@@ -384,7 +384,10 @@ struct CodexStreamState {
     fork_attribution_incomplete: bool,
     /// See [`json_text_codec`].
     #[serde(with = "json_text_codec")]
-    previous_usage_key: Option<(UsageRecordKey, bool)>,
+    previous_usage_key: Option<UsageRecordSeen>,
+    /// See [`json_text_codec`].
+    #[serde(with = "json_text_codec")]
+    recent_cross_format_usage: Option<UsageRecordSeen>,
     previous_event_was_boundary: bool,
     previous_boundary_ts: Option<i64>,
     context_window: Option<u64>,
@@ -404,7 +407,7 @@ struct CodexStreamState {
 
 /// Snapshot codec for a `CodexStreamState` field whose type carries
 /// `serde_json::Value` data at any depth (`pending_rows`,
-/// `previous_usage_key`).
+/// `previous_usage_key`, `recent_cross_format_usage`).
 ///
 /// `serde_json::Value`'s `Deserialize` impl calls `deserialize_any`, a
 /// self-describing lookahead `postcard` explicitly does not implement (its
@@ -569,13 +572,13 @@ impl CodexStreamState {
         }
 
         if is_usage_record {
-            if let Some(key) = usage_record_key(&value) {
-                let key_with_ownership = (key, usage_is_owned);
-                let duplicate = self.previous_usage_key.as_ref() == Some(&key_with_ownership);
-                self.previous_usage_key = Some(key_with_ownership);
-                if duplicate {
-                    return;
-                }
+            if usage_record_is_duplicate(
+                &mut self.previous_usage_key,
+                &mut self.recent_cross_format_usage,
+                &value,
+                usage_is_owned,
+            ) {
+                return;
             }
             if !usage_is_owned {
                 return;
@@ -639,6 +642,7 @@ impl CodexStreamState {
         if settings || matches!(record_type, Some("session_meta" | "turn_context")) {
             // A new request context separates equal usage totals from different requests.
             self.previous_usage_key = None;
+            self.recent_cross_format_usage = None;
         }
         let provider = if record_type == Some("session_meta") {
             value.pointer("/payload/model_provider")
@@ -1212,14 +1216,13 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
             let is_usage_record = is_token_count_record(record_type, payload_type)
                 || record_type == Some("token_usage_record");
             let inherited_usage = !usage_is_owned && is_usage_record;
-            if let Some(key) = usage_record_key(&value) {
-                let key_with_ownership = (key, usage_is_owned);
-                let duplicate_usage =
-                    controls.previous_usage_key.as_ref() == Some(&key_with_ownership);
-                controls.previous_usage_key = Some(key_with_ownership);
-                if duplicate_usage {
-                    continue;
-                }
+            if usage_record_is_duplicate(
+                &mut controls.previous_usage_key,
+                &mut controls.recent_cross_format_usage,
+                &value,
+                usage_is_owned,
+            ) {
+                continue;
             }
             if !inherited_usage && let Some(mut ev) = record_to_event(&value) {
                 ev.provider = controls.current_provider.clone();
@@ -1927,6 +1930,22 @@ fn is_usage_free_record(value: &Value) -> bool {
 
 /// The per-response and cumulative usage that identify one usage row.
 type UsageRecordKey = (Value, Value);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum UsageRecordFormat {
+    LegacyTokenCount,
+    TokenUsageRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct UsageRecordSeen {
+    key: UsageRecordKey,
+    format: UsageRecordFormat,
+    identity: Option<Value>,
+    owned: bool,
+    ts_ms: Option<i64>,
+}
+
 type TokenUsageObjects<'a> = (
     &'a Map<String, Value>,
     &'a Map<String, Value>,
@@ -1950,8 +1969,8 @@ fn token_usage_record_objects(payload: &Map<String, Value>) -> Option<TokenUsage
 /// Returns a common deduplication key for both Codex usage formats.
 ///
 /// Codex can write equivalent `token_usage_record` and `token_count` rows.
-/// It can also repeat the last usage row after a rollout resumes. Both parsing
-/// paths drop a row when this pair matches the prior row with the same owner.
+/// The first value is per-response usage; the second is cumulative usage.
+/// The dedupe policy compares these values with format and request identity.
 fn usage_record_key(value: &Value) -> Option<UsageRecordKey> {
     let record_type = value.get("type").and_then(Value::as_str);
     let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
@@ -1973,6 +1992,107 @@ fn usage_record_key(value: &Value) -> Option<UsageRecordKey> {
             .cloned()
             .unwrap_or(Value::Null),
     ))
+}
+
+fn usage_record_format(value: &Value) -> Option<UsageRecordFormat> {
+    let record_type = value.get("type").and_then(Value::as_str);
+    let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
+    if record_type == Some("token_usage_record") {
+        Some(UsageRecordFormat::TokenUsageRecord)
+    } else if is_token_count_record(record_type, payload_type) {
+        Some(UsageRecordFormat::LegacyTokenCount)
+    } else {
+        None
+    }
+}
+
+/// A cross-format match needs a timestamp because equal per-response usage
+/// can belong to distinct requests. Keep the window short and retain one candidate.
+const CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS: u64 = 5_000;
+
+fn usage_record_is_duplicate(
+    previous: &mut Option<UsageRecordSeen>,
+    recent: &mut Option<UsageRecordSeen>,
+    value: &Value,
+    owned: bool,
+) -> bool {
+    let Some(key) = usage_record_key(value) else {
+        return false;
+    };
+    let Some(format) = usage_record_format(value) else {
+        return false;
+    };
+    let current = UsageRecordSeen {
+        key,
+        format,
+        identity: usage_record_identity(value),
+        owned,
+        ts_ms: value.get("timestamp").and_then(parse_ts),
+    };
+
+    let same_format_repeat = previous.as_ref().is_some_and(|prior| {
+        prior.owned == current.owned
+            && prior.format == current.format
+            && prior.key == current.key
+            && prior.identity == current.identity
+    });
+    let exact_cross_format_repeat = previous.as_ref().is_some_and(|prior| {
+        prior.owned == current.owned
+            && prior.format != current.format
+            && prior.key == current.key
+            && prior
+                .ts_ms
+                .zip(current.ts_ms)
+                .is_some_and(|(prior, current)| {
+                    prior.abs_diff(current) <= CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS
+                })
+    });
+
+    let mismatched_cross_format_repeat = !same_format_repeat
+        && !exact_cross_format_repeat
+        && recent.as_ref().is_some_and(|prior| {
+            prior.owned == current.owned
+                && prior.format != current.format
+                && prior.key.0 == current.key.0
+                && prior.key.1 != current.key.1
+                && prior
+                    .ts_ms
+                    .zip(current.ts_ms)
+                    .is_some_and(|(prior, current)| {
+                        prior.abs_diff(current) <= CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS
+                    })
+        });
+
+    let duplicate =
+        same_format_repeat || exact_cross_format_repeat || mismatched_cross_format_repeat;
+    if exact_cross_format_repeat || mismatched_cross_format_repeat {
+        *recent = None;
+    }
+    *previous = Some(current.clone());
+    if !duplicate {
+        *recent = Some(current);
+    }
+    duplicate
+}
+
+fn usage_record_identity(value: &Value) -> Option<Value> {
+    if usage_record_format(value) != Some(UsageRecordFormat::TokenUsageRecord) {
+        return None;
+    }
+    let payload = value.get("payload")?.as_object()?;
+    let mut identity = Map::new();
+    for key in [
+        "thread_id",
+        "turn_id",
+        "session_id",
+        "root_turn_id",
+        "response_id",
+    ] {
+        if let Some(value) = payload.get(key) {
+            identity.insert(key.to_owned(), value.clone());
+        }
+    }
+    (!identity.is_empty()).then_some(Value::Object(identity))
 }
 
 fn is_token_count_record(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
@@ -2237,7 +2357,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 6_996_697_630_133_459_451;
+        const EXPECTED_FINGERPRINT: u64 = 18_370_784_376_499_888_089;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -2501,6 +2621,188 @@ mod tests {
             streamed.events[0].ts_ms,
             parse_ts(&serde_json::json!("2026-09-01T00:00:01Z"))
         );
+    }
+
+    #[test]
+    fn mismatched_cumulative_usage_rows_deduplicate_by_per_response_usage() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:00:00Z","type":"session_meta","payload":{"model":"gpt-test","effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":60863,"cached_input_tokens":0,"output_tokens":107},"turn_token_usage":{"input_tokens":60863,"cached_input_tokens":0,"output_tokens":107},"thread_token_usage":{"input_tokens":60863,"cached_input_tokens":0,"output_tokens":107}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":200000,"last_token_usage":{"input_tokens":60863,"cached_input_tokens":0,"output_tokens":107},"total_token_usage":{"input_tokens":70000,"cached_input_tokens":50000,"output_tokens":200}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:03Z","type":"token_usage_record","payload":{"usage":{"input_tokens":67617,"cached_input_tokens":60800,"output_tokens":126},"turn_token_usage":{"input_tokens":67617,"cached_input_tokens":60800,"output_tokens":126},"thread_token_usage":{"input_tokens":128480,"cached_input_tokens":60800,"output_tokens":233}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":200000,"last_token_usage":{"input_tokens":67617,"cached_input_tokens":60800,"output_tokens":126},"total_token_usage":{"input_tokens":130000,"cached_input_tokens":110000,"output_tokens":350}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:05Z","type":"token_usage_record","payload":{"usage":{"input_tokens":67756,"cached_input_tokens":67584,"output_tokens":185},"turn_token_usage":{"input_tokens":67756,"cached_input_tokens":67584,"output_tokens":185},"thread_token_usage":{"input_tokens":196236,"cached_input_tokens":128384,"output_tokens":418}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":200000,"last_token_usage":{"input_tokens":67756,"cached_input_tokens":67584,"output_tokens":185},"total_token_usage":{"input_tokens":200000,"cached_input_tokens":180000,"output_tokens":500}}}}"#,
+            "\n",
+        );
+
+        let (coverage, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, context_window, model, _) = parse_codex(jsonl);
+
+        assert_eq!(coverage, crate::analysis::RecordCoverage::Complete);
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 3);
+        let usage = streamed
+            .events
+            .iter()
+            .fold(Usage::default(), |total, event| {
+                total.saturating_add(event.usage)
+            });
+        assert_eq!(usage.input_tokens, 67_852);
+        assert_eq!(usage.cache_read_tokens, 128_384);
+        assert_eq!(usage.output_tokens, 418);
+        assert_eq!(
+            streamed
+                .events
+                .iter()
+                .map(|event| event.usage.context_tokens())
+                .max(),
+            Some(67_756)
+        );
+        assert_eq!(streamed.context_window, Some(200_000));
+        assert_eq!(context_window, Some(200_000));
+        assert_eq!(streamed.model.as_deref(), Some("gpt-test"));
+        assert_eq!(model.as_deref(), Some("gpt-test"));
+    }
+
+    #[test]
+    fn equal_usage_requests_with_distinct_response_ids_are_preserved() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:10:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:10:01Z","type":"token_usage_record","payload":{"response_id":"response-a","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:10:02Z","type":"token_usage_record","payload":{"response_id":"response-b","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 2);
+        assert_eq!(streamed.events[0].usage, streamed.events[1].usage);
+    }
+
+    #[test]
+    fn mismatched_cross_format_usage_outside_window_is_preserved() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:20:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:20:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:20:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":15}}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 2);
+    }
+
+    #[test]
+    fn adjacent_equal_usage_pairs_are_consumed_independently() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:30:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:30:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:30:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":110,"cached_input_tokens":20,"output_tokens":6}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:30:03Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":200,"cached_input_tokens":40,"output_tokens":10}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:30:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":210,"cached_input_tokens":40,"output_tokens":11}}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 2);
+    }
+
+    #[test]
+    fn a_distinct_usage_row_blocks_an_older_cross_format_match() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:40:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:40:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:40:02Z","type":"token_usage_record","payload":{"usage":{"input_tokens":200,"cached_input_tokens":30,"output_tokens":6},"turn_token_usage":{"input_tokens":200,"cached_input_tokens":30,"output_tokens":6},"thread_token_usage":{"input_tokens":300,"cached_input_tokens":50,"output_tokens":11}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:40:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":400,"cached_input_tokens":80,"output_tokens":16}}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 3);
+    }
+
+    #[test]
+    fn reversed_cross_format_usage_rows_deduplicate() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:50:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:50:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":15}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:50:02Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 1);
+    }
+
+    #[test]
+    fn mismatched_cross_format_usage_without_timestamps_is_preserved() {
+        let new_record = serde_json::json!({
+            "type": "token_usage_record",
+            "payload": {
+                "usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 5},
+                "turn_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 5},
+                "thread_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 5}
+            }
+        });
+        let legacy_record = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 5},
+                    "total_token_usage": {"input_tokens": 300, "cached_input_tokens": 200, "output_tokens": 15}
+                }
+            }
+        });
+        let mut previous = None;
+        let mut recent = None;
+
+        assert!(!usage_record_is_duplicate(
+            &mut previous,
+            &mut recent,
+            &new_record,
+            true
+        ));
+        assert!(!usage_record_is_duplicate(
+            &mut previous,
+            &mut recent,
+            &legacy_record,
+            true
+        ));
     }
 
     #[test]
@@ -3303,6 +3605,61 @@ mod tests {
             assert_eq!(second_visit.outcome, VisitOutcome::AcceptedFull);
             assert!(second_session.events.is_empty());
             assert_eq!(second_session.context_window, Some(96_000));
+        }
+
+        #[test]
+        fn a_resumed_mismatched_cumulative_usage_record_deduplicates() {
+            let first_records = concat!(
+                r#"{"timestamp":"2026-09-02T01:00:00Z","type":"turn_context","payload":{"effort":"high"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-09-02T01:00:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+                "\n",
+            );
+            let legacy_record = concat!(
+                r#"{"timestamp":"2026-09-02T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":15}}}}"#,
+                "\n",
+            );
+            let directory = TempDir::new().expect("tempdir");
+            let path = write_source(&directory, first_records.as_bytes());
+            let input = file_input(&path);
+            let first_claim = claim_for_path(&path);
+            let mut first_pass = SessionCollector::new("codex", "claimed-session");
+            let first_visit = CodexSessionReader
+                .visit_claimed_resumed(
+                    &input,
+                    &first_claim,
+                    &fresh_snapshot(),
+                    &|| false,
+                    &mut first_pass,
+                )
+                .expect("first resumed visit");
+            assert_eq!(first_pass.into_session().unwrap().events.len(), 1);
+            let snapshot = snapshot_from(first_visit.resume.expect("first pass resumes"));
+
+            OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open source for append")
+                .write_all(legacy_record.as_bytes())
+                .expect("append legacy usage record");
+            let second_claim = claim_for_path(&path);
+            let mut second_pass = SessionCollector::new("codex", "claimed-session");
+            let second_visit = CodexSessionReader
+                .visit_claimed_resumed(
+                    &input,
+                    &second_claim,
+                    &snapshot,
+                    &|| false,
+                    &mut second_pass,
+                )
+                .expect("second resumed visit");
+            let resumed_session = second_pass.into_session().unwrap();
+
+            assert_eq!(second_visit.outcome, VisitOutcome::AcceptedFull);
+            assert!(resumed_session.events.is_empty());
+            let mut full = SessionCollector::new("codex", "claimed-session");
+            CodexSessionReader.visit(&input, &mut full).unwrap();
+            assert_eq!(full.into_session().unwrap().events.len(), 1);
         }
 
         #[test]

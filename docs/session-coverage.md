@@ -1,6 +1,6 @@
 # Session Parsing Coverage
 
-Audit date: 2026-09-10.
+Audit date: 2026-09-11.
 
 This document records how Antiburn discovers and parses local session sources.
 It covers source identity, framing, companion data, normalized facts, and
@@ -37,6 +37,17 @@ release range: an accepted schema, header, or pinned producer commit with
 synthetic fixtures can define its contract. This does not prove all historical
 versions. Full and resumed reads must agree where resume is supported.
 
+Codex can emit one response's usage in both `token_usage_record` and
+`event_msg`/`token_count`. Per-response usage fields identify cross-format pairs
+within five seconds, while available request identities separate same-format
+requests with equal usage. The reader retains one recent observation.
+Cumulative `thread_token_usage` and
+`total_token_usage` fields can use different producer bases, so they do not
+decide whether a cross-format pair is a duplicate. Repeated legacy rows and
+cross-format pairs are deduplicated within the active request segment, and the
+bounded dedupe state crosses a resume boundary. Missing or malformed
+per-response usage remains partial.
+
 Inline materialized sources use a fingerprint of the full bounded content, not
 only a head region. The content is already materialized and size-bounded before
 this fingerprint is calculated. OpenCode SQLite fingerprints stream every
@@ -66,7 +77,7 @@ Newly discovered repositories remain enabled by default.
 | `SourceFormat`                 | Agent         | Native source                                                              | Discovery and framing                                                                                                                                          | Parsed facts                                                                                                                                                                  | State                                                                                             |
 | ------------------------------ | ------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `ClaudeJsonl`                  | Claude Code   | `~/.claude/projects/<workspace>/*.jsonl`                                   | Native discovery; bounded JSONL with source claims; resume supported                                                                                           | Usage, token classes, time, models, request controls/routes, calls, observed resource injection, thread links, compactions, exact Task/Agent child pairing                    | Characterized accepted core; observed resources are not full inventories                          |
-| `CodexRolloutJsonl`            | Codex         | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`                             | Native discovery with child rollouts; bounded JSONL; resume supported                                                                                          | Usage, time, models, provider/control inheritance, service tier, tools, harness version, spawn records, selected skill documents, exact tool-search MCP exposure, compactions | Characterized accepted core; resource subsets only                                                |
+| `CodexRolloutJsonl`            | Codex         | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`                             | Native discovery with child rollouts; bounded JSONL; resume supported; paired `token_usage_record`/`token_count` usage dedupe                                                       | Per-response usage and context window, time, models, provider/control inheritance, service tier, tools, harness version, spawn records, selected skill documents, exact tool-search MCP exposure, compactions | Characterized accepted core; resource subsets only                                                |
 | `OpenCodeJsonl`                | OpenCode      | Legacy exported session JSONL                                              | Native or WSL export discovery; bounded JSONL with validated history wrappers/order                                                                            | Usage, time, models, provider/API fields where saved, raw variants, task proof, selected skills, tools, compactions, session/message identities                               | Characterized accepted export; no historical effort map or resource inventory                     |
 | `OpenCodeSqliteV2`             | OpenCode      | `~/.local/share/opencode/opencode.db` or platform equivalent               | Read-only snapshot of the root and descendant `session`, `message`, `part` cluster; row-streamed content fingerprint; validated creation-time/message-ID order | Native messages and parts, task metadata joined to child models, selected skills, usage, provider/API fields, compactions, identities                                         | Characterized table contract; not CoreV2 `session_message`                                        |
 | `PiV3Jsonl`                    | Pi            | `~/.pi/agent/sessions/**/*.jsonl` or `PI_AGENT_DIR`                        | Native discovery; version 3 header; bounded JSONL; resume supported                                                                                            | Usage at the nested request-start timestamp, top-level event time, provider/API/model, agent-selected thinking policy, branch/fork state, tools, links, compactions, official example-extension nested worker results | Characterized core; extension delegation is finding-only, not arbitrary extension support         |
@@ -122,7 +133,7 @@ compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
 The route columns use engine turn migration 7 and desktop migration 39. Current
-parser/analyzer/evidence/coverage/resume revisions are 32/23/18/4/6. Existing
+parser/analyzer/evidence/coverage/resume revisions are 33/23/18/4/7. Existing
 revision gates invalidate old projections and snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.
 
