@@ -78,7 +78,7 @@ export function BurnCheckReviewDialog({
           </div>
           <div className="col-span-2">
             <dt className="type-footnote text-label-tertiary">Config file</dt>
-            <dd className="mt-0.5 break-all type-callout font-mono text-label-secondary">
+            <dd className="mt-0.5 break-all type-callout font-mono text-label">
               {review.configFile}
             </dd>
           </div>
