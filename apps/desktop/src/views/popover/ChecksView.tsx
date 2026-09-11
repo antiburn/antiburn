@@ -65,7 +65,7 @@ export function ChecksSummary({
         hovered.current = false
         if (!focused.current) onLeave()
       }}
-      className="burn-check-summary-surface group flex items-center rounded-control bg-surface-card/50 hover:bg-surface-hover/35 data-[state=active]:bg-surface-selected/40"
+      className="burn-check-summary-surface group flex items-center rounded-control bg-surface-card/50 transition-colors duration-fast hover:bg-surface-secondary/70 focus-within:bg-surface-secondary/70 data-[state=active]:bg-surface-selected/40"
     >
       <button
         type="button"
@@ -82,7 +82,7 @@ export function ChecksSummary({
           focused.current = false
           if (!hovered.current) onLeave()
         }}
-        className="min-w-0 flex-1 rounded-control text-left disabled:opacity-100 active:transform-none active:opacity-100"
+        className="min-w-0 flex-1 cursor-pointer rounded-control text-left disabled:opacity-100 active:transform-none active:opacity-100"
       >
         <BurnCheckSummary presentation={burnChecks} />
       </button>

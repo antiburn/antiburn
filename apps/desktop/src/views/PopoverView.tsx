@@ -84,7 +84,7 @@ function selectedProviderPresentation(
  * The tray popover.
  *
  * The window shows activity. Session cards open the retained main window.
- * Usage and Checks use the anchored companion window.
+ * Usage uses the anchored companion window. Checks opens the main window.
  * `PopoverSession` owns Escape handling and temporary attention-banner dismissal.
  */
 
@@ -204,19 +204,10 @@ export function PopoverView() {
               className="shrink-0 px-[var(--space-sm)] pt-[var(--space-md)]"
             >
               <ChecksSummary
-                active={
-                  peekTrigger.target?.kind === "checks" && peekTrigger.activation !== "idle"
-                }
+                active={false}
                 presentation={checks}
                 reportUnavailable={state.checksUnavailable}
-                onPreview={(anchor) => {
-                  if (!checks) return
-                  void peekTriggers.hover({ kind: "checks" }, anchor, {
-                    kind: "checks",
-                    presentation: checks,
-                    pendingEvidence: state.checksReport?.pendingEvidence ?? 0,
-                  })
-                }}
+                onPreview={() => void peekTriggers.leave()}
                 onLeave={() => void peekTriggers.leave()}
                 onOpen={() => {
                   void peekTriggers.leave()
