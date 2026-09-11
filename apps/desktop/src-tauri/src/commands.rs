@@ -569,13 +569,6 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     // keeps a once-flag), so no transition edge needs to be computed here.
     crate::notifications::maybe_initialize_authorization(app);
 
-    // Consent changing is the queue's business: turning it off withdraws
-    // whatever is already queued rather than merely pausing it, and destroys
-    // the installation identifier so a later opt-in cannot be joined to this
-    // one. Routed through the same hub as every other consequence so the two
-    // can never drift apart.
-    crate::analytics::handle_settings_transition(app, previous, saved);
-
     // Which switch moved, never what it moved to, and only from this closed
     // list. A key alone answers "is this control being found at all"; the
     // value would start describing the reader's setup.

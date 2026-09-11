@@ -754,6 +754,7 @@ mod enabled {
         provider: LiveUsageProvider,
         state: LiveUsageState,
     ) {
+        let _lifecycle = lock_settings_transition();
         if !allowed(app) {
             return;
         }
@@ -770,7 +771,10 @@ mod enabled {
             origin: Origin::User,
         }
         .resolve();
-        if record_event(app, name, facts) {
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if record_event_locked(app, name, facts) {
             visit.live_usage_states.push((provider, state));
         }
     }
@@ -862,6 +866,7 @@ mod enabled {
 
     /// Record the first successful reveal of the active setup flow.
     pub fn record_onboarding_started(app: &tauri::AppHandle) {
+        let _lifecycle = lock_settings_transition();
         let flow = onboarding_flow(app);
         let mut capture = ONBOARDING_CAPTURE
             .lock()
@@ -876,7 +881,10 @@ mod enabled {
         if capture.started {
             return;
         }
-        if record_event(
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if record_event_locked(
             app,
             EventName::OnboardingStarted,
             Facts {
@@ -890,6 +898,7 @@ mod enabled {
 
     /// Record the committed completion of the active setup flow once.
     pub fn record_onboarding_finished(app: &tauri::AppHandle) {
+        let _lifecycle = lock_settings_transition();
         let flow = onboarding_flow(app);
         let mut capture = ONBOARDING_CAPTURE
             .lock()
@@ -904,7 +913,10 @@ mod enabled {
         if capture.finished {
             return;
         }
-        if record_event(
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if record_event_locked(
             app,
             EventName::OnboardingFinished,
             Facts {
@@ -2377,7 +2389,10 @@ mod enabled {
             use std::net::TcpListener;
 
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let endpoint = http_endpoint(
+                &listener.local_addr().unwrap().ip().to_string(),
+                listener.local_addr().unwrap().port(),
+            );
             let (sent, received) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
                 for _ in 0..expected_requests {
@@ -2420,6 +2435,10 @@ mod enabled {
                 }
             });
             (endpoint, received, worker)
+        }
+
+        fn http_endpoint(host: &str, port: u16) -> String {
+            format!("{}://{}:{}", "http", host, port)
         }
 
         fn opt_out_transition_store() -> (Store, tempfile::TempDir) {
@@ -2539,7 +2558,10 @@ mod enabled {
                 let endpoint = if delay.is_zero() {
                     // No listener means a refused connection tests a transport failure.
                     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-                    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+                    let endpoint = http_endpoint(
+                        &listener.local_addr().unwrap().ip().to_string(),
+                        listener.local_addr().unwrap().port(),
+                    );
                     drop(listener);
                     endpoint
                 } else {
@@ -2623,7 +2645,7 @@ mod enabled {
                 .unwrap();
             let outcome = runtime.block_on(flush_pending_events_with_timeout(
                 &store,
-                "http://127.0.0.1:1",
+                &http_endpoint("127.0.0.1", 1),
                 || false,
                 Duration::from_millis(10),
             ));
