@@ -25,6 +25,7 @@ import {
   liveUnavailableReason,
   liveWindowElapsed,
   liveWindowLabel,
+  liveWindowSweeps,
   liveWindows,
   orderedLiveAccounts,
   maxLiveUsedPercent,
@@ -60,6 +61,18 @@ export interface UsageLimitsBarProps {
     provider: string
     activation: Exclude<AnchoredTriggerActivation, "idle">
   } | null
+  /**
+   * The providers a live session draws on. Each of them sweeps, the way the
+   * HUD's bars sweep: its ring on the closed bar, and every one of its
+   * meters on the open one, from the top down.
+   */
+  liveProviders?: readonly string[]
+  /**
+   * The models a live session runs. A meter scoped to one model sweeps only
+   * while that model is in this list, so a limit the reader is not drawing
+   * on stays still.
+   */
+  liveModels?: readonly string[]
 }
 
 /**
@@ -86,6 +99,8 @@ export function UsageLimitsBar({
   refreshing,
   onHoverProvider,
   activeProvider,
+  liveProviders = [],
+  liveModels = [],
 }: UsageLimitsBarProps) {
   const limited = orderedLiveAccounts(liveDisplayableProviders(live)).filter(
     ({ reading }) => liveWindows(reading).length > 0,
@@ -116,7 +131,12 @@ export function UsageLimitsBar({
   )
 
   return (
-    <div data-testid="usage-limits-bar" className="relative shrink-0">
+    // `led-clock` runs the one sweep clock every live meter below reads, so
+    // the rows stay in phase whenever each row joined.
+    <div
+      data-testid="usage-limits-bar"
+      className={cn("relative shrink-0", liveProviders.length > 0 && "led-clock")}
+    >
       {!expanded && (
         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -127,6 +147,7 @@ export function UsageLimitsBar({
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 status={liveProviderStatus(live, reading)}
                 onHover={onHoverProvider}
+                live={liveProviders.includes(reading.provider)}
                 activation={
                   activeProvider?.provider === reading.provider
                     ? activeProvider.activation
@@ -160,6 +181,8 @@ export function UsageLimitsBar({
               status={liveProviderStatus(live, reading)}
               now={at}
               action={index === 0 ? disclosure(true) : undefined}
+              live={liveProviders.includes(reading.provider)}
+              liveModels={liveModels}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
@@ -262,6 +285,8 @@ function ProviderGroup({
   action,
   onHover,
   activation,
+  live = false,
+  liveModels = [],
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
@@ -270,6 +295,14 @@ function ProviderGroup({
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
+  /**
+   * A live session draws on this provider. An account-wide meter then
+   * sweeps, from the top down. A model-scoped meter also needs its model in
+   * `liveModels`.
+   */
+  live?: boolean
+  /** The models a live session runs, for the model-scoped meters. */
+  liveModels?: readonly string[]
   onHover?: (provider: string | null, anchor: AnchorRegion | null) => void
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
@@ -303,8 +336,15 @@ function ProviderGroup({
       {/* Not orange: a grace-period reading is still fine, not a failure. */}
       {graceNote && <p className="pb-1.5 type-footnote text-label-tertiary">{graceNote}</p>}
       <div className="space-y-2.5">
-        {liveWindows(provider).map((window) => (
-          <WindowMeterRow key={window.id} window={window} now={now} resetOnHover />
+        {liveWindows(provider).map((window, index) => (
+          <WindowMeterRow
+            key={window.id}
+            window={window}
+            now={now}
+            resetOnHover
+            live={liveWindowSweeps(window, live, liveModels)}
+            row={index}
+          />
         ))}
       </div>
     </div>
@@ -321,12 +361,15 @@ function ProviderRadial({
   status,
   onHover,
   activation,
+  live = false,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   status: LiveProviderStatus
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
+  /** Sweep the ring while a session is live. */
+  live?: boolean
 }) {
   const percent = maxLiveUsedPercent(provider)
   const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
@@ -360,6 +403,7 @@ function ProviderRadial({
         glyph={providerInitial(displayName)}
         size={RING_SIZE}
         className="block text-label-secondary"
+        live={live}
       />
       <span
         aria-hidden="true"
@@ -441,6 +485,8 @@ function WindowMeterRow({
   window,
   now,
   resetOnHover = false,
+  live = false,
+  row = 0,
 }: {
   window: LiveUsageWindowPayload
   /** The instant the elapsed notch is measured from. */
@@ -453,6 +499,10 @@ function WindowMeterRow({
    * A surface that shows one provider keeps the reset in view instead.
    */
   resetOnHover?: boolean
+  /** Sweep the meter while a session is live. */
+  live?: boolean
+  /** The row's place under its provider, for the sweep stagger. */
+  row?: number
 }) {
   const percent = window.usedPercent
   return (
@@ -484,6 +534,8 @@ function WindowMeterRow({
       <SegmentedMeter
         percent={percent ?? null}
         expectedFraction={liveWindowElapsed(window, now)}
+        live={live}
+        row={row}
       />
     </div>
   )

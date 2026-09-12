@@ -7,6 +7,7 @@ import {
   EMPTY_PROVIDER_USAGE,
   type ActivityEntryPayload,
   type ScanStatus,
+  type SessionLifecycleEvent,
   type SessionLimitAllocationSummaryPayload,
 } from "../../lib/ipc"
 import { PopoverSession } from "./PopoverSession"
@@ -15,6 +16,8 @@ const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
 const getProviderUsage = vi.hoisted(() => vi.fn())
 const listRecentSessions = vi.hoisted(() => vi.fn())
 const onSessionEntryChanged = vi.hoisted(() => vi.fn())
+const onSessionLifecycle = vi.hoisted(() => vi.fn())
+const getLiveSessions = vi.hoisted(() => vi.fn())
 const onScanEvent = vi.hoisted(() => vi.fn())
 const onChecksReportChanged = vi.hoisted(() => vi.fn())
 const getChecksReport = vi.hoisted(() => vi.fn())
@@ -33,6 +36,8 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     getProviderUsage,
     listRecentSessions,
     onSessionEntryChanged,
+    onSessionLifecycle,
+    getLiveSessions,
     onScanEvent,
     onPopoverShown,
     onPopoverHidden,
@@ -54,6 +59,7 @@ type EntryChangedHandler = (entry: ActivityEntryPayload) => void
 type ScanEventHandler = (status: ScanStatus, phase: "started" | "progress" | "finished") => void
 
 let entryChangedHandler: EntryChangedHandler | null = null
+let lifecycleHandler: ((event: SessionLifecycleEvent) => void) | null = null
 let scanEventHandler: ScanEventHandler | null = null
 let popoverShownHandler: (() => void) | null = null
 let popoverHiddenHandler: (() => void) | null = null
@@ -83,6 +89,7 @@ function activityEntry(overrides: Partial<ActivityEntryPayload> = {}): ActivityE
 
 beforeEach(() => {
   entryChangedHandler = null
+  lifecycleHandler = null
   scanEventHandler = null
   popoverShownHandler = null
   popoverHiddenHandler = null
@@ -95,6 +102,17 @@ beforeEach(() => {
       entryChangedHandler = null
     }
   })
+  onSessionLifecycle.mockReset()
+  onSessionLifecycle.mockImplementation(
+    async (handler: (event: SessionLifecycleEvent) => void) => {
+      lifecycleHandler = handler
+      return () => {
+        lifecycleHandler = null
+      }
+    },
+  )
+  getLiveSessions.mockReset()
+  getLiveSessions.mockResolvedValue([])
   onScanEvent.mockReset()
   onScanEvent.mockImplementation(async (handler: ScanEventHandler) => {
     scanEventHandler = handler
@@ -601,6 +619,54 @@ describe("PopoverSession surface presentation", () => {
 
     await vi.advanceTimersByTimeAsync(30_000)
     expect(session.getSnapshot().now).toBe(Date.now())
+    unsubscribe()
+  })
+})
+
+describe("PopoverSession live sessions", () => {
+  const ref = { environmentKey: "native", agent: "claude-code", sessionId: "session-1" }
+
+  it("follows the lifecycle bus and the snapshot", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(lifecycleHandler).not.toBeNull())
+    await vi.waitFor(() => expect(getLiveSessions).toHaveBeenCalledTimes(1))
+    expect(session.getSnapshot().sessionLive).toBe(false)
+    expect(session.getSnapshot().liveProviders).toEqual([])
+
+    const at = Math.floor(Date.now() / 1000)
+    lifecycleHandler?.({ kind: "activity", session: ref, agent: "claude-code", at })
+    expect(session.getSnapshot().sessionLive).toBe(true)
+    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
+
+    lifecycleHandler?.({ kind: "quiet", session: ref, agent: "claude-code", at: at + 30 })
+    expect(session.getSnapshot().sessionLive).toBe(false)
+    expect(session.getSnapshot().liveProviders).toEqual([])
+
+    unsubscribe()
+    expect(lifecycleHandler).toBeNull()
+  })
+
+  it("starts live when the snapshot lists a session with a recent write", async () => {
+    getLiveSessions.mockResolvedValue([
+      { session: ref, agent: "claude-code", lastActivityAt: Math.floor(Date.now() / 1000) },
+    ])
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+
+    await vi.waitFor(() => expect(session.getSnapshot().sessionLive).toBe(true))
+    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
+    unsubscribe()
+  })
+
+  it("re-reads the live set when the popover is shown", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    await vi.waitFor(() => expect(getLiveSessions).toHaveBeenCalledTimes(1))
+
+    popoverShownHandler?.()
+    expect(getLiveSessions).toHaveBeenCalledTimes(2)
     unsubscribe()
   })
 })

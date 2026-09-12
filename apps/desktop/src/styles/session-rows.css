@@ -1,6 +1,7 @@
 /* These styles show active sessions with a title shimmer. */
 
 .activity-row-active {
+  /* The live meters sweep on this cycle too. See `--led-sweep-cycle` in hud.css. */
   --activity-row-shimmer-cycle: 4000ms;
 }
 
@@ -80,6 +81,9 @@
   -webkit-background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
+  /* `installLivePhase` in src/lib/livePhase.ts sets the start time of this
+     animation from the wall clock, so it holds the phase of the meter sweep.
+     Do not declare a delay here, because a delay moves the phase. */
   animation: activity-row-title-shimmer var(--activity-row-shimmer-cycle) linear infinite;
 }
 

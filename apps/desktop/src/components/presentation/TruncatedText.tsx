@@ -73,8 +73,8 @@ export function TruncatedText({
   const lineLimit = Number.isFinite(lines) ? Math.max(1, Math.floor(lines)) : 1
   const ref = useRef<HTMLDivElement | null>(null)
   const truncated = useTruncated(ref, text, lineLimit)
-  const lineStyle =
-    lineLimit > 1 ? ({ "--truncated-text-lines": lineLimit } as CSSProperties) : undefined
+  const style: CSSProperties = {}
+  if (lineLimit > 1) Object.assign(style, { "--truncated-text-lines": lineLimit })
 
   return (
     <div
@@ -84,7 +84,7 @@ export function TruncatedText({
         lineLimit === 1 ? "truncate" : "truncated-text-lines",
         shimmer && "activity-row-title-shimmer",
       )}
-      style={lineStyle}
+      style={style}
       title={truncated ? text : undefined}
       data-text={shimmer ? text : undefined}
       aria-label={shimmer ? text : undefined}

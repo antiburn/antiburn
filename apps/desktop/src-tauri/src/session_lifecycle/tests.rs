@@ -67,6 +67,7 @@ async fn touched_publishes_activity_with_the_same_key_and_time() {
             session: session_ref("busy"),
             agent: AgentKind::Claude,
             last_activity_at: BASE + 3,
+            model: None,
         }]
     );
 }
@@ -301,11 +302,13 @@ async fn a_late_subscriber_reads_the_seeded_set_from_the_snapshot_not_a_replay()
                 session: session_ref("second"),
                 agent: AgentKind::Claude,
                 last_activity_at: BASE - 5,
+                model: None,
             },
             LiveSession {
                 session: session_ref("first"),
                 agent: AgentKind::Claude,
                 last_activity_at: BASE - 30,
+                model: None,
             },
         ]
     );

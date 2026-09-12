@@ -50,35 +50,6 @@ fn sessions_active_since_query_plan_uses_the_coalesced_recency_index() {
     );
 }
 #[test]
-fn latest_session_activity_ignores_null_epochs() {
-    let store = store();
-    assert_eq!(
-        store.latest_session_activity().unwrap(),
-        None,
-        "empty store"
-    );
-
-    let mut no_heartbeat = session("no-heartbeat", 0);
-    no_heartbeat.updated_at_epoch = None;
-    store
-        .upsert_sessions(&[no_heartbeat], &crate::agents::evidence_cohort())
-        .unwrap();
-    assert_eq!(
-        store.latest_session_activity().unwrap(),
-        None,
-        "a NULL epoch is not activity"
-    );
-
-    store
-        .upsert_sessions(
-            &[session("recent", 5_000)],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-    assert_eq!(store.latest_session_activity().unwrap(), Some(5_000));
-}
-
-#[test]
 fn native_file_session_activity_keys_keep_full_identity() {
     let store = store();
     let record = session("by-label", 4_000);

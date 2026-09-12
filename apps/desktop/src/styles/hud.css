@@ -136,25 +136,198 @@ body[data-transparent-window] #root {
     0 0 0 0.5px rgb(0 0 0 / 0.04);
 }
 
-.led-blink {
-  animation: led-blink 3s steps(1, end) infinite;
+/*
+ * The live-session sweep. One clock drives every live meter on a surface.
+ * `.led-clock` on an ancestor animates the sweep position, and each segment
+ * and ring reads it.
+ *
+ * A CSS animation starts when the browser applies it. An animation on each
+ * meter therefore gives a meter that joins later its own clock, and the rows
+ * of one provider drift apart. One animation on one ancestor keeps every row
+ * in phase, whenever a row joins.
+ *
+ * The position runs in bar lengths: 0 is the left end of a bar and 1 is the
+ * right end. It travels at a constant rate from half a bar before the left
+ * end to half a bar past the right end, and the band is off the bar at each
+ * end of the cycle. Each row starts `--led-row-lag` bar lengths after the row
+ * above it.
+ *
+ * The pace is the session list's title shimmer, cycle and phase alike. That
+ * shimmer moves its band from half a title before the text to half a title
+ * past it, over one `--activity-row-shimmer-cycle` in `session-rows.css`, so
+ * this travel copies the range as well as the number. `installLivePhase` in
+ * `src/lib/livePhase.ts` holds both at the same point of the cycle.
+ *
+ * The travel then holds back a tenth of a bar, which is 0.2 s. The shimmer's
+ * band is soft and almost a title wide, so it fades in; this band is sharp
+ * and three segments wide, so it snaps on. Equal centres therefore looked
+ * early on the meter. The delay makes the two appear to start together.
+ *
+ * `--led-gleam-peak` caps the gleam. The popover keeps the default; the HUD
+ * adds `led-clock-soft`, because it floats over the reader's work and must
+ * stay quieter than a panel they opened.
+ */
+@property --led-sweep {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
 }
 
-@keyframes led-blink {
-  0%,
-  49.9% {
-    background-color: var(--led-on);
+.led-clock {
+  /* The session list's shimmer cycle. The band crosses a bar in half of it. */
+  --led-sweep-cycle: 4000ms;
+  /*
+   * The start of one row after the row above it. The sweep travels 0.5 bar
+   * lengths each second, so this delay is 100 ms.
+   */
+  --led-row-lag: 0.05;
+  /*
+   * Half the band's width, as a share of the bar. The band is on or off, so
+   * this is also its width in segments: about three dots of 20.
+   */
+  --led-band: 0.075;
+  --led-gleam-peak: 0.56;
+  /* Lit levels between off and the peak: two brightness options in all. */
+  --led-gleam-steps: 1;
+  /* `installLivePhase` in src/lib/livePhase.ts sets the start time of this
+     animation from the wall clock, so it holds the phase of the title
+     shimmer. Do not declare a delay here, because a delay moves the phase. */
+  animation: led-sweep var(--led-sweep-cycle) linear infinite;
+}
+
+.led-clock-soft {
+  --led-gleam-peak: 0.245;
+}
+
+@keyframes led-sweep {
+  from {
+    --led-sweep: -0.6;
   }
 
-  50%,
-  100% {
-    background-color: var(--color-led-off);
+  to {
+    --led-sweep: 1.4;
   }
 }
 
+/*
+ * A lit segment paints the gleam on a pseudo-element above its own colour,
+ * from its distance to the sweep position. An unlit segment carries no
+ * `led-sweep-dot` class and does not move. `--led-index` and
+ * `--led-segments` come from the component; `--led-row` from the bar.
+ * `max(x, -x)` stands in for `abs()`, which older WebKit lacks.
+ *
+ * The gleam is the shimmer white, the same highlight the session list runs
+ * across a running session's title: a lit segment is already near the brand
+ * tint, and a 6 px dot cannot show the tint above it. The one segment that
+ * sweeps unlit, the first of a bar with nothing lit, takes the brand tint.
+ * The gleam peaks at `--led-gleam-peak`, well under full, so the segment
+ * keeps its colour under it.
+ */
+.led-sweep-dot::after {
+  --led-pos: calc(
+    var(--led-sweep) - var(--led-row, 0) * var(--led-row-lag, 0.1) -
+      (var(--led-index, 0) + 0.5) / var(--led-segments, 20)
+  );
+  /* The band's profile: 1 at its centre, 0 at its edge. */
+  --led-glow: clamp(
+    0,
+    calc(1 - max(var(--led-pos), -1 * var(--led-pos)) / var(--led-band, 0.075)),
+    1
+  );
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-shimmer);
+  opacity: calc(var(--led-glow) * var(--led-gleam-peak, 0.56));
+}
+
+/*
+ * A LED is a lamp, and a lamp steps. The gleam takes two brightness levels,
+ * off and the peak, instead of a smooth ramp: a band of about three segments
+ * holds the peak together, and the band hops a segment at a time. A webview
+ * without `round()` keeps the ramp.
+ */
+@supports (opacity: round(up, 0.5, 0.25)) {
+  .led-sweep-dot::after {
+    opacity: calc(
+      round(up, var(--led-glow), 1 / var(--led-gleam-steps, 1)) * var(--led-gleam-peak, 0.56)
+    );
+  }
+}
+
+/*
+ * A segment that carries its own colour in `--led-color` takes a gleam made
+ * from it: white above a dark segment, a dark shade of the same hue above a
+ * light one. A provider whose bar is the label colour is near white in dark
+ * mode, and white above white shows nothing. The step sits at an oklch
+ * lightness of 0.85; every bar colour of a vendor sits below it. A webview
+ * without relative colour syntax keeps the white gleam.
+ */
+@supports (color: oklch(from red l c h)) {
+  .led-sweep-dot[data-led-lit]::after {
+    background: oklch(
+      from var(--led-color, var(--color-brand-tint))
+        calc(1 - clamp(0, (l - 0.85) * 40, 1) * 0.65) c h / 1
+    );
+  }
+}
+
+.led-sweep-dot:not([data-led-lit])::after {
+  background: var(--color-brand-tint);
+}
+
+/*
+ * The ring's gleam runs clockwise from twelve o'clock to the end of the
+ * reading's arc while the bars sweep, then fades over 0.6 s and waits for
+ * the next cycle. `--led-lap` is the sweep as a share of one lap, 0 to 1
+ * over the cycle. `--led-ring-span` is how far the gleam's start may go
+ * before its end leaves the arc; at zero the gleam holds at twelve and
+ * flashes in the brand tint. The stylesheet owns the arc's rotation; the
+ * component sets no `transform` attribute on it.
+ */
+.led-sweep-ring {
+  --led-lap: calc((var(--led-sweep) + 0.6) / 2);
+  stroke: var(--color-brand-tint);
+  transform-origin: 16px 16px;
+  transform: rotate(calc(-90deg + clamp(0, var(--led-lap), var(--led-ring-span, 0)) * 360deg));
+  opacity: calc(
+    clamp(0, calc(1 - (var(--led-lap) - var(--led-ring-span, 0)) / 0.15), 1) *
+      var(--led-gleam-peak, 0.56)
+  );
+}
+
+.led-sweep-ring[data-led-lit] {
+  stroke: var(--color-shimmer);
+}
+
+/*
+ * Reduced motion stops the loop. A steady mark stays: the next segment to
+ * light holds the brand tint, and the ring holds its next eighth. That is a
+ * colour, not movement.
+ */
 @media (prefers-reduced-motion: reduce) {
-  .led-blink {
+  .led-clock {
     animation: none;
+  }
+
+  .led-sweep-dot::after {
+    opacity: 0;
+  }
+
+  [data-led-next]::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--color-brand-tint);
+    opacity: 1;
+  }
+
+  .led-sweep-ring {
+    stroke: var(--color-brand-tint);
+    transform: rotate(var(--led-ring-rest, -90deg));
+    opacity: 1;
   }
 }
 

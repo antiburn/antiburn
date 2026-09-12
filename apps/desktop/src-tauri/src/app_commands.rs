@@ -25,7 +25,6 @@ macro_rules! with_app_commands {
             commands::get_hygiene_summary => "get_hygiene_summary",
             commands::get_insights_report => "get_insights_report",
             commands::get_insights_status => "get_insights_status",
-            commands::get_latest_session_activity => "get_latest_session_activity",
             commands::get_live_sessions => "get_live_sessions",
             commands::get_live_usage => "get_live_usage",
             commands::get_provider_usage => "get_provider_usage",

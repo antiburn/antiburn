@@ -252,6 +252,8 @@ export function PopoverView() {
             <div className="divide-y divide-separator border-b border-separator">
               <UsageLimitsBar
                 live={state.liveUsage}
+                liveProviders={state.liveProviders}
+                liveModels={state.liveModels}
                 expanded={limitsExpanded}
                 onToggleExpanded={() => {
                   void peekTriggers.leave()

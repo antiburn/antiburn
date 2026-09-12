@@ -324,18 +324,30 @@ pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
     antiburn_hud::apply_detail_size(&app, height);
 }
 
-/// Return the newest recent transcript write as epoch seconds.
-#[tauri::command]
-pub fn get_latest_session_activity(app: tauri::AppHandle) -> Option<i64> {
-    crate::hud::latest_session_activity(&app.state::<Store>())
-}
-
 /// Every session inside the active window, most recent first. This is the
 /// snapshot a reader takes before it subscribes to lifecycle events.
+///
+/// Each session carries the model of its newest analyzed turn. A meter that
+/// is scoped to one model sweeps from this, so a model-scoped limit animates
+/// only while a session runs that model. The model comes from the store here
+/// and not from the bus, because the analyzer publishes a turn after the
+/// index pass that starts the session. A session with no published turn
+/// reports no model, and a scoped meter then stays still.
 #[tauri::command]
 pub fn get_live_sessions(app: tauri::AppHandle) -> Vec<crate::session_lifecycle::LiveSession> {
-    app.state::<crate::session_lifecycle::SessionEvents>()
-        .live_sessions()
+    let store = app.state::<Store>();
+    let mut sessions = app
+        .state::<crate::session_lifecycle::SessionEvents>()
+        .live_sessions();
+    for live in &mut sessions {
+        let key = SessionKey::new(
+            live.session.environment_key.clone(),
+            live.session.agent.clone(),
+            live.session.session_id.clone(),
+        );
+        live.model = store.latest_session_model(&key).unwrap_or_default();
+    }
+    sessions
 }
 
 /// Where the app came from and what it is running against.

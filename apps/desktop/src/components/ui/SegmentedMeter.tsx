@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react"
+
 import { cn } from "../../lib/cn"
 
 /**
@@ -19,8 +21,14 @@ export interface MeterZone {
  * not pick its own colors.
  */
 const METER_INK = {
-  normal: { fillClassName: "bg-brand-tint", trackClassName: "bg-brand-unlit/12" },
-  critical: { fillClassName: "bg-system-red-tint", trackClassName: "bg-system-red-unlit/12" },
+  normal: {
+    fillClassName: "bg-brand-tint",
+    trackClassName: "bg-brand-unlit/12",
+  },
+  critical: {
+    fillClassName: "bg-system-red-tint",
+    trackClassName: "bg-system-red-unlit/12",
+  },
 } as const
 
 /**
@@ -72,6 +80,21 @@ function zoneAt(zones: MeterZone[], fraction: number): MeterZone {
  * the window's period the clock has travelled. It keeps 60% used at 30%
  * elapsed from looking the same as 60% used at 90% elapsed. With no fraction
  * there is no notch — the component never draws one from an assumption.
+ *
+ * `live` runs the session sweep, as `LedBar` does on the HUD: a gleam that
+ * crosses the lit segments in the fill direction, on the clock of the
+ * nearest `led-clock` ancestor. An unlit segment does not move. Each lit
+ * segment carries its place along the sweep and the meter's segment count,
+ * and `hud.css` paints the gleam from its distance to the sweep position.
+ * `row` is the meter's row within its provider: each row runs 100 ms after
+ * the one above it. A meter with no lit segment flashes the first segment
+ * in the fill direction, in the brand tint, so a session at zero still
+ * shows.
+ *
+ * Under reduced motion the sweep stops, and the next segment to light holds
+ * the brand tint instead: a lit segment is already the brand colour, so the
+ * segment past the reading is the one that can show it. At zero that is the
+ * first segment.
  */
 export function SegmentedMeter({
   percent,
@@ -82,6 +105,8 @@ export function SegmentedMeter({
   className = "",
   zones = USAGE_METER_ZONES,
   fillFrom = "start",
+  live = false,
+  row = 0,
 }: {
   /** Consumed capacity, 0–100, or `null` for no stated figure. */
   percent: number | null
@@ -93,12 +118,25 @@ export function SegmentedMeter({
   zones?: MeterZone[]
   /** The end the fill and the zones start from. */
   fillFrom?: MeterFillFrom
+  /** Run the sweep across the meter, for a live session. */
+  live?: boolean
+  /** The meter's row within its provider, for the sweep stagger. */
+  row?: number
 }) {
   const clamped = percent == null ? null : Math.min(100, Math.max(0, percent))
   const filled = clamped == null ? 0 : Math.round((clamped / 100) * segments)
+  // A full meter has no next segment; the still mark then stays on the last one.
+  const nextIndex = !live
+    ? -1
+    : fillFrom === "end"
+      ? Math.max(0, filled - 1)
+      : Math.min(segments - 1, filled)
+  const sweep = live
+    ? ({ "--led-segments": segments, "--led-row": row } as CSSProperties)
+    : undefined
 
   return (
-    <div aria-hidden="true" className={cn("relative", className)}>
+    <div aria-hidden="true" className={cn("relative", className)} style={sweep}>
       {/* The segments span the full row, so the track ends where the figure
           column starts. This also keeps the notch honest: the notch offset
           and the track then measure the same width. */}
@@ -108,14 +146,25 @@ export function SegmentedMeter({
           // The reading sits at the same mark either way. The fill covers the
           // side of that mark its own end is on.
           const lit = fillFrom === "end" ? index >= filled : index < filled
+          // The band runs in the fill direction, so a meter that fills from
+          // the right counts its segments from that end.
+          const sweepIndex = fillFrom === "end" ? segments - 1 - index : index
+          const litCount = fillFrom === "end" ? segments - filled : filled
+          // The gleam runs over the lit segments. With none lit, the first
+          // segment in the fill direction takes the sweep alone.
+          const sweeping = live && (lit || (litCount === 0 && sweepIndex === 0))
           return (
             <span
               key={index}
+              data-led-lit={(live && lit) || undefined}
+              data-led-next={index === nextIndex || undefined}
               className={cn(
-                "h-[7px] w-[7px] shrink-0 rounded-full",
+                "relative h-[7px] w-[7px] shrink-0 rounded-full",
                 lit ? zone.fillClassName : zone.trackClassName,
                 clamped == null && "opacity-50",
+                sweeping && "led-sweep-dot",
               )}
+              style={sweeping ? ({ "--led-index": sweepIndex } as CSSProperties) : undefined}
             />
           )
         })}
