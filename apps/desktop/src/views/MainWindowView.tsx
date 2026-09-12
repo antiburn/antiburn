@@ -34,7 +34,7 @@ export interface MainWindowSection extends SidebarNavItem {
 /** A store subscription that never fires, for a reader that only needs the
  *  current snapshot and must not join the store's active-viewer count. */
 function neverSubscribe(): () => void {
-  return () => {}
+  return () => undefined
 }
 
 /** One child row under "Sessions" for a filter, with its live count. */
