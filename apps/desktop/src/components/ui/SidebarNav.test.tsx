@@ -283,6 +283,29 @@ describe("SidebarNav", () => {
     const separators = tablist.querySelectorAll('[role="presentation"]')
     const childSeparator = Array.from(separators).find((el) => el.className.includes("ml-8"))
     expect(childSeparator).not.toBeUndefined()
+    expect(childSeparator?.hasAttribute("data-nested")).toBe(true)
+  })
+
+  it("marks child rows with data-nested and leaves top-level rows unmarked", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    const parent = screen.getByRole("tab", { name: "Sessions" })
+    expect(parent.hasAttribute("data-nested")).toBe(false)
+    const nested = screen
+      .getAllByRole("tab")
+      .filter((tab) => tab.hasAttribute("data-nested"))
+      .map((tab) => tab.id)
+    const expected = NESTED_ITEMS.flatMap((item) =>
+      (item.children ?? []).map((child) => `${child.id}-tab`),
+    )
+    expect(nested).toEqual(expected)
   })
 
   it("never moves arrow-key navigation onto the footer", () => {

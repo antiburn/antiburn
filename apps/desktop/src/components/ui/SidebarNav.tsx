@@ -152,7 +152,11 @@ export function SidebarNav({
                 return (
                   <Fragment key={child.id}>
                     {child.separatorBefore && (
-                      <div role="presentation" className="my-1 ml-8 h-px bg-separator" />
+                      <div
+                        role="presentation"
+                        data-nested=""
+                        className="my-1 ml-8 h-px bg-separator"
+                      />
                     )}
                     <SidebarNavRow
                       item={child}
@@ -161,6 +165,7 @@ export function SidebarNav({
                       rowRefs={rowRefs}
                       heightClass="h-8"
                       paddingClass="pl-8 pr-3"
+                      nested
                     />
                   </Fragment>
                 )
@@ -187,6 +192,7 @@ function SidebarNavRow({
   rowRefs,
   heightClass,
   paddingClass,
+  nested = false,
 }: {
   item: SidebarNavItem | SidebarNavChildItem
   selected: boolean
@@ -194,6 +200,8 @@ function SidebarNavRow({
   rowRefs: RefObject<Map<string, HTMLButtonElement>>
   heightClass: string
   paddingClass: string
+  /** Mark a child row, so a denser stylesheet can set its own indent. */
+  nested?: boolean
 }) {
   const Icon = item.icon
   const controls = ("controls" in item && item.controls) || `${item.id}-panel`
@@ -208,6 +216,7 @@ function SidebarNavRow({
       id={`${item.id}-tab`}
       aria-selected={selected}
       aria-controls={controls}
+      data-nested={nested ? "" : undefined}
       // Set the accessible name to the label alone when a count pill is
       // present. This keeps the name stable and free of the count digits,
       // which the row already shows as visible text.
