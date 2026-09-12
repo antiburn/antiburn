@@ -37,16 +37,23 @@ release range: an accepted schema, header, or pinned producer commit with
 synthetic fixtures can define its contract. This does not prove all historical
 versions. Full and resumed reads must agree where resume is supported.
 
-Codex can emit one response's usage in both `token_usage_record` and
-`event_msg`/`token_count`. Per-response usage fields identify cross-format pairs
-within five seconds, while available request identities separate same-format
-requests with equal usage. The reader retains one recent observation.
-Cumulative `thread_token_usage` and
-`total_token_usage` fields can use different producer bases, so they do not
-decide whether a cross-format pair is a duplicate. Repeated legacy rows and
-cross-format pairs are deduplicated within the active request segment, and the
-bounded dedupe state crosses a resume boundary. Missing or malformed
-per-response usage remains partial.
+Codex pairs `token_usage_record` and `event_msg`/`token_count` records once.
+Matching per-response and nonempty cumulative usage identifies exact copies
+without a time limit. Different cumulative producer bases require matching
+per-response usage within five seconds. Available identities distinguish
+same-format requests. The reader retains bounded state across resume boundaries.
+Unmatched valid usage remains evidence; malformed usage remains partial.
+
+Cache accounting compares usage-bearing requests across ordinary Codex assistant
+messages. Broken links, unknown requests, route changes, and compaction boundaries
+still break pairs. The paid denominator includes every eligible request,
+including each segment's initial payment. Partial cache or repeated-context
+evidence permits neither a ratio finding nor a clean result.
+
+Maintainer confirmation (2026-09-12): repair delayed exact-copy deduplication,
+request pairing, and full-denominator accounting. Reviewed passive alternatives
+include increasing the time limit and adjusting thresholds; neither repairs
+all three accounting errors. Per-session thresholds remain unchanged.
 
 Inline materialized sources use a fingerprint of the full bounded content, not
 only a head region. The content is already materialized and size-bounded before

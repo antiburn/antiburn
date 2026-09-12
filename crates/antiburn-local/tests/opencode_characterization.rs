@@ -339,7 +339,7 @@ fn native_repeated_context_reaches_reports_without_capability_overrides() {
                     if matches!(case, "finding" | "tied_time") {
                         assert_eq!(repeated.pairs_considered, 2);
                         assert_eq!(repeated.repeated_tokens, 2000);
-                        assert_eq!(repeated.paid_tokens, 2000);
+                        assert_eq!(repeated.paid_tokens, 3000);
                     }
                 }
                 store.with_connection(|connection| {

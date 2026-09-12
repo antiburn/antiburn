@@ -173,7 +173,8 @@ pub use vendors::{has_dedicated_reader, reader_for};
 // This batch also reparses nested resources and paired subagent observations.
 // +1 for Pi assistant request-start timestamps: token and context buckets now
 // use `message.timestamp` while event ordering keeps the outer row timestamp.
-pub const PARSER_REVISION: i64 = 33;
+// Deduplicate delayed exact Codex usage copies.
+pub const PARSER_REVISION: i64 = 34;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -217,7 +218,8 @@ pub const PARSER_REVISION: i64 = 33;
 // Recompute repeated context within compatible request segments.
 // This batch also reassesses nested resource use and paired subagent models.
 // Reassess sessions with the larger thread identity limit.
-pub const ANALYZER_REVISION: i64 = 23;
+// Compare actual requests and include every eligible payment in cache ratios.
+pub const ANALYZER_REVISION: i64 = 24;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the
@@ -274,7 +276,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 4;
 // +1 because parent evidence now includes delegated model control observations.
 // This batch also changes retained nested resource and paired subagent state.
 // +1 for the bounded Codex cross-format usage matcher in adapter snapshots.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 7;
+// Reject snapshots that can retain duplicate usage totals.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 8;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

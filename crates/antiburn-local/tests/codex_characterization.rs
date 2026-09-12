@@ -1116,15 +1116,9 @@ fn context_reread_reads_complete_uncached_input_repeated_context_and_a_finding_b
         repeated_context.accounting,
         antiburn_local::analysis::RepeatedContextAccounting::UncachedInput
     );
-    // Turn two grows the window from 2000 to 60000 (+58000), paying 2000
-    // fresh uncached-input tokens; turn three re-sends the same
-    // 60000-token window fully uncached after the idle gap, so growth is
-    // 0 and the whole 60000 it pays is repeated. paid_tokens sums both
-    // turns' paid buckets: 2000 + 60000 = 62000.
+    // The initial payment and both later payments contribute to the denominator.
     assert_eq!(repeated_context.repeated_tokens, 60_000);
-    assert_eq!(repeated_context.paid_tokens, 62_000);
-    // multiple = 62000 / (62000 - 60000) = 31, far above the OpenAI
-    // bound of 2.0.
+    assert_eq!(repeated_context.paid_tokens, 64_000);
     let unique_paid_tokens = repeated_context.paid_tokens - repeated_context.repeated_tokens;
     let multiple = repeated_context.paid_tokens as f64 / unique_paid_tokens as f64;
     assert!(multiple >= 2.0);
@@ -1190,14 +1184,9 @@ fn cache_write_tokens_reads_the_split_keeps_uncached_input_accounting() {
         repeated_context.accounting,
         antiburn_local::analysis::RepeatedContextAccounting::UncachedInput
     );
-    // Pair one (turn one -> turn two): occupancy grows 2000 -> 60000
-    // (+58000); turn two pays only 1000 fresh input, below growth, so
-    // nothing is repeated. Pair two (turn two -> turn three): occupancy
-    // stays at 60000 (growth 0); turn three pays 58000 fresh input, all of
-    // it repeated. repeated_tokens: 0 + 58000 = 58000. paid_tokens sums
-    // both pairs' paid buckets: 1000 + 58000 = 59000.
+    // The initial payment adds 1,500 uncached tokens to the denominator.
     assert_eq!(repeated_context.repeated_tokens, 58_000);
-    assert_eq!(repeated_context.paid_tokens, 59_000);
+    assert_eq!(repeated_context.paid_tokens, 60_500);
 }
 
 /// `records_all_kinds` carries no `cache_write_input_tokens` key anywhere,
@@ -1406,4 +1395,70 @@ fn usage_free_token_count_records_are_recognized_eventless() {
     // 300 `input_tokens`.
     assert_eq!(metrics.metrics().tokens_in, 200);
     assert_eq!(metrics.metrics().tokens_out, 40);
+}
+
+#[test]
+fn delayed_usage_copies_and_assistant_messages_preserve_cache_accounting() {
+    pricing::install();
+    for reversed in [false, true] {
+        let mut records = vec![
+            json!({"type":"session_meta","payload":{"model":"gpt-5.6","model_provider":"openai","effort":"medium"}}),
+        ];
+        let mut cumulative_input = 0;
+        let mut cumulative_cached = 0;
+        for (input, cached) in [(1000, 0), (1080, 980), (1160, 1060)] {
+            let usage =
+                json!({"input_tokens":input,"cached_input_tokens":cached,"output_tokens":10});
+            cumulative_input += input;
+            cumulative_cached += cached;
+            let total = json!({"input_tokens":cumulative_input,"cached_input_tokens":cumulative_cached,"output_tokens":10});
+            let mut pair = vec![
+                json!({"type":"token_usage_record","payload":{"usage":usage,"turn_token_usage":total,"thread_token_usage":total}}),
+                json!({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":usage,"total_token_usage":total}}}),
+            ];
+            if reversed {
+                pair.reverse();
+            }
+            records.push(json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic progress."}]}}));
+            records.push(pair.remove(0));
+            records.push(json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"synthetic-tool","output":"done"}}));
+            records.push(pair.remove(0));
+        }
+        let source = records
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut record)| {
+                record["timestamp"] = json!(format!("2026-08-05T10:{index:02}:00Z"));
+                record.to_string() + "\n"
+            })
+            .collect();
+        let input = SessionInput {
+            source: RawSource::Jsonl(source),
+            ..provider_input(vec![])
+        };
+        let (evidence, metrics) = composite(&input);
+        assert_eq!(metrics.metrics().tokens_in, 1200);
+        let EvidenceValue::Complete(cache) = &evidence.cache else {
+            panic!(
+                "complete cache: {:?}; {:?}",
+                evidence.cache, evidence.diagnostics
+            );
+        };
+        let EvidenceValue::Complete(repeated) = &cache.repeated_context else {
+            panic!("complete request accounting: {:?}", cache.repeated_context);
+        };
+        assert_eq!(repeated.paid_tokens, 1200);
+        assert_eq!(repeated.repeated_tokens, 40);
+        assert_eq!(repeated.pairs_considered, 2);
+        assert_eq!(repeated.pairs_skipped, 0);
+        let badges = session_badges(&evidence, &ReportCatalogs::default());
+        assert_eq!(
+            badges
+                .iter()
+                .find(|badge| badge.id == BadgeId::ExcessCacheRehydration)
+                .unwrap()
+                .status,
+            BadgeStatus::Clean
+        );
+    }
 }

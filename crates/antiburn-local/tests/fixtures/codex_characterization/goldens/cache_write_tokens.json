@@ -20,7 +20,7 @@
           "state": "complete",
           "value": {
             "accounting": "uncached_input",
-            "paidTokens": 59000,
+            "paidTokens": 60500,
             "pairsConsidered": 2,
             "pairsSkipped": 0,
             "repeatedTokens": 58000
@@ -187,14 +187,14 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 23,
+      "analyzerRevision": 24,
       "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "complete",
         "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 33,
+      "parserRevision": 34,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },

@@ -3594,7 +3594,16 @@ mod tests {
             for fact in clean_only {
                 let mut row = trigger_finding(detector, &catalogs);
                 degrade_fact_to_partial(&mut row, fact);
+                let incomplete_ratio = detector == DetectorId::CacheChurn
+                    && !matches!(row.cache, EvidenceValue::Complete(_));
                 let status = status_for_with_catalogs(row, detector, catalogs.clone());
+                if incomplete_ratio {
+                    assert_eq!(
+                        status,
+                        DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+                    );
+                    continue;
+                }
                 assert!(
                     matches!(status, DetectorStatus::Findings(_)),
                     "degrading clean-only fact {fact:?} for {detector:?} must still report a finding, got {status:?}"
