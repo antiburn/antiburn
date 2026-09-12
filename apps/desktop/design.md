@@ -869,3 +869,24 @@ using `--main-window-titlebar-height` and `data-tauri-drag-region`. The strip
 remains available in loading and error states. Sidebar dragging remains
 available; report controls scroll below the strip and stay interactive.
 Windows and Linux use their native title bars without this added strip.
+
+### Floating HUD LED rings
+
+The HUD window paints no surface at rest, so its LEDs sit directly on the
+desktop. The desktop can be any colour, and it can match a lit segment and hide
+it. Each lit segment therefore takes a 1px ring at 75% alpha. A ring holds a 6px
+dot better than a blurred shadow, which only softens the edge at that size.
+Unlit segments take no ring, so they stay quiet.
+
+A coloured LED rings in its own colour, darkened to 70% in oklab, so the ring
+reads as the edge of the LED rather than as a second mark. An LED that takes
+`label` has no colour of its own: it is near-black in the light theme and
+near-white in the dark theme, so it rings in the opposite tone, white on light
+and black on dark. `OverlayWindow` chooses between the two with the
+`hud-leds-color` and `hud-leds-label` classes and passes the row's colour in
+`--hud-led-color`.
+
+Inside the HUD, unlit segments raise `led-off` to full opacity. The token keeps
+its 45% alpha everywhere else, because the popover and the detail card paint
+their own surfaces to hold it. The HUD has none. These ring and opacity values
+are local to `src/styles/hud.css` and are not palette or shadow tokens.

@@ -12,12 +12,14 @@ export function LedBar({
   split,
   segments = 40,
   className = "",
+  style,
   blinkLast = false,
   expectedFraction = null,
 }: {
   split: Array<{ fraction: number; color: string }>
   segments?: number
   className?: string
+  style?: CSSProperties | undefined
   blinkLast?: boolean
   /** Elapsed share of the window's period, 0-1, or null when unknown. */
   expectedFraction?: number | null
@@ -37,6 +39,7 @@ export function LedBar({
   return (
     <div
       className={`relative flex w-full items-center justify-between ${className}`.trimEnd()}
+      style={style}
       aria-hidden="true"
     >
       {Array.from({ length: segments }, (_, index) => {
@@ -45,7 +48,7 @@ export function LedBar({
         return (
           <span
             key={index}
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${index === blinkIndex ? "led-blink" : ""}`.trimEnd()}
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "led-lit" : "led-off bg-led-off"} ${index === blinkIndex ? "led-blink" : ""}`.trimEnd()}
             style={
               hit
                 ? index === blinkIndex
