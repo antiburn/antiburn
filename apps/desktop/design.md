@@ -640,7 +640,15 @@ Notes for what isn't expressible as a token:
   their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
-  Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
+  Main navigation (`SidebarNav`) uses 36px top-level rows, 8px vertical gaps, 16px icons, and
+  12px icon-to-label gaps. A top-level item can nest child rows one level deep, right below it in
+  the same tablist. A child row is 32px tall, needs no icon of its own, and sits 32px from the
+  sidebar's inner edge — `pl-8` in place of a top-level row's `px-3`. A child's own hairline
+  separator keeps that same 32px indent. Any row's optional trailing count uses the shared
+  `CountPill` (`src/components/ui/CountPill.tsx`): the same 16px-high, borderless,
+  `surface-tertiary/40`, tertiary-ink, `font-mono type-metadata tabular-nums` pill documented
+  below for a session card's `+N` model count. A row with a count sets its accessible name to
+  its label alone, so the count digits stay out of the announced name.
   These local geometry rules use the spacing tokens in `main-window.css`; other source lists
   retain their current density. Burn checks and Sessions are the main sidebar sections. Burn checks
   is the default section, uses the 14px Lucide `Flame` mark, and opens from the checks summary in
