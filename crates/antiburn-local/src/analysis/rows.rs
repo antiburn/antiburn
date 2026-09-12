@@ -1143,6 +1143,29 @@ pub fn count_turn_rows(
     Ok(count.max(0) as u64)
 }
 
+/// Reads the model of the newest turn for `key` at `claim_fence`.
+///
+/// The newest turn tells which model the session runs now. The complete
+/// model set of the session does not: a session that changes its model
+/// keeps every model it used. A turn without a model, such as a user turn,
+/// is skipped.
+pub fn latest_turn_model(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT model FROM turn
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND claim_fence = ?4 AND model IS NOT NULL AND model <> \'\'
+          ORDER BY ts_ms DESC, turn_index DESC
+          LIMIT 1",
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 /// Counts the `turn_content` rows for `key`'s turns stamped with
 /// `claim_fence`.
 pub fn count_turn_content_rows(

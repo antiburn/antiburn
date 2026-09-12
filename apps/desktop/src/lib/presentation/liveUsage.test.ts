@@ -24,6 +24,7 @@ import {
   liveUnavailableReason,
   liveWindowElapsed,
   liveWindowLabel,
+  liveWindowSweeps,
   livePlanAccountLabel,
   livePlanLabel,
   liveMetricRows,
@@ -1019,5 +1020,28 @@ describe("runway", () => {
 
   it("says nothing at all without a forecast", () => {
     expect(runwayLabel(window(), NOW)).toBeNull()
+  })
+})
+
+describe("liveWindowSweeps", () => {
+  it("sweeps an account-wide meter for any live session on the provider", () => {
+    expect(liveWindowSweeps(window({ scopeModel: null }), true, [])).toBe(true)
+    expect(liveWindowSweeps(window({ scopeModel: null }), true, ["claude-opus-4-6"])).toBe(true)
+  })
+
+  it("sweeps a model-scoped meter only while that model runs", () => {
+    const fable = window({ id: "weekly-fable", role: "supplemental", scopeModel: "Fable" })
+    expect(liveWindowSweeps(fable, true, ["claude-fable-5"])).toBe(true)
+    // The report this answers: a live Claude Code session on another model
+    // used to sweep every Anthropic meter, the Fable line included.
+    expect(liveWindowSweeps(fable, true, ["claude-opus-4-6"])).toBe(false)
+    expect(liveWindowSweeps(fable, true, [])).toBe(false)
+  })
+
+  it("sweeps nothing while the provider has no live session", () => {
+    expect(liveWindowSweeps(window({ scopeModel: null }), false, [])).toBe(false)
+    expect(liveWindowSweeps(window({ scopeModel: "Fable" }), false, ["claude-fable-5"])).toBe(
+      false,
+    )
   })
 })

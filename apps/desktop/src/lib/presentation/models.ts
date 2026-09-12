@@ -66,3 +66,43 @@ export function modelRunShortPairs(
   }
   return pairs
 }
+
+/**
+ * Tokens that name a vendor, not a model. A scope name and a model id
+ * disagree on these: the provider scopes a window to "Fable" while the
+ * session states `claude-fable-5`.
+ */
+const GENERIC_MODEL_TOKENS = new Set([
+  "anthropic",
+  "claude",
+  "codex",
+  "gemini",
+  "google",
+  "gpt",
+  "openai",
+])
+
+/** The lower-case word parts of a model name or id. */
+function modelTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 0)
+}
+
+/**
+ * True when `modelId` names the model a usage window is scoped to.
+ *
+ * A provider scopes a window with a display name, such as "Fable", and a
+ * session states a raw id, such as `claude-fable-5`. The comparison drops
+ * the vendor tokens from the scope name and keeps the version, so "Fable"
+ * does not match `claude-opus-4-6` and "Sonnet 4.5" does not match
+ * `claude-sonnet-3-7`. A name the id spells differently matches nothing,
+ * and the meter then stays still rather than claim a model is running.
+ */
+export function modelMatchesScope(modelId: string, scopeName: string): boolean {
+  const wanted = modelTokens(scopeName).filter((token) => !GENERIC_MODEL_TOKENS.has(token))
+  if (wanted.length === 0) return false
+  const found = new Set(modelTokens(modelId))
+  return wanted.every((token) => found.has(token))
+}

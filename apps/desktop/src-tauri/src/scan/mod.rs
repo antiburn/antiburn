@@ -88,6 +88,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS;
 use antiburn_local::discovery::scanner::{self, TitleSource};
 use antiburn_local::discovery::{
     Explorers, ResolvedTitle, SessionLog, SessionSource, SourceDescriptor, TitleLookupKind,
@@ -106,10 +107,10 @@ use crate::analysis;
 use crate::commands;
 use crate::dto::{ActivityEntry, ScanStatus};
 use crate::repositories;
+use crate::session_lifecycle;
 use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
-pub mod idle;
 pub mod scoped;
 pub mod watch;
 
@@ -460,6 +461,9 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                             .native_file_session_activity_keys(source_labels)
                             .unwrap_or_default()
                     });
+                    // Before any floor or describe: this is the realtime
+                    // path to the lifecycle bus.
+                    report_touched(&app, &store, &work);
                     pending_work.merge(work);
                 }
             }
@@ -568,6 +572,7 @@ async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped:
         .agents
         .iter()
         .chain(work.db_agents.iter())
+        .chain(work.quiet_agents.iter())
         .copied()
         .collect();
     if !rediscover.is_empty() {
@@ -579,6 +584,7 @@ async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped:
         {
             busy.agents = work.agents;
             busy.db_agents = work.db_agents;
+            busy.quiet_agents = work.quiet_agents;
         }
     }
 
@@ -892,6 +898,9 @@ async fn pass(
     )?;
     if persisted {
         wake_session_workers(app);
+        // The lifecycle actor learns of a session it was not yet watching, or
+        // of one whose deadline just moved later, from this report.
+        report_indexed(app, now, &records, &changed, &previous_records);
     }
 
     announce_changed_rows(&store, &changed, &previous_records, now, announce);
@@ -944,6 +953,93 @@ async fn pass(
     })
 }
 
+/// Tell the lifecycle bus which sessions and agents a burst touched.
+///
+/// A known session (T1) reports with its key. The new-session (T3) and
+/// database-agent (T5) lanes only know the agent, so they report without
+/// one. Title-only writes (T4) and quiet paths are not activity and report
+/// nothing.
+fn report_touched(app: &AppHandle, store: &Store, work: &scoped::ScopedWork) {
+    if work.sessions.is_empty() && work.agents.is_empty() && work.db_agents.is_empty() {
+        return;
+    }
+    let at = unix_now();
+    let activity_keys = work.sessions.iter().cloned().collect::<Vec<_>>();
+    let records = store
+        .session_records_for_activity_keys(&activity_keys)
+        .unwrap_or_default();
+    for key in &work.sessions {
+        let Some(agent) = AgentKind::from_slug(&key.agent) else {
+            continue;
+        };
+        session_lifecycle::report(
+            app,
+            session_lifecycle::Observation::Touched {
+                session: records.get(key).map(|record| record.key.clone()),
+                agent,
+                at,
+            },
+        );
+    }
+    for agent in work.agents.iter().chain(work.db_agents.iter()) {
+        session_lifecycle::report(
+            app,
+            session_lifecycle::Observation::Touched {
+                session: None,
+                agent: *agent,
+                at,
+            },
+        );
+    }
+}
+
+/// Tell the lifecycle bus which sessions a pass just wrote.
+///
+/// Only a changed record inside the active window is reported: a reused row
+/// says nothing new, and an old row is history. A key absent from
+/// `previous_records` is new to the store.
+pub(super) fn report_indexed(
+    app: &AppHandle,
+    now: i64,
+    records: &[SessionRecord],
+    changed: &[SessionKey],
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+) {
+    let changed: std::collections::HashSet<&SessionKey> = changed.iter().collect();
+    let mut sessions = Vec::new();
+    let mut new = Vec::new();
+    for record in records {
+        if !changed.contains(&record.key) {
+            continue;
+        }
+        let Some(at) = record.updated_at_epoch else {
+            continue;
+        };
+        if now - at >= ACTIVE_SESSION_WINDOW_SECS {
+            continue;
+        }
+        let Some(agent) = AgentKind::from_slug(&record.key.agent) else {
+            continue;
+        };
+        let activity_key = SessionActivityKey::new(
+            record.key.environment_key.clone(),
+            record.key.agent.clone(),
+            record.source_label.clone(),
+        );
+        if !previous_records.contains_key(&activity_key) {
+            new.push(record.key.clone());
+        }
+        sessions.push((record.key.clone(), agent, at));
+    }
+    if sessions.is_empty() {
+        return;
+    }
+    session_lifecycle::report(
+        app,
+        session_lifecycle::Observation::Indexed { sessions, new },
+    );
+}
+
 /// R3: which of this pass's records are actually worth writing.
 ///
 /// A record earns a write when it is new, refreshed, or returned.
@@ -981,8 +1077,6 @@ fn persist_changed_records(
 
 fn wake_session_workers(app: &AppHandle) {
     crate::insights_worker::wake(app);
-    // A changed session can add, remove, or move an idle deadline.
-    idle::wake(app);
 }
 
 /// [`PassScope::Agents`]'s discovery: only the named agents, concurrently,

@@ -62,6 +62,8 @@ enum ClassifiedPath {
     IndexedTitles(AgentKind),
     DatabaseAgent(AgentKind),
     Agent(AgentKind),
+    /// A path the agent's explorer calls quiet: rediscover, but not activity.
+    QuietAgent(AgentKind),
     Ignored,
 }
 
@@ -74,6 +76,9 @@ pub struct ScopedWork {
     pub title_agents: BTreeSet<AgentKind>,
     pub agents: BTreeSet<AgentKind>,
     pub db_agents: BTreeSet<AgentKind>,
+    /// Agents whose only evidence in the burst is a quiet path. They are
+    /// rediscovered on the T3 floor, and the lifecycle bus hears nothing.
+    pub quiet_agents: BTreeSet<AgentKind>,
 }
 
 /// Native file activity keys grouped by their source label.
@@ -88,6 +93,7 @@ impl ScopedWork {
             && self.title_agents.is_empty()
             && self.agents.is_empty()
             && self.db_agents.is_empty()
+            && self.quiet_agents.is_empty()
     }
 
     /// Fold another burst's work in, dropping nothing (T7).
@@ -96,6 +102,7 @@ impl ScopedWork {
         self.title_agents.extend(other.title_agents);
         self.agents.extend(other.agents);
         self.db_agents.extend(other.db_agents);
+        self.quiet_agents.extend(other.quiet_agents);
     }
 }
 
@@ -131,6 +138,9 @@ pub fn classify_burst(
             ClassifiedPath::Agent(agent) => {
                 work.agents.insert(agent);
             }
+            ClassifiedPath::QuietAgent(agent) => {
+                work.quiet_agents.insert(agent);
+            }
             ClassifiedPath::Ignored => ignored += 1,
         }
     }
@@ -138,6 +148,9 @@ pub fn classify_burst(
     // database-triggered rediscovery: both lead to the same
     // `discover_recent` call, and the shorter T3 floor already covers it.
     work.db_agents.retain(|agent| !work.agents.contains(agent));
+    // A quiet path adds nothing to an agent the burst already rediscovers.
+    work.quiet_agents
+        .retain(|agent| !work.agents.contains(agent) && !work.db_agents.contains(agent));
     work.title_agents
         .retain(|agent| !work.agents.contains(agent) && !work.db_agents.contains(agent));
     let sample = paths
@@ -152,6 +165,7 @@ pub fn classify_burst(
         title_agents = work.title_agents.len(),
         agents = work.agents.len(),
         db_agents = work.db_agents.len(),
+        quiet_agents = work.quiet_agents.len(),
         ignored,
         paths = %sample,
         path_count = paths.len(),
@@ -179,6 +193,9 @@ fn classify_path(
         return ClassifiedPath::DatabaseAgent(agent);
     }
     match owning_agent(path, roots) {
+        Some(agent) if Explorers::DISK.is_quiet_path_for(&agent, path, home) => {
+            ClassifiedPath::QuietAgent(agent)
+        }
         Some(agent) => ClassifiedPath::Agent(agent),
         None => ClassifiedPath::Ignored,
     }
@@ -332,6 +349,15 @@ impl Floors {
             };
             outcome.admit(agent, last_run, DB_AGENT_REDISCOVER_MIN_INTERVAL, now);
         }
+        for agent in work.quiet_agents {
+            let last_run = self.agents.get(&agent).copied();
+            let mut outcome = Admission {
+                run_now: &mut run_now.quiet_agents,
+                deferred: &mut deferred.quiet_agents,
+                earliest_due: &mut earliest_due,
+            };
+            outcome.admit(agent, last_run, AGENT_REDISCOVER_MIN_INTERVAL, now);
+        }
 
         self.stamp(&run_now, now);
         (run_now, deferred, earliest_due)
@@ -347,7 +373,12 @@ impl Floors {
         for agent in &work.title_agents {
             self.titles.insert(*agent, now);
         }
-        for agent in work.agents.iter().chain(work.db_agents.iter()) {
+        for agent in work
+            .agents
+            .iter()
+            .chain(work.db_agents.iter())
+            .chain(work.quiet_agents.iter())
+        {
             self.agents.insert(*agent, now);
         }
     }
@@ -593,6 +624,13 @@ async fn refresh_sessions_locked(
     )?;
     if persisted {
         super::wake_session_workers(app);
+        super::report_indexed(
+            app,
+            now,
+            &described.records,
+            &described.changed,
+            &previous_map,
+        );
     }
     super::announce_changed_rows(&store, &described.changed, &previous_map, now, &announce);
     for key in &described.rejected {
@@ -867,6 +905,59 @@ mod tests {
         let work = classify_burst(&[db_path, plain_path], &home, &lookup);
         assert_eq!(work.agents, BTreeSet::from([AgentKind::Cursor]));
         assert!(work.db_agents.is_empty());
+    }
+
+    /// Claude's desktop manifest root for `home`, through the real registry.
+    fn claude_manifest_root(home: &Path) -> PathBuf {
+        Explorers::DISK
+            .watch_roots_for(&AgentKind::Claude, home)
+            .into_iter()
+            .map(|root| root.path)
+            .find(|path| path.ends_with("claude-code-sessions"))
+            .expect("Claude watches its desktop manifests")
+    }
+
+    #[test]
+    fn the_claude_desktop_manifest_is_quiet_rediscovery_not_activity() {
+        let home = PathBuf::from("/home/avery");
+        let manifest = claude_manifest_root(&home).join("tab/pane/local_abc.json");
+        let lookup = |_: &BTreeSet<String>| HashMap::new();
+
+        let work = classify_burst(&[manifest], &home, &lookup);
+        assert_eq!(work.quiet_agents, BTreeSet::from([AgentKind::Claude]));
+        assert!(work.agents.is_empty());
+        assert!(!work.is_empty());
+    }
+
+    #[test]
+    fn a_quiet_path_adds_nothing_to_an_agent_the_burst_already_rediscovers() {
+        let home = PathBuf::from("/home/avery");
+        let manifest = claude_manifest_root(&home).join("tab/pane/local_abc.json");
+        let transcript = home.join(".claude/projects/demo/new.jsonl");
+        let lookup = |_: &BTreeSet<String>| HashMap::new();
+
+        let work = classify_burst(&[manifest, transcript], &home, &lookup);
+        assert_eq!(work.agents, BTreeSet::from([AgentKind::Claude]));
+        assert!(work.quiet_agents.is_empty());
+    }
+
+    #[test]
+    fn a_quiet_agent_shares_the_rediscovery_floor() {
+        let mut floors = Floors::default();
+        let now = Instant::now();
+        let mut work = ScopedWork::default();
+        work.quiet_agents.insert(AgentKind::Claude);
+
+        let (run_now, deferred, _) = floors.admit(work, now);
+        assert_eq!(run_now.quiet_agents, BTreeSet::from([AgentKind::Claude]));
+        assert!(deferred.quiet_agents.is_empty());
+
+        // The quiet run stamps the same floor a plain rediscovery reads.
+        let mut work = ScopedWork::default();
+        work.agents.insert(AgentKind::Claude);
+        let (run_now, deferred, _) = floors.admit(work, now + Duration::from_secs(1));
+        assert!(run_now.agents.is_empty());
+        assert_eq!(deferred.agents, BTreeSet::from([AgentKind::Claude]));
     }
 
     #[test]

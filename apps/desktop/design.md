@@ -344,6 +344,7 @@ motion:
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
+  led-sweep: "4000ms loop in src/styles/hud.css, the session list's shimmer cycle and its phase: installLivePhase in src/lib/livePhase.ts sets the start time of every live animation from the wall clock, on an animation frame, so a title shimmer and a meter sweep hold the same point of the cycle however late either one starts and whatever a render does; it sets the start time again when an animation starts, when the window comes back, and once each cycle, so a window that stopped painting returns in step; the stylesheets declare no animation-delay, because a delay would move the phase; the sweep is held back 0.2s because a stepped segment snaps on where the soft shimmer fades in; a gleam crosses the lit segments of each live meter in about 2s, rows 100ms apart, and runs the ring's lit arc once; each segment takes one of two brightness levels, off or the peak, instead of a smooth ramp, and the band is about three segments wide; it peaks at 0.56 in the popover and 0.245 on the floating HUD; the gleam takes a shade of the segment's own colour, white above a dark segment and dark above a light one; unlit segments do not move; a meter that is scoped to one model sweeps only while a live session runs that model; reduced motion stops the loop and holds the brand tint on the next segment to light"
 components:
   button-secondary:
     className: ui-push-button
@@ -592,7 +593,9 @@ Notes for what isn't expressible as a token:
   content presenter's opacity-only handoff crossfade over 60ms instead of swapping instantly. An
   ambient loop stops instead of shortening: no duration makes a loop acceptable, so the
   activity-row title shimmer in `src/styles/session-rows.css` sets `animation: none` and keeps its
-  resting meaning — the title paints as plain primary text.
+  resting meaning — the title paints as plain primary text. The live-session sweep in
+  `src/styles/hud.css` stops the same way and holds a steady brand-tint mark on the next segment
+  to light: a colour, not movement.
 - **State** — style the headless control primitives via `[data-state]` / `[data-highlighted]`, not
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to

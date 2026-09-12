@@ -21,7 +21,7 @@ permissions = [
   "allow-get-hygiene-summary",
   "allow-get-insights-report",
   "allow-get-insights-status",
-  "allow-get-latest-session-activity",
+  "allow-get-live-sessions",
   "allow-get-live-usage",
   "allow-get-provider-usage",
   "allow-get-scan-status",

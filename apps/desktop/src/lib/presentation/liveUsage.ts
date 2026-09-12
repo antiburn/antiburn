@@ -36,6 +36,7 @@ export interface UnavailableLiveProvider {
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
 }
+import { modelMatchesScope } from "./models"
 import { relativeTime } from "./relativeTime"
 
 /** Canonical provider ids, matching the Rust `provider_usage::providers` constants. */
@@ -326,6 +327,26 @@ export function liveFreshnessToneClass(freshness: LiveUsageFreshness): string {
 export function liveStalenessNote(provider: LiveProviderUsagePayload): string | null {
   if (provider.freshness !== "stale") return null
   return `These figures are from ${relativeTime(provider.observedAt)} and may have moved since.`
+}
+
+/**
+ * Whether one window's meter sweeps for a live session.
+ *
+ * A window with no scope model measures the whole account, so it sweeps
+ * whenever the provider has a live session. A model-scoped window measures
+ * one model, so it sweeps only while a live session runs that model. This
+ * keeps the sweep an honest claim: the meter moves only when the reader's
+ * work draws on the limit that meter shows.
+ */
+export function liveWindowSweeps(
+  window: Pick<LiveUsageWindowPayload, "scopeModel">,
+  providerLive: boolean,
+  liveModels: readonly string[],
+): boolean {
+  if (!providerLive) return false
+  const scope = window.scopeModel
+  if (scope == null) return true
+  return liveModels.some((model) => modelMatchesScope(model, scope))
 }
 
 /**

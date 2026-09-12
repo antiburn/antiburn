@@ -7,6 +7,7 @@ import type {
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "../../lib/ipc"
+
 import { UsageLimitsBar } from "./UsageLimitsBar"
 
 const FORECAST = {
@@ -254,6 +255,120 @@ describe("UsageLimitsBar — the ring row", () => {
     })
     const seat = screen.getByRole("img", { name: "Claude, no stated figure" })
     expect(within(seat).getByText("—")).toBeInTheDocument()
+  })
+})
+
+describe("UsageLimitsBar — the live sweep", () => {
+  const twoProviders = () =>
+    liveSummary({
+      providers: [
+        liveProvider({
+          windows: [
+            liveWindow(),
+            liveWindow({ id: "seven-day", role: "primaryLong" }),
+            liveWindow({ id: "seven-day-fable", role: "other", scopeModel: "fable" }),
+          ],
+        }),
+        liveProvider({ provider: "openai", displayName: "OpenAI" }),
+      ],
+    })
+
+  it("sweeps every meter of the live provider, one row apart from the top", () => {
+    bar({
+      live: twoProviders(),
+      liveProviders: ["anthropic"],
+      // The third window is scoped to Fable, so it needs the session to run
+      // that model before it joins the other two.
+      liveModels: ["claude-fable-5"],
+      expanded: true,
+    })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    const meters = Array.from(region.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(meters.map((node) => node.style.getPropertyValue("--led-row"))).toEqual([
+      "0",
+      "1",
+      "2",
+    ])
+    // 42% lights 13 of 32 on each of the three meters; only those move.
+    expect(region.querySelectorAll(".led-sweep-dot")).toHaveLength(3 * 13)
+    // The live provider's group holds them all; the other provider stays dark.
+    const groups = within(region).getAllByRole("group")
+    expect(meters.every((node) => groups[0]?.contains(node))).toBe(true)
+    expect(groups[1]?.querySelector(".led-sweep-dot")).toBeNull()
+  })
+
+  it("holds a model-scoped meter still while the session runs another model", () => {
+    bar({
+      live: twoProviders(),
+      liveProviders: ["anthropic"],
+      liveModels: ["claude-opus-4-6"],
+      expanded: true,
+    })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    // The two account-wide meters sweep. The Fable meter measures a model
+    // this session does not run, so it states nothing about live work.
+    const meters = Array.from(region.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(meters.map((node) => node.style.getPropertyValue("--led-row"))).toEqual(["0", "1"])
+    expect(region.querySelectorAll(".led-sweep-dot")).toHaveLength(2 * 13)
+  })
+
+  it("holds a model-scoped meter still while no session states a model", () => {
+    bar({ live: twoProviders(), liveProviders: ["anthropic"], expanded: true })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    // No analysis pass has named the live session's model yet. A scoped
+    // meter must not claim that model is running.
+    expect(region.querySelectorAll(".led-sweep-dot")).toHaveLength(2 * 13)
+  })
+
+  it("sweeps the ring of each live provider on the closed bar", () => {
+    const { container } = bar({
+      live: twoProviders(),
+      liveProviders: ["openai"],
+      expanded: false,
+    })
+    const arcs = container.querySelectorAll(".led-sweep-ring")
+    expect(arcs).toHaveLength(1)
+    expect(arcs[0]).toHaveAttribute("data-testid", "usage-ring-sweep")
+    const rings = screen.getAllByRole("img")
+    expect(rings[0]?.contains(arcs[0]!)).toBe(false)
+    expect(rings[1]?.contains(arcs[0]!)).toBe(true)
+  })
+
+  it("runs one sweep clock for the whole bar, and only while a session is live", () => {
+    const live = bar({ live: twoProviders(), liveProviders: ["anthropic"], expanded: true })
+    expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).toHaveClass(
+      "led-clock",
+    )
+    // The popover is a panel the reader opened, so its gleam runs at the
+    // full peak; only the floating HUD softens it.
+    expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).not.toHaveClass(
+      "led-clock-soft",
+    )
+    // The component writes no phase, because `installLivePhase` owns it. A
+    // delay from a render would move the sweep on every later render.
+    const clock = live.container.querySelector<HTMLElement>('[data-testid="usage-limits-bar"]')
+    expect(clock?.style.getPropertyValue("--led-sweep-delay")).toBe("")
+    expect(clock?.style.animationDelay).toBe("")
+    const dark = bar({ live: twoProviders(), expanded: true })
+    expect(dark.container.querySelector('[data-testid="usage-limits-bar"]')).not.toHaveClass(
+      "led-clock",
+    )
+  })
+
+  it("keeps the bar dark while the live session draws on a provider it does not show", () => {
+    const { container } = bar({ liveProviders: ["google"], expanded: false })
+    expect(container.querySelector(".led-sweep-ring")).toBeNull()
+  })
+
+  it("does not sweep the rings without a live session", () => {
+    const { container } = bar({ expanded: false })
+    expect(container.querySelector(".led-sweep-ring")).toBeNull()
+  })
+
+  it("does not sweep without a live session", () => {
+    bar({ expanded: true })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    expect(region.querySelector(".led-sweep-dot")).toBeNull()
   })
 })
 
