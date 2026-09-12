@@ -266,11 +266,15 @@ mod tests {
     }
 
     #[test]
-    fn each_badge_accepts_a_finding_from_partial_evidence() {
+    fn partial_evidence_follows_each_badges_finding_policy() {
         for id in BadgeId::ALL {
             assert_eq!(
                 badge(&finding_evidence(id, true), id).status,
-                BadgeStatus::Finding
+                if id == BadgeId::ExcessCacheRehydration {
+                    BadgeStatus::NotAssessed(super::super::NotAssessedReason::IncompleteEvidence)
+                } else {
+                    BadgeStatus::Finding
+                }
             );
         }
     }

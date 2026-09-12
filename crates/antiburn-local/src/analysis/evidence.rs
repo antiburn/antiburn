@@ -390,12 +390,8 @@ pub struct RepeatedContext {
     pub repeated_tokens: u64,
     pub pairs_considered: u64,
     pub pairs_skipped: u64,
-    /// Sum of `paid` (the accounting's billed bucket) over every
-    /// considered pair's current turn, same accounting as
-    /// `repeated_tokens`. `repeated_tokens <= paid_tokens` by
-    /// construction: a pair's overpay never exceeds what it paid.
-    /// Old persisted evidence has no field here, so it deserializes as
-    /// `0`.
+    /// Sum the accounting's paid bucket across all eligible requests, including each segment's first request.
+    /// Old persisted evidence uses zero until analysis refreshes it.
     #[serde(default)]
     pub paid_tokens: u64,
 }
@@ -1157,8 +1153,8 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 32,
-                "analyzerRevision": 22,
+                "parserRevision": 34,
+                "analyzerRevision": 24,
                 "evidenceSchemaRevision": 18,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",

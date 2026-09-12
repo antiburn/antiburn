@@ -43,6 +43,9 @@ pub enum EventName {
     ScanCompleted,
     /// A preference changed. The key travels; the value never does.
     SettingToggled,
+    /// The reader withdrew analytics consent.
+    #[cfg(feature = "analytics")]
+    AnalyticsOptedOut,
     /// A session was opened from the activity list.
     #[cfg(feature = "analytics")]
     SessionOpened,
@@ -75,6 +78,27 @@ pub enum EventName {
     /// One hourly summary describes the shell's coarse resource use.
     #[cfg(feature = "analytics")]
     ResourceUsageObserved,
+    /// An Auto Fix review reached a closed preparation outcome.
+    #[cfg(feature = "analytics")]
+    BurnCheckAutoFixReviewed,
+    /// The reader confirmed one reviewed Auto Fix operation.
+    #[cfg(feature = "analytics")]
+    BurnCheckAutoFixConfirmed,
+    /// A confirmed Auto Fix operation reached a closed result.
+    #[cfg(feature = "analytics")]
+    BurnCheckAutoFixCompleted,
+    /// A fix prompt request reached a closed preparation outcome.
+    #[cfg(feature = "analytics")]
+    BurnCheckPromptPrepared,
+    /// A prepared fix prompt was copied to the clipboard.
+    #[cfg(feature = "analytics")]
+    BurnCheckPromptCopied,
+    /// A verified or recurred result appeared during a deliberate exposure.
+    #[cfg(feature = "analytics")]
+    BurnCheckOutcomeObserved,
+    /// The Sessions sidebar filter changed to a different selection.
+    #[cfg(feature = "analytics")]
+    SessionFilterSelected,
 }
 
 /// Every event this application may send.
@@ -93,6 +117,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
     EventName::SettingToggled,
+    EventName::AnalyticsOptedOut,
     EventName::SessionOpened,
     EventName::ErrorOccurred,
     EventName::UnrecognizedRecordsObserved,
@@ -104,6 +129,13 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::UsageObserved,
     EventName::LimitFactorObserved,
     EventName::ResourceUsageObserved,
+    EventName::BurnCheckAutoFixReviewed,
+    EventName::BurnCheckAutoFixConfirmed,
+    EventName::BurnCheckAutoFixCompleted,
+    EventName::BurnCheckPromptPrepared,
+    EventName::BurnCheckPromptCopied,
+    EventName::BurnCheckOutcomeObserved,
+    EventName::SessionFilterSelected,
 ];
 
 #[cfg(feature = "analytics")]
@@ -116,6 +148,7 @@ impl EventName {
             EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
+            EventName::AnalyticsOptedOut => "antiburn.analytics_opted_out",
             EventName::SessionOpened => "antiburn.session_opened",
             EventName::ErrorOccurred => "antiburn.error_occurred",
             EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
@@ -127,6 +160,13 @@ impl EventName {
             EventName::UsageObserved => "antiburn.usage_observed",
             EventName::LimitFactorObserved => "antiburn.limit_factor_observed",
             EventName::ResourceUsageObserved => "antiburn.resource_usage_observed",
+            EventName::BurnCheckAutoFixReviewed => "antiburn.burn_check_auto_fix_reviewed",
+            EventName::BurnCheckAutoFixConfirmed => "antiburn.burn_check_auto_fix_confirmed",
+            EventName::BurnCheckAutoFixCompleted => "antiburn.burn_check_auto_fix_completed",
+            EventName::BurnCheckPromptPrepared => "antiburn.burn_check_prompt_prepared",
+            EventName::BurnCheckPromptCopied => "antiburn.burn_check_prompt_copied",
+            EventName::BurnCheckOutcomeObserved => "antiburn.burn_check_outcome_observed",
+            EventName::SessionFilterSelected => "antiburn.session_filter_selected",
         }
     }
 }
@@ -197,7 +237,7 @@ pub struct Properties {
     /// under WSL. Same rules as [`Properties::label`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<&'static str>,
-    /// Whether a surface exposure followed a user action or automatic restore.
+    /// The closed origin for a surface state or visible Burn Check result.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<&'static str>,
     /// The short-window usage position returned with a Claude reset probe.
@@ -264,7 +304,7 @@ pub struct Facts {
     pub label: Option<&'static str>,
     /// The secondary dimension, where the event has one.
     pub detail: Option<&'static str>,
-    /// Whether a surface exposure followed a user action or automatic restore.
+    /// The closed origin for a surface state or visible Burn Check result.
     pub origin: Option<&'static str>,
     pub usage_band: Option<&'static str>,
     pub response_shape: Option<&'static str>,
@@ -352,6 +392,29 @@ pub enum Interaction {
         state: LiveUsageState,
         origin: Origin,
     },
+    /// An Auto Fix review request completed.
+    BurnCheckAutoFixReviewed { outcome: AutoFixReviewOutcome },
+    /// The reader confirmed the operation shown in an Auto Fix review.
+    BurnCheckAutoFixConfirmed,
+    /// A confirmed Auto Fix operation completed.
+    BurnCheckAutoFixCompleted { outcome: AutoFixOutcome },
+    /// A fix prompt request completed.
+    BurnCheckPromptPrepared { outcome: PromptPreparationOutcome },
+    /// A prepared fix prompt reached the clipboard.
+    BurnCheckPromptCopied,
+    /// A later result appeared in the visible Burn Checks workspace.
+    BurnCheckOutcomeObserved {
+        outcome: BurnCheckOutcome,
+        origin: BurnCheckOrigin,
+    },
+    /// The Sessions sidebar filter changed to a different selection. `agent`
+    /// deserializes into the engine's own closed enum, so an unrecognized
+    /// slug is a rejected command rather than a new value appearing in the
+    /// data; the renderer omits it rather than send one.
+    SessionFilterSelected {
+        filter: SessionFilterKind,
+        agent: Option<AgentKind>,
+    },
 }
 
 /// A product surface whose visibility is measured.
@@ -365,6 +428,7 @@ pub enum Surface {
     Hud,
     HudDetail,
     Settings,
+    BurnChecks,
 }
 
 /// A surface that can present a measured data state.
@@ -379,6 +443,59 @@ pub enum StateSurface {
     HudDetail,
     Settings,
     Insights,
+    BurnChecks,
+}
+
+/// A closed Auto Fix review preparation result.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoFixReviewOutcome {
+    Ready,
+    Stale,
+    Expired,
+    Conflict,
+    Unavailable,
+    Failed,
+}
+
+/// A closed result from one confirmed Auto Fix operation.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoFixOutcome {
+    AppliedAwaitingVerification,
+    RecoveryNeeded,
+    Stale,
+    Expired,
+    Conflict,
+    Unavailable,
+    Failed,
+}
+
+/// A closed result from one prompt preparation request.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptPreparationOutcome {
+    Ready,
+    Stale,
+    Expired,
+    Unavailable,
+    Failed,
+}
+
+/// A later Burn Check result that the workspace can present.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BurnCheckOutcome {
+    Verified,
+    Recurred,
+}
+
+/// Whether the measured verification watch started passively or from an action.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BurnCheckOrigin {
+    Passive,
+    Action,
 }
 
 /// Why a surface became visible.
@@ -462,6 +579,20 @@ pub enum Environment {
     Wsl,
 }
 
+/// A Sessions sidebar filter kind. `Agent` covers every harness item; the
+/// harness itself travels separately, as `Interaction::SessionFilterSelected`'s
+/// own `agent` field.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionFilterKind {
+    Notable,
+    Material,
+    Agent,
+    Failing,
+    Passing,
+    All,
+}
+
 #[cfg(feature = "analytics")]
 impl Interaction {
     /// The event and the facts this interaction becomes.
@@ -520,6 +651,49 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::BurnCheckAutoFixReviewed { outcome } => (
+                EventName::BurnCheckAutoFixReviewed,
+                Facts {
+                    detail: Some(outcome.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::BurnCheckAutoFixConfirmed => {
+                (EventName::BurnCheckAutoFixConfirmed, Facts::default())
+            }
+            Interaction::BurnCheckAutoFixCompleted { outcome } => (
+                EventName::BurnCheckAutoFixCompleted,
+                Facts {
+                    detail: Some(outcome.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::BurnCheckPromptPrepared { outcome } => (
+                EventName::BurnCheckPromptPrepared,
+                Facts {
+                    detail: Some(outcome.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::BurnCheckPromptCopied => {
+                (EventName::BurnCheckPromptCopied, Facts::default())
+            }
+            Interaction::BurnCheckOutcomeObserved { outcome, origin } => (
+                EventName::BurnCheckOutcomeObserved,
+                Facts {
+                    detail: Some(outcome.as_str()),
+                    origin: Some(origin.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SessionFilterSelected { filter, agent } => (
+                EventName::SessionFilterSelected,
+                Facts {
+                    label: Some(filter.as_str()),
+                    detail: agent.map(AgentKind::slug),
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
@@ -546,6 +720,7 @@ wire_values!(Surface, {
     Surface::Hud => "hud",
     Surface::HudDetail => "hud_detail",
     Surface::Settings => "settings",
+    Surface::BurnChecks => "burn_checks",
 });
 
 #[cfg(feature = "analytics")]
@@ -558,6 +733,59 @@ wire_values!(StateSurface, {
     StateSurface::HudDetail => "hud_detail",
     StateSurface::Settings => "settings",
     StateSurface::Insights => "insights",
+    StateSurface::BurnChecks => "burn_checks",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(SessionFilterKind, {
+    SessionFilterKind::Notable => "notable",
+    SessionFilterKind::Material => "material",
+    SessionFilterKind::Agent => "agent",
+    SessionFilterKind::Failing => "failing",
+    SessionFilterKind::Passing => "passing",
+    SessionFilterKind::All => "all",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(AutoFixReviewOutcome, {
+    AutoFixReviewOutcome::Ready => "ready",
+    AutoFixReviewOutcome::Stale => "stale",
+    AutoFixReviewOutcome::Expired => "expired",
+    AutoFixReviewOutcome::Conflict => "conflict",
+    AutoFixReviewOutcome::Unavailable => "unavailable",
+    AutoFixReviewOutcome::Failed => "failed",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(AutoFixOutcome, {
+    AutoFixOutcome::AppliedAwaitingVerification => "applied_awaiting_verification",
+    AutoFixOutcome::RecoveryNeeded => "recovery_needed",
+    AutoFixOutcome::Stale => "stale",
+    AutoFixOutcome::Expired => "expired",
+    AutoFixOutcome::Conflict => "conflict",
+    AutoFixOutcome::Unavailable => "unavailable",
+    AutoFixOutcome::Failed => "failed",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(PromptPreparationOutcome, {
+    PromptPreparationOutcome::Ready => "ready",
+    PromptPreparationOutcome::Stale => "stale",
+    PromptPreparationOutcome::Expired => "expired",
+    PromptPreparationOutcome::Unavailable => "unavailable",
+    PromptPreparationOutcome::Failed => "failed",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(BurnCheckOutcome, {
+    BurnCheckOutcome::Verified => "verified",
+    BurnCheckOutcome::Recurred => "recurred",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(BurnCheckOrigin, {
+    BurnCheckOrigin::Passive => "passive",
+    BurnCheckOrigin::Action => "action",
 });
 
 #[cfg(feature = "analytics")]
@@ -666,22 +894,40 @@ pub fn bucket(count: u64) -> &'static str {
     }
 }
 
-/// Map a provider-reported plan name to the closed vocabulary
-/// `antiburn.limit_factor_observed` sends.
+/// Map the plan and tier to fixed analytics values.
 ///
-/// The raw string never leaves this machine: it names a plan the reader
-/// chose, which is exactly the kind of value this file's own module docs say
-/// has nowhere to be put. `None` (no plan reported) and an empty or
-/// all-whitespace string both become `unknown`; a plan name outside the
-/// listed set becomes `other`, so a provider renaming or adding a plan tier
-/// widens no vocabulary a reader was not already told about.
+/// Missing or blank plans map to `unknown`.
+/// Unlisted plans map to `other`.
+/// Specific Max tiers and Pro Lite require the matching provider.
+/// Raw plan and tier strings stay on this machine.
 #[cfg(feature = "analytics")]
-pub fn map_plan(plan: Option<&str>) -> &'static str {
+pub fn map_plan(
+    provider: LiveUsageProvider,
+    plan: Option<&str>,
+    plan_tier: Option<&str>,
+) -> &'static str {
     let Some(plan) = plan else {
         return "unknown";
     };
-    match plan.trim().to_lowercase().as_str() {
-        "" => "unknown",
+    let plan = plan.trim().to_ascii_lowercase();
+    if plan.is_empty() {
+        return "unknown";
+    }
+    if provider == LiveUsageProvider::Anthropic && plan == "max" {
+        match plan_tier
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("default_claude_max_5x") => return "max_5x",
+            Some("default_claude_max_20x") => return "max_20x",
+            _ => {}
+        }
+    }
+    if provider == LiveUsageProvider::Openai && plan == "prolite" {
+        return "prolite";
+    }
+    match plan.as_str() {
         "free" => "free",
         "pro" => "pro",
         "max" => "max",
@@ -834,18 +1080,76 @@ mod tests {
     /// `other` rather than the raw text.
     #[test]
     fn an_unlisted_plan_name_maps_to_other_rather_than_leaking_its_text() {
-        assert_eq!(map_plan(None), "unknown");
-        assert_eq!(map_plan(Some("")), "unknown");
-        assert_eq!(map_plan(Some("   ")), "unknown");
-        assert_eq!(map_plan(Some("Max")), "max");
-        assert_eq!(map_plan(Some(" pro ")), "pro");
-        assert_eq!(map_plan(Some("FREE")), "free");
-        assert_eq!(map_plan(Some("team")), "team");
-        assert_eq!(map_plan(Some("enterprise")), "enterprise");
-        assert_eq!(map_plan(Some("plus")), "plus");
-        assert_eq!(map_plan(Some("business")), "business");
-        assert_eq!(map_plan(Some("edu")), "edu");
-        assert_eq!(map_plan(Some("some-future-plan")), "other");
+        let provider = LiveUsageProvider::Anthropic;
+        assert_eq!(map_plan(provider, None, None), "unknown");
+        assert_eq!(map_plan(provider, Some(""), None), "unknown");
+        assert_eq!(map_plan(provider, Some("   "), None), "unknown");
+        assert_eq!(map_plan(provider, Some("Max"), None), "max");
+        assert_eq!(map_plan(provider, Some(" pro "), None), "pro");
+        assert_eq!(map_plan(provider, Some("FREE"), None), "free");
+        assert_eq!(map_plan(provider, Some("team"), None), "team");
+        assert_eq!(map_plan(provider, Some("enterprise"), None), "enterprise");
+        assert_eq!(map_plan(provider, Some("plus"), None), "plus");
+        assert_eq!(map_plan(provider, Some("business"), None), "business");
+        assert_eq!(map_plan(provider, Some("edu"), None), "edu");
+        assert_eq!(map_plan(provider, Some("some-future-plan"), None), "other");
+    }
+
+    #[test]
+    fn provider_specific_plan_values_stay_in_their_provider_vocabulary() {
+        assert_eq!(
+            map_plan(
+                LiveUsageProvider::Anthropic,
+                Some("max"),
+                Some("default_claude_max_5x")
+            ),
+            "max_5x"
+        );
+        assert_eq!(
+            map_plan(
+                LiveUsageProvider::Anthropic,
+                Some("MAX"),
+                Some("default_claude_max_20x")
+            ),
+            "max_20x"
+        );
+        assert_eq!(
+            map_plan(
+                LiveUsageProvider::Anthropic,
+                Some("max"),
+                Some("new_claude_max_tier")
+            ),
+            "max"
+        );
+        assert_eq!(
+            map_plan(LiveUsageProvider::Openai, Some("prolite"), None),
+            "prolite"
+        );
+        assert_eq!(
+            map_plan(LiveUsageProvider::Anthropic, Some("prolite"), None),
+            "other"
+        );
+        assert_eq!(
+            map_plan(LiveUsageProvider::Google, Some("prolite"), None),
+            "other"
+        );
+    }
+
+    #[test]
+    fn codex_plan_values_keep_the_existing_closed_mappings() {
+        for (raw, mapped) in [
+            ("pro", "pro"),
+            ("plus", "plus"),
+            ("team", "team"),
+            ("enterprise", "enterprise"),
+            ("prolite", "prolite"),
+        ] {
+            assert_eq!(map_plan(LiveUsageProvider::Openai, Some(raw), None), mapped);
+        }
+        assert_eq!(
+            map_plan(LiveUsageProvider::Openai, Some("future_codex_plan"), None),
+            "other"
+        );
     }
 
     #[test]
@@ -1083,6 +1387,7 @@ mod tests {
                 | EventName::OnboardingStepViewed
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
+                | EventName::AnalyticsOptedOut
                 | EventName::SessionOpened
                 | EventName::ErrorOccurred
                 | EventName::UnrecognizedRecordsObserved
@@ -1094,12 +1399,19 @@ mod tests {
                 | EventName::ClaudeLimitResetObserved
                 | EventName::UsageObserved
                 | EventName::LimitFactorObserved
-                | EventName::ResourceUsageObserved => true,
+                | EventName::ResourceUsageObserved
+                | EventName::BurnCheckAutoFixReviewed
+                | EventName::BurnCheckAutoFixConfirmed
+                | EventName::BurnCheckAutoFixCompleted
+                | EventName::BurnCheckPromptPrepared
+                | EventName::BurnCheckPromptCopied
+                | EventName::BurnCheckOutcomeObserved
+                | EventName::SessionFilterSelected => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            17,
+            25,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -1218,6 +1530,57 @@ mod tests {
         assert_eq!(facts.label, Some("google"));
         assert_eq!(facts.detail, Some("rate_limited"));
         assert_eq!(facts.origin, None);
+
+        let (name, facts) = Interaction::BurnCheckAutoFixCompleted {
+            outcome: AutoFixOutcome::RecoveryNeeded,
+        }
+        .resolve();
+        assert_eq!(name, EventName::BurnCheckAutoFixCompleted);
+        assert_eq!(facts.detail, Some("recovery_needed"));
+        assert_eq!(facts.label, None);
+
+        let (name, facts) = Interaction::BurnCheckOutcomeObserved {
+            outcome: BurnCheckOutcome::Recurred,
+            origin: BurnCheckOrigin::Passive,
+        }
+        .resolve();
+        assert_eq!(name, EventName::BurnCheckOutcomeObserved);
+        assert_eq!(facts.detail, Some("recurred"));
+        assert_eq!(facts.origin, Some("passive"));
+
+        let (name, facts) = Interaction::SessionFilterSelected {
+            filter: SessionFilterKind::Agent,
+            agent: Some(AgentKind::Codex),
+        }
+        .resolve();
+        assert_eq!(name, EventName::SessionFilterSelected);
+        assert_eq!(facts.label, Some("agent"));
+        assert_eq!(facts.detail, Some("codex"));
+
+        let (name, facts) = Interaction::SessionFilterSelected {
+            filter: SessionFilterKind::Notable,
+            agent: None,
+        }
+        .resolve();
+        assert_eq!(name, EventName::SessionFilterSelected);
+        assert_eq!(facts.label, Some("notable"));
+        assert_eq!(facts.detail, None);
+    }
+
+    /// An agent filter with no recognized harness reports the filter kind
+    /// alone. The renderer never sends a slug this enum rejects; `None` is
+    /// what a genuinely unrecognized harness (or a non-agent filter) looks
+    /// like here.
+    #[test]
+    fn an_agent_filter_with_no_recognized_harness_has_no_detail() {
+        let (name, facts) = Interaction::SessionFilterSelected {
+            filter: SessionFilterKind::Agent,
+            agent: None,
+        }
+        .resolve();
+        assert_eq!(name, EventName::SessionFilterSelected);
+        assert_eq!(facts.label, Some("agent"));
+        assert_eq!(facts.detail, None);
     }
 
     /// `usage_observed` reads the same closed vocabulary
@@ -1285,6 +1648,21 @@ mod tests {
             "origin": "background_poll",
         });
         assert!(serde_json::from_value::<Interaction>(unknown_origin).is_err());
+
+        let private_action_fields = serde_json::json!({
+            "kind": "burnCheckAutoFixCompleted",
+            "outcome": "applied_awaiting_verification",
+            "path": "/Users/someone/work",
+            "watchId": "private-watch",
+        });
+        assert!(serde_json::from_value::<Interaction>(private_action_fields).is_err());
+
+        let unknown_result = serde_json::json!({
+            "kind": "burnCheckOutcomeObserved",
+            "outcome": "fixed_with_1234_tokens",
+            "origin": "action",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_result).is_err());
     }
 
     #[test]

@@ -1,10 +1,10 @@
-import { useCallback, useState, useSyncExternalStore } from "react"
+import { useCallback, useState, useSyncExternalStore, type CSSProperties } from "react"
 
 import { X } from "lucide-react"
 
 import { LedBar } from "../components/ui/LedBar"
 import { liveWindowSweeps } from "../lib/presentation/liveUsage"
-import type { UsageBarItem } from "../lib/usageBars"
+import { LABEL_BAR_COLOR, type UsageBarItem } from "../lib/usageBars"
 import { OverlaySession } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
@@ -71,7 +71,7 @@ export function OverlayWindow() {
 
         {state.bars.length === 0 ? (
           <div
-            className={`pointer-events-none ${state.sessionLive ? "led-clock led-clock-soft" : ""}`.trimEnd()}
+            className={`hud-leds pointer-events-none ${state.sessionLive ? "led-clock led-clock-soft" : ""}`.trimEnd()}
           >
             <LedBar segments={HUD_SEGMENTS} split={[]} live={state.sessionLive} />
           </div>
@@ -79,11 +79,17 @@ export function OverlayWindow() {
           // `led-clock` runs the one sweep clock every live bar reads, so the
           // bars stay in phase whenever each bar joined.
           <div
-            className={`pointer-events-none space-y-[3px] ${sweeping.some(Boolean) ? "led-clock led-clock-soft" : ""}`.trimEnd()}
+            className={`hud-leds pointer-events-none space-y-[3px] ${sweeping.some(Boolean) ? "led-clock led-clock-soft" : ""}`.trimEnd()}
           >
             {state.bars.map((bar, index) => (
               <LedBar
                 key={bar.key}
+                className={bar.color === LABEL_BAR_COLOR ? "hud-leds-label" : "hud-leds-color"}
+                style={
+                  bar.color === LABEL_BAR_COLOR
+                    ? undefined
+                    : ({ "--hud-led-color": bar.color } as CSSProperties)
+                }
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
                 live={sweeping[index]!}

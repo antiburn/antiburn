@@ -194,7 +194,12 @@ function candidateContent(
 function PeekPayloadContent({ payload }: { payload: PeekPayload }) {
   if (payload.kind === "unavailable") return <PeekUnavailable />
   if (payload.data.kind === "checks") {
-    return <ChecksPeek presentation={payload.data.presentation} />
+    return (
+      <ChecksPeek
+        presentation={payload.data.presentation}
+        pendingEvidence={payload.data.pendingEvidence}
+      />
+    )
   }
   return (
     <>

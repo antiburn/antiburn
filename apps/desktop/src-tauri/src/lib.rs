@@ -185,15 +185,17 @@ pub fn run() {
                 repeated.pending.store(true, Ordering::Release);
                 if repeated.setup_ready.load(Ordering::Acquire) {
                     repeated.pending.store(false, Ordering::Release);
-                    if let Err(error) =
-                        open_launch_surface(app, main_window::OpenTrigger::Interaction)
-                    {
-                        ::tracing::warn!(
-                            event = "launch_surface_open_failed",
-                            trigger = "second_instance",
-                            error = %error
-                        );
-                    }
+                    main_window::on_main(app, |app| {
+                        if let Err(error) =
+                            open_launch_surface(app, main_window::OpenTrigger::Interaction)
+                        {
+                            ::tracing::warn!(
+                                event = "launch_surface_open_failed",
+                                trigger = "second_instance",
+                                error = %error
+                            );
+                        }
+                    });
                 }
             })),
     )
@@ -376,6 +378,10 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
+            #[cfg(target_os = "macos")]
+            if let Some(manager) = app.try_state::<popover_peek::PopoverPeekManager>() {
+                manager.shutdown();
+            }
             main_window::flush_placement(app);
             // Ask a running report reduction to stop at its next probe.
             // The reduction is read-only, so even a task that never sees
@@ -534,6 +540,7 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         .try_state::<popover_peek::PopoverPeekManager>()
     {
         manager.handle_anchor_event(window, event);
+        #[cfg(not(target_os = "macos"))]
         if window.label() == popover_peek::LABEL && matches!(event, WindowEvent::Destroyed) {
             manager.handle_companion_destroyed();
             if manager.state().target.is_some() {
@@ -682,6 +689,13 @@ mod tests {
             "\"allow-delete-session-data\"",
             "\"dialog:allow-confirm\"",
             "\"allow-main-window-ready\"",
+            "\"allow-main-window-health-ack\"",
+            "\"allow-main-window-pending-health-check\"",
+            "\"allow-report-main-window-render-status\"",
+            "\"allow-report-main-window-render-failure\"",
+            "\"allow-request-main-window-recovery\"",
+            "\"allow-peek-main-window-session-target\"",
+            "\"allow-acknowledge-main-window-session-target\"",
         ] {
             assert!(capability.contains(expected), "missing {expected}");
         }
@@ -781,7 +795,17 @@ mod tests {
         let task_announced = Arc::clone(&announced);
         let task_store = Arc::clone(&store);
         let task_handle = Arc::clone(&handle);
+        struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let (dropped, worker_dropped) = tokio::sync::oneshot::channel();
         let task = tauri::async_runtime::spawn(async move {
+            let _drop_signal = DropSignal(Some(dropped));
             worker_loop(
                 &task_store,
                 &task_handle,
@@ -802,12 +826,15 @@ mod tests {
         schedulers.push(task);
 
         abort_schedulers(Some(&schedulers));
+        tokio::time::timeout(Duration::from_secs(1), worker_dropped)
+            .await
+            .expect("the async worker stops")
+            .expect("the async worker reports its drop");
         assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
         release.send(()).unwrap();
         pass_completed
             .recv_timeout(Duration::from_secs(1))
             .expect("the blocking job survives the worker abort");
-        tokio::task::yield_now().await;
         assert_eq!(store.analysis(&key).unwrap(), analysis_before);
         assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
         assert!(announced.lock().unwrap().is_empty());

@@ -16,6 +16,7 @@ sources:
   - src/styles/session-rows.css
   - src/styles/session-detail.css
   - src/components/ui/text-roll.css
+  - src/components/burn-checks/burn-check-summary.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -38,6 +39,12 @@ colors:
   surface-card:
     light: "hsl(0 0% 0% / 0.04)"
     dark: "hsl(0 0% 100% / 0.08)"
+  stats-edge:
+    light: "hsl(0 0% 0% / 0.04)"
+    dark: "hsl(0 0% 100% / 0.05)"
+  session-card: # quiet session-list rest fill; dark mode needs less lift than generic cards
+    light: "hsl(0 0% 0% / 0.02)"
+    dark: "hsl(0 0% 100% / 0.03)"
   surface-header: # the quiet band at the head of the menu-bar popover; fainter than a card
     light: "hsl(0 0% 0% / 0.025)"
     dark: "hsl(0 0% 100% / 0.03)"
@@ -146,6 +153,18 @@ colors:
   agent-mark: # vendor brand-mark ink; see the Vendor brand marks note below
     light: "hsl(52 11% 13.3%)"
     dark: "hsl(60 15% 96.2%)"
+  burn-check-failure-fill: # failure arcs and terminal marks
+    light: "hsl(17.6 100% 58.6%)"
+    dark: "hsl(17.6 100% 58.6%)"
+  burn-check-failure-text: # failure wording on session and summary surfaces
+    light: "hsl(18 100% 36.4%)"
+    dark: "hsl(18 100% 68%)"
+  burn-check-pass-fill: # pass arcs and terminal marks
+    light: "hsl(191.5 83% 36.8%)"
+    dark: "hsl(192 63% 47.6%)"
+  burn-check-neutral: # unassessed arcs and neutral lifecycle marks
+    light: "hsl(209 6% 73.7%)"
+    dark: "hsl(210 3% 50.5%)"
   # Floating-HUD sub-palette only (src/styles/hud.css)
   burn:
     light: "hsl(18 100% 50%)"
@@ -269,6 +288,7 @@ typography:
   callout: { fontSize: 12px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0" }
   footnote: { fontSize: 11px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.12px" }
   caption: { fontSize: 11px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.06px" }
+  metadata: { fontSize: 10.5px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.08px" } # transient metadata in a constrained list row
 spacing:
   1: 4px
   2: 8px
@@ -299,6 +319,7 @@ rounded:
   popover: 10px # outer corner for macOS floating popover and notification surfaces
   full: 9999px
 shadow:
+  stats-card: "inset 0 0 0 1px var(--color-stats-edge)"
   popover: "0 4px 12px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.08)"
   tooltip: "0 2px 8px rgb(0 0 0 / 0.12), 0 0.5px 2px rgb(0 0 0 / 0.06)"
   raised: "0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04)" # @theme-registered; consume as the `shadow-raised` utility
@@ -309,6 +330,7 @@ motion:
   # the `ease-out-quart` utility. Plain `ease-out` is the default elsewhere.
   --duration-quick: 100ms # a crossfade that leads the movement it accompanies
   --duration-fast: 120ms # the default control, hover, and disclosure transition
+  --duration-medium: 180ms # a paired visibility crossfade
   --duration-slow: 300ms # a meter or bar that fills
   --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
   # Recipes, for the timings the tokens above do not carry. Animation timings
@@ -368,7 +390,8 @@ components:
     backgroundColor: { light: "rgb(235 235 235 / 0.92)", dark: "rgb(50 50 50 / 0.96)" }
     backdropFilter: "blur(20px) saturate(180%)"
     textColor: "{colors.label}"
-    rounded: 3px
+    rounded: "{rounded.control}"
+    padding: 8px
     shadow: "{shadow.tooltip}"
     maxWidth: 250px
   switch:
@@ -400,6 +423,14 @@ components:
     rounded: "7px track, {rounded.control} segment"
     shadow: "{shadow.raised}"
     separator: "{colors.separator} hairline between two unselected neighbours"
+  list-display-toolbar:
+    className: "ListDisplayToolbar + SegmentedControl variant=text-tabs"
+    selectedInk: "{colors.accent}"
+    indicatorColor: "{colors.label}"
+    typography: "{typography.footnote}"
+    height: 32px
+    padding: "0 12px"
+    motion: "100ms color and underline opacity crossfade; no moving indicator"
   scroll:
     className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
@@ -411,6 +442,27 @@ components:
 The token reference is the YAML front matter above. Light and Dark live in one file:
 every `colors` entry carries both values, and only those values differ between themes.
 Notes for what isn't expressible as a token:
+
+- **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
+  a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.
+  The following component owns the gap below the card; the summary adds no bottom padding.
+  Every cost uses system sans with `type-title-3 font-semibold!`; each secondary line
+  uses `type-footnote text-label-secondary` without an added top gap. `SegmentFigure` supplies
+  tabular numerals. The secondary line keeps the token count in `label-secondary`, then
+  renders the middle dot and period in `label-tertiary` with 4px side margins around the dot:
+  `1.35B · 7 days`. Periods read Today, 7 days, and 30 days,
+  while accessible labels retain Last 7 days and Last 30 days.
+  Token units remain accessible but visually implicit. If cost is unavailable, the
+  token count becomes the primary figure and only the period appears below it.
+  The summary has no column dividers, individual card shadows, or entrance animation.
+  The shared card uses `shadow-stats-card`: a uniform 1px inset outline that follows
+  its rounded corners. `stats-edge` uses pure black at 4% in light mode and pure white
+  at 5% in dark mode, so no single edge reads as a divider.
+  The collapsed provider row uses a 16px leading inset, 10px top padding, 6px bottom padding,
+  and 4px horizontal radial padding, so the first ring aligns with the summary's 20px content
+  inset. The expanded row uses 4px bottom padding. The disclosure keeps its visual size and
+  has a centered 40px square hit area in both states. A 12px gap separates its slot from the
+  provider group.
 
 - **Utilities** — every `colors` key is a Tailwind utility via `bg-/text-/border-<name>` (e.g.
   `bg-surface`, `text-label`, `text-system-green`). Use `bg-accent-fill` for accent backgrounds; the
@@ -439,6 +491,88 @@ Notes for what isn't expressible as a token:
   published brand value is made for a filled mark at 18px, and a row of 6px dots on an uncontrolled
   desktop needs more chroma to read as the same colour. The lift is a factor applied to the package
   value, so the source stays the package.
+  Session cards omit the mark from the model line. Instead, each card places a decorative 40px neutral
+  mark at 5% opacity in light mode and 6% in dark mode, cropped 6px beyond the lower-right edge. The
+  denser Antigravity mark scales to 90% inside the same box for equal optical weight. The card clips
+  overflow, and the mark ignores pointer input and assistive technology. The model tooltip keeps the
+  vendor mark and source name for explicit identification. It does not repeat repository metadata,
+  which remains in the card's trailing context row.
+- **Burn Checks** — `BurnCheckIndicator` owns the feature palette and iconography. Failure uses
+  `burn-check-failure-fill` for arcs or marks and `burn-check-failure-text` for wording. Pass arcs
+  and terminal ticks use `burn-check-pass-fill`. A passing session-card verdict uses the same cyan
+  with semibold sentence-case `All X passed` wording. Passed counts in mixed results use the same cyan at regular
+  weight, so the color maps to the dial segment while failure retains weight priority. Unassessed arcs and
+  lifecycle marks use `burn-check-neutral`. A compact session-list verdict uses system monospace with
+  `type-footnote tabular-nums text-label-secondary`, aligns its text to the card's 8px content
+  gap, and renders each outcome and middle dot as separate elements. The dot uses 2px CSS margins on
+  each side instead of monospace space characters. The verdict omits unassessed counts and the repeated “Burn Checks” noun
+  from assessed counts. Failure wording uses semibold weight. Compact Lucide indicators use a
+  15px visual size. Compact segmented dials remain 14px with a 1.5px optical stroke and 14-degree requested
+  gaps. A text-bearing indicator shifts down 1px for optical alignment with the monospace verdict.
+  Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
+  when some checks are not assessed. Session cards keep the passing verdict visible above the title.
+  Failed and non-result states keep their explicit verdict wording. Session cards use
+  fill alone in the default state, without inset top or bottom edges; their existing hover, tooltip-open, and selected fills
+  remain unchanged. Their interaction transitions only the background fill and opts out of the generic
+  role-button scale and opacity feedback, so thin Burn Check icons remain raster-stable. Cards within one date group use a 12px gap; date headings retain their existing
+  8px separation from the next group. Hover-only repository and time metadata and the decorative
+  vendor watermark form a paired opacity crossfade. Both wait for `--duration-fast`, then transition
+  linearly over `--duration-medium`; metadata fades in while the watermark fades out. Pointer exit
+  reverses the transition without a delay. The same state persists while a card tooltip is open.
+  The Burn Check tooltip uses system sans and groups details as Failed, Passed, then Not assessed.
+  Its `type-callout` title uses semibold weight; group labels remain medium.
+  It reuses the circular Burn Check alert, pass, and neutral icons in a leading 14px column. The
+  Failed heading uses the same tertiary ink as other group labels; failed row text uses
+  `burn-check-failure-text`, and the failed icon uses `burn-check-failure-fill`. Not-assessed rows omit their repeated “not assessed” suffix. The group
+  heading remains the visible and accessible status, so row icons stay decorative. The tooltip has
+  no repeated result summary or “Open the session” footer.
+  Session-detail check cards and expandable rows share the tooltip's individual-check marks:
+  a 14px `CircleAlert` with a 2.5px stroke and `burn-check-failure-fill` for failures,
+  and a 14px `CircleCheck` with a 2px stroke and `burn-check-pass-fill` for passes.
+  Failure wording and evidence use `burn-check-failure-text`, including card tooltips
+  and expanded guidance. Passing row wording stays neutral. Unassessed checks remain
+  omitted from the detail cards and rows.
+  The popover summary uses a stable “All burn checks” heading without a dial, reserving circular indicators
+  for provider usage and individual sessions. It uses `--space-md` (12px) horizontal padding and a 12px text-to-meter gap.
+  The text block uses `--space-sm` (8px) top and bottom padding, matching the spend card.
+  Failed and passed counts use `font-mono type-footnote tabular-nums`, matching session verdicts.
+  Failed counts use semibold failure ink; passed counts use regular cyan `burn-check-pass-fill`.
+  The headline uses system sans with `type-headline font-semibold! text-label`. A regular
+  `type-footnote text-label-tertiary` “30 days” label shares its baseline with an 8px gap.
+  Counts carry the visible verdict;
+  the accessible description and companion retain the full result and evidence status.
+  When no counts exist, the second line shows the loading or unavailable status.
+  Remaining context stays in system sans. The summary omits visible “Evidence incomplete” wording;
+  its accessible description retains the evidence status.
+  The summary is the first card in the collapsing overview header, above spend and provider limits.
+  Its wrapper uses twelve pixels of top padding and `--space-sm` (8px) horizontal padding.
+  The wrapper and inner padding use the same tokens as the spend card, so their text starts on the same line.
+  Provider rings retain their existing optical indent.
+  A single separator after
+  the provider limits is inset twelve pixels from both popover edges. The session toolbar starts eight
+  pixels below that rule.
+  The session list uses the remaining popover height without a persistent footer.
+  A static one-pixel edge sits one pixel inside the card. Its state color starts at 40% opacity and fades
+  to 10% at the 45% stop, then into a faint separator at the right. Findings use
+  `burn-check-failure-fill`; results with passes and no findings use `burn-check-pass-fill`;
+  loading, unavailable, and unassessed states use `burn-check-neutral`. Failure takes precedence over pass.
+  The fill stays neutral at 50% of `surface-card`, so the semantic state remains in the edge and content.
+  The surface uses `rounded-control` (5px), matching the spend summary card. The twelve-pixel gap between these cards matches the top inset. Hover uses 35% of `surface-hover`, and the active preview uses 40% of
+  `surface-selected`, while the keyboard-focus treatment remains unchanged.
+  Increased contrast uses a solid edge in the resolved state color.
+  The trailing estimate uses four filled Lucide flame silhouettes, masked over a neutral track.
+  Each full flame represents 25% token burn and fills from the bottom, in order from left to right.
+  The 78 × 18px meter uses local SVG geometry. Values below five percent use a yellow-to-brand
+  gradient; higher values use brand-to-red, matching the existing token-burn threshold.
+  The exact estimate stays in the accessible summary, meter value, app tooltip, and companion
+  panel. The flame tooltip opens on hover or keyboard focus and explains the estimate and scale.
+  The summary button opens Burn checks in the main window. The meter is a separate focus target
+  beside the button, so inspecting it does not open the main window.
+  Its estimate uses semibold `font-mono type-callout tabular-nums` in `burn-check-failure-text`,
+  or cyan `burn-check-pass-fill` for zero burn. The explanation uses secondary callout text,
+  followed by the scale in tertiary footnote text. Color identifies the result, not the explanatory prose.
+  Its target is at least 40px high. Inspecting the flames dismisses the companion, so only one
+  explanation opens at a time. Unknown estimates omit the meter. Flames remain static when reports update.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
   `@supports`, so text and chrome track the OS exactly. A platform without them takes an explicit
@@ -510,8 +644,24 @@ Notes for what isn't expressible as a token:
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
+  `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,
+  and 12px icon gaps, which Settings keeps. A top-level item can nest child rows one level deep,
+  right below it in the same tablist. A child row needs no icon of its own and carries
+  `data-nested`. In the main window its label starts at the parent label column, 30px from the
+  row edge (`--main-window-nav-indent`: 8px padding, the 14px icon, and the 8px gap). A child's
+  own hairline separator carries `data-nested` too and keeps that same indent. In `SidebarNav`'s
+  default density a child row is 32px tall with a 32px `pl-8` indent and an `ml-8` separator.
+  Any row's optional trailing count uses the shared `CountPill`
+  (`src/components/ui/CountPill.tsx`): the same 16px-high, borderless, `surface-tertiary/40`,
+  tertiary-ink, `font-mono type-metadata tabular-nums` pill documented below for a session
+  card's `+N` model count. A row with a count sets its accessible name to its label alone, so the
+  count digits stay out of the announced name.
   These local geometry rules use the spacing tokens in `main-window.css`; other source lists
-  retain their current density. Sessions is the main sidebar section. A Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows and Linux) also opens Settings without changing the selected section.
+  retain their current density. Burn checks and Sessions are the main sidebar sections. Burn checks
+  is the default section, uses the 14px Lucide `Flame` mark, and opens from the checks summary in
+  the menu-bar popover. A
+  Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows
+  and Linux) also opens Settings without changing the selected section.
   The first sidebar row starts at 48px on macOS, clear of the drag strip. The content region scrolls
   independently of the title strip. A view switch is immediate: the window does not animate navigation. Use the
   documented type scale and keyboard-only focus treatment. Hidden or minimized main windows suspend
@@ -539,10 +689,61 @@ hover and tooltip states retain that fill. This yields a 5.4% black tint in ligh
 an 8.4% white tint in dark mode, without reducing text or badge opacity. Sidebar and generic
 collection selections keep their full-strength token;
 row density, grouping, badges, and tooltips match the menu-bar list. The 340px collection uses
-existing title truncation rather than a responsive layout change. The detail toolbar shows the
-session title; Back appears only for related-session history. Embedded shortcuts stay inside
-the detail pane. Hidden panes pause hygiene reads, relative-time clocks, and active-row motion.
-The menu-bar list keeps its existing navigation and presentation defaults.
+existing title truncation rather than a responsive layout change. Session cards lead structurally with the
+token-burn verdict, while the unique title uses `type-body font-medium! text-label` as the primary row identifier.
+Titles stay on one line, truncate at rest, and reveal their overflow at about 45px per second with an
+interruptible horizontal transition after a deliberate card hover. Reduced motion keeps the truncated resting
+title and disables the reveal.
+Routine verdict text uses secondary ink; failure wording retains its status colour. One context row
+shows the complete first model in semibold secondary ink, keeps its same-size thinking suffix tertiary, adds a separator-free
+`+N` count as a 16px-high, borderless muted pill with `surface-tertiary/40`, tertiary ink, and
+`font-mono type-metadata tabular-nums`, and exposes the complete source and model context
+in a tooltip. The tooltip leads with the vendor icon and name without a redundant Source label,
+groups full model identifiers under one Models label, and gives model values primary contrast.
+The first model never truncates. Repository moves to the trailing metadata zone
+beside the hover timestamp, appears only while the card is hovered, and exists only when the list spans multiple
+repositories or it is the row's only context. The trailing repository does not open a second tooltip. On hover,
+repository and timestamp anchor to the card's right edge on the model baseline. An 8px inter-group gap
+protects the model cluster, including its `+N` pill, from a long truncated repository. Repository and time form one
+`font-mono type-metadata tabular-nums` group with a compact 2px gap around their middle
+dot; the timestamp never wraps. When the repository name exceeds
+18 monospace characters, the visible timestamp drops “ago”; its accessible label remains complete. The model line does
+not reserve inline space for the vendor mark. Group labels use sentence case. A
+shared `ListDisplayToolbar` places the pinned activity label and the right-aligned `text-tabs` badge metric control on one row with the labels Cost,
+Week %, and 5h %. Its accessible group name replaces redundant visible labels. The selected choice uses accent ink and a
+primary-label hairline underline. The control crossfades only color and underline opacity over `--duration-quick`; it never slides a moving indicator.
+The detail toolbar shows the session title; Back appears
+only for related-session history. Embedded shortcuts stay inside the detail pane. Hidden panes pause
+hygiene reads, relative-time clocks, and active-row motion. The menu-bar list shares this card presentation
+while keeping its existing navigation behavior.
+
+Burn checks uses the workspace as one flexible pane instead of adding a collection pane. It has no
+visual page header. The scroll viewport starts with the report summary and keeps a screen-reader-only
+page heading. The viewport uses the shared top-edge fade and centers a single-column overview. The summary and grouped check
+rows extend the anchored preview. Both surfaces use the same check names, icons, assessed-session
+counts, order, token-burn percentages, summaries, and semantic status colors. This parity comes from
+shared presentation helpers. Do not copy labels or calculate percentages in either surface. Do not
+sum category percentages. Use color only for the compact status icon and metric. Other text and
+surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows;
+the summary never presents incomplete historical evidence as a pending product state. Groups use `surface-card/50`, a subtle `border-separator/40` outline, `rounded-control`,
+internal row separators, and accessible disclosure buttons. Expanded failures use one short, check-specific
+finding sentence, followed by the available actions. Do not show internal target identities,
+repeated observations, repeated guidance, or detail refresh and bounded-list notices. Only unused MCP servers and unused skills show
+named resource rows. A separate nested disclosure lists bounded sample sessions. Opening a sample selects it in the
+standard Sessions collection and detail layout. Returning to Burn checks preserves the check and
+sample disclosure state. `Fix` opens a small modal that shows the effect, scope, and one
+current-to-new value. The modal traps focus, focuses Cancel first, and closes from Cancel, Escape,
+or the backdrop. At narrow widths, summaries, details, and actions stack without horizontal
+scrolling. The cold loading state uses one busy region, one screen-reader status, an uncontained summary,
+a group label, and three shaped row skeletons. An expanded check uses the same one-region,
+one-status rule with a compact body, action, and sample skeleton. It must not announce each skeleton. The quiet
+`Your savings` disclosure appears only when at least one supported estimate exists. Place it below
+the report summary and before failed checks. Its neutral vertical list supports any number of
+contributing checks and collapses into the total. Show token and dollar savings together only when
+they cover the same scope and period.
+Clipboard success replaces `Copy fix prompt` with a disabled `Copied` button for three seconds.
+Applied fixes replace `Fix` with a disabled `Change applied` button for three seconds. A current
+finding then restores the enabled action. Do not add separate success text below the actions.
 
 The unselected Sessions detail uses a centered, quiet empty state: a decorative 24px
 `MessagesSquare` icon on a soft circular surface, a `type-title-2` heading, and a short
@@ -552,12 +753,12 @@ The main-window collection slot owns this presentation; menu-bar empty states re
 
 #### Session card state treatment
 
-| State                 | Fill                             | Behavior                                                        |
-| --------------------- | -------------------------------- | --------------------------------------------------------------- |
-| Rest                  | `surface-card/50`                | Quiet background; text and badges retain their normal contrast. |
-| Hover or open tooltip | `surface-secondary/50`           | Applies only to an unselected card.                             |
-| Selected              | `surface-selected/60`            | Persists through hover and open tooltips.                       |
-| Keyboard focus        | Existing focus-visible treatment | Remains independent of the selected fill.                       |
+| State                 | Fill                             | Behavior                                                    |
+| --------------------- | -------------------------------- | ----------------------------------------------------------- |
+| Rest                  | `session-card`                   | Dark mode is quieter; light mode retains the existing fill. |
+| Hover or open tooltip | `surface-secondary/50`           | Applies only to an unselected card.                         |
+| Selected              | `surface-selected/60`            | Persists through hover and open tooltips.                   |
+| Keyboard focus        | Existing focus-visible treatment | Remains independent of the selected fill.                   |
 
 Apply this treatment to main-window session selection. Do not change the shared color
 tokens or the menu-bar list's default appearance to achieve it.
@@ -568,8 +769,8 @@ tokens or the menu-bar list's default appearance to achieve it.
   solid surface-window with no blur. Rounded controls have no outline; the active
   tab uses surface and the raised shadow. Tab labels use regular weight.
   The section picker and action group are both 32px tall, with 24px inner controls.
-  Typography matches the session list: row names use body-large (13.5px), figures and
-  table rows use body (13px), and descriptions use callout (12px). Section headings
+  Within the detail, check row names use body-large (13.5px), figures and table rows use
+  body (13px), and descriptions use callout (12px). Section headings
   are screen-reader-only; caption is reserved for compact toolbar metadata.
   There are no inherited size overrides. Content has 40px side padding.
   Cost composition closes the Context tab, below the plot and its key.
@@ -600,3 +801,107 @@ tokens or the menu-bar list's default appearance to achieve it.
   Efficiency sits at the bottom of the Cost pane when content fits, and follows the
   checks in normal scroll order otherwise. The total appears once in the top cost
   block.
+
+### Main Burn Checks cosmetic polish
+
+The main report keeps Zack’s failed/passed grouping, ordering, disclosure states,
+target loading, sample navigation, and actions. The summary has no card. Use
+Marty’s `SegmentedRadialDial` at 88px diameter with an 8px stroke and 100% opacity. Use an
+explicit 88px grid column, a flexible text column, and a 24px gap. The ring
+has no center icon. Put a grey 12px `Flame` before the `type-callout`
+“Estimated burn” label, matching its height. The dial uses `brand-tint` for
+avoidable usage and `measure` darker cyan for the remainder. Positive burn has a
+4px minimum arc length at the stroke centerline, about 1.59% of this ring,
+so tiny issues remain visible. Larger values retain their actual proportions.
+The remainder uses the display share so the ring totals 100%. Zero burn has no
+orange arc, and unknown estimates show a neutral ring. Keep zero gaps and flat
+endpoints. The visible text and accessible name retain the exact supplied value
+or its existing display formatting; the arc can overstate values below the floor.
+This display floor belongs only to the hero call site. Other uses retain the
+shared component’s existing proportions and rounded endpoints.
+
+Use neutral `type-large-title` with `font-semibold!` for the complete percentage. Write “Less than 1%”
+for a positive estimate below 1%; do not add decorative decimals. Use `type-body`
+for “Of assessed usage could be avoided.” and `type-callout` for the check count,
+with no extra paragraph margins. The text column has an 88px minimum height and
+distributes its lines to align with the circle. It can grow for wrapped text or
+processing status. The failed count has a small `share-waste-text` dot; its words
+stay neutral. Use the documented line heights and 32px vertical hero padding.
+Use explicit 88px wrapper geometry to match the SVG; rem-based spacing utilities
+do not match it with the app’s 13px root font.
+The page fills the workspace with 32px horizontal padding and no centered
+maximum-width column. The cold skeleton follows this hierarchy.
+
+Use `type-title-2` group headings with 32px space above and 12px below. Check
+rows use 16px horizontal and 12px vertical padding, `type-title-3` titles,
+`type-body` summaries, and `font-mono` percentage figures. Metric qualifiers and
+“burn” labels use neutral sans-serif text, with 6px gaps between the pieces. Omit “token” from the main
+view’s displayed metrics; shared percentage calculation and popover copy stay
+unchanged. Check category icons are bare 15px glyphs, with no tinted container. Use
+`label-secondary` for all category icons, including passed checks. Keep their
+existing grid alignment. Failed-session counts use `share-waste-text`; other
+values, savings, and status text below the hero use neutral label colours. Provider logos retain their
+brand colours. Action-success glyphs use `token-in` cyan.
+
+Parent check groups use `surface-card/50` with a subtle `border-separator/40`
+outline. Expanded problems and named targets use borderless `surface-card/75`
+for slightly stronger grouping. Savings retains borderless `surface-card/50`.
+Expanded problems use
+`rounded-control` and 16px padding. Keep internal row dividers. Named MCP and skill targets form a responsive grid with a local
+18rem minimum card width, 12px gaps, and 16px outer padding. Cards stack when
+space is narrow. Long resource names wrap. Regular check details keep one card.
+Every action and sample disclosure stays inside its original problem. The hero
+follows Keith’s sketch, using the dial from Marty’s `feat/desktop-pr4-burn-check-design`
+branch at `9cb51e4f`. The approved 02D refinement moves the grey flame beside the label.
+
+### Burn Checks action buttons
+
+The opt-in `burn-check-action` variant in `main-window.css` styles the existing
+copy, fix, and change-selection buttons. Keep `ui-push-button` and its standard
+22px control height, 10px horizontal padding, and `rounded-control`. Use regular
+`type-callout` labels, 12px icons, and a 4px gap, matching `PushButton`. The resting surface uses `surface-window`, `separator`,
+and `label`. Enabled hover uses solid `brand` fill and border with
+`selected-ink` text and `shadow-raised`. Press mixes 10% `label` into the
+brand fill and removes the shadow. Transitions use `duration-fast`, with `duration-quick`
+for press movement. The shared keyboard focus ring stays visible. Disabled and
+completed states keep the neutral surface and do not lift or change on hover.
+Success icons use `token-in` cyan. No other buttons use this variant.
+In named target cards, Copy fix prompt fills the available width up to 24rem
+and is horizontally centred. In wide check-level detail panels, actions use
+their natural width and align left beneath the description. Keep the copied
+state in the same slot. Sample-session disclosure labels use semibold callout
+text and the count first, such as “3 Sample sessions”, with no chevron. Hover
+uses `surface-secondary/50` and `label` text with the standard fast transition. Preserve their
+expanded state, keyboard interaction, and accessible disclosure attributes.
+
+The menu-bar Burn Checks summary uses `surface-card/50` at rest and
+`surface-secondary/70` on hover or focus within, with a `duration-fast` colour
+transition. Its summary button uses a pointer cursor. Hover does not open the
+checks companion; clicking opens Burn Checks in the main window.
+
+On macOS, Burn Checks reserves a fixed 40px drag strip above its scroll area,
+using `--main-window-titlebar-height` and `data-tauri-drag-region`. The strip
+remains available in loading and error states. Sidebar dragging remains
+available; report controls scroll below the strip and stay interactive.
+Windows and Linux use their native title bars without this added strip.
+
+### Floating HUD LED rings
+
+The HUD window paints no surface at rest, so its LEDs sit directly on the
+desktop. The desktop can be any colour, and it can match a lit segment and hide
+it. Each lit segment therefore takes a 1px ring at 75% alpha. A ring holds a 6px
+dot better than a blurred shadow, which only softens the edge at that size.
+Unlit segments take no ring, so they stay quiet.
+
+A coloured LED rings in its own colour, darkened to 70% in oklab, so the ring
+reads as the edge of the LED rather than as a second mark. An LED that takes
+`label` has no colour of its own: it is near-black in the light theme and
+near-white in the dark theme, so it rings in the opposite tone, white on light
+and black on dark. `OverlayWindow` chooses between the two with the
+`hud-leds-color` and `hud-leds-label` classes and passes the row's colour in
+`--hud-led-color`.
+
+Inside the HUD, unlit segments raise `led-off` to full opacity. The token keeps
+its 45% alpha everywhere else, because the popover and the detail card paint
+their own surfaces to hold it. The HUD has none. These ring and opacity values
+are local to `src/styles/hud.css` and are not palette or shadow tokens.

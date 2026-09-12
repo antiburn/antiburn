@@ -226,7 +226,7 @@ describe("SessionDetailPresentation — chrome", () => {
 
     // The status bar carries the evidence state, so the tab does not repeat it.
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
-    expect(screen.queryByText("Burn Checks")).toBeNull()
+    expect(screen.queryByText("Burn checks")).toBeNull()
     expect(screen.queryByText("Refreshing")).toBeNull()
     expect(screen.queryByText("0/0")).toBeNull()
   })

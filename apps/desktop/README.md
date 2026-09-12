@@ -30,6 +30,8 @@ src/            React 19 + TypeScript frontend (Vite, Tailwind v4)
 tests/          Checks that must not live inside the tree they check
 scripts/        Icon generator (see src-tauri/icons/README.md)
 src-tauri/      The Tauri 2 shell: windows, tray, store, scan, commands
+  src/agent_config/ Safe agent config resolution and exact file edits
+  src/remediation/ Burn Check targets, watches, recovery, and vendor policy
   capabilities/ Webview permission grants
   icons/        Generated app and tray artwork
 ```
@@ -102,6 +104,10 @@ native lifecycle checks, opening latency, and hidden-window resource use. Run
 Rust formatting, Clippy, and tests from `src-tauri/crates/main-window` as well
 as the shell when changing the main-window mechanism.
 
+For companion-window changes, run the same Rust checks from
+`src-tauri/crates/anchored-window`. CI runs its Clippy checks and tests on macOS,
+Windows, and Linux.
+
 `rusqlite` is compiled from bundled sources, so neither CI nor a checkout needs
 a system SQLite.
 
@@ -117,6 +123,11 @@ The Tauri content security policy limits renderer connections to the local app
 and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
+
+Burn Check remediation stays local. It can change one reviewed existing agent
+setting only after a separate review and confirmation. See the
+[remediation guide](../../docs/remediation.md) for supported agents, safety
+checks, recovery, bounds, and privacy.
 
 ## Shell behavior
 
@@ -134,7 +145,8 @@ Settings teardown, and the memory rules behind those policies.
   1100×600 logical pixels with a normal minimum of 1000×560. The initial outer
   frame is capped at 85% of each usable display dimension. Saved user sizes
   retain their dimensions within the available work area. The navigation shell
-  uses a persistent 220px sidebar with dense desktop rows. Sessions shows the session list and selected detail. The sidebar Settings action and
+  uses a persistent 220px sidebar with dense desktop rows. Burn checks is the
+  default section. Sessions shows the session list and selected detail. The sidebar Settings action and
   Command+, (Control+, on Windows and Linux) open the existing Settings window; see the
   [main-window validation runbook](../../docs/runbooks/main-window.md).
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
@@ -151,10 +163,15 @@ Settings teardown, and the memory rules behind those policies.
 - **Popover.** 380pt wide, frameless, always on top, hidden from the taskbar.
   It is created on demand and anchored under its menu-bar item on each
   open, flipping above the item and clamping to the display when there is no
-  room below. It hides when it loses focus, when Escape is pressed, on a
-  second click of the menu-bar item, and — on macOS — on a click anywhere
-  outside the app, which catches the Finder desktop: clicking it makes no
-  window key, so no focus change is reported at all.
+  room below. On macOS it follows the reader to every Space, including a
+  full-screen Space. Hover previews use a passive companion panel with the same
+  Space behavior. Their native `NSPanel` and `WKWebView` are created directly,
+  without Wry or window-class conversion. Preview creation and presentation
+  preserve the active application and keyboard recipient. The popover hides
+  when it loses focus, when Escape is pressed, on a second click of the menu-bar
+  item, and — on macOS —
+  on a click anywhere outside the app, which catches the Finder desktop:
+  clicking it makes no window key, so no focus change is reported at all.
 - **Pin.** The tray menu's first item suspends all four of those dismissals,
   and reads Unpin Window while it does. The state is in memory only: a pin
   means "keep this on screen while I work", and a relaunch ends that work.
@@ -218,14 +235,19 @@ Settings teardown, and the memory rules behind those policies.
   makes the bundled app an agent; the shell applies the equivalent accessory
   activation policy at runtime so unbundled development runs match.
 
-Settings and onboarding have dedicated HTML and TypeScript entries. The
-resident shell uses URL fragments for the nudge and overlay, with the popover
+Settings, onboarding, and native macOS hover previews have dedicated HTML and
+TypeScript entries. The resident shell uses URL fragments for the nudge and overlay, with the popover
 as its default. Each window owns one surface until the shell releases it.
 
 ## Known gaps
 
 These build-level limits affect desktop development:
 
+- On macOS, Wry 0.55.1 activates the application during webview creation even
+  when the window requests `focused(false)`. Other Tauri-created surfaces,
+  including a cold popover, retain this upstream limitation. macOS hover
+  previews bypass Wry and create their nonactivating panel and WebKit view
+  directly. Wry remains an official crates.io transitive dependency.
 - The popover is opaque and square-cornered. Rounded, translucent chrome needs
   `macOSPrivateApi` plus transparent-window support, and arrives with the
   design system.
@@ -273,3 +295,10 @@ cached usage, and selected analysis. This adds no scanner or provider polling.
 Shared subject identity and analysis loading live in `lib/sessionSubject.ts`. Existing
 menu-bar callers retain their defaults. Session removal broadcasts the existing invalidation
 event so both windows refresh their local views.
+
+Burn checks uses `BurnChecksSession`, a second independent external store. It owns a distinct
+Checks report consumer, combines section activity with main-window visibility, and loads target
+details only for opened checks. It coalesces refreshes, rejects stale results, and keeps prior data
+after a refresh error. Its snapshot subscription reports bounded visible-state and outcome
+analytics. Actions report only reviewed closed outcomes. They never report work data, target values,
+paths, identifiers, exact tokens, or exact costs.

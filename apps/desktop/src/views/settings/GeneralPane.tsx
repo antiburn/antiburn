@@ -63,10 +63,7 @@ export interface GeneralPaneProps extends AppSettingsController {
  * General preferences: how much history the popover shows, whether antiburn
  * keeps looking on its own, and how much it has accumulated.
  *
- * The monitoring toggle here and the pause control in the popover footer are
- * the same preference. That is deliberate: the footer is where a reader notices
- * background work happening, and Settings is where they go looking for the
- * switch that stops it.
+ * The monitoring toggle controls whether antiburn continues to scan in the background.
  */
 export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
   const [restartingSetup, setRestartingSetup] = useState(false)

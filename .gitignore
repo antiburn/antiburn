@@ -13,6 +13,7 @@ node_modules/
 !/.claude/settings.json
 /.codex/*
 !/.codex/hooks.json
+/.playwright-cli/
 
 # Signing material must never enter the tree. The updater keypair is minted
 # with an absolute path outside the repository (see

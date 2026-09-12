@@ -14,7 +14,8 @@ const mocks = vi.hoisted(() => ({
   setSettings: vi.fn(),
   listRecentSessions: vi.fn(),
   getMainWindowVisible: vi.fn(),
-  takeMainWindowSessionTarget: vi.fn(),
+  peekMainWindowSessionTarget: vi.fn(),
+  acknowledgeMainWindowSessionTarget: vi.fn(),
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
   loadSessionAnalysis: vi.fn(),
@@ -89,7 +90,12 @@ beforeEach(() => {
   mocks.getSettings.mockResolvedValue(DEFAULT_SETTINGS)
   mocks.setSettings.mockImplementation(async (settings) => settings)
   mocks.getMainWindowVisible.mockResolvedValue(true)
-  mocks.takeMainWindowSessionTarget.mockResolvedValue(null)
+  mocks.peekMainWindowSessionTarget.mockResolvedValue(null)
+  mocks.acknowledgeMainWindowSessionTarget.mockResolvedValue(undefined)
+  Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+    value: 7,
+    configurable: true,
+  })
   mocks.listRecentSessions.mockResolvedValue([entry("one"), entry("two")])
   mocks.loadSessionAnalysis.mockResolvedValue(payload("Loaded"))
   mocks.getLiveUsage.mockResolvedValue(null)
@@ -200,8 +206,8 @@ describe("MainActivitySession", () => {
     })
   })
 
-  it("takes a cold-start session target after installing its listener", async () => {
-    mocks.takeMainWindowSessionTarget.mockResolvedValue({
+  it("peeks and acknowledges a cold-start target after installing its listener", async () => {
+    mocks.peekMainWindowSessionTarget.mockResolvedValue({
       revision: 1,
       target: { agent: "codex", sessionId: "cold", wslDistro: "Ubuntu" },
     })
@@ -214,6 +220,8 @@ describe("MainActivitySession", () => {
       wslDistro: "Ubuntu",
     })
     expect(mocks.events.has("session-target")).toBe(true)
+    expect(mocks.peekMainWindowSessionTarget).toHaveBeenCalledWith(7)
+    expect(mocks.acknowledgeMainWindowSessionTarget).toHaveBeenCalledWith(7, 1)
     await vi.waitFor(() =>
       expect(mocks.loadSessionAnalysis).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: "cold", wslDistro: "Ubuntu" }),
@@ -221,12 +229,32 @@ describe("MainActivitySession", () => {
     )
   })
 
+  it("keeps an applied event target when its acknowledgement fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    mocks.acknowledgeMainWindowSessionTarget.mockRejectedValue(new Error("unavailable"))
+    const { session } = start(false)
+    await vi.waitFor(() => expect(mocks.events.has("session-target")).toBe(true))
+    mocks.events.get("session-target")!({
+      revision: 3,
+      target: { agent: "codex", sessionId: "kept", wslDistro: null },
+    })
+    await vi.waitFor(() => expect(session.getSnapshot().subject?.sessionId).toBe("kept"))
+    expect(mocks.acknowledgeMainWindowSessionTarget).toHaveBeenCalledWith(7, 3)
+    mocks.events.get("session-target")!({
+      revision: 3,
+      target: { agent: "codex", sessionId: "kept", wslDistro: null },
+    })
+    expect(mocks.acknowledgeMainWindowSessionTarget).toHaveBeenCalledTimes(2)
+    await Promise.resolve()
+    consoleError.mockRestore()
+  })
+
   it("keeps only the latest target across the listener and pending-target race", async () => {
     const pending = deferred<{
       revision: number
       target: { agent: string; sessionId: string; wslDistro: string | null }
     } | null>()
-    mocks.takeMainWindowSessionTarget.mockReturnValue(pending.promise)
+    mocks.peekMainWindowSessionTarget.mockReturnValue(pending.promise)
     const { session } = start(false)
     await vi.waitFor(() => expect(mocks.events.has("session-target")).toBe(true))
 
@@ -439,6 +467,71 @@ describe("MainActivitySession", () => {
     expect(mocks.setSettings).toHaveBeenCalledWith(
       expect.objectContaining({ activityWindowDays: 2, sessionBadgeMetric: "weeklyPercent" }),
     )
+  })
+
+  it("selects a filter optimistically, persists it, and reports the change", async () => {
+    const { session } = start()
+    await ready(session)
+
+    session.setFilter({ kind: "notable" })
+
+    expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
+    expect(session.getSnapshot().settings.sessionFilter).toBe("notable")
+    expect(mocks.setSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionFilter: "notable" }),
+    )
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "sessionFilterSelected",
+      filter: "notable",
+    })
+  })
+
+  it("does nothing when the requested filter already matches", async () => {
+    const { session } = start()
+    await ready(session)
+    mocks.noteInteraction.mockClear()
+
+    session.setFilter({ kind: "all" })
+
+    expect(mocks.setSettings).not.toHaveBeenCalled()
+    expect(mocks.noteInteraction).not.toHaveBeenCalled()
+  })
+
+  it("never reports a selection while restoring the persisted filter on load", async () => {
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "failing" })
+    const { session } = start()
+    await ready(session)
+
+    expect(session.getSnapshot().filter).toEqual({ kind: "failing" })
+    expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "sessionFilterSelected" }),
+    )
+  })
+
+  it("reports an agent filter's slug only when the harness is recognized", async () => {
+    const { session } = start()
+    await ready(session)
+
+    session.setFilter({ kind: "agent", agent: "codex" })
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "sessionFilterSelected",
+      filter: "agent",
+      agent: "codex",
+    })
+
+    mocks.noteInteraction.mockClear()
+    session.setFilter({ kind: "agent", agent: "some-future-harness" })
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "sessionFilterSelected",
+      filter: "agent",
+    })
+  })
+
+  it("falls back to all when persisted settings carry an unrecognized filter id", async () => {
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "bogus" })
+    const { session } = start()
+    await ready(session)
+    expect(session.getSnapshot().filter).toEqual({ kind: "all" })
   })
 
   it("orders navigation like the list and excludes non-opening rows", async () => {

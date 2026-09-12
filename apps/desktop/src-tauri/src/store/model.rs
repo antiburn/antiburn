@@ -110,6 +110,7 @@ pub struct RemediationRecord {
     pub effective_boundary_ms: Option<i64>,
     pub verified_at_epoch: Option<i64>,
     pub recurred_at_epoch: Option<i64>,
+    pub action_joined_at_ms: Option<i64>,
 }
 
 /// A remediation verification result ready for guarded persistence.
@@ -118,7 +119,7 @@ pub struct RemediationResult {
     pub state: RemediationState,
     pub result_json: String,
     pub evaluated_at_epoch: i64,
-    pub transition_at_epoch: Option<i64>,
+    pub transition_at_ms: Option<i64>,
 }
 
 impl SessionKey {
@@ -898,6 +899,18 @@ pub struct AppSettings {
     pub skills_mcp_expanded: bool,
     /// The metric shown in each activity-session badge.
     pub session_badge_metric: SessionBadgeMetric,
+    /// The selected Sessions sidebar filter, as its persisted id.
+    ///
+    /// The renderer owns the vocabulary (`lib/sessionFilters.ts`): this side
+    /// stores and returns the id verbatim, and does not validate it. An id
+    /// this release does not recognize is the renderer's to fall back on.
+    #[serde(default = "default_session_filter")]
+    pub session_filter: String,
+}
+
+/// The persisted id for the unfiltered "All Sessions" view.
+fn default_session_filter() -> String {
+    "all".to_string()
 }
 
 impl Default for AppSettings {
@@ -952,6 +965,7 @@ impl Default for AppSettings {
             // pushes the rest of the analysis off the screen.
             skills_mcp_expanded: false,
             session_badge_metric: SessionBadgeMetric::default(),
+            session_filter: default_session_filter(),
         }
     }
 }

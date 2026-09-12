@@ -39,6 +39,7 @@ mod tests;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 
@@ -66,6 +67,9 @@ pub use model::{
     RemediationResult, RemediationState, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
     SessionKey, SessionRecord, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
     ThemePreference, UsageEvidenceRecord,
+};
+pub(crate) use remediation::{
+    PassiveRemediation, RemediationContribution, RemediationDisplaySnapshot,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -186,6 +190,7 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
     limit_factor_learn: Arc<Mutex<()>>,
+    remediation_turn: Arc<AtomicBool>,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
@@ -314,6 +319,7 @@ impl Store {
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
             limit_factor_learn: Arc::new(Mutex::new(())),
+            remediation_turn: Arc::new(AtomicBool::new(true)),
             state_dir,
         };
         store.migrate()?;
@@ -323,6 +329,10 @@ impl Store {
     /// The directory the engine's state files live in.
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    pub(crate) fn take_remediation_work_turn(&self) -> bool {
+        self.remediation_turn.fetch_xor(true, Ordering::Relaxed)
     }
 
     /// Apply every migration the database has not seen yet.
@@ -484,12 +494,21 @@ impl Store {
         settings: &AppSettings,
         apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings) -> Result<T>,
     ) -> Result<(AppSettings, AppSettings, T)> {
+        self.replace_settings_with_transition(settings, |tx, _previous, saved| apply(tx, saved))
+    }
+
+    /// Replace preferences and expose both sides of the transition in one transaction.
+    pub fn replace_settings_with_transition<T>(
+        &self,
+        settings: &AppSettings,
+        apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings, &AppSettings) -> Result<T>,
+    ) -> Result<(AppSettings, AppSettings, T)> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         let previous = read_settings(&tx)?;
         let saved = settings.clone().normalized();
         write_settings(&tx, &saved)?;
-        let result = apply(&tx, &saved)?;
+        let result = apply(&tx, &previous, &saved)?;
         tx.commit()?;
         Ok((previous, saved, result))
     }
@@ -648,6 +667,47 @@ impl Store {
         Ok(())
     }
 
+    /// Queue an analytics event in a transaction that also changes settings.
+    #[cfg(feature = "analytics")]
+    pub(crate) fn queue_analytics_event_in(
+        transaction: &rusqlite::Transaction<'_>,
+        name: &str,
+        payload: &str,
+    ) -> Result<()> {
+        transaction.execute(
+            "INSERT INTO analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
+            params![name, payload, now_rfc3339()],
+        )?;
+        transaction.execute(
+            "DELETE FROM analytics_event WHERE id NOT IN
+                 (SELECT id FROM analytics_event ORDER BY id DESC LIMIT ?1)",
+            params![ANALYTICS_QUEUE_LIMIT],
+        )?;
+        Ok(())
+    }
+
+    /// Read the current analytics identity inside a settings transaction.
+    #[cfg(feature = "analytics")]
+    pub(crate) fn analytics_identity_in(
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> Result<Option<(String, String)>> {
+        let mut statement = transaction
+            .prepare("SELECT install_id, minted_at FROM analytics_identity WHERE id = 1")?;
+        let mut rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Whether a durable opt-out event still waits for its final flush.
+    pub fn analytics_opt_out_pending(&self) -> Result<bool> {
+        Ok(self.lock().query_row(
+            "SELECT EXISTS(SELECT 1 FROM analytics_event WHERE name = 'antiburn.analytics_opted_out')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
+
     /// Return the current delivery backlog depth.
     pub fn analytics_event_count(&self) -> Result<u32> {
         Ok(self
@@ -660,8 +720,11 @@ impl Store {
     /// The next batch to attempt, oldest first, as `(id, payload)`.
     pub fn pending_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
         let connection = self.lock();
-        let mut statement =
-            connection.prepare("SELECT id, payload FROM analytics_event ORDER BY id LIMIT ?1")?;
+        let mut statement = connection.prepare(
+            "SELECT id, payload FROM analytics_event
+                 ORDER BY CASE WHEN name = 'antiburn.analytics_opted_out' THEN 0 ELSE 1 END, id
+                 LIMIT ?1",
+        )?;
         let rows = statement.query_map(params![limit], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -1610,6 +1673,7 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
+        tx.execute("DELETE FROM remediation_contribution", [])?;
         tx.execute("DELETE FROM remediation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
@@ -1673,12 +1737,15 @@ impl Store {
         relations: &[RelationRecord],
         sources: &[SourcePublishOutcome],
     ) -> Result<bool> {
-        let model_attribution = crate::remediation::publication_model_attribution(
+        let config_attribution = crate::remediation::publication_config_attribution(
             self,
             &record.key,
             completion.status,
             &completion.evidence_json,
         )?;
+        let remediation_secret = (completion.status == PublishedEvidence::Ready)
+            .then(|| self.provider_account_secret())
+            .transpose()?;
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         // The fence every source's rows will share once this pass
@@ -1688,6 +1755,17 @@ impl Store {
         // never published. Read before the claim-race UPDATE below so this
         // still names the *pre*-publish value.
         let existing_published_fence = read_published_fence(&transaction, &record.key)?;
+        let correction_replay = existing_published_fence.is_some()
+            && transaction.query_row(
+                "SELECT analyzed_generation FROM session_evidence
+                      WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id
+                ],
+                |row| row.get::<_, Option<i64>>(0),
+            )? == Some(record.analyzed_generation);
         let target_fence = existing_published_fence.unwrap_or(completion.claim_fence);
         transaction.execute(
             "INSERT INTO session_analysis (
@@ -1751,7 +1829,9 @@ impl Store {
                     claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
                      next_attempt_at_epoch = NULL, published_fence = ?12,
                      effective_model_target_hash = ?14,
-                     effective_model_scope = ?15, effective_model = ?16
+                     effective_model_scope = ?15, effective_model = ?16,
+                     effective_reasoning_target_hash = ?17,
+                     effective_reasoning_scope = ?18, effective_reasoning = ?19
               WHERE evidence.environment_key = ?1
                 AND evidence.agent = ?2 AND evidence.session_id = ?3
                 AND evidence.status = 'processing' AND evidence.claim_fence = ?13
@@ -1776,9 +1856,30 @@ impl Store {
                 time::OffsetDateTime::now_utc().unix_timestamp(),
                 target_fence,
                 completion.claim_fence,
-                model_attribution.as_ref().map(|value| value.0.as_str()),
-                model_attribution.as_ref().map(|value| value.1.as_str()),
-                model_attribution.as_ref().map(|value| value.2.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.0.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.1.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.2.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.0.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.1.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.2.as_str()),
             ],
         )?;
         if updated == 0 {
@@ -1938,11 +2039,30 @@ impl Store {
         delete_turn_rows_except_fence(&transaction, &key, target_fence)?;
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
         if completion.status == PublishedEvidence::Ready {
+            let publication_epoch = time::OffsetDateTime::now_utc();
             remediation::mark_remediations_dirty_in(
                 &transaction,
                 &record.key.environment_key,
                 &record.key.agent,
-                time::OffsetDateTime::now_utc().unix_timestamp(),
+                publication_epoch.unix_timestamp(),
+                correction_replay,
+            )?;
+            let findings =
+                crate::insights_report::publication_findings_in(&transaction, &record.key)?;
+            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
+            let candidates = crate::remediation::passive_remediations(
+                &transaction,
+                remediation_secret
+                    .as_ref()
+                    .expect("ready publication has a remediation secret"),
+                findings,
+                boundary_ms,
+            )?;
+            remediation::enroll_passive_remediations_in(
+                &transaction,
+                &candidates,
+                publication_epoch.unix_timestamp(),
             )?;
         }
         transaction.commit()?;
@@ -2859,6 +2979,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("sessionBadgeMetric")
             .and_then(|value| SessionBadgeMetric::parse(value))
             .unwrap_or(defaults.session_badge_metric),
+        session_filter: stored
+            .get("sessionFilter")
+            .cloned()
+            .unwrap_or_else(|| defaults.session_filter.clone()),
     }
     .normalized())
 }
@@ -2961,6 +3085,7 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         "sessionBadgeMetric",
         settings.session_badge_metric.as_str()
     ])?;
+    put.execute(params!["sessionFilter", settings.session_filter.as_str()])?;
     Ok(())
 }
 

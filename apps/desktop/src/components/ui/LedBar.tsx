@@ -24,6 +24,7 @@ export function LedBar({
   split,
   segments = 40,
   className = "",
+  style,
   live = false,
   row = 0,
   expectedFraction = null,
@@ -31,6 +32,7 @@ export function LedBar({
   split: Array<{ fraction: number; color: string }>
   segments?: number
   className?: string
+  style?: CSSProperties | undefined
   /** Run the sweep across the bar, for a live session. */
   live?: boolean
   /** The bar's row within its provider, for the sweep stagger. */
@@ -50,14 +52,14 @@ export function LedBar({
   )
   // A full bar has no next segment; the still mark then stays on the last one.
   const nextIndex = live ? Math.min(segments - 1, litCount) : -1
-  const sweep = live
-    ? ({ "--led-segments": segments, "--led-row": row } as CSSProperties)
-    : undefined
+  const barStyle: CSSProperties | undefined = live
+    ? ({ ...style, "--led-segments": segments, "--led-row": row } as CSSProperties)
+    : style
 
   return (
     <div
       className={`relative flex w-full items-center justify-between ${className}`.trimEnd()}
-      style={sweep}
+      style={barStyle}
       aria-hidden="true"
     >
       {Array.from({ length: segments }, (_, index) => {
@@ -77,7 +79,7 @@ export function LedBar({
             key={index}
             data-led-lit={live && hit != null ? true : undefined}
             data-led-next={index === nextIndex || undefined}
-            className={`relative h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${sweeping ? "led-sweep-dot" : ""}`.trimEnd()}
+            className={`relative h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "led-lit" : "led-off bg-led-off"} ${sweeping ? "led-sweep-dot" : ""}`.trimEnd()}
             style={hit || sweeping ? style : undefined}
           />
         )

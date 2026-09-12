@@ -132,12 +132,20 @@ dependencies = [
 name = "antiburn-anchored-window"
 version = "0.1.0"
 dependencies = [
+ "block2",
+ "dispatch2",
  "gtk",
+ "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-quartz-core",
+ "objc2-web-kit",
  "serde",
+ "serde_json",
  "tauri",
  "tokio",
  "tracing",
+ "url",
  "windows 0.62.2",
 ]
 
@@ -145,10 +153,10 @@ dependencies = [
 name = "antiburn-hud"
 version = "0.1.0"
 dependencies = [
- "objc2-app-kit",
  "serde",
  "serde_json",
  "tauri",
+ "tauri-nspanel",
  "tokio",
  "tracing",
 ]
@@ -5955,7 +5963,6 @@ dependencies = [
 [[package]]
 name = "tray-icon"
 version = "0.24.1"
-source = "git+https://github.com/tauri-apps/tray-icon.git?rev=0ada43072646fe4454b1f969f4f446dc401fa1aa#0ada43072646fe4454b1f969f4f446dc401fa1aa"
 dependencies = [
  "crossbeam-channel",
  "dirs",

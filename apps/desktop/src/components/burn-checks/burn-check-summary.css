@@ -1,0 +1,43 @@
+.burn-check-summary-surface {
+  --burn-check-summary-edge-width: 1px;
+  --burn-check-summary-tone: var(--color-burn-check-neutral-val);
+
+  position: relative;
+}
+
+.burn-check-summary-surface[data-tone="failure"] {
+  --burn-check-summary-tone: var(--color-burn-check-failure-fill-val);
+}
+
+.burn-check-summary-surface[data-tone="pass"] {
+  --burn-check-summary-tone: var(--color-burn-check-pass-fill-val);
+}
+
+.burn-check-summary-surface::before {
+  position: absolute;
+  inset: var(--burn-check-summary-edge-width);
+  padding: var(--burn-check-summary-edge-width);
+  border-radius: calc(var(--radius-control) - var(--burn-check-summary-edge-width));
+  background: linear-gradient(
+    105deg,
+    color-mix(in srgb, var(--burn-check-summary-tone) 40%, transparent),
+    color-mix(in srgb, var(--burn-check-summary-tone) 10%, transparent) 45%,
+    color-mix(in srgb, var(--color-border) 35%, transparent) 85%
+  );
+  content: "";
+  pointer-events: none;
+  mask:
+    linear-gradient(white 0 0) content-box,
+    linear-gradient(white 0 0);
+  mask-composite: exclude;
+}
+
+:where(html[data-keyboard]) [data-burn-check-summary-trigger]:focus-visible {
+  border-radius: var(--radius-control);
+}
+
+@media (prefers-contrast: more) {
+  .burn-check-summary-surface::before {
+    background: var(--burn-check-summary-tone);
+  }
+}

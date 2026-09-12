@@ -1,22 +1,12 @@
 /**
- * The typed edge of the shell's IPC surface.
- *
- * Every command the Rust side exposes has exactly one wrapper here, and the
- * views call nothing else. That keeps the command names in one file, gives the
- * payloads a declared shape, and means the whole surface can be mocked at one
- * module boundary in tests.
- *
- * The bundle also has to load in a plain browser (`pnpm dev:web`, unit tests)
- * where no shell is attached. Every wrapper therefore reports *absence* rather
- * than throwing, so views render a degraded state instead of crashing.
- *
- * None of these payloads comes from a service of ours. The local engine
- * produces them on this machine.
+ * Typed shell IPC edge, including re-exported feature edges.
+ * Wrappers tolerate a browser without the shell and expose one test boundary.
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
+import { nativePeekBridge } from "./nativePeekBridge"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -31,6 +21,7 @@ import type {
   SessionLimitAllocationSummaryPayload,
 } from "./providerUsageIpc"
 
+export * from "./mainWindowIpc"
 export * from "./providerUsageIpc"
 export type { SettingsPane } from "./settingsPanes"
 
@@ -153,6 +144,12 @@ export interface AppSettings {
   skillsMcpExpanded: boolean
   /** The metric shown in each activity-session badge. */
   sessionBadgeMetric: "cost" | "weeklyPercent" | "fiveHourPercent"
+  /**
+   * The selected Sessions sidebar filter, as its persisted id (see
+   * `sessionFilterId`/`parseSessionFilterId` in `lib/sessionFilters.ts`). An
+   * id this release does not recognize parses back to `all`.
+   */
+  sessionFilter: string
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -221,6 +218,14 @@ export interface SessionIdentityPayload {
 export interface MainWindowSessionRequest {
   revision: number
   target: SessionIdentityPayload
+}
+
+export type MainWindowSectionId = "activity" | "burnChecks"
+
+/** One revisioned request to select a retained main-window section. */
+export interface MainWindowSectionRequest {
+  revision: number
+  section: MainWindowSectionId
 }
 
 /** One end of a local fork relation. */
@@ -494,11 +499,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   overviewLimitsExpanded: true,
   skillsMcpExpanded: false,
   sessionBadgeMetric: "cost",
+  sessionFilter: "all",
 }
-
-/* -------------------------------------------------------------------------
- * Commands
- * ---------------------------------------------------------------------- */
 
 /** Tell the shell that React committed this renderer generation. */
 export async function windowReady(generation: number): Promise<void> {
@@ -524,6 +526,18 @@ export async function openMainWindowSession(target: SessionIdentityPayload): Pro
   await invoke("open_main_window_session", { target })
 }
 
+/** Open or focus the main window and select one top-level section. */
+export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_main_window_section", { section })
+}
+
+/** Take the latest section that arrived before the main renderer could listen. */
+export async function takeMainWindowSectionTarget(): Promise<MainWindowSectionRequest | null> {
+  if (!hasShell()) return null
+  return invoke<MainWindowSectionRequest | null>("take_main_window_section_target")
+}
+
 /** Take the latest target that arrived before the main renderer could listen. */
 export async function takeMainWindowSessionTarget(): Promise<MainWindowSessionRequest | null> {
   if (!hasShell()) return null
@@ -536,9 +550,7 @@ export async function popoverContentReady(generation: number): Promise<void> {
   await invoke("popover_content_ready", { generation })
 }
 
-/**
- * Version stamp of the active runtime pricing catalog.
- */
+/** Version stamp of the active runtime pricing catalog. */
 export async function engineCatalogVersion(): Promise<string | null> {
   if (!hasShell()) return null
   return invoke<string>("engine_catalog_version")
@@ -785,6 +797,27 @@ export type Interaction =
       state: LiveUsageState
       origin: SurfaceOrigin
     }
+  | { kind: "burnCheckAutoFixReviewed"; outcome: AutoFixReviewAnalyticsOutcome }
+  | { kind: "burnCheckAutoFixConfirmed" }
+  | { kind: "burnCheckAutoFixCompleted"; outcome: AutoFixAnalyticsOutcome }
+  | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
+  | { kind: "burnCheckPromptCopied" }
+  | {
+      kind: "burnCheckOutcomeObserved"
+      outcome: "verified" | "recurred"
+      origin: "passive" | "action"
+    }
+  | {
+      kind: "sessionFilterSelected"
+      filter: SessionFilterAnalyticsKind
+      /**
+       * Only when `filter` is `agent`, and only for a slug the shell's own
+       * closed agent enum recognizes. Deserializes into that enum, so an
+       * unrecognized slug is a rejected command rather than a new value
+       * appearing in the data — omit the field instead of sending one.
+       */
+      agent?: string
+    }
 
 export type Surface =
   | "activity"
@@ -794,6 +827,7 @@ export type Surface =
   | "hud"
   | "hud_detail"
   | "settings"
+  | "burn_checks"
 
 export type StateSurface = Surface | "insights"
 export type SurfaceOrigin = "user" | "automatic"
@@ -801,6 +835,35 @@ export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
 export type LiveUsageState =
   "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
+export type AutoFixReviewAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
+export type AutoFixAnalyticsOutcome =
+  | "applied_awaiting_verification"
+  | "recovery_needed"
+  | "stale"
+  | "expired"
+  | "conflict"
+  | "unavailable"
+  | "failed"
+export type PromptPreparationAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "unavailable" | "failed"
+/** The closed vocabulary `sessionFilterSelected` reports its filter as. */
+export type SessionFilterAnalyticsKind =
+  "notable" | "material" | "agent" | "failing" | "passing" | "all"
+
+function isNativePeekInteraction(interaction: Interaction): boolean {
+  switch (interaction.kind) {
+    case "surfaceViewed":
+    case "surfaceStateObserved":
+      return (
+        interaction.surface === "provider_preview" || interaction.surface === "checks_preview"
+      )
+    case "liveUsageStateObserved":
+      return true
+    default:
+      return false
+  }
+}
 
 /**
  * Report one interaction. Fire-and-forget, and silent on failure.
@@ -811,6 +874,14 @@ export type LiveUsageState =
  * one gate rather than two that can drift apart.
  */
 export function noteInteraction(interaction: Interaction): void {
+  const native = nativePeekBridge()
+  if (native) {
+    if (!isNativePeekInteraction(interaction)) return
+    void native.invoke("note_interaction", { interaction }).catch(() => {
+      // Analytics errors must not interrupt the preview.
+    })
+    return
+  }
   if (!hasShell()) return
   void invoke("note_interaction", { interaction }).catch(() => {
     // Analytics must never surface an error into something the reader asked
@@ -1298,10 +1369,6 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
   await invoke("nudge_set_hovered", { hovered })
 }
 
-/* -------------------------------------------------------------------------
- * Events
- * ---------------------------------------------------------------------- */
-
 const noShellUnlisten: UnlistenFn = () => undefined
 
 /** Event the shell emits when the main renderer can start or stop presenting work. */
@@ -1309,6 +1376,9 @@ export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 
 /** Event carrying a revisioned session target to an existing main renderer. */
 export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
+
+/** Event carrying a revisioned section target to an existing main renderer. */
+export const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
 
 /** Subscribe to main-window presentation visibility. */
 export async function onMainWindowVisibilityChanged(
@@ -1326,6 +1396,16 @@ export async function onMainWindowSessionTarget(
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<MainWindowSessionRequest>(MAIN_WINDOW_SESSION_TARGET_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/** Subscribe to section targets sent to the retained main renderer. */
+export async function onMainWindowSectionTarget(
+  handler: (request: MainWindowSectionRequest) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<MainWindowSectionRequest>(MAIN_WINDOW_SECTION_TARGET_EVENT, (event) =>
     handler(event.payload),
   )
 }

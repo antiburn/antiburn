@@ -19,7 +19,7 @@ use tauri::image::Image;
 use tauri::menu::CheckMenuItem;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, Wry};
+use tauri::{Emitter, Manager, Wry};
 
 #[cfg(debug_assertions)]
 use crate::commands;
@@ -72,7 +72,7 @@ struct UsageMeterState {
     columns: usize,
     generation: u64,
     #[cfg(debug_assertions)]
-    debug_columns: Option<usize>,
+    debug_used_percent: Option<f64>,
 }
 
 impl Default for UsageMeter {
@@ -82,7 +82,7 @@ impl Default for UsageMeter {
                 columns: COLUMN_COUNT,
                 generation: 0,
                 #[cfg(debug_assertions)]
-                debug_columns: None,
+                debug_used_percent: None,
             }),
         }
     }
@@ -97,6 +97,8 @@ const MENU_SETTINGS: &str = "settings";
 const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
 #[cfg(debug_assertions)]
 const MENU_RANDOM_USAGE: &str = "random-usage";
+#[cfg(debug_assertions)]
+const MENU_BURN_CHECKS: &str = "burn-checks";
 const MENU_QUIT: &str = "quit";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
@@ -110,6 +112,23 @@ const OPEN_POPOVER_LABEL: &str = "Open Usage Popover";
 const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 #[cfg(debug_assertions)]
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
+#[cfg(debug_assertions)]
+const BURN_CHECKS_LABEL: &str = "Simulate Burn Checks";
+
+/// Debug-only state that replaces a report with stable sample findings.
+#[cfg(debug_assertions)]
+pub struct DebugBurnChecks {
+    enabled: Mutex<bool>,
+}
+
+#[cfg(debug_assertions)]
+impl Default for DebugBurnChecks {
+    fn default() -> Self {
+        Self {
+            enabled: Mutex::new(false),
+        }
+    }
+}
 
 /// The tray menu items whose text follows app state.
 ///
@@ -122,6 +141,8 @@ pub struct TrayMenu {
     pin: MenuItem<Wry>,
     #[cfg(debug_assertions)]
     random_usage: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    burn_checks: CheckMenuItem<Wry>,
 }
 
 struct BuiltMenu {
@@ -129,6 +150,8 @@ struct BuiltMenu {
     pin: MenuItem<Wry>,
     #[cfg(debug_assertions)]
     random_usage: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    burn_checks: CheckMenuItem<Wry>,
 }
 
 /// The label the pin item carries for a given state — it names the action, not
@@ -144,9 +167,13 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         pin: menu.pin,
         #[cfg(debug_assertions)]
         random_usage: menu.random_usage,
+        #[cfg(debug_assertions)]
+        burn_checks: menu.burn_checks,
     });
+    #[cfg(debug_assertions)]
+    app.manage(DebugBurnChecks::default());
 
-    TrayIconBuilder::with_id(TRAY_ID)
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(TRAY_ICON)?)
         // macOS renders template images tinted for the current menu-bar
         // appearance, including the inverted pressed state.
@@ -159,7 +186,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         .show_menu_on_left_click(false)
         .on_tray_icon_event(on_tray_event)
         .on_menu_event(on_menu_event)
-        .build(app)
+        .build(app)?;
+
+    #[cfg(target_os = "macos")]
+    tray.with_inner_tray_icon(|inner| inner.set_highlight_override(Some(false)))?;
+
+    Ok(tray)
 }
 
 /// Register the tray meter after the initial full icon is visible.
@@ -178,12 +210,12 @@ pub fn sync_usage(
     launch: bool,
 ) {
     #[cfg(debug_assertions)]
-    if let Some(columns) = debug_columns(app) {
-        set_columns(app, columns, Some(UPDATE_TRANSITION));
+    if let Some(used) = debug_used_percent(app) {
+        set_usage(app, Some(used), true, Some(UPDATE_TRANSITION));
         return;
     }
-    let columns = active.then(|| usage_columns(summary)).flatten();
-    let transition = if columns.is_some() {
+    let used = active.then(|| usage_used_percent(summary)).flatten();
+    let transition = if used.is_some() {
         Some(if launch {
             LAUNCH_TRANSITION
         } else {
@@ -192,12 +224,12 @@ pub fn sync_usage(
     } else {
         None
     };
-    set_columns(app, columns.unwrap_or(COLUMN_COUNT), transition);
+    set_usage(app, used, false, transition);
 }
 
 /// Restore the neutral tray mark immediately when usage monitoring is inactive.
 pub fn clear_usage(app: &AppHandle) {
-    set_columns(app, COLUMN_COUNT, None);
+    set_usage(app, None, false, None);
 }
 
 /// Toggle a debug-only random usage value without changing persisted usage.
@@ -206,22 +238,22 @@ fn toggle_random_usage(app: &AppHandle) -> bool {
     let Some(meter) = app.try_state::<UsageMeter>() else {
         return false;
     };
-    let columns = {
+    let used = {
         let mut state = meter
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.debug_columns.is_some() {
-            state.debug_columns = None;
+        if state.debug_used_percent.is_some() {
+            state.debug_used_percent = None;
             None
         } else {
-            let columns = random_debug_columns(random_seed());
-            state.debug_columns = Some(columns);
-            Some(columns)
+            let used = random_debug_used_percent(random_seed());
+            state.debug_used_percent = Some(used);
+            Some(used)
         }
     };
-    if let Some(columns) = columns {
-        set_columns(app, columns, Some(UPDATE_TRANSITION));
+    if let Some(used) = used {
+        set_usage(app, Some(used), true, Some(UPDATE_TRANSITION));
         return true;
     }
 
@@ -237,14 +269,56 @@ fn toggle_random_usage(app: &AppHandle) -> bool {
     false
 }
 
+/// Toggle stable sample findings without writing simulated data to the store.
 #[cfg(debug_assertions)]
-fn debug_columns(app: &AppHandle) -> Option<usize> {
+fn toggle_burn_checks(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<DebugBurnChecks>() else {
+        return false;
+    };
+    let mut enabled = state
+        .enabled
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *enabled = !*enabled;
+    *enabled
+}
+
+/// Replace the report display with predictable development findings.
+#[cfg(debug_assertions)]
+pub(crate) fn simulate_burn_checks(app: &AppHandle, report: &mut crate::dto::ChecksReportPayload) {
+    let enabled = app.try_state::<DebugBurnChecks>().is_some_and(|state| {
+        *state
+            .enabled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
+    if !enabled {
+        return;
+    }
+    report.estimated_token_burn_basis_points = Some(125);
+    report.evidence_settled = false;
+    report.pending_evidence = 12;
+    for category in &mut report.categories {
+        category.finding = 0;
+        category.clean = 8;
+        category.unavailable = 0;
+        category.estimated_token_burn_basis_points = None;
+    }
+    if let Some(category) = report.categories.first_mut() {
+        category.finding = 3;
+        category.clean = 5;
+        category.estimated_token_burn_basis_points = Some(125);
+    }
+}
+
+#[cfg(debug_assertions)]
+fn debug_used_percent(app: &AppHandle) -> Option<f64> {
     app.try_state::<UsageMeter>().and_then(|meter| {
         meter
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .debug_columns
+            .debug_used_percent
     })
 }
 
@@ -257,9 +331,35 @@ fn random_seed() -> u128 {
 }
 
 #[cfg(debug_assertions)]
-fn random_debug_columns(seed: u128) -> usize {
-    let used = (seed % 101) as f64;
-    columns_for_used_percent(used)
+fn random_debug_used_percent(seed: u128) -> f64 {
+    (seed % 101) as f64
+}
+
+fn usage_tooltip(used: Option<f64>, simulated: bool) -> String {
+    let Some(used) = used else {
+        return "antiburn".to_string();
+    };
+    let remaining = (100.0 - used).round();
+    let suffix = if simulated { " (simulated)" } else { "" };
+    format!("antiburn — {remaining:.0}% remaining{suffix}")
+}
+
+fn set_usage(app: &AppHandle, used: Option<f64>, simulated: bool, transition: Option<Duration>) {
+    let main_thread_app = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        if let Some(tray) = main_thread_app.tray_by_id(TRAY_ID)
+            && let Err(error) = tray.set_tooltip(Some(usage_tooltip(used, simulated)))
+        {
+            ::tracing::warn!(event = "tray_usage_tooltip_update_failed", error = %error);
+        }
+        set_columns(
+            &main_thread_app,
+            used.map(columns_for_used_percent).unwrap_or(COLUMN_COUNT),
+            transition,
+        );
+    }) {
+        ::tracing::warn!(event = "tray_usage_update_schedule_failed", error = %error);
+    }
 }
 
 fn set_columns(app: &AppHandle, target: usize, transition: Option<Duration>) {
@@ -391,16 +491,15 @@ fn tray_dot_alpha_indices(rgba: &[u8], width: u32, height: u32) -> Vec<Vec<usize
     dots
 }
 
-fn usage_columns(summary: &crate::dto::LiveUsageSummary) -> Option<usize> {
-    let used = summary
+fn usage_used_percent(summary: &crate::dto::LiveUsageSummary) -> Option<f64> {
+    summary
         .providers
         .iter()
         .filter(|provider| provider_is_displayable(summary, provider))
         .flat_map(visible_windows)
         .filter_map(|window| window.used_percent)
         .filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))
-        .max_by(f64::total_cmp)?;
-    Some(columns_for_used_percent(used))
+        .max_by(f64::total_cmp)
 }
 
 fn columns_for_used_percent(used: f64) -> usize {
@@ -492,6 +591,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    #[cfg(debug_assertions)]
+    let burn_checks_item = CheckMenuItem::with_id(
+        app,
+        MENU_BURN_CHECKS,
+        BURN_CHECKS_LABEL,
+        true,
+        false,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
@@ -514,6 +622,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &reset_onboarding_item,
         #[cfg(debug_assertions)]
         &random_usage_item,
+        #[cfg(debug_assertions)]
+        &burn_checks_item,
         &separator,
         &quit_item,
     ];
@@ -523,6 +633,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         pin: pin_item,
         #[cfg(debug_assertions)]
         random_usage: random_usage_item,
+        #[cfg(debug_assertions)]
+        burn_checks: burn_checks_item,
     })
 }
 
@@ -594,6 +706,16 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 ::tracing::warn!(event = "tray_random_usage_relabel_failed", enabled, error = %error);
             }
         }
+        #[cfg(debug_assertions)]
+        MENU_BURN_CHECKS => {
+            let enabled = toggle_burn_checks(app);
+            if let Some(menu) = app.try_state::<TrayMenu>()
+                && let Err(error) = menu.burn_checks.set_checked(enabled)
+            {
+                ::tracing::warn!(event = "tray_burn_checks_relabel_failed", enabled, error = %error);
+            }
+            let _ = app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        }
         MENU_QUIT => {
             // Exit code 0 distinguishes a deliberate quit from the window
             // closes the shell suppresses (see `on_window_event`).
@@ -618,54 +740,22 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 /// Every open and every close already runs through that pair, so no caller —
 /// including the tray menu's own pin — has to remember the icon separately.
 ///
-/// # A known flicker on the opening click
+/// The vendored tray backend treats this override as the visibility contract.
+/// Primary mouse events cannot replace it, and native menu tracking restores
+/// its latest value. Remove the patch only when upstream provides both this
+/// control and the macOS 27 menu attachment fix recorded in `Cargo.toml`.
 ///
-/// tray-icon's `mouseUp:` calls `highlight(false)` and only then hands the
-/// click on, so this function re-lights a button that went dark ~185µs
-/// earlier. That gap is visible: `NSCell`'s highlight drawing is immediate and
-/// flushed, not deferred to the next frame, so the dark state reaches the
-/// screen as its own paint. Opening the popover therefore blinks once.
-///
-/// Measured, not guessed — Tauri delivers the tray event ~13µs after
-/// `mouseUp:` begins, so this is not event-loop latency and no reordering on
-/// this side can close it. Two alternatives were tried and rejected against
-/// the running app: driving the button's `state` instead (a status button is
-/// momentary, so `state` has no rendering at all), and forcing
-/// `PushOnPushOff` so `state` would paint a background (it still does not).
-/// `highlight(_:)` is the only property that renders, and tray-icon clears it
-/// on every mouse-up.
-///
-/// Removing the blink means stopping that call, which means carrying a fork of
-/// tray-icon rather than tracking the upstream revision already pinned in
-/// `Cargo.toml`. Judged not worth it for one frame, deliberately rather than by
-/// omission; the `[patch.crates-io]` note records the same decision.
-///
-/// macOS-only; a no-op elsewhere. Stateless — the caller says what the icon
-/// should look like, not what to change.
+/// macOS-only; a no-op elsewhere.
 #[cfg(target_os = "macos")]
 pub fn set_highlight(app: &AppHandle, on: bool) {
-    use objc2::MainThreadMarker;
-
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    // Tauri marshals the closure onto the main thread either way: inline when
-    // the caller is already there (the tray click, the window-event handler,
-    // the global click monitor), or via a blocking event-loop round-trip when
-    // it isn't (the `hide_popover` command, which runs on the async runtime).
-    // The closure takes no lock, so neither path can deadlock.
-    let _ = tray.with_inner_tray_icon(move |inner| {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
-        let Some(item) = inner.ns_status_item() else {
-            return;
-        };
-        let Some(button) = item.button(mtm) else {
-            return;
-        };
-        button.highlight(on);
-    });
+    if let Err(error) =
+        tray.with_inner_tray_icon(move |inner| inner.set_highlight_override(Some(on)))
+    {
+        ::tracing::warn!(event = "tray_highlight_update_failed", on, error = %error);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -695,12 +785,76 @@ mod tests {
         assert_eq!(columns_for_used_percent(100.0), 0);
     }
 
+    #[test]
+    fn the_tooltip_reports_rounded_remaining_allowance() {
+        for (used, expected) in [
+            (0.0, "antiburn — 100% remaining"),
+            (100.0, "antiburn — 0% remaining"),
+            (79.4, "antiburn — 21% remaining"),
+            (79.5, "antiburn — 21% remaining"),
+            (79.6, "antiburn — 20% remaining"),
+        ] {
+            assert_eq!(usage_tooltip(Some(used), false), expected);
+        }
+        assert_eq!(usage_tooltip(None, false), "antiburn");
+    }
+
+    #[test]
+    fn usage_changes_within_one_column_bucket_have_distinct_tooltips() {
+        assert_eq!(
+            columns_for_used_percent(71.0),
+            columns_for_used_percent(79.0)
+        );
+        assert_eq!(usage_tooltip(Some(71.0), false), "antiburn — 29% remaining");
+        assert_eq!(usage_tooltip(Some(79.0), false), "antiburn — 21% remaining");
+    }
+
+    #[test]
+    fn invalid_percentages_do_not_drive_the_icon_or_tooltip() {
+        let mut summary = crate::dto::LiveUsageSummary {
+            providers: vec![provider(
+                "openai",
+                "Read from Codex",
+                [
+                    None,
+                    Some(f64::NAN),
+                    Some(f64::INFINITY),
+                    Some(-1.0),
+                    Some(101.0),
+                ]
+                .into_iter()
+                .map(|used| window("five-hour", "primaryShort", None, used))
+                .collect(),
+            )],
+            ..Default::default()
+        };
+        assert_eq!(usage_used_percent(&summary), None);
+        assert_eq!(
+            usage_tooltip(usage_used_percent(&summary), false),
+            "antiburn"
+        );
+
+        summary.providers[0]
+            .windows
+            .push(window("weekly", "primaryLong", None, Some(25.0)));
+        let used = usage_used_percent(&summary);
+        assert_eq!(used, Some(25.0));
+        assert_eq!(used.map(columns_for_used_percent), Some(4));
+        assert_eq!(usage_tooltip(used, false), "antiburn — 75% remaining");
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     fn debug_random_usage_stays_within_the_column_range() {
-        assert_eq!(random_debug_columns(0), COLUMN_COUNT);
-        assert_eq!(random_debug_columns(100), 0);
-        assert!(random_debug_columns(57) <= COLUMN_COUNT);
+        assert_eq!(random_debug_used_percent(0), 0.0);
+        assert_eq!(random_debug_used_percent(100), 100.0);
+        let used = random_debug_used_percent(57);
+        assert_eq!(used, 57.0);
+        assert_eq!(columns_for_used_percent(used), 2);
+        assert_eq!(
+            usage_tooltip(Some(used), true),
+            "antiburn — 43% remaining (simulated)"
+        );
     }
 
     #[test]
@@ -709,7 +863,7 @@ mod tests {
             columns: 3,
             generation: 4,
             #[cfg(debug_assertions)]
-            debug_columns: None,
+            debug_used_percent: None,
         };
         assert!(frame_is_current(&state, 3, 4));
 
@@ -771,7 +925,10 @@ mod tests {
             generated_at: "2026-09-04T12:00:00Z".to_string(),
             ..Default::default()
         };
-        assert_eq!(usage_columns(&summary), Some(1));
+        let used = usage_used_percent(&summary);
+        assert_eq!(used, Some(80.0));
+        assert_eq!(used.map(columns_for_used_percent), Some(1));
+        assert_eq!(usage_tooltip(used, false), "antiburn — 20% remaining");
     }
 
     #[test]
@@ -787,7 +944,9 @@ mod tests {
             )],
             ..Default::default()
         };
-        assert_eq!(usage_columns(&summary), Some(4));
+        let used = usage_used_percent(&summary);
+        assert_eq!(used, Some(30.0));
+        assert_eq!(used.map(columns_for_used_percent), Some(4));
     }
 
     #[test]
@@ -820,7 +979,7 @@ mod tests {
             ..Default::default()
         };
         summary.providers[1].observed_at = "2026-09-04T12:10:00Z".to_string();
-        assert_eq!(usage_columns(&summary), None);
+        assert_eq!(usage_used_percent(&summary), None);
     }
 
     fn provider(

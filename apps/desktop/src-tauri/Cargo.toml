@@ -10,7 +10,7 @@
 # neither member nor excluded aborts resolution outright ("multiple workspace
 # roots found in the same workspace").
 [workspace]
-exclude = ["crates/anchored-window", "crates/hud", "crates/main-window", "crates/nudge", "crates/sound", "crates/trace"]
+exclude = ["crates/anchored-window", "crates/hud", "crates/main-window", "crates/nudge", "crates/sound", "crates/trace", "vendor/tray-icon"]
 
 [package]
 name = "antiburn"
@@ -211,34 +211,16 @@ opt-level = "s"
 panic = "abort"
 strip = true
 
-# Temporary, and the whole reason it exists is one line of AppKit.
+# Temporary vendoring for two macOS behavior fixes.
 #
-# tray-icon attaches the status item's `NSMenu` once, at construction, and
-# leaves it attached. Through macOS 26 that is harmless — the item's primary
-# button still delivers its clicks and the menu only opens on the secondary
-# one. On **macOS 27** an always-attached menu swallows the primary click
-# outright, so antiburn's menu-bar item would stop opening the popover at all:
-# a menu-bar app with no way into it. The pinned revision moves the attachment
-# to the moment the menu is actually being shown and detaches it again straight
-# after (upstream https://github.com/tauri-apps/tray-icon/pull/341).
+# The upstream revision moves `NSMenu` attachment into menu tracking so macOS 27
+# continues to deliver primary clicks. The local delta adds an opt-in highlight
+# override so popover visibility owns the status item's persistent highlight.
+# Native menu tracking still highlights the item and restores the latest
+# override afterward.
 #
-# The revision is 0.24.1 plus that change, and it is the *only* change: diffed
-# against the 0.24.2 this replaces, `platform_impl/macos/mod.rs` is the sole
-# differing file and this fix is its entire delta. So the version going
-# backwards costs nothing.
-#
-# Remove this — do not bump the rev — as soon as the fix ships in a release,
-# and keep whatever replaces it on the same major/minor line as Tauri's own
-# transitive tray-icon.
-#
-# One thing this deliberately does *not* fix. tray-icon's `mouseUp:` calls
-# `NSStatusBarButton.highlight(false)` unconditionally, before handing the
-# click on, so `tray::set_highlight` re-lights a button that went dark ~185µs
-# earlier — a single visible blink when the popover opens, because AppKit's
-# highlight drawing is flushed immediately rather than deferred to the next
-# frame. Removing it would mean carrying a fork rather than tracking upstream,
-# which is a bigger commitment than a one-frame blink is worth. Decided
-# knowingly; see the note on `tray::set_highlight` for the measurements and
-# for the two alternatives that were tried and did not work.
+# Remove this path patch when a compatible release has equivalent highlight
+# control and retains the macOS 27 menu attachment fix. Keep its version on the
+# same line as Tauri's transitive requirement.
 [patch.crates-io]
-tray-icon = { git = "https://github.com/tauri-apps/tray-icon.git", rev = "0ada43072646fe4454b1f969f4f446dc401fa1aa" }
+tray-icon = { path = "vendor/tray-icon" }

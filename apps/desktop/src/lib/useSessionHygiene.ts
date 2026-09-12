@@ -1,5 +1,6 @@
 import { useMemo, useSyncExternalStore } from "react"
 
+import type { SessionListEntry } from "../components/session/SessionList"
 import { createExternalStore, type ExternalStore } from "./externalStore"
 import { getSessionHygiene, type SessionHygienePayload } from "./insightsIpc"
 import { onScanEvent, onSessionEntryChanged, onSessionsInvalidated } from "./ipc"
@@ -8,6 +9,23 @@ import { INITIAL_SESSION_HYGIENE } from "./presentation/sessionHygiene"
 import type { LocalSessionIdentity } from "./types/session"
 
 export type SessionHygieneSnapshot = ReadonlyMap<string, SessionHygienePayload>
+
+/**
+ * Every entry with a transcript id, as the identity a hygiene fetch needs.
+ *
+ * A caller that lifts `useSessionHygiene` above a filtered or grouped view
+ * uses this over its full, unfiltered entry list, so the request key does not
+ * change when a filter or day-window grouping changes what actually renders.
+ */
+export function sessionHygieneIdentities(
+  entries: readonly SessionListEntry[],
+): LocalSessionIdentity[] {
+  return entries.flatMap((entry) =>
+    entry.sessionId
+      ? [{ agent: entry.agent, sessionId: entry.sessionId, wslDistro: entry.wslDistro ?? null }]
+      : [],
+  )
+}
 
 type IdentityTuple = [agent: string, sessionId: string, wslDistro: string | null]
 

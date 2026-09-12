@@ -126,6 +126,45 @@ async fn a_dirty_watch_has_priority_and_a_restart_loses_no_work() {
     );
 }
 
+#[tokio::test]
+async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
+    let store = store();
+    seed_dirty_remediation(&store);
+    store
+        .upsert_sessions(
+            &[record("fair-evidence")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let passes = AtomicUsize::new(0);
+    let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+        passes.fetch_add(1, Ordering::SeqCst);
+        let pass = published_pass(record);
+        Box::pin(async move { pass }) as PassFuture
+    };
+    assert!(
+        process_next_work(&store, &|| 100, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE remediation SET dirty_revision = dirty_revision + 1,
+                    updated_at_epoch = 101 WHERE remediation_id = 'worker-remediation'",
+                [],
+            )
+            .unwrap();
+    }
+    assert!(
+        process_next_work(&store, &|| 101, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+    assert_eq!(passes.load(Ordering::SeqCst), 1);
+}
+
 fn failed_pass(outcome: PassOutcome) -> EvidencePass {
     EvidencePass {
         analysis: analysis::SessionAnalysis::unavailable(),

@@ -66,6 +66,7 @@ function markTransform(mark: BrandMark): string {
  */
 export function UsageRing({
   percent,
+  expectedFraction = null,
   glyph,
   mark,
   size = 16,
@@ -74,6 +75,8 @@ export function UsageRing({
 }: {
   /** Consumed capacity, 0–100. `null` renders the indeterminate ring. */
   percent: number | null
+  /** The elapsed share of the displayed window, or null when its timing is unknown. */
+  expectedFraction?: number | null
   /**
    * What sits inside the ring — the provider's brand mark where one exists,
    * otherwise its initial.
@@ -176,6 +179,21 @@ export function UsageRing({
               }
               data-led-lit={sweepSpan > 0 || undefined}
               data-testid="usage-ring-sweep"
+            />
+          )}
+          {expectedFraction != null && Number.isFinite(expectedFraction) && (
+            // The tick crosses the track and stays outside the provider mark in the 32-unit box.
+            <line
+              x1="16"
+              y1="1.75"
+              x2="16"
+              y2="3.25"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              className="text-label"
+              transform={`rotate(${Math.min(1, Math.max(0, expectedFraction)) * 360} 16 16)`}
+              data-testid="usage-ring-notch"
             />
           )}
         </>

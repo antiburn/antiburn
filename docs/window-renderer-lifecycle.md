@@ -29,7 +29,9 @@ A native build receives a monotonically increasing renderer generation. The
 shell injects that generation before the page loads. After React commits the
 window shell, `WindowReadyBoundary` reports the generation through
 `window_ready`. The native window appears only when the report matches the
-active generation and a reveal is pending.
+active generation and a reveal is pending. The main-window policy extends this
+machine with generation-preserving `Ready` state, hidden verification, and a
+`Terminal` recovery gate. Other windows do not enter that terminal phase.
 
 This handshake gives the lifecycle these properties:
 
@@ -42,29 +44,135 @@ This handshake gives the lifecycle these properties:
 
 The shared Tauri adapters in
 [`window_lifecycle.rs`](../apps/desktop/src-tauri/src/window_lifecycle.rs) record
-load timing, warn about the current stale generation, and reset failed loads.
-The main-window, popover, Settings, and onboarding modules own their window-specific reveal
-and destruction policies.
+load timing and warn about the current stale generation. They reset failed
+loads only for windows whose labels are free. Main-window failures use their
+ownership-aware resolver instead. The main-window, popover, Settings, and
+onboarding modules own their window-specific reveal and destruction policies.
+
+## macOS overlay presentation
+
+The HUD, HUD detail, popover, and nudge start hidden and unfocused. Their
+native presentation runs on the main thread: configure stacking and Space
+behavior, then use `orderFrontRegardless()` for visual reveal. All use
+`CanJoinAllSpaces | FullScreenAuxiliary`. Tauri-backed surfaces reapply their
+native policy before each reveal; popover refocus reapplies it too.
+
+| Surface | Native level | Keyboard interaction |
+| --- | --- | --- |
+| HUD and detail | Screen saver (1000) | Non-focusable; detail also passes through clicks |
+| Popover | Floating (3) | Takes key and gives its webview first responder separately from visual reveal |
+| Nudge | Status (25) | Passive on arrival; takes key only after hover |
+| Native popover preview | Matches the anchor before presentation | Cannot become key or main |
+
+HUD and detail use passive nonactivating panels, retaining their existing
+screen-saver level while the fullscreen fix is validated. Level alone did not
+make their previous ordinary windows visible over fullscreen apps. The
+nonactivating popover panel stays below system menus and status-level nudges.
+Nudges remain above floating windows. HUD and detail additionally use
+`Stationary | IgnoresCycle`.
+
+HUD, detail, popover, and nudge resolve or convert their panel in the same
+main-thread callback that configures and reveals it. Failed conversion does not fall back
+to an activating Tauri show or focus operation. The popover records reveal
+completion only after native presentation, not after queueing a callback.
+Nudge key release returns focus through the popover's nonactivating path.
+
+Native previews initialize their nonactivating style and fullscreen collection
+behavior before presentation. Frame placement reapplies the anchor's level.
+They bypass Tauri window conversion, so they do not need repeated collection
+configuration to defend against toolkit changes.
+
+This policy does not change Main, Settings, or Onboarding activation. It also
+does not remove the upstream Wry cold-webview creation limitation documented
+in the [desktop README](../apps/desktop/README.md#known-gaps). Creation-time
+activation and reveal-time activation require separate macOS QA.
 
 ## Main window
 
-The main window uses a dedicated frontend entry with an empty themed shell.
-An explicit launch creates it after onboarding. Background startup does not
+The main window uses a dedicated frontend entry and a retained renderer. An
+explicit launch creates it after onboarding. Background startup does not
 construct its webview. After first use, closing hides the window and preserves
 its renderer for the next open. Quit stops the application and all renderers.
 
 The native mechanism crate owns creation, reveal, and placement geometry. The
-shell owns the shared readiness state machine, persisted placement, launch
-intent, and close policy. Repeated opens join the same load; a matching shell
-readiness report permits reveal without waiting for data or network requests.
+shell owns readiness, persisted placement, launch intent, bounded recovery, and
+the close policy. Repeated opens join the same load. A matching initial
+readiness report permits the first reveal without waiting for data or network
+requests.
 
-The main window adds no scans or provider polling. Future views must gate
-presentation work on visibility rather than focus, and consume existing native
-state. An unfocused window can still be visible beside another application.
+A hidden or minimized ready renderer must answer one event-driven health check
+before native reveal. The check names both its renderer generation and request
+ID. Concurrent opens share that request. The renderer answers only after React
+commits either the application tree or its independent error fallback. A
+healthy application commit permits reveal. A fallback commit starts bounded
+replacement. A dropped event is recovered by one generation-scoped pull after
+the responder installs. There is no heartbeat, poll, extra webview, network
+wait, data wait, or hidden animation-frame wait.
 
-Opening timing is local diagnostic evidence. Native reveal completion does not
-prove a frame was presented. See the [validation runbook](runbooks/main-window.md)
-for separate cold, first-open, and warm measurements.
+The 300 ms health timeout is provisional. It is the failure detector when a
+WebContent process cannot answer. Emitting an event does not establish health.
+A healthy acknowledgement establishes JavaScript response and a committed
+application tree, but not painted pixels. Native reveal completion also does
+not prove a frame was presented.
+
+Automatic recovery permits two consecutive failures. A healthy status report
+from the active generation is the only automatic budget reset. Renderer
+readiness, fallback commit, acknowledgement, reveal, and destruction do not
+reset it. Every destroy-and-replace generation has a 10-second provisional
+watchdog. The watchdog also covers ordinary stale replacement, fallback Reload,
+build and destroy retries, and native-dialog Try Again.
+
+Recovery preserves native label ownership:
+
+- A failed destroy remains a pending-destroy load or becomes terminal with the
+  native label still owned.
+- A failed build receives a fresh generation. If a native handle exists, the
+  shell destroys it before rebuilding. Native build and failure resolution run
+  after the readiness guard is released.
+- A watchdog replaces a hung load without using reveal intent as a gate. Closing
+  during recovery keeps the hidden recovery and watchdog active.
+- A delayed or duplicate `Destroyed` event cannot reset terminal state. It can
+  only record that the terminal window no longer owns the label.
+- The state machine never returns to `Idle` while a native window may own the
+  `main` label.
+
+Budget exhaustion enters a terminal phase and opens a native **Try Again** or
+**Dismiss** dialog. A hidden recovery defers that dialog until the next open.
+Each dialog has a token, and its worker callback returns to the main thread
+before token validation or any state change. Try Again grants one fresh budget
+only after both the token and terminal transition match. Dismiss keeps the
+terminal gate, so a later open presents a new informed choice. This surface
+works without a responsive WebContent process.
+
+The session target is a retained revision, not a destructive mount-time take.
+An active loading or ready generation peeks, applies, and acknowledges the
+latest revision. An acknowledgement received while loading remains recorded.
+The shell retires it only after that same generation becomes ready and is also
+presented. Acknowledgement and presentation can happen in either order.
+Recovery removes a doomed generation's application acknowledgement but retains the pending
+target. Accepted destroy or build failures, terminal entry, Dismiss, and Try
+Again also retain it. Only reconciliation or a revision-matched genuine open
+failure clears it. A recovered renderer therefore does not replay an old target
+after the user has navigated elsewhere.
+
+The root `MainWindowErrorBoundary` is inside `WindowReadyBoundary`. Its static
+fallback can commit the initial readiness marker and remain revealable. The
+boundary defers healthy classification until commit error handling settles.
+A descendant callback-ref failure therefore commits fallback without first
+reporting a healthy application. Global errors and unhandled rejections send
+bounded closed-schema diagnostics only. They do not declare the renderer fatal
+or trigger recovery. Reports contain no
+message, URL, path, stack, rejection payload, session identity, or free-form
+text. Native accepts at most five reports per generation.
+
+The main window adds no scans or provider polling. Views gate presentation work
+on visibility rather than focus and consume existing native state. An
+unfocused window can still be visible beside another application.
+
+Opening timing is local diagnostic evidence. Hidden-warm `elapsed_ms` now
+includes the health handshake. See the
+[validation runbook](runbooks/main-window.md) for separate cold, first-open,
+warm, acknowledgement, and visible-content measurements.
 
 ## Onboarding handoff and popover prewarm
 
@@ -208,15 +316,18 @@ Application shutdown uses the same native cancellation signal.
 | ---------- | ---------------------------------------------------------------------------------------------------- | -------------------------------- |
 | 1 second   | Let onboarding's final IPC response complete before destroying its renderer                          | Onboarding completion            |
 | 5 seconds  | Mark an active renderer load stale; log a warning and permit one replacement on a later open request | Renderer build start             |
+| 300 ms     | Provisional main-window hidden health acknowledgement timeout                                       | Hidden retained open             |
+| 10 seconds | Provisional main-window recovery watchdog for each replacement generation                           | Recovery generation start        |
 | 60 seconds | Keep the one post-onboarding handoff renderer available for the first menu-bar click                 | Onboarding prewarm readiness     |
 | 65 seconds | Destroy an onboarding prewarm that never reports renderer readiness                                  | Onboarding prewarm build         |
 | 5 seconds  | Refresh Insights processing status only while the pane has subscribers and remains visible           | Insights session start or resume |
 
 These values serve different purposes. The stale threshold is a recovery
-boundary, not an eviction deadline. The prewarm eviction delays are bounded
-handoff windows, not guarantees that a renderer will remain alive. A lifecycle
-reset, onboarding restart, application shutdown, or build failure can end one
-earlier.
+boundary, not an eviction deadline. The main-window 300 ms and 10-second values
+require post-implementation calibration before merge. No distribution is
+recorded here yet. The prewarm eviction delays are bounded handoff windows, not
+guarantees that a renderer will remain alive. A lifecycle reset, onboarding
+restart, application shutdown, or build failure can end one earlier.
 
 ## Popover latency evidence
 
@@ -274,6 +385,7 @@ Use these principles when adding or changing desktop windows:
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | Shared phases, generations, stale-load policy                    | [`window_readiness.rs`](../apps/desktop/src-tauri/src/window_readiness.rs)      |
 | Tauri readiness, timing, and trace adapters                      | [`window_lifecycle.rs`](../apps/desktop/src-tauri/src/window_lifecycle.rs)      |
+| Main ownership, recovery, dialogs, targets, and native effects   | [`main_window.rs`](../apps/desktop/src-tauri/src/main_window.rs)                |
 | Popover facade, first-click reuse, and Tauri window effects      | [`popover.rs`](../apps/desktop/src-tauri/src/popover.rs)                        |
 | Popover prewarm leases, eviction tokens, and deadline ownership  | [`retention.rs`](../apps/desktop/src-tauri/src/popover/retention.rs)            |
 | Peek target policy and shell hooks                               | [`popover_peek.rs`](../apps/desktop/src-tauri/src/popover_peek.rs)              |
@@ -283,6 +395,11 @@ Use these principles when adding or changing desktop windows:
 | Settings creation, destruction, and native Insights cancellation | [`settings.rs`](../apps/desktop/src-tauri/src/settings.rs)                      |
 | Global close and destroyed-window routing                        | [`lib.rs`](../apps/desktop/src-tauri/src/lib.rs)                                |
 | React readiness marker                                           | [`WindowReadyMarker.tsx`](../apps/desktop/src/components/WindowReadyMarker.tsx) |
+| Main application/fallback boundary                               | [`MainWindowErrorBoundary.tsx`](../apps/desktop/src/components/MainWindowErrorBoundary.tsx) |
+| Main committed-health store                                      | [`rendererHealth.ts`](../apps/desktop/src/lib/rendererHealth.ts)                |
+| Main hidden-open responder                                       | [`mainWindowHealth.ts`](../apps/desktop/src/lib/mainWindowHealth.ts)            |
+| Main typed health and target IPC                                 | [`mainWindowIpc.ts`](../apps/desktop/src/lib/mainWindowIpc.ts)                  |
+| Main bounded bootstrap diagnostics                               | [`bootstrapDiagnostics.ts`](../apps/desktop/src/lib/bootstrapDiagnostics.ts)    |
 | Popover content-ready boundary                                   | [`PopoverSession.ts`](../apps/desktop/src/views/popover/PopoverSession.ts)      |
 | Insights visibility and subscriber ownership                     | [`InsightsSession.ts`](../apps/desktop/src/views/settings/InsightsSession.ts)   |
 | Native Insights cancellation and request sharing                 | [`insights_ipc.rs`](../apps/desktop/src-tauri/src/insights_ipc.rs)              |
@@ -299,7 +416,17 @@ When a window lifecycle changes, verify all of these together:
 - prewarm expiry after readiness, reopening, Pin, or renderer replacement;
 - destruction resetting readiness before the next build;
 - cancellation of native work when its final visible owner leaves; and
-- fresh reconstruction without relying on the previous renderer's memory.
+- fresh reconstruction without relying on the previous renderer's memory;
+- a cancelled or replaced verification cannot destroy or reveal;
+- a failed destroy never yields `Idle` while its label can remain owned;
+- closing a recovery cannot strand its loading generation;
+- delayed destruction cannot reset a terminal recovery ledger;
+- only a generation-scoped healthy application commit resets recovery budget;
+- a loading generation's session-target acknowledgement remains until
+  readiness and presentation;
+- a doomed generation's session-target acknowledgement retires nothing;
+- an accepted recovery failure never clears the pending session target; and
+- a commit-phase callback-ref failure cannot report the application as healthy.
 
 Keep timings next to the native or frontend owner that enforces them. Tests
 should assert both the duration and the condition that makes delayed work safe.

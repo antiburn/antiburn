@@ -7,7 +7,6 @@ import {
   EMPTY_LIVE_USAGE,
   EMPTY_PROVIDER_USAGE,
   EMPTY_SESSION_LIMIT_ALLOCATIONS,
-  appInfo,
   getLiveSessions,
   getLiveUsage,
   getProviderUsage,
@@ -78,8 +77,6 @@ import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types
  */
 
 export interface PopoverSnapshot {
-  appVersion: string | null
-  debugBuild: boolean
   settings: AppSettings | null
   entries: SessionListEntry[] | null
   /** True when the initial activity-list read failed. */
@@ -262,8 +259,6 @@ export class PopoverSession {
   private livenessExpiry: number | null = null
 
   private snapshot: PopoverSnapshot = {
-    appVersion: null,
-    debugBuild: false,
     settings: null,
     entries: null,
     entriesUnavailable: false,
@@ -410,16 +405,13 @@ export class PopoverSession {
   // the stored time window. The cached limits do not wait for either read.
   private loadInitial = async (generation: number): Promise<void> => {
     const usage = this.loadCachedUsage(generation)
-    const [stored, health, info] = await Promise.all([
+    const [stored, health] = await Promise.all([
       getSettings().catch(() => DEFAULT_SETTINGS),
       getStorageHealth().catch(() => HEALTHY_STORAGE),
-      appInfo().catch(() => null),
     ])
     if (generation !== this.generation) return
     applyTheme(stored.theme)
     this.update({
-      appVersion: info?.appVersion ?? null,
-      debugBuild: info?.debugBuild ?? false,
       settings: stored,
       storage: health,
     })

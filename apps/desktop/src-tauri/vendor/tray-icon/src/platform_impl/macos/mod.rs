@@ -1,0 +1,775 @@
+// Copyright 2022-2022 Tauri Programme within The Commons Conservancy
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
+
+mod icon;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use objc2::rc::Retained;
+use objc2::{define_class, msg_send, AllocAnyThread, DeclaredClass, Message};
+use objc2_app_kit::{
+    NSCellImagePosition, NSEvent, NSImage, NSMenu, NSStatusBar, NSStatusBarButton, NSStatusItem,
+    NSTrackingArea, NSTrackingAreaOptions, NSVariableStatusItemLength, NSView, NSWindow,
+};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_graphics::{CGDisplayPixelsHigh, CGMainDisplayID};
+use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString};
+
+pub(crate) use self::icon::PlatformIcon;
+use crate::Error;
+use crate::{
+    icon::Icon, menu, MouseButton, MouseButtonState, Rect, TrayIconAttributes, TrayIconEvent,
+    TrayIconId,
+};
+
+pub struct TrayIcon {
+    ns_status_item: Option<Retained<NSStatusItem>>,
+    tray_target: Option<Retained<TrayTarget>>,
+    id: TrayIconId,
+    attrs: TrayIconAttributes,
+    highlight_state: Rc<HighlightState>,
+    mtm: MainThreadMarker,
+}
+
+impl TrayIcon {
+    pub fn new(id: TrayIconId, attrs: TrayIconAttributes) -> crate::Result<Self> {
+        let mtm = MainThreadMarker::new().ok_or(Error::NotMainThread)?;
+        let highlight_state = Rc::new(HighlightState::default());
+        let (ns_status_item, tray_target) =
+            Self::create(&id, &attrs, Rc::clone(&highlight_state), mtm)?;
+
+        let tray_icon = Self {
+            ns_status_item: Some(ns_status_item),
+            tray_target: Some(tray_target),
+            id,
+            attrs,
+            highlight_state,
+            mtm,
+        };
+
+        Ok(tray_icon)
+    }
+
+    fn create(
+        id: &TrayIconId,
+        attrs: &TrayIconAttributes,
+        highlight_state: Rc<HighlightState>,
+        mtm: MainThreadMarker,
+    ) -> crate::Result<(Retained<NSStatusItem>, Retained<TrayTarget>)> {
+        let forced_highlight = highlight_state.highlight_override.get();
+        let ns_status_item = unsafe {
+            NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength)
+        };
+
+        set_icon_for_ns_status_item_button(
+            &ns_status_item,
+            attrs.icon.as_ref(),
+            attrs.icon_is_template,
+            mtm,
+        )?;
+
+        Self::set_tooltip_inner(&ns_status_item, attrs.tooltip.as_deref(), mtm)?;
+        Self::set_title_inner(&ns_status_item, attrs.title.as_deref(), mtm);
+
+        let tray_target = unsafe {
+            let button = ns_status_item.button(mtm).unwrap();
+
+            let frame = button.frame();
+
+            let target = mtm.alloc().set_ivars(TrayTargetIvars {
+                id: NSString::from_str(&id.0),
+                menu: RefCell::new(
+                    attrs
+                        .menu
+                        .as_deref()
+                        .and_then(|menu| Retained::retain(menu.ns_menu().cast::<NSMenu>())),
+                ),
+                status_item: ns_status_item.retain(),
+                highlight_state,
+                menu_on_left_click: Cell::new(attrs.menu_on_left_click),
+                menu_on_right_click: Cell::new(attrs.menu_on_right_click),
+            });
+            let tray_target: Retained<TrayTarget> = msg_send![super(target), initWithFrame: frame];
+            tray_target.setWantsLayer(true);
+
+            button.addSubview(&tray_target);
+
+            if let Some(highlight) = forced_highlight {
+                button.highlight(highlight);
+            }
+
+            tray_target
+        };
+
+        Ok((ns_status_item, tray_target))
+    }
+
+    fn remove(&mut self) {
+        if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
+        {
+            unsafe {
+                NSStatusBar::systemStatusBar().removeStatusItem(ns_status_item);
+                tray_target.removeFromSuperview();
+            }
+        }
+
+        self.ns_status_item = None;
+        self.tray_target = None;
+    }
+
+    pub fn set_icon(&mut self, icon: Option<Icon>) -> crate::Result<()> {
+        if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
+        {
+            set_icon_for_ns_status_item_button(ns_status_item, icon.as_ref(), false, self.mtm)?;
+            tray_target.update_dimensions();
+        }
+        self.attrs.icon = icon;
+        Ok(())
+    }
+
+    pub fn set_menu(&mut self, menu: Option<Box<dyn menu::ContextMenu>>) {
+        if let (Some(_), Some(tray_target)) = (&self.ns_status_item, &self.tray_target) {
+            unsafe {
+                let menu = menu
+                    .as_ref()
+                    .and_then(|m| m.ns_menu().cast::<NSMenu>().as_ref())
+                    .map(|menu| menu.retain());
+
+                *tray_target.ivars().menu.borrow_mut() = menu;
+            }
+        }
+        self.attrs.menu = menu;
+    }
+
+    pub fn set_tooltip<S: AsRef<str>>(&mut self, tooltip: Option<S>) -> crate::Result<()> {
+        let tooltip = tooltip.map(|s| s.as_ref().to_string());
+        if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
+        {
+            Self::set_tooltip_inner(ns_status_item, tooltip.as_deref(), self.mtm)?;
+            tray_target.update_dimensions();
+        }
+        self.attrs.tooltip = tooltip;
+        Ok(())
+    }
+
+    fn set_tooltip_inner<S: AsRef<str>>(
+        ns_status_item: &NSStatusItem,
+        tooltip: Option<S>,
+        mtm: MainThreadMarker,
+    ) -> crate::Result<()> {
+        unsafe {
+            let tooltip = tooltip.map(|tooltip| NSString::from_str(tooltip.as_ref()));
+            if let Some(button) = ns_status_item.button(mtm) {
+                button.setToolTip(tooltip.as_deref());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_title<S: AsRef<str>>(&mut self, title: Option<S>) {
+        let title = title.map(|s| s.as_ref().to_string());
+        if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
+        {
+            Self::set_title_inner(ns_status_item, title.as_deref(), self.mtm);
+            tray_target.update_dimensions();
+        }
+        self.attrs.title = title;
+    }
+
+    fn set_title_inner<S: AsRef<str>>(
+        ns_status_item: &NSStatusItem,
+        title: Option<S>,
+        mtm: MainThreadMarker,
+    ) {
+        if let Some(title) = title {
+            unsafe {
+                if let Some(button) = ns_status_item.button(mtm) {
+                    button.setTitle(&NSString::from_str(title.as_ref()));
+                }
+            }
+        }
+    }
+
+    pub fn set_visible(&mut self, visible: bool) -> crate::Result<()> {
+        if visible {
+            if self.ns_status_item.is_none() {
+                let (ns_status_item, tray_target) = Self::create(
+                    &self.id,
+                    &self.attrs,
+                    Rc::clone(&self.highlight_state),
+                    self.mtm,
+                )?;
+                self.ns_status_item = Some(ns_status_item);
+                self.tray_target = Some(tray_target);
+            }
+        } else {
+            self.remove();
+        }
+
+        Ok(())
+    }
+
+    pub fn set_highlight_override(&self, highlight: Option<bool>) {
+        if set_highlight_override(&self.highlight_state, highlight) {
+            self.apply_highlight_override();
+        }
+    }
+
+    fn apply_highlight_override(&self) {
+        if let Some(ns_status_item) = &self.ns_status_item {
+            let highlight = self
+                .highlight_state
+                .highlight_override
+                .get()
+                .unwrap_or(false);
+            // SAFETY: The marker requires the main thread. The retained status item keeps its button alive.
+            unsafe {
+                let button = ns_status_item.button(self.mtm).unwrap();
+                button.highlight(highlight);
+            }
+        }
+    }
+
+    pub fn set_icon_as_template(&mut self, is_template: bool) {
+        if let Some(ns_status_item) = &self.ns_status_item {
+            unsafe {
+                let button = ns_status_item.button(self.mtm).unwrap();
+                if let Some(nsimage) = button.image() {
+                    nsimage.setTemplate(is_template);
+                    button.setImage(Some(&nsimage));
+                }
+            }
+        }
+        self.attrs.icon_is_template = is_template;
+    }
+
+    pub fn set_icon_with_as_template(
+        &mut self,
+        icon: Option<Icon>,
+        is_template: bool,
+    ) -> crate::Result<()> {
+        if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
+        {
+            set_icon_for_ns_status_item_button(
+                ns_status_item,
+                icon.as_ref(),
+                is_template,
+                self.mtm,
+            )?;
+            tray_target.update_dimensions();
+        }
+        self.attrs.icon = icon;
+        self.attrs.icon_is_template = is_template;
+        Ok(())
+    }
+
+    pub fn set_show_menu_on_left_click(&mut self, enable: bool) {
+        if let Some(tray_target) = &self.tray_target {
+            tray_target.ivars().menu_on_left_click.set(enable);
+        }
+        self.attrs.menu_on_left_click = enable;
+    }
+
+    pub fn set_show_menu_on_right_click(&mut self, enable: bool) {
+        if let Some(tray_target) = &self.tray_target {
+            tray_target.ivars().menu_on_right_click.set(enable);
+        }
+        self.attrs.menu_on_right_click = enable;
+    }
+
+    pub fn show_menu(&self) {
+        if let Some(target) = &self.tray_target {
+            show_menu(target);
+        }
+    }
+
+    pub fn rect(&self) -> Option<Rect> {
+        let ns_status_item = self.ns_status_item.as_deref()?;
+        unsafe {
+            let button = ns_status_item.button(self.mtm).unwrap();
+            let window = button.window();
+            window.map(|window| get_tray_rect(&window))
+        }
+    }
+
+    pub fn ns_status_item(&self) -> Option<&Retained<NSStatusItem>> {
+        self.ns_status_item.as_ref()
+    }
+}
+
+impl Drop for TrayIcon {
+    fn drop(&mut self) {
+        self.remove()
+    }
+}
+
+fn set_icon_for_ns_status_item_button(
+    ns_status_item: &NSStatusItem,
+    icon: Option<&Icon>,
+    icon_is_template: bool,
+    mtm: MainThreadMarker,
+) -> crate::Result<()> {
+    let button = unsafe { ns_status_item.button(mtm).unwrap() };
+
+    if let Some(icon) = icon {
+        let png_icon = icon.inner.to_png()?;
+
+        let (width, height) = icon.inner.get_size();
+
+        let icon_height: f64 = 18.0;
+        let icon_width: f64 = (width as f64) / (height as f64 / icon_height);
+
+        unsafe {
+            // build our icon
+            let nsdata = NSData::from_vec(png_icon);
+
+            let nsimage = NSImage::initWithData(NSImage::alloc(), &nsdata).unwrap();
+            let new_size = NSSize::new(icon_width, icon_height);
+
+            button.setImage(Some(&nsimage));
+            nsimage.setSize(new_size);
+            // The image is to the right of the title
+            button.setImagePosition(NSCellImagePosition::ImageLeft);
+            nsimage.setTemplate(icon_is_template);
+        }
+    } else {
+        unsafe { button.setImage(None) };
+    }
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct TrayTargetIvars {
+    id: Retained<NSString>,
+    menu: RefCell<Option<Retained<NSMenu>>>,
+    status_item: Retained<NSStatusItem>,
+    highlight_state: Rc<HighlightState>,
+    menu_on_left_click: Cell<bool>,
+    menu_on_right_click: Cell<bool>,
+}
+
+#[derive(Debug, Default)]
+struct HighlightState {
+    highlight_override: Cell<Option<bool>>,
+    menu_tracking: Cell<bool>,
+}
+
+define_class!(
+    #[unsafe(super(NSView))]
+    #[name = "TaoTrayTarget"]
+    #[ivars = TrayTargetIvars]
+    struct TrayTarget;
+
+    /// Mouse events on NSResponder
+    impl TrayTarget {
+        #[unsafe(method(mouseDown:))]
+        fn on_mouse_down(&self, event: &NSEvent) {
+            send_mouse_event(
+                self,
+                event,
+                MouseEventType::Click,
+                Some(MouseClickEvent {
+                    button: MouseButton::Left,
+                    state: MouseButtonState::Down,
+                }),
+            );
+            on_tray_click(self, MouseButton::Left);
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn on_mouse_up(&self, event: &NSEvent) {
+            apply_primary_highlight(self, false);
+            send_mouse_event(
+                self,
+                event,
+                MouseEventType::Click,
+                Some(MouseClickEvent {
+                    button: MouseButton::Left,
+                    state: MouseButtonState::Up,
+                }),
+            );
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn on_right_mouse_down(&self, event: &NSEvent) {
+            send_mouse_event(
+                self,
+                event,
+                MouseEventType::Click,
+                Some(MouseClickEvent {
+                    button: MouseButton::Right,
+                    state: MouseButtonState::Down,
+                }),
+            );
+            on_tray_click(self, MouseButton::Right);
+        }
+
+        #[unsafe(method(rightMouseUp:))]
+        fn on_right_mouse_up(&self, event: &NSEvent) {
+            send_mouse_event(
+                self,
+                event,
+                MouseEventType::Click,
+                Some(MouseClickEvent {
+                    button: MouseButton::Right,
+                    state: MouseButtonState::Up,
+                }),
+            );
+        }
+
+        #[unsafe(method(otherMouseDown:))]
+        fn on_other_mouse_down(&self, event: &NSEvent) {
+            let button_number = unsafe { event.buttonNumber() };
+            if button_number == 2 {
+                send_mouse_event(
+                    self,
+                    event,
+                    MouseEventType::Click,
+                    Some(MouseClickEvent {
+                        button: MouseButton::Middle,
+                        state: MouseButtonState::Down,
+                    }),
+                );
+            }
+        }
+
+        #[unsafe(method(otherMouseUp:))]
+        fn on_other_mouse_up(&self, event: &NSEvent) {
+            let button_number = unsafe { event.buttonNumber() };
+            if button_number == 2 {
+                send_mouse_event(
+                    self,
+                    event,
+                    MouseEventType::Click,
+                    Some(MouseClickEvent {
+                        button: MouseButton::Middle,
+                        state: MouseButtonState::Up,
+                    }),
+                );
+            }
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn on_mouse_entered(&self, event: &NSEvent) {
+            send_mouse_event(self, event, MouseEventType::Enter, None);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn on_mouse_exited(&self, event: &NSEvent) {
+            send_mouse_event(self, event, MouseEventType::Leave, None);
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn on_mouse_moved(&self, event: &NSEvent) {
+            send_mouse_event(self, event, MouseEventType::Move, None);
+        }
+    }
+
+    /// Tracking mouse enter/exit/move events
+    impl TrayTarget {
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            unsafe {
+                let areas = self.trackingAreas();
+                for area in areas {
+                    self.removeTrackingArea(&area);
+                }
+
+                let _: () = msg_send![super(self), updateTrackingAreas];
+
+                let options = NSTrackingAreaOptions::MouseEnteredAndExited
+                    | NSTrackingAreaOptions::MouseMoved
+                    | NSTrackingAreaOptions::ActiveAlways
+                    | NSTrackingAreaOptions::InVisibleRect;
+                let rect = CGRect {
+                    origin: CGPoint { x: 0.0, y: 0.0 },
+                    size: CGSize {
+                        width: 0.0,
+                        height: 0.0,
+                    },
+                };
+                let area = NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    rect,
+                    options,
+                    Some(self),
+                    None,
+                );
+                self.addTrackingArea(&area);
+            }
+        }
+    }
+);
+
+impl TrayTarget {
+    fn update_dimensions(&self) {
+        let mtm = MainThreadMarker::from(self);
+        unsafe {
+            let button = self.ivars().status_item.button(mtm).unwrap();
+            self.setFrame(button.frame());
+        }
+    }
+}
+
+fn on_tray_click(this: &TrayTarget, button: MouseButton) {
+    let mtm = MainThreadMarker::from(this);
+    unsafe {
+        let ns_button = this.ivars().status_item.button(mtm).unwrap();
+        let menu_on_left_click = this.ivars().menu_on_left_click.get();
+        let menu_on_right_click = this.ivars().menu_on_right_click.get();
+        if (menu_on_right_click && button == MouseButton::Right)
+            || (menu_on_left_click && button == MouseButton::Left)
+        {
+            if !show_menu(this) {
+                apply_click_highlight(this, button, &ns_button);
+            }
+        } else {
+            apply_click_highlight(this, button, &ns_button);
+        }
+    }
+}
+
+fn show_menu(this: &TrayTarget) -> bool {
+    let menu = this.ivars().menu.borrow().clone();
+    let mtm = MainThreadMarker::from(this);
+    // SAFETY: The marker requires the main thread. The target retains the status item; the local menu is retained.
+    unsafe {
+        let Some(menu) = menu.filter(|menu| menu.numberOfItems() > 0) else {
+            return false;
+        };
+        let status_item = &this.ivars().status_item;
+        let button = status_item.button(mtm).unwrap();
+        track_menu_and_restore(
+            &this.ivars().highlight_state,
+            || {
+                status_item.setMenu(Some(&menu));
+                button.performClick(None);
+                status_item.setMenu(None);
+            },
+            |highlight| button.highlight(highlight),
+        );
+    }
+    true
+}
+
+fn apply_click_highlight(this: &TrayTarget, mouse_button: MouseButton, button: &NSStatusBarButton) {
+    if let Some(highlight) = click_highlight(
+        mouse_button,
+        this.ivars().highlight_state.highlight_override.get(),
+    ) {
+        // SAFETY: TrayTarget runs on the main thread. Its retained status item owns this button.
+        unsafe { button.highlight(highlight) };
+    }
+}
+
+fn apply_primary_highlight(this: &TrayTarget, highlight: bool) {
+    if let Some(highlight) = primary_highlight(
+        highlight,
+        this.ivars().highlight_state.highlight_override.get(),
+    ) {
+        let mtm = MainThreadMarker::from(this);
+        // SAFETY: The marker requires the main thread. The target retains the status item and its button.
+        unsafe {
+            let button = this.ivars().status_item.button(mtm).unwrap();
+            button.highlight(highlight);
+        }
+    }
+}
+
+fn click_highlight(mouse_button: MouseButton, highlight_override: Option<bool>) -> Option<bool> {
+    (mouse_button != MouseButton::Left || highlight_override.is_none()).then_some(true)
+}
+
+fn primary_highlight(highlight: bool, highlight_override: Option<bool>) -> Option<bool> {
+    highlight_override.is_none().then_some(highlight)
+}
+
+fn set_highlight_override(highlight_state: &HighlightState, highlight: Option<bool>) -> bool {
+    highlight_state.highlight_override.set(highlight);
+    !highlight_state.menu_tracking.get()
+}
+
+fn track_menu_and_restore(
+    highlight_state: &HighlightState,
+    track_menu: impl FnOnce(),
+    apply_highlight: impl FnOnce(bool),
+) {
+    highlight_state.menu_tracking.set(true);
+    track_menu();
+    highlight_state.menu_tracking.set(false);
+    if let Some(highlight) = highlight_state.highlight_override.get() {
+        apply_highlight(highlight);
+    }
+}
+
+fn get_tray_rect(window: &NSWindow) -> Rect {
+    let frame = window.frame();
+    let scale_factor = window.backingScaleFactor();
+
+    Rect {
+        size: crate::dpi::LogicalSize::new(frame.size.width, frame.size.height)
+            .to_physical(scale_factor),
+        position: crate::dpi::LogicalPosition::new(
+            frame.origin.x,
+            flip_window_screen_coordinates(frame.origin.y) - frame.size.height,
+        )
+        .to_physical(scale_factor),
+    }
+}
+
+fn send_mouse_event(
+    this: &TrayTarget,
+    event: &NSEvent,
+    mouse_event_type: MouseEventType,
+    click_event: Option<MouseClickEvent>,
+) {
+    let mtm = MainThreadMarker::from(this);
+    unsafe {
+        let tray_id = TrayIconId(this.ivars().id.to_string());
+
+        // icon position & size
+        let window = event.window(mtm).unwrap();
+        let icon_rect = get_tray_rect(&window);
+
+        // cursor position
+        let mouse_location = NSEvent::mouseLocation();
+        let scale_factor = window.backingScaleFactor();
+        let cursor_position = crate::dpi::LogicalPosition::new(
+            mouse_location.x,
+            flip_window_screen_coordinates(mouse_location.y),
+        )
+        .to_physical(scale_factor);
+
+        let event = match mouse_event_type {
+            MouseEventType::Click => {
+                let click_event = click_event.unwrap();
+                TrayIconEvent::Click {
+                    id: tray_id,
+                    position: cursor_position,
+                    rect: icon_rect,
+                    button: click_event.button,
+                    button_state: click_event.state,
+                }
+            }
+            MouseEventType::Enter => TrayIconEvent::Enter {
+                id: tray_id,
+                position: cursor_position,
+                rect: icon_rect,
+            },
+            MouseEventType::Leave => TrayIconEvent::Leave {
+                id: tray_id,
+                position: cursor_position,
+                rect: icon_rect,
+            },
+            MouseEventType::Move => TrayIconEvent::Move {
+                id: tray_id,
+                position: cursor_position,
+                rect: icon_rect,
+            },
+        };
+
+        TrayIconEvent::send(event);
+    }
+}
+
+#[derive(Debug)]
+enum MouseEventType {
+    Click,
+    Enter,
+    Leave,
+    Move,
+}
+
+#[derive(Debug)]
+struct MouseClickEvent {
+    button: MouseButton,
+    state: MouseButtonState,
+}
+
+/// Core graphics screen coordinates are relative to the top-left corner of
+/// the so-called "main" display, with y increasing downwards - which is
+/// exactly what we want in Winit.
+///
+/// However, `NSWindow` and `NSScreen` changes these coordinates to:
+/// 1. Be relative to the bottom-left corner of the "main" screen.
+/// 2. Be relative to the bottom-left corner of the window/screen itself.
+/// 3. Have y increasing upwards.
+///
+/// This conversion happens to be symmetric, so we only need this one function
+/// to convert between the two coordinate systems.
+fn flip_window_screen_coordinates(y: f64) -> f64 {
+    unsafe { CGDisplayPixelsHigh(CGMainDisplayID()) as f64 - y }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_tracking_restores_the_latest_override() {
+        let highlight_state = HighlightState {
+            highlight_override: Cell::new(Some(false)),
+            ..Default::default()
+        };
+        let restored = Cell::new(None);
+
+        track_menu_and_restore(
+            &highlight_state,
+            || {
+                assert!(highlight_state.menu_tracking.get());
+                assert!(!set_highlight_override(&highlight_state, Some(true)));
+            },
+            |highlight| restored.set(Some(highlight)),
+        );
+
+        assert!(!highlight_state.menu_tracking.get());
+        assert_eq!(restored.get(), Some(true));
+    }
+
+    #[test]
+    fn default_mode_preserves_primary_mouse_highlighting() {
+        assert_eq!(click_highlight(MouseButton::Left, None), Some(true));
+        assert_eq!(primary_highlight(false, None), Some(false));
+    }
+
+    #[test]
+    fn explicit_overrides_preserve_their_state_through_primary_mouse_events() {
+        assert_eq!(click_highlight(MouseButton::Left, Some(false)), None);
+        assert_eq!(primary_highlight(false, Some(false)), None);
+        assert_eq!(click_highlight(MouseButton::Left, Some(true)), None);
+        assert_eq!(primary_highlight(false, Some(true)), None);
+    }
+
+    #[test]
+    fn automatic_mode_does_not_force_a_state_after_menu_tracking() {
+        let highlight_state = HighlightState::default();
+        let restored = Cell::new(None);
+
+        track_menu_and_restore(
+            &highlight_state,
+            || {},
+            |highlight| restored.set(Some(highlight)),
+        );
+
+        assert_eq!(restored.get(), None);
+    }
+
+    #[test]
+    fn clearing_the_override_during_menu_tracking_restores_automatic_mode() {
+        let highlight_state = HighlightState {
+            highlight_override: Cell::new(Some(true)),
+            ..Default::default()
+        };
+        let restored = Cell::new(None);
+
+        track_menu_and_restore(
+            &highlight_state,
+            || assert!(!set_highlight_override(&highlight_state, None)),
+            |highlight| restored.set(Some(highlight)),
+        );
+
+        assert_eq!(restored.get(), None);
+    }
+}

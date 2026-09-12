@@ -67,10 +67,13 @@ const CLAUDE_SATURATION_GAIN = 1.15
 
 const CLAUDE_BRAND = saturated(`#${siClaude.hex}`, CLAUDE_SATURATION_GAIN)
 
+/** The LED color that follows the label token, and has no color of its own. */
+export const LABEL_BAR_COLOR = "var(--color-label)"
+
 const PROVIDER_COLORS: Record<string, string> = {
   anthropic: CLAUDE_BRAND,
   claude: CLAUDE_BRAND,
-  openai: "var(--color-label)",
+  openai: LABEL_BAR_COLOR,
   cursor: "var(--color-system-indigo)",
   google: "var(--color-system-blue)",
   opencode_go: "var(--color-system-green)",

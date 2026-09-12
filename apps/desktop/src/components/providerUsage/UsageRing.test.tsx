@@ -23,6 +23,45 @@ const SQUARE = {
 }
 
 describe("UsageRing", () => {
+  it.each([
+    [0, 0],
+    [0.25, 90],
+    [0.5, 180],
+    [0.75, 270],
+    [1, 360],
+    [-0.5, 0],
+    [1.5, 360],
+  ])("places elapsed fraction %s clockwise at %s degrees", (fraction, degrees) => {
+    const { getByTestId } = render(<UsageRing percent={42} expectedFraction={fraction} />)
+    expect(getByTestId("usage-ring-notch")).toHaveAttribute(
+      "transform",
+      `rotate(${degrees} 16 16)`,
+    )
+  })
+
+  it.each([undefined, null])(
+    "omits the tick for unknown elapsed time (%s)",
+    (expectedFraction) => {
+      const { queryByTestId } = render(
+        <UsageRing
+          percent={42}
+          {...(expectedFraction === undefined ? {} : { expectedFraction })}
+        />,
+      )
+      expect(queryByTestId("usage-ring-notch")).not.toBeInTheDocument()
+    },
+  )
+
+  it("omits the tick when usage is unavailable even if timing is known", () => {
+    const { queryByTestId } = render(<UsageRing percent={null} expectedFraction={0.5} />)
+    expect(queryByTestId("usage-ring-notch")).not.toBeInTheDocument()
+  })
+
+  it("keeps the tick on a stated zero usage reading", () => {
+    const { getByTestId } = render(<UsageRing percent={0} expectedFraction={0.5} />)
+    expect(getByTestId("usage-ring-notch")).toBeInTheDocument()
+  })
+
   it("fills the arc in proportion to what is consumed", () => {
     const { container } = render(<UsageRing percent={75} />)
     // Three quarters gone leaves a quarter of the circumference hidden.

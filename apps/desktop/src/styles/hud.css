@@ -369,3 +369,51 @@ body[data-transparent-window] #root {
       inset 0 -1px 0 rgb(0 0 0 / 0.35);
   }
 }
+
+/*
+ * The HUD window paints no surface, so the LEDs sit on the desktop behind it.
+ * The desktop can be any color, and it can match a lit LED and hide it. Each
+ * lit segment gets a 1px ring to hold it apart. An unlit segment gets no ring,
+ * because it must stay quiet. A ring holds a small dot better than a shadow,
+ * which only blurs at this size.
+ *
+ * A colored LED takes a ring in a darker shade of its own color, so the ring
+ * reads as the edge of the LED. An LED that takes the label color has no color
+ * of its own. It is near-black in the light theme and near-white in the dark
+ * theme, so it takes a ring in the opposite tone.
+ */
+.hud-leds-color {
+  --hud-led-ring: 0 0 0 1px
+    color-mix(in srgb, color-mix(in oklab, var(--hud-led-color) 70%, black) 75%, transparent);
+}
+
+.hud-leds-label {
+  --hud-led-ring: 0 0 0 1px rgb(255 255 255 / 0.75);
+}
+
+:root[data-theme="dark"] .hud-leds-label {
+  --hud-led-ring: 0 0 0 1px rgb(0 0 0 / 0.75);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .hud-leds-label {
+    --hud-led-ring: 0 0 0 1px rgb(0 0 0 / 0.75);
+  }
+}
+
+.hud-leds .led-lit {
+  box-shadow: var(--hud-led-ring, none);
+}
+
+/*
+ * An unlit segment in the HUD takes the full-strength mid grey. The shared
+ * `led-off` token is softer, which the detail card keeps, because that card
+ * paints its own surface. The HUD has none, so the desktop shows through.
+ */
+.hud-leds {
+  --hud-led-off: hsl(0 0% 50%);
+}
+
+.hud-leds .led-off {
+  background-color: var(--hud-led-off);
+}

@@ -102,6 +102,23 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         } => {
             let _ = (provider, state, origin);
         }
+        event::Interaction::BurnCheckAutoFixReviewed { outcome } => {
+            let _ = outcome;
+        }
+        event::Interaction::BurnCheckAutoFixConfirmed => {}
+        event::Interaction::BurnCheckAutoFixCompleted { outcome } => {
+            let _ = outcome;
+        }
+        event::Interaction::BurnCheckPromptPrepared { outcome } => {
+            let _ = outcome;
+        }
+        event::Interaction::BurnCheckPromptCopied => {}
+        event::Interaction::BurnCheckOutcomeObserved { outcome, origin } => {
+            let _ = (outcome, origin);
+        }
+        event::Interaction::SessionFilterSelected { filter, agent } => {
+            let _ = (filter, agent);
+        }
     }
 }
 
@@ -158,10 +175,29 @@ pub fn handle_settings_transition(
 ) {
 }
 
+#[cfg(not(feature = "analytics"))]
+pub fn prepare_opt_out_in_transaction(
+    _app: &tauri::AppHandle,
+    _transaction: &rusqlite::Transaction<'_>,
+    _previous: &crate::store::AppSettings,
+    _saved: &crate::store::AppSettings,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(feature = "analytics"))]
+pub struct SettingsTransitionGuard;
+
+#[cfg(not(feature = "analytics"))]
+pub fn lock_settings_transition() -> SettingsTransitionGuard {
+    SettingsTransitionGuard
+}
+
 #[cfg(feature = "analytics")]
 mod enabled {
 
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use antiburn_local::insights::UnrecognizedRecords;
@@ -228,6 +264,95 @@ mod enabled {
         config::operator()
     }
 
+    /// Persist the withdrawal event with the preference change.
+    ///
+    /// The transaction makes the user's decision and the event durable as one
+    /// unit. A crash after commit cannot restore consent or lose the signal.
+    pub fn prepare_opt_out_in_transaction(
+        app: &tauri::AppHandle,
+        transaction: &rusqlite::Transaction<'_>,
+        previous: &AppSettings,
+        saved: &AppSettings,
+    ) -> anyhow::Result<()> {
+        prepare_opt_out_payload(
+            transaction,
+            previous,
+            saved,
+            &format!("antiburn:{}", app.package_info().version),
+        )
+    }
+
+    fn prepare_opt_out_payload(
+        transaction: &rusqlite::Transaction<'_>,
+        previous: &AppSettings,
+        saved: &AppSettings,
+        app_version: &str,
+    ) -> anyhow::Result<()> {
+        if !previous.analytics_enabled
+            || saved.analytics_enabled
+            || !available()
+            || environment_disabled()
+        {
+            return Ok(());
+        }
+        let Some((anonymous_id, _minted_at)) = Store::analytics_identity_in(transaction)? else {
+            return Ok(());
+        };
+        let event = Event {
+            platform: event::PLATFORM,
+            message_id: random_identifier(),
+            anonymous_id,
+            session_id: current_session_id(),
+            event: EventName::AnalyticsOptedOut.as_str().to_string(),
+            original_timestamp: crate::store::now_rfc3339(),
+            properties: event::Properties {
+                arch: event::arch(),
+                bucket: None,
+                label: None,
+                detail: None,
+                origin: None,
+                usage_band: None,
+                response_shape: None,
+                eligibility: None,
+                ineligible_reason: None,
+                experiment: None,
+                reset_arm: None,
+                reset_availability: None,
+                resets_per_week: None,
+                next_reset_available: None,
+                plan: None,
+                factor_band: None,
+                residual_band: None,
+                resource_usage: None,
+                unrecognized_types: None,
+            },
+            context: event::Context {
+                app_version: app_version.to_string(),
+                os: event::os_family(),
+            },
+        };
+        let payload = serde_json::to_string(&event)?;
+        Store::queue_analytics_event_in(
+            transaction,
+            EventName::AnalyticsOptedOut.as_str(),
+            &payload,
+        )?;
+        Ok(())
+    }
+
+    /// Serialize settings writes with opt-out cleanup.
+    pub struct SettingsTransitionGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    pub fn lock_settings_transition() -> SettingsTransitionGuard {
+        SettingsTransitionGuard {
+            _guard: OPT_OUT_LIFECYCLE_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        }
+    }
+
     /// Whether an event may be recorded right now.
     ///
     /// Read fresh, and default to *not* acting: an unreadable preference is not
@@ -251,6 +376,7 @@ mod enabled {
     }
 
     fn record_event(app: &tauri::AppHandle, name: EventName, facts: Facts) -> bool {
+        let _lifecycle = lock_settings_transition();
         let _capture = CAPTURE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -319,6 +445,10 @@ mod enabled {
         app: &tauri::AppHandle,
         diagnostic: crate::provider_usage::live::anthropic::LimitResetDiagnostic,
     ) {
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !allowed(app) {
             return;
         }
@@ -328,7 +458,7 @@ mod enabled {
         if *last == Some(diagnostic) {
             return;
         }
-        if record_event(
+        if record_event_locked(
             app,
             EventName::ClaudeLimitResetObserved,
             event::claude_limit_reset_facts(diagnostic),
@@ -346,6 +476,10 @@ mod enabled {
     /// failed this pass has no snapshot in the slice, so it contributes no
     /// observation and its last reported band is left exactly as it was.
     pub fn record_usage_observed(app: &tauri::AppHandle, snapshots: &[ProviderUsageSnapshot]) {
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !allowed(app) {
             return;
         }
@@ -360,7 +494,7 @@ mod enabled {
             if !usage_observed_is_new(&last, label, detail, band) {
                 continue;
             }
-            if record_event(
+            if record_event_locked(
                 app,
                 EventName::UsageObserved,
                 Facts {
@@ -457,12 +591,17 @@ mod enabled {
         learned
             .iter()
             .filter_map(|factor| {
-                let label = LiveUsageProvider::from_provider_id(&factor.provider)?.as_str();
+                let provider = LiveUsageProvider::from_provider_id(&factor.provider)?;
+                let label = provider.as_str();
                 let detail = limit_factor_lane_detail(factor.lane)?;
                 Some(LimitFactorObservation {
                     label,
                     detail,
-                    plan: event::map_plan(factor.plan.as_deref()),
+                    plan: event::map_plan(
+                        provider,
+                        factor.plan.as_deref(),
+                        factor.plan_tier.as_deref(),
+                    ),
                     factor_band: event::factor_band(factor.usd_per_percent),
                     residual_band: event::residual_band(factor.residual),
                 })
@@ -502,6 +641,10 @@ mod enabled {
     /// pass, only the first account processed for a pair can report; see
     /// `docs/plans/limit-factor-estimation.md`'s Phase 3 decisions.
     pub fn record_limit_factor_observed(app: &tauri::AppHandle, learned: &[LearnedFactor]) {
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !allowed(app) {
             return;
         }
@@ -523,7 +666,7 @@ mod enabled {
             if !limit_factor_observed_is_new(&last, key, tuple, now) {
                 continue;
             }
-            if record_event(
+            if record_event_locked(
                 app,
                 EventName::LimitFactorObserved,
                 Facts {
@@ -614,6 +757,7 @@ mod enabled {
         provider: LiveUsageProvider,
         state: LiveUsageState,
     ) {
+        let _lifecycle = lock_settings_transition();
         if !allowed(app) {
             return;
         }
@@ -630,7 +774,10 @@ mod enabled {
             origin: Origin::User,
         }
         .resolve();
-        if record_event(app, name, facts) {
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if record_event_locked(app, name, facts) {
             visit.live_usage_states.push((provider, state));
         }
     }
@@ -722,6 +869,7 @@ mod enabled {
 
     /// Record the first successful reveal of the active setup flow.
     pub fn record_onboarding_started(app: &tauri::AppHandle) {
+        let _lifecycle = lock_settings_transition();
         let flow = onboarding_flow(app);
         let mut capture = ONBOARDING_CAPTURE
             .lock()
@@ -736,7 +884,10 @@ mod enabled {
         if capture.started {
             return;
         }
-        if record_event(
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if record_event_locked(
             app,
             EventName::OnboardingStarted,
             Facts {
@@ -750,6 +901,7 @@ mod enabled {
 
     /// Record the committed completion of the active setup flow once.
     pub fn record_onboarding_finished(app: &tauri::AppHandle) {
+        let _lifecycle = lock_settings_transition();
         let flow = onboarding_flow(app);
         let mut capture = ONBOARDING_CAPTURE
             .lock()
@@ -764,7 +916,10 @@ mod enabled {
         if capture.finished {
             return;
         }
-        if record_event(
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if record_event_locked(
             app,
             EventName::OnboardingFinished,
             Facts {
@@ -1061,6 +1216,9 @@ mod enabled {
     /// Serializes consent checks, capture, and consent withdrawal.
     static CAPTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Serializes ordinary and final queue drains.
+    static FLUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// The run identifier to stamp on an event, minting or rolling it as needed.
     fn current_session_id() -> String {
         let now = std::time::Instant::now();
@@ -1122,7 +1280,7 @@ mod enabled {
     /// `commands.rs` so the queue can never drift out of step with the switch.
     ///
     /// A consent change also resets and wakes the resource sampler. Opt-out
-    /// still clears the queue and identifiers before any later report.
+    /// queues one final signal, then withdraws all remaining local state.
     pub fn handle_settings_transition(
         app: &tauri::AppHandle,
         previous: &AppSettings,
@@ -1131,23 +1289,84 @@ mod enabled {
         if saved.analytics_enabled != previous.analytics_enabled {
             resources::settings_changed(app);
         }
-        if saved.analytics_enabled || !previous.analytics_enabled {
+        if saved.analytics_enabled {
+            if !previous.analytics_enabled {
+                finish_reenabled_opt_out(app);
+            }
             return;
         }
-        let Some(store) = app.try_state::<Store>() else {
+        if !previous.analytics_enabled {
+            return;
+        }
+        if app.try_state::<Store>().is_none() {
             reset_suppression();
             return;
+        }
+        let generation = begin_opt_out();
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = flush_opt_out_once(&handle, generation).await;
+            finish_opt_out(&handle, generation);
+        });
+    }
+
+    static NEXT_OPT_OUT_GENERATION: AtomicU64 = AtomicU64::new(0);
+    static ACTIVE_OPT_OUT_GENERATION: AtomicU64 = AtomicU64::new(0);
+    static OPT_OUT_LIFECYCLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn begin_opt_out() -> u64 {
+        let generation = NEXT_OPT_OUT_GENERATION
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let generation = if generation == 0 { 1 } else { generation };
+        ACTIVE_OPT_OUT_GENERATION.store(generation, Ordering::Release);
+        generation
+    }
+
+    fn opt_out_is_active(generation: u64) -> bool {
+        ACTIVE_OPT_OUT_GENERATION.load(Ordering::Acquire) == generation
+    }
+
+    fn cancel_opt_out() {
+        ACTIVE_OPT_OUT_GENERATION.store(0, Ordering::Release);
+    }
+
+    fn finish_reenabled_opt_out(app: &tauri::AppHandle) {
+        cancel_opt_out();
+        if let Some(store) = app.try_state::<Store>() {
+            clear_local_state(&store);
+        } else {
+            reset_suppression();
+        }
+    }
+
+    fn finish_opt_out(app: &tauri::AppHandle, generation: u64) {
+        let _lifecycle = lock_settings_transition();
+        let Some(store) = app.try_state::<Store>() else {
+            if opt_out_is_active(generation) {
+                cancel_opt_out();
+                reset_suppression();
+            }
+            return;
         };
-        clear_local_state(&store);
+        // Re-enable can commit before this worker reaches cleanup. Check the
+        // persisted preference while holding the lifecycle lock, so fresh
+        // identity state is never removed by an old opt-out task.
+        if opt_out_is_active(generation)
+            && store
+                .settings()
+                .ok()
+                .is_some_and(|settings| !settings.analytics_enabled)
+        {
+            clear_local_state(&store);
+            cancel_opt_out();
+        }
     }
 
     /// Remove all analytics state after either opt-out mechanism is used.
     fn clear_local_state(store: &Store) {
-        // Opting out is immediate and total: anything already queued is withdrawn,
-        // not merely paused, and both identifiers go with it. The run identifier
-        // lives in memory rather than in the store, so it has to be dropped
-        // separately or opting out and back in inside the same launch would resume
-        // the session that was just withdrawn.
+        // Final cleanup withdraws anything that was not delivered. The run
+        // identifier lives in memory, so it also needs a separate reset.
         {
             let _capture = CAPTURE_LOCK
                 .lock()
@@ -1179,6 +1398,13 @@ mod enabled {
                 clear_local_state(&store);
             }
             return;
+        }
+        // A crash after the atomic opt-out transaction leaves its signal on
+        // disk. The next launch completes withdrawal without retrying it.
+        if let Some(store) = app.try_state::<Store>()
+            && store.analytics_opt_out_pending().unwrap_or(false)
+        {
+            clear_local_state(&store);
         }
         if !available() {
             return;
@@ -1232,6 +1458,7 @@ mod enabled {
         generation: u64,
         summary: resources::schema::ResourceUsageSummary,
     ) {
+        let _lifecycle = lock_settings_transition();
         let _capture = CAPTURE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1258,8 +1485,53 @@ mod enabled {
     /// machine was offline is still worth sending later, and a call site that
     /// blocks on the network to report on itself has its priorities inverted.
     async fn flush_once(app: &tauri::AppHandle) -> FlushOutcome {
-        if !allowed(app) {
+        flush_once_with_mode(app, None).await
+    }
+
+    /// Deliver one final bounded pass while the durable opt-out is active.
+    async fn flush_opt_out_once(app: &tauri::AppHandle, generation: u64) -> FlushOutcome {
+        match tokio::time::timeout(
+            Duration::from_secs(30),
+            flush_once_with_mode(app, Some(generation)),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => FlushOutcome::Failed {
+                remaining: app
+                    .try_state::<Store>()
+                    .and_then(|store| store.analytics_event_count().ok())
+                    .unwrap_or(0),
+            },
+        }
+    }
+
+    async fn flush_once_with_mode(
+        app: &tauri::AppHandle,
+        opt_out_generation: Option<u64>,
+    ) -> FlushOutcome {
+        let permitted = |app: &tauri::AppHandle| match opt_out_generation {
+            Some(generation) => {
+                opt_out_is_active(generation)
+                    && available()
+                    && !environment_disabled()
+                    && app
+                        .try_state::<Store>()
+                        .and_then(|store| store.settings().ok())
+                        .is_some_and(|settings| !settings.analytics_enabled)
+            }
+            None => allowed(app),
+        };
+        if !permitted(app) {
             return FlushOutcome::Suspended;
+        }
+        if opt_out_generation.is_some()
+            && !app
+                .try_state::<Store>()
+                .and_then(|store| store.analytics_opt_out_pending().ok())
+                .unwrap_or(false)
+        {
+            return FlushOutcome::Empty;
         }
         let Some(base) = config::endpoint() else {
             return FlushOutcome::Suspended;
@@ -1267,6 +1539,24 @@ mod enabled {
         let Some(store) = app.try_state::<Store>() else {
             return FlushOutcome::Suspended;
         };
+        flush_pending_events(&store, base, || permitted(app)).await
+    }
+
+    async fn flush_pending_events(
+        store: &Store,
+        base: &str,
+        permitted: impl Fn() -> bool,
+    ) -> FlushOutcome {
+        flush_pending_events_with_timeout(store, base, permitted, REQUEST_TIMEOUT).await
+    }
+
+    async fn flush_pending_events_with_timeout(
+        store: &Store,
+        base: &str,
+        permitted: impl Fn() -> bool,
+        request_timeout: Duration,
+    ) -> FlushOutcome {
+        let _flush = FLUSH_LOCK.lock().await;
         let Ok(pending) = store.pending_analytics_events(delivery::REQUEST_BUDGET) else {
             return FlushOutcome::Suspended;
         };
@@ -1274,7 +1564,7 @@ mod enabled {
             return FlushOutcome::Empty;
         }
         ensure_crypto_provider();
-        let Ok(client) = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build() else {
+        let Ok(client) = reqwest::Client::builder().timeout(request_timeout).build() else {
             return FlushOutcome::Failed {
                 remaining: store.analytics_event_count().unwrap_or(0),
             };
@@ -1291,7 +1581,7 @@ mod enabled {
             // off withdraws what is queued — a batch that kept posting after the
             // switch moved would make that promise false in exactly the moment it
             // matters most.
-            if !allowed(app) {
+            if !permitted() {
                 suspended = true;
                 break;
             }
@@ -1381,6 +1671,20 @@ mod enabled {
                 types: types.iter().map(|name| name.to_string()).collect(),
                 ..UnrecognizedRecords::default()
             }
+        }
+
+        #[test]
+        fn opt_out_generations_do_not_reuse_a_cancelled_token() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            cancel_opt_out();
+            let first = begin_opt_out();
+            cancel_opt_out();
+            let second = begin_opt_out();
+
+            assert_ne!(first, second);
+            assert!(!opt_out_is_active(first));
+            assert!(opt_out_is_active(second));
+            cancel_opt_out();
         }
 
         /// The delivery client must actually build.
@@ -1615,6 +1919,7 @@ mod enabled {
             lane: &'static str,
             usd_per_percent: f64,
             plan: Option<&str>,
+            plan_tier: Option<&str>,
             residual: Option<(f64, f64)>,
         ) -> LearnedFactor {
             LearnedFactor {
@@ -1622,6 +1927,7 @@ mod enabled {
                 lane,
                 usd_per_percent,
                 plan: plan.map(str::to_string),
+                plan_tier: plan_tier.map(str::to_string),
                 residual,
             }
         }
@@ -1633,6 +1939,7 @@ mod enabled {
                 crate::store::provider_limit::LANE_FIVE_HOUR,
                 5.0,
                 Some("Max"),
+                Some("default_claude_max_5x"),
                 Some((50.0, 48.0)),
             )];
             assert_eq!(
@@ -1640,7 +1947,7 @@ mod enabled {
                 vec![LimitFactorObservation {
                     label: "anthropic",
                     detail: "short",
-                    plan: "max",
+                    plan: "max_5x",
                     factor_band: "4_to_under_8",
                     residual_band: "within_5",
                 }]
@@ -1655,6 +1962,7 @@ mod enabled {
                 40.0,
                 None,
                 None,
+                None,
             )];
             let candidates = limit_factor_observed_candidates(&learned);
             assert_eq!(candidates[0].detail, "long");
@@ -1664,11 +1972,37 @@ mod enabled {
         }
 
         #[test]
+        fn provider_tiers_reach_the_candidate_event_as_closed_plan_values() {
+            let learned = vec![
+                learned_factor(
+                    crate::provider_usage::providers::ANTHROPIC,
+                    crate::store::provider_limit::LANE_FIVE_HOUR,
+                    5.0,
+                    Some("max"),
+                    Some("default_claude_max_20x"),
+                    None,
+                ),
+                learned_factor(
+                    crate::provider_usage::providers::OPENAI,
+                    crate::store::provider_limit::LANE_FIVE_HOUR,
+                    5.0,
+                    Some("prolite"),
+                    None,
+                    None,
+                ),
+            ];
+            let candidates = limit_factor_observed_candidates(&learned);
+            assert_eq!(candidates[0].plan, "max_20x");
+            assert_eq!(candidates[1].plan, "prolite");
+        }
+
+        #[test]
         fn an_unrecognized_provider_or_lane_reports_nothing() {
             let unrecognized_provider = vec![learned_factor(
                 "some-future-provider",
                 crate::store::provider_limit::LANE_WEEKLY,
                 5.0,
+                None,
                 None,
                 None,
             )];
@@ -1680,6 +2014,7 @@ mod enabled {
                 5.0,
                 None,
                 None,
+                None,
             )];
             assert!(limit_factor_observed_candidates(&unrecognized_lane).is_empty());
         }
@@ -1688,8 +2023,9 @@ mod enabled {
         fn a_pair_fires_first_then_only_on_a_changed_tuple_at_least_a_day_later() {
             let mut last = BTreeMap::new();
             let key = ("anthropic", "short");
-            let tuple_a = ("max", "2_to_under_4", "within_5");
-            let tuple_b = ("max", "4_to_under_8", "within_5");
+            let tuple_a = ("max_5x", "2_to_under_4", "within_5");
+            let tuple_b = ("max_20x", "2_to_under_4", "within_5");
+            let tuple_c = ("max_5x", "4_to_under_8", "within_5");
             let start = Instant::now();
 
             assert!(
@@ -1712,6 +2048,15 @@ mod enabled {
                 "a changed tuple inside the 24-hour floor is still suppressed"
             );
             assert!(
+                !limit_factor_observed_is_new(
+                    &last,
+                    key,
+                    tuple_c,
+                    start + Duration::from_secs(3_600)
+                ),
+                "a changed factor band inside the 24-hour floor is still suppressed"
+            );
+            assert!(
                 limit_factor_observed_is_new(
                     &last,
                     key,
@@ -1720,6 +2065,12 @@ mod enabled {
                 ),
                 "a changed tuple past the floor fires again"
             );
+            assert!(limit_factor_observed_is_new(
+                &last,
+                key,
+                tuple_c,
+                start + LIMIT_FACTOR_MIN_INTERVAL
+            ));
             // A different pair is judged independently.
             assert!(limit_factor_observed_is_new(
                 &last,
@@ -2027,6 +2378,305 @@ mod enabled {
             assert!(older_than_lifetime("not a timestamp"));
             assert!(older_than_lifetime("2000-01-01T00:00:00Z"));
             assert!(!older_than_lifetime(&crate::store::now_rfc3339()));
+        }
+
+        fn collector(
+            expected_requests: usize,
+            response_delay: Duration,
+        ) -> (
+            String,
+            std::sync::mpsc::Receiver<Vec<u8>>,
+            std::thread::JoinHandle<()>,
+        ) {
+            use std::io::{Read, Write};
+            use std::net::TcpListener;
+
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let endpoint = http_endpoint(
+                &listener.local_addr().unwrap().ip().to_string(),
+                listener.local_addr().unwrap().port(),
+            );
+            let (sent, received) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                for _ in 0..expected_requests {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    let header_end = loop {
+                        let read = stream.read(&mut buffer).unwrap();
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                        if let Some(end) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            break end + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    while request.len() < header_end + length {
+                        let read = stream.read(&mut buffer).unwrap();
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                    }
+                    sent.send(request[header_end..header_end + length].to_vec())
+                        .unwrap();
+                    if !response_delay.is_zero() {
+                        std::thread::sleep(response_delay);
+                    }
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            });
+            (endpoint, received, worker)
+        }
+
+        fn http_endpoint(host: &str, port: u16) -> String {
+            format!("{}://{}:{}", "http", host, port)
+        }
+
+        fn opt_out_transition_store() -> (Store, tempfile::TempDir) {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open_in_memory(directory.path()).unwrap();
+            store
+                .set_analytics_identity("11111111-1111-4111-8111-111111111111")
+                .unwrap();
+            store
+                .queue_analytics_event("antiburn.app_launched", r#"{"event":"old"}"#)
+                .unwrap();
+            (store, directory)
+        }
+
+        #[test]
+        fn the_production_transition_queues_one_fixed_signal_with_existing_identity() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let (store, _directory) = opt_out_transition_store();
+            let mut disabled = store.settings().unwrap();
+            disabled.analytics_enabled = false;
+
+            let (previous, saved, ()) = store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+
+            assert!(previous.analytics_enabled);
+            assert!(!saved.analytics_enabled);
+            assert_eq!(
+                store.analytics_identity().unwrap().unwrap().0,
+                "11111111-1111-4111-8111-111111111111"
+            );
+            let pending = store.pending_analytics_events(50).unwrap();
+            assert_eq!(pending.len(), 2);
+            assert!(pending[0].1.contains("antiburn.analytics_opted_out"));
+            let payload: serde_json::Value = serde_json::from_str(&pending[0].1).unwrap();
+            assert_eq!(payload["event"], "antiburn.analytics_opted_out");
+            assert_eq!(
+                payload["anonymousId"],
+                "11111111-1111-4111-8111-111111111111"
+            );
+            let properties = payload["properties"].as_object().unwrap();
+            assert_eq!(properties["arch"], event::arch());
+            assert!(
+                properties
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "arch")
+                    .all(|(_, value)| value.is_null())
+            );
+        }
+
+        #[test]
+        fn final_transition_delivery_drains_the_signal_and_backlog_before_cleanup() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let (store, _directory) = opt_out_transition_store();
+            let mut disabled = store.settings().unwrap();
+            disabled.analytics_enabled = false;
+            store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+            let (endpoint, received, worker) = collector(2, Duration::ZERO);
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = runtime.block_on(flush_pending_events_with_timeout(
+                &store,
+                &endpoint,
+                || true,
+                Duration::from_secs(2),
+            ));
+            assert_eq!(outcome, FlushOutcome::Empty);
+            let first: serde_json::Value =
+                serde_json::from_slice(&received.recv().unwrap()).unwrap();
+            assert_eq!(first["event"], "antiburn.analytics_opted_out");
+            let _second = received.recv().unwrap();
+            worker.join().unwrap();
+            assert_eq!(store.analytics_event_count().unwrap(), 0);
+            assert!(store.analytics_identity().unwrap().is_some());
+
+            clear_local_state(&store);
+            assert!(store.analytics_identity().unwrap().is_none());
+            assert_eq!(store.analytics_event_count().unwrap(), 0);
+        }
+
+        #[test]
+        fn failed_or_timed_out_final_delivery_still_cleans_up_without_retry() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            for (delay, timeout) in [
+                (Duration::ZERO, Duration::from_secs(2)),
+                (Duration::from_millis(100), Duration::from_millis(10)),
+            ] {
+                let (store, _directory) = opt_out_transition_store();
+                let mut disabled = store.settings().unwrap();
+                disabled.analytics_enabled = false;
+                store
+                    .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                        prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                    })
+                    .unwrap();
+                let endpoint = if delay.is_zero() {
+                    // No listener means a refused connection tests a transport failure.
+                    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                    let endpoint = http_endpoint(
+                        &listener.local_addr().unwrap().ip().to_string(),
+                        listener.local_addr().unwrap().port(),
+                    );
+                    drop(listener);
+                    endpoint
+                } else {
+                    let (endpoint, _received, worker) = collector(1, delay);
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    let outcome = runtime.block_on(flush_pending_events_with_timeout(
+                        &store,
+                        &endpoint,
+                        || true,
+                        timeout,
+                    ));
+                    assert!(matches!(outcome, FlushOutcome::Failed { .. }));
+                    let _ = worker.join();
+                    clear_local_state(&store);
+                    assert!(store.analytics_identity().unwrap().is_none());
+                    assert_eq!(store.analytics_event_count().unwrap(), 0);
+                    continue;
+                };
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let outcome = runtime.block_on(flush_pending_events_with_timeout(
+                    &store,
+                    &endpoint,
+                    || true,
+                    timeout,
+                ));
+                assert!(matches!(outcome, FlushOutcome::Failed { .. }));
+                clear_local_state(&store);
+                assert!(store.analytics_identity().unwrap().is_none());
+                assert_eq!(store.analytics_event_count().unwrap(), 0);
+            }
+        }
+
+        #[test]
+        fn a_second_disabled_transition_does_not_append_a_duplicate_signal() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let (store, _directory) = opt_out_transition_store();
+            let mut disabled = store.settings().unwrap();
+            disabled.analytics_enabled = false;
+            store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+            let (_, _, ()) = store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+            assert_eq!(
+                store
+                    .pending_analytics_events(50)
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, payload)| payload.contains("antiburn.analytics_opted_out"))
+                    .count(),
+                1
+            );
+        }
+
+        #[test]
+        fn final_delivery_gate_can_stop_a_pass_before_it_sends_or_removes_rows() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let (store, _directory) = opt_out_transition_store();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = runtime.block_on(flush_pending_events_with_timeout(
+                &store,
+                &http_endpoint("127.0.0.1", 1),
+                || false,
+                Duration::from_millis(10),
+            ));
+            assert_eq!(outcome, FlushOutcome::Suspended);
+            assert_eq!(store.analytics_event_count().unwrap(), 1);
+            clear_local_state(&store);
+            assert_eq!(store.analytics_event_count().unwrap(), 0);
+            assert!(store.analytics_identity().unwrap().is_none());
+        }
+
+        #[test]
+        fn opt_out_preparation_without_an_identity_does_not_mint_or_queue() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open_in_memory(directory.path()).unwrap();
+            let mut disabled = store.settings().unwrap();
+            disabled.analytics_enabled = false;
+            store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+            assert!(store.analytics_identity().unwrap().is_none());
+            assert_eq!(store.analytics_event_count().unwrap(), 0);
         }
     }
 }

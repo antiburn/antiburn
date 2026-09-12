@@ -1,6 +1,11 @@
-import type { ChecksCategoryPayload, ChecksReportPayload } from "../insightsIpc"
+import type {
+  BurnCheckDetectorId,
+  ChecksCategoryPayload,
+  ChecksReportPayload,
+} from "../insightsIpc"
+import { aggregateBurnCheckPresentation, type BurnCheckPresentation } from "./burnChecks"
 
-export const CHECK_LABELS: Record<string, string> = {
+export const CHECK_LABELS: Record<BurnCheckDetectorId, string> = {
   sessionsOverDepth: "Session overdepth",
   modelOverthinking: "Model overthinking",
   overpoweredSubagents: "Overpowered subagents",
@@ -21,7 +26,15 @@ export interface ChecksPresentation {
   wins: ChecksCategoryPayload[]
   unavailable: ChecksCategoryPayload[]
   refreshUnavailable: boolean
+  burnChecks: BurnCheckPresentation
   estimate: ChecksEstimate
+}
+
+export interface ChecksHeroPresentation {
+  result: string
+  summary: string | null
+  state: "failed" | "passed" | "pending"
+  tone: string
 }
 
 function estimateOrder(category: ChecksCategoryPayload): number {
@@ -41,9 +54,37 @@ export function checksPresentation(
       (category) => category.finding === 0 && category.clean === 0,
     ),
     refreshUnavailable,
+    burnChecks: aggregateBurnCheckPresentation(report, refreshUnavailable),
     estimate: {
       tokenBurnBasisPoints: report.estimatedTokenBurnBasisPoints,
     },
+  }
+}
+
+export function checksHeroPresentation(
+  presentation: ChecksPresentation,
+): ChecksHeroPresentation {
+  const failureCount = presentation.failures.length
+  if (failureCount > 0) {
+    const failed = `${failureCount} check${failureCount === 1 ? "" : "s"} failed`
+    const basisPoints = presentation.estimate.tokenBurnBasisPoints
+    return {
+      result:
+        basisPoints == null ? failed : `${formatTokenBurnPercent(basisPoints)} token burn`,
+      summary: basisPoints == null ? null : failed,
+      state: "failed",
+      tone: basisPoints == null ? "text-system-red-text" : tokenBurnTone(basisPoints),
+    }
+  }
+
+  const completePass = presentation.wins.length > 0
+  return {
+    result: completePass ? "No issues found" : "No checks assessed",
+    summary: completePass
+      ? `${presentation.wins.length} check${presentation.wins.length === 1 ? "" : "s"} passed`
+      : null,
+    state: completePass ? "passed" : "pending",
+    tone: "text-label",
   }
 }
 

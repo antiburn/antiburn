@@ -21,7 +21,7 @@
           "value": {
             "observed": {
               "accounting": "uncached_input",
-              "paidTokens": 0,
+              "paidTokens": 400,
               "pairsConsidered": 0,
               "pairsSkipped": 1,
               "repeatedTokens": 0
@@ -201,14 +201,14 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 22,
+      "analyzerRevision": 24,
       "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "complete",
         "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 32,
+      "parserRevision": 34,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },

@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43,
+    V41, V42, V43, V44, V45, V46,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -936,4 +936,75 @@ WHEN NOT (
 BEGIN
     SELECT RAISE(ABORT, 'invalid remediation state transition');
 END;
+"#;
+
+/// v44 stores safe remediation display facts and durable aggregate wins.
+///
+/// Existing v43 rows stay `NULL`: the migration cannot safely infer display,
+/// origin, or exact evidence boundaries from private watch documents. A
+/// contribution contains only bounded derived facts. It has no session foreign
+/// key, so normal session retention does not erase a confirmed win.
+const V44: &str = r#"
+ALTER TABLE remediation ADD COLUMN origin TEXT
+    CHECK (origin IN ('passive', 'action'));
+ALTER TABLE remediation ADD COLUMN display_snapshot_json TEXT CHECK (
+    display_snapshot_json IS NULL OR (
+        length(CAST(display_snapshot_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(display_snapshot_json)
+        AND json_type(display_snapshot_json, '$.version') IS 'integer'
+        AND json_extract(display_snapshot_json, '$.version') = 1));
+ALTER TABLE remediation ADD COLUMN verified_boundary_ms INTEGER CHECK (
+    verified_boundary_ms IS NULL OR (
+        verified_boundary_ms >= 0
+        AND effective_boundary_ms IS NOT NULL
+        AND verified_boundary_ms >= effective_boundary_ms));
+ALTER TABLE remediation ADD COLUMN recurred_boundary_ms INTEGER CHECK (
+    recurred_boundary_ms IS NULL OR (
+        recurred_boundary_ms >= 0
+        AND verified_boundary_ms IS NOT NULL
+        AND recurred_boundary_ms >= verified_boundary_ms));
+
+CREATE TABLE remediation_contribution (
+    owner_key TEXT PRIMARY KEY NOT NULL CHECK (length(owner_key) BETWEEN 1 AND 256),
+    remediation_id TEXT NOT NULL CHECK (length(remediation_id) BETWEEN 1 AND 256),
+    detector_id TEXT NOT NULL CHECK (length(detector_id) BETWEEN 1 AND 64),
+    origin TEXT NOT NULL CHECK (origin IN ('passive', 'action')),
+    display_snapshot_json TEXT NOT NULL CHECK (
+        length(CAST(display_snapshot_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(display_snapshot_json)
+        AND json_type(display_snapshot_json, '$.version') IS 'integer'
+        AND json_extract(display_snapshot_json, '$.version') = 1),
+    facts_json TEXT NOT NULL CHECK (
+        length(CAST(facts_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(facts_json)
+        AND json_type(facts_json, '$.version') IS 'integer'
+        AND json_extract(facts_json, '$.version') = 1),
+    starts_at_ms INTEGER NOT NULL CHECK (starts_at_ms >= 0),
+    ends_at_ms INTEGER NOT NULL CHECK (ends_at_ms >= starts_at_ms),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= ends_at_ms)
+) STRICT;
+
+CREATE INDEX remediation_contribution_recent
+    ON remediation_contribution (ends_at_ms DESC, owner_key DESC);
+CREATE INDEX remediation_contribution_remediation
+    ON remediation_contribution (remediation_id);
+"#;
+
+/// v45 marks deliberate actions that join an existing passive attempt.
+///
+/// The migration does not scan old evidence. Only a later winning publication
+/// can create a passive attempt after this schema is installed.
+const V45: &str = r#"
+ALTER TABLE remediation ADD COLUMN action_joined_at_ms INTEGER CHECK (
+    action_joined_at_ms IS NULL OR action_joined_at_ms >= 0);
+ALTER TABLE remediation ADD COLUMN joined_boundary_ms INTEGER CHECK (
+    joined_boundary_ms IS NULL OR joined_boundary_ms >= 0);
+"#;
+
+/// v46 stores exact reasoning-setting attribution without changing shipped model attribution.
+const V46: &str = r#"
+ALTER TABLE session_evidence ADD COLUMN effective_reasoning_target_hash TEXT;
+ALTER TABLE session_evidence ADD COLUMN effective_reasoning_scope TEXT
+    CHECK (effective_reasoning_scope IN ('global', 'project'));
+ALTER TABLE session_evidence ADD COLUMN effective_reasoning TEXT;
 "#;

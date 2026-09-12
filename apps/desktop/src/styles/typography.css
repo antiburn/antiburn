@@ -77,6 +77,13 @@
   letter-spacing: 0.06px;
 }
 
+/* Use this step only for transient metadata in a constrained list row. */
+.type-metadata {
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0.08px;
+}
+
 /* Limit the text to the selected number of lines. */
 .truncated-text-lines {
   display: -webkit-box;
