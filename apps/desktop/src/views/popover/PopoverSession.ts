@@ -318,9 +318,9 @@ export class PopoverSession {
     void this.startPopoverVisibility(generation)
     void this.listenLiveUsage(generation)
 
-    // ⌘, opens Settings — the platform's standard preferences shortcut, which
-    // an accessory app with no application menu has to own itself. Bound
-    // alongside Escape on `window`, deliberately: it is the last object in an
+    // The preferences shortcut opens Settings. The window listener supports
+    // the nonactivating popover and platforms without an application menu.
+    // It is bound alongside Escape on `window`: this is the last object in an
     // event's propagation path, so every surface listening on `document` has
     // already had its chance to claim the key first.
     window.addEventListener("keydown", this.onWindowKeyDown)

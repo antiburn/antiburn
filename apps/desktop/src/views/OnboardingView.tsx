@@ -1,7 +1,8 @@
-import { useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent } from "react"
+import { useState, useSyncExternalStore } from "react"
 
 import { PushButton } from "../components/ui/PushButton"
-import { closeCurrentWindow } from "../lib/ipc"
+import { closeCurrentWindow, openSettingsWindow } from "../lib/ipc"
+import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { OnboardingFlow } from "./onboarding/OnboardingFlow"
 import { OnboardingSession } from "./onboarding/OnboardingSession"
 
@@ -19,6 +20,7 @@ export function OnboardingView() {
     session.getSnapshot,
     session.getSnapshot,
   )
+  useGlobalKeydown(true, handleWindowKeyDown)
 
   if (state.loadState === "loading") {
     return (
@@ -50,7 +52,7 @@ export function OnboardingView() {
   )
 
   return (
-    <div className="h-full" onKeyDownCapture={handleWindowKeyDown}>
+    <div className="h-full">
       <OnboardingFlow
         defaultRoots={state.defaultRoots}
         blockedRoots={blockedRoots}
@@ -83,7 +85,12 @@ export function OnboardingView() {
   )
 }
 
-function handleWindowKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+function handleWindowKeyDown(event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key === ",") {
+    event.preventDefault()
+    void openSettingsWindow()
+    return
+  }
   if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "w") {
     event.preventDefault()
     void closeCurrentWindow()

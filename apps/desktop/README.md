@@ -146,12 +146,14 @@ Settings teardown, and the memory rules behind those policies.
   frame is capped at 85% of each usable display dimension. Saved user sizes
   retain their dimensions within the available work area. The navigation shell
   uses a persistent 220px sidebar with dense desktop rows. Burn checks is the
-  default section. Sessions shows the session list and selected detail. The sidebar Settings action and
-  Command+, (Control+, on Windows and Linux) open the existing Settings window; see the
-  [main-window validation runbook](../../docs/runbooks/main-window.md).
+  default section. Sessions shows the session list and selected detail. The
+  sidebar Settings action opens the existing Settings window. Command+,
+  (Control+, on Windows and Linux) opens it from the main window, onboarding,
+  and popover; see the [main-window validation runbook](../../docs/runbooks/main-window.md).
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
   menu with Open antiburn, Pin Window, Settings, and Quit. Native application
-  menus also provide Quit. Explicit Quit stops the
+  menus also provide Quit. On macOS, the antiburn application menu provides
+  Settings... with Command+,. Explicit Quit stops the
   application; closing the main window does not. On macOS the
   item stays highlighted for as long as the popover is open: the system's own
   highlight is momentary and lets go on mouse-up, so the shell drives it, and

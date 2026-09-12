@@ -587,9 +587,9 @@ export async function takeSettingsPane(): Promise<string | null> {
  * `core:window:allow-close` in `capabilities/default.json` — the ACL's
  * `core:window:default` set is read-only.
  *
- * Used by the two windows that own a ⌘W: settings, and the first-run flow.
- * Both are accessory-app windows with no application menu, so the standard
- * shortcut has no owner unless the view handles it.
+ * Used by the two windows that own Command-W: Settings and the first-run flow.
+ * Their view handlers keep Command-W and Control-W available across platform
+ * menu configurations.
  */
 export async function closeCurrentWindow(): Promise<void> {
   if (!hasShell()) return
