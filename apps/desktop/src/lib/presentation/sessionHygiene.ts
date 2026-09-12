@@ -118,14 +118,14 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     cleanTitle: "Cache rehydration under control",
     findingTitle: "Cache rehydration out of control",
     notAssessedTitle: "Cache rehydration not assessed",
-    summary: "Spending tokens to refresh the server-side cache is a waste of money/quota.",
+    summary: "Repeated full-price context processing can increase cost and quota use.",
     guidance: [
       "Avoid long breaks in sessions.",
       "If you have a long break, compact before or even after it.",
       "Avoid switching models with a large context accumulated.",
     ],
     explainer:
-      "When the cache expires mid-session, the next turn rewrites the whole context at full price. Long idle gaps are the usual cause.",
+      "This estimates paid context beyond context growth. Cache expiry, context changes, and provider evictions can contribute; the estimate does not establish the cause.",
   },
 ]
 

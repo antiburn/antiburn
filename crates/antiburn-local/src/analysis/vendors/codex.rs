@@ -2006,8 +2006,7 @@ fn usage_record_format(value: &Value) -> Option<UsageRecordFormat> {
     }
 }
 
-/// A cross-format match needs a timestamp because equal per-response usage
-/// can belong to distinct requests. Keep the window short and retain one candidate.
+/// A match with different cumulative totals requires timestamps within this window.
 const CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS: u64 = 5_000;
 
 fn usage_record_is_duplicate(
@@ -2040,12 +2039,17 @@ fn usage_record_is_duplicate(
         prior.owned == current.owned
             && prior.format != current.format
             && prior.key == current.key
-            && prior
-                .ts_ms
-                .zip(current.ts_ms)
-                .is_some_and(|(prior, current)| {
-                    prior.abs_diff(current) <= CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS
-                })
+            && (prior
+                .key
+                .1
+                .as_object()
+                .is_some_and(|usage| !usage.is_empty())
+                || prior
+                    .ts_ms
+                    .zip(current.ts_ms)
+                    .is_some_and(|(prior, current)| {
+                        prior.abs_diff(current) <= CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS
+                    }))
     });
 
     let mismatched_cross_format_repeat = !same_format_repeat
@@ -2357,7 +2361,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 18_370_784_376_499_888_089;
+        const EXPECTED_FINGERPRINT: u64 = 17_590_009_681_109_556_840;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -3554,7 +3558,7 @@ mod tests {
         }
 
         #[test]
-        fn a_resumed_legacy_usage_record_deduplicates_after_a_new_record() {
+        fn a_delayed_resumed_legacy_record_deduplicates_after_a_new_record() {
             let first_records = concat!(
                 r#"{"timestamp":"2026-09-02T00:00:00Z","type":"turn_context","payload":{"effort":"high"}}"#,
                 "\n",
@@ -3562,7 +3566,7 @@ mod tests {
                 "\n",
             );
             let legacy_record = concat!(
-                r#"{"timestamp":"2026-09-02T00:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":96000,"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":35},"total_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":35}}}}"#,
+                r#"{"timestamp":"2026-09-02T00:01:04Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":96000,"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":35},"total_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":35}}}}"#,
                 "\n",
             );
             let directory = TempDir::new().expect("tempdir");

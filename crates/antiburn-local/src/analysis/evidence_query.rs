@@ -67,9 +67,7 @@ pub struct TurnFacts {
     /// The same sum under uncached-input billing: paid context
     /// (`input_tokens`) beyond positive growth.
     pub repeated_context_uncached_input_tokens: u64,
-    /// Sum of the raw cache-write bucket over every considered pair's
-    /// current turn, before subtracting growth
-    /// (`RepeatedContext::paid_tokens` under cache-write accounting).
+    /// Sum the paid cache-write bucket across all eligible requests.
     pub repeated_context_cache_write_paid_tokens: u64,
     /// The same sum under uncached-input accounting.
     pub repeated_context_uncached_input_paid_tokens: u64,
@@ -1243,7 +1241,7 @@ fn query_duplicate_turn_identities(
 /// Scan all main rows so intervening links and compactions can break request pairs.
 const REPEATED_CONTEXT_SCAN_SQL: &str = "SELECT thread_id, ts_ms, input_tokens,
         cache_read_tokens, cache_write_tokens, is_compaction_boundary,
-        source_key, role, model, provider, api, uuid, parent_uuid, turn_index
+        source_key, role, model, provider, api, uuid, parent_uuid, turn_index, output_tokens
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main'
@@ -1254,9 +1252,7 @@ struct RepeatedContextTotals {
     incomplete: bool,
     cache_write_tokens: u64,
     uncached_input_tokens: u64,
-    /// Sum of the raw cache-write bucket (`RepeatedContext::paid_tokens`
-    /// under `CacheAccounting::CacheWrite`) over every considered pair's
-    /// current turn, before subtracting growth.
+    /// Sum the paid cache-write bucket across all eligible requests.
     cache_write_paid_tokens: u64,
     /// The same sum under uncached-input accounting.
     uncached_input_paid_tokens: u64,
@@ -1378,6 +1374,9 @@ fn query_repeated_context(
         let depth = as_u64(input_tokens)
             .saturating_add(as_u64(cache_read_tokens))
             .saturating_add(as_u64(cache_write));
+        if key.agent == "codex" && depth == 0 && row.get::<_, i64>(14)? == 0 {
+            continue;
+        }
         if mode.is_none()
             || mode != accounting
             || model.as_deref().is_none_or(|model| model.trim().is_empty())
@@ -1387,6 +1386,9 @@ fn query_repeated_context(
             pairs_skipped = pairs_skipped.saturating_add(u64::from(previous.take().is_some()));
             continue;
         }
+        cache_write_paid_tokens = cache_write_paid_tokens.saturating_add(as_u64(cache_write));
+        uncached_input_paid_tokens =
+            uncached_input_paid_tokens.saturating_add(as_u64(input_tokens));
         let route = (model, provider, api);
         if let Some((previous_ts, previous_depth, previous_route)) = previous {
             let in_order = matches!((previous_ts, ts_ms), (Some(previous_ts), Some(ts_ms)) if ts_ms >= previous_ts);
@@ -1399,9 +1401,6 @@ fn query_repeated_context(
                     cache_write_tokens.saturating_add(paid_cache_write.saturating_sub(growth));
                 uncached_input_tokens = uncached_input_tokens
                     .saturating_add(paid_uncached_input.saturating_sub(growth));
-                cache_write_paid_tokens = cache_write_paid_tokens.saturating_add(paid_cache_write);
-                uncached_input_paid_tokens =
-                    uncached_input_paid_tokens.saturating_add(paid_uncached_input);
             } else {
                 pairs_skipped = pairs_skipped.saturating_add(1);
                 incomplete = true;
@@ -2182,6 +2181,24 @@ mod tests {
     }
 
     #[test]
+    fn paid_totals_include_initial_requests_and_new_segments() {
+        for agent in ["claude", "codex"] {
+            let mut rows: Vec<_> = (0..3).map(|index| cache_row("s1", index)).collect();
+            for row in &mut rows {
+                row.input_tokens = 100;
+                row.cache_write_tokens = 100;
+            }
+            rows[2].model = Some("different-model".to_owned());
+            let facts = route_facts(agent, &rows);
+            assert_eq!(facts.repeated_context_cache_write_paid_tokens, 300);
+            assert_eq!(facts.repeated_context_uncached_input_paid_tokens, 300);
+            assert_eq!(facts.repeated_context_cache_write_tokens, 100);
+            assert_eq!(facts.repeated_context_pairs_considered, 1);
+            assert!(facts.repeated_context_incomplete);
+        }
+    }
+
+    #[test]
     fn known_request_contracts_use_disjoint_input_buckets() {
         use RepeatedContextAccounting::{CacheWrite, UncachedInput};
         for (agent, provider, api, expected) in [
@@ -2315,7 +2332,7 @@ mod tests {
         };
         assert_eq!(observed.accounting, RepeatedContextAccounting::CacheWrite);
         assert_eq!(observed.repeated_tokens, 200);
-        assert_eq!(observed.paid_tokens, 200);
+        assert_eq!(observed.paid_tokens, 400);
 
         let reversed: Vec<_> = rows
             .into_iter()
