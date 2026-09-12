@@ -2961,6 +2961,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("sessionBadgeMetric")
             .and_then(|value| SessionBadgeMetric::parse(value))
             .unwrap_or(defaults.session_badge_metric),
+        session_filter: stored
+            .get("sessionFilter")
+            .cloned()
+            .unwrap_or_else(|| defaults.session_filter.clone()),
     }
     .normalized())
 }
@@ -3063,6 +3067,7 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         "sessionBadgeMetric",
         settings.session_badge_metric.as_str()
     ])?;
+    put.execute(params!["sessionFilter", settings.session_filter.as_str()])?;
     Ok(())
 }
 

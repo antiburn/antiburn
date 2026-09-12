@@ -144,6 +144,12 @@ export interface AppSettings {
   skillsMcpExpanded: boolean
   /** The metric shown in each activity-session badge. */
   sessionBadgeMetric: "cost" | "weeklyPercent" | "fiveHourPercent"
+  /**
+   * The selected Sessions sidebar filter, as its persisted id (see
+   * `sessionFilterId`/`parseSessionFilterId` in `lib/sessionFilters.ts`). An
+   * id this release does not recognize parses back to `all`.
+   */
+  sessionFilter: string
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -493,6 +499,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   overviewLimitsExpanded: true,
   skillsMcpExpanded: false,
   sessionBadgeMetric: "cost",
+  sessionFilter: "all",
 }
 
 /** Tell the shell that React committed this renderer generation. */
@@ -800,6 +807,17 @@ export type Interaction =
       outcome: "verified" | "recurred"
       origin: "passive" | "action"
     }
+  | {
+      kind: "sessionFilterSelected"
+      filter: SessionFilterAnalyticsKind
+      /**
+       * Only when `filter` is `agent`, and only for a slug the shell's own
+       * closed agent enum recognizes. Deserializes into that enum, so an
+       * unrecognized slug is a rejected command rather than a new value
+       * appearing in the data — omit the field instead of sending one.
+       */
+      agent?: string
+    }
 
 export type Surface =
   | "activity"
@@ -829,6 +847,9 @@ export type AutoFixAnalyticsOutcome =
   | "failed"
 export type PromptPreparationAnalyticsOutcome =
   "ready" | "stale" | "expired" | "unavailable" | "failed"
+/** The closed vocabulary `sessionFilterSelected` reports its filter as. */
+export type SessionFilterAnalyticsKind =
+  "notable" | "material" | "agent" | "failing" | "passing" | "all"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {

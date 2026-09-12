@@ -641,6 +641,18 @@ Notes for what isn't expressible as a token:
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
+  `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,
+  and 12px icon gaps, which Settings keeps. A top-level item can nest child rows one level deep,
+  right below it in the same tablist. A child row needs no icon of its own and carries
+  `data-nested`. In the main window its label starts at the parent label column, 30px from the
+  row edge (`--main-window-nav-indent`: 8px padding, the 14px icon, and the 8px gap). A child's
+  own hairline separator carries `data-nested` too and keeps that same indent. In `SidebarNav`'s
+  default density a child row is 32px tall with a 32px `pl-8` indent and an `ml-8` separator.
+  Any row's optional trailing count uses the shared `CountPill`
+  (`src/components/ui/CountPill.tsx`): the same 16px-high, borderless, `surface-tertiary/40`,
+  tertiary-ink, `font-mono type-metadata tabular-nums` pill documented below for a session
+  card's `+N` model count. A row with a count sets its accessible name to its label alone, so the
+  count digits stay out of the announced name.
   These local geometry rules use the spacing tokens in `main-window.css`; other source lists
   retain their current density. Burn checks and Sessions are the main sidebar sections. Burn checks
   is the default section, uses the 14px Lucide `Flame` mark, and opens from the checks summary in

@@ -26,13 +26,14 @@ import {
   type PresentableModelRun,
 } from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
-import { sessionHygieneFor, useSessionHygiene } from "../../lib/useSessionHygiene"
+import { sessionHygieneFor, type SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { SessionStatusBar } from "./SessionStatusBar"
 import { SessionTooltipOwner } from "./SessionTooltipOwner"
 import { type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
+import { CountPill } from "../ui/CountPill"
 import { ScrollPane } from "../ui/ScrollPane"
 import { ListDisplayToolbar } from "../ui/ListDisplayToolbar"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
@@ -117,6 +118,12 @@ export interface SessionListProps {
   onBadgeMetricChange?: (metric: "cost" | "weeklyPercent" | "fiveHourPercent") => void
   liveUsage?: LiveUsageSummaryPayload
   sessionLimitAllocations?: SessionLimitAllocationSummaryPayload
+  /**
+   * Burn Check verdicts, keyed by local session identity. The caller fetches
+   * this for the full unfiltered list, so a filtered view still shows the
+   * right verdict per row. Missing entries render as not-yet-assessed.
+   */
+  hygieneBySession?: SessionHygieneSnapshot
 }
 
 function primaryLine(entry: SessionListEntry): string {
@@ -127,6 +134,9 @@ function primaryLine(entry: SessionListEntry): string {
 }
 
 type BadgeMetric = "cost" | "weeklyPercent" | "fiveHourPercent"
+
+/** Default for `hygieneBySession`: every row renders as not yet assessed. */
+const EMPTY_HYGIENE_SNAPSHOT: SessionHygieneSnapshot = new Map()
 
 function keepScrollOffset(): false {
   return false
@@ -491,12 +501,11 @@ function SessionRow({
                 )}
 
                 {additionalModelCount > 0 && (
-                  <span
-                    className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-surface-tertiary/40 px-1 font-mono type-metadata font-medium! tabular-nums text-label-tertiary"
+                  <CountPill
+                    count={additionalModelCount}
+                    prefix="+"
                     data-additional-model-count=""
-                  >
-                    +{additionalModelCount}
-                  </span>
+                  />
                 )}
               </div>
             </Tooltip>
@@ -580,6 +589,7 @@ export function SessionList({
   onBadgeMetricChange,
   liveUsage,
   sessionLimitAllocations,
+  hygieneBySession = EMPTY_HYGIENE_SNAPSHOT,
 }: SessionListProps) {
   const fiveHourAvailable =
     badgeMetric === "fiveHourPercent" ||
@@ -636,22 +646,6 @@ export function SessionList({
   const selectableRowIndexes = virtualItems.flatMap((item, index) =>
     item.type === "row" && item.item.entry.sessionId ? [index] : [],
   )
-  const hygieneSessions = active
-    ? groups.flatMap((group) =>
-        group.items.flatMap(({ entry }) =>
-          entry.sessionId
-            ? [
-                {
-                  agent: entry.agent,
-                  sessionId: entry.sessionId,
-                  wslDistro: entry.wslDistro ?? null,
-                },
-              ]
-            : [],
-        ),
-      )
-    : []
-  const hygieneBySession = useSessionHygiene(hygieneSessions)
   const firstSelectableKey = groups
     .flatMap((group) => group.items)
     .find((item) => item.entry.sessionId)?.key

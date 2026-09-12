@@ -236,6 +236,33 @@ failure. Do not introduce persistent operation or work identifiers.
 
 ### Phase 3: targeted diagnostics and measurement quality
 
+#### Session filters (implemented 2026-09-12)
+
+The product question is which Sessions sidebar filters readers actually use,
+and whether harness filters concentrate on one agent. The metric is the
+distribution of `antiburn.session_filter_selected` by `label` (and, for the
+`agent` label, by `detail`), using reporting installations as the denominator.
+This supports deciding whether the fixed filter set earns its sidebar space and
+whether a harness filter is worth the row it takes.
+
+The owning boundary is the setter behind the sidebar selection (in the main
+window's activity controller). It fires only when the persisted filter
+actually changes — never when the window loads and restores the persisted
+selection, and never twice for a click that reselects the current filter. The
+closed `label` vocabulary is `notable`, `material`, `agent`, `failing`,
+`passing`, `all`. `detail` carries the selected harness slug only when
+`label=agent`, and only when the harness is one of antiburn's fixed agent
+enum's values; an unrecognized harness — a slug newer than this build's
+agent list — reports `label=agent` with no `detail` rather than widening the
+vocabulary or dropping the event. No session id, title, repository, count, or
+cost travels with it.
+
+Validation: a test resolves the interaction for a known agent (`detail` set)
+and for a non-agent filter and an unrecognized agent (both with no `detail`),
+and a frontend test confirms the setter is a no-op — no persistence write, no
+event — when the requested filter matches the current one, including the
+initial load path that only restores the persisted value.
+
 #### Limit-factor plan mapping (implemented 2026-09-11)
 
 The product question is whether learned factor accuracy differs across the
