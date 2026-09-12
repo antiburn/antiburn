@@ -96,6 +96,9 @@ pub enum EventName {
     /// A verified or recurred result appeared during a deliberate exposure.
     #[cfg(feature = "analytics")]
     BurnCheckOutcomeObserved,
+    /// The Sessions sidebar filter changed to a different selection.
+    #[cfg(feature = "analytics")]
+    SessionFilterSelected,
 }
 
 /// Every event this application may send.
@@ -132,6 +135,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::BurnCheckPromptPrepared,
     EventName::BurnCheckPromptCopied,
     EventName::BurnCheckOutcomeObserved,
+    EventName::SessionFilterSelected,
 ];
 
 #[cfg(feature = "analytics")]
@@ -162,6 +166,7 @@ impl EventName {
             EventName::BurnCheckPromptPrepared => "antiburn.burn_check_prompt_prepared",
             EventName::BurnCheckPromptCopied => "antiburn.burn_check_prompt_copied",
             EventName::BurnCheckOutcomeObserved => "antiburn.burn_check_outcome_observed",
+            EventName::SessionFilterSelected => "antiburn.session_filter_selected",
         }
     }
 }
@@ -402,6 +407,14 @@ pub enum Interaction {
         outcome: BurnCheckOutcome,
         origin: BurnCheckOrigin,
     },
+    /// The Sessions sidebar filter changed to a different selection. `agent`
+    /// deserializes into the engine's own closed enum, so an unrecognized
+    /// slug is a rejected command rather than a new value appearing in the
+    /// data; the renderer omits it rather than send one.
+    SessionFilterSelected {
+        filter: SessionFilterKind,
+        agent: Option<AgentKind>,
+    },
 }
 
 /// A product surface whose visibility is measured.
@@ -566,6 +579,20 @@ pub enum Environment {
     Wsl,
 }
 
+/// A Sessions sidebar filter kind. `Agent` covers every harness item; the
+/// harness itself travels separately, as `Interaction::SessionFilterSelected`'s
+/// own `agent` field.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionFilterKind {
+    Notable,
+    Material,
+    Agent,
+    Failing,
+    Passing,
+    All,
+}
+
 #[cfg(feature = "analytics")]
 impl Interaction {
     /// The event and the facts this interaction becomes.
@@ -659,6 +686,14 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::SessionFilterSelected { filter, agent } => (
+                EventName::SessionFilterSelected,
+                Facts {
+                    label: Some(filter.as_str()),
+                    detail: agent.map(AgentKind::slug),
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
@@ -699,6 +734,16 @@ wire_values!(StateSurface, {
     StateSurface::Settings => "settings",
     StateSurface::Insights => "insights",
     StateSurface::BurnChecks => "burn_checks",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(SessionFilterKind, {
+    SessionFilterKind::Notable => "notable",
+    SessionFilterKind::Material => "material",
+    SessionFilterKind::Agent => "agent",
+    SessionFilterKind::Failing => "failing",
+    SessionFilterKind::Passing => "passing",
+    SessionFilterKind::All => "all",
 });
 
 #[cfg(feature = "analytics")]
@@ -1360,12 +1405,13 @@ mod tests {
                 | EventName::BurnCheckAutoFixCompleted
                 | EventName::BurnCheckPromptPrepared
                 | EventName::BurnCheckPromptCopied
-                | EventName::BurnCheckOutcomeObserved => true,
+                | EventName::BurnCheckOutcomeObserved
+                | EventName::SessionFilterSelected => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            24,
+            25,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -1501,6 +1547,40 @@ mod tests {
         assert_eq!(name, EventName::BurnCheckOutcomeObserved);
         assert_eq!(facts.detail, Some("recurred"));
         assert_eq!(facts.origin, Some("passive"));
+
+        let (name, facts) = Interaction::SessionFilterSelected {
+            filter: SessionFilterKind::Agent,
+            agent: Some(AgentKind::Codex),
+        }
+        .resolve();
+        assert_eq!(name, EventName::SessionFilterSelected);
+        assert_eq!(facts.label, Some("agent"));
+        assert_eq!(facts.detail, Some("codex"));
+
+        let (name, facts) = Interaction::SessionFilterSelected {
+            filter: SessionFilterKind::Notable,
+            agent: None,
+        }
+        .resolve();
+        assert_eq!(name, EventName::SessionFilterSelected);
+        assert_eq!(facts.label, Some("notable"));
+        assert_eq!(facts.detail, None);
+    }
+
+    /// An agent filter with no recognized harness reports the filter kind
+    /// alone. The renderer never sends a slug this enum rejects; `None` is
+    /// what a genuinely unrecognized harness (or a non-agent filter) looks
+    /// like here.
+    #[test]
+    fn an_agent_filter_with_no_recognized_harness_has_no_detail() {
+        let (name, facts) = Interaction::SessionFilterSelected {
+            filter: SessionFilterKind::Agent,
+            agent: None,
+        }
+        .resolve();
+        assert_eq!(name, EventName::SessionFilterSelected);
+        assert_eq!(facts.label, Some("agent"));
+        assert_eq!(facts.detail, None);
     }
 
     /// `usage_observed` reads the same closed vocabulary

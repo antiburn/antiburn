@@ -4,6 +4,7 @@ import { SessionList } from "../../components/session/SessionList"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 import { isMacOS } from "../../lib/platform"
+import { sessionHygieneIdentities, useSessionHygiene } from "../../lib/useSessionHygiene"
 import { SessionEmptyDetail } from "./SessionEmptyDetail"
 import { CollectionDetailPane, type CollectionItem } from "./CollectionDetailPane"
 import {
@@ -47,6 +48,11 @@ export function MainActivityView({
   const index = selected ? items.findIndex((item) => item.id === selected.id) : -1
   const previous = index > 0 ? ordered[index - 1] : undefined
   const next = index >= 0 ? ordered[index + 1] : undefined
+  // Pinned to the full unfiltered list, so a future list filter never
+  // changes this request's key.
+  const hygieneBySession = useSessionHygiene(
+    state.active ? sessionHygieneIdentities(state.entries ?? []) : [],
+  )
 
   return (
     <CollectionDetailPane<SessionItem>
@@ -101,6 +107,7 @@ export function MainActivityView({
               onBadgeMetricChange={(metric) => void session.setBadgeMetric(metric)}
               liveUsage={state.liveUsage}
               sessionLimitAllocations={state.allocations}
+              hygieneBySession={hygieneBySession}
             />
           )}
         </div>

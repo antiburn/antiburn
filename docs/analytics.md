@@ -101,15 +101,18 @@ opened — `claude-code`, `codex`, `cursor`, and so on, from the fixed list
 antiburn knows how to read. Nothing else about the session travels with it: not
 its title, not its repository, not its path, and not the name of your WSL
 distribution, which you chose and which would identify your machine.
+`antiburn.session_filter_selected` carries the same fixed agent list, and only
+when you select a harness filter in the Sessions sidebar.
 
 `antiburn.live_usage_state_observed`, `antiburn.usage_observed`, and
 `antiburn.limit_factor_observed` each carry one of three provider categories:
 `anthropic`, `openai`, or `google`. The Claude reset event reveals that Claude
 is enabled; `usage_observed` and `limit_factor_observed` reveal more broadly
 which of the three providers are enabled and visible, since each fires for
-whichever ones an ordinary pass produces a reading for. These are the only
-analytics fields that identify an agent or provider category. If that is more
-than you want to share, the switch turns all analytics off.
+whichever ones an ordinary pass produces a reading for. These, plus the two
+agent-carrying events above, are the only analytics fields that identify an
+agent or provider category. If that is more than you want to share, the switch
+turns all analytics off.
 
 ### Why counts are bucketed
 
@@ -225,6 +228,7 @@ Event names are namespaced `antiburn.*`.
 | `antiburn.burn_check_prompt_prepared`    | A deliberate Copy fix prompt request reaches a typed prompt-preparation result. This is separate from clipboard success because preparation also starts or joins local verification.                                                                                                                                                                                                                                                                                                                                                                                                                                         | `detail` — `ready`, `stale`, `expired`, `unavailable`, or `failed`. No prompt, resource or model string, path, action, watch, or reference ID.                                                                                                                                                                                                                                                               |
 | `antiburn.burn_check_prompt_copied`      | The prepared prompt is written successfully to the clipboard. A clipboard failure emits nothing, and a retry reuses the prepared prompt without another preparation event.                                                                                                                                                                                                                                                                                                                                                                                                                                                   | No event-specific properties.                                                                                                                                                                                                                                                                                                                                                                                |
 | `antiburn.burn_check_outcome_observed`   | A verified improvement appears in the visible Burn Checks summary, or a verified or recurred watch appears in a deliberately expanded visible target list. Background verification alone emits nothing.                                                                                                                                                                                                                                                                                                                                                                                                                      | `detail` — `verified` or `recurred`. `origin` — `passive` or `action`, which describes how the watch started and does not claim causation. No finding, action, watch, reference, sample, or evidence revision; no exact tokens or costs.                                                                                                                                                                     |
+| `antiburn.session_filter_selected`       | The Sessions sidebar filter changes to a different selection. Fires only on an actual change; restoring the persisted filter when the window opens emits nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `label` — `notable`, `material`, `agent`, `failing`, `passing`, or `all`. `detail` — the selected harness slug, only when `label` is `agent` and the harness is one antiburn's fixed agent list recognizes; a harness this build does not recognize sends `label` `agent` with no `detail`. No session, title, repository, or count.                                                                          |
 
 Several events are deliberately not sent once per occurrence. A full scan result
 that repeats the last bucket is dropped, so a machine left running does not

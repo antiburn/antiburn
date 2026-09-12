@@ -31,6 +31,7 @@ import {
   type PopoverPeekTarget,
 } from "../lib/popoverPeekIpc"
 import { checksPresentation } from "../lib/presentation/checks"
+import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
 import { PopoverSession } from "./popover/PopoverSession"
 import { ChecksSummary } from "./popover/ChecksView"
 import { foldActivityHeader } from "./popover/usageChartFold"
@@ -124,6 +125,7 @@ export function PopoverView() {
     : null
 
   const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
+  const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(state.entries ?? []))
 
   // Focus the activity heading when the popover renderer mounts.
   const focusHeading = useCallback((node: HTMLDivElement | null) => {
@@ -298,6 +300,7 @@ export function PopoverView() {
               now={new Date(state.now)}
               liveUsage={state.liveUsage}
               sessionLimitAllocations={state.sessionLimitAllocations}
+              hygieneBySession={hygieneBySession}
             />
           )}
         </div>

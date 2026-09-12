@@ -899,6 +899,18 @@ pub struct AppSettings {
     pub skills_mcp_expanded: bool,
     /// The metric shown in each activity-session badge.
     pub session_badge_metric: SessionBadgeMetric,
+    /// The selected Sessions sidebar filter, as its persisted id.
+    ///
+    /// The renderer owns the vocabulary (`lib/sessionFilters.ts`): this side
+    /// stores and returns the id verbatim, and does not validate it. An id
+    /// this release does not recognize is the renderer's to fall back on.
+    #[serde(default = "default_session_filter")]
+    pub session_filter: String,
+}
+
+/// The persisted id for the unfiltered "All Sessions" view.
+fn default_session_filter() -> String {
+    "all".to_string()
 }
 
 impl Default for AppSettings {
@@ -953,6 +965,7 @@ impl Default for AppSettings {
             // pushes the rest of the analysis off the screen.
             skills_mcp_expanded: false,
             session_badge_metric: SessionBadgeMetric::default(),
+            session_filter: default_session_filter(),
         }
     }
 }

@@ -730,6 +730,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Closed by default, unlike the limits section: the skills table is a long
     // tail behind a summary, and opening it every time buries the rest.
     assert!(!defaults.skills_mcp_expanded);
+    // Unfiltered by default: a fresh install shows every loaded session.
+    assert_eq!(defaults.session_filter, "all");
     assert_eq!(
         defaults.session_data_retention_days,
         RETAIN_SESSION_DATA_FOREVER
@@ -772,6 +774,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             overview_limits_expanded: false,
             skills_mcp_expanded: true,
             session_badge_metric: SessionBadgeMetric::WeeklyPercent,
+            session_filter: "agent:codex".to_string(),
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
@@ -785,6 +788,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(saved.nudge_auto_dismiss_secs, 25);
     assert_eq!(saved.disk_space_display, DiskSpaceDisplay::Always);
     assert_eq!(saved.disk_space_threshold_gb, 100);
+    // Stored and returned verbatim; this side does not validate the id.
+    assert_eq!(saved.session_filter, "agent:codex");
     // The empty milestone subset survives a round trip as "none selected",
     // not as a reset back to the defaults.
     assert!(!saved.milestones_weekly.any());

@@ -9,21 +9,24 @@ import {
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type * as InsightsIpc from "../../lib/insightsIpc"
+import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import type { LiveUsageSummaryPayload, LiveUsageWindowPayload } from "../../lib/ipc"
+import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { SessionList, type SessionListEntry, type SessionListProps } from "./SessionList"
 
-const getSessionHygiene = vi.hoisted(() => vi.fn())
-
-vi.mock("../../lib/insightsIpc", async (importOriginal) => ({
-  ...(await importOriginal<typeof InsightsIpc>()),
-  getSessionHygiene,
-}))
+/** A `hygieneBySession` snapshot keyed the way `SessionList` looks rows up. */
+function hygieneSnapshot(
+  pairs: Array<[SessionListEntry, SessionHygienePayload]>,
+): Map<string, SessionHygienePayload> {
+  return new Map(
+    pairs.map(([session, payload]) => [
+      localSessionKey(session.agent, session.sessionId ?? "", session.wslDistro ?? null),
+      payload,
+    ]),
+  )
+}
 
 beforeEach(() => {
-  getSessionHygiene.mockReset()
-  getSessionHygiene.mockResolvedValue(null)
-
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
     this: HTMLElement,
   ) {
@@ -744,77 +747,60 @@ describe("SessionList — rows", () => {
     expect(screen.queryByLabelText(/All Burn Checks passed/)).toBeNull()
   })
 
-  it("renders finding and clean statuses returned by the batched IPC path", async () => {
-    getSessionHygiene.mockResolvedValueOnce([
-      {
-        evidenceState: "ready",
-        badges: [
+  it("renders finding and clean statuses from the hygiene snapshot prop", () => {
+    const session = entry({ sessionId: "synthetic-hygiene-result" })
+    list({
+      entries: [session],
+      hygieneBySession: hygieneSnapshot([
+        [
+          session,
           {
-            id: "sessionOverdepth",
-            status: "finding",
-            notAssessedReason: null,
-          },
-          {
-            id: "modelOverthinking",
-            status: "clean",
-            notAssessedReason: null,
-          },
-          {
-            id: "overpoweredSubagents",
-            status: "clean",
-            notAssessedReason: null,
-          },
-          {
-            id: "obsoleteModel",
-            status: "clean",
-            notAssessedReason: null,
-          },
-          {
-            id: "fastModeOveruse",
-            status: "clean",
-            notAssessedReason: null,
-          },
-          {
-            id: "excessCacheRehydration",
-            status: "clean",
-            notAssessedReason: null,
+            evidenceState: "ready",
+            badges: [
+              { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
+              { id: "modelOverthinking", status: "clean", notAssessedReason: null },
+              { id: "overpoweredSubagents", status: "clean", notAssessedReason: null },
+              { id: "obsoleteModel", status: "clean", notAssessedReason: null },
+              { id: "fastModeOveruse", status: "clean", notAssessedReason: null },
+              { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
+            ],
           },
         ],
-      },
-    ])
-    list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/Some Burn Checks failed/)).toHaveTextContent(
-        "1 failed·5 passed",
-      )
+      ]),
     })
-    expect(getSessionHygiene).toHaveBeenCalledWith([
-      {
-        agent: "claude-code",
-        sessionId: "synthetic-hygiene-result",
-        wslDistro: null,
-      },
-    ])
+
+    expect(screen.getByLabelText(/Some Burn Checks failed/)).toHaveTextContent(
+      "1 failed·5 passed",
+    )
   })
 
-  it("keeps a cyan all-passed verdict above the session title", async () => {
-    getSessionHygiene.mockResolvedValueOnce([
-      {
-        evidenceState: "ready",
-        badges: [
-          "sessionOverdepth",
-          "modelOverthinking",
-          "overpoweredSubagents",
-          "obsoleteModel",
-          "fastModeOveruse",
-          "excessCacheRehydration",
-        ].map((id) => ({ id, status: "clean", notAssessedReason: null })),
-      },
-    ])
-    list({ entries: [entry({ sessionId: "clean-session", title: "Primary clean title" })] })
+  it("keeps a cyan all-passed verdict above the session title", () => {
+    const session = entry({ sessionId: "clean-session", title: "Primary clean title" })
+    list({
+      entries: [session],
+      hygieneBySession: hygieneSnapshot([
+        [
+          session,
+          {
+            evidenceState: "ready",
+            badges: [
+              "sessionOverdepth",
+              "modelOverthinking",
+              "overpoweredSubagents",
+              "obsoleteModel",
+              "fastModeOveruse",
+              "excessCacheRehydration",
+            ].map((id) => ({
+              id: id as SessionHygienePayload["badges"][number]["id"],
+              status: "clean" as const,
+              notAssessedReason: null,
+            })),
+          },
+        ],
+      ]),
+    })
 
-    const verdict = await screen.findByLabelText(/All Burn Checks passed/)
+    const verdict = screen.getByLabelText(/All Burn Checks passed/)
     expect(verdict).toHaveTextContent("All 6 passed")
     expect(screen.getByText("All 6 passed")).toHaveClass("text-burn-check-pass-fill")
     expect(
@@ -822,25 +808,29 @@ describe("SessionList — rows", () => {
     ).toBeNull()
   })
 
-  it("keeps the last verdict on screen, marked stale, while a live session recomputes", async () => {
-    getSessionHygiene.mockResolvedValueOnce([
-      {
-        evidenceState: "stale",
-        badges: [
-          { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
-          { id: "modelOverthinking", status: "clean", notAssessedReason: null },
-          { id: "overpoweredSubagents", status: "clean", notAssessedReason: null },
-          { id: "obsoleteModel", status: "clean", notAssessedReason: null },
-          { id: "fastModeOveruse", status: "clean", notAssessedReason: null },
-          { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
+  it("marks a stale verdict while a live session recomputes", () => {
+    const session = entry({ sessionId: "synthetic-hygiene-stale" })
+    list({
+      entries: [session],
+      hygieneBySession: hygieneSnapshot([
+        [
+          session,
+          {
+            evidenceState: "stale",
+            badges: [
+              { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
+              { id: "modelOverthinking", status: "clean", notAssessedReason: null },
+              { id: "overpoweredSubagents", status: "clean", notAssessedReason: null },
+              { id: "obsoleteModel", status: "clean", notAssessedReason: null },
+              { id: "fastModeOveruse", status: "clean", notAssessedReason: null },
+              { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
+            ],
+          },
         ],
-      },
-    ])
-    list({ entries: [entry({ sessionId: "synthetic-hygiene-stale" })] })
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/Refreshing/)).toHaveTextContent("1 failed·5 passed")
+      ]),
     })
+
+    expect(screen.getByLabelText(/Refreshing/)).toHaveTextContent("1 failed·5 passed")
     expect(screen.queryByText("Refreshing Burn Checks…")).toBeNull()
   })
 
@@ -1119,34 +1109,36 @@ describe("SessionList — shared tooltips", () => {
   })
 
   it("shares rich status and cost content with fork, repository, and WSL labels", async () => {
-    getSessionHygiene.mockResolvedValueOnce([
-      {
-        evidenceState: "ready",
-        badges: [
-          { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
-          { id: "modelOverthinking", status: "clean", notAssessedReason: null },
-          { id: "overpoweredSubagents", status: "clean", notAssessedReason: null },
-          { id: "obsoleteModel", status: "clean", notAssessedReason: null },
-          { id: "fastModeOveruse", status: "clean", notAssessedReason: null },
-          { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
-        ],
+    const session = entry({
+      additionalRepos: ["avery/docs"],
+      hasForkParent: true,
+      forkChildCount: 2,
+      wslDistro: "Ubuntu-24.04",
+      cost: {
+        totalUsd: 2.4,
+        figureLabel: "Estimated cost",
+        models: ["claude-fable-5"],
+        breakdownRows: [{ label: "Output", usd: 1.25 }],
       },
-    ])
+    })
     const { container } = list({
-      entries: [
-        entry({
-          additionalRepos: ["avery/docs"],
-          hasForkParent: true,
-          forkChildCount: 2,
-          wslDistro: "Ubuntu-24.04",
-          cost: {
-            totalUsd: 2.4,
-            figureLabel: "Estimated cost",
-            models: ["claude-fable-5"],
-            breakdownRows: [{ label: "Output", usd: 1.25 }],
+      entries: [session],
+      hygieneBySession: hygieneSnapshot([
+        [
+          session,
+          {
+            evidenceState: "ready",
+            badges: [
+              { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
+              { id: "modelOverthinking", status: "clean", notAssessedReason: null },
+              { id: "overpoweredSubagents", status: "clean", notAssessedReason: null },
+              { id: "obsoleteModel", status: "clean", notAssessedReason: null },
+              { id: "fastModeOveruse", status: "clean", notAssessedReason: null },
+              { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
+            ],
           },
-        }),
-      ],
+        ],
+      ]),
     })
     const status = await screen.findByLabelText(/Some Burn Checks failed/)
     const cost = screen.getByLabelText("Estimated cost $2.40")
@@ -1341,13 +1333,12 @@ describe("SessionList — controlled main-window selection", () => {
     expect(fireEvent.keyDown(document.activeElement!, { key: "Tab" })).toBe(true)
   })
 
-  it("pauses hygiene work and active row motion while hidden", () => {
+  it("pauses active row motion while hidden", () => {
     const { container } = list({
       entries: [entry({ isActive: true })],
       active: false,
       onSelect: vi.fn(),
     })
-    expect(getSessionHygiene).not.toHaveBeenCalled()
     expect(container.querySelector(".activity-row-active")).toBeNull()
   })
 })

@@ -469,6 +469,71 @@ describe("MainActivitySession", () => {
     )
   })
 
+  it("selects a filter optimistically, persists it, and reports the change", async () => {
+    const { session } = start()
+    await ready(session)
+
+    session.setFilter({ kind: "notable" })
+
+    expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
+    expect(session.getSnapshot().settings.sessionFilter).toBe("notable")
+    expect(mocks.setSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionFilter: "notable" }),
+    )
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "sessionFilterSelected",
+      filter: "notable",
+    })
+  })
+
+  it("does nothing when the requested filter already matches", async () => {
+    const { session } = start()
+    await ready(session)
+    mocks.noteInteraction.mockClear()
+
+    session.setFilter({ kind: "all" })
+
+    expect(mocks.setSettings).not.toHaveBeenCalled()
+    expect(mocks.noteInteraction).not.toHaveBeenCalled()
+  })
+
+  it("never reports a selection while restoring the persisted filter on load", async () => {
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "failing" })
+    const { session } = start()
+    await ready(session)
+
+    expect(session.getSnapshot().filter).toEqual({ kind: "failing" })
+    expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "sessionFilterSelected" }),
+    )
+  })
+
+  it("reports an agent filter's slug only when the harness is recognized", async () => {
+    const { session } = start()
+    await ready(session)
+
+    session.setFilter({ kind: "agent", agent: "codex" })
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "sessionFilterSelected",
+      filter: "agent",
+      agent: "codex",
+    })
+
+    mocks.noteInteraction.mockClear()
+    session.setFilter({ kind: "agent", agent: "some-future-harness" })
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "sessionFilterSelected",
+      filter: "agent",
+    })
+  })
+
+  it("falls back to all when persisted settings carry an unrecognized filter id", async () => {
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "bogus" })
+    const { session } = start()
+    await ready(session)
+    expect(session.getSnapshot().filter).toEqual({ kind: "all" })
+  })
+
   it("orders navigation like the list and excludes non-opening rows", async () => {
     const { session } = start()
     await ready(session)
