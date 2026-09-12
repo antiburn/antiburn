@@ -14,6 +14,9 @@ export type SidebarNavChildItem = {
   count?: number
   /** Draw a hairline above this row to set it apart from the group before it. */
   separatorBefore?: boolean
+  /** The panel id this row's `aria-controls` points at. Defaults to
+   *  `${id}-panel`. Set this when several children share one parent panel. */
+  controls?: string
 }
 
 export type SidebarNavItem = {
@@ -193,6 +196,7 @@ function SidebarNavRow({
   paddingClass: string
 }) {
   const Icon = item.icon
+  const controls = ("controls" in item && item.controls) || `${item.id}-panel`
   return (
     <button
       ref={(node) => {
@@ -203,7 +207,7 @@ function SidebarNavRow({
       role="tab"
       id={`${item.id}-tab`}
       aria-selected={selected}
-      aria-controls={`${item.id}-panel`}
+      aria-controls={controls}
       // Set the accessible name to the label alone when a count pill is
       // present. This keeps the name stable and free of the count digits,
       // which the row already shows as visible text.

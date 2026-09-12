@@ -14,7 +14,13 @@ const NESTED_ITEMS: SidebarNavItem[] = [
     children: [
       { id: "notable", label: "Notable", count: 3 },
       { id: "material", label: "Material", count: 5 },
-      { id: "claude-code", label: "Claude Code", count: 4, separatorBefore: true },
+      {
+        id: "claude-code",
+        label: "Claude Code",
+        count: 4,
+        separatorBefore: true,
+        controls: "sessions-panel",
+      },
     ],
   },
   { id: "checks", label: "Burn checks", icon: Triangle },
@@ -159,6 +165,32 @@ describe("SidebarNav", () => {
 
     const pill = within(tab("Sessions")).getByText("12")
     expect(pill).toHaveClass("font-mono", "tabular-nums")
+  })
+
+  it("points a child's aria-controls at its own panel by default", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    expect(tab("Notable").getAttribute("aria-controls")).toBe("notable-panel")
+  })
+
+  it("points a child's aria-controls at a shared panel when controls is set", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    expect(tab("Claude Code").getAttribute("aria-controls")).toBe("sessions-panel")
   })
 
   it("renders children indented and reachable by ArrowDown from the parent", () => {

@@ -32,4 +32,16 @@ describe("CountPill", () => {
 
     expect(screen.getByText("3")).toHaveClass("ml-auto")
   })
+
+  it("renders a prefix before the count", () => {
+    render(<CountPill count={1} prefix="+" />)
+
+    expect(screen.getByText("+1")).toBeInTheDocument()
+  })
+
+  it("passes through extra attributes", () => {
+    render(<CountPill count={1} prefix="+" data-additional-model-count="" />)
+
+    expect(screen.getByText("+1")).toHaveAttribute("data-additional-model-count", "")
+  })
 })

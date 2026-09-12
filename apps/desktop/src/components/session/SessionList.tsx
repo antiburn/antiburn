@@ -33,6 +33,7 @@ import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { SessionStatusBar } from "./SessionStatusBar"
 import { SessionTooltipOwner } from "./SessionTooltipOwner"
 import { type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
+import { CountPill } from "../ui/CountPill"
 import { ScrollPane } from "../ui/ScrollPane"
 import { ListDisplayToolbar } from "../ui/ListDisplayToolbar"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
@@ -500,12 +501,11 @@ function SessionRow({
                 )}
 
                 {additionalModelCount > 0 && (
-                  <span
-                    className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-surface-tertiary/40 px-1 font-mono type-metadata font-medium! tabular-nums text-label-tertiary"
+                  <CountPill
+                    count={additionalModelCount}
+                    prefix="+"
                     data-additional-model-count=""
-                  >
-                    +{additionalModelCount}
-                  </span>
+                  />
                 )}
               </div>
             </Tooltip>

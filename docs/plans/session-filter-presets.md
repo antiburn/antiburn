@@ -40,7 +40,7 @@ Decisions confirmed by the maintainer on 2026-09-12:
 
 | Step | Status |
 | --- | --- |
-| Sidebar nesting, counts, and `design.md` update | Pending |
-| Filter model, counts, hygiene lift, persistence, analytics | Pending |
-| Wire the nav to the filter model; view tests | Pending |
+| Sidebar nesting, counts, and `design.md` update | Complete (SidebarNav.test.tsx: 21 tests; CountPill.test.tsx: 5 tests) |
+| Filter model, counts, hygiene lift, persistence, analytics | Complete (sessionFilters.test.ts, MainActivitySession.test.ts) |
+| Wire the nav to the filter model; view tests | Complete (MainWindowView.test.tsx: 14 tests; MainActivityView.test.tsx: 3 tests) |
 | PR and CI | Pending |
