@@ -434,3 +434,16 @@ Recorded during implementation, smallest faithful choice in each case:
    and gets the summed cost line, and the popover's call site simply omits
    the argument and gets `costLine: null`, with no new fetch added to the
    popover's lighter surface.
+
+## Deviations during PR 2
+
+**PR 2 outcome (2026-09-14).** The per-session Hygiene badges this section
+planned (PR #516, `feat/prefix-cost-session-badges`) were closed: a
+per-session "unused" verdict is not evidence for a config change, since one
+session's idle resource says nothing about the fleet, and the three checks
+could never read clean, because no reader proves a full historical resource
+inventory for one session (see `docs/check-coverage.md`). The recommendation
+stays where it can act on it, in the aggregate Burn Checks report from PR 1. In its place, the session's Cost
+tab gained an informational "Loaded but not used" section: it names each
+resource this one session paid to carry idle and what that replay cost, with
+no badge, no check, and no effect on any pass/fail count.

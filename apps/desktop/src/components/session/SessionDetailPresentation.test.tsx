@@ -263,6 +263,38 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.queryByText(/not assessed/i)).toBeNull()
   })
 
+  it("shows the Loaded but not used section only when the evidence carries unused resources", () => {
+    view({
+      hygiene: {
+        ...INITIAL_SESSION_HYGIENE,
+        evidenceState: "ready",
+        unusedResources: {
+          mcpServers: [],
+          builtInTools: [{ name: "bash", costUsd: 0.42 }],
+          skills: [],
+        },
+      },
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    expect(screen.getByText("Loaded but not used")).toBeTruthy()
+    expect(screen.getByText("bash")).toBeTruthy()
+    expect(screen.getByText("$0.42")).toBeTruthy()
+  })
+
+  it("omits the Loaded but not used section when the evidence carries no unused resources", () => {
+    view({
+      hygiene: {
+        ...INITIAL_SESSION_HYGIENE,
+        evidenceState: "ready",
+        unusedResources: null,
+      },
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    expect(screen.queryByText("Loaded but not used")).toBeNull()
+  })
+
   it("adds the provider-cache-miss count from the session metrics to the Context stats", () => {
     view({
       cost: cost(),
