@@ -18,7 +18,7 @@ const PILL_CHAR_WIDTH = 6.1
  * position. Recharts gives a custom label the point but not the anchors, so
  * the chart states the same anchors the built-in label uses.
  */
-export const LABEL_ANCHORS: Record<
+const LABEL_ANCHORS: Record<
   string,
   { textAnchor: "start" | "middle"; verticalAnchor: "start" | "end" }
 > = {
@@ -43,7 +43,7 @@ interface PillLabelProps {
  * opposite of the surface, so the text stays legible over the fill, the
  * line, and the marker bars it can land on.
  */
-export function PillLabel({
+function PillLabel({
   x,
   y,
   dy = 0,
@@ -110,7 +110,7 @@ export const AXIS_LABEL = {
 export const AXIS_TICK = { fontSize: 11, fill: "var(--color-label-tertiary)" }
 
 /** Nearer than this fraction of the x-domain, two labels would collide. */
-export const LABEL_MIN_GAP_FRACTION = 0.18
+const LABEL_MIN_GAP_FRACTION = 0.18
 
 /**
  * Greedy min-gap labelling: walk `indices` in ascending order and keep one
