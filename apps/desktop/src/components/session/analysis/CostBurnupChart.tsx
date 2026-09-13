@@ -58,13 +58,11 @@ const CHART_MIN_HEIGHT = 180
 const TIME_AXIS_HEIGHT = 16
 /** The width the dollar axis takes on the left of the plot, sized for "$1.2k". */
 const VALUE_AXIS_WIDTH = 44
-/** A cache event keeps the established prominent marker width. */
-const CACHE_EVENT_BAR_WIDTH = 7
-/** Default opacity for a cache rehydration mark. */
-const REHYDRATION_BAR_OPACITY = 0.9
-/** A compaction mark at rest and lit. It is heavier than a hairline, because it traces a boundary. */
-const COMPACTION_STROKE_WIDTH = 2.5
-const COMPACTION_LIT_STROKE_WIDTH = 3.5
+/** An event mark's stroke width at rest and when its own key row is lit. */
+const MARK_STROKE_WIDTH = 1
+const MARK_LIT_STROKE_WIDTH = 1.5
+/** An event mark's dash pattern. Short dashes with a round cap read as dots. */
+const MARK_DASH = "1 3"
 /** Every mark at rest. A mark is a hairline, so it takes the denser grey. */
 const REST_MARK_STROKE = "var(--color-chart-rest-mark)"
 /** The lit stroke of each event mark drawn over the plot. */
@@ -310,9 +308,8 @@ export function CostBurnupChart({
                   yAxisId="cost"
                   x={point.index}
                   stroke={lit ? MARK_STROKE.compaction : REST_MARK_STROKE}
-                  strokeWidth={
-                    emphasised ? COMPACTION_LIT_STROKE_WIDTH : COMPACTION_STROKE_WIDTH
-                  }
+                  strokeWidth={emphasised ? MARK_LIT_STROKE_WIDTH : MARK_STROKE_WIDTH}
+                  strokeDasharray={MARK_DASH}
                   strokeLinecap="round"
                 />
               )
@@ -322,6 +319,7 @@ export function CostBurnupChart({
             .filter((point) => point.isCacheRehydration)
             .map((point) => {
               const lit = highlight == null || highlight === "rehydration"
+              const emphasised = highlight === "rehydration"
               return (
                 <ReferenceLine
                   key={`rehydration-${point.index}`}
@@ -329,8 +327,9 @@ export function CostBurnupChart({
                   yAxisId="cost"
                   x={point.index}
                   stroke={lit ? MARK_STROKE.rehydration : REST_MARK_STROKE}
-                  strokeWidth={CACHE_EVENT_BAR_WIDTH}
-                  strokeOpacity={REHYDRATION_BAR_OPACITY}
+                  strokeWidth={emphasised ? MARK_LIT_STROKE_WIDTH : MARK_STROKE_WIDTH}
+                  strokeDasharray={MARK_DASH}
+                  strokeLinecap="round"
                 />
               )
             })}
@@ -367,39 +366,54 @@ export function CostBurnupChart({
           </>
         )}
         {/* Labels draw last of all, so they stay legible over every mark and
-            every area. Only the highlighted layer shows its labels; a bar
-            close to the last labeled one shares that label instead of
-            overlapping it. */}
-        {highlight === "compaction" &&
+            every area. Every labeled mark keeps its label at all times; a
+            bar close to the last labeled one shares that label instead of
+            overlapping it. Each label takes its line's lit color, or grey
+            when another layer is highlighted, so it still names the line. */}
+        {hasCostData &&
           data
             .filter((point) => point.isCompactionBoundary && labeledCompaction.has(point.index))
-            .map((point) => (
-              <ReferenceLine
-                key={`compaction-label-${point.index}`}
-                className="animate-chart-mark"
-                yAxisId="cost"
-                x={point.index}
-                stroke="none"
-                label={{
-                  ...AXIS_LABEL,
-                  value: compactionMarkLabel(point),
-                  position: "insideTop" as const,
-                }}
-              />
-            ))}
-        {highlight === "rehydration" &&
+            .map((point) => {
+              const lit = highlight == null || highlight === "compaction"
+              return (
+                <ReferenceLine
+                  key={`compaction-label-${point.index}`}
+                  className="animate-chart-mark"
+                  yAxisId="cost"
+                  x={point.index}
+                  stroke="none"
+                  label={{
+                    ...AXIS_LABEL,
+                    value: compactionMarkLabel(point),
+                    position: "insideTop" as const,
+                    angle: -90,
+                    fill: lit ? MARK_STROKE.compaction : REST_MARK_STROKE,
+                  }}
+                />
+              )
+            })}
+        {hasCostData &&
           data
             .filter((point) => point.isCacheRehydration && labeledRehydration.has(point.index))
-            .map((point) => (
-              <ReferenceLine
-                key={`rehydration-label-${point.index}`}
-                className="animate-chart-mark"
-                yAxisId="cost"
-                x={point.index}
-                stroke="none"
-                label={{ ...AXIS_LABEL, value: "Rehydration", position: "insideTop" as const }}
-              />
-            ))}
+            .map((point) => {
+              const lit = highlight == null || highlight === "rehydration"
+              return (
+                <ReferenceLine
+                  key={`rehydration-label-${point.index}`}
+                  className="animate-chart-mark"
+                  yAxisId="cost"
+                  x={point.index}
+                  stroke="none"
+                  label={{
+                    ...AXIS_LABEL,
+                    value: "Rehydration",
+                    position: "insideTop" as const,
+                    angle: -90,
+                    fill: lit ? MARK_STROKE.rehydration : REST_MARK_STROKE,
+                  }}
+                />
+              )
+            })}
       </AreaChart>
     </ResponsiveContainer>
   )

@@ -135,15 +135,18 @@ describe("CostBurnupChart", () => {
     expect(container.querySelector('path[fill="var(--color-chart-rest-faint)"]')).not.toBeNull()
   })
 
-  it("draws a compaction line at the flagged index, with a label only while highlighted", () => {
+  it("draws a compaction line at the flagged index, with a label at rest and while highlighted", () => {
     const buckets = [pricedBucket({ isCompactionBoundary: true }), pricedBucket()]
     const { rerender, container } = render(<CostBurnupChart buckets={buckets} />)
-    expect(
-      container.querySelector('line[stroke="var(--color-mark-compaction)"]'),
-    ).not.toBeNull()
-    expect(screen.queryByText("Compaction")).not.toBeInTheDocument()
+    const line = container.querySelector('line[stroke="var(--color-mark-compaction)"]')
+    expect(line).not.toBeNull()
+    expect(line?.getAttribute("stroke-dasharray")).toBe("1 3")
+    expect(line?.getAttribute("stroke-width")).toBe("1")
+    expect(screen.getByText("Compaction")).toBeInTheDocument()
 
     rerender(<CostBurnupChart buckets={buckets} highlight="compaction" />)
+    const litLine = container.querySelector('line[stroke="var(--color-mark-compaction)"]')
+    expect(litLine?.getAttribute("stroke-width")).toBe("1.5")
     expect(screen.getByText("Compaction")).toBeInTheDocument()
   })
 
@@ -156,12 +159,14 @@ describe("CostBurnupChart", () => {
     expect(screen.getByText("Manual compaction")).toBeInTheDocument()
   })
 
-  it("draws a rehydration bar at the flagged index", () => {
+  it("draws a rehydration line at the flagged index, dotted, with a label at rest", () => {
     const buckets = [pricedBucket({ isCacheRehydration: true }), pricedBucket()]
-    const { container } = render(<CostBurnupChart buckets={buckets} highlight="rehydration" />)
-    const bar = container.querySelector('line[stroke="var(--color-mark-rehydration)"]')
-    expect(bar).not.toBeNull()
-    expect(bar?.getAttribute("stroke-width")).toBe("7")
+    const { container } = render(<CostBurnupChart buckets={buckets} />)
+    const line = container.querySelector('line[stroke="var(--color-mark-rehydration)"]')
+    expect(line).not.toBeNull()
+    expect(line?.getAttribute("stroke-dasharray")).toBe("1 3")
+    expect(line?.getAttribute("stroke-width")).toBe("1")
+    expect(screen.getByText("Rehydration")).toBeInTheDocument()
   })
 
   it("draws a sub-agent launch tick only for a bucket that launched one", () => {
@@ -194,6 +199,14 @@ describe("CostBurnupChart", () => {
     for (const label of labels) {
       expect(nodes.indexOf(label)).toBeGreaterThan(lastArea)
     }
+  })
+
+  it("rotates a mark label's text to read bottom to top", () => {
+    const buckets = [pricedBucket({ isCompactionBoundary: true }), pricedBucket()]
+    render(<CostBurnupChart buckets={buckets} />)
+    const label = screen.getByText("Compaction")
+    const rotated = label.closest("g[transform*='rotate(-90']")
+    expect(rotated).not.toBeNull()
   })
 
   it("updates resized geometry without replaying the entrance animation", () => {
