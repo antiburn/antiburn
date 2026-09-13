@@ -63,6 +63,8 @@ export interface SessionBucket {
   compactionPreTokens: number | null
   /** The context token count right after the compaction in this bucket, when known. */
   compactionPostTokens: number | null
+  /** Estimated USD cost of the events in this bucket; absent when unpriced. */
+  cost?: SessionCostComponents
 }
 
 interface CacheRehydration {

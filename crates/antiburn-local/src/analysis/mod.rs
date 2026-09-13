@@ -242,7 +242,8 @@ pub const ANALYZER_REVISION: i64 = 24;
 // +1 for `context_window_source`: `context_available` is now always true,
 // and the new field says whether the window is reported, tagged,
 // catalogued, or inferred. Stored analyses must rerun to populate it.
-pub const METRICS_SCHEMA_REVISION: i64 = 8;
+// +1 for per-bucket estimated cost (Bucket::cost). Stored analyses must rerun to populate it.
+pub const METRICS_SCHEMA_REVISION: i64 = 9;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.
@@ -282,7 +283,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 4;
 // This batch also changes retained nested resource and paired subagent state.
 // +1 for the bounded Codex cross-format usage matcher in adapter snapshots.
 // Reject snapshots that can retain duplicate usage totals.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 8;
+// +1 because SlotAggregate gained priced tokens for per-bucket cost.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 9;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///
