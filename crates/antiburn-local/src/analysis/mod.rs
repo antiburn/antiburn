@@ -284,7 +284,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 4;
 // +1 for the bounded Codex cross-format usage matcher in adapter snapshots.
 // Reject snapshots that can retain duplicate usage totals.
 // +1 because SlotAggregate gained priced tokens for per-bucket cost.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 9;
+// +1 because a merged slot keeps one priced entry per pricing key.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 10;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///
