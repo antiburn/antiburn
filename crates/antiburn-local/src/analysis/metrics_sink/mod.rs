@@ -1373,8 +1373,6 @@ fn finish_bucket_state(
     thinking_modes: &Interner,
     speeds: &Interner,
     last_tools: &Interner,
-    // The pricing interner and the summary fallback model, bundled to keep
-    // this function's argument count under the lint limit.
     pricing: (&Interner, Option<&str>),
 ) {
     let (pricing_models, pricing_fallback) = pricing;

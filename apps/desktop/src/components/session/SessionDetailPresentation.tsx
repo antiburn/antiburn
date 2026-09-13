@@ -639,10 +639,6 @@ export function SessionDetailPresentation({
         ]
       : []
 
-  // The burnup chart's own key: the four billable components in the same
-  // order the stack draws them, then the marks it plots. An unpriced session
-  // still shows every cell, so the tab does not shuffle once pricing lands;
-  // it reads "—" instead of a dollar figure until there is one to show.
   const costBurnupTotal = summary ? costBurnupSeries(summary.buckets) : []
   // The four dollar figures reuse the cost card's own rows so the two can
   // never disagree by a cent after rounding. "—" shows only when the card
