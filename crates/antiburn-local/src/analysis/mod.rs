@@ -306,7 +306,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 5;
 // Reject snapshots that can retain duplicate usage totals.
 // +1 because the evidence sink now carries Codex quota and provider incidents.
 // +1 because SlotAggregate gained priced tokens for per-bucket cost.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 10;
+// +1 because a merged slot keeps one priced entry per pricing key.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 11;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

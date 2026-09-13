@@ -59,7 +59,7 @@ pub(crate) enum PricedModel {
     Named(NameId),
 }
 
-/// The token counts one slot contributes to per-bucket cost.
+/// The token counts one pricing key contributes to per-bucket cost.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PricedTokens {
     pub(crate) model: PricedModel,
@@ -69,6 +69,49 @@ pub(crate) struct PricedTokens {
     pub(crate) cache_read_tokens: u64,
     pub(crate) cache_write_tokens: u64,
     pub(crate) cache_write_1h_tokens: u64,
+}
+
+impl PricedTokens {
+    pub(crate) fn has_tokens(&self) -> bool {
+        self.input_tokens != 0
+            || self.output_tokens != 0
+            || self.cache_read_tokens != 0
+            || self.cache_write_tokens != 0
+            || self.cache_write_1h_tokens != 0
+    }
+
+    fn add(&mut self, other: &PricedTokens) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(other.cache_write_tokens);
+        self.cache_write_1h_tokens = self
+            .cache_write_1h_tokens
+            .saturating_add(other.cache_write_1h_tokens);
+    }
+}
+
+/// Add `incoming` to the entry in `target` with the same model and speed.
+/// Push a new entry when no entry matches. Skip an entry with no tokens.
+pub(crate) fn fold_priced_tokens(target: &mut Vec<PricedTokens>, incoming: &PricedTokens) {
+    if !incoming.has_tokens() {
+        return;
+    }
+    match target
+        .iter_mut()
+        .find(|entry| entry.model == incoming.model && entry.fast == incoming.fast)
+    {
+        Some(entry) => entry.add(incoming),
+        None => {
+            // Most slots hold one entry, so grow by exactly one.
+            target.reserve_exact(1);
+            target.push(*incoming);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,7 +128,9 @@ pub(crate) struct SlotAggregate {
     pub(crate) cache_write_tokens: u64,
     pub(crate) subagent_tokens: u64,
     pub(crate) context_tokens: u64,
-    pub(crate) priced: PricedTokens,
+    /// One entry per pricing key. A slot holds at most one entry until slots
+    /// merge on a very large session.
+    pub(crate) priced: Vec<PricedTokens>,
     pub(crate) user_prompts: u32,
     pub(crate) subagent_launches: u32,
     pub(crate) has_thinking: bool,
@@ -115,7 +160,7 @@ impl SlotAggregate {
             cache_write_tokens: 0,
             subagent_tokens: 0,
             context_tokens: 0,
-            priced: PricedTokens::default(),
+            priced: Vec::new(),
             user_prompts: 0,
             subagent_launches: 0,
             has_thinking: false,
@@ -133,12 +178,9 @@ impl SlotAggregate {
 
     /// Merge another slot's counts into this one.
     ///
-    /// A merged run that changes model mid-run prices at the later model:
-    /// `priced.model` and `priced.fast` take the value from the slot with the
-    /// higher `last_ordinal`. Slots merge only after the position quantum
-    /// doubles on very large sessions, so this only matters there.
+    /// A merged run keeps one `priced` entry per pricing key, so a run that
+    /// changes model or speed still prices each turn at its own rate.
     pub(crate) fn merge(&mut self, other: Self) {
-        let other_is_later = other.last_ordinal > self.last_ordinal;
         self.first_ordinal = self.first_ordinal.min(other.first_ordinal);
         self.last_ordinal = self.last_ordinal.max(other.last_ordinal);
         self.first_key = self.first_key.min(other.first_key);
@@ -158,29 +200,8 @@ impl SlotAggregate {
             .saturating_add(other.cache_write_tokens);
         self.subagent_tokens = self.subagent_tokens.saturating_add(other.subagent_tokens);
         self.context_tokens = self.context_tokens.max(other.context_tokens);
-        self.priced.input_tokens = self
-            .priced
-            .input_tokens
-            .saturating_add(other.priced.input_tokens);
-        self.priced.output_tokens = self
-            .priced
-            .output_tokens
-            .saturating_add(other.priced.output_tokens);
-        self.priced.cache_read_tokens = self
-            .priced
-            .cache_read_tokens
-            .saturating_add(other.priced.cache_read_tokens);
-        self.priced.cache_write_tokens = self
-            .priced
-            .cache_write_tokens
-            .saturating_add(other.priced.cache_write_tokens);
-        self.priced.cache_write_1h_tokens = self
-            .priced
-            .cache_write_1h_tokens
-            .saturating_add(other.priced.cache_write_1h_tokens);
-        if other_is_later {
-            self.priced.model = other.priced.model;
-            self.priced.fast = other.priced.fast;
+        for priced in &other.priced {
+            fold_priced_tokens(&mut self.priced, priced);
         }
         self.user_prompts = self.user_prompts.saturating_add(other.user_prompts);
         self.subagent_launches = self
@@ -368,7 +389,19 @@ impl ReorderWindow {
         self.entries
             .capacity()
             .saturating_mul(size_of::<SlotAggregate>())
+            .saturating_add(priced_heap_bytes(self.entries.iter()))
     }
+}
+
+/// The heap bytes the `priced` entries of these slots hold.
+fn priced_heap_bytes<'a>(slots: impl Iterator<Item = &'a SlotAggregate>) -> usize {
+    slots.fold(0usize, |total, slot| {
+        total.saturating_add(
+            slot.priced
+                .capacity()
+                .saturating_mul(size_of::<PricedTokens>()),
+        )
+    })
 }
 
 fn clamp_timestamp(slot: &mut SlotAggregate, timestamp: i64) {
@@ -502,6 +535,9 @@ impl ProgressSlots {
         self.slots
             .capacity()
             .saturating_mul(size_of::<PositionedSlot>())
+            .saturating_add(priced_heap_bytes(
+                self.slots.iter().map(|slot| &slot.aggregate),
+            ))
     }
 
     #[cfg(test)]

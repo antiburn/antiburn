@@ -411,7 +411,8 @@ impl SessionMetricsAccumulator {
         self.observe_tools(&event, ordinal, effective_ts);
         let priced_model = self.observe_model_usage(&event, usage_effective_ts, ordinal);
         if let Some((model, fast)) = priced_model {
-            slot.priced = PricedTokens {
+            slot.priced.reserve_exact(1);
+            slot.priced.push(PricedTokens {
                 model,
                 fast,
                 input_tokens: event.usage.input_tokens,
@@ -419,7 +420,7 @@ impl SessionMetricsAccumulator {
                 cache_read_tokens: event.usage.cache_read_tokens,
                 cache_write_tokens: event.usage.cache_creation_tokens,
                 cache_write_1h_tokens: event.usage.cache_creation_1h_tokens,
-            };
+            });
         }
 
         if event.source == EventSource::Parent {
@@ -463,7 +464,7 @@ impl SessionMetricsAccumulator {
             usage_slot.context_tokens = slot.context_tokens;
             usage_slot.first_gap = slot.first_gap;
             usage_slot.cache_mode_1 = slot.cache_mode_1;
-            usage_slot.priced = slot.priced;
+            usage_slot.priced = std::mem::take(&mut slot.priced);
 
             slot.tokens_in = 0;
             slot.tokens_out = 0;
@@ -473,7 +474,6 @@ impl SessionMetricsAccumulator {
             slot.context_tokens = 0;
             slot.first_gap = None;
             slot.cache_mode_1 = CacheSlot::default();
-            slot.priced = PricedTokens::default();
             Some(usage_slot)
         } else {
             None
@@ -1262,30 +1262,27 @@ fn fold_slot(
         slot.cache_mode_2
     };
     fold_cache_slot(bucket, state, cache);
-    fold_priced_tokens(&mut state.pricing, &slot.priced);
+    fold_slot_pricing(&mut state.pricing, &slot.priced);
 }
 
 /// Add one slot's priced tokens into a bucket's per-pricing-key totals.
 /// Excluded tokens (an empty-model event) never price, so they add nothing.
-fn fold_priced_tokens(
+fn fold_slot_pricing(
     pricing: &mut Vec<((PricedModel, bool), ModelTokens)>,
-    priced: &PricedTokens,
+    slot_priced: &[PricedTokens],
 ) {
-    let has_tokens = priced.input_tokens != 0
-        || priced.output_tokens != 0
-        || priced.cache_read_tokens != 0
-        || priced.cache_write_tokens != 0
-        || priced.cache_write_1h_tokens != 0;
-    if priced.model == PricedModel::Excluded || !has_tokens {
-        return;
-    }
-    let key = (priced.model, priced.fast);
-    if let Some((_, tokens)) = pricing.iter_mut().find(|(current, _)| *current == key) {
-        add_priced_tokens(tokens, priced);
-    } else {
-        let mut tokens = ModelTokens::default();
-        add_priced_tokens(&mut tokens, priced);
-        pricing.push((key, tokens));
+    for priced in slot_priced {
+        if priced.model == PricedModel::Excluded || !priced.has_tokens() {
+            continue;
+        }
+        let key = (priced.model, priced.fast);
+        if let Some((_, tokens)) = pricing.iter_mut().find(|(current, _)| *current == key) {
+            add_priced_tokens(tokens, priced);
+        } else {
+            let mut tokens = ModelTokens::default();
+            add_priced_tokens(&mut tokens, priced);
+            pricing.push((key, tokens));
+        }
     }
 }
 
@@ -1828,7 +1825,7 @@ pub fn merge_metrics(
                 .saturating_add(slot.subagent_tokens);
             merged.buckets[index].subagent_tokens =
                 merged.buckets[index].subagent_tokens.saturating_add(tokens);
-            fold_priced_tokens(&mut bucket_pricing[index], &slot.priced);
+            fold_slot_pricing(&mut bucket_pricing[index], &slot.priced);
         }
         for (index, pricing) in bucket_pricing.iter().enumerate() {
             if let Some(cost) = bucket_cost(pricing, &subagent.model_interner, parent_fallback) {

@@ -1702,6 +1702,69 @@ fn merged_bucket_costs_sum_to_the_merged_session_cost() {
 }
 
 #[test]
+fn merged_slots_keep_each_turn_under_its_own_pricing_key() {
+    // More turns than the slot grid holds, so adjacent slots merge. Every
+    // priced turn sits between two user turns that carry no usage, and the
+    // model alternates, so a merged slot must hold more than one key.
+    let turn_count = super::slots::SLOTS * 4;
+    let mut events = Vec::with_capacity(turn_count);
+    for ordinal in 0..turn_count {
+        let ordinal_i64 = i64::try_from(ordinal).expect("the ordinal fits");
+        if ordinal % 2 == 0 {
+            events.push(event(Some(ordinal_i64 * 10_000), Role::User, 0, 0));
+        } else {
+            let model = if ordinal % 4 == 1 {
+                "claude-sonnet-5"
+            } else {
+                "claude-opus-4-6"
+            };
+            events.push(priced_event(
+                ordinal_i64,
+                10_000,
+                EventSource::Parent,
+                Some(model),
+                None,
+                (100, 400, 5_000, 300, 0),
+            ));
+        }
+    }
+    let own_summary = SessionSummary {
+        model: Some("claude-sonnet-5".to_string()),
+        ..SessionSummary::default()
+    };
+    let metrics = finished(events.clone(), own_summary.clone()).metrics();
+    let session_cost = metrics.cost.expect("both models are priced");
+    let (summed, _) = sum_bucket_cost(&metrics.buckets);
+    assert!((summed.total_usd - session_cost.total_usd).abs() < 1e-9);
+    assert!((summed.output_usd - session_cost.output_usd).abs() < 1e-9);
+
+    // The same stream as a sub-agent of a parent on a dearer model: the fold
+    // in `merge_metrics` must not price any of its tokens at the parent rate.
+    let parent = finished(
+        vec![priced_event(
+            0,
+            10_000,
+            EventSource::Parent,
+            Some("claude-opus-4-6"),
+            None,
+            (1_000, 200, 50, 30, 10),
+        )],
+        SessionSummary {
+            model: Some("claude-opus-4-6".to_string()),
+            ..SessionSummary::default()
+        },
+    );
+    let child = finished(events, own_summary);
+    let merged = merge_metrics(&parent, &[child]);
+    let merged_cost = merged.cost.expect("the merged session is priced");
+    let (summed, _) = sum_bucket_cost(&merged.buckets);
+    assert!((summed.total_usd - merged_cost.total_usd).abs() < 1e-9);
+    assert!((summed.output_usd - merged_cost.output_usd).abs() < 1e-9);
+    assert!((summed.cache_read_usd - merged_cost.cache_read_usd).abs() < 1e-9);
+    assert!((summed.cache_write_usd - merged_cost.cache_write_usd).abs() < 1e-9);
+}
+
+#[test]
 fn an_unpriced_model_clears_every_bucket_cost() {
     let mut priced = event(Some(0), Role::Assistant, 100, 20);
     priced.model = Some("claude-opus-4-6".to_string());
