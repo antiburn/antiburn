@@ -107,8 +107,8 @@ describe("CostBurnupChart", () => {
     expect([...areas].map((area) => area.getAttribute("fill"))).toEqual([
       "var(--color-token-in)",
       "var(--color-token-out)",
-      "var(--color-cost-cache-read)",
       "var(--color-cost-cache-write)",
+      "var(--color-cost-cache-read)",
     ])
   })
 

@@ -88,10 +88,13 @@ const VERTICAL_LABEL_MIN_GAP_FRACTION = 0.05
 const SHOW_SUBAGENT_LAUNCH_MARKS = true
 
 /**
- * The four billable layers, from the baseline up. `restVar` gives each layer
- * its own resting grey step, so the four stay distinguishable with no color
- * at all: output takes the strongest step, as the Context chart's token
- * layers do, and the two cache layers take the two faintest steps.
+ * The four billable layers, from the baseline up: input, output, cache
+ * write, then cache read. Cache write sits on the more stable lower stack,
+ * because it is the layer a user can affect most and so needs the clearest
+ * shape. `restVar` gives each layer its own resting grey step, so the four
+ * stay distinguishable with no color at all: output takes the strongest
+ * step, as the Context chart's token layers do, and the two cache layers
+ * take the two faintest steps.
  */
 const COST_ROWS: Array<{
   key: "inputUsd" | "outputUsd" | "cacheReadUsd" | "cacheWriteUsd"
@@ -115,18 +118,18 @@ const COST_ROWS: Array<{
     series: "output",
   },
   {
-    key: "cacheReadUsd",
-    label: "Cache read",
-    colorVar: "var(--color-cost-cache-read)",
-    restVar: "var(--color-chart-rest-faint)",
-    series: "cacheRead",
-  },
-  {
     key: "cacheWriteUsd",
     label: "Cache write",
     colorVar: "var(--color-cost-cache-write)",
     restVar: "var(--color-chart-rest-fainter)",
     series: "cacheWrite",
+  },
+  {
+    key: "cacheReadUsd",
+    label: "Cache read",
+    colorVar: "var(--color-cost-cache-read)",
+    restVar: "var(--color-chart-rest-faint)",
+    series: "cacheRead",
   },
 ]
 

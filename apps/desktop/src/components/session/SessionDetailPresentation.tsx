@@ -657,14 +657,14 @@ export function SessionDetailPresentation({
             series: "output",
           },
           {
-            label: "Cache read",
-            value: costMoney(costCacheReadRow),
-            series: "cacheRead",
-          },
-          {
             label: "Cache write",
             value: costMoney(costCacheWriteRow),
             series: "cacheWrite",
+          },
+          {
+            label: "Cache read",
+            value: costMoney(costCacheReadRow),
+            series: "cacheRead",
           },
           {
             label: "Compactions",
