@@ -150,6 +150,16 @@ describe("CostBurnupChart", () => {
     expect(screen.getByText("Compaction")).toBeInTheDocument()
   })
 
+  it("labels two compaction marks 10 buckets apart in a long session", () => {
+    // A vertical mark label is narrow, so two marks 10 buckets apart in a
+    // 100-bucket series both clear the label gap and each draws its own label.
+    const buckets = Array.from({ length: 100 }, (_, index) =>
+      pricedBucket({ isCompactionBoundary: index === 10 || index === 20 }),
+    )
+    render(<CostBurnupChart buckets={buckets} />)
+    expect(screen.getAllByText("Compaction")).toHaveLength(2)
+  })
+
   it("names a manual compaction in its label", () => {
     const buckets = [
       pricedBucket({ isCompactionBoundary: true, compactionTrigger: "manual" }),

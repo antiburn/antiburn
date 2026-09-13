@@ -87,6 +87,12 @@ const COMPACTION_LIT_STROKE_WIDTH = 3.5
 const REST_MARK_STROKE = "var(--color-chart-rest-mark)"
 
 /**
+ * A horizontal pill label needs this much of the x domain clear on each
+ * side, so two nearby pills do not draw over each other.
+ */
+const LABEL_MIN_GAP_FRACTION = 0.18
+
+/**
  * The rewrite-family points, with a flag for which bars carry a label. Only a
  * cache rehydration is labeled: an ordinary rewrite and a provider cache miss
  * draw a quiet line, because the user usually cannot prevent them. A bar
@@ -105,6 +111,7 @@ function labeledRewritePoints(
   const labeled = labeledIndices(
     points.filter((point) => point.isCacheRehydration).map((point) => point.index),
     data.length,
+    LABEL_MIN_GAP_FRACTION,
   )
   return points.map((point) => ({
     point,

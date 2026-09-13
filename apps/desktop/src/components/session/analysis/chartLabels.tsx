@@ -129,17 +129,20 @@ export const AXIS_LABEL = {
 /* Axis tick text, drawn outside the plot in the caption grey. */
 export const AXIS_TICK = { fontSize: 11, fill: "var(--color-label-tertiary)" }
 
-/** Nearer than this fraction of the x-domain, two labels would collide. */
-const LABEL_MIN_GAP_FRACTION = 0.18
-
 /**
  * Greedy min-gap labelling: walk `indices` in ascending order and keep one
- * whenever it sits at least `LABEL_MIN_GAP_FRACTION` of the x-domain past the
- * last kept index. `domainLength` is the series length the marks share, so
- * the gap scales with the same x-axis every mark draws on.
+ * whenever it sits at least `minGapFraction` of the x-domain past the last
+ * kept index. `domainLength` is the series length the marks share, so the
+ * gap scales with the same x-axis every mark draws on. Callers pass
+ * `minGapFraction` because the label shape sets how close two labels can sit:
+ * a wide horizontal pill needs a bigger gap than a narrow rotated label.
  */
-export function labeledIndices(indices: readonly number[], domainLength: number): Set<number> {
-  const minGap = Math.max(1, domainLength - 1) * LABEL_MIN_GAP_FRACTION
+export function labeledIndices(
+  indices: readonly number[],
+  domainLength: number,
+  minGapFraction: number,
+): Set<number> {
+  const minGap = Math.max(1, domainLength - 1) * minGapFraction
   let lastLabeled = Number.NEGATIVE_INFINITY
   const labeled = new Set<number>()
   for (const index of indices) {
