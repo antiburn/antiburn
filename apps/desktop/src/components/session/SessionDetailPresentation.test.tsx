@@ -868,6 +868,22 @@ describe("SessionDetailPresentation — presentation", () => {
     ])
   })
 
+  it("shows the same four dollar figures in the burnup key as the cost card", () => {
+    detailView()
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    const panel = screen.getByRole("tabpanel")
+    const breakdown = panel.querySelector<HTMLElement>(".session-cost-summary")!
+    const key = screen.getByTestId("chart-key")
+
+    for (const label of ["Input", "Output", "Cache read", "Cache write"]) {
+      const cardRow = within(breakdown).getByText(label).closest(".group")!
+      const cardValue = cardRow.querySelector(".pr-1\\.5")!.textContent
+      const keyCell = within(key).getByText(label).closest("button")!
+      const keyValue = keyCell.querySelector(".type-body")!.textContent
+      expect(keyValue).toBe(cardValue)
+    }
+  })
+
   it("lights the hovered layer in the burnup chart through the key", () => {
     detailView()
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))

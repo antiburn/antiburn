@@ -629,9 +629,10 @@ Notes for what isn't expressible as a token:
   draws a reading — the real-work run of the efficiency composition and the measure on the cost
   scale. The Cost tab's burnup chart stacks the same token in/out colors with two more: a muted
   blue-green `cost-cache-read` and a muted green `cost-cache-write`, each grey at rest in its own
-  step (`chart-rest` through the new `chart-rest-fainter`) until the key names it. In that composition rewrite waste takes the mid neutral and carry takes the brand
-  orange, so the same orange means a compaction in the chart and carry in the bar below it; the
-  two never share a shape, and the legend beside each names it. The Tools tab reports its wasted
+  step (`chart-rest` through the new `chart-rest-fainter`) until the key names it. In that
+  composition rewrite waste takes the mid neutral and carry takes the brand orange, so the same
+  orange means a compaction in the chart and carry in the bar below it; the two never share a
+  shape, and the legend beside each names it. The Tools tab reports its wasted
   tokens in `waste-warn`, and in `system-red-text` when the waste is both a large share of the
   startup context and large in absolute terms. `waste-warn` is its own token because `brand` is
   too dark on the light surface to read as orange beside that red. Everything else stays greyscale

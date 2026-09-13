@@ -644,26 +644,30 @@ export function SessionDetailPresentation({
   // still shows every cell, so the tab does not shuffle once pricing lands;
   // it reads "—" instead of a dollar figure until there is one to show.
   const costBurnupTotal = summary ? costBurnupSeries(summary.buckets) : []
-  const lastCostPoint = costBurnupTotal[costBurnupTotal.length - 1]
-  const hasPricedCost = (lastCostPoint?.totalUsd ?? 0) > 0
-  const costMoney = (usd: number) => (hasPricedCost ? formatCost(usd) : "—")
+  // The four dollar figures reuse the cost card's own rows so the two can
+  // never disagree by a cent after rounding. "—" shows only when the card
+  // itself has no priced figure to show.
+  const [costInputRow, costOutputRow, costCacheReadRow, costCacheWriteRow] =
+    costBadge?.breakdownRows ?? []
+  const costMoney = (row: { usd: number } | undefined) =>
+    costBadge ? formatCost(row?.usd ?? 0) : "—"
   const costKeyStats: ReadonlyArray<{ label: string; value: string; series?: CostSeries }> =
     summary
       ? [
-          { label: "Input", value: costMoney(lastCostPoint?.inputUsd ?? 0), series: "input" },
+          { label: "Input", value: costMoney(costInputRow), series: "input" },
           {
             label: "Output",
-            value: costMoney(lastCostPoint?.outputUsd ?? 0),
+            value: costMoney(costOutputRow),
             series: "output",
           },
           {
             label: "Cache read",
-            value: costMoney(lastCostPoint?.cacheReadUsd ?? 0),
+            value: costMoney(costCacheReadRow),
             series: "cacheRead",
           },
           {
             label: "Cache write",
-            value: costMoney(lastCostPoint?.cacheWriteUsd ?? 0),
+            value: costMoney(costCacheWriteRow),
             series: "cacheWrite",
           },
           {
