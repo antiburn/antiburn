@@ -125,6 +125,74 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
   }))
 }
 
+export interface CostBurnupPoint {
+  /** Bucket position; the chart's x value, shared with {@link ContextTokenPoint}. */
+  index: number
+  /** Rounded percentage through the session, for labels. */
+  progress: number
+  /** Cumulative USD through this bucket, by component. */
+  inputUsd: number
+  outputUsd: number
+  cacheReadUsd: number
+  cacheWriteUsd: number
+  totalUsd: number
+  /** USD spent inside this bucket alone. */
+  bucketUsd: number
+  isCompactionBoundary: boolean
+  compactionTrigger: "manual" | "auto" | null
+  isCacheRehydration: boolean
+  isCacheRoutingMiss: boolean
+  subagentLaunches: number
+  secsSincePriorTurn: number | null
+  /** Model that produced this point, forward-filled from the last bucket that named one. */
+  model: string | null
+}
+
+/**
+ * Cumulative cost series over session progress, one point per bucket, in the
+ * same order the chart stacks its layers: input, output, cache read, cache
+ * write. A bucket with no `cost` — unpriced, or with no priced tokens — adds
+ * zero, so the running totals hold at their last value. The series keeps
+ * every bucket, including empty ones, so it shares the Context chart's x-axis
+ * index and the two charts cannot drift apart.
+ */
+export function costBurnupSeries(buckets: SessionBucket[]): CostBurnupPoint[] {
+  const models = forwardFillMode(buckets, (bucket) => bucket.model)
+  let inputUsd = 0
+  let outputUsd = 0
+  let cacheReadUsd = 0
+  let cacheWriteUsd = 0
+  let totalUsd = 0
+  return buckets.map((bucket, index) => {
+    const cost = bucket.cost
+    inputUsd += cost?.inputUsd ?? 0
+    outputUsd += cost?.outputUsd ?? 0
+    cacheReadUsd += cost?.cacheReadUsd ?? 0
+    cacheWriteUsd += cost?.cacheWriteUsd ?? 0
+    // Summed from the bucket's own total rather than from the four running
+    // components, so float drift across many additions cannot pull the
+    // running total away from the bucket-reported figures it must match.
+    totalUsd += cost?.totalUsd ?? 0
+    return {
+      index,
+      progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
+      inputUsd,
+      outputUsd,
+      cacheReadUsd,
+      cacheWriteUsd,
+      totalUsd,
+      bucketUsd: cost?.totalUsd ?? 0,
+      isCompactionBoundary: bucket.isCompactionBoundary,
+      compactionTrigger: bucket.compactionTrigger,
+      isCacheRehydration: bucket.isCacheRehydration,
+      isCacheRoutingMiss: bucket.isCacheRoutingMiss,
+      subagentLaunches: bucket.subagentLaunches,
+      secsSincePriorTurn: bucket.secsSincePriorTurn,
+      model: models[index]!,
+    }
+  })
+}
+
 /**
  * Mirrors `analysis::engine::IDLE_GAP_MS`. The engine counts each gap between
  * events toward active time up to this cap, so the chart draws a longer gap
@@ -308,6 +376,38 @@ export function axisScale(peak: number, cap: number, maxTicks: number): AxisScal
   const ceiling = Math.min(cap, Math.ceil(target / step) * step)
   const ticks: number[] = []
   for (let v = step; v <= ceiling; v += step) ticks.push(v)
+  return { ceiling, ticks }
+}
+
+/** Candidate dollar axis steps, from fine to coarse. The top step is the cap. */
+const COST_AXIS_STEPS = [
+  0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000,
+]
+
+/** Round to the nearest cent, clear of the float error repeated addition leaves behind. */
+function roundCents(usd: number): number {
+  return Math.round(usd * 100) / 100
+}
+
+/**
+ * Scale the cost burnup chart's dollar axis to its peak, the same way
+ * {@link axisScale} scales the context axis: the ceiling is the peak rounded
+ * up to the finest step that yields at most `maxTicks` marks, with no
+ * headroom past the peak, and the ceiling is itself a tick.
+ *
+ * A peak of zero — an unpriced or still-empty session — yields the finest
+ * step as its ceiling, with `0` as the first tick, so the axis still draws
+ * something for the reader to read the empty plot against.
+ */
+export function costAxisScale(peakUsd: number, maxTicks: number): AxisScale {
+  const finest = COST_AXIS_STEPS[0]!
+  const cap = COST_AXIS_STEPS[COST_AXIS_STEPS.length - 1]!
+  if (!(peakUsd > 0)) return { ceiling: finest, ticks: [0, finest] }
+  const target = Math.min(cap, peakUsd)
+  const step = COST_AXIS_STEPS.find((s) => target / s <= maxTicks) ?? cap
+  const ceiling = roundCents(Math.min(cap, Math.ceil(target / step) * step))
+  const ticks: number[] = []
+  for (let i = 1; roundCents(step * i) <= ceiling; i++) ticks.push(roundCents(step * i))
   return { ceiling, ticks }
 }
 
@@ -538,6 +638,20 @@ export function formatCost(usd: number): string {
   if (!Number.isFinite(usd) || usd <= 0) return "$0.00"
   if (usd < 0.005) return "<$0.01"
   return `$${usd.toFixed(2)}`
+}
+
+/**
+ * USD axis tick, compact rather than exact: `"$0"`, `"$0.05"`, `"$0.50"`,
+ * `"$2"`, `"$2.50"`, `"$120"`, `"$1.2k"`. Below one dollar it always shows
+ * the cent pair; a whole number of dollars drops the decimals entirely
+ * instead of showing a bare ".00"; at or above one thousand it switches to
+ * the same compact `k`/`M` suffix {@link formatTokenBand} uses.
+ */
+export function formatCostTick(usd: number): string {
+  if (!Number.isFinite(usd) || usd <= 0) return "$0"
+  if (usd >= 1000) return `$${formatTokenBand(usd)}`
+  const cents = Math.round(usd * 100)
+  return cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`
 }
 
 /* -------------------------------------------------------------------------
