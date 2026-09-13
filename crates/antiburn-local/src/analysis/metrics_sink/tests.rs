@@ -1485,3 +1485,245 @@ fn earliest_timestamp_is_a_minimum() {
     );
     assert_eq!(accumulator.earliest_ts_ms(), Some(5));
 }
+
+/// `tokens` is `(input, output, cache_read, cache_write, cache_write_1h)`,
+/// bundled to keep this helper's argument count under the lint limit.
+fn priced_event(
+    ordinal: i64,
+    interval_ms: i64,
+    source: EventSource,
+    model: Option<&str>,
+    speed: Option<&str>,
+    tokens: (u64, u64, u64, u64, u64),
+) -> NormalizedEvent {
+    let (input, output, cache_read, cache_write, cache_write_1h) = tokens;
+    let mut current = event(Some(ordinal * interval_ms), Role::Assistant, input, output);
+    current.source = source;
+    current.model = model.map(str::to_string);
+    current.speed = speed.map(str::to_string);
+    current.usage.cache_read_tokens = cache_read;
+    current.usage.cache_creation_tokens = cache_write;
+    current.usage.cache_creation_1h_tokens = cache_write_1h;
+    current
+}
+
+fn sum_bucket_cost(buckets: &[Bucket]) -> (SessionCost, usize) {
+    let mut summed = SessionCost {
+        total_usd: 0.0,
+        input_usd: 0.0,
+        output_usd: 0.0,
+        cache_read_usd: 0.0,
+        cache_write_usd: 0.0,
+    };
+    let mut priced_buckets = 0;
+    for bucket in buckets {
+        if let Some(cost) = bucket.cost {
+            priced_buckets += 1;
+            summed.total_usd += cost.total_usd;
+            summed.input_usd += cost.input_usd;
+            summed.output_usd += cost.output_usd;
+            summed.cache_read_usd += cost.cache_read_usd;
+            summed.cache_write_usd += cost.cache_write_usd;
+        }
+    }
+    (summed, priced_buckets)
+}
+
+fn assert_costs_match(left: SessionCost, right: SessionCost) {
+    assert!((left.total_usd - right.total_usd).abs() < 1e-9);
+    assert!((left.input_usd - right.input_usd).abs() < 1e-9);
+    assert!((left.output_usd - right.output_usd).abs() < 1e-9);
+    assert!((left.cache_read_usd - right.cache_read_usd).abs() < 1e-9);
+    assert!((left.cache_write_usd - right.cache_write_usd).abs() < 1e-9);
+}
+
+#[test]
+fn bucket_costs_sum_to_the_session_cost() {
+    let events = vec![
+        priced_event(
+            0,
+            60_000,
+            EventSource::Parent,
+            Some("claude-opus-4-6"),
+            None,
+            (1_000, 200, 50, 30, 10),
+        ),
+        priced_event(
+            1,
+            60_000,
+            EventSource::Parent,
+            Some("gpt-6-astra"),
+            Some("fast"),
+            (500, 100, 20, 0, 0),
+        ),
+        priced_event(
+            2,
+            60_000,
+            EventSource::Parent,
+            Some("gpt-6-astra"),
+            None,
+            (800, 150, 40, 20, 0),
+        ),
+        priced_event(
+            3,
+            60_000,
+            EventSource::Parent,
+            Some("claude-opus-4-6"),
+            None,
+            (300, 60, 10, 5, 5),
+        ),
+        // No model: prices under the summary fallback model.
+        priced_event(
+            4,
+            60_000,
+            EventSource::Parent,
+            None,
+            None,
+            (200, 40, 0, 0, 0),
+        ),
+        // Empty model: excluded, prices nothing.
+        priced_event(
+            5,
+            60_000,
+            EventSource::Parent,
+            Some(""),
+            None,
+            (900, 900, 900, 900, 0),
+        ),
+        priced_event(
+            6,
+            60_000,
+            EventSource::Subagent,
+            Some("claude-opus-4-6"),
+            None,
+            (400, 80, 0, 0, 0),
+        ),
+        priced_event(
+            7,
+            60_000,
+            EventSource::Subagent,
+            Some("gpt-6-astra"),
+            Some("fast"),
+            (250, 50, 0, 0, 0),
+        ),
+    ];
+    let summary = SessionSummary {
+        model: Some("claude-opus-4-6".to_string()),
+        ..SessionSummary::default()
+    };
+    let metrics = finished(events, summary).metrics();
+    let cost = metrics.cost.expect("every model prices");
+    let (summed, priced_buckets) = sum_bucket_cost(&metrics.buckets);
+    assert!(priced_buckets >= 2, "several buckets should carry a cost");
+    assert_costs_match(summed, cost);
+}
+
+#[test]
+fn merged_bucket_costs_sum_to_the_merged_session_cost() {
+    let parent_events = vec![
+        priced_event(
+            0,
+            60_000,
+            EventSource::Parent,
+            Some("claude-opus-4-6"),
+            None,
+            (1_000, 200, 50, 30, 10),
+        ),
+        priced_event(
+            1,
+            60_000,
+            EventSource::Parent,
+            Some("claude-opus-4-6"),
+            None,
+            (500, 100, 20, 0, 0),
+        ),
+        priced_event(
+            2,
+            60_000,
+            EventSource::Parent,
+            None,
+            None,
+            (200, 40, 0, 0, 0),
+        ),
+        priced_event(
+            3,
+            60_000,
+            EventSource::Parent,
+            Some(""),
+            None,
+            (900, 900, 900, 900, 0),
+        ),
+    ];
+    let parent = finished(
+        parent_events,
+        SessionSummary {
+            model: Some("claude-opus-4-6".to_string()),
+            ..SessionSummary::default()
+        },
+    );
+    let child_a = finished(
+        vec![
+            priced_event(
+                0,
+                90_000,
+                EventSource::Parent,
+                Some("gpt-6-astra"),
+                None,
+                (700, 140, 0, 0, 0),
+            ),
+            priced_event(
+                1,
+                90_000,
+                EventSource::Parent,
+                Some("gpt-6-astra"),
+                Some("fast"),
+                (300, 60, 0, 0, 0),
+            ),
+        ],
+        SessionSummary::default(),
+    );
+    let child_b = finished(
+        vec![priced_event(
+            0,
+            45_000,
+            EventSource::Parent,
+            Some("claude-opus-4-6"),
+            None,
+            (400, 80, 0, 15, 15),
+        )],
+        SessionSummary::default(),
+    );
+
+    let merged = merge_metrics(&parent, &[child_a, child_b]);
+    let cost = merged.cost.expect("every model prices");
+    let (summed, priced_buckets) = sum_bucket_cost(&merged.buckets);
+    assert!(priced_buckets >= 2, "several buckets should carry a cost");
+    assert_costs_match(summed, cost);
+}
+
+#[test]
+fn an_unpriced_model_clears_every_bucket_cost() {
+    let mut priced = event(Some(0), Role::Assistant, 100, 20);
+    priced.model = Some("claude-opus-4-6".to_string());
+    let mut unpriced = event(Some(60_000), Role::Assistant, 50, 10);
+    unpriced.model = Some("unpriced-synthetic-model".to_string());
+    let metrics = finished(vec![priced, unpriced], SessionSummary::default()).metrics();
+    assert!(metrics.cost.is_none());
+    assert!(metrics.buckets.iter().all(|bucket| bucket.cost.is_none()));
+}
+
+#[test]
+fn buckets_without_priced_tokens_have_no_cost() {
+    let mut priced = event(Some(0), Role::Assistant, 100, 20);
+    priced.model = Some("claude-opus-4-6".to_string());
+    let metrics = finished(vec![priced], SessionSummary::default()).metrics();
+    let cost = metrics.buckets[0]
+        .cost
+        .expect("the only turn lands in bucket 0");
+    assert!(cost.total_usd > 0.0);
+    assert!(
+        metrics.buckets[1..]
+            .iter()
+            .all(|bucket| bucket.cost.is_none())
+    );
+}

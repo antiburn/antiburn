@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use active::ActiveSegments;
 use cache_miss::{CacheInput, CachePatch, CacheReducer};
 use slots::{
-    CacheSlot, CompactionMark, ProgressSlots, ReorderWindow, SlotAggregate, SlotAxis, StampedName,
+    CacheSlot, CompactionMark, PricedModel, PricedTokens, ProgressSlots, ReorderWindow,
+    SlotAggregate, SlotAxis, StampedName,
 };
 use tally::{
     IdentityKey, Interner, LateToolCandidate, MAX_BUILTIN_LATE_CANDIDATES, MAX_LATE_CANDIDATES,
@@ -28,7 +29,7 @@ use tally::{
 
 use crate::analysis::efficiency::{EfficiencyInput, EfficiencyReducer};
 use crate::analysis::engine::{
-    BUCKETS, Bucket, CONTEXT_WINDOW, IDLE_GAP_MS, SessionMetrics, SkillUse,
+    BUCKETS, Bucket, CONTEXT_WINDOW, IDLE_GAP_MS, SessionCost, SessionMetrics, SkillUse,
 };
 use crate::analysis::initial_context::{
     InitialContextBreakdown, InitialContextSourceCount, InitialContextTokenSource, SourceOrigin,
@@ -408,7 +409,18 @@ impl SessionMetricsAccumulator {
             self.observe_parent_fields(&event, ordinal, model, &mut slot);
         }
         self.observe_tools(&event, ordinal, effective_ts);
-        self.observe_model_usage(&event, usage_effective_ts, ordinal);
+        let priced_model = self.observe_model_usage(&event, usage_effective_ts, ordinal);
+        if let Some((model, fast)) = priced_model {
+            slot.priced = PricedTokens {
+                model,
+                fast,
+                input_tokens: event.usage.input_tokens,
+                output_tokens: event.usage.output_tokens,
+                cache_read_tokens: event.usage.cache_read_tokens,
+                cache_write_tokens: event.usage.cache_creation_tokens,
+                cache_write_1h_tokens: event.usage.cache_creation_1h_tokens,
+            };
+        }
 
         if event.source == EventSource::Parent {
             if event.role == Role::User {
@@ -451,6 +463,7 @@ impl SessionMetricsAccumulator {
             usage_slot.context_tokens = slot.context_tokens;
             usage_slot.first_gap = slot.first_gap;
             usage_slot.cache_mode_1 = slot.cache_mode_1;
+            usage_slot.priced = slot.priced;
 
             slot.tokens_in = 0;
             slot.tokens_out = 0;
@@ -460,6 +473,7 @@ impl SessionMetricsAccumulator {
             slot.context_tokens = 0;
             slot.first_gap = None;
             slot.cache_mode_1 = CacheSlot::default();
+            slot.priced = PricedTokens::default();
             Some(usage_slot)
         } else {
             None
@@ -699,20 +713,35 @@ impl SessionMetricsAccumulator {
         self.skill_marks.push(mark);
     }
 
-    fn observe_model_usage(&mut self, event: &NormalizedEvent, effective_ts: i64, ordinal: u64) {
+    /// Resolve the model and speed for one event's usage, and fold the usage
+    /// into the session-level model and pricing breakdowns.
+    ///
+    /// Returns `None` when the event carries no tokens to price. Otherwise
+    /// returns the pricing key the event's tokens are attributed under, for
+    /// the caller to stamp on the event's slot for per-bucket cost.
+    fn observe_model_usage(
+        &mut self,
+        event: &NormalizedEvent,
+        effective_ts: i64,
+        ordinal: u64,
+    ) -> Option<(PricedModel, bool)> {
         let usage = event.usage;
         let has_tokens = usage.input_tokens != 0
             || usage.output_tokens != 0
             || usage.cache_read_tokens != 0
             || usage.cache_creation_tokens != 0;
         if !has_tokens {
-            return;
+            return None;
         }
+        let fast = event
+            .speed
+            .as_deref()
+            .is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"));
         let model = match event.model.as_deref() {
             Some(value) => {
                 let value = crate::analysis::pricing::strip_window_tag(value).trim();
                 if value.is_empty() {
-                    return;
+                    return Some((PricedModel::Excluded, fast));
                 }
                 let model = self.model_interner.intern(value);
                 if model.is_none() {
@@ -747,17 +776,13 @@ impl SessionMetricsAccumulator {
                 tracing::debug!(event = "metrics_model_runs_capped");
             }
         }
-        let fast = event
-            .speed
-            .as_deref()
-            .is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"));
         let Some(model) = model else {
             add_usage(&mut self.unattributed_model_tokens, usage);
             add_usage(
                 &mut self.unattributed_pricing_tokens[usize::from(fast)],
                 usage,
             );
-            return;
+            return Some((PricedModel::Fallback, fast));
         };
         if let Some((_, tokens)) = self
             .model_breakdown
@@ -777,7 +802,7 @@ impl SessionMetricsAccumulator {
             );
             self.models_truncated = self.models_truncated.saturating_add(1);
             tracing::debug!(event = "metrics_model_breakdown_capped");
-            return;
+            return Some((PricedModel::Fallback, fast));
         }
         if let Some((_, tokens)) = self
             .pricing_breakdown
@@ -790,6 +815,7 @@ impl SessionMetricsAccumulator {
             add_usage(&mut tokens, usage);
             self.pricing_breakdown.push(((model, fast), tokens));
         }
+        Some((PricedModel::Named(model), fast))
     }
 
     fn count_tool(&mut self, name: &str) {
@@ -1005,6 +1031,7 @@ impl SessionMetricsAccumulator {
             &self.thinking_interner,
             &self.speed_interner,
             &self.last_tool_interner,
+            (&self.model_interner, summary.model.as_deref()),
         );
         for mark in self.efficiency.clone().rewrite_marks() {
             let index = bucket_index(mark.key.0, mark.key.1, active_ms, axis, self.observed_turns);
@@ -1052,6 +1079,12 @@ impl SessionMetricsAccumulator {
         let mut model_breakdown = self.model_breakdown_map(summary.model.as_deref());
         let mut pricing_breakdown = self.pricing_breakdown_map(summary.model.as_deref());
         let cost = crate::analysis::pricing::price_breakdown(&pricing_breakdown);
+        if cost.is_none() {
+            // A partially priced series would mislead: clear every bucket cost too.
+            for bucket in &mut buckets {
+                bucket.cost = None;
+            }
+        }
         let model_runs = self.model_runs(summary.model.as_deref());
         let tool_calls_by_name = count_map(&self.tool_calls_by_name, &self.interner);
         let mcp_tool_calls = count_map(&self.mcp_tool_calls, &self.mcp_interner);
@@ -1132,22 +1165,15 @@ impl SessionMetricsAccumulator {
         let mut result = HashMap::new();
         for ((model, fast), tokens) in &self.pricing_breakdown {
             let model = self.model_interner.get(*model);
-            let key = crate::analysis::pricing::turn_pricing_key(model, fast.then_some("fast"));
-            add_model_tokens(result.entry(key).or_default(), tokens);
+            if let Some(key) = pricing_key_for(Some(model), *fast, fallback) {
+                add_model_tokens(result.entry(key).or_default(), tokens);
+            }
         }
-        if let Some(model) = fallback
-            .map(crate::analysis::pricing::strip_window_tag)
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-        {
-            for (fast, tokens) in self.unattributed_pricing_tokens.iter().enumerate() {
-                if has_model_tokens(tokens) {
-                    let key = crate::analysis::pricing::turn_pricing_key(
-                        model,
-                        (fast == 1).then_some("fast"),
-                    );
-                    add_model_tokens(result.entry(key).or_default(), tokens);
-                }
+        for (fast, tokens) in self.unattributed_pricing_tokens.iter().enumerate() {
+            if has_model_tokens(tokens)
+                && let Some(key) = pricing_key_for(None, fast == 1, fallback)
+            {
+                add_model_tokens(result.entry(key).or_default(), tokens);
             }
         }
         result
@@ -1194,6 +1220,9 @@ struct BucketState {
     first_gap: Option<(u64, u64)>,
     rehydration_gap: Option<(u64, Option<u64>)>,
     rehydration: Option<slots::CacheRehydrationMark>,
+    /// Priced token counts landing in this bucket, by pricing key. A short
+    /// linear-scan list: a bucket sees only a few distinct keys.
+    pricing: Vec<((PricedModel, bool), ModelTokens)>,
 }
 
 fn fold_slot(
@@ -1233,6 +1262,64 @@ fn fold_slot(
         slot.cache_mode_2
     };
     fold_cache_slot(bucket, state, cache);
+    fold_priced_tokens(&mut state.pricing, &slot.priced);
+}
+
+/// Add one slot's priced tokens into a bucket's per-pricing-key totals.
+/// Excluded tokens (an empty-model event) never price, so they add nothing.
+fn fold_priced_tokens(
+    pricing: &mut Vec<((PricedModel, bool), ModelTokens)>,
+    priced: &PricedTokens,
+) {
+    let has_tokens = priced.input_tokens != 0
+        || priced.output_tokens != 0
+        || priced.cache_read_tokens != 0
+        || priced.cache_write_tokens != 0
+        || priced.cache_write_1h_tokens != 0;
+    if priced.model == PricedModel::Excluded || !has_tokens {
+        return;
+    }
+    let key = (priced.model, priced.fast);
+    if let Some((_, tokens)) = pricing.iter_mut().find(|(current, _)| *current == key) {
+        add_priced_tokens(tokens, priced);
+    } else {
+        let mut tokens = ModelTokens::default();
+        add_priced_tokens(&mut tokens, priced);
+        pricing.push((key, tokens));
+    }
+}
+
+/// Add one slot's priced token counts into a `ModelTokens` accumulator.
+fn add_priced_tokens(target: &mut ModelTokens, priced: &PricedTokens) {
+    target.input_tokens = target.input_tokens.saturating_add(priced.input_tokens);
+    target.output_tokens = target.output_tokens.saturating_add(priced.output_tokens);
+    target.cache_read_tokens = target
+        .cache_read_tokens
+        .saturating_add(priced.cache_read_tokens);
+    target.cache_creation_tokens = target
+        .cache_creation_tokens
+        .saturating_add(priced.cache_write_tokens);
+    target.cache_creation_1h_tokens = target
+        .cache_creation_1h_tokens
+        .saturating_add(priced.cache_write_1h_tokens);
+}
+
+/// Resolve one pricing key the same way for a live per-turn key and a
+/// per-bucket key, so the accumulator and its bucket sums cannot drift apart.
+/// `None` for a `Fallback` model whose fallback strips to nothing: the tokens
+/// then have no key to price under.
+fn pricing_key_for(model: Option<&str>, fast: bool, fallback: Option<&str>) -> Option<String> {
+    let model = match model {
+        Some(model) => model,
+        None => fallback
+            .map(crate::analysis::pricing::strip_window_tag)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())?,
+    };
+    Some(crate::analysis::pricing::turn_pricing_key(
+        model,
+        fast.then_some("fast"),
+    ))
 }
 
 fn fold_slot_compactions(
@@ -1286,7 +1373,11 @@ fn finish_bucket_state(
     thinking_modes: &Interner,
     speeds: &Interner,
     last_tools: &Interner,
+    // The pricing interner and the summary fallback model, bundled to keep
+    // this function's argument count under the lint limit.
+    pricing: (&Interner, Option<&str>),
 ) {
+    let (pricing_models, pricing_fallback) = pricing;
     for (bucket, state) in buckets.iter_mut().zip(states) {
         bucket.model = state.model.map(|value| models.get(value.name).to_string());
         bucket.thinking_mode = state
@@ -1310,6 +1401,31 @@ fn finish_bucket_state(
             .map(|(_, gap)| gap)
             .unwrap_or_else(|| state.first_gap.map(|(_, gap)| gap));
         bucket.cache_rehydration = state.rehydration.map(public_cache_rehydration);
+        bucket.cost = bucket_cost(&state.pricing, pricing_models, pricing_fallback);
+    }
+}
+
+/// Price one bucket's pricing-key totals into `Bucket::cost`. `None` when the
+/// bucket has no priced tokens.
+fn bucket_cost(
+    pricing: &[((PricedModel, bool), ModelTokens)],
+    pricing_models: &Interner,
+    pricing_fallback: Option<&str>,
+) -> Option<SessionCost> {
+    let mut map: HashMap<String, ModelTokens> = HashMap::new();
+    for ((model, fast), tokens) in pricing {
+        let model_name = match model {
+            PricedModel::Named(id) => Some(pricing_models.get(*id)),
+            PricedModel::Fallback | PricedModel::Excluded => None,
+        };
+        if let Some(key) = pricing_key_for(model_name, *fast, pricing_fallback) {
+            add_model_tokens(map.entry(key).or_default(), tokens);
+        }
+    }
+    if map.is_empty() {
+        None
+    } else {
+        crate::analysis::pricing::price_breakdown(&map)
     }
 }
 
@@ -1698,6 +1814,8 @@ pub fn merge_metrics(
         0,
     );
     for subagent in subagents {
+        let mut bucket_pricing: Vec<Vec<((PricedModel, bool), ModelTokens)>> =
+            vec![Vec::new(); BUCKETS];
         for slot in subagent.slots.iter().chain(subagent.reorder.iter()) {
             let index = bucket_index(
                 slot.first_ts,
@@ -1712,6 +1830,12 @@ pub fn merge_metrics(
                 .saturating_add(slot.subagent_tokens);
             merged.buckets[index].subagent_tokens =
                 merged.buckets[index].subagent_tokens.saturating_add(tokens);
+            fold_priced_tokens(&mut bucket_pricing[index], &slot.priced);
+        }
+        for (index, pricing) in bucket_pricing.iter().enumerate() {
+            if let Some(cost) = bucket_cost(pricing, &subagent.model_interner, parent_fallback) {
+                merged.buckets[index].cost = merge_bucket_cost(merged.buckets[index].cost, cost);
+            }
         }
     }
     merged.duration_secs = active.duration_secs();
@@ -1842,7 +1966,28 @@ pub fn merge_metrics(
     merged.cost = pricing_complete
         .then(|| crate::analysis::pricing::price_breakdown(&merged.pricing_breakdown))
         .flatten();
+    if merged.cost.is_none() {
+        // A partially priced series would mislead: clear every bucket cost too.
+        for bucket in &mut merged.buckets {
+            bucket.cost = None;
+        }
+    }
     merged
+}
+
+/// Add one subagent bucket's estimated cost into a merged bucket's cost,
+/// component-wise. `None` on the merged side takes the incoming value as-is.
+fn merge_bucket_cost(target: Option<SessionCost>, incoming: SessionCost) -> Option<SessionCost> {
+    Some(match target {
+        Some(existing) => SessionCost {
+            total_usd: existing.total_usd + incoming.total_usd,
+            input_usd: existing.input_usd + incoming.input_usd,
+            output_usd: existing.output_usd + incoming.output_usd,
+            cache_read_usd: existing.cache_read_usd + incoming.cache_read_usd,
+            cache_write_usd: existing.cache_write_usd + incoming.cache_write_usd,
+        },
+        None => incoming,
+    })
 }
 
 fn reproject_exact_merged_cache(
