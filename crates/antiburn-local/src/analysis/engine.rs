@@ -54,6 +54,11 @@ pub struct Bucket {
     /// This is a breakdown of `tokens_in`, not an addition to it — `tokens_in`
     /// already includes cache writes as effective input.
     pub cache_write_tokens: u64,
+    /// The estimated USD cost of the events in this bucket, by component.
+    /// Merged metrics include sub-agent events. `None` when the bucket has no
+    /// priced tokens or when the session cost is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<SessionCost>,
     /// Fresh parent input that does not grow context.
     /// This derived value does not depend on reported cache-write tokens.
     #[serde(default, skip_serializing_if = "is_zero")]
