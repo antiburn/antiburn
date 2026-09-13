@@ -461,24 +461,51 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         bucket.is_cache_routing_miss = is_cache_routing_miss;
         bucket.subagent_launches = subagent_launches;
         bucket.user_prompts = user_prompts;
-        // The per-session signals below name one gap, one model, one mode, and
-        // one compaction. Each contributing session can run a different agent
-        // with its own mode and its own compactions, so a multi-session summary
-        // leaves them at their defaults (`None`/`false`). A single-session
-        // summary carries them through, so the session detail view can show
-        // them.
+        // The per-session signals below name one gap, one model, one mode,
+        // one compaction, and one estimated cost. Each contributing session
+        // can run a different agent with its own mode and its own
+        // compactions, so a multi-session summary leaves them at their
+        // defaults (`None`/`false`). A single-session summary carries them
+        // through, so the session detail view can show them.
         if count == 1 {
-            let own = &metrics[0].buckets[bi];
-            bucket.cache_rehydration = own.cache_rehydration;
-            bucket.secs_since_prior_turn = own.secs_since_prior_turn;
-            bucket.model = own.model.clone();
-            bucket.thinking_mode = own.thinking_mode.clone();
-            bucket.speed = own.speed.clone();
-            bucket.has_thinking = own.has_thinking;
-            bucket.last_tool = own.last_tool.clone();
-            bucket.compaction_trigger = own.compaction_trigger;
-            bucket.compaction_pre_tokens = own.compaction_pre_tokens;
-            bucket.compaction_post_tokens = own.compaction_post_tokens;
+            // This pattern has no `..`. A new `Bucket` field fails to compile
+            // here, so the author must decide how the summary carries it.
+            let Bucket {
+                tokens_in: _,
+                tokens_out: _,
+                subagent_tokens: _,
+                context_tokens: _,
+                is_compaction_boundary: _,
+                cache_read_tokens: _,
+                cache_write_tokens: _,
+                cost,
+                rewrite_tokens: _,
+                is_cache_rehydration: _,
+                cache_rehydration,
+                is_cache_routing_miss: _,
+                secs_since_prior_turn,
+                subagent_launches: _,
+                user_prompts: _,
+                last_tool,
+                model,
+                thinking_mode,
+                speed,
+                has_thinking,
+                compaction_trigger,
+                compaction_pre_tokens,
+                compaction_post_tokens,
+            } = &metrics[0].buckets[bi];
+            bucket.cache_rehydration = *cache_rehydration;
+            bucket.secs_since_prior_turn = *secs_since_prior_turn;
+            bucket.model = model.clone();
+            bucket.thinking_mode = thinking_mode.clone();
+            bucket.speed = speed.clone();
+            bucket.has_thinking = *has_thinking;
+            bucket.last_tool = last_tool.clone();
+            bucket.compaction_trigger = *compaction_trigger;
+            bucket.compaction_pre_tokens = *compaction_pre_tokens;
+            bucket.compaction_post_tokens = *compaction_post_tokens;
+            bucket.cost = *cost;
         }
     }
 
