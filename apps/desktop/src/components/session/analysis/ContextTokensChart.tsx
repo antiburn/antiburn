@@ -1,16 +1,15 @@
-import { useId, useRef, useState, type CSSProperties, type ReactElement } from "react"
+import { useId, type CSSProperties, type ReactElement } from "react"
 import {
   Area,
   AreaChart,
   ReferenceLine,
   ResponsiveContainer,
-  Text,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts"
 
-import { prefersReducedMotion, slowAnimationDurationMs } from "../../../lib/popoverHeight"
+import { slowAnimationDurationMs } from "../../../lib/popoverHeight"
 import { modelShortName } from "../../../lib/presentation/models"
 import {
   axisScale,
@@ -26,7 +25,9 @@ import {
   type SessionModeBaseline,
 } from "../../../lib/presentation/sessionAnalysis"
 import type { SessionBucket } from "../../../lib/types/session"
+import { AXIS_LABEL, AXIS_TICK, labeledIndices } from "./chartLabels"
 import { GLASS_TOOLTIP_STYLE } from "./tooltip"
+import { useChartResize } from "./useChartResize"
 
 /**
  * A layer of the plot that a key entry can name.
@@ -55,108 +56,6 @@ export interface ContextTokensChartProps {
 const WARM_FLOOR_TOKENS = 400_000
 /** Token level the warm ramp reaches full red at. */
 const CRITICAL_TOKENS = 1_000_000
-/** Horizontal padding inside a label pill. */
-const PILL_PAD_X = 5
-/** Vertical padding above and below the label text inside its pill. */
-const PILL_PAD_Y = 2
-/** Mean glyph width at the label size, for sizing a pill to its text. */
-const PILL_CHAR_WIDTH = 6.1
-
-/**
- * Where the text sits relative to the point recharts computes for each label
- * position. Recharts gives a custom label the point but not the anchors, so
- * the chart states the same anchors the built-in label uses.
- */
-const LABEL_ANCHORS: Record<
-  string,
-  { textAnchor: "start" | "middle"; verticalAnchor: "start" | "end" }
-> = {
-  insideTop: { textAnchor: "middle", verticalAnchor: "start" },
-  top: { textAnchor: "middle", verticalAnchor: "end" },
-}
-
-/* Recharts states a label's geometry as string-or-number, so the pill takes
-   the same shape and converts once. */
-interface PillLabelProps {
-  x?: string | number | undefined
-  y?: string | number | undefined
-  dy?: string | number | undefined
-  fontSize?: string | number | undefined
-  fill?: string | undefined
-  value?: string | number | boolean | null | undefined
-  position?: unknown
-}
-
-/**
- * A label drawn inside the plot, on a translucent pill. The pill is the
- * opposite of the surface, so the text stays legible over the fill, the
- * line, and the marker bars it can land on.
- */
-function PillLabel({
-  x,
-  y,
-  dy = 0,
-  fontSize = 11,
-  fill,
-  value,
-  position = "insideTop",
-}: PillLabelProps) {
-  const originX = Number(x)
-  const originY = Number(y)
-  const offsetY = Number(dy)
-  const size = Number(fontSize)
-  if (
-    value == null ||
-    value === false ||
-    !Number.isFinite(originX) ||
-    !Number.isFinite(originY)
-  ) {
-    return null
-  }
-  const text = String(value)
-  const anchors =
-    (typeof position === "string" ? LABEL_ANCHORS[position] : undefined) ??
-    LABEL_ANCHORS.insideTop!
-  const width = text.length * PILL_CHAR_WIDTH + PILL_PAD_X * 2
-  const height = size + PILL_PAD_Y * 2
-  const left = anchors.textAnchor === "start" ? originX - PILL_PAD_X : originX - width / 2
-  // A "start" anchor puts the text's top edge on the point, an "end" anchor
-  // puts its bottom edge there.
-  const top =
-    anchors.verticalAnchor === "start" ? originY - PILL_PAD_Y : originY + PILL_PAD_Y - height
-  return (
-    <g>
-      <rect
-        x={left}
-        y={top + offsetY}
-        width={width}
-        height={height}
-        rx={height / 2}
-        fill="var(--color-chart-label-pill)"
-      />
-      <Text
-        x={originX}
-        y={originY + offsetY}
-        textAnchor={anchors.textAnchor}
-        verticalAnchor={anchors.verticalAnchor}
-        fontSize={size}
-        fill={fill}
-      >
-        {text}
-      </Text>
-    </g>
-  )
-}
-
-/* Band label text, drawn inside the plot. The size matches the caption
-   step of the type scale, which is the legibility floor. */
-const AXIS_LABEL = {
-  fontSize: 11,
-  fill: "var(--color-label-tertiary)",
-  content: PillLabel,
-}
-/* Axis tick text, drawn outside the plot in the caption grey. */
-const AXIS_TICK = { fontSize: 11, fill: "var(--color-label-tertiary)" }
 /** The width the value axis takes on the left of the plot. */
 const VALUE_AXIS_WIDTH = 40
 /* The plot fills the height its tab gives it, and never draws shorter than
@@ -186,8 +85,6 @@ const COMPACTION_STROKE_WIDTH = 2.5
 const COMPACTION_LIT_STROKE_WIDTH = 3.5
 /** Every mark at rest. A mark is a hairline, so it takes the denser grey. */
 const REST_MARK_STROKE = "var(--color-chart-rest-mark)"
-/** Nearer than this fraction of the x-domain, two rewrite labels would collide. */
-const REWRITE_LABEL_MIN_GAP_FRACTION = 0.18
 
 /**
  * The rewrite-family points, with a flag for which bars carry a label. Only a
@@ -205,13 +102,14 @@ function labeledRewritePoints(
       point.isCacheRehydration ||
       point.isCacheRoutingMiss,
   )
-  const minGap = Math.max(1, data.length - 1) * REWRITE_LABEL_MIN_GAP_FRACTION
-  let lastLabeled = Number.NEGATIVE_INFINITY
-  return points.map((point) => {
-    const showLabel = point.isCacheRehydration && point.index - lastLabeled >= minGap
-    if (showLabel) lastLabeled = point.index
-    return { point, showLabel }
-  })
+  const labeled = labeledIndices(
+    points.filter((point) => point.isCacheRehydration).map((point) => point.index),
+    data.length,
+  )
+  return points.map((point) => ({
+    point,
+    showLabel: point.isCacheRehydration && labeled.has(point.index),
+  }))
 }
 
 export interface ContextTokensTooltipProps {
@@ -570,29 +468,14 @@ export function ContextTokensChart({
 }: ContextTokensChartProps) {
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
-  const [initialBuckets] = useState(() => buckets)
-  const measuredSize = useRef<{ width: number; height: number } | null>(null)
-  const [resizedBuckets, setResizedBuckets] = useState<SessionBucket[] | null>(null)
-  const resizing = resizedBuckets === buckets
-  const animate = !resizing && !prefersReducedMotion()
-  const onResize = (width: number, height: number) => {
-    if (width <= 0 || height <= 0) return
-    const next = { width: Math.round(width), height: Math.round(height) }
-    const previous = measuredSize.current
-    measuredSize.current = next
-    if (previous && (previous.width !== next.width || previous.height !== next.height)) {
-      // Geometry changes must not replay the data's entrance animation.
-      setResizedBuckets(buckets)
-    }
-  }
+  const { onResize, resizing, animate, initial } = useChartResize(buckets)
   const animationDurationMs = slowAnimationDurationMs()
   // The first paint plays the session back in order: the context fill grows,
   // the token spikes follow it, and the rewrite marks land last, on top of a
   // chart that has finished drawing. A later bucket set comes from the live
   // poll, where a staggered replay would read as the panel redrawing itself,
   // so those updates animate together.
-  const entranceStepMs =
-    animate && buckets === initialBuckets ? Math.round(animationDurationMs / 2) : 0
+  const entranceStepMs = animate && initial ? Math.round(animationDurationMs / 2) : 0
   const tokenRowStepMs = Math.round(entranceStepMs / 2)
   const markDelayMs =
     entranceStepMs === 0
