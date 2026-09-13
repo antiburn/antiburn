@@ -20,6 +20,12 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- The session detail Cost tab shows how the estimated cost grew over the
+  session, split by input, output, cache read, and cache write, with
+  compaction and cache rehydration marks.
+
 ### Fixed
 
 - Claude Code cache writes now price at the one-hour rate (2x input) instead

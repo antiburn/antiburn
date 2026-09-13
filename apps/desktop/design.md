@@ -218,6 +218,9 @@ colors:
   chart-rest-faint: # resting grey, faintest step; sub-agent tokens
     light: "hsl(240 5.5% 25% / 0.09)"
     dark: "hsl(240 33% 94% / 0.08)"
+  chart-rest-fainter: # resting grey, fourth step; the cost burnup chart's cache-write layer
+    light: "hsl(240 5.5% 25% / 0.045)"
+    dark: "hsl(240 33% 94% / 0.04)"
   chart-rest-mark: # resting grey for a hairline mark over the plot
     light: "hsl(240 5.5% 25% / 0.55)"
     dark: "hsl(240 33% 94% / 0.5)"
@@ -236,6 +239,12 @@ colors:
   token-subagent: # quiet label-family neutral
     light: "hsl(240 5.5% 25% / 0.45)"
     dark: "hsl(240 33% 94% / 0.4)"
+  cost-cache-read: # cost burnup chart, cache-read layer; muted blue-green
+    light: "hsl(165 45% 40%)"
+    dark: "hsl(165 50% 62%)"
+  cost-cache-write: # cost burnup chart, cache-write layer; muted green
+    light: "hsl(140 40% 38%)"
+    dark: "hsl(140 45% 64%)"
   mark-rehydration: # a cache rehydration mark, lit; yellow
     light: "hsl(45.5 96% 56.2%)"
     dark: "hsl(45.2 96% 60.1%)"
@@ -618,7 +627,9 @@ Notes for what isn't expressible as a token:
   where it means a category: blue for context, the token series colors for in/out, yellow and
   pink for cache marks, brand orange for a compaction, and the `measure` blue wherever the view
   draws a reading — the real-work run of the efficiency composition and the measure on the cost
-  scale. In that composition rewrite waste takes the mid neutral and carry takes the brand
+  scale. The Cost tab's burnup chart stacks the same token in/out colors with two more: a muted
+  blue-green `cost-cache-read` and a muted green `cost-cache-write`, each grey at rest in its own
+  step (`chart-rest` through the new `chart-rest-fainter`) until the key names it. In that composition rewrite waste takes the mid neutral and carry takes the brand
   orange, so the same orange means a compaction in the chart and carry in the bar below it; the
   two never share a shape, and the legend beside each names it. The Tools tab reports its wasted
   tokens in `waste-warn`, and in `system-red-text` when the waste is both a large share of the
@@ -794,6 +805,9 @@ tokens or the menu-bar list's default appearance to achieve it.
 
   The Context chart updates geometry without animation when its measured size changes.
   New bucket data can still animate together, without the entrance stagger.
+
+  The Cost tab's burnup chart sits between the cost card and the checks, and shares the
+  Context chart's minimum height and resize behavior.
 
   Efficiency sits at the bottom of the Cost pane when content fits, and follows the
   checks in normal scroll order otherwise. The total appears once in the top cost

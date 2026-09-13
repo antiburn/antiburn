@@ -42,6 +42,9 @@
   --color-chart-rest-strong: var(--color-chart-rest-strong-val);
   --color-chart-rest: var(--color-chart-rest-val);
   --color-chart-rest-faint: var(--color-chart-rest-faint-val);
+  /* A fourth, fainter step for the cost burnup chart's fourth stacked layer
+     (cache write), so all four greyed layers stay distinguishable. */
+  --color-chart-rest-fainter: var(--color-chart-rest-fainter-val);
 
   /* The resting grey for a mark drawn over the plot: a rewrite bar, a cache
      event, or a routing miss. Denser than the series greys, because a mark is
@@ -63,6 +66,12 @@
   --color-token-in: var(--color-token-in-val);
   --color-token-out: var(--color-token-out-val);
   --color-token-subagent: var(--color-token-subagent-val);
+
+  /* The two cache layers of the cost burnup chart's stack: a muted blue-green
+     for cache read, distinct from the context, input, and measure blues, and
+     a muted green for cache write, distinct from the teal and mark hues. */
+  --color-cost-cache-read: var(--color-cost-cache-read-val);
+  --color-cost-cache-write: var(--color-cost-cache-write-val);
 
   /* The lit color of each mark drawn over the plot. A rehydration takes a
      yellow, a routing miss a pink, and a compaction the brand orange. Each
@@ -117,10 +126,13 @@
   --color-chart-rest-strong-val: hsl(240 5.5% 25% / 0.3);
   --color-chart-rest-val: hsl(240 5.5% 25% / 0.18);
   --color-chart-rest-faint-val: hsl(240 5.5% 25% / 0.09);
+  --color-chart-rest-fainter-val: hsl(240 5.5% 25% / 0.045);
   --color-chart-rest-mark-val: hsl(240 5.5% 25% / 0.55);
   --color-token-in-val: hsl(189 86% 53.3%); /* cyan */
   --color-token-out-val: hsl(258.3 89% 66.2%); /* violet */
   --color-token-subagent-val: hsl(240 5.5% 25% / 0.45); /* label-family neutral */
+  --color-cost-cache-read-val: hsl(165 45% 40%); /* muted blue-green */
+  --color-cost-cache-write-val: hsl(140 40% 38%); /* muted green */
   --color-chart-label-pill-val: hsl(0 0% 100% / 0.5);
   --color-context-rewrite-val: hsl(0 0% 100%);
   --color-mark-rehydration-val: hsl(45.5 96% 56.2%); /* yellow */
@@ -151,10 +163,13 @@
     --color-chart-rest-strong-val: hsl(240 33% 94% / 0.28);
     --color-chart-rest-val: hsl(240 33% 94% / 0.16);
     --color-chart-rest-faint-val: hsl(240 33% 94% / 0.08);
+    --color-chart-rest-fainter-val: hsl(240 33% 94% / 0.04);
     --color-chart-rest-mark-val: hsl(240 33% 94% / 0.5);
     --color-token-in-val: hsl(188.7 87% 58.2%); /* cyan */
     --color-token-out-val: hsl(258 89% 69.8%); /* violet */
     --color-token-subagent-val: hsl(240 33% 94% / 0.4); /* label-family neutral */
+    --color-cost-cache-read-val: hsl(165 50% 62%); /* blue-green, lifted for dark */
+    --color-cost-cache-write-val: hsl(140 45% 64%); /* green, lifted for dark */
     --color-chart-label-pill-val: hsl(0 0% 0% / 0.5);
     --color-context-rewrite-val: hsl(0 0% 100%);
     --color-mark-rehydration-val: hsl(45.2 96% 60.1%); /* yellow */
@@ -181,10 +196,13 @@
   --color-chart-rest-strong-val: hsl(240 33% 94% / 0.28);
   --color-chart-rest-val: hsl(240 33% 94% / 0.16);
   --color-chart-rest-faint-val: hsl(240 33% 94% / 0.08);
+  --color-chart-rest-fainter-val: hsl(240 33% 94% / 0.04);
   --color-chart-rest-mark-val: hsl(240 33% 94% / 0.5);
   --color-token-in-val: hsl(188.7 87% 58.2%);
   --color-token-out-val: hsl(258 89% 69.8%);
   --color-token-subagent-val: hsl(240 33% 94% / 0.4);
+  --color-cost-cache-read-val: hsl(165 50% 62%);
+  --color-cost-cache-write-val: hsl(140 45% 64%);
   --color-chart-label-pill-val: hsl(0 0% 0% / 0.5);
   --color-context-rewrite-val: hsl(0 0% 100%);
   --color-mark-rehydration-val: hsl(45.2 96% 60.1%);

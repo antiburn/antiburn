@@ -12,12 +12,28 @@ import type {
   SessionMetrics,
 } from "../../lib/types/session"
 import { subagentsExpandedStore } from "./analysis/subagentsExpandedStore"
+import type * as CostBurnupChartModule from "./analysis/CostBurnupChart"
 import {
   SessionDetailPresentation,
   type SessionDetailPresentationProps,
 } from "./SessionDetailPresentation"
 
 afterEach(cleanup)
+
+// jsdom never measures a real layout size, so recharts' `ResponsiveContainer`
+// renders no children for either analysis chart here (see ContextTokensChart
+// and CostBurnupChart's own test files for their real rendered content). This
+// file only needs to know the burnup chart received the right `highlight`,
+// so it stands in for the whole component with a stub that exposes it.
+vi.mock("./analysis/CostBurnupChart", async (importOriginal) => {
+  const actual = await importOriginal<typeof CostBurnupChartModule>()
+  return {
+    ...actual,
+    CostBurnupChart: ({ highlight }: { highlight?: string | null }) => (
+      <div data-testid="cost-burnup-chart" data-highlight={highlight ?? ""} />
+    ),
+  }
+})
 
 // The Cost card's sub-agent roster now remembers its open/closed state in a
 // module-level store, shared across every test in this file. Start each test
@@ -258,7 +274,9 @@ describe("SessionDetailPresentation — chrome", () => {
     view({ cost: null })
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.getByText("No cost has been recorded for this session.")).toBeTruthy()
-    expect(screen.queryByText("Input")).toBeNull()
+    // The burnup chart's key still names "Input" as a category (with a "—"
+    // value); it is the cost breakdown's own component row that is absent.
+    expect(screen.getAllByText("Input")).toHaveLength(1)
   })
 
   it("splits the efficiency readings: composition under the chart, $/MTok on Cost", () => {
@@ -512,8 +530,9 @@ describe("SessionDetailPresentation — session facts", () => {
     fireEvent.click(costTab)
     const panel = screen.getByRole("tabpanel")
     expect(panel).toHaveTextContent("Estimated cost")
-    expect(screen.getByText("Input")).toBeTruthy()
-    expect(screen.getByText("$2.40")).toBeTruthy()
+    const breakdown = panel.querySelector<HTMLElement>(".session-cost-summary")!
+    expect(within(breakdown).getByText("Input")).toBeTruthy()
+    expect(within(breakdown).getByText("$2.40")).toBeTruthy()
   })
 
   it("marks a WSL session origin in the header", () => {
@@ -817,15 +836,63 @@ describe("SessionDetailPresentation — presentation", () => {
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.getByRole("heading", { name: "Checks" })).toHaveClass("sr-only")
     expect(screen.getByText("Efficiency")).toBeTruthy()
-    // Spacing separates the cost, checks, and efficiency sections.
+    // Spacing separates the cost, burnup chart, checks, and efficiency sections.
     const sections = Array.from(container.querySelectorAll("section"))
-    expect(sections).toHaveLength(3)
+    expect(sections).toHaveLength(4)
     expect(sections.map((section) => section.querySelector("h3")?.textContent)).toEqual([
       "Cost",
+      "Cost over time",
       "Checks",
       "Efficiency",
     ])
     for (const section of sections) expect(section).not.toHaveClass("border-separator")
+  })
+
+  it("renders the Cost tab's burnup chart and a seven-cell key in order", () => {
+    detailView()
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    expect(screen.getByRole("heading", { name: "Cost over time" })).toHaveClass("sr-only")
+    expect(screen.getByTestId("cost-burnup-chart")).toBeTruthy()
+    const key = screen.getByTestId("chart-key")
+    const captions = Array.from(key.querySelectorAll("button")).map(
+      (button) => button.querySelector(".type-callout")?.textContent,
+    )
+    expect(captions).toEqual([
+      "Input",
+      "Output",
+      "Cache read",
+      "Cache write",
+      "Compactions",
+      "Rehydrations",
+      "Sub-agents launched",
+    ])
+  })
+
+  it("lights the hovered layer in the burnup chart through the key", () => {
+    detailView()
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    const key = screen.getByTestId("chart-key")
+    const cell = within(key).getByText("Cache write").closest("button")!
+    fireEvent.mouseEnter(cell)
+    expect(screen.getByTestId("cost-burnup-chart")).toHaveAttribute(
+      "data-highlight",
+      "cacheWrite",
+    )
+    fireEvent.mouseLeave(cell)
+    expect(screen.getByTestId("cost-burnup-chart")).toHaveAttribute("data-highlight", "")
+  })
+
+  it("keeps the Cost tab's pin separate from the Context tab's", () => {
+    detailView()
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    const costKey = screen.getByTestId("chart-key")
+    fireEvent.click(within(costKey).getByText("Output").closest("button")!)
+    expect(screen.getByTestId("cost-burnup-chart")).toHaveAttribute("data-highlight", "output")
+
+    fireEvent.click(screen.getByRole("tab", { name: /^Context/ }))
+    const contextKey = screen.getByTestId("chart-key")
+    const outCell = within(contextKey).getByText("Out").closest("button")!
+    expect(outCell).toHaveAttribute("aria-pressed", "false")
   })
 
   it("lays the Tools tab out in two columns", () => {
