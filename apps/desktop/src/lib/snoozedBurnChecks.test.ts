@@ -5,6 +5,7 @@ import { sessionHygieneChecks } from "./presentation/sessionHygiene"
 
 const payload = {
   evidenceState: "ready" as const,
+  unusedResources: null,
   badges: [
     { id: "sessionOverdepth" as const, status: "finding" as const, notAssessedReason: null },
     { id: "modelOverthinking" as const, status: "clean" as const, notAssessedReason: null },

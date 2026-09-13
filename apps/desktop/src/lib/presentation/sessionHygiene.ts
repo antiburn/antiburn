@@ -154,6 +154,7 @@ const ACCOUNTING_DETAIL: Record<
 export const INITIAL_SESSION_HYGIENE: SessionHygienePayload = {
   badges: CHECKS.map((check) => ({ ...NOT_ASSESSED, id: check.id })),
   evidenceState: "pending",
+  unusedResources: null,
 }
 
 /** The reader-facing name of one check, with no verdict attached. */

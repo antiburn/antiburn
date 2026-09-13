@@ -133,6 +133,7 @@ function presentationProps(
         notAssessedReason: null,
       })),
       evidenceState: "ready",
+      unusedResources: null,
     },
     error: false,
     onBack: () => {},
@@ -207,6 +208,7 @@ describe("SessionDetailPresentation — chrome", () => {
           },
         ],
         evidenceState: "ready",
+        unusedResources: null,
       },
     })
 

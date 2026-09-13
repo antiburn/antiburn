@@ -142,7 +142,7 @@ describe("BurnCheckTargetDetail", () => {
               cost: null,
               models: [],
               modelRuns: [],
-              hygiene: { evidenceState: "pending", badges: [] },
+              hygiene: { evidenceState: "pending", unusedResources: null, badges: [] },
             },
           ],
         })}
