@@ -75,6 +75,12 @@ const SUBAGENT_TICK_WIDTH = 2
 const SUBAGENT_TICK_HEIGHT = 6
 
 /**
+ * A vertical mark label is about one glyph height wide, so two labels can
+ * sit closer together on the x domain than two horizontal pill labels can.
+ */
+const VERTICAL_LABEL_MIN_GAP_FRACTION = 0.05
+
+/**
  * Sub-agent launch marks are an experiment: a short tick on the baseline for
  * each bucket that launched one, with no label. Set to `false` to drop them
  * if they read as noise.
@@ -228,11 +234,19 @@ export function CostBurnupChart({
   const rehydrationIndices = data
     .filter((point) => point.isCacheRehydration)
     .map((point) => point.index)
-  const labeledRehydration = labeledIndices(rehydrationIndices, data.length)
+  const labeledRehydration = labeledIndices(
+    rehydrationIndices,
+    data.length,
+    VERTICAL_LABEL_MIN_GAP_FRACTION,
+  )
   const compactionIndices = data
     .filter((point) => point.isCompactionBoundary)
     .map((point) => point.index)
-  const labeledCompaction = labeledIndices(compactionIndices, data.length)
+  const labeledCompaction = labeledIndices(
+    compactionIndices,
+    data.length,
+    VERTICAL_LABEL_MIN_GAP_FRACTION,
+  )
 
   return (
     <ResponsiveContainer
