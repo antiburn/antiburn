@@ -861,8 +861,8 @@ describe("SessionDetailPresentation — presentation", () => {
     expect(captions).toEqual([
       "Input",
       "Output",
-      "Cache read",
       "Cache write",
+      "Cache read",
       "Compactions",
       "Rehydrations",
       "Sub-agents launched",
