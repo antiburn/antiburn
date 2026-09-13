@@ -31,6 +31,7 @@ import { agentDisplayName } from "../../lib/presentation/agents"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { localSessionKey, sessionIdentityKey } from "../../lib/presentation/localIdentity"
 import { sessionHygieneChecks } from "../../lib/presentation/sessionHygiene"
+import { unusedContextRows as unusedContextRowsFor } from "../../lib/presentation/unusedContext"
 import {
   modelRunNames,
   modelRunShortPairs,
@@ -72,6 +73,7 @@ import { ContextTokensChart, type ChartSeries } from "./analysis/ContextTokensCh
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
 import { HygieneBreakdown } from "./analysis/HygieneBreakdown"
 import { SkillsMcpChart } from "./analysis/SkillsMcpChart"
+import { UnusedContext } from "./analysis/UnusedContext"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
 import { SubagentBadge } from "./orchestration/SubagentBadge"
@@ -720,6 +722,7 @@ export function SessionDetailPresentation({
     snoozedDetectorIds(useSnoozedBurnChecks()),
   )
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
+  const unusedContextRows = unusedContextRowsFor(hygiene)
 
   const handleAdjacentKey = (event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>) => {
     if (!active || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey)
@@ -1103,6 +1106,13 @@ export function SessionDetailPresentation({
                       swatchClass={COST_SERIES_SWATCH_CLASS}
                     />
                   </section>
+                  {unusedContextRows.length > 0 && (
+                    <section className="shrink-0">
+                      <TabSectionHeading>Loaded but not used</TabSectionHeading>
+                      <UnusedContext rows={unusedContextRows} />
+                    </section>
+                  )}
+
                   {hasAssessedHygieneChecks && (
                     <section className="shrink-0">
                       <TabSectionHeading>Checks</TabSectionHeading>
