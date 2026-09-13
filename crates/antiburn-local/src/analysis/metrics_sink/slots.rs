@@ -47,6 +47,30 @@ pub(crate) struct CacheRehydrationMark {
     pub(crate) user_inactive_secs: Option<u64>,
 }
 
+/// Which pricing key a slot's tokens belong to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum PricedModel {
+    /// The event names no usable model. The tokens price under the summary fallback model.
+    #[default]
+    Fallback,
+    /// The event names a model that strips to an empty string. The tokens are not priced.
+    Excluded,
+    /// The event names an interned model in the pricing interner.
+    Named(NameId),
+}
+
+/// The token counts one slot contributes to per-bucket cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PricedTokens {
+    pub(crate) model: PricedModel,
+    pub(crate) fast: bool,
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) cache_read_tokens: u64,
+    pub(crate) cache_write_tokens: u64,
+    pub(crate) cache_write_1h_tokens: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SlotAggregate {
     pub(crate) first_ordinal: u64,
@@ -61,6 +85,7 @@ pub(crate) struct SlotAggregate {
     pub(crate) cache_write_tokens: u64,
     pub(crate) subagent_tokens: u64,
     pub(crate) context_tokens: u64,
+    pub(crate) priced: PricedTokens,
     pub(crate) user_prompts: u32,
     pub(crate) subagent_launches: u32,
     pub(crate) has_thinking: bool,
@@ -90,6 +115,7 @@ impl SlotAggregate {
             cache_write_tokens: 0,
             subagent_tokens: 0,
             context_tokens: 0,
+            priced: PricedTokens::default(),
             user_prompts: 0,
             subagent_launches: 0,
             has_thinking: false,
@@ -105,7 +131,14 @@ impl SlotAggregate {
         }
     }
 
+    /// Merge another slot's counts into this one.
+    ///
+    /// A merged run that changes model mid-run prices at the later model:
+    /// `priced.model` and `priced.fast` take the value from the slot with the
+    /// higher `last_ordinal`. Slots merge only after the position quantum
+    /// doubles on very large sessions, so this only matters there.
     pub(crate) fn merge(&mut self, other: Self) {
+        let other_is_later = other.last_ordinal > self.last_ordinal;
         self.first_ordinal = self.first_ordinal.min(other.first_ordinal);
         self.last_ordinal = self.last_ordinal.max(other.last_ordinal);
         self.first_key = self.first_key.min(other.first_key);
@@ -125,6 +158,30 @@ impl SlotAggregate {
             .saturating_add(other.cache_write_tokens);
         self.subagent_tokens = self.subagent_tokens.saturating_add(other.subagent_tokens);
         self.context_tokens = self.context_tokens.max(other.context_tokens);
+        self.priced.input_tokens = self
+            .priced
+            .input_tokens
+            .saturating_add(other.priced.input_tokens);
+        self.priced.output_tokens = self
+            .priced
+            .output_tokens
+            .saturating_add(other.priced.output_tokens);
+        self.priced.cache_read_tokens = self
+            .priced
+            .cache_read_tokens
+            .saturating_add(other.priced.cache_read_tokens);
+        self.priced.cache_write_tokens = self
+            .priced
+            .cache_write_tokens
+            .saturating_add(other.priced.cache_write_tokens);
+        self.priced.cache_write_1h_tokens = self
+            .priced
+            .cache_write_1h_tokens
+            .saturating_add(other.priced.cache_write_1h_tokens);
+        if other_is_later {
+            self.priced.model = other.priced.model;
+            self.priced.fast = other.priced.fast;
+        }
         self.user_prompts = self.user_prompts.saturating_add(other.user_prompts);
         self.subagent_launches = self
             .subagent_launches
