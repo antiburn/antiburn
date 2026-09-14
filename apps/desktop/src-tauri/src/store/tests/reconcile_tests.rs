@@ -30,7 +30,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
         ProjectionRevisions {
             parser_revision: 37,
             analyzer_revision: 24,
-            metrics_schema_revision: 8,
+            metrics_schema_revision: 9,
             evidence_schema_revision: 19,
         }
     );

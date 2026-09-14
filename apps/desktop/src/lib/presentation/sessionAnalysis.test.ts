@@ -4,11 +4,14 @@ import type { InitialContextBreakdown, SessionBucket } from "../types/session"
 import {
   axisScale,
   contextTokenSeries,
+  costAxisScale,
+  costBurnupSeries,
   timeAxisTicks,
   costBreakdownRows,
   costFigureLabel,
   costOutlierThreshold,
   formatCost,
+  formatCostTick,
   formatDuration,
   formatTime,
   formatTokenBand,
@@ -243,6 +246,89 @@ describe("contextTokenSeries", () => {
   })
 })
 
+describe("costBurnupSeries", () => {
+  it("sums each component cumulatively across buckets", () => {
+    const buckets = [
+      bucket({
+        cost: {
+          totalUsd: 1,
+          inputUsd: 0.4,
+          outputUsd: 0.3,
+          cacheReadUsd: 0.2,
+          cacheWriteUsd: 0.1,
+        },
+      }),
+      bucket({
+        cost: {
+          totalUsd: 2,
+          inputUsd: 0.8,
+          outputUsd: 0.6,
+          cacheReadUsd: 0.4,
+          cacheWriteUsd: 0.2,
+        },
+      }),
+    ]
+    const series = costBurnupSeries(buckets)
+    expect(series[0]).toMatchObject({
+      inputUsd: 0.4,
+      outputUsd: 0.3,
+      cacheReadUsd: 0.2,
+      cacheWriteUsd: 0.1,
+      totalUsd: 1,
+      bucketUsd: 1,
+    })
+    expect(series[1]!.inputUsd).toBeCloseTo(1.2)
+    expect(series[1]!.outputUsd).toBeCloseTo(0.9)
+    expect(series[1]!.cacheReadUsd).toBeCloseTo(0.6)
+    expect(series[1]!.cacheWriteUsd).toBeCloseTo(0.3)
+    expect(series[1]).toMatchObject({ totalUsd: 3, bucketUsd: 2 })
+  })
+
+  it("adds zero for a bucket with no cost, holding the running totals", () => {
+    const buckets = [
+      bucket({
+        cost: { totalUsd: 1, inputUsd: 1, outputUsd: 0, cacheReadUsd: 0, cacheWriteUsd: 0 },
+      }),
+      bucket(),
+    ]
+    const series = costBurnupSeries(buckets)
+    expect(series[1]).toMatchObject({ inputUsd: 1, totalUsd: 1, bucketUsd: 0 })
+  })
+
+  it("passes the compaction, rehydration, routing-miss, and launch flags through", () => {
+    const buckets = [
+      bucket({
+        isCompactionBoundary: true,
+        compactionTrigger: "manual",
+        isCacheRehydration: true,
+        isCacheRoutingMiss: true,
+        subagentLaunches: 3,
+        secsSincePriorTurn: 42,
+      }),
+    ]
+    const series = costBurnupSeries(buckets)
+    expect(series[0]).toMatchObject({
+      isCompactionBoundary: true,
+      compactionTrigger: "manual",
+      isCacheRehydration: true,
+      isCacheRoutingMiss: true,
+      subagentLaunches: 3,
+      secsSincePriorTurn: 42,
+    })
+  })
+
+  it("forward-fills the model across buckets with no value", () => {
+    const buckets = [bucket({ model: "claude-opus-4-6" }), bucket()]
+    const series = costBurnupSeries(buckets)
+    expect(series.map((p) => p.model)).toEqual(["claude-opus-4-6", "claude-opus-4-6"])
+  })
+
+  it("keeps one point per bucket, including empty ones", () => {
+    const buckets = [bucket(), bucket(), bucket()]
+    expect(costBurnupSeries(buckets)).toHaveLength(3)
+  })
+})
+
 describe("modeChangeMarkers", () => {
   it("emits no marker for the starting mode, only for later changes", () => {
     const buckets = [
@@ -329,6 +415,36 @@ describe("axisScale", () => {
       ceiling: 20_000,
       ticks: [5_000, 10_000, 15_000, 20_000],
     })
+  })
+})
+
+describe("costAxisScale", () => {
+  it("scales the ceiling to the peak, taking no headroom", () => {
+    expect(costAxisScale(0.23, 4)).toEqual({
+      ceiling: 0.3,
+      ticks: [0.1, 0.2, 0.3],
+    })
+  })
+
+  it("uses a coarse step once the peak needs more than the tick limit of fine ones", () => {
+    expect(costAxisScale(3.4, 4)).toEqual({
+      ceiling: 4,
+      ticks: [1, 2, 3, 4],
+    })
+  })
+
+  it("makes the ceiling itself a tick", () => {
+    const scale = costAxisScale(41.45, 4)
+    expect(scale.ticks[scale.ticks.length - 1]).toBe(scale.ceiling)
+  })
+
+  it("never exceeds the top of the dollar ladder", () => {
+    expect(costAxisScale(12_000, 4).ceiling).toBe(5_000)
+  })
+
+  it("gives an unpriced or empty chart an axis to draw against", () => {
+    expect(costAxisScale(0, 4)).toEqual({ ceiling: 0.01, ticks: [0, 0.01] })
+    expect(costAxisScale(-1, 4)).toEqual({ ceiling: 0.01, ticks: [0, 0.01] })
   })
 })
 
@@ -430,6 +546,28 @@ describe("formatCost", () => {
     expect(formatCost(Number.NaN)).toBe("$0.00")
     expect(formatCost(Number.POSITIVE_INFINITY)).toBe("$0.00")
     expect(formatCost(-1)).toBe("$0.00")
+  })
+})
+
+describe("formatCostTick", () => {
+  it("renders each documented example", () => {
+    expect(formatCostTick(0)).toBe("$0")
+    expect(formatCostTick(0.05)).toBe("$0.05")
+    expect(formatCostTick(0.5)).toBe("$0.50")
+    expect(formatCostTick(2)).toBe("$2")
+    expect(formatCostTick(2.5)).toBe("$2.50")
+    expect(formatCostTick(120)).toBe("$120")
+    expect(formatCostTick(1_200)).toBe("$1.2k")
+  })
+
+  it("drops decimals for a whole number of dollars at any scale", () => {
+    expect(formatCostTick(1)).toBe("$1")
+    expect(formatCostTick(5_000)).toBe("$5k")
+  })
+
+  it("clamps non-finite or negative input to $0", () => {
+    expect(formatCostTick(Number.NaN)).toBe("$0")
+    expect(formatCostTick(-1)).toBe("$0")
   })
 })
 

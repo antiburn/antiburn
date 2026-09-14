@@ -3013,6 +3013,37 @@ fn single_session_summary_keeps_mode_signals() {
 }
 
 #[test]
+fn single_session_summary_keeps_bucket_costs() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1000,"output_tokens":500}},"uuid":"a1"}
+{"type":"assistant","timestamp":"2024-06-01T12:10:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2000,"output_tokens":100}},"uuid":"a2"}"#;
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+
+    // The Cost tab's burnup chart reads the summary buckets, so a
+    // one-session summary must carry each bucket's own cost through.
+    let session_cost = summary.sessions[0].cost.expect("priced session");
+    let bucket_total: f64 = summary
+        .buckets
+        .iter()
+        .filter_map(|bucket| bucket.cost)
+        .map(|cost| cost.total_usd)
+        .sum();
+    assert!(bucket_total > 0.0);
+    assert!((bucket_total - session_cost.total_usd).abs() < 1e-9);
+}
+
+#[test]
+fn aggregate_metrics_leaves_bucket_costs_at_default() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1000,"output_tokens":500}},"uuid":"a1"}"#;
+    let summary = analyze_sources(vec![
+        jsonl_input("claude", fixture),
+        jsonl_input("claude", fixture),
+    ]);
+
+    assert!(summary.cost_total_usd.is_some());
+    assert!(summary.buckets.iter().all(|bucket| bucket.cost.is_none()));
+}
+
+#[test]
 fn aggregate_metrics_leaves_mode_signals_at_default() {
     let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"x"}]},"effort":"high"}"#;
     let summary = analyze_sources(vec![

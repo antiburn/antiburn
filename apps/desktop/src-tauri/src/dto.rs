@@ -10,10 +10,11 @@
 //! around them belongs to the views — so these payloads carry values and facts,
 //! never labels.
 
+use antiburn_local::analysis::tool_catalog::{comparable_tool_name, situational_tools};
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, ModelRun,
-    ProviderIncidentKind, QuotaLimitKind, RepeatedContextAccounting, SessionCost, SessionEvidence,
-    SourceFormat,
+    ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, LoadedSource,
+    ModelEvidence, ModelRun, ProviderIncidentKind, QuotaLimitKind, RepeatedContextAccounting,
+    SessionCost, SessionEvidence, SourceFormat, ToolDefinition, lookup_pricing,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
@@ -21,7 +22,7 @@ use antiburn_local::insights::{
 };
 use antiburn_local::pricing::canonical_model_key;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One row of the popover's activity list.
 ///
@@ -1285,6 +1286,28 @@ pub struct SessionHygieneBadgePayload {
 pub struct SessionHygienePayload {
     pub badges: Vec<SessionHygieneBadgePayload>,
     pub evidence_state: &'static str,
+    /// Priced idle context for this one session, present only when
+    /// evidence backs it. Informational: it carries no verdict.
+    pub unused_resources: Option<SessionUnusedResourcesPayload>,
+}
+
+/// Resources that sat in every request's context this session and were
+/// never called, with what the session paid to replay each one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUnusedResourcesPayload {
+    pub mcp_servers: Vec<UnusedResourcePayload>,
+    pub built_in_tools: Vec<UnusedResourcePayload>,
+    pub skills: Vec<UnusedResourcePayload>,
+}
+
+/// One unused resource, with its priced replication cost. `cost_usd` is
+/// absent when no observed model resolves in the live pricing table.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnusedResourcePayload {
+    pub name: String,
+    pub cost_usd: Option<f64>,
 }
 
 /// The aggregate hygiene numbers for the sessions in the activity window.
@@ -1486,6 +1509,87 @@ fn finding_evidence(
     }
 }
 
+/// Sums one resource's replication cost across every observed model:
+/// `token_count * turns * cache_read_cost_per_token`, per model in
+/// `models.by_model`. `None` when no observed model resolves in the
+/// live pricing table, even though the resource still names itself.
+fn unused_resource_cost_usd(token_count: u64, models: Option<&ModelEvidence>) -> Option<f64> {
+    let models = models?;
+    let mut total_usd = 0.0;
+    let mut priced_any = false;
+    for (model, tokens) in &models.by_model {
+        let Some(pricing) = lookup_pricing(model) else {
+            continue;
+        };
+        total_usd += token_count as f64 * tokens.turns as f64 * pricing.cache_read_cost_per_token;
+        priced_any = true;
+    }
+    priced_any.then_some(total_usd)
+}
+
+/// Builds one payload entry per injected, never-invoked MCP server or
+/// skill, matching `unused_mcp_servers`/`unused_skills`'s own `evaluate`.
+fn unused_loaded_source_payloads(
+    sources: &BTreeMap<String, LoadedSource>,
+    models: Option<&ModelEvidence>,
+) -> Vec<UnusedResourcePayload> {
+    sources
+        .iter()
+        .filter(|(_, source)| source.injected && !source.invoked)
+        .map(|(name, source)| UnusedResourcePayload {
+            name: name.clone(),
+            cost_usd: source
+                .token_count
+                .and_then(|tokens| unused_resource_cost_usd(tokens, models)),
+        })
+        .collect()
+}
+
+/// Builds one payload entry per unused built-in tool definition, matching
+/// `unused_built_in_tools::has_unused_definition`: a real, non-deferred,
+/// never-invoked, non-situational definition.
+fn unused_built_in_tool_payloads(
+    agent: &str,
+    definitions: &BTreeMap<String, ToolDefinition>,
+    models: Option<&ModelEvidence>,
+) -> Vec<UnusedResourcePayload> {
+    let situational: Vec<String> = situational_tools(agent)
+        .iter()
+        .map(|name| comparable_tool_name(name))
+        .collect();
+    definitions
+        .iter()
+        .filter(|(name, definition)| {
+            definition.tokens > 0
+                && !definition.deferred
+                && !definition.invoked
+                && !situational.contains(&comparable_tool_name(name))
+        })
+        .map(|(name, definition)| UnusedResourcePayload {
+            name: name.clone(),
+            cost_usd: unused_resource_cost_usd(u64::from(definition.tokens), models),
+        })
+        .collect()
+}
+
+/// Builds the session's priced idle-context section from evidence: every
+/// injected-but-unused MCP server, built-in tool, and skill.
+fn session_unused_resources(evidence: &SessionEvidence) -> Option<SessionUnusedResourcesPayload> {
+    let sources = observed(&evidence.context_sources)?;
+    let models = observed(&evidence.models);
+    let built_in_tools = match observed(&sources.tool_definitions) {
+        Some(definitions) => {
+            unused_built_in_tool_payloads(&evidence.identity.agent, definitions, models)
+        }
+        None => Vec::new(),
+    };
+    Some(SessionUnusedResourcesPayload {
+        mcp_servers: unused_loaded_source_payloads(&sources.mcp_servers, models),
+        built_in_tools,
+        skills: unused_loaded_source_payloads(&sources.skills, models),
+    })
+}
+
 /// Reads the accounting `Cache Churn` used for this session's
 /// `repeated_context`, or `None` when neither cache-write nor
 /// uncached-input accounting applies.
@@ -1519,6 +1623,7 @@ impl SessionHygienePayload {
                 .map(|badge| SessionHygieneBadgePayload::from_badge(badge, accounting, None))
                 .collect(),
             evidence_state,
+            unused_resources: None,
         }
     }
 
@@ -1542,6 +1647,7 @@ impl SessionHygienePayload {
                 })
                 .collect(),
             evidence_state,
+            unused_resources: session_unused_resources(evidence),
         }
     }
 
@@ -2445,9 +2551,9 @@ mod tests {
         use std::collections::{BTreeMap, BTreeSet};
 
         use antiburn_local::analysis::{
-            ContextEvidence, EvidenceSource, ModelControlObservation, ModelTokens,
+            ContextEvidence, EvidenceSource, LoadedSource, ModelControlObservation, ModelTokens,
             RelationConfidence, RelationProvenance, RepeatedContext, SessionEvidenceAccumulator,
-            SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
+            SourceCapabilities, SourceKind, SubagentChild, ToolDefinition, TurnCounts, TurnFacts,
         };
         use antiburn_local::insights::{
             CoverageCounts, DetectorCounts, DetectorFindings, EfficiencyReportAccumulator,
@@ -2929,7 +3035,8 @@ mod tests {
                         {"id": "fastModeOveruse", "status": "clean", "notAssessedReason": null},
                         {"id": "excessCacheRehydration", "status": "clean", "notAssessedReason": null}
                     ],
-                    "evidenceState": "ready"
+                    "evidenceState": "ready",
+                    "unusedResources": null
                 })
             );
         }
@@ -3073,6 +3180,134 @@ mod tests {
                     "repeatedTokens": 135,
                     "paidTokens": 235,
                     "thresholdMultiple": 2.35
+                })
+            );
+        }
+
+        /// One unused MCP server, built-in tool, and skill each report a
+        /// name and a cost summed across every priced observed model; a
+        /// used resource of each kind is absent from the payload.
+        #[test]
+        fn for_evidence_prices_unused_resources_and_omits_used_ones() {
+            let mut evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: "claude-code".to_owned(),
+                session_id: "unused-resources".to_owned(),
+                kind: SourceKind::File,
+                capabilities: SourceCapabilities::claude(),
+            })
+            .evidence(&TurnFacts::default());
+            let catalogs = ReportCatalogs::default();
+
+            let EvidenceValue::Complete(models) = &mut evidence.models else {
+                panic!("synthetic model evidence must be complete");
+            };
+            models.by_model.insert(
+                "claude-sonnet-5".to_owned(),
+                ModelTokens {
+                    turns: 2,
+                    ..ModelTokens::default()
+                },
+            );
+            models.by_model.insert(
+                "claude-opus-5".to_owned(),
+                ModelTokens {
+                    turns: 3,
+                    ..ModelTokens::default()
+                },
+            );
+
+            let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+                panic!("synthetic context source evidence must be complete");
+            };
+            sources.mcp_servers.insert(
+                "unused-server".to_owned(),
+                LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: false,
+                    token_count: Some(100),
+                    origin: EvidenceValue::Unsupported,
+                },
+            );
+            sources.mcp_servers.insert(
+                "used-server".to_owned(),
+                LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: true,
+                    token_count: Some(100),
+                    origin: EvidenceValue::Unsupported,
+                },
+            );
+            sources.skills.insert(
+                "unused-skill".to_owned(),
+                LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: false,
+                    token_count: Some(80),
+                    origin: EvidenceValue::Unsupported,
+                },
+            );
+            sources.skills.insert(
+                "used-skill".to_owned(),
+                LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: true,
+                    token_count: Some(80),
+                    origin: EvidenceValue::Unsupported,
+                },
+            );
+            let mut definitions = BTreeMap::new();
+            definitions.insert(
+                "unused-tool".to_owned(),
+                ToolDefinition {
+                    tokens: 50,
+                    invoked: false,
+                    deferred: false,
+                },
+            );
+            definitions.insert(
+                "used-tool".to_owned(),
+                ToolDefinition {
+                    tokens: 50,
+                    invoked: true,
+                    deferred: false,
+                },
+            );
+            sources.tool_definitions = EvidenceValue::Complete(definitions);
+
+            let payload = SessionHygienePayload::for_evidence(
+                session_badges(&evidence, &catalogs),
+                &evidence,
+                &catalogs,
+                "ready",
+            );
+            let expected_cost = |tokens: f64| tokens * (2.0 * 0.3e-6 + 3.0 * 0.4e-6);
+            assert_eq!(
+                payload.unused_resources,
+                Some(SessionUnusedResourcesPayload {
+                    mcp_servers: vec![UnusedResourcePayload {
+                        name: "unused-server".to_owned(),
+                        cost_usd: Some(expected_cost(100.0)),
+                    }],
+                    built_in_tools: vec![UnusedResourcePayload {
+                        name: "unused-tool".to_owned(),
+                        cost_usd: Some(expected_cost(50.0)),
+                    }],
+                    skills: vec![UnusedResourcePayload {
+                        name: "unused-skill".to_owned(),
+                        cost_usd: Some(expected_cost(80.0)),
+                    }],
                 })
             );
         }

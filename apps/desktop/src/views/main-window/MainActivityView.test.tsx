@@ -86,6 +86,7 @@ function hygieneFor(
 const cleanHygiene: SessionHygienePayload = {
   badges: [{ id: "obsoleteModel", status: "clean", notAssessedReason: null }],
   evidenceState: "ready",
+  unusedResources: null,
 }
 
 let sessions: MainActivitySession[]

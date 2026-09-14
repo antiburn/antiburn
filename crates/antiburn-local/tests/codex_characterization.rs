@@ -566,6 +566,12 @@ fn check_golden(name: &str) {
         fs::write(&path, format!("{rendered}\n")).unwrap();
     }
     let expected: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    // Compare through the same text round trip on both sides: serde_json's
+    // default float parser is not always bit-exact, so an `actual` value
+    // built straight from the Rust struct can land one ULP away from the
+    // same value re-parsed from disk. Re-parsing `rendered` keeps the two
+    // sides on equal footing.
+    let actual: Value = serde_json::from_str(&rendered).unwrap();
     assert_eq!(actual, expected, "golden differs for {name}");
 }
 

@@ -132,7 +132,9 @@ fn retained_state_stays_small_for_a_small_session() {
         accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
     }
     accumulator.finish(SessionSummary::default());
-    assert!(accumulator.retained_bytes() <= 32 * 1_024);
+    // Each priced slot keeps one heap entry per pricing key, about 1 KiB for
+    // this session, on top of the fixed slot and reorder capacity.
+    assert!(accumulator.retained_bytes() <= 40 * 1_024);
 }
 
 /// Records only the largest batch and the total row count it ever saw, so

@@ -477,9 +477,23 @@ export interface SessionHygieneBadgePayload {
 export type SessionHygieneEvidenceState =
   "pending" | "processing" | "ready" | "unsupported" | "failed" | "stale" | "activelyGrowing"
 
+/** One resource that sat in every request's context and was never called. */
+export interface UnusedResource {
+  name: string
+  costUsd: number | null
+}
+
+/** Priced idle context for one session, grouped by resource kind. */
+export interface SessionUnusedResources {
+  mcpServers: UnusedResource[]
+  builtInTools: UnusedResource[]
+  skills: UnusedResource[]
+}
+
 export interface SessionHygienePayload {
   badges: SessionHygieneBadgePayload[]
   evidenceState: SessionHygieneEvidenceState
+  unusedResources: SessionUnusedResources | null
 }
 
 /**
