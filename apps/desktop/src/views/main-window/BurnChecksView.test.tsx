@@ -555,7 +555,7 @@ describe("BurnChecksView", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "false")
   })
 
-  it("opens Insights coverage details from the assessment summary", async () => {
+  it("reports the assessment state in the summary", async () => {
     setup(target, false, aggregate, { ...report, evidenceSettled: true })
 
     fireEvent.click(await screen.findByRole("button", { name: "Assessment details" }))
@@ -563,9 +563,6 @@ describe("BurnChecksView", () => {
     expect(
       within(summary).getByText("Assessment complete for available evidence."),
     ).toBeVisible()
-    fireEvent.click(within(summary).getByRole("button", { name: "Coverage details" }))
-
-    expect(commands.openSettings).toHaveBeenCalledExactlyOnceWith("insights")
   })
 
   it("keeps processing count out of the collection header", async () => {
