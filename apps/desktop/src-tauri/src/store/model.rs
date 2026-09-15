@@ -22,6 +22,56 @@ pub struct SessionKey {
     pub session_id: String,
 }
 
+/// The order of committed writes on the app database's one writing
+/// connection.
+///
+/// The value is the connection's `total_changes()` read under the store
+/// mutex. A committed row-changing transaction ends above every value read
+/// before it began. A value read in the same critical section as a row read
+/// describes exactly that row set. The value is process-local: it starts
+/// again when the app opens the database.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Revision(pub u64);
+
+/// The persisted creation identity of one session row.
+///
+/// A row gets its value on insert from a counter that only increases. The
+/// value does not change on update. A re-created key gets a higher value than
+/// every earlier row of that key. Rows that predate the column hold `0`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Incarnation(pub u64);
+
+/// Evidence that one session row exists: its key, incarnation, and activity
+/// epoch, read together with a [`Revision`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Presence {
+    pub key: SessionKey,
+    pub incarnation: Incarnation,
+    pub epoch: i64,
+}
+
+/// The last row of one active-window page, in the page order's four columns.
+/// The next page starts strictly after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveCursor {
+    pub epoch: i64,
+    pub session_id: String,
+    pub environment_key: String,
+    pub agent: String,
+}
+
+impl ActiveCursor {
+    /// The cursor that continues after `last`.
+    pub fn after(last: &Presence) -> Self {
+        Self {
+            epoch: last.epoch,
+            session_id: last.key.session_id.clone(),
+            environment_key: last.key.environment_key.clone(),
+            agent: last.key.agent.clone(),
+        }
+    }
+}
+
 /// The durable lifecycle state for one remediation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemediationState {

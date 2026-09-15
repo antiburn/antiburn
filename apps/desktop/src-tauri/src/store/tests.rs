@@ -15,6 +15,7 @@ mod coverage_tests;
 mod reconcile_tests;
 mod remediation_tests;
 mod resume_tests;
+mod revision_tests;
 mod turn_row_tests;
 
 fn store() -> Store {
@@ -1040,6 +1041,7 @@ fn the_session_table_shape_is_stable() {
             "source_fingerprint",
             "source_generation",
             "started_at_epoch",
+            "incarnation",
         ]
     );
 }
@@ -1253,7 +1255,7 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
         }])
         .unwrap();
 
-    assert_eq!(store.clear_local_session_data().unwrap(), 1);
+    assert_eq!(store.clear_local_session_data().unwrap().0, 1);
 
     assert!(store.recent_sessions(0, 100).unwrap().is_empty());
     assert!(
@@ -1288,8 +1290,8 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
 #[test]
 fn clearing_an_already_empty_index_is_a_no_op() {
     let store = store();
-    assert_eq!(store.clear_local_session_data().unwrap(), 0);
-    assert_eq!(store.clear_local_session_data().unwrap(), 0);
+    assert_eq!(store.clear_local_session_data().unwrap().0, 0);
+    assert_eq!(store.clear_local_session_data().unwrap().0, 0);
 }
 
 #[test]
@@ -1312,7 +1314,7 @@ fn clearing_local_data_forgets_account_pseudonyms_and_rotates_the_install_key() 
         1
     );
 
-    assert_eq!(store.clear_local_session_data().unwrap(), 0);
+    assert_eq!(store.clear_local_session_data().unwrap().0, 0);
 
     let connection = store.lock();
     assert_eq!(
@@ -1373,7 +1375,7 @@ fn session_retention_removes_only_sessions_before_the_cutoff() {
         })
         .unwrap();
 
-    assert_eq!(store.apply_session_retention(NOW).unwrap(), 1);
+    assert_eq!(store.apply_session_retention(NOW).unwrap().0, 1);
     let remaining = store.recent_sessions(0, 100).unwrap();
     assert_eq!(remaining.len(), 2);
     assert!(
@@ -1413,7 +1415,7 @@ fn session_retention_uses_last_seen_when_activity_time_is_unknown() {
         })
         .unwrap();
 
-    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 1);
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap().0, 1);
     assert_eq!(store.session_count().unwrap(), 0);
 }
 
@@ -1469,7 +1471,7 @@ fn session_retention_removes_all_derived_session_data() {
         })
         .unwrap();
 
-    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 1);
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap().0, 1);
     assert!(store.analysis(&key).unwrap().is_none());
     assert!(store.evidence(&key).unwrap().is_none());
     assert!(store.relations(&key).unwrap().is_empty());
@@ -1486,7 +1488,7 @@ fn forever_retention_is_a_no_op() {
         .upsert_sessions(&[session("kept", 1)], &crate::agents::evidence_cohort())
         .unwrap();
 
-    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 0);
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap().0, 0);
     assert_eq!(store.session_count().unwrap(), 1);
 }
 
@@ -1577,7 +1579,7 @@ fn repository_counts_can_be_refreshed_after_retention_cleanup() {
         })
         .unwrap();
 
-    assert_eq!(store.apply_session_retention(NOW).unwrap(), 1);
+    assert_eq!(store.apply_session_retention(NOW).unwrap().0, 1);
     crate::repositories::refresh_session_counts(&store).unwrap();
 
     assert_eq!(store.repositories().unwrap()[0].session_count, 1);
@@ -1803,7 +1805,7 @@ fn recent_sessions_are_windowed_and_ordered_newest_first() {
 }
 
 #[test]
-fn recent_sessions_query_plan_uses_the_coalesced_recency_index() {
+fn recent_sessions_uses_the_keyset_index() {
     let store = store();
     let connection = store.lock();
     let mut statement = connection
@@ -1816,8 +1818,8 @@ fn recent_sessions_query_plan_uses_the_coalesced_recency_index() {
         .unwrap();
     let plan = plan_lines.join("\n");
     assert!(
-        plan.contains("session_recency_coalesced"),
-        "query plan did not use the coalesced index: {plan}"
+        plan.contains("USING INDEX session_recency_keyset") && !plan.contains("TEMP B-TREE"),
+        "query plan did not use the keyset index: {plan}"
     );
 }
 
@@ -2209,11 +2211,11 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
         )
         .unwrap();
 
-    assert!(store.delete_session(&key).unwrap());
+    assert!(store.delete_session(&key).unwrap().is_some());
     assert!(store.session(&key).unwrap().is_none());
     assert!(store.analysis(&key).unwrap().is_none());
     assert!(store.relations(&key).unwrap().is_empty());
-    assert!(!store.delete_session(&key).unwrap());
+    assert!(store.delete_session(&key).unwrap().is_none());
 }
 
 #[test]
@@ -2559,12 +2561,35 @@ fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
         assert!(
             index_names
                 .iter()
-                .any(|name| name == "session_recency_coalesced"),
+                .any(|name| name == "session_recency_keyset"),
             "start version {start}: {index_names:?}"
         );
         assert!(
-            !index_names.iter().any(|name| name == "session_recency"),
+            !index_names
+                .iter()
+                .any(|name| name == "session_recency" || name == "session_recency_coalesced"),
             "start version {start}: {index_names:?}"
+        );
+
+        let incarnation_column: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session')
+                   WHERE name = 'incarnation' AND \"notnull\" = 1 AND dflt_value = '0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(incarnation_column, 1, "start version {start}");
+        let counter: i64 = connection
+            .query_row(
+                "SELECT value FROM session_incarnation_seq WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            counter, 0,
+            "start version {start}: the counter starts at zero"
         );
     }
 }
@@ -3842,7 +3867,7 @@ fn deleting_a_session_removes_its_session_evidence() {
         .unwrap();
     assert!(store.evidence(&record.key).unwrap().is_some());
 
-    assert!(store.delete_session(&record.key).unwrap());
+    assert!(store.delete_session(&record.key).unwrap().is_some());
 
     assert!(store.evidence(&record.key).unwrap().is_none());
 }
@@ -3858,7 +3883,7 @@ fn clearing_local_session_data_removes_every_session_evidence_row() {
         .upsert_sessions(&[first, second], &crate::agents::evidence_cohort())
         .unwrap();
 
-    assert_eq!(store.clear_local_session_data().unwrap(), 2);
+    assert_eq!(store.clear_local_session_data().unwrap().0, 2);
 
     let count: i64 = store
         .lock()

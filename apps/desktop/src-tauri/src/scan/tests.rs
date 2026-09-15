@@ -1497,7 +1497,7 @@ fn scoped_persistence_skips_unchanged_rows_without_calling_the_store() {
     })
     .unwrap();
 
-    assert!(!persisted);
+    assert!(persisted.is_none());
     assert_eq!(calls.get(), 0);
 }
 
@@ -1516,12 +1516,12 @@ fn scoped_persistence_writes_changed_new_and_returned_rows_once() {
         std::slice::from_ref(&returned.key),
         |batch| {
             writes.lock().unwrap().push(batch.to_vec());
-            Ok(())
+            Ok(batch.len())
         },
     )
     .unwrap();
 
-    assert!(persisted);
+    assert_eq!(persisted, Some(3), "the write's own result comes back");
     assert_eq!(
         writes.into_inner().unwrap(),
         vec![vec![changed, new, returned]]
@@ -1973,6 +1973,7 @@ fn a_reused_source_label_with_a_new_identity_still_reads_as_new() {
         std::slice::from_ref(&reused_label),
         &[reused_label.key.clone()],
         &previous_records,
+        &[(reused_label.key.clone(), crate::store::Incarnation(7))],
     );
 
     assert_eq!(sessions.len(), 1);
@@ -1980,6 +1981,21 @@ fn a_reused_source_label_with_a_new_identity_still_reads_as_new() {
         sessions[0].is_new,
         "a new identity is new even when its source label was known"
     );
+    assert_eq!(
+        sessions[0].incarnation,
+        crate::store::Incarnation(7),
+        "the fact carries the upsert's incarnation"
+    );
+
+    // A record the upsert returned no incarnation for was not written.
+    let sessions = indexed_sessions_for_report(
+        2_010,
+        std::slice::from_ref(&reused_label),
+        &[reused_label.key.clone()],
+        &previous_records,
+        &[],
+    );
+    assert!(sessions.is_empty());
 
     // The same identity again is not new, whatever its label.
     let known_key = SessionActivityKey::new("native", "claude-code", "/another/label.jsonl");
@@ -1991,6 +2007,7 @@ fn a_reused_source_label_with_a_new_identity_still_reads_as_new() {
         std::slice::from_ref(&known),
         &[known.key.clone()],
         &previous_records,
+        &[(known.key.clone(), crate::store::Incarnation(1))],
     );
     assert_eq!(sessions.len(), 1);
     assert!(!sessions[0].is_new);
@@ -2043,4 +2060,317 @@ async fn a_rejected_transcript_reports_a_list_change() {
 
     assert_eq!(described.rejected.len(), 1);
     assert!(described.list_changed);
+}
+
+fn activity_key(agent: AgentKind, source_label: &str) -> SessionActivityKey {
+    SessionActivityKey::new("native", agent.slug(), source_label)
+}
+
+fn agents(kinds: &[AgentKind]) -> BTreeSet<AgentKind> {
+    kinds.iter().copied().collect()
+}
+
+#[test]
+fn anonymous_generations_increase_and_the_ledger_keeps_the_highest_per_agent() {
+    let mut ledger = AnonymousLedger::default();
+
+    assert_eq!(ledger.issue(AgentKind::Codex), Some(AnonymousGen(1)));
+    assert_eq!(ledger.issue(AgentKind::Claude), Some(AnonymousGen(2)));
+    // A same-second second touch of the same agent still gets its own,
+    // higher generation: causality, not time, orders it.
+    assert_eq!(ledger.issue(AgentKind::Codex), Some(AnonymousGen(3)));
+
+    assert_eq!(
+        ledger.outstanding,
+        BTreeMap::from([
+            (AgentKind::Codex, AnonymousGen(3)),
+            (AgentKind::Claude, AnonymousGen(2)),
+        ])
+    );
+}
+
+#[test]
+fn an_exhausted_generation_counter_issues_nothing_rather_than_wrapping() {
+    let mut ledger = AnonymousLedger {
+        next: u64::MAX,
+        outstanding: BTreeMap::new(),
+    };
+    assert_eq!(ledger.issue(AgentKind::Codex), None);
+    assert_eq!(ledger.next, u64::MAX);
+    assert!(ledger.outstanding.is_empty());
+
+    // The touch that found the counter exhausted is not reported.
+    let work = scoped::ScopedWork {
+        agents: agents(&[AgentKind::Codex]),
+        ..Default::default()
+    };
+    assert!(touch_observations(&mut ledger, &work, None, 1_000).is_empty());
+}
+
+#[test]
+fn a_full_pass_captures_every_outstanding_agent_and_a_scoped_pass_only_its_own() {
+    let mut ledger = AnonymousLedger::default();
+    ledger.issue(AgentKind::Codex);
+    ledger.issue(AgentKind::Claude);
+    ledger.issue(AgentKind::Codex);
+
+    assert_eq!(
+        ledger.capture(&PassScope::Full),
+        vec![
+            AnonymousCover {
+                agent: AgentKind::Claude,
+                through: AnonymousGen(2),
+            },
+            AnonymousCover {
+                agent: AgentKind::Codex,
+                through: AnonymousGen(3),
+            },
+        ]
+    );
+    assert_eq!(
+        ledger.capture(&PassScope::Agents(agents(&[AgentKind::Codex]))),
+        vec![AnonymousCover {
+            agent: AgentKind::Codex,
+            through: AnonymousGen(3),
+        }]
+    );
+    // A scope with nothing outstanding captures nothing, so a successful
+    // pass over it sends no cover at all.
+    assert!(
+        ledger
+            .capture(&PassScope::Agents(agents(&[AgentKind::Kiro])))
+            .is_empty()
+    );
+}
+
+#[test]
+fn settling_forgets_only_generations_the_cover_reaches() {
+    let mut ledger = AnonymousLedger::default();
+    ledger.issue(AgentKind::Codex);
+    ledger.issue(AgentKind::Claude);
+    let captured = ledger.capture(&PassScope::Full);
+
+    // A touch reported while the pass runs outranks the capture.
+    ledger.issue(AgentKind::Codex);
+    ledger.settle(&captured);
+
+    assert_eq!(
+        ledger.outstanding,
+        BTreeMap::from([(AgentKind::Codex, AnonymousGen(3))]),
+        "Claude settled at 2; Codex moved to 3 after the capture and stays"
+    );
+
+    // The next pass captures generation 3 and settles it.
+    let captured = ledger.capture(&PassScope::Full);
+    ledger.settle(&captured);
+    assert!(ledger.outstanding.is_empty());
+
+    // Settling a cover with nothing outstanding changes nothing.
+    ledger.settle(&captured);
+    assert!(ledger.outstanding.is_empty());
+}
+
+#[test]
+fn a_failed_or_busy_pass_leaves_the_capture_outstanding() {
+    let mut ledger = AnonymousLedger::default();
+    ledger.issue(AgentKind::Codex);
+    let captured = ledger.capture(&PassScope::Full);
+    assert_eq!(captured.len(), 1);
+
+    // Without a settle (the pass failed, was busy, or was cancelled), the
+    // generation is still outstanding, and the next capture names it again.
+    assert_eq!(ledger.capture(&PassScope::Full), captured);
+
+    let ok = ScanStatus::default();
+    assert!(pass_covers(&ok));
+    let failed = ScanStatus {
+        error: Some("disk full".into()),
+        ..ScanStatus::default()
+    };
+    assert!(!pass_covers(&failed));
+    let cancelled = ScanStatus {
+        cancelled: true,
+        ..ScanStatus::default()
+    };
+    assert!(!pass_covers(&cancelled));
+}
+
+#[test]
+fn a_burst_reports_keyed_touches_then_one_generation_per_agent_lane() {
+    let mut ledger = AnonymousLedger::default();
+    let known = activity_key(
+        AgentKind::Claude,
+        "/home/avery/.claude/projects/p/known.jsonl",
+    );
+    let deleted = activity_key(
+        AgentKind::Claude,
+        "/home/avery/.claude/projects/p/gone.jsonl",
+    );
+    let work = scoped::ScopedWork {
+        sessions: BTreeSet::from([known.clone(), deleted]),
+        agents: agents(&[AgentKind::Codex]),
+        db_agents: agents(&[AgentKind::Cursor]),
+        quiet_agents: agents(&[AgentKind::Kiro]),
+        title_agents: agents(&[AgentKind::Claude]),
+    };
+    let identities = std::collections::HashMap::from([(
+        known,
+        (
+            SessionKey::new("native", "claude-code", "known-id"),
+            crate::store::Incarnation(4),
+        ),
+    )]);
+
+    let facts = touch_observations(
+        &mut ledger,
+        &work,
+        Some((identities, crate::store::Revision(9))),
+        1_000,
+    );
+
+    assert_eq!(
+        facts,
+        vec![
+            session_lifecycle::Observation::Touched {
+                session: session_lifecycle::TouchedSession {
+                    key: SessionKey::new("native", "claude-code", "known-id"),
+                    incarnation: crate::store::Incarnation(4),
+                    seen: crate::store::Revision(9),
+                },
+                agent: AgentKind::Claude,
+                at: 1_000,
+            },
+            session_lifecycle::Observation::Anonymous {
+                agent: AgentKind::Codex,
+                at: 1_000,
+                generation: AnonymousGen(1),
+            },
+            session_lifecycle::Observation::Anonymous {
+                agent: AgentKind::Cursor,
+                at: 1_000,
+                generation: AnonymousGen(2),
+            },
+        ],
+        "the deleted key has no anonymous substitute; quiet and title lanes report nothing"
+    );
+    assert_eq!(
+        ledger.outstanding,
+        BTreeMap::from([
+            (AgentKind::Codex, AnonymousGen(1)),
+            (AgentKind::Cursor, AnonymousGen(2)),
+        ])
+    );
+}
+
+#[test]
+fn a_failed_identity_lookup_reports_no_keyed_touch_and_no_substitute() {
+    let mut ledger = AnonymousLedger::default();
+    let work = scoped::ScopedWork {
+        sessions: BTreeSet::from([activity_key(
+            AgentKind::Claude,
+            "/home/avery/.claude/x.jsonl",
+        )]),
+        agents: agents(&[AgentKind::Codex]),
+        ..Default::default()
+    };
+
+    let facts = touch_observations(&mut ledger, &work, None, 1_000);
+
+    assert_eq!(
+        facts,
+        vec![session_lifecycle::Observation::Anonymous {
+            agent: AgentKind::Codex,
+            at: 1_000,
+            generation: AnonymousGen(1),
+        }]
+    );
+}
+
+#[test]
+fn a_quiet_only_burst_issues_no_generation_and_its_pass_covers_nothing() {
+    let mut ledger = AnonymousLedger::default();
+    let work = scoped::ScopedWork {
+        quiet_agents: agents(&[AgentKind::Claude]),
+        ..Default::default()
+    };
+
+    assert!(touch_observations(&mut ledger, &work, None, 1_000).is_empty());
+    assert!(ledger.outstanding.is_empty());
+    assert!(
+        ledger
+            .capture(&PassScope::Agents(agents(&[AgentKind::Claude])))
+            .is_empty()
+    );
+
+    // An outstanding generation for the same agent from an earlier
+    // anonymous touch is covered by the quiet rediscovery, since that pass
+    // discovers everything under the agent's root.
+    ledger.issue(AgentKind::Claude);
+    assert_eq!(
+        ledger.capture(&PassScope::Agents(agents(&[AgentKind::Claude]))),
+        vec![AnonymousCover {
+            agent: AgentKind::Claude,
+            through: AnonymousGen(1),
+        }]
+    );
+}
+
+/// The scheduler wiring cannot run without a Tauri app. Its shape is pinned
+/// at the source instead: every scheduler-owned pass captures before it
+/// runs, settles and covers only on success, and the cover is the last
+/// report of the pass on the waiting path. A pass a command asks for goes
+/// through `run_pass`, which owns no ledger and covers nothing.
+#[test]
+fn only_scheduler_owned_passes_cover_and_only_after_their_indexed_reports() {
+    let source = include_str!("mod.rs");
+    let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+
+    let covered = {
+        let start = production.find("async fn run_covered_pass(").unwrap();
+        let body = &production[start..];
+        &body[..body.find("\n}\n").unwrap()]
+    };
+    let capture = covered
+        .find("ledger.capture(&scope)")
+        .expect("captures at start");
+    let run = covered
+        .find("try_run_pass(app, None, trigger, scope).await?")
+        .expect("runs the pass");
+    let gate = covered
+        .find("if pass_covers(&status) {")
+        .expect("gates on success");
+    let settle = covered.find("ledger.settle(&covers);").expect("settles");
+    let report = covered
+        .find("report_covered(app, covers).await;")
+        .expect("covers");
+    assert!(capture < run && run < gate && gate < settle && settle < report);
+
+    // Every scheduler pass goes through the covered helper; nothing else
+    // sends a cover.
+    assert_eq!(
+        production.matches("run_covered_pass(").count(),
+        4,
+        "one definition, three call sites"
+    );
+    assert!(
+        !production.contains("run_pass(&app, None, "),
+        "the scheduler runs no uncovered pass"
+    );
+    assert_eq!(
+        production.matches("report_covered(").count(),
+        2,
+        "one definition, one call site"
+    );
+    assert_eq!(
+        production.matches("Observation::AnonymousCovered").count(),
+        1
+    );
+    assert!(!include_str!("scoped.rs").contains("AnonymousCovered"));
+    assert!(!include_str!("../commands.rs").contains("AnonymousCovered"));
+
+    // Anonymous touches are issued only from the burst path, before any
+    // floor or pass, so a generation issued during a pass is above its
+    // capture.
+    assert_eq!(production.matches("ledger.issue(").count(), 1);
+    assert_eq!(production.matches("Observation::Anonymous {").count(), 1);
 }

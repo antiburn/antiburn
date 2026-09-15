@@ -96,10 +96,16 @@ function emitNative(event: string, payload: unknown): void {
 
 const lifecycle = { seq: 0 }
 
-/** Push one sequenced lifecycle envelope at the mocked native listener. */
-function emitLifecycle(event: Record<string, unknown>): void {
+/**
+ * Push one sequenced lifecycle envelope at the mocked native listener, with
+ * the batch counts the registry stamps on its last lifecycle event.
+ */
+function emitLifecycle(
+  event: Record<string, unknown>,
+  aggregate: { working: number; total: number; anonymous: number },
+): void {
   lifecycle.seq += 1
-  emitNative("session:lifecycle", { seq: lifecycle.seq, ...event })
+  emitNative("session:lifecycle", { seq: lifecycle.seq, aggregate, ...event })
 }
 
 const setPosition = vi.hoisted(() => vi.fn(async () => {}))
@@ -239,7 +245,13 @@ describe("OverlayWindow", () => {
     getLiveUsage.mockReset()
     getLiveUsage.mockResolvedValue(summary())
     getLiveSessions.mockReset()
-    getLiveSessions.mockResolvedValue({ seq: 0, sessions: [] })
+    getLiveSessions.mockResolvedValue({
+      seq: 0,
+      working: 0,
+      total: 0,
+      sessions: [],
+      anonymous: [],
+    })
     lifecycle.seq = 0
     isOverlayWorkActive.mockReset()
     isOverlayWorkActive.mockResolvedValue(true)
@@ -414,6 +426,8 @@ describe("OverlayWindow", () => {
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
     getLiveSessions.mockResolvedValue({
       seq: 1,
+      working: 1,
+      total: 1,
       sessions: [
         {
           session: { environmentKey: "native", agent: "claude-code", sessionId: "busy" },
@@ -422,6 +436,7 @@ describe("OverlayWindow", () => {
           quiet: false,
         },
       ],
+      anonymous: [],
     })
     try {
       const { container } = render(<OverlayWindow />)
@@ -432,12 +447,15 @@ describe("OverlayWindow", () => {
       lifecycle.seq = 1
       // The registry, not a local timer, ends the working state.
       act(() =>
-        emitLifecycle({
-          kind: "quiet",
-          session: { environmentKey: "native", agent: "claude-code", sessionId: "busy" },
-          agent: "claude-code",
-          at: Math.floor(Date.now() / 1000) + 30,
-        }),
+        emitLifecycle(
+          {
+            kind: "quiet",
+            session: { environmentKey: "native", agent: "claude-code", sessionId: "busy" },
+            agent: "claude-code",
+            at: Math.floor(Date.now() / 1000) + 30,
+          },
+          { working: 0, total: 1, anonymous: 0 },
+        ),
       )
       expect(container.querySelector(".led-blink")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
@@ -446,7 +464,64 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("expires anonymous agent activity after the registry's quiet window", async () => {
+  it("lights working activity from the exact counts when the snapshot rows are truncated", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
+    // The bounded rows hold nothing that works, but the registry's exact
+    // counts say two sessions do. The HUD trusts the counts, not the rows.
+    getLiveSessions.mockResolvedValue({
+      seq: 1,
+      working: 2,
+      total: 300,
+      sessions: [
+        {
+          session: { environmentKey: "native", agent: "claude-code", sessionId: "quiet-row" },
+          agent: "claude-code",
+          lastActivityAt: Math.floor(Date.now() / 1000) - 60,
+          quiet: true,
+        },
+      ],
+      anonymous: [],
+    })
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector(".led-blink")).not.toBeNull()
+
+      lifecycle.seq = 1
+      // A stamped delta about a session the rows never named still moves
+      // the HUD, because the counts are what it reads.
+      act(() =>
+        emitLifecycle(
+          {
+            kind: "quiet",
+            session: { environmentKey: "native", agent: "claude-code", sessionId: "unlisted" },
+            agent: "claude-code",
+            at: Math.floor(Date.now() / 1000),
+          },
+          { working: 1, total: 300, anonymous: 0 },
+        ),
+      )
+      expect(container.querySelector(".led-blink")).not.toBeNull()
+      act(() =>
+        emitLifecycle(
+          {
+            kind: "quiet",
+            session: { environmentKey: "native", agent: "claude-code", sessionId: "unlisted-2" },
+            agent: "claude-code",
+            at: Math.floor(Date.now() / 1000),
+          },
+          { working: 0, total: 300, anonymous: 0 },
+        ),
+      )
+      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("clears anonymous agent activity only when the registry says so", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
     try {
@@ -454,20 +529,37 @@ describe("OverlayWindow", () => {
       await advance(0)
       expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(1)
 
+      const at = Math.floor(Date.now() / 1000)
       act(() =>
-        emitLifecycle({
-          kind: "activity",
-          session: null,
-          agent: "codex",
-          at: Math.floor(Date.now() / 1000),
-          resumed: false,
-        }),
+        emitLifecycle(
+          {
+            kind: "activity",
+            session: null,
+            agent: "codex",
+            at,
+            resumed: false,
+          },
+          { working: 0, total: 0, anonymous: 1 },
+        ),
       )
       expect(container.querySelector(".led-blink")).not.toBeNull()
 
-      // No quiet event exists for an unindexed session; the tracker
-      // expires it after the registry's own quiet window.
+      // No renderer timer ends anonymous activity: past the registry's
+      // window the bar still blinks until the canonical clear arrives.
       await advance(30_000)
+      expect(container.querySelector(".led-blink")).not.toBeNull()
+
+      act(() =>
+        emitLifecycle(
+          {
+            kind: "anonymous_cleared",
+            agent: "codex",
+            at: at + 30,
+            cause: "expired",
+          },
+          { working: 0, total: 0, anonymous: 0 },
+        ),
+      )
       expect(container.querySelector(".led-blink")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
@@ -480,13 +572,16 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(nativeEvents.get("session:lifecycle")?.size).toBe(1))
 
     act(() =>
-      emitLifecycle({
-        kind: "activity",
-        session: { environmentKey: "native", agent: "claude-code", sessionId: "live" },
-        agent: "claude-code",
-        at: Math.floor(Date.now() / 1000),
-        resumed: false,
-      }),
+      emitLifecycle(
+        {
+          kind: "activity",
+          session: { environmentKey: "native", agent: "claude-code", sessionId: "live" },
+          agent: "claude-code",
+          at: Math.floor(Date.now() / 1000),
+          resumed: false,
+        },
+        { working: 1, total: 1, anonymous: 0 },
+      ),
     )
     await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
 

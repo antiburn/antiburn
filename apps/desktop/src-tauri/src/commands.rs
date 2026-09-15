@@ -350,8 +350,8 @@ pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
 }
 
 /// The most recent live sessions, bounded to `limit`, with the registry
-/// sequence. A reader takes this snapshot, subscribes to lifecycle events,
-/// and applies only deltas with a higher sequence.
+/// sequence and its exact counts. A reader takes this snapshot, subscribes
+/// to lifecycle events, and applies only deltas with a higher sequence.
 #[tauri::command]
 pub fn get_live_sessions(
     app: tauri::AppHandle,
@@ -359,6 +359,32 @@ pub fn get_live_sessions(
 ) -> crate::session_lifecycle::LiveSnapshot {
     app.state::<crate::session_lifecycle::SessionEvents>()
         .snapshot(limit.unwrap_or(crate::session_lifecycle::DEFAULT_SNAPSHOT_LIMIT))
+}
+
+/// The registry's state for the named identities at one sequence: each is
+/// live (`present`) or not (`absent`). A list whose rows fall outside the
+/// bounded snapshot asks for them here. At most [`MAX_ACTIVITY_ROWS`]
+/// identities per call, the list's own row bound.
+#[tauri::command]
+pub fn get_live_sessions_for(
+    app: tauri::AppHandle,
+    sessions: Vec<crate::session_lifecycle::SessionRef>,
+) -> CommandResult<crate::session_lifecycle::LivePresence> {
+    let sessions = bounded_presence_request(&sessions)?;
+    Ok(app
+        .state::<crate::session_lifecycle::SessionEvents>()
+        .presence(sessions))
+}
+
+/// Reject a presence request above [`MAX_ACTIVITY_ROWS`] identities before
+/// the registry lock is taken.
+fn bounded_presence_request(
+    sessions: &[crate::session_lifecycle::SessionRef],
+) -> CommandResult<&[crate::session_lifecycle::SessionRef]> {
+    if sessions.len() > MAX_ACTIVITY_ROWS {
+        return Err("too many live session requests".to_owned());
+    }
+    Ok(sessions)
 }
 
 /// Where the app came from and what it is running against.
@@ -475,7 +501,10 @@ pub async fn set_settings(
             crate::analytics::handle_settings_transition(&database_app, &result.0, &result.1);
             result
         };
-        crate::retention::note_removed(&database_app, removed);
+        // The store guard is released: the revision read here is at or
+        // after the retention commit, so every purged row is absent at it.
+        let revision = store.revision();
+        crate::retention::note_removed(&database_app, removed, revision);
         Ok((previous, saved))
     })
     .await?;
@@ -2247,18 +2276,32 @@ pub async fn set_repository_enabled(
     key: String,
     enabled: bool,
 ) -> CommandResult<Vec<RepositoryItem>> {
-    {
+    let revision = {
         let store = app.state::<Store>();
         repositories::set_enabled(&store, &key, enabled)
             .await
             .map_err(fail)?;
-    }
-    // Disabling purges the repository's rows; the open popover re-reads its
-    // list on this fact rather than waiting for a scan. Re-enabling asks for
+        // Read after the purge, with no store guard held: every purged row
+        // is absent at this revision.
+        store.revision()
+    };
+    // Disabling purges the repository's rows: a broad removal the registry
+    // reconciles against the store. The open popover re-reads its list on
+    // the invalidation rather than waiting for a scan. Re-enabling asks for
     // a pass so the rows come back without the reader doing anything.
+    if !enabled {
+        crate::session_lifecycle::report(
+            &app,
+            crate::session_lifecycle::SyncObservation::Removed {
+                scope: crate::session_lifecycle::RemovalScope::Broad,
+                reason: crate::session_lifecycle::RemovalReason::Purged,
+                revision,
+            },
+        );
+    }
     crate::session_lifecycle::report(
         &app,
-        crate::session_lifecycle::Observation::IndexChanged {
+        crate::session_lifecycle::SyncObservation::IndexChanged {
             reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
         },
     );
@@ -2402,16 +2445,17 @@ pub async fn delete_session_data(
             .map_err(fail)
     })
     .await?;
-    if removed {
+    if let Some((incarnation, revision)) = removed {
         crate::session_lifecycle::report(
             &app,
-            crate::session_lifecycle::Observation::Removed {
-                session: Some(key),
+            crate::session_lifecycle::SyncObservation::Removed {
+                scope: crate::session_lifecycle::RemovalScope::One(key, incarnation),
                 reason: crate::session_lifecycle::RemovalReason::Deleted,
+                revision,
             },
         );
     }
-    Ok(removed)
+    Ok(removed.is_some())
 }
 
 /// Forget all session data in antiburn's local store.
@@ -2427,13 +2471,29 @@ pub async fn delete_session_data(
 #[tauri::command]
 pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     let action_app = app.clone();
-    let removed = run_blocking(move || {
+    let (removed, revision) = run_blocking(move || {
         action_app
             .state::<Store>()
             .clear_local_session_data()
             .map_err(fail)
     })
     .await?;
+    // Every row is gone at `revision`: a broad removal the registry
+    // reconciles, then one list refetch, before the refill pass is asked for.
+    crate::session_lifecycle::report(
+        &app,
+        crate::session_lifecycle::SyncObservation::Removed {
+            scope: crate::session_lifecycle::RemovalScope::Broad,
+            reason: crate::session_lifecycle::RemovalReason::Deleted,
+            revision,
+        },
+    );
+    crate::session_lifecycle::report(
+        &app,
+        crate::session_lifecycle::SyncObservation::IndexChanged {
+            reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
+        },
+    );
     // The index is empty and the popover is showing it. Refill it rather than
     // leaving a reader looking at an empty list until the next tick.
     app.state::<ScanController>()
@@ -3299,6 +3359,44 @@ mod tests {
                 home.display()
             );
         }
+    }
+
+    #[test]
+    fn a_presence_request_is_bounded_by_the_list_row_limit() {
+        let session_ref = |index: usize| crate::session_lifecycle::SessionRef {
+            environment_key: "native".to_owned(),
+            agent: "claude-code".to_owned(),
+            session_id: format!("session-{index}"),
+        };
+        let at_the_bound = (0..MAX_ACTIVITY_ROWS).map(session_ref).collect::<Vec<_>>();
+        assert_eq!(
+            bounded_presence_request(&at_the_bound).map(<[_]>::len),
+            Ok(MAX_ACTIVITY_ROWS)
+        );
+        assert_eq!(bounded_presence_request(&[]).map(<[_]>::len), Ok(0));
+
+        let past_the_bound = (0..=MAX_ACTIVITY_ROWS).map(session_ref).collect::<Vec<_>>();
+        let error = bounded_presence_request(&past_the_bound).expect_err("501 is too many");
+        assert!(error.contains("too many"), "got {error:?}");
+    }
+
+    #[test]
+    fn get_live_sessions_keeps_its_signature() {
+        let source = include_str!("../src/commands.rs");
+        let expected = "pub fn get_live_sessions(\n    app: tauri::AppHandle,\n    limit: Option<usize>,\n) -> crate::session_lifecycle::LiveSnapshot {\n    app.state::<crate::session_lifecycle::SessionEvents>()\n        .snapshot(limit.unwrap_or(crate::session_lifecycle::DEFAULT_SNAPSHOT_LIMIT))\n}";
+        assert!(
+            source.contains(expected),
+            "the snapshot command changed shape; only its payload may grow"
+        );
+        // The named-presence command guards its bound before the registry
+        // lock and answers through the one presence reader.
+        let presence = source
+            .split("pub fn get_live_sessions_for(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("the presence command exists");
+        assert!(presence.contains("bounded_presence_request(&sessions)?"));
+        assert!(presence.contains(".presence(sessions)"));
     }
 
     mod session_limit_allocations_tests {

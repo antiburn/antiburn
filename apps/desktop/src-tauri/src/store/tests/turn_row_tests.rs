@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 47);
+    assert_eq!(super::schema::MIGRATIONS.len(), 48);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 47);
+    assert_eq!(store.schema_version().unwrap(), 48);
     let index_exists = store
         .lock()
         .query_row(
@@ -349,7 +349,7 @@ fn deleting_a_session_removes_its_turn_rows() {
         insert_turn_rows(&connection, &turn_session_key(&key), 1, &[turn_row(0)]).unwrap();
     }
 
-    assert!(store.delete_session(&key).unwrap());
+    assert!(store.delete_session(&key).unwrap().is_some());
 
     let connection = store.lock();
     assert_eq!(
@@ -394,7 +394,7 @@ fn clearing_local_session_data_removes_every_turn_row() {
         .unwrap();
     }
 
-    assert_eq!(store.clear_local_session_data().unwrap(), 2);
+    assert_eq!(store.clear_local_session_data().unwrap().0, 2);
 
     let count: i64 = store
         .lock()
@@ -460,7 +460,7 @@ fn deleting_a_session_removes_turn_content_written_through_the_fenced_writer() {
         1
     );
 
-    assert!(store.delete_session(&key).unwrap());
+    assert!(store.delete_session(&key).unwrap().is_some());
 
     assert_eq!(
         count_turn_content_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),

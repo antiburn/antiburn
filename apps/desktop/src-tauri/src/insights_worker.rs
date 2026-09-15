@@ -160,7 +160,7 @@ async fn run_worker(app: tauri::AppHandle) {
     let announce = move |key: &SessionKey| {
         crate::session_lifecycle::report(
             &announce_app,
-            crate::session_lifecycle::Observation::RowChanged {
+            crate::session_lifecycle::SyncObservation::RowChanged {
                 session: key.clone(),
                 facets: crate::session_lifecycle::UpdateFacets {
                     analysis: true,

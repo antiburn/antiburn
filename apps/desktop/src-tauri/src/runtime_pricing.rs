@@ -203,7 +203,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                         // no durable estimate needs a re-price here.
                         crate::session_lifecycle::report(
                             &app,
-                            crate::session_lifecycle::Observation::IndexChanged {
+                            crate::session_lifecycle::SyncObservation::IndexChanged {
                                 reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
                             },
                         );

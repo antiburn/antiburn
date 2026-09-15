@@ -36,9 +36,8 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     onMainWindowVisibilityChanged: noListener,
     onMainWindowSessionTarget: noListener,
     onSettingsChanged: noListener,
-    onSessionsInvalidated: noListener,
-    onScanEvent: noListener,
-    onSessionEntryChanged: noListener,
+    onSessionIndexChanged: noListener,
+    onSessionUpdated: noListener,
     onLiveUsageChanged: noListener,
   }
 })

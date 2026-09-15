@@ -19,11 +19,10 @@ use tauri::{AppHandle, Manager};
 use tokio::time::Instant;
 
 use crate::agents;
-use crate::dto::ScanStatus;
 use crate::storage_health::checked;
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
-use super::{PassScope, ScanController, ScanTrigger};
+use super::ScanController;
 
 /// T2: a refreshed session is not refreshed again before this interval ends.
 pub const TARGETED_MIN_INTERVAL: Duration = Duration::from_secs(10);
@@ -548,7 +547,7 @@ async fn refresh_indexed_titles_locked(
             }
             // A title-store refresh changes titles only, so the diff below
             // reports `title` facets without a metadata reload.
-            super::report_row_changes(app, &records, &changed, &previous_map, now);
+            super::report_row_changes(app, &records, &changed, &previous_map, now).await;
             changed_count += changed.len();
         }
     }
@@ -615,7 +614,7 @@ async fn refresh_sessions_locked(
             |records| store.upsert_sessions(records, &agents::evidence_cohort()),
         ),
     )?;
-    if persisted {
+    if let Some((incarnations, revision)) = persisted {
         super::wake_session_workers(app);
         super::report_indexed(
             app,
@@ -623,7 +622,10 @@ async fn refresh_sessions_locked(
             &described.records,
             &described.changed,
             &previous_map,
-        );
+            &incarnations,
+            revision,
+        )
+        .await;
     }
     super::report_row_changes(
         app,
@@ -631,50 +633,32 @@ async fn refresh_sessions_locked(
         &described.changed,
         &previous_map,
         now,
-    );
+    )
+    .await;
     for key in &described.rejected {
         let removed = checked(app, "The session index", store.delete_session(key))?;
-        if removed {
+        if let Some((incarnation, revision)) = removed {
             super::wake_session_workers(app);
-            crate::session_lifecycle::report(
-                app,
-                crate::session_lifecycle::Observation::Removed {
-                    session: Some(key.clone()),
-                    reason: crate::session_lifecycle::RemovalReason::Rejected,
-                },
-            );
+            super::report_rejected(app, key, incarnation, revision).await;
         }
     }
     // A targeted refresh can still change list membership: a reused source
     // label can carry a new session identity, and a rejection evicts a
     // row. The full pass reports the same fact from `scan/mod.rs::pass`.
     if described.list_changed {
-        crate::session_lifecycle::report(
+        crate::session_lifecycle::report_async(
             app,
             crate::session_lifecycle::Observation::IndexChanged {
                 reason: crate::session_lifecycle::IndexChangeReason::ScanPass,
             },
-        );
+        )
+        .await;
     }
 
     Ok(ScopedSummary {
         sessions: described.records.len(),
         re_described: described.changed.len(),
     })
-}
-
-/// T3, T5: rediscover exactly `agents`, reusing [`super::run_pass`] scoped to
-/// them so `scan:started` / `scan:finished` and the log lines it already
-/// emits come for free.
-///
-/// Returns `None` when [`super::on_demand_start`] finds a pass already
-/// running — the caller keeps `agents` pending and retries (T7).
-pub(super) async fn rediscover_agents(
-    app: &AppHandle,
-    agents: &BTreeSet<AgentKind>,
-    trigger: ScanTrigger,
-) -> Option<ScanStatus> {
-    super::try_run_pass(app, None, trigger, PassScope::Agents(agents.clone())).await
 }
 
 #[cfg(test)]

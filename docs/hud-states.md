@@ -193,9 +193,14 @@ live macOS validation after changes to the native window mechanism.
 - Liveness comes from the session lifecycle registry: the renderer
   subscribes to `session:lifecycle`, then reads the versioned
   `get_live_sessions` snapshot, and applies only deltas with a higher
-  sequence. A session works until the registry says `quiet` (30 seconds
-  without a write); anonymous agent activity expires locally on the same
-  window. See `docs/session-lifecycle-events.md`.
+  sequence. The bar blinks while the registry's exact `working` or
+  `anonymous` count is above zero; the snapshot carries the counts and the
+  last lifecycle event of each registry batch re-stamps them, so the
+  snapshot's bounded rows never decide it. A session works until the
+  registry says `quiet` (30 seconds without a write); anonymous agent
+  activity works until the registry says `anonymous_cleared`, when a scan
+  pass covers it or the same window passes. The renderer keeps no timer
+  for it. See `docs/session-lifecycle-events.md`.
 - The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
 - Hiding the HUD parks the native polls and the retained renderer's timers.

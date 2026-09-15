@@ -18,6 +18,7 @@ const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
 const getProviderUsage = vi.hoisted(() => vi.fn())
 const listRecentSessions = vi.hoisted(() => vi.fn())
 const getLiveSessions = vi.hoisted(() => vi.fn())
+const getLiveSessionsFor = vi.hoisted(() => vi.fn())
 const onSessionUpdated = vi.hoisted(() => vi.fn())
 const onSessionIndexChanged = vi.hoisted(() => vi.fn())
 const onSessionLifecycleEvent = vi.hoisted(() => vi.fn())
@@ -38,6 +39,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     getProviderUsage,
     listRecentSessions,
     getLiveSessions,
+    getLiveSessionsFor,
     onSessionUpdated,
     onSessionIndexChanged,
     onSessionLifecycleEvent,
@@ -108,6 +110,7 @@ function emitLifecycleActivity(at = Date.now() / 1000): void {
     agent: "claude-code",
     at,
     resumed: false,
+    aggregate: { working: 1, total: 1, anonymous: 0 },
   }
   for (const handler of lifecycleHandlers) handler(event)
 }
@@ -145,7 +148,9 @@ beforeEach(() => {
   listRecentSessions.mockReset()
   listRecentSessions.mockResolvedValue([])
   getLiveSessions.mockReset()
-  getLiveSessions.mockResolvedValue({ seq: 0, sessions: [] })
+  getLiveSessions.mockResolvedValue({ seq: 0, working: 0, total: 0, sessions: [], anonymous: [] })
+  getLiveSessionsFor.mockReset()
+  getLiveSessionsFor.mockResolvedValue(null)
   onSessionUpdated.mockReset()
   onSessionUpdated.mockImplementation(async (handler: UpdatedHandler) => {
     sessionUpdatedHandler = handler
@@ -898,6 +903,8 @@ describe("PopoverSession event-driven refresh", () => {
     ])
     getLiveSessions.mockResolvedValue({
       seq: 4,
+      working: 1,
+      total: 1,
       sessions: [
         {
           session: {
@@ -910,6 +917,7 @@ describe("PopoverSession event-driven refresh", () => {
           quiet: false,
         },
       ],
+      anonymous: [],
     })
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
@@ -922,6 +930,90 @@ describe("PopoverSession event-driven refresh", () => {
       expect(entries?.find((entry) => entry.sessionId === "session-idle")?.isActive).toBe(
         false,
       )
+    })
+    // A complete snapshot needs no presence read.
+    expect(getLiveSessionsFor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it("asks the registry by name for rows the bounded snapshot omitted", async () => {
+    listRecentSessions.mockResolvedValue([
+      entryPayload({ sessionId: "session-listed", isActive: false }),
+      entryPayload({ sessionId: "session-omitted-live", isActive: false }),
+      entryPayload({ sessionId: "session-omitted-idle", isActive: true }),
+    ])
+    // The registry holds 300 live sessions; the snapshot's rows hold one
+    // of them. The two other listed rows are unknown until named.
+    getLiveSessions.mockResolvedValue({
+      seq: 10,
+      working: 300,
+      total: 300,
+      sessions: [
+        {
+          session: {
+            environmentKey: "native",
+            agent: "claude-code",
+            sessionId: "session-listed",
+          },
+          agent: "claude-code",
+          lastActivityAt: 1_800_000_000,
+          quiet: false,
+        },
+      ],
+      anonymous: [],
+    })
+    let answer!: (presence: Ipc.LivePresencePayload) => void
+    getLiveSessionsFor.mockImplementation(
+      () =>
+        new Promise<Ipc.LivePresencePayload>((resolve) => {
+          answer = resolve
+        }),
+    )
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+
+    await vi.waitFor(() => expect(getLiveSessionsFor).toHaveBeenCalledTimes(1))
+    // Only the rows the snapshot did not answer are named.
+    expect(getLiveSessionsFor.mock.calls[0]?.[0]).toEqual([
+      { environmentKey: "native", agent: "claude-code", sessionId: "session-omitted-live" },
+      { environmentKey: "native", agent: "claude-code", sessionId: "session-omitted-idle" },
+    ])
+    const before = session.getSnapshot().entries
+    expect(before?.find((entry) => entry.sessionId === "session-listed")?.isActive).toBe(true)
+    // Unknown rows keep their flag rather than flashing off.
+    expect(before?.find((entry) => entry.sessionId === "session-omitted-idle")?.isActive).toBe(
+      true,
+    )
+    expect(before?.find((entry) => entry.sessionId === "session-omitted-live")?.isActive).toBe(
+      false,
+    )
+
+    answer({
+      seq: 11,
+      present: [
+        {
+          session: {
+            environmentKey: "native",
+            agent: "claude-code",
+            sessionId: "session-omitted-live",
+          },
+          agent: "claude-code",
+          lastActivityAt: 1_800_000_001,
+          quiet: true,
+        },
+      ],
+      absent: [
+        { environmentKey: "native", agent: "claude-code", sessionId: "session-omitted-idle" },
+      ],
+    })
+    await vi.waitFor(() => {
+      const entries = session.getSnapshot().entries
+      expect(
+        entries?.find((entry) => entry.sessionId === "session-omitted-live")?.isActive,
+      ).toBe(true)
+      expect(
+        entries?.find((entry) => entry.sessionId === "session-omitted-idle")?.isActive,
+      ).toBe(false)
     })
     unsubscribe()
   })

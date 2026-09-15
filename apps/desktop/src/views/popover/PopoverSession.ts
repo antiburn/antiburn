@@ -52,8 +52,7 @@ import {
   openOverlayWindow,
 } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
-import { localSessionKey } from "../../lib/presentation/localIdentity"
-import { liveSessions } from "../../lib/sessionLifecycle"
+import { listInterests, liveSessions, withRegistryActivity } from "../../lib/sessionLifecycle"
 import { SurfaceExposureTracker, liveUsageObservations } from "../../lib/surfaceExposure"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
 
@@ -345,6 +344,7 @@ export class PopoverSession {
     this.stopSessionLifecycleListening = null
     this.stopLiveSessionsListening?.()
     this.stopLiveSessionsListening = null
+    liveSessions.clearInterest(this)
     this.stopChecksReportChangedListening?.()
     this.stopChecksReportChangedListening = null
     this.stopStorageHealthListening?.()
@@ -542,22 +542,9 @@ export class PopoverSession {
     this.update({ entries: this.withRegistryActivity(next) })
   }
 
-  /**
-   * Re-derive each row's active pill from the lifecycle registry: presence
-   * in the live snapshot is what "active" means, not the row's own
-   * timestamp-derived flag. Until the tracker's first snapshot settles the
-   * backend row flag stands in, so a fresh window never flashes every pill
-   * off.
-   */
+  /** Active pills come from the lifecycle registry, never from row timestamps. */
   private withRegistryActivity(entries: SessionListEntry[]): SessionListEntry[] {
-    const live = liveSessions.getSnapshot()
-    if (!live.ready) return entries
-    return entries.map((entry) => {
-      const isActive = live.sessions.has(
-        localSessionKey(entry.agent, entry.sessionId ?? "", entry.wslDistro),
-      )
-      return entry.isActive === isActive ? entry : { ...entry, isActive }
-    })
+    return withRegistryActivity(liveSessions.getSnapshot(), entries)
   }
 
   /**
@@ -764,10 +751,14 @@ export class PopoverSession {
     try {
       const payloads = await listRecentSessions(days)
       if (generation !== this.generation) return
+      const entries = toActivityEntries(payloads)
       this.update({
-        entries: this.withRegistryActivity(toActivityEntries(payloads)),
+        entries: this.withRegistryActivity(entries),
         entriesUnavailable: false,
       })
+      // The listed rows are this surface's interest: the registry names
+      // any of them the bounded snapshot omitted.
+      liveSessions.setInterest(this, listInterests(entries))
     } catch (error) {
       if (
         generation === this.generation &&

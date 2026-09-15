@@ -711,6 +711,8 @@ mod tests {
             "\"allow-get-session-analysis\"",
             "\"allow-get-subagent-analysis\"",
             "\"allow-get-live-usage\"",
+            "\"allow-get-live-sessions\"",
+            "\"allow-get-live-sessions-for\"",
             "\"allow-get-session-limit-allocations\"",
             "\"allow-get-session-hygiene\"",
             "\"allow-set-settings\"",

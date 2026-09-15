@@ -30,7 +30,7 @@ import {
   type SurfaceOrigin,
 } from "../../lib/ipc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
-import { liveSessions } from "../../lib/sessionLifecycle"
+import { listInterests, liveSessions, withRegistryActivity } from "../../lib/sessionLifecycle"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import { AGENT_SLUGS } from "../../lib/presentation/agents"
 import {
@@ -329,16 +329,9 @@ export class MainActivitySession {
     }
   }
 
-  /** Active pills come from the lifecycle registry's live snapshot. */
+  /** Active pills come from the lifecycle registry, never from row timestamps. */
   private withRegistryActivity(entries: SessionListEntry[]): SessionListEntry[] {
-    const live = liveSessions.getSnapshot()
-    if (!live.ready) return entries
-    return entries.map((entry) => {
-      const isActive = live.sessions.has(
-        localSessionKey(entry.agent, entry.sessionId ?? "", entry.wslDistro),
-      )
-      return entry.isActive === isActive ? entry : { ...entry, isActive }
-    })
+    return withRegistryActivity(liveSessions.getSnapshot(), entries)
   }
 
   private applySessionTarget(request: MainWindowSessionRequest): void {
@@ -407,6 +400,7 @@ export class MainActivitySession {
     this.initialized = false
     this.visible = false
     for (const stop of this.stops.splice(0)) stop()
+    liveSessions.clearInterest(this)
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     this.update({ active: false, refreshing: false })
@@ -444,6 +438,9 @@ export class MainActivitySession {
           continue
         }
         this.update({ entries, listError: false, now: Date.now() })
+        // The listed rows are this surface's interest: the registry names
+        // any of them the bounded snapshot omitted.
+        liveSessions.setInterest(this, listInterests(entries))
         this.selectDefaultEntry()
         const subject = this.snapshot.subject
         if (

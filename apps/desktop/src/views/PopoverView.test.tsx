@@ -902,7 +902,7 @@ describe("PopoverView", () => {
     )
     expect(await screen.findByText("1 failed")).toBeInTheDocument()
 
-    emit("scan:finished", SCAN_STATUS)
+    emit("session:index-changed", { seq: 2, cause: "scan_pass" })
     await waitFor(() => expect(screen.getByText("1 failed")).toBeInTheDocument())
 
     settled = true
@@ -923,7 +923,8 @@ describe("PopoverView", () => {
     await screen.findByText("1 failed")
 
     settled = false
-    emit("scan:finished", SCAN_STATUS)
+    // Membership changes, not scan progress, refresh the Checks report.
+    emit("session:index-changed", { seq: 2, cause: "scan_pass" })
 
     expect(await screen.findByText("1 failed")).toBeInTheDocument()
     expect(screen.getByText("Running")).toBeInTheDocument()
@@ -1301,9 +1302,9 @@ describe("PopoverView — attention banners", () => {
 
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
 
-    // A scan finishing re-reads the repository list; the banner must not come
-    // back from the dead because of it.
-    emit("scan:finished", SCAN_STATUS)
+    // A membership change re-reads the repository list; the banner must not
+    // come back from the dead because of it.
+    emit("session:index-changed", { seq: 2, cause: "scan_pass" })
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_repositories"))
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
   })
