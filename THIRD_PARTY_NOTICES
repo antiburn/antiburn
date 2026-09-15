@@ -567,7 +567,7 @@ rustls-native-certs@0.8.4 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls
 rustls-pki-types@1.15.1 | MIT OR Apache-2.0 | https://github.com/rustls/pki-types
 rustls-platform-verifier@0.7.0 | MIT OR Apache-2.0 | https://github.com/rustls/rustls-platform-verifier
 rustls-webpki@0.103.14 | ISC | https://github.com/rustls/webpki
-rustls@0.23.44 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls
+rustls@0.23.45 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls
 rustversion@1.0.23 | MIT OR Apache-2.0 | https://github.com/dtolnay/rustversion
 ryu@1.0.23 | Apache-2.0 OR BSL-1.0 | https://github.com/dtolnay/ryu
 safe_arch@1.1.0 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/safe_arch
@@ -5293,7 +5293,7 @@ THE SOFTWARE.
 Used by:
   hyper-rustls@0.27.9
   rustls-native-certs@0.8.4
-  rustls@0.23.44
+  rustls@0.23.45
 
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 
