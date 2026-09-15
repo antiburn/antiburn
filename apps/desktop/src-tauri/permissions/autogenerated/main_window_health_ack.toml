@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-main-window-health-ack"
+description = "Enables the main_window_health_ack command without any pre-configured scope."
+commands.allow = ["main_window_health_ack"]
+
+[[permission]]
+identifier = "deny-main-window-health-ack"
+description = "Denies the main_window_health_ack command without any pre-configured scope."
+commands.deny = ["main_window_health_ack"]

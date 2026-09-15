@@ -42,4 +42,18 @@ describe("TruncatedText", () => {
     expect(element.getAttribute("title")).toBe("A title that needs more than two lines")
     vi.restoreAllMocks()
   })
+
+  it("prepares a truncated single line for an interruptible hover reveal", () => {
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(300)
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(120)
+    render(<TruncatedText text="A long scrolling title" scrollOnHover />)
+
+    const text = screen.getByText("A long scrolling title")
+    const container = text.closest("[data-scroll-on-hover]")
+    expect(text).toHaveClass("truncate")
+    expect(container).toHaveAttribute("data-truncated", "true")
+    expect(container?.getAttribute("style")).toContain("--truncated-text-offset: -180px")
+    expect(container?.getAttribute("style")).toContain("--truncated-text-duration: 3960ms")
+    vi.restoreAllMocks()
+  })
 })

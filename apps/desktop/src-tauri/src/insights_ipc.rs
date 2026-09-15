@@ -228,6 +228,7 @@ mod tests {
                 coverage: CoverageCounts::default(),
             }),
             evidence_settled: true,
+            pending_evidence: 0,
         }
     }
 

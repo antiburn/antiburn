@@ -19,6 +19,14 @@ pub struct Usage {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// The subset of `cache_creation_tokens` written with a one-hour TTL.
+    /// Anthropic bills a one-hour cache write at 2x the input rate, versus
+    /// 1.25x for the default five-minute write. Claude Code has run with
+    /// one-hour caching configured throughout, so a Claude record with no
+    /// nested cache-creation breakdown counts its whole cache-creation
+    /// total here; a record that does carry a breakdown reports the exact
+    /// split instead. Non-Claude vendors always report `0` here.
+    pub cache_creation_1h_tokens: u64,
 }
 
 impl Usage {
@@ -48,6 +56,9 @@ impl Usage {
             cache_creation_tokens: self
                 .cache_creation_tokens
                 .saturating_add(other.cache_creation_tokens),
+            cache_creation_1h_tokens: self
+                .cache_creation_1h_tokens
+                .saturating_add(other.cache_creation_1h_tokens),
         }
     }
 }
@@ -177,10 +188,13 @@ pub fn is_test_command(cmd: &str) -> bool {
 }
 
 /// True for a tool name that launches a subagent: `Task` (Claude Code's
-/// original name) or `Agent` (its rename). The match is case-insensitive so
-/// a vendor's own casing still counts.
+/// original name), `Agent` (its rename), or `spawn_agent` (Codex's launch
+/// tool). The match is case-insensitive so a vendor's own casing still
+/// counts.
 pub(crate) fn is_subagent_launch_tool(name: &str) -> bool {
-    name.eq_ignore_ascii_case("task") || name.eq_ignore_ascii_case("agent")
+    name.eq_ignore_ascii_case("task")
+        || name.eq_ignore_ascii_case("agent")
+        || name.eq_ignore_ascii_case("spawn_agent")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

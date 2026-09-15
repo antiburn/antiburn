@@ -96,14 +96,15 @@ use antiburn_local::discovery::{
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
+#[cfg(not(test))]
+use antiburn_local::platform::git;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
 use crate::agents;
 use crate::analysis;
-use crate::commands;
-use crate::dto::{ActivityEntry, ScanStatus};
+use crate::dto::ScanStatus;
 use crate::repositories;
 use crate::session_lifecycle;
 use crate::storage_health::{self, checked};
@@ -670,11 +671,7 @@ pub(crate) async fn try_run_pass(
     ::tracing::debug!(event = "scan_pass_started", trigger = trigger.label());
     let pass_started_at = Instant::now();
 
-    let announce_app = app.clone();
-    let announce = move |entry: ActivityEntry| {
-        let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
-    };
-    let outcome = pass(app, activity_window_days, &trigger, &scope, &announce).await;
+    let outcome = pass(app, activity_window_days, &trigger, &scope).await;
 
     let controller = app.state::<ScanController>();
     let cancelled = controller.cancelled();
@@ -816,7 +813,6 @@ async fn pass(
     _activity_window_days: Option<u32>,
     trigger: &ScanTrigger,
     scope: &PassScope,
-    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
 ) -> anyhow::Result<PassSummary> {
     let store = app.state::<Store>();
     let now = unix_now();
@@ -901,7 +897,7 @@ async fn pass(
         report_indexed(app, now, &records, &changed, &previous_records);
     }
 
-    announce_changed_rows(&store, &changed, &previous_records, now, announce);
+    report_row_changes(app, &records, &changed, &previous_records, now);
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
@@ -910,6 +906,13 @@ async fn pass(
         let removed = checked(app, "The session index", store.delete_session(key))?;
         if removed {
             wake_session_workers(app);
+            session_lifecycle::report(
+                app,
+                session_lifecycle::Observation::Removed {
+                    session: Some(key.clone()),
+                    reason: session_lifecycle::RemovalReason::Rejected,
+                },
+            );
         }
     }
 
@@ -943,6 +946,14 @@ async fn pass(
     if trigger.refreshes_repositories() || list_changed {
         repositories::refresh(app).await?;
     }
+    if list_changed {
+        session_lifecycle::report(
+            app,
+            session_lifecycle::Observation::IndexChanged {
+                reason: session_lifecycle::IndexChangeReason::ScanPass,
+            },
+        );
+    }
 
     Ok(PassSummary {
         sessions: records.len(),
@@ -963,8 +974,9 @@ fn report_touched(app: &AppHandle, store: &Store, work: &scoped::ScopedWork) {
     }
     let at = unix_now();
     let activity_keys = work.sessions.iter().cloned().collect::<Vec<_>>();
-    let records = store
-        .session_records_for_activity_keys(&activity_keys)
+    // Identity only: the touch report needs a `SessionKey`, not row data.
+    let identities = store
+        .session_keys_for_activity_keys(&activity_keys)
         .unwrap_or_default();
     for key in &work.sessions {
         let Some(agent) = AgentKind::from_slug(&key.agent) else {
@@ -973,7 +985,7 @@ fn report_touched(app: &AppHandle, store: &Store, work: &scoped::ScopedWork) {
         session_lifecycle::report(
             app,
             session_lifecycle::Observation::Touched {
-                session: records.get(key).map(|record| record.key.clone()),
+                session: identities.get(key).cloned(),
                 agent,
                 at,
             },
@@ -992,10 +1004,6 @@ fn report_touched(app: &AppHandle, store: &Store, work: &scoped::ScopedWork) {
 }
 
 /// Tell the lifecycle bus which sessions a pass just wrote.
-///
-/// Only a changed record inside the active window is reported: a reused row
-/// says nothing new, and an old row is history. A key absent from
-/// `previous_records` is new to the store.
 pub(super) fn report_indexed(
     app: &AppHandle,
     now: i64,
@@ -1003,9 +1011,28 @@ pub(super) fn report_indexed(
     changed: &[SessionKey],
     previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
 ) {
+    let sessions = indexed_sessions_for_report(now, records, changed, previous_records);
+    if sessions.is_empty() {
+        return;
+    }
+    session_lifecycle::report(app, session_lifecycle::Observation::Indexed { sessions });
+}
+
+/// Which sessions a pass just wrote, as compact lifecycle facts.
+///
+/// Only a changed record inside the active window is reported: a reused row
+/// says nothing new, and an old row is history. `is_new` uses session
+/// identity, so a new session that reuses a source label another identity
+/// held before still reads as new.
+fn indexed_sessions_for_report(
+    now: i64,
+    records: &[SessionRecord],
+    changed: &[SessionKey],
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+) -> Vec<session_lifecycle::IndexedSession> {
     let changed: std::collections::HashSet<&SessionKey> = changed.iter().collect();
+    let previously_known = previously_known_keys(previous_records);
     let mut sessions = Vec::new();
-    let mut new = Vec::new();
     for record in records {
         if !changed.contains(&record.key) {
             continue;
@@ -1019,23 +1046,14 @@ pub(super) fn report_indexed(
         let Some(agent) = AgentKind::from_slug(&record.key.agent) else {
             continue;
         };
-        let activity_key = SessionActivityKey::new(
-            record.key.environment_key.clone(),
-            record.key.agent.clone(),
-            record.source_label.clone(),
-        );
-        if !previous_records.contains_key(&activity_key) {
-            new.push(record.key.clone());
-        }
-        sessions.push((record.key.clone(), agent, at));
+        sessions.push(session_lifecycle::IndexedSession {
+            key: record.key.clone(),
+            agent,
+            at,
+            is_new: !previously_known.contains(&record.key),
+        });
     }
-    if sessions.is_empty() {
-        return;
-    }
-    session_lifecycle::report(
-        app,
-        session_lifecycle::Observation::Indexed { sessions, new },
-    );
+    sessions
 }
 
 /// R3: which of this pass's records are actually worth writing.
@@ -1110,26 +1128,77 @@ async fn discover_scoped_agents(
     logs
 }
 
-/// Emit `SESSION_ENTRY_CHANGED_EVENT` for every refreshed row the reader's
-/// list has already shown, so a row already on screen patches in place
-/// instead of waiting for the next full refetch. A brand-new session is not
-/// announced this way: it has no row to patch, and [`Described::list_changed`]
+/// Report a `RowChanged` fact for every refreshed row the reader's list
+/// has already shown, so a row already on screen patches in place instead
+/// of waiting for the next full refetch. A brand-new session is not
+/// reported this way: it has no row to patch, and [`Described::list_changed`]
 /// tells the list to refetch and pick it up instead.
-fn announce_changed_rows(
-    store: &Store,
+pub(super) fn report_row_changes(
+    app: &AppHandle,
+    records: &[SessionRecord],
     changed: &[SessionKey],
     previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
     now: i64,
-    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
 ) {
-    let previously_known = previously_known_keys(previous_records);
-    for key in changed {
-        if !previously_known.contains(key) {
+    for (session, facets) in row_change_facets(records, changed, previous_records) {
+        session_lifecycle::report(
+            app,
+            session_lifecycle::Observation::RowChanged {
+                session,
+                facets,
+                at: now,
+            },
+        );
+    }
+}
+
+/// Which facets changed on each refreshed, previously known row. The scan
+/// reports compact facts only; the projection layer rebuilds rich rows.
+fn row_change_facets(
+    records: &[SessionRecord],
+    changed: &[SessionKey],
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+) -> Vec<(SessionKey, session_lifecycle::UpdateFacets)> {
+    let changed: std::collections::HashSet<&SessionKey> = changed.iter().collect();
+    let previous_by_identity: std::collections::HashMap<&SessionKey, &SessionRecord> =
+        previous_records
+            .values()
+            .map(|record| (&record.key, record))
+            .collect();
+    let mut out = Vec::new();
+    for record in records {
+        if !changed.contains(&record.key) {
             continue;
         }
-        if let Some(entry) = crate::insights_worker::completion_entry(store, key, now) {
-            announce(entry);
+        let Some(&previous) = previous_by_identity.get(&record.key) else {
+            continue;
+        };
+        let facets = facets_between(previous, record);
+        if facets == session_lifecycle::UpdateFacets::default() {
+            continue;
         }
+        out.push((record.key.clone(), facets));
+    }
+    out
+}
+
+/// Compare one refreshed record with its stored predecessor and name what
+/// changed: the title facet, the metadata facet, or both.
+fn facets_between(
+    previous: &SessionRecord,
+    record: &SessionRecord,
+) -> session_lifecycle::UpdateFacets {
+    let title = previous.title != record.title || previous.title_source != record.title_source;
+    let metadata = {
+        let mut without_title = record.clone();
+        without_title.title = previous.title.clone();
+        without_title.title_source = previous.title_source.clone();
+        &without_title != previous
+    };
+    session_lifecycle::UpdateFacets {
+        title,
+        metadata,
+        ..Default::default()
     }
 }
 
@@ -1195,16 +1264,58 @@ async fn describe_with_states(
         while let Some(joined) = set.join_next().await {
             match joined {
                 Ok((DescribeOutcome::Session(record), changed_record)) => {
-                    let cwd = record.cwd.as_deref();
-                    // The engine's opt-out gate, applied once here so every
-                    // surface that reads the store inherits it.
-                    if cwd.is_some_and(|cwd| ignored_paths::set_contains(ignored, cwd)) {
+                    if record.cwd.is_none() {
+                        #[cfg(test)]
+                        {
+                            if changed_record {
+                                changed.push(record.key.clone());
+                            }
+                            records.push(*record);
+                            continue;
+                        }
+                        #[cfg(not(test))]
+                        {
+                            rejected.push(record.key.clone());
+                            continue;
+                        }
+                    }
+                    let cwd = record.cwd.as_deref().expect("the CWD was checked above");
+                    if ignored_paths::set_contains(ignored, cwd) {
+                        rejected.push(record.key.clone());
                         continue;
                     }
-                    if changed_record {
-                        changed.push(record.key.clone());
+                    // Scan unit fixtures use synthetic paths instead of Git
+                    // repositories. Production always resolves the repository.
+                    #[cfg(test)]
+                    {
+                        if changed_record {
+                            changed.push(record.key.clone());
+                        }
+                        records.push(*record);
+                        continue;
                     }
-                    records.push(*record);
+                    #[cfg(not(test))]
+                    {
+                        let Ok(root) = git::repo_root_at(std::path::Path::new(cwd)).await else {
+                            rejected.push(record.key.clone());
+                            continue;
+                        };
+                        let root = git::canonical_main_repo_root(&root).await;
+                        // Apply the shared opt-out gate to both the working directory
+                        // and the canonical main root. This also covers linked worktrees.
+                        if ignored_paths::is_session_ignored(
+                            ignored,
+                            Some(cwd),
+                            &root.to_string_lossy(),
+                        ) {
+                            rejected.push(record.key.clone());
+                            continue;
+                        }
+                        if changed_record {
+                            changed.push(record.key.clone());
+                        }
+                        records.push(*record);
+                    }
                 }
                 Ok((DescribeOutcome::Subagent(key), _)) => rejected.push(key),
                 Ok((DescribeOutcome::Skip, _)) | Err(_) => {}

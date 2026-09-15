@@ -59,6 +59,7 @@ fn saturated_accumulator(record_count: usize) -> SessionMetricsAccumulator {
             output_tokens: 3,
             cache_read_tokens: 20_000,
             cache_creation_tokens: 2,
+            cache_creation_1h_tokens: 0,
         };
         event.tools.push(ToolCall::new("Skill"));
         event.tools[0].detail = Some(format!("synthetic-skill-{}", index.min(300)));

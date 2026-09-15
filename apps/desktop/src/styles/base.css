@@ -12,6 +12,8 @@ body,
   line-height: 1.4;
   font-optical-sizing: auto;
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   /* Transparent by default so a window that opts into translucent material
      shows it. A window that wants an opaque surface paints one itself. */
   background: transparent;

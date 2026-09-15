@@ -37,11 +37,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use antiburn_local::analysis::{price_breakdown, turn_pricing_key};
 use antiburn_local::pricing::ModelTokens;
-use time::{OffsetDateTime, Time, UtcOffset};
+use time::{Date, OffsetDateTime, Time, UtcOffset};
 
 use crate::dto::{
-    ProviderAgentUsage, ProviderUsage, ProviderUsageStaleness, ProviderUsageState,
-    ProviderUsageSummary, ProviderUsageWindow, ProviderUsageWindows,
+    ProviderAgentUsage, ProviderUsage, ProviderUsageDay, ProviderUsageStaleness,
+    ProviderUsageState, ProviderUsageSummary, ProviderUsageWindow, ProviderUsageWindows,
 };
 use crate::store::{UsageEvidenceRecord, iso_from_epoch};
 
@@ -72,7 +72,17 @@ pub struct WindowBounds {
     pub month_start: i64,
     /// Local midnight twenty-nine days before today.
     pub last_30_days_start: i64,
+    /// Local midnight thirty days before `last_30_days_start`: the start of
+    /// the comparison period that precedes the trailing thirty days.
+    pub previous_30_days_start: i64,
 }
+
+/// Seconds in one local day. Daylight-saving changes are ignored here, as
+/// they are in [`window_bounds`].
+const DAY: i64 = 86_400;
+
+/// Days in each of the two daily series.
+const SERIES_DAYS: usize = 30;
 
 impl WindowBounds {
     /// The earliest instant any window reaches back to.
@@ -80,6 +90,7 @@ impl WindowBounds {
         self.week_start
             .min(self.month_start)
             .min(self.last_30_days_start)
+            .min(self.previous_30_days_start)
     }
 }
 
@@ -116,7 +127,8 @@ pub fn window_bounds(now: i64, utc_offset_minutes: i32) -> WindowBounds {
         // would make the same session appear and disappear as the clock moves.
         week_start: today_start - 6 * 86_400,
         month_start,
-        last_30_days_start: today_start - 29 * 86_400,
+        last_30_days_start: today_start - 29 * DAY,
+        previous_30_days_start: today_start - 59 * DAY,
     }
 }
 
@@ -141,6 +153,8 @@ struct Membership {
     week: bool,
     month: bool,
     last_30_days: bool,
+    /// In the thirty days before `last_30_days`. Never overlaps a window.
+    previous_30_days: bool,
 }
 
 impl Membership {
@@ -150,15 +164,57 @@ impl Membership {
             week: epoch >= bounds.week_start,
             month: epoch >= bounds.month_start,
             last_30_days: epoch >= bounds.last_30_days_start,
+            previous_30_days: epoch >= bounds.previous_30_days_start
+                && epoch < bounds.last_30_days_start,
         }
     }
 
-    /// True when the row falls outside every window, which makes it irrelevant
-    /// — a session whose activity is older than the widest bound, or missing
-    /// entirely (stored as zero).
+    /// True when the row falls outside every window and the comparison
+    /// period, which makes it irrelevant — a session whose activity is older
+    /// than the widest bound, or missing entirely (stored as zero).
     fn is_empty(self) -> bool {
-        !self.today && !self.week && !self.month && !self.last_30_days
+        !self.in_a_window() && !self.previous_30_days
     }
+
+    /// True when the row counts toward at least one provider window.
+    fn in_a_window(self) -> bool {
+        self.today || self.week || self.month || self.last_30_days
+    }
+}
+
+/// The index of `epoch` in a daily series that starts at `start`, when it
+/// falls inside the series.
+fn day_index(epoch: i64, start: i64) -> Option<usize> {
+    let days = (epoch - start).div_euclid(DAY);
+    usize::try_from(days)
+        .ok()
+        .filter(|index| *index < SERIES_DAYS)
+}
+
+/// The reader's calendar date for the day that starts at `day_start`.
+fn local_date(day_start: i64, offset: UtcOffset) -> String {
+    let date: Date = OffsetDateTime::from_unix_timestamp(day_start)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+        .to_offset(offset)
+        .date();
+    format!(
+        "{:04}-{:02}-{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    )
+}
+
+/// Turn a run of daily buckets into their wire shape.
+fn days_of(buckets: &[Bucket], start: i64, offset: UtcOffset) -> Vec<ProviderUsageDay> {
+    buckets
+        .iter()
+        .enumerate()
+        .map(|(index, bucket)| ProviderUsageDay {
+            local_date: local_date(start + index as i64 * DAY, offset),
+            usage: window_of(bucket),
+        })
+        .collect()
 }
 
 /// Tokens and session count accumulating for one provider in one window.
@@ -486,13 +542,28 @@ pub fn summarize(
     utc_offset_minutes: i32,
 ) -> ProviderUsageSummary {
     let bounds = window_bounds(now, utc_offset_minutes);
+    let offset = local_offset(utc_offset_minutes);
     let mut accumulators: BTreeMap<(&'static str, Option<String>), Accumulator> = BTreeMap::new();
+    let mut days: Vec<Bucket> = (0..SERIES_DAYS).map(|_| Bucket::default()).collect();
+    let mut previous_days: Vec<Bucket> = (0..SERIES_DAYS).map(|_| Bucket::default()).collect();
 
     for record in rows {
         let membership = Membership::of(record.updated_at_epoch, &bounds);
         if membership.is_empty() {
             continue;
         }
+        // The day this record lands on, in whichever series holds it. A
+        // record is in at most one of the two.
+        let day = if membership.last_30_days {
+            day_index(record.updated_at_epoch, bounds.last_30_days_start)
+                .map(|index| (&mut days, index))
+        } else if membership.previous_30_days {
+            day_index(record.updated_at_epoch, bounds.previous_30_days_start)
+                .map(|index| (&mut previous_days, index))
+        } else {
+            None
+        };
+        let mut day = day.map(|(series, index)| &mut series[index]);
 
         let breakdown = breakdown_of(record);
         let pricing_breakdown = pricing_breakdown_of(record);
@@ -563,6 +634,21 @@ pub fn summarize(
             }
             pricing_incomplete |=
                 token_totals(attributed.models.values()) != token_totals(pricing_models.values());
+            if let Some(bucket) = day.as_deref_mut() {
+                bucket.session_count = bucket.session_count.saturating_add(1);
+                bucket.pricing_incomplete |= pricing_incomplete;
+                for (model, tokens) in &attributed.models {
+                    bucket.add_tokens(model, tokens);
+                }
+                for (model, tokens) in &pricing_models {
+                    bucket.add_pricing_tokens(model, tokens);
+                }
+            }
+            // The comparison period feeds the daily series and nothing else:
+            // no provider row, no total, no state.
+            if !membership.in_a_window() {
+                continue;
+            }
             let account_key = account_for(record, provider);
             let accumulator = accumulators.entry((provider, account_key)).or_default();
             accumulator.explicit_provider_detected |= attributed.explicit;
@@ -703,6 +789,8 @@ pub fn summarize(
             .into_iter()
             .map(|(agent, windows)| ProviderAgentUsage { agent, windows })
             .collect(),
+        days: days_of(&days, bounds.last_30_days_start, offset),
+        previous_days: days_of(&previous_days, bounds.previous_30_days_start, offset),
         generated_at: iso_from_epoch(Some(now)),
     }
 }

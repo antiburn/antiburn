@@ -20,7 +20,7 @@
           "state": "complete",
           "value": {
             "accounting": "uncached_input",
-            "paidTokens": 0,
+            "paidTokens": 450000,
             "pairsConsidered": 0,
             "pairsSkipped": 0,
             "repeatedTokens": 0
@@ -39,7 +39,8 @@
       "linearRecordOrder": true,
       "mcpInventory": false,
       "modelIdentity": true,
-      "quotaIncidents": false,
+      "providerIncidents": true,
+      "quotaIncidents": true,
       "reasoningEffortTier": true,
       "recordIdentity": false,
       "repeatedContextAccounting": "uncached_input",
@@ -177,21 +178,30 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 22,
-      "evidenceSchemaRevision": 18,
+      "analyzerRevision": 24,
+      "evidenceSchemaRevision": 19,
       "harnessVersion": {
         "state": "complete",
         "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 32,
+      "parserRevision": 38,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
-    "quotaIncidents": {
-      "state": "unsupported"
+    "providerIncidents": {
+      "state": "complete",
+      "value": {
+        "incidents": []
+      }
     },
-    "schemaRevision": 18,
+    "quotaIncidents": {
+      "state": "complete",
+      "value": {
+        "incidents": []
+      }
+    },
+    "schemaRevision": 19,
     "subagents": {
       "state": "complete",
       "value": {
@@ -4259,6 +4269,7 @@
         "tools": [],
         "tsMs": 1786615202000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 450000,

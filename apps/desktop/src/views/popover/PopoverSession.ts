@@ -7,7 +7,6 @@ import {
   EMPTY_LIVE_USAGE,
   EMPTY_PROVIDER_USAGE,
   EMPTY_SESSION_LIMIT_ALLOCATIONS,
-  appInfo,
   getLiveUsage,
   getProviderUsage,
   getSessionLimitAllocations,
@@ -20,9 +19,9 @@ import {
   onPopoverHidden,
   onPopoverShown,
   onLiveUsageChanged,
-  onScanEvent,
-  onSessionEntryChanged,
-  onSessionsInvalidated,
+  onSessionIndexChanged,
+  onSessionLifecycleEvent,
+  onSessionUpdated,
   onSettingsChanged,
   onStorageHealth,
   openSettingsWindow,
@@ -33,6 +32,7 @@ import {
   type ActivityEntryPayload,
   type AppSettings,
   type LiveUsageSummaryPayload,
+  type SessionUpdatedPayload,
   type ProviderUsageSummaryPayload,
   type SessionLimitAllocationSummaryPayload,
   type StorageHealthPayload,
@@ -52,6 +52,8 @@ import {
   openOverlayWindow,
 } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
+import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { liveSessions } from "../../lib/sessionLifecycle"
 import { SurfaceExposureTracker, liveUsageObservations } from "../../lib/surfaceExposure"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
 
@@ -66,8 +68,6 @@ import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types
  */
 
 export interface PopoverSnapshot {
-  appVersion: string | null
-  debugBuild: boolean
   settings: AppSettings | null
   entries: SessionListEntry[] | null
   /** True when the initial activity-list read failed. */
@@ -100,23 +100,13 @@ export interface PopoverSnapshot {
 const NOW_TICK_MS = 30_000
 
 /**
- * How long the list can go without a full refetch before `listenScanEvent`
- * forces one, even though the pass reported `listChanged: false`. The
- * backstop for a signal this session missed or got wrong; matches the
- * backend scheduler's own tick, so reconciliation never lags a full cycle
- * behind the pass that produced it.
- */
-const LIST_RECONCILE_MS = 60_000
-
-/**
- * Floor shared by `scan:finished` and `sessions:entry-changed` usage
- * refreshes that report no list change. A re-described pass or a patched row
- * is not, by itself, a reason to recompute 30-day usage totals and resolve
- * both live provider accounts (F1, R6): an active session's row updates
- * every few seconds, and a usage refresh on every one of those would cost as
- * much as the list rebuild it was meant to avoid. `listChanged` still forces
- * an immediate refresh, since that means a session was discovered or
- * removed.
+ * Floor for the lifecycle-activity usage refresh. A write to an active
+ * session is not, by itself, a reason to recompute 30-day usage totals and
+ * resolve both live provider accounts (F1, R6): an active session writes
+ * every few seconds, and a usage refresh on every write would cost as much
+ * as the list rebuild it was meant to avoid. A membership change
+ * (`session:index-changed`) still forces an immediate refresh, since that
+ * means a session was discovered or removed.
  */
 const USAGE_REFRESH_MIN_MS = 30_000
 
@@ -175,8 +165,8 @@ export class PopoverSession {
   /**
    * How many `refreshUsage` calls are currently in flight.
    *
-   * A counter rather than a boolean: the popover-shown signal and a
-   * scan-finished event can each trigger a refresh close together, and the
+   * A counter rather than a boolean: the popover-shown signal and an
+   * index-changed event can each trigger a refresh close together, and the
    * first one to settle must not clear the spinner out from under the one
    * still running. The snapshot's `usageRefreshing` is `count > 0`.
    */
@@ -195,25 +185,17 @@ export class PopoverSession {
   /** Set while a coalesced `refreshEntries` call is in flight. */
   private entriesRefreshInFlight = false
   private entriesRefreshQueued = false
-  /**
-   * When `listenScanEvent` last refetched the full list. Read against
-   * `LIST_RECONCILE_MS` so a pass that never sets `listChanged` still gets
-   * reconciled eventually.
-   */
-  private lastListReconcileAt = 0
 
   /**
-   * When a usage refresh last ran from `listenScanEvent` or
-   * `listenSessionEntryChanged`. Read against `USAGE_REFRESH_MIN_MS` (F1, R6)
-   * so a quiet stream of events with no list change refreshes usage on a
-   * shared floor, not on every event.
+   * When a usage refresh last ran from lifecycle activity. Read against
+   * `USAGE_REFRESH_MIN_MS` (F1, R6) so a stream of activity events
+   * refreshes usage on a shared floor, not on every event.
    */
   private lastUsageRefreshAt = 0
 
   /**
-   * Whether the popover is currently on screen. R6: gates the
-   * `sessions:entry-changed` usage refresh and whether the visible-only poll
-   * is running.
+   * Whether the popover is currently on screen. R6: gates the lifecycle
+   * activity usage refresh and whether the visible-only poll is running.
    *
    * Defaults `true` rather than `false`: the session can start after the
    * shell's first `popover:shown` already fired, before this class's own
@@ -227,18 +209,17 @@ export class PopoverSession {
   private usagePollTimer: ReturnType<typeof setInterval> | null = null
 
   private stopSettingsListening: (() => void) | null = null
-  private stopSessionsInvalidatedListening: (() => void) | null = null
-  private stopSessionEntryChangedListening: (() => void) | null = null
+  private stopSessionIndexChangedListening: (() => void) | null = null
+  private stopSessionUpdatedListening: (() => void) | null = null
+  private stopSessionLifecycleListening: (() => void) | null = null
+  private stopLiveSessionsListening: (() => void) | null = null
   private stopChecksReportChangedListening: (() => void) | null = null
   private stopStorageHealthListening: (() => void) | null = null
-  private stopScanListening: (() => void) | null = null
   private stopPopoverShownListening: (() => void) | null = null
   private stopPopoverHiddenListening: (() => void) | null = null
   private stopLiveUsageListening: (() => void) | null = null
 
   private snapshot: PopoverSnapshot = {
-    appVersion: null,
-    debugBuild: false,
     settings: null,
     entries: null,
     entriesUnavailable: false,
@@ -315,17 +296,26 @@ export class PopoverSession {
 
     void this.loadInitial(generation)
     void this.listenSettings(generation)
-    void this.listenSessionsInvalidated(generation)
-    void this.listenSessionEntryChanged(generation)
+    void this.listenSessionIndexChanged(generation)
+    void this.listenSessionUpdated(generation)
+    void this.listenSessionLifecycle(generation)
     void this.startChecks(generation)
     void this.listenStorageHealth(generation)
-    void this.listenScanEvent(generation)
     void this.startPopoverVisibility(generation)
     void this.listenLiveUsage(generation)
 
-    // ⌘, opens Settings — the platform's standard preferences shortcut, which
-    // an accessory app with no application menu has to own itself. Bound
-    // alongside Escape on `window`, deliberately: it is the last object in an
+    // The registry, not row data, decides which rows show as active. The
+    // tracker subscribes to lifecycle deltas before it reads the versioned
+    // snapshot, so this overlay never derives windows from timestamps.
+    this.stopLiveSessionsListening = liveSessions.subscribe(() => {
+      if (generation !== this.generation) return
+      const entries = this.snapshot.entries
+      if (entries) this.update({ entries: this.withRegistryActivity(entries) })
+    })
+
+    // The preferences shortcut opens Settings. The window listener supports
+    // the nonactivating popover and platforms without an application menu.
+    // It is bound alongside Escape on `window`: this is the last object in an
     // event's propagation path, so every surface listening on `document` has
     // already had its chance to claim the key first.
     window.addEventListener("keydown", this.onWindowKeyDown)
@@ -347,16 +337,18 @@ export class PopoverSession {
     this.exposure.suspend()
     this.stopSettingsListening?.()
     this.stopSettingsListening = null
-    this.stopSessionsInvalidatedListening?.()
-    this.stopSessionsInvalidatedListening = null
-    this.stopSessionEntryChangedListening?.()
-    this.stopSessionEntryChangedListening = null
+    this.stopSessionIndexChangedListening?.()
+    this.stopSessionIndexChangedListening = null
+    this.stopSessionUpdatedListening?.()
+    this.stopSessionUpdatedListening = null
+    this.stopSessionLifecycleListening?.()
+    this.stopSessionLifecycleListening = null
+    this.stopLiveSessionsListening?.()
+    this.stopLiveSessionsListening = null
     this.stopChecksReportChangedListening?.()
     this.stopChecksReportChangedListening = null
     this.stopStorageHealthListening?.()
     this.stopStorageHealthListening = null
-    this.stopScanListening?.()
-    this.stopScanListening = null
     this.stopPopoverShownListening?.()
     this.stopPopoverShownListening = null
     this.stopPopoverHiddenListening?.()
@@ -377,16 +369,13 @@ export class PopoverSession {
   // the stored time window. The cached limits do not wait for either read.
   private loadInitial = async (generation: number): Promise<void> => {
     const usage = this.loadCachedUsage(generation)
-    const [stored, health, info] = await Promise.all([
+    const [stored, health] = await Promise.all([
       getSettings().catch(() => DEFAULT_SETTINGS),
       getStorageHealth().catch(() => HEALTHY_STORAGE),
-      appInfo().catch(() => null),
     ])
     if (generation !== this.generation) return
     applyTheme(stored.theme)
     this.update({
-      appVersion: info?.appVersion ?? null,
-      debugBuild: info?.debugBuild ?? false,
       settings: stored,
       storage: health,
     })
@@ -438,38 +427,62 @@ export class PopoverSession {
     this.stopSettingsListening = unlisten
   }
 
-  // Sessions can leave the index without a scan — a repository opt-out purges
-  // its rows on the spot — and the list must not keep showing them.
-  private listenSessionsInvalidated = async (generation: number): Promise<void> => {
-    const unlisten = await onSessionsInvalidated(() => {
+  // Membership changed: a session arrived, left, or the whole list was
+  // invalidated. The refetch coalesces so an event burst runs one query.
+  // A `resync` cause means events were lost; it refetches everything but
+  // leaves the usage refresh to its own floor and poll.
+  private listenSessionIndexChanged = async (generation: number): Promise<void> => {
+    const unlisten = await onSessionIndexChanged((change) => {
       if (generation !== this.generation) return
-      void this.refreshEntries(this.windowDays()).catch(() => {})
-      void this.refreshUsage()
+      this.requestEntriesRefresh()
       void this.refreshRepositoryList()
       void this.refreshChecks()
       this.requestSessionLimitAllocationRefresh(false, true)
+      if (change.cause !== "resync") {
+        this.lastUsageRefreshAt = Date.now()
+        void this.refreshUsage()
+      }
     })
     if (generation !== this.generation) {
       unlisten()
       return
     }
-    this.stopSessionsInvalidatedListening = unlisten
+    this.stopSessionIndexChangedListening = unlisten
   }
 
-  // The shell pushes one changed row so the activity pills stay current.
-  // This avoids a full list query for each analysis cache write.
-  //
-  // R6: while the popover is visible, this is also a usage-refresh signal,
-  // on the same `USAGE_REFRESH_MIN_MS` floor `listenScanEvent` uses — an
-  // active session's row updates faster than a full pass re-describes it, so
-  // waiting for `scan:finished` alone would leave usage stale in between.
-  // Hidden, this does nothing for usage: the visible-only poll is what keeps
-  // a hidden popover's next open cheap instead.
-  private listenSessionEntryChanged = async (generation: number): Promise<void> => {
-    const unlisten = await onSessionEntryChanged((entry) => {
+  // The projection worker pushes one enriched row per coalesced registry
+  // update, so the list patches in place without a full query. The facets
+  // say what else the change touched: checks and allocations refresh only
+  // when their own facet is set, so a title-only change costs nothing.
+  private listenSessionUpdated = async (generation: number): Promise<void> => {
+    const unlisten = await onSessionUpdated((update) => {
       if (generation !== this.generation) return
-      this.patchOrRefetchEntry(entry)
+      this.applySessionUpdate(update)
+    })
+    if (generation !== this.generation) {
+      unlisten()
+      return
+    }
+    this.stopSessionUpdatedListening = unlisten
+  }
+
+  private applySessionUpdate(update: SessionUpdatedPayload): void {
+    this.patchOrRefetchEntry(update.entry)
+    const facets = update.facets
+    if (facets.checks || facets.analysis) void this.refreshChecks()
+    if (facets.metadata || facets.analysis || facets.usage || facets.limits) {
       this.requestSessionLimitAllocationRefresh(false, true)
+    }
+  }
+
+  // R6: lifecycle `activity` is the usage-refresh signal while the popover
+  // is visible, on the `USAGE_REFRESH_MIN_MS` floor — an active session
+  // writes faster than any pass re-describes it. Hidden, this does nothing:
+  // the visible-only poll keeps the next open cheap instead.
+  private listenSessionLifecycle = async (generation: number): Promise<void> => {
+    const unlisten = await onSessionLifecycleEvent((event) => {
+      if (generation !== this.generation) return
+      if (event.kind !== "activity") return
       if (this.visible && Date.now() - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS) {
         this.lastUsageRefreshAt = Date.now()
         void this.refreshUsage()
@@ -479,7 +492,7 @@ export class PopoverSession {
       unlisten()
       return
     }
-    this.stopSessionEntryChangedListening = unlisten
+    this.stopSessionLifecycleListening = unlisten
   }
 
   private listenChecksReportChanged = async (generation: number): Promise<void> => {
@@ -526,14 +539,32 @@ export class PopoverSession {
     const next = [...entries]
     next[index] = toActivityEntry(entry, threshold)
     next.sort(compareByRecency)
-    this.update({ entries: next })
+    this.update({ entries: this.withRegistryActivity(next) })
+  }
+
+  /**
+   * Re-derive each row's active pill from the lifecycle registry: presence
+   * in the live snapshot is what "active" means, not the row's own
+   * timestamp-derived flag. Until the tracker's first snapshot settles the
+   * backend row flag stands in, so a fresh window never flashes every pill
+   * off.
+   */
+  private withRegistryActivity(entries: SessionListEntry[]): SessionListEntry[] {
+    const live = liveSessions.getSnapshot()
+    if (!live.ready) return entries
+    return entries.map((entry) => {
+      const isActive = live.sessions.has(
+        localSessionKey(entry.agent, entry.sessionId ?? "", entry.wslDistro),
+      )
+      return entry.isActive === isActive ? entry : { ...entry, isActive }
+    })
   }
 
   /**
    * Refresh `refreshEntries` at most once at a time: a burst of
-   * `sessions:entry-changed` events for sessions outside the current list
-   * (a watcher-driven scan describing several new sessions in one pass, say)
-   * must not start a refetch per event.
+   * `session:updated` or `session:index-changed` events (a watcher-driven
+   * scan describing several new sessions in one pass, say) must not start
+   * a refetch per event.
    */
   private requestEntriesRefresh = (): void => {
     if (this.entriesRefreshInFlight) {
@@ -572,54 +603,14 @@ export class PopoverSession {
     this.stopStorageHealthListening = unlisten
   }
 
-  // The scan is the only thing that changes what is on screen behind the
-  // reader's back, so that is what the list listens for rather than polling.
-  // Only `finished` matters here: no surface in this window draws a pass in
-  // progress, so the intermediate phases have nothing to say. A full refetch
-  // of entries and repositories only runs when the pass says the list needs
-  // one, or the reconcile interval has elapsed — `sessions:entry-changed`
-  // already keeps individual rows current in between. Usage follows its own
-  // floor (R5): `listChanged` forces an immediate refresh, and otherwise a
-  // pass only counts when it re-described at least one session
-  // (`reDescribed > 0`) — an idle pass, the common case now that the watcher
-  // does the real freshness work, refreshes nothing. `sessions:entry-changed`
-  // shares this same floor while the popover is visible (R6), which is what
-  // replaces the usage refresh a row patch never used to trigger — see
-  // `listenSessionEntryChanged`.
-  private listenScanEvent = async (generation: number): Promise<void> => {
-    const unlisten = await onScanEvent((status, phase) => {
-      if (generation !== this.generation) return
-      if (phase !== "finished") return
-      const now = Date.now()
-      if (status.listChanged || now - this.lastListReconcileAt >= LIST_RECONCILE_MS) {
-        this.lastListReconcileAt = now
-        void this.refreshEntries(this.windowDays()).catch(() => {})
-        void this.refreshRepositoryList()
-      }
-      if (
-        status.listChanged ||
-        (status.reDescribed > 0 && now - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS)
-      ) {
-        this.lastUsageRefreshAt = now
-        void this.refreshUsage()
-      }
-      void this.refreshChecks()
-    })
-    if (generation !== this.generation) {
-      unlisten()
-      return
-    }
-    this.stopScanListening = unlisten
-  }
-
   // The shell's own signal that the popover just reached the screen — no
   // longer paired with a scan kick (R1: opening the popover does not ask for
   // one).
   //
-  // Entries are also refetched here, even though the scan scheduler now
-  // ticks unconditionally and `listenScanEvent` above is the primary path:
-  // this is a cheap defence against a `scan:finished` event missed while the
-  // popover was hidden, so a reader never sees a stale list for a whole tick.
+  // Entries are also refetched here, even though `session:index-changed`
+  // above is the primary path: this is a cheap defence against an event
+  // missed while the popover was hidden, so a reader never sees a stale
+  // list until the next membership change.
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
@@ -773,7 +764,10 @@ export class PopoverSession {
     try {
       const payloads = await listRecentSessions(days)
       if (generation !== this.generation) return
-      this.update({ entries: toActivityEntries(payloads), entriesUnavailable: false })
+      this.update({
+        entries: this.withRegistryActivity(toActivityEntries(payloads)),
+        entriesUnavailable: false,
+      })
     } catch (error) {
       if (
         generation === this.generation &&
@@ -802,7 +796,7 @@ export class PopoverSession {
 
   private refreshUsage = async (generation = this.generation): Promise<void> => {
     // Counted rather than flagged directly, and flushed to the snapshot as
-    // `count > 0`: the popover-shown signal and a scan-finished event can
+    // `count > 0`: the popover-shown signal and an index-changed event can
     // each start a refresh close together, and the first call to settle must
     // not clear the spinner while a second one is still in flight.
     this.usageRefreshCount += 1
@@ -936,10 +930,11 @@ export class PopoverSession {
   }
 
   /**
-   * R6: usage freshness while the popover is visible, independent of a scan.
-   * Each tick stamps `lastUsageRefreshAt` the same way the scan- and
-   * entry-changed-triggered refreshes do, so they all share one floor rather
-   * than a poll immediately re-triggering one of the others.
+   * R6: usage freshness while the popover is visible, independent of any
+   * event. Each tick stamps `lastUsageRefreshAt` the same way the
+   * index-changed and lifecycle-activity refreshes do, so they all share
+   * one floor rather than a poll immediately re-triggering one of the
+   * others.
    */
   private startUsagePolling(): void {
     if (this.usagePollTimer !== null) return

@@ -7,9 +7,10 @@ use antiburn_local::analysis::{
     ANALYZER_REVISION, CompositeSink, ContextWindowSource, CoverageReason,
     EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource, EvidenceValue, MAX_RECORD_BYTES,
     MemoryTurnRowStore, NormalizedSession, OrderingObservation, PARSER_REVISION, PartialReason,
-    RawSource, RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts,
-    TurnRowSink, TurnRowStore, TurnScope, analyze_session, analyze_sources_with, merge_metrics,
+    ProviderIncidentKind, QuotaHitSeverity, QuotaLimitKind, RawSource, RecordCoverage,
+    SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
+    TurnRowStore, TurnScope, analyze_session, analyze_sources_with, merge_metrics,
     merge_subagent_events, normalize_source, reader_for,
 };
 use antiburn_local::insights::{
@@ -146,6 +147,9 @@ fn fixture(name: &str) -> &'static str {
         }
         "fork_lineage_fork" => {
             include_str!("fixtures/claude_characterization/fork_lineage_fork.jsonl")
+        }
+        "api_error_records" => {
+            include_str!("fixtures/claude_characterization/api_error_records.jsonl")
         }
         _ => panic!("unknown characterization fixture: {name}"),
     }
@@ -625,6 +629,7 @@ fn every_group_reports_a_three_state_value() {
         "cache",
         "compactions",
         "quotaIncidents",
+        "providerIncidents",
     ] {
         let state = value[group]["state"].as_str().expect("group state");
         assert!(matches!(state, "complete" | "partial" | "unsupported"));
@@ -645,6 +650,7 @@ fn the_capability_matrix_names_every_group_and_every_capability() {
         "cache",
         "compactions",
         "quota_incidents",
+        "provider_incidents",
         "model_identity",
         "token_classes",
         "request_context_tokens",
@@ -727,16 +733,99 @@ fn a_missing_delegated_model_blocks_a_clean_overpowered_subagents_claim() {
     );
 }
 
+/// The fixture's mapped `isApiErrorMessage` records become a `QuotaIncident`
+/// or a `ProviderIncident`, in file order, with the model from the last
+/// real request the stream observed (`claude-sonnet-4-6`; the synthetic
+/// error records never overwrite it). `529` is `Capacity`; another `5xx`
+/// status, or `error: "server_error"` with no usable status, is
+/// `ServerError`; `429`, or `error: "rate_limit"` with no status, is a
+/// `QuotaIncident`. Every other shape (`error: "unknown"` with no status,
+/// a non-429 4xx, a non-integer status falling back to a non-`server_error`/
+/// `rate_limit` label, an ordinary record without `isApiErrorMessage`, and a
+/// record with no top-level `timestamp`) produces nothing.
 #[test]
-fn quota_incidents_are_unsupported_for_claude() {
-    let evidence = stream_composite(&input("delegated_turns"))
-        .evidence()
-        .expect("evidence must publish");
-    assert!(!evidence.capabilities.quota_incidents);
-    assert!(matches!(
-        evidence.quota_incidents,
-        EvidenceValue::Unsupported
-    ));
+fn api_error_records_map_only_the_reviewed_shapes() {
+    let composite = stream_composite(&input("api_error_records"));
+    let evidence = composite.evidence().expect("evidence must publish");
+
+    assert!(evidence.capabilities.quota_incidents);
+    assert!(evidence.capabilities.provider_incidents);
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+
+    let EvidenceValue::Complete(quota) = &evidence.quota_incidents else {
+        panic!("quota incidents must be complete for this fixture");
+    };
+    let observed: Vec<_> = quota
+        .incidents
+        .iter()
+        .map(|incident| {
+            (
+                incident.ts_ms,
+                incident.limit_kind,
+                incident.severity,
+                incident.model.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        observed,
+        vec![
+            (
+                1_767_607_205_000,
+                QuotaLimitKind::RateLimit,
+                QuotaHitSeverity::HardHit,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_206_000,
+                QuotaLimitKind::RateLimit,
+                QuotaHitSeverity::HardHit,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+        ]
+    );
+
+    let EvidenceValue::Complete(provider) = &evidence.provider_incidents else {
+        panic!("provider incidents must be complete for this fixture");
+    };
+    let observed_provider: Vec<_> = provider
+        .incidents
+        .iter()
+        .map(|incident| (incident.ts_ms, incident.kind, incident.model.clone()))
+        .collect();
+    assert_eq!(
+        observed_provider,
+        vec![
+            (
+                1_767_607_202_000,
+                ProviderIncidentKind::Capacity,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_203_000,
+                ProviderIncidentKind::ServerError,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_204_000,
+                ProviderIncidentKind::ServerError,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_210_000,
+                ProviderIncidentKind::ServerError,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_212_000,
+                ProviderIncidentKind::ServerError,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+        ]
+    );
+
+    let rendered = serde_json::to_string(&evidence).unwrap();
+    assert!(!rendered.contains("API Error: synthetic"));
 }
 
 fn fixture_cache(name: &str) -> antiburn_local::analysis::CacheEvidence {

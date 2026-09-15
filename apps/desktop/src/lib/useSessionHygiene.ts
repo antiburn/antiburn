@@ -1,13 +1,31 @@
 import { useMemo, useSyncExternalStore } from "react"
 
+import type { SessionListEntry } from "../components/session/SessionList"
 import { createExternalStore, type ExternalStore } from "./externalStore"
 import { getSessionHygiene, type SessionHygienePayload } from "./insightsIpc"
-import { onScanEvent, onSessionEntryChanged, onSessionsInvalidated } from "./ipc"
+import { onSessionIndexChanged, onSessionUpdated } from "./ipc"
 import { localSessionKey } from "./presentation/localIdentity"
 import { INITIAL_SESSION_HYGIENE } from "./presentation/sessionHygiene"
 import type { LocalSessionIdentity } from "./types/session"
 
 export type SessionHygieneSnapshot = ReadonlyMap<string, SessionHygienePayload>
+
+/**
+ * Every entry with a transcript id, as the identity a hygiene fetch needs.
+ *
+ * A caller that lifts `useSessionHygiene` above a filtered or grouped view
+ * uses this over its full, unfiltered entry list, so the request key does not
+ * change when a filter or day-window grouping changes what actually renders.
+ */
+export function sessionHygieneIdentities(
+  entries: readonly SessionListEntry[],
+): LocalSessionIdentity[] {
+  return entries.flatMap((entry) =>
+    entry.sessionId
+      ? [{ agent: entry.agent, sessionId: entry.sessionId, wslDistro: entry.wslDistro ?? null }]
+      : [],
+  )
+}
 
 type IdentityTuple = [agent: string, sessionId: string, wslDistro: string | null]
 
@@ -80,16 +98,18 @@ function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHyg
         }
         refreshing = false
       }
-      const [stopScan, stopInvalidation, stopEntryChange] = await Promise.all([
-        onScanEvent((_status, phase) => {
-          if (phase === "finished") void refresh(sessions)
-        }),
-        onSessionsInvalidated(() => void refresh(sessions)),
-        onSessionEntryChanged((entry) => {
+      const [stopIndexChange, stopUpdate] = await Promise.all([
+        // Membership changed, or events were lost: re-read every requested
+        // session rather than guessing which ones moved.
+        onSessionIndexChanged(() => void refresh(sessions)),
+        onSessionUpdated((update) => {
+          // Hygiene reads published evidence, so only an analysis or
+          // checks change can move it; a title or usage facet cannot.
+          if (!update.facets.analysis && !update.facets.checks) return
           const identity = {
-            agent: entry.agent,
-            sessionId: entry.sessionId,
-            wslDistro: entry.wslDistro,
+            agent: update.entry.agent,
+            sessionId: update.entry.sessionId,
+            wslDistro: update.entry.wslDistro,
           }
           if (
             requestedKeys.has(
@@ -102,9 +122,8 @@ function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHyg
       ])
       return () => {
         active = false
-        stopScan()
-        stopInvalidation()
-        stopEntryChange()
+        stopIndexChange()
+        stopUpdate()
       }
     },
   })

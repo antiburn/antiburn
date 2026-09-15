@@ -2,7 +2,8 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{Emitter, Manager};
+#[cfg(not(target_os = "macos"))]
+use tauri::Emitter;
 
 use crate::REQUEST_EVENT;
 use crate::geometry::CursorProximity;
@@ -197,7 +198,7 @@ where
         request: &AnchoredWindowRenderRequest<T, P>,
         renderer_ready: bool,
     ) -> tauri::Result<()> {
-        let Some(window) = app.get_webview_window(&self.inner.config.label) else {
+        let Some(window) = self.companion(app) else {
             if self.lock_lifecycle().concealed(request.generation) {
                 self.emit_state(app)?;
             }
@@ -231,7 +232,7 @@ where
         {
             return;
         }
-        if let Some(window) = app.get_webview_window(&self.inner.config.label)
+        if let Some(window) = self.companion(app)
             && let Err(error) = platform::hide(&window)
         {
             tracing::warn!(%error, "failed to hide anchored window after fallback");

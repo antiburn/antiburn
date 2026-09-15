@@ -1832,21 +1832,14 @@ async fn an_unchanged_pass_emits_nothing_and_reports_no_list_change() {
     assert!(second.changed.is_empty());
     assert!(!second.list_changed);
 
-    let announced = Mutex::new(Vec::new());
-    announce_changed_rows(
-        &store,
-        &second.changed,
-        &previous,
-        1_800_000_100,
-        &|entry| {
-            announced.lock().unwrap().push(entry);
-        },
+    assert!(
+        row_change_facets(&second.records, &second.changed, &previous).is_empty(),
+        "an unchanged pass reports no row change"
     );
-    assert!(announced.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn a_moved_cursor_emits_exactly_one_entry_and_reports_no_list_change() {
+async fn a_moved_cursor_reports_exactly_one_row_change_and_no_list_change() {
     let home = tempfile::TempDir::new().unwrap();
     let path = write_claude_session(home.path(), "moving");
     let store = crate::store::Store::open_in_memory(home.path()).unwrap();
@@ -1884,23 +1877,16 @@ async fn a_moved_cursor_emits_exactly_one_entry_and_reports_no_list_change() {
         .upsert_sessions(&second.records, &agents::evidence_cohort())
         .unwrap();
 
-    let announced = Mutex::new(Vec::new());
-    announce_changed_rows(
-        &store,
-        &second.changed,
-        &previous,
-        1_800_000_200,
-        &|entry| {
-            announced.lock().unwrap().push(entry);
-        },
-    );
-    let entries = announced.lock().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].session_id, "moving");
+    let changes = row_change_facets(&second.records, &second.changed, &previous);
+    assert_eq!(changes.len(), 1);
+    let (session, facets) = &changes[0];
+    assert_eq!(session.session_id, "moving");
+    assert!(facets.metadata, "an append moves the activity metadata");
+    assert!(!facets.title, "the title did not change");
 }
 
 #[tokio::test]
-async fn a_new_session_emits_nothing_and_reports_a_list_change() {
+async fn a_new_session_reports_no_row_change_and_reports_a_list_change() {
     let home = tempfile::TempDir::new().unwrap();
     let path = write_claude_session(home.path(), "fresh");
     let store = crate::store::Store::open_in_memory(home.path()).unwrap();
@@ -1917,18 +1903,130 @@ async fn a_new_session_emits_nothing_and_reports_a_list_change() {
     assert!(described.list_changed);
 
     // A brand-new session has no row on screen to patch; the list's own
-    // `list_changed` refetch is what picks it up, not this event.
-    let announced = Mutex::new(Vec::new());
-    announce_changed_rows(
-        &store,
-        &described.changed,
-        &previous,
-        1_800_000_100,
-        &|entry| {
-            announced.lock().unwrap().push(entry);
-        },
+    // `list_changed` refetch is what picks it up, not a row fact.
+    assert!(row_change_facets(&described.records, &described.changed, &previous).is_empty());
+}
+
+#[test]
+fn a_title_only_change_reports_the_title_facet_alone() {
+    let previous = record_for_facets("stable", Some("Old title"), 1_000);
+    let mut refreshed = previous.clone();
+    refreshed.title = Some("New title".into());
+
+    let facets = facets_between(&previous, &refreshed);
+
+    assert!(facets.title);
+    assert!(!facets.metadata);
+    assert!(!facets.analysis);
+}
+
+#[test]
+fn a_metadata_change_reports_the_metadata_facet_alone() {
+    let previous = record_for_facets("stable", Some("Same title"), 1_000);
+    let mut refreshed = previous.clone();
+    refreshed.updated_at_epoch = Some(2_000);
+    refreshed.activity_cursor = "moved".into();
+
+    let facets = facets_between(&previous, &refreshed);
+
+    assert!(!facets.title);
+    assert!(facets.metadata);
+}
+
+/// A minimal stored record for the facet diff tests. Synthetic values only.
+fn record_for_facets(session_id: &str, title: Option<&str>, at: i64) -> SessionRecord {
+    SessionRecord {
+        key: SessionKey::new("native", "claude-code", session_id),
+        source_kind: "file".into(),
+        source_label: format!("/home/avery/.claude/projects/demo/{session_id}.jsonl"),
+        wsl_distro: None,
+        title: title.map(str::to_string),
+        title_source: title.map(|_| "vendor".to_string()),
+        cwd: Some("/home/avery/code/widgets".into()),
+        surface: "cli".into(),
+        updated_at_epoch: Some(at),
+        activity_cursor: "cursor".into(),
+        activity_source: "event".into(),
+        subagent_count: 0,
+        fork_parent_session_id: None,
+        source_fingerprint: None,
+    }
+}
+
+#[test]
+fn a_reused_source_label_with_a_new_identity_still_reads_as_new() {
+    let previous_owner = record_for_facets("first-owner", None, 1_000);
+    let activity_key = SessionActivityKey::new(
+        previous_owner.key.environment_key.clone(),
+        previous_owner.key.agent.clone(),
+        previous_owner.source_label.clone(),
     );
-    assert!(announced.lock().unwrap().is_empty());
+    let previous_records =
+        std::collections::HashMap::from([(activity_key, previous_owner.clone())]);
+
+    // A new session identity now writes to the same source label.
+    let mut reused_label = record_for_facets("second-owner", None, 2_000);
+    reused_label.source_label = previous_owner.source_label.clone();
+
+    let sessions = indexed_sessions_for_report(
+        2_010,
+        std::slice::from_ref(&reused_label),
+        &[reused_label.key.clone()],
+        &previous_records,
+    );
+
+    assert_eq!(sessions.len(), 1);
+    assert!(
+        sessions[0].is_new,
+        "a new identity is new even when its source label was known"
+    );
+
+    // The same identity again is not new, whatever its label.
+    let known_key = SessionActivityKey::new("native", "claude-code", "/another/label.jsonl");
+    let mut known = previous_owner.clone();
+    known.updated_at_epoch = Some(2_000);
+    let previous_records = std::collections::HashMap::from([(known_key, previous_owner)]);
+    let sessions = indexed_sessions_for_report(
+        2_010,
+        std::slice::from_ref(&known),
+        &[known.key.clone()],
+        &previous_records,
+    );
+    assert_eq!(sessions.len(), 1);
+    assert!(!sessions[0].is_new);
+}
+
+/// The targeted (watcher) refresh path feeds `describe_with_states` a
+/// previous map for the same labels. A label whose file now carries a new
+/// session identity must read as a membership change, which
+/// `refresh_sessions_locked` reports as `IndexChanged { ScanPass }`.
+#[tokio::test]
+async fn a_reused_source_label_reports_a_list_change_for_the_new_identity() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = write_claude_session(home.path(), "second-identity");
+    let mut previous = record_for_facets("first-identity", None, 1_799_000_000);
+    previous.source_label = path.to_string_lossy().into_owned();
+    let previous_map = std::collections::HashMap::from([(
+        SessionActivityKey::new("native", "claude-code", &previous.source_label),
+        previous,
+    )]);
+
+    let described = describe_with_states(
+        vec![log(AgentKind::Claude, path, 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+        &previous_map,
+    )
+    .await;
+
+    assert_eq!(described.changed.len(), 1);
+    assert_eq!(described.changed[0].session_id, "second-identity");
+    assert!(
+        described.list_changed,
+        "a new identity behind a known label is a membership change"
+    );
+    // No previously known row to patch: the list refetch is the path.
+    assert!(row_change_facets(&described.records, &described.changed, &previous_map).is_empty());
 }
 
 #[tokio::test]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-burn-check-sample"
+description = "Enables the open_burn_check_sample command without any pre-configured scope."
+commands.allow = ["open_burn_check_sample"]
+
+[[permission]]
+identifier = "deny-open-burn-check-sample"
+description = "Denies the open_burn_check_sample command without any pre-configured scope."
+commands.deny = ["open_burn_check_sample"]

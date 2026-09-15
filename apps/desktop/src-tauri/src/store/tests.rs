@@ -568,6 +568,51 @@ fn opting_out_destroys_the_queue_and_the_installation_identity() {
     assert!(store.analytics_identity().unwrap().is_none());
 }
 
+#[test]
+#[cfg(feature = "analytics")]
+fn settings_and_opt_out_signal_can_commit_as_one_durable_transition() {
+    let store = store();
+    store
+        .set_analytics_identity("11111111-1111-4111-8111-111111111111")
+        .unwrap();
+    let mut disabled = store.settings().unwrap();
+    disabled.analytics_enabled = false;
+
+    let (previous, saved, ()) = store
+        .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+            assert!(previous.analytics_enabled);
+            assert!(!saved.analytics_enabled);
+            Store::queue_analytics_event_in(
+                transaction,
+                "antiburn.analytics_opted_out",
+                "{\"anonymousId\":\"11111111-1111-4111-8111-111111111111\"}",
+            )
+        })
+        .unwrap();
+
+    assert!(previous.analytics_enabled);
+    assert!(!saved.analytics_enabled);
+    assert!(!store.settings().unwrap().analytics_enabled);
+    assert!(store.analytics_opt_out_pending().unwrap());
+}
+
+#[test]
+fn opt_out_signal_is_prioritized_over_a_full_backlog() {
+    let store = store();
+    for index in 0..500 {
+        store
+            .queue_analytics_event("antiburn.app_launched", &index.to_string())
+            .unwrap();
+    }
+    store
+        .queue_analytics_event("antiburn.analytics_opted_out", "opt-out")
+        .unwrap();
+
+    let pending = store.pending_analytics_events(1).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].1, "opt-out");
+}
+
 /// An undeliverable event is dropped rather than retried forever: a queue that
 /// grows without bound on a machine that is offline for a week is a
 /// disk-space bug, not a feature.
@@ -672,6 +717,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(defaults, AppSettings::default());
     assert!(!defaults.onboarding_completed);
     assert!(defaults.launch_at_login);
+    assert!(defaults.tray_icon_visible);
+    assert!(defaults.dock_icon_visible);
     // On by default: fetching the reader's own usage from a provider they
     // already use, with a credential they already hold, is ordinary traffic,
     // not something that needs a first-run choice. See `live_usage_active`
@@ -685,6 +732,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Closed by default, unlike the limits section: the skills table is a long
     // tail behind a summary, and opening it every time buries the rest.
     assert!(!defaults.skills_mcp_expanded);
+    // Unfiltered by default: a fresh install shows every loaded session.
+    assert_eq!(defaults.session_filter, "all");
     assert_eq!(
         defaults.session_data_retention_days,
         RETAIN_SESSION_DATA_FOREVER
@@ -706,6 +755,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             session_data_retention_days: SESSION_DATA_RETENTION_DAYS_90,
             onboarding_completed: true,
             launch_at_login: true,
+            tray_icon_visible: false,
+            dock_icon_visible: true,
             auto_update: false,
             discovery_paused: true,
             notifications_enabled: false,
@@ -727,11 +778,14 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             overview_limits_expanded: false,
             skills_mcp_expanded: true,
             session_badge_metric: SessionBadgeMetric::WeeklyPercent,
+            session_filter: "agent:codex".to_string(),
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
     assert_eq!(saved.theme, ThemePreference::Dark);
     assert_eq!(saved.activity_window_days, 14);
+    assert!(!saved.tray_icon_visible);
+    assert!(saved.dock_icon_visible);
     assert_eq!(
         saved.session_data_retention_days,
         SESSION_DATA_RETENTION_DAYS_90
@@ -740,6 +794,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(saved.nudge_auto_dismiss_secs, 25);
     assert_eq!(saved.disk_space_display, DiskSpaceDisplay::Always);
     assert_eq!(saved.disk_space_threshold_gb, 100);
+    // Stored and returned verbatim; this side does not validate the id.
+    assert_eq!(saved.session_filter, "agent:codex");
     // The empty milestone subset survives a round trip as "none selected",
     // not as a reset back to the defaults.
     assert!(!saved.milestones_weekly.any());
@@ -773,6 +829,98 @@ fn an_explicit_launch_at_login_opt_out_overrides_the_default() {
 
     assert!(!saved.launch_at_login);
     assert!(!store.settings().unwrap().launch_at_login);
+}
+
+#[test]
+fn settings_restore_the_dock_when_both_presence_icons_are_hidden() {
+    let store = store();
+    let saved = store
+        .save_settings(&AppSettings {
+            tray_icon_visible: false,
+            dock_icon_visible: false,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert!(!saved.tray_icon_visible);
+    assert!(saved.dock_icon_visible);
+    assert_eq!(store.settings().unwrap(), saved);
+}
+
+#[test]
+fn settings_snapshot_does_not_wait_for_the_database_connection() {
+    let store = store();
+    let connection = store.lock();
+    let snapshot_store = store.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        sender.send(snapshot_store.settings_snapshot()).unwrap();
+    });
+
+    let snapshot = receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("the settings snapshot stays independent from the database connection");
+    drop(connection);
+    reader.join().unwrap();
+
+    assert_eq!(snapshot, AppSettings::default());
+}
+
+#[test]
+fn settings_snapshot_tracks_commits_across_store_clones() {
+    let store = store();
+    let snapshot_store = store.clone();
+    let saved = store
+        .save_settings(&AppSettings {
+            theme: ThemePreference::Dark,
+            onboarding_completed: true,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(snapshot_store.settings_snapshot(), saved);
+}
+
+#[test]
+fn settings_snapshot_ignores_a_rolled_back_transition() {
+    let store = store();
+    let before = store.settings_snapshot();
+    let result: anyhow::Result<(AppSettings, AppSettings, ())> = store
+        .replace_settings_with_transition(
+            &AppSettings {
+                theme: ThemePreference::Dark,
+                ..AppSettings::default()
+            },
+            |_, _, _| anyhow::bail!("rollback"),
+        );
+
+    assert!(result.is_err());
+    assert_eq!(store.settings_snapshot(), before);
+}
+
+#[test]
+fn settings_repair_malformed_stored_presence_values() {
+    let store = store();
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES (?1, ?2)",
+                params!["trayIconVisible", "false"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES (?1, ?2)",
+                params!["dockIconVisible", "false"],
+            )
+            .unwrap();
+    }
+
+    let settings = store.settings().unwrap();
+
+    assert!(!settings.tray_icon_visible);
+    assert!(settings.dock_icon_visible);
 }
 
 #[test]
@@ -933,6 +1081,9 @@ fn session_evidence_table_shape_is_stable() {
             "effective_model_target_hash",
             "effective_model_scope",
             "effective_model",
+            "effective_reasoning_target_hash",
+            "effective_reasoning_scope",
+            "effective_reasoning",
         ]
     );
 }
@@ -2929,7 +3080,7 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(ready.status, EvidenceStatus::Ready);
-    assert_eq!(ready.evidence_schema_revision, Some(18));
+    assert_eq!(ready.evidence_schema_revision, Some(19));
     assert!(!ready.evidence_json.unwrap().contains("unimplemented"));
 }
 
@@ -2965,7 +3116,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
 
     let failed = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(failed.status, EvidenceStatus::Failed);
-    assert_eq!(failed.evidence_schema_revision, Some(18));
+    assert_eq!(failed.evidence_schema_revision, Some(19));
     assert!(failed.evidence_json.is_none());
 }
 
@@ -3864,6 +4015,7 @@ fn turn_row(turn_index: u64) -> TurnRow {
         input_tokens: 10,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         output_tokens: 5,
         is_compaction_boundary: false,
         message_id: None,

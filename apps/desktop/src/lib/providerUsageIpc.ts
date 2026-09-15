@@ -47,11 +47,21 @@ export interface ProviderUsagePayload {
   lastActivityAt: string | null
 }
 
+/** One local calendar day's totals across every provider. Mirrors Rust `ProviderUsageDay`. */
+export interface ProviderUsageDayPayload extends ProviderUsageWindowPayload {
+  /** The reader's calendar date, `YYYY-MM-DD`. */
+  localDate: string
+}
+
 /** Local provider usage as one snapshot. Mirrors Rust `ProviderUsageSummary`. */
 export interface ProviderUsageSummaryPayload {
   providers: ProviderUsagePayload[]
   totals?: ProviderUsageWindowsPayload
   agents?: ProviderAgentUsagePayload[]
+  /** The trailing thirty days, oldest first and today last; empty days included. */
+  days?: ProviderUsageDayPayload[]
+  /** The thirty days before `days`, for a like-for-like comparison. */
+  previousDays?: ProviderUsageDayPayload[]
   generatedAt: string
 }
 

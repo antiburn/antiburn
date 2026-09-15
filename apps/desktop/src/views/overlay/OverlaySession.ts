@@ -5,19 +5,16 @@ import type { MouseEvent as ReactMouseEvent } from "react"
 import { flushSync } from "react-dom"
 
 import {
-  getLatestSessionActivity,
   getLiveUsage,
   hideHudDetail,
   isOverlayWorkActive,
   onLiveUsageChanged,
-  onSessionEntryChanged,
-  onSessionsInvalidated,
   resizeOverlayWindow,
-  SCAN_EVENTS,
   showHudDetail,
   type HudDetailState,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
+import { hasWorkingActivity, liveSessions } from "../../lib/sessionLifecycle"
 import {
   hideOverlayWindow,
   onOverlayWorkChanged,
@@ -31,9 +28,7 @@ import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
-const LIVE_WINDOW_SECS = 90
 const SHOW_DELAY_MS = 400
-const MAX_TIMEOUT_MS = 2_147_483_647
 
 export type OverlaySnapshot = {
   bars: UsageBarItem[]
@@ -90,15 +85,10 @@ export class OverlaySession {
   private showTimer: number | null = null
   private detailShown = false
   private usagePoll: number | null = null
-  private livenessExpiry: number | null = null
-  private latestActivity: number | null = null
-  private livenessRevision = 0
   private stopWorkListening: (() => void) | null = null
   private stopHoverListening: (() => void) | null = null
   private stopUsageListening: (() => void) | null = null
-  private stopSessionEntryListening: (() => void) | null = null
-  private stopScanListening: (() => void) | null = null
-  private stopInvalidationListening: (() => void) | null = null
+  private stopLifecycleListening: (() => void) | null = null
   private stopVisibilityListening: (() => void) | null = null
   private stopDetailShownListening: (() => void) | null = null
   private dragOrigin: DragOrigin | null = null
@@ -250,8 +240,16 @@ export class OverlaySession {
       })
       .catch(() => {})
 
-    this.listenForActivity(generation)
-    this.refreshLatestActivity(generation)
+    // Liveness comes from the lifecycle registry alone: the tracker takes
+    // the versioned snapshot behind its own listener and applies only
+    // newer deltas, so this surface never derives windows from row
+    // timestamps or scan events.
+    const syncLiveness = () => {
+      if (!this.isCurrent(generation)) return
+      this.update({ sessionLive: hasWorkingActivity(liveSessions.getSnapshot()) })
+    }
+    this.stopLifecycleListening = liveSessions.subscribe(syncLiveness)
+    syncLiveness()
 
     void listen<boolean>("overlay_hover", (event) => {
       if (this.isCurrent(generation)) this.requestHover(Boolean(event.payload))
@@ -306,21 +304,15 @@ export class OverlaySession {
     if (!this.active) return
     this.active = false
     this.activityGeneration += 1
-    this.livenessRevision += 1
     this.clearShowTimer()
     this.hideDetail()
     this.clearUsagePoll()
-    this.clearLivenessExpiry()
     this.stopHoverListening?.()
     this.stopHoverListening = null
     this.stopUsageListening?.()
     this.stopUsageListening = null
-    this.stopSessionEntryListening?.()
-    this.stopSessionEntryListening = null
-    this.stopScanListening?.()
-    this.stopScanListening = null
-    this.stopInvalidationListening?.()
-    this.stopInvalidationListening = null
+    this.stopLifecycleListening?.()
+    this.stopLifecycleListening = null
     this.stopVisibilityListening?.()
     this.stopVisibilityListening = null
     this.stopDetailShownListening?.()
@@ -330,7 +322,6 @@ export class OverlaySession {
     this.observer = null
     this.dragOrigin = null
     this.pendingMove = null
-    this.latestActivity = null
     this.update({ hovered: false, dragging: false, sessionLive: false })
   }
 
@@ -345,85 +336,6 @@ export class OverlaySession {
   private clearUsagePoll(): void {
     if (this.usagePoll != null) window.clearInterval(this.usagePoll)
     this.usagePoll = null
-  }
-
-  private clearLivenessExpiry(): void {
-    if (this.livenessExpiry != null) window.clearTimeout(this.livenessExpiry)
-    this.livenessExpiry = null
-  }
-
-  private listenForActivity(generation: number): void {
-    void onSessionEntryChanged((entry) => {
-      if (!this.isCurrent(generation)) return
-      const latest = Date.parse(entry.timestamp) / 1000
-      if (!Number.isFinite(latest)) return
-      this.livenessRevision += 1
-      this.setLatestActivity(
-        this.latestActivity == null ? latest : Math.max(this.latestActivity, latest),
-        generation,
-      )
-    })
-      .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopSessionEntryListening = dispose
-        else dispose()
-      })
-      .catch(() => {})
-
-    void listen(SCAN_EVENTS.finished, () => {
-      if (this.isCurrent(generation)) this.refreshLatestActivity(generation)
-    })
-      .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopScanListening = dispose
-        else dispose()
-      })
-      .catch(() => {})
-
-    void onSessionsInvalidated(() => {
-      if (this.isCurrent(generation)) this.refreshLatestActivity(generation)
-    })
-      .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopInvalidationListening = dispose
-        else dispose()
-      })
-      .catch(() => {})
-  }
-
-  private refreshLatestActivity(generation: number): void {
-    const revision = ++this.livenessRevision
-    void getLatestSessionActivity()
-      .then((latest) => {
-        if (!this.isCurrent(generation) || revision !== this.livenessRevision) return
-        this.setLatestActivity(latest, generation)
-      })
-      .catch(() => {})
-  }
-
-  private setLatestActivity(latest: number | null, generation: number): void {
-    this.latestActivity = latest
-    this.clearLivenessExpiry()
-    if (latest == null) {
-      this.update({ sessionLive: false })
-      return
-    }
-    const expiresAt = latest * 1000 + LIVE_WINDOW_SECS * 1000
-    const remaining = expiresAt - Date.now()
-    if (remaining < 0) {
-      this.update({ sessionLive: false })
-      return
-    }
-    this.update({ sessionLive: true })
-    this.livenessExpiry = window.setTimeout(
-      () => {
-        this.livenessExpiry = null
-        if (!this.isCurrent(generation) || this.latestActivity !== latest) return
-        if (Date.now() <= expiresAt) {
-          this.setLatestActivity(latest, generation)
-        } else {
-          this.update({ sessionLive: false })
-        }
-      },
-      Math.min(remaining + 1, MAX_TIMEOUT_MS),
-    )
   }
 
   private armShowTimer(): void {

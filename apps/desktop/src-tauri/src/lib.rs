@@ -9,6 +9,7 @@
 //!
 //! - [`agents`] — translating between the engine's two names for an agent.
 //! - [`analysis`] — turning a located transcript into what the views render.
+//! - [`app_presence`] — applying tray and Dock visibility preferences.
 //! - [`commands`] — the IPC surface exposed to the webview.
 //! - [`diagnostics_export`] — the privacy-scoped support document.
 //! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
@@ -53,6 +54,7 @@ pub mod agent_config;
 mod agents;
 mod analysis;
 mod analytics;
+mod app_presence;
 mod commands;
 mod consent;
 mod diagnostics_export;
@@ -82,6 +84,7 @@ mod runtime_pricing;
 mod runtime_pricing_config;
 mod scan;
 mod session_lifecycle;
+mod session_projection;
 mod settings;
 mod startup_registration;
 mod storage_health;
@@ -185,15 +188,17 @@ pub fn run() {
                 repeated.pending.store(true, Ordering::Release);
                 if repeated.setup_ready.load(Ordering::Acquire) {
                     repeated.pending.store(false, Ordering::Release);
-                    if let Err(error) =
-                        open_launch_surface(app, main_window::OpenTrigger::Interaction)
-                    {
-                        ::tracing::warn!(
-                            event = "launch_surface_open_failed",
-                            trigger = "second_instance",
-                            error = %error
-                        );
-                    }
+                    main_window::on_main(app, |app| {
+                        if let Err(error) =
+                            open_launch_surface(app, main_window::OpenTrigger::Interaction)
+                        {
+                            ::tracing::warn!(
+                                event = "launch_surface_open_failed",
+                                trigger = "second_instance",
+                                error = %error
+                            );
+                        }
+                    });
                 }
             })),
     )
@@ -272,6 +277,9 @@ pub fn run() {
 
         tray::create(app.handle())?;
         tray::install_usage_meter(app.handle());
+        if let Ok(settings) = app.state::<store::Store>().settings() {
+            app_presence::apply_at_launch(app.handle(), &settings);
+        }
         // After the tray, and on the main thread: the monitor reaches the
         // menu-bar item to unlight it. The popover itself is lazy, and its
         // dismissal path already treats a missing window as idle.
@@ -323,9 +331,14 @@ pub fn run() {
         if let Some(schedulers) = app.try_state::<Schedulers>() {
             analytics::install_schedulers(app.handle(), &schedulers);
             schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
-            schedulers.push(scan::spawn_scheduler(app.handle()));
+            // The lifecycle actor seeds synchronously inside `spawn`, and
+            // the scan scheduler starts after it: every producer reports
+            // into a registry that already holds the stored live rows. The
+            // projection worker is the one bridge that emits session
+            // events to the webviews.
             schedulers.push(session_lifecycle::spawn(app.handle()));
-            schedulers.push(session_lifecycle::spawn_bridge(app.handle()));
+            schedulers.push(session_projection::spawn(app.handle()));
+            schedulers.push(scan::spawn_scheduler(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
             schedulers.push(updates::spawn_scheduler(app.handle()));
@@ -376,7 +389,10 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
-            main_window::flush_placement(app);
+            #[cfg(target_os = "macos")]
+            if let Some(manager) = app.try_state::<popover_peek::PopoverPeekManager>() {
+                manager.shutdown();
+            }
             // Ask a running report reduction to stop at its next probe.
             // The reduction is read-only, so even a task that never sees
             // the flag cannot corrupt durable evidence state.
@@ -454,14 +470,19 @@ fn finish_retention_cleanup(handle: &mut Option<tauri::async_runtime::JoinHandle
 enum ClosePolicy {
     Allow,
     HideMain,
+    QuitApp,
     HidePopover,
     HidePendingOnboarding,
     HideNudge,
 }
 
-fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
+fn close_policy(label: &str, onboarding_pending: bool, quit_when_main_closes: bool) -> ClosePolicy {
     if label == main_window::LABEL {
-        ClosePolicy::HideMain
+        if quit_when_main_closes {
+            ClosePolicy::QuitApp
+        } else {
+            ClosePolicy::HideMain
+        }
     } else if label == popover::LABEL {
         ClosePolicy::HidePopover
     } else if label == antiburn_nudge::NUDGE_LABEL {
@@ -534,6 +555,7 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         .try_state::<popover_peek::PopoverPeekManager>()
     {
         manager.handle_anchor_event(window, event);
+        #[cfg(not(target_os = "macos"))]
         if window.label() == popover_peek::LABEL && matches!(event, WindowEvent::Destroyed) {
             manager.handle_companion_destroyed();
             if manager.state().target.is_some() {
@@ -560,7 +582,17 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
             }
         }
         WindowEvent::CloseRequested { api, .. } => {
-            match close_policy(window.label(), onboarding::is_pending(window.app_handle())) {
+            let quit_when_main_closes = cfg!(not(target_os = "macos"))
+                && window
+                    .app_handle()
+                    .try_state::<store::Store>()
+                    .map(|store| store.settings_snapshot())
+                    .is_some_and(|settings| !settings.tray_icon_visible);
+            match close_policy(
+                window.label(),
+                onboarding::is_pending(window.app_handle()),
+                quit_when_main_closes,
+            ) {
                 ClosePolicy::Allow => {}
                 ClosePolicy::HideMain => {
                     api.prevent_close();
@@ -568,6 +600,10 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     {
                         main_window::close(&window);
                     }
+                }
+                ClosePolicy::QuitApp => {
+                    api.prevent_close();
+                    main_window::exit_after_placement_flush(window.app_handle());
                 }
                 ClosePolicy::HidePopover => {
                     api.prevent_close();
@@ -682,6 +718,13 @@ mod tests {
             "\"allow-delete-session-data\"",
             "\"dialog:allow-confirm\"",
             "\"allow-main-window-ready\"",
+            "\"allow-main-window-health-ack\"",
+            "\"allow-main-window-pending-health-check\"",
+            "\"allow-report-main-window-render-status\"",
+            "\"allow-report-main-window-render-failure\"",
+            "\"allow-request-main-window-recovery\"",
+            "\"allow-peek-main-window-session-target\"",
+            "\"allow-acknowledge-main-window-session-target\"",
         ] {
             assert!(capability.contains(expected), "missing {expected}");
         }
@@ -781,13 +824,23 @@ mod tests {
         let task_announced = Arc::clone(&announced);
         let task_store = Arc::clone(&store);
         let task_handle = Arc::clone(&handle);
+        struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let (dropped, worker_dropped) = tokio::sync::oneshot::channel();
         let task = tauri::async_runtime::spawn(async move {
+            let _drop_signal = DropSignal(Some(dropped));
             worker_loop(
                 &task_store,
                 &task_handle,
                 &|| 100,
                 &runner,
-                &|entry| task_announced.lock().unwrap().push(entry),
+                &|key| task_announced.lock().unwrap().push(key.clone()),
                 &|| {},
             )
             .await;
@@ -802,12 +855,15 @@ mod tests {
         schedulers.push(task);
 
         abort_schedulers(Some(&schedulers));
+        tokio::time::timeout(Duration::from_secs(1), worker_dropped)
+            .await
+            .expect("the async worker stops")
+            .expect("the async worker reports its drop");
         assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
         release.send(()).unwrap();
         pass_completed
             .recv_timeout(Duration::from_secs(1))
             .expect("the blocking job survives the worker abort");
-        tokio::task::yield_now().await;
         assert_eq!(store.analysis(&key).unwrap(), analysis_before);
         assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
         assert!(announced.lock().unwrap().is_empty());
@@ -827,27 +883,31 @@ mod tests {
     #[test]
     fn only_transient_or_incomplete_windows_intercept_close() {
         assert_eq!(
-            close_policy(super::main_window::LABEL, false),
+            close_policy(super::main_window::LABEL, false, false),
             ClosePolicy::HideMain
         );
         assert_eq!(
-            close_policy(super::popover::LABEL, false),
+            close_policy(super::main_window::LABEL, false, true),
+            ClosePolicy::QuitApp
+        );
+        assert_eq!(
+            close_policy(super::popover::LABEL, false, false),
             ClosePolicy::HidePopover
         );
         assert_eq!(
-            close_policy(super::onboarding::LABEL, true),
+            close_policy(super::onboarding::LABEL, true, false),
             ClosePolicy::HidePendingOnboarding
         );
         assert_eq!(
-            close_policy(super::onboarding::LABEL, false),
+            close_policy(super::onboarding::LABEL, false, false),
             ClosePolicy::Allow
         );
         assert_eq!(
-            close_policy(super::settings::LABEL, false),
+            close_policy(super::settings::LABEL, false, false),
             ClosePolicy::Allow
         );
         assert_eq!(
-            close_policy(antiburn_nudge::NUDGE_LABEL, false),
+            close_policy(antiburn_nudge::NUDGE_LABEL, false, false),
             ClosePolicy::HideNudge
         );
     }

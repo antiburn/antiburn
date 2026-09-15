@@ -25,7 +25,6 @@ use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::paths::{home_dir, protected};
 use antiburn_local::pricing::ModelTokens;
 use antiburn_local::repositories as repositories_engine;
-use antiburn_local::repositories::ConsentGrants as _;
 use antiburn_local::repositories::platform::{PlatformDiscovery as _, platform};
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
@@ -34,19 +33,23 @@ use crate::agents::kind_from_slug;
 use crate::analysis;
 use crate::consent;
 use crate::dto::{
-    ActivityEntry, AgentScanState, AppInfo, AutoFixBurnCheckTargetOutcome,
-    AutoFixUnavailableReason, BurnCheckDetectorId, BurnCheckTargetListPayload, ChecksReportPayload,
+    ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
+    ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
+    BurnCheckTargetListPayload, ChecksReportPayload, CopyPromptFixBurnCheckOutcome,
     CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir, HygieneSummaryPayload,
     InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus,
-    PromptFixUnavailableReason, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
-    SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocation,
-    SessionLimitAllocationSummary, SessionRelation, SessionRelations, SubagentMember,
+    PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
+    SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
+    SessionRelations, SubagentMember,
 };
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
 use crate::popover;
 use crate::provider_usage;
-use crate::remediation::{BurnCheckTargetContext, ControllerError, RemediationController};
+use crate::remediation::{
+    BurnCheckSampleSession, BurnCheckTargetContext, ControllerError, RemediationController,
+};
 use crate::repositories;
 use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
@@ -60,6 +63,16 @@ type CommandResult<T> = Result<T, String>;
 
 fn fail(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+async fn run_blocking<T, F>(operation: F) -> CommandResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> CommandResult<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(fail)?
 }
 
 /// Version stamp of the active runtime pricing catalog.
@@ -125,8 +138,9 @@ pub fn take_settings_pane(app: tauri::AppHandle) -> Option<String> {
 /// background tasks are aborted on the way out.
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
-    crate::main_window::flush_placement(&app);
-    app.exit(0);
+    crate::main_window::on_main(&app, |app| {
+        crate::main_window::exit_after_placement_flush(app);
+    });
 }
 
 /// Post the settings pane's test notification.
@@ -217,7 +231,8 @@ pub async fn open_overlay_window(
     app: tauri::AppHandle,
     origin: crate::analytics::event::Origin,
 ) -> CommandResult<()> {
-    let entries = crate::hud::load_placements(&app.state::<Store>());
+    let store = app.state::<Store>().inner().clone();
+    let entries = run_blocking(move || Ok(crate::hud::load_placements(&store))).await?;
     let needs_exposure = hud_needs_exposure(&app);
     if needs_exposure {
         crate::analytics::prepare_hud_exposure(origin);
@@ -263,8 +278,18 @@ pub fn take_hud_analytics_origin(app: tauri::AppHandle) -> Option<crate::analyti
 /// No argument: the webview knows a drag ended, the shell knows where the
 /// window is, and that split keeps geometry out of the IPC payload.
 #[tauri::command]
-pub fn record_hud_position(app: tauri::AppHandle) {
-    crate::hud::record_position(&app);
+pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
+    let placement =
+        crate::main_window::on_main_value(&app, antiburn_hud::current_placement).await?;
+    let Some(placement) = placement else {
+        return Ok(());
+    };
+    let store = app.state::<Store>().inner().clone();
+    run_blocking(move || {
+        crate::hud::save_placement(&store, placement);
+        Ok(())
+    })
+    .await
 }
 
 /// Hide the usage HUD and cancel any pending reveal.
@@ -324,44 +349,45 @@ pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
     antiburn_hud::apply_detail_size(&app, height);
 }
 
-/// Return the newest recent transcript write as epoch seconds.
+/// The most recent live sessions, bounded to `limit`, with the registry
+/// sequence. A reader takes this snapshot, subscribes to lifecycle events,
+/// and applies only deltas with a higher sequence.
 #[tauri::command]
-pub fn get_latest_session_activity(app: tauri::AppHandle) -> Option<i64> {
-    crate::hud::latest_session_activity(&app.state::<Store>())
-}
-
-/// Every session inside the active window, most recent first. This is the
-/// snapshot a reader takes before it subscribes to lifecycle events.
-#[tauri::command]
-pub fn get_live_sessions(app: tauri::AppHandle) -> Vec<crate::session_lifecycle::LiveSession> {
+pub fn get_live_sessions(
+    app: tauri::AppHandle,
+    limit: Option<usize>,
+) -> crate::session_lifecycle::LiveSnapshot {
     app.state::<crate::session_lifecycle::SessionEvents>()
-        .live_sessions()
+        .snapshot(limit.unwrap_or(crate::session_lifecycle::DEFAULT_SNAPSHOT_LIMIT))
 }
 
 /// Where the app came from and what it is running against.
 #[tauri::command]
-pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
-    let store = app.state::<Store>();
-    Ok(AppInfo {
-        app_version: app.package_info().version.to_string(),
-        debug_build: cfg!(debug_assertions),
-        arch: std::env::consts::ARCH.to_string(),
-        pricing_catalog_version: crate::runtime_pricing::catalog_version(&app),
-        schema_version: store.schema_version().map_err(fail)?,
-        data_dir: store.state_dir().to_string_lossy().to_string(),
-        indexed_sessions: store.session_count().map_err(fail)?,
-        database_bytes: store.database_bytes(),
-        // Real registration state, not a compile-time guess: a release build
-        // whose signing key was never configured has no working updater, and
-        // every piece of copy downstream is derived from this one flag.
-        updates_supported: crate::updates::supported(&app),
-        // Same rule, same reason: derived from the build that is actually
-        // running rather than from a `cfg!`, so no copy downstream can offer
-        // a control this binary cannot honour.
-        analytics_supported: crate::analytics::available(),
-        analytics_environment_disabled: crate::analytics::environment_disabled(),
-        analytics_operator: crate::analytics::operator().map(str::to_string),
+pub async fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
+    run_blocking(move || {
+        let store = app.state::<Store>();
+        Ok(AppInfo {
+            app_version: app.package_info().version.to_string(),
+            debug_build: cfg!(debug_assertions),
+            arch: std::env::consts::ARCH.to_string(),
+            pricing_catalog_version: crate::runtime_pricing::catalog_version(&app),
+            schema_version: store.schema_version().map_err(fail)?,
+            data_dir: store.state_dir().to_string_lossy().to_string(),
+            indexed_sessions: store.session_count().map_err(fail)?,
+            database_bytes: store.database_bytes(),
+            // Real registration state, not a compile-time guess: a release build
+            // whose signing key was never configured has no working updater, and
+            // every piece of copy downstream is derived from this one flag.
+            updates_supported: crate::updates::supported(&app),
+            // Same rule, same reason: derived from the build that is actually
+            // running rather than from a `cfg!`, so no copy downstream can offer
+            // a control this binary cannot honour.
+            analytics_supported: crate::analytics::available(),
+            analytics_environment_disabled: crate::analytics::environment_disabled(),
+            analytics_operator: crate::analytics::operator().map(str::to_string),
+        })
     })
+    .await
 }
 
 /// Ask the release feed for a newer version.
@@ -405,8 +431,9 @@ pub fn restart_to_update(app: tauri::AppHandle) -> CommandResult<()> {
 
 /// Every persisted preference.
 #[tauri::command]
-pub fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {
-    app.state::<Store>().settings().map_err(fail)
+pub async fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {
+    let store = app.state::<Store>().inner().clone();
+    run_blocking(move || store.settings().map_err(fail)).await
 }
 
 /// Event carrying the stored settings to every window after a write.
@@ -415,35 +442,78 @@ pub fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {
 /// popover too (theme, the activity window, the pause state). The event is
 /// what keeps a long-lived popover webview honest without a poll.
 pub const SETTINGS_CHANGED_EVENT: &str = "settings:changed";
+static SETTINGS_COMMAND_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tauri::command]
-pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResult<AppSettings> {
-    let store = app.state::<Store>();
-    let (previous, saved, removed) = store
-        .replace_settings_with(&settings, |tx, saved| {
-            crate::store::apply_session_retention_in(
-                tx,
-                saved.session_data_retention_days,
-                crate::retention::unix_now(),
-            )
-        })
-        .map_err(fail)?;
-    crate::retention::note_removed(&app, removed);
-    apply_settings_transition(&app, &previous, &saved);
+pub async fn set_settings(
+    app: tauri::AppHandle,
+    settings: AppSettings,
+) -> CommandResult<AppSettings> {
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let database_app = app.clone();
+    let (previous, saved) = run_blocking(move || {
+        let store = database_app.state::<Store>();
+        let (previous, saved, removed) = {
+            let _analytics_transition = crate::analytics::lock_settings_transition();
+            let result = store
+                .replace_settings_with_transition(&settings, |tx, previous, saved| {
+                    // The preference must still save when analytics serialization or
+                    // queue storage fails. The withdrawal signal is best effort.
+                    let _ = crate::analytics::prepare_opt_out_in_transaction(
+                        &database_app,
+                        tx,
+                        previous,
+                        saved,
+                    );
+                    crate::store::apply_session_retention_in(
+                        tx,
+                        saved.session_data_retention_days,
+                        crate::retention::unix_now(),
+                    )
+                })
+                .map_err(fail)?;
+            crate::analytics::handle_settings_transition(&database_app, &result.0, &result.1);
+            result
+        };
+        crate::retention::note_removed(&database_app, removed);
+        Ok((previous, saved))
+    })
+    .await?;
+    apply_settings_transition_on_main(&app, &previous, &saved).await?;
+    let analytics_app = app.clone();
+    let analytics_previous = previous.clone();
+    let analytics_saved = saved.clone();
+    run_blocking(move || {
+        record_settings_transition(&analytics_app, &analytics_previous, &analytics_saved);
+        Ok(())
+    })
+    .await?;
     Ok(saved)
 }
 
 /// Make setup pending, open it at Welcome, and keep all other local state.
 #[tauri::command]
-pub fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
-    let store = app.state::<Store>();
-    let (previous, saved) = store.restart_onboarding().map_err(fail)?;
-    crate::analytics::prepare_onboarding_restart();
-    apply_settings_transition(&app, &previous, &saved);
-    restart_onboarding_surfaces(
-        || crate::popover::hide_for_onboarding(&app),
-        || crate::onboarding::restart(&app).map_err(fail),
-    )
+pub async fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let store = app.state::<Store>().inner().clone();
+    let (previous, saved) = run_blocking(move || store.restart_onboarding().map_err(fail)).await?;
+    let main_previous = previous.clone();
+    let main_saved = saved.clone();
+    crate::main_window::on_main_value(&app, move |app| {
+        crate::analytics::prepare_onboarding_restart();
+        apply_settings_transition(app, &main_previous, &main_saved);
+        restart_onboarding_surfaces(
+            || crate::popover::hide_for_onboarding(app),
+            || crate::onboarding::restart(app).map_err(fail),
+        )
+    })
+    .await??;
+    let analytics_app = app.clone();
+    run_blocking(move || {
+        record_settings_transition(&analytics_app, &previous, &saved);
+        Ok(())
+    })
+    .await
 }
 
 fn restart_onboarding_surfaces(
@@ -460,31 +530,43 @@ fn restart_onboarding_surfaces(
 /// the merge here means an unrelated preference written elsewhere cannot be
 /// replaced by an older whole-settings snapshot from the onboarding window.
 #[tauri::command]
-pub fn finish_onboarding(
+pub async fn finish_onboarding(
     app: tauri::AppHandle,
     activity_window_days: u32,
     launch_at_login: bool,
     disabled_agents: Option<Vec<String>>,
     nudges_respect_dnd: Option<bool>,
 ) -> CommandResult<AppSettings> {
-    let store = app.state::<Store>();
-    let (previous, saved) = store
-        .update_settings(|settings| {
-            settings.activity_window_days = activity_window_days;
-            settings.launch_at_login = launch_at_login;
-            if let Some(disabled) = disabled_agents {
-                settings.disabled_agents = crate::store::DisabledAgents::selected(disabled);
-            }
-            if let Some(respect) = nudges_respect_dnd {
-                settings.nudges_respect_dnd = respect;
-            }
-            settings.onboarding_completed = true;
-        })
-        .map_err(fail)?;
-    apply_settings_transition(&app, &previous, &saved);
-    if !previous.onboarding_completed && saved.onboarding_completed {
-        crate::analytics::record_onboarding_finished(&app);
-    }
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let store = app.state::<Store>().inner().clone();
+    let (previous, saved) = run_blocking(move || {
+        store
+            .update_settings(|settings| {
+                settings.activity_window_days = activity_window_days;
+                settings.launch_at_login = launch_at_login;
+                if let Some(disabled) = disabled_agents {
+                    settings.disabled_agents = crate::store::DisabledAgents::selected(disabled);
+                }
+                if let Some(respect) = nudges_respect_dnd {
+                    settings.nudges_respect_dnd = respect;
+                }
+                settings.onboarding_completed = true;
+            })
+            .map_err(fail)
+    })
+    .await?;
+    apply_settings_transition_on_main(&app, &previous, &saved).await?;
+    let analytics_app = app.clone();
+    let analytics_previous = previous.clone();
+    let analytics_saved = saved.clone();
+    run_blocking(move || {
+        record_settings_transition(&analytics_app, &analytics_previous, &analytics_saved);
+        if !analytics_previous.onboarding_completed && analytics_saved.onboarding_completed {
+            crate::analytics::record_onboarding_finished(&analytics_app);
+        }
+        Ok(())
+    })
+    .await?;
     Ok(saved)
 }
 
@@ -495,8 +577,15 @@ pub fn finish_onboarding(
 /// closed enum rather than a name and a property map — see
 /// [`analytics::event::Interaction`](crate::analytics::event::Interaction).
 #[tauri::command]
-pub fn note_interaction(app: tauri::AppHandle, interaction: crate::analytics::event::Interaction) {
-    crate::analytics::record_interaction(&app, interaction);
+pub async fn note_interaction(
+    app: tauri::AppHandle,
+    interaction: crate::analytics::event::Interaction,
+) -> CommandResult<()> {
+    run_blocking(move || {
+        crate::analytics::record_interaction(&app, interaction);
+        Ok(())
+    })
+    .await
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
@@ -508,6 +597,7 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     if crate::startup_registration::should_reconcile_after_save(previous, saved) {
         crate::startup_registration::reconcile(app, saved.launch_at_login);
     }
+    crate::app_presence::apply_transition(app, previous, saved);
 
     // Finishing onboarding, widening the window past what the store holds, and
     // resuming discovery all want fresh data immediately rather than at the
@@ -563,13 +653,23 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     // keeps a once-flag), so no transition edge needs to be computed here.
     crate::notifications::maybe_initialize_authorization(app);
 
-    // Consent changing is the queue's business: turning it off withdraws
-    // whatever is already queued rather than merely pausing it, and destroys
-    // the installation identifier so a later opt-in cannot be joined to this
-    // one. Routed through the same hub as every other consequence so the two
-    // can never drift apart.
-    crate::analytics::handle_settings_transition(app, previous, saved);
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, &saved);
+}
 
+async fn apply_settings_transition_on_main(
+    app: &tauri::AppHandle,
+    previous: &AppSettings,
+    saved: &AppSettings,
+) -> CommandResult<()> {
+    let previous = previous.clone();
+    let saved = saved.clone();
+    crate::main_window::on_main_value(app, move |app| {
+        apply_settings_transition(app, &previous, &saved);
+    })
+    .await
+}
+
+fn record_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
     // Which switch moved, never what it moved to, and only from this closed
     // list. A key alone answers "is this control being found at all"; the
     // value would start describing the reader's setup.
@@ -587,6 +687,14 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
             "launch_at_login",
         ),
         (
+            previous.tray_icon_visible != saved.tray_icon_visible,
+            "tray_icon",
+        ),
+        (
+            previous.dock_icon_visible != saved.dock_icon_visible,
+            "dock_icon",
+        ),
+        (
             previous.discovery_paused != saved.discovery_paused,
             "discovery_paused",
         ),
@@ -602,8 +710,6 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
             );
         }
     }
-
-    let _ = app.emit(SETTINGS_CHANGED_EVENT, &saved);
 }
 
 /* -------------------------------------------------------------------------
@@ -615,41 +721,44 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
 /// `window_days` overrides the stored preference, so the list can be widened
 /// without writing a setting first.
 #[tauri::command]
-pub fn list_recent_sessions(
+pub async fn list_recent_sessions(
     app: tauri::AppHandle,
     window_days: Option<u32>,
 ) -> CommandResult<Vec<ActivityEntry>> {
-    #[cfg(feature = "memory-probe")]
-    if let Some(entries) = crate::memory_probe::synthetic_sessions()? {
-        return Ok(entries);
-    }
-    let store = app.state::<Store>();
-    let settings = store.settings().map_err(fail)?;
-    let days = match window_days {
-        Some(days) => days.clamp(
-            crate::store::MIN_ACTIVITY_DAYS,
-            crate::store::MAX_ACTIVITY_DAYS,
-        ),
-        None => settings.activity_window_days,
-    };
-    let now = scan::unix_now();
-    let since = now - i64::from(days) * 86_400;
-    let sessions = store
-        .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
-        .map_err(fail)?;
-    let repositories = store.repositories().map_err(fail)?;
+    run_blocking(move || {
+        #[cfg(feature = "memory-probe")]
+        if let Some(entries) = crate::memory_probe::synthetic_sessions()? {
+            return Ok(entries);
+        }
+        let store = app.state::<Store>();
+        let settings = store.settings().map_err(fail)?;
+        let days = match window_days {
+            Some(days) => days.clamp(
+                crate::store::MIN_ACTIVITY_DAYS,
+                crate::store::MAX_ACTIVITY_DAYS,
+            ),
+            None => settings.activity_window_days,
+        };
+        let now = scan::unix_now();
+        let since = now - i64::from(days) * 86_400;
+        let sessions = store
+            .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
+            .map_err(fail)?;
+        let repositories = store.repositories().map_err(fail)?;
 
-    let mut entries = Vec::with_capacity(sessions.len());
-    for session in sessions {
-        entries.push(activity_entry(&store, &repositories, session, now).map_err(fail)?);
-    }
-    if entries
-        .iter()
-        .any(|entry| entry.cost.is_none() && !entry.models.is_empty())
-    {
-        crate::runtime_pricing::request_refresh(&app);
-    }
-    Ok(entries)
+        let mut entries = Vec::with_capacity(sessions.len());
+        for session in sessions {
+            entries.push(activity_entry(&store, &repositories, session, now).map_err(fail)?);
+        }
+        if entries
+            .iter()
+            .any(|entry| entry.cost.is_none() && !entry.models.is_empty())
+        {
+            crate::runtime_pricing::request_refresh(&app);
+        }
+        Ok(entries)
+    })
+    .await
 }
 
 /// Upper bound on rows one list request returns. Well past what any window can
@@ -778,11 +887,11 @@ fn path_is_under(path: &str, root: &str) -> bool {
 /// [`crate::provider_usage`], which reads the local database and the engine's
 /// active runtime pricing snapshot.
 #[tauri::command]
-pub fn get_provider_usage(
+pub async fn get_provider_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
-    provider_usage_summary(&app, utc_offset_minutes)
+    run_blocking(move || provider_usage_summary(&app, utc_offset_minutes)).await
 }
 
 pub(crate) fn provider_usage_summary(
@@ -1029,11 +1138,11 @@ const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::fro
 /// The live-usage setting gates the cached value too. Turning the feature off
 /// removes its figures immediately without waiting for another refresh.
 #[tauri::command]
-pub fn get_live_usage(
+pub async fn get_live_usage(
     app: tauri::AppHandle,
     _utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
-    Ok(cached_live_usage(&app))
+    run_blocking(move || Ok(cached_live_usage(&app))).await
 }
 
 pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
@@ -1115,6 +1224,15 @@ pub async fn get_session_analysis(
     session_id: String,
     wsl_distro: Option<String>,
 ) -> CommandResult<SessionAnalysis> {
+    run_blocking(move || session_analysis(&app, agent, session_id, wsl_distro)).await
+}
+
+fn session_analysis(
+    app: &tauri::AppHandle,
+    agent: String,
+    session_id: String,
+    wsl_distro: Option<String>,
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
@@ -1129,8 +1247,8 @@ pub async fn get_session_analysis(
     // instead of re-parsing the transcript in-process, and nudges the
     // worker so the gap closes on its own. Publishing a fresh pass is the
     // worker's job — see its announce callback in `insights_worker::spawn`
-    // — so this command never caches one itself or emits
-    // `SESSION_ENTRY_CHANGED_EVENT` for it.
+    // — so this command never caches one itself or reports a row fact
+    // for it.
     let (analysis, analysis_pending, analysis_stale) =
         match analysis::analysis_from_rows(&store, &key, &session_id, kind) {
             Some(replayed) => {
@@ -1138,11 +1256,11 @@ pub async fn get_session_analysis(
                 (replayed, false, analysis_is_stale(evidence_status))
             }
             None => {
-                requeue_and_wake_worker(&app, &store, &key);
+                requeue_and_wake_worker(app, &store, &key);
                 (analysis::SessionAnalysis::unavailable(), true, false)
             }
         };
-    let relations = resolve_lineage(&app, &key, wsl_distro.as_deref());
+    let relations = resolve_lineage(app, &key, wsl_distro.as_deref());
 
     let stored = store.session(&key).ok().flatten();
 
@@ -1198,6 +1316,17 @@ pub async fn get_subagent_analysis(
     subagent_id: String,
     wsl_distro: Option<String>,
 ) -> CommandResult<SessionAnalysis> {
+    run_blocking(move || subagent_analysis(&app, agent, parent_session_id, subagent_id, wsl_distro))
+        .await
+}
+
+fn subagent_analysis(
+    app: &tauri::AppHandle,
+    agent: String,
+    parent_session_id: String,
+    subagent_id: String,
+    wsl_distro: Option<String>,
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
@@ -1224,7 +1353,7 @@ pub async fn get_subagent_analysis(
             (replayed, false, analysis_is_stale(evidence_status))
         }
         None => {
-            requeue_and_wake_worker(&app, &store, &parent_key);
+            requeue_and_wake_worker(app, &store, &parent_key);
             (analysis::SessionAnalysis::unavailable(), true, false)
         }
     };
@@ -1386,20 +1515,23 @@ pub fn cancel_scan(app: tauri::AppHandle) -> ScanStatus {
 
 /// What the current or last scan is doing, plus what each agent last saw.
 #[tauri::command]
-pub fn get_scan_status(app: tauri::AppHandle) -> ScanStatus {
-    let mut status = app.state::<ScanController>().status();
-    status.agents = app
-        .state::<Store>()
-        .scan_state()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(agent, last_completed_at, sessions_seen)| AgentScanState {
-            agent,
-            last_completed_at,
-            sessions_seen,
-        })
-        .collect();
-    status
+pub async fn get_scan_status(app: tauri::AppHandle) -> CommandResult<ScanStatus> {
+    run_blocking(move || {
+        let mut status = app.state::<ScanController>().status();
+        status.agents = app
+            .state::<Store>()
+            .scan_state()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(agent, last_completed_at, sessions_seen)| AgentScanState {
+                agent,
+                last_completed_at,
+                sessions_seen,
+            })
+            .collect();
+        Ok(status)
+    })
+    .await
 }
 
 /* -------------------------------------------------------------------------
@@ -1459,6 +1591,8 @@ pub async fn get_insights_report(app: tauri::AppHandle) -> CommandResult<Insight
         .await?;
     let report = reduced.report;
     crate::analytics::record_unrecognized_records(&app, &report.unrecognized_records);
+    crate::analytics::record_quota_incidents(&app, &report.quota_pressure);
+    crate::analytics::record_provider_incidents(&app, &report.provider_incidents);
     Ok(report.into())
 }
 
@@ -1468,8 +1602,8 @@ pub async fn get_checks_report(
     window: tauri::WebviewWindow,
     consumer_id: String,
 ) -> CommandResult<ChecksReportPayload> {
-    if window.label() != popover::LABEL {
-        return Err(fail("only the popover can read the Checks report"));
+    if !matches!(window.label(), popover::LABEL | crate::main_window::LABEL) {
+        return Err(fail("only Checks surfaces can read the Checks report"));
     }
     if consumer_id.is_empty() || consumer_id.len() > 128 {
         return Err(fail("the Checks consumer ID is invalid"));
@@ -1481,18 +1615,24 @@ pub async fn get_checks_report(
         .state::<InsightsController>()
         .checks_report(data_dir, request, consumer_id)
         .await?;
-    Ok(ChecksReportPayload::from_report(
+    let mut payload = ChecksReportPayload::from_report(
         &reduced.report,
         reduced.evidence_settled,
-    ))
+        reduced.pending_evidence,
+    );
+    #[cfg(debug_assertions)]
+    crate::tray::simulate_burn_checks(app, &mut payload);
+    Ok(payload)
 }
 
 /// Restricts burn-check remediation to the current Checks surface.
 fn ensure_checks_window(label: &str) -> CommandResult<()> {
-    if label == popover::LABEL {
+    if matches!(label, popover::LABEL | crate::main_window::LABEL) {
         Ok(())
     } else {
-        Err(fail("only the popover can use burn check remediation"))
+        Err(fail(
+            "only the main window and popover can use burn check remediation",
+        ))
     }
 }
 
@@ -1505,7 +1645,8 @@ pub async fn list_burn_check_targets(
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let request = insights_report_request(epoch_now());
-        app.state::<RemediationController>()
+        let list = app
+            .state::<RemediationController>()
             .list_burn_check_targets(
                 &app.state::<Store>(),
                 detector.into(),
@@ -1514,73 +1655,159 @@ pub async fn list_burn_check_targets(
                     window: request.window,
                 },
             )
-            .map(Into::into)
-            .map_err(|_| "unable to list burn check targets".to_owned())
+            .map_err(|_| "unable to list burn check targets".to_owned())?;
+        let mut sample_identities = BTreeSet::new();
+        let samples = list
+            .targets
+            .iter()
+            .map(|target| {
+                let unique_samples =
+                    unique_sample_sessions(&target.sample_sessions, &mut sample_identities);
+                crate::main_window::sample_payloads(&app, &unique_samples)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut payload: BurnCheckTargetListPayload = list.into();
+        for (target, samples) in payload.targets.iter_mut().zip(samples) {
+            target.samples = samples;
+        }
+        Ok(payload)
     })
     .await
     .map_err(|_| "unable to list burn check targets".to_owned())?
 }
 
-fn auto_fix_outcome(
+fn unique_sample_sessions(
+    samples: &[BurnCheckSampleSession],
+    seen: &mut BTreeSet<(String, String, String)>,
+) -> Vec<BurnCheckSampleSession> {
+    samples
+        .iter()
+        .filter(|sample| {
+            seen.insert((
+                sample.environment_key.clone(),
+                sample.agent.clone(),
+                sample.session_id.clone(),
+            ))
+        })
+        .cloned()
+        .collect()
+}
+
+fn prepare_auto_fix_outcome(
+    result: Result<crate::remediation::AutoFixReview, ControllerError>,
+) -> CommandResult<PrepareAutoFixBurnCheckTargetOutcome> {
+    match result {
+        Ok(review) => Ok(PrepareAutoFixBurnCheckTargetOutcome::ReviewReady {
+            review: review.into(),
+        }),
+        Err(ControllerError::TargetExpired) => Ok(PrepareAutoFixBurnCheckTargetOutcome::Expired),
+        Err(ControllerError::TargetChanged) => Ok(PrepareAutoFixBurnCheckTargetOutcome::Stale),
+        Err(ControllerError::Conflict) => Ok(PrepareAutoFixBurnCheckTargetOutcome::Conflict),
+        Err(ControllerError::TargetNotFound) => {
+            Ok(PrepareAutoFixBurnCheckTargetOutcome::Unavailable {
+                reason: AutoFixUnavailableReason::TargetNotFound,
+            })
+        }
+        Err(ControllerError::AutoFixUnavailable(reason)) => {
+            Ok(PrepareAutoFixBurnCheckTargetOutcome::Unavailable {
+                reason: reason.into(),
+            })
+        }
+        Err(ControllerError::PromptUnavailable(_))
+        | Err(ControllerError::CheckPromptUnavailable)
+        | Err(ControllerError::ApplyFailed(_))
+        | Err(ControllerError::RecoveryNeeded { .. })
+        | Err(ControllerError::PersistenceFailed)
+        | Err(ControllerError::Internal) => Err("unable to prepare burn check fix".to_owned()),
+    }
+}
+
+fn apply_prepared_outcome(
     result: Result<crate::remediation::AutoFixResult, ControllerError>,
-) -> CommandResult<AutoFixBurnCheckTargetOutcome> {
+) -> CommandResult<ApplyPreparedBurnCheckOperationOutcome> {
     use crate::agent_config::ApplyError;
 
     match result {
-        Ok(result) => Ok(AutoFixBurnCheckTargetOutcome::AppliedAwaitingVerification {
-            watch_id: result.watch_id,
-        }),
+        Ok(result) => Ok(
+            ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification {
+                watch_id: result.watch_id,
+            },
+        ),
         Err(ControllerError::RecoveryNeeded { watch_id }) => {
-            Ok(AutoFixBurnCheckTargetOutcome::RecoveryNeeded { watch_id })
+            Ok(ApplyPreparedBurnCheckOperationOutcome::RecoveryNeeded { watch_id })
         }
-        Err(ControllerError::TargetExpired) => Ok(AutoFixBurnCheckTargetOutcome::Expired),
-        Err(ControllerError::TargetChanged) => Ok(AutoFixBurnCheckTargetOutcome::Stale),
-        Err(ControllerError::Conflict) => Ok(AutoFixBurnCheckTargetOutcome::Conflict),
-        Err(ControllerError::TargetNotFound) => Ok(AutoFixBurnCheckTargetOutcome::Unavailable {
-            reason: AutoFixUnavailableReason::TargetNotFound,
-        }),
+        Err(ControllerError::TargetExpired) => Ok(ApplyPreparedBurnCheckOperationOutcome::Expired),
+        Err(ControllerError::TargetChanged) => Ok(ApplyPreparedBurnCheckOperationOutcome::Stale),
+        Err(ControllerError::Conflict) => Ok(ApplyPreparedBurnCheckOperationOutcome::Conflict),
+        Err(ControllerError::TargetNotFound) => {
+            Ok(ApplyPreparedBurnCheckOperationOutcome::Unavailable {
+                reason: AutoFixUnavailableReason::TargetNotFound,
+            })
+        }
         Err(ControllerError::AutoFixUnavailable(reason)) => {
-            Ok(AutoFixBurnCheckTargetOutcome::Unavailable {
+            Ok(ApplyPreparedBurnCheckOperationOutcome::Unavailable {
                 reason: reason.into(),
             })
         }
         Err(ControllerError::ApplyFailed(ApplyError::Conflict(_))) => {
-            Ok(AutoFixBurnCheckTargetOutcome::Conflict)
+            Ok(ApplyPreparedBurnCheckOperationOutcome::Conflict)
         }
         Err(ControllerError::ApplyFailed(ApplyError::Unavailable(_))) => {
-            Ok(AutoFixBurnCheckTargetOutcome::Unavailable {
+            Ok(ApplyPreparedBurnCheckOperationOutcome::Unavailable {
                 reason: AutoFixUnavailableReason::SafetyCheckFailed,
             })
         }
         Err(ControllerError::PromptUnavailable(_))
+        | Err(ControllerError::CheckPromptUnavailable)
         | Err(ControllerError::ApplyFailed(ApplyError::Readback(_)))
         | Err(ControllerError::PersistenceFailed)
         | Err(ControllerError::Internal) => Err("unable to auto fix burn check target".to_owned()),
     }
 }
 
-/// Applies the supported automatic change for one opaque current target.
+/// Prepares one exact automatic change for review without reserving a write.
 #[tauri::command]
-pub async fn auto_fix_burn_check_target(
+pub async fn prepare_auto_fix_burn_check_target(
     window: tauri::WebviewWindow,
-    target_id: String,
-) -> CommandResult<AutoFixBurnCheckTargetOutcome> {
+    action_id: String,
+) -> CommandResult<PrepareAutoFixBurnCheckTargetOutcome> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_auto_fix_outcome(
+            app.state::<RemediationController>()
+                .prepare_auto_fix_burn_check_target(&app.state::<Store>(), &action_id),
+        )
+    })
+    .await
+    .map_err(|_| "unable to prepare burn check fix".to_owned())?
+}
+
+/// Applies only the exact operation returned by the review command.
+#[tauri::command]
+pub async fn apply_prepared_burn_check_operation(
+    window: tauri::WebviewWindow,
+    prepared_operation_id: String,
+) -> CommandResult<ApplyPreparedBurnCheckOperationOutcome> {
     ensure_checks_window(window.label())?;
     let app = window.app_handle().clone();
     let action_app = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        auto_fix_outcome(
+        apply_prepared_outcome(
             action_app
                 .state::<RemediationController>()
-                .auto_fix_burn_check_target(&action_app.state::<Store>(), &target_id),
+                .apply_prepared_burn_check_operation(
+                    &action_app.state::<Store>(),
+                    &prepared_operation_id,
+                ),
         )
     })
     .await
-    .map_err(|_| "unable to auto fix burn check target".to_owned())??;
+    .map_err(|_| "unable to apply prepared burn check operation".to_owned())??;
     if matches!(
         outcome,
-        AutoFixBurnCheckTargetOutcome::AppliedAwaitingVerification { .. }
-            | AutoFixBurnCheckTargetOutcome::RecoveryNeeded { .. }
+        ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
+            | ApplyPreparedBurnCheckOperationOutcome::RecoveryNeeded { .. }
     ) {
         crate::insights_worker::wake(&app);
     }
@@ -1625,6 +1852,7 @@ fn prompt_fix_outcome(
             Ok(CopyPromptFixBurnCheckTargetOutcome::Unavailable { reason })
         }
         Err(ControllerError::AutoFixUnavailable(_))
+        | Err(ControllerError::CheckPromptUnavailable)
         | Err(ControllerError::Conflict)
         | Err(ControllerError::ApplyFailed(_))
         | Err(ControllerError::RecoveryNeeded { .. })
@@ -1637,7 +1865,7 @@ fn prompt_fix_outcome(
 #[tauri::command]
 pub async fn copy_prompt_fix_burn_check_target(
     window: tauri::WebviewWindow,
-    target_id: String,
+    action_id: String,
 ) -> CommandResult<CopyPromptFixBurnCheckTargetOutcome> {
     ensure_checks_window(window.label())?;
     let app = window.app_handle().clone();
@@ -1646,7 +1874,7 @@ pub async fn copy_prompt_fix_burn_check_target(
         prompt_fix_outcome(
             action_app
                 .state::<RemediationController>()
-                .copy_prompt_fix_burn_check_target(&action_app.state::<Store>(), &target_id),
+                .copy_prompt_fix_burn_check_target(&action_app.state::<Store>(), &action_id),
         )
     })
     .await
@@ -1660,14 +1888,99 @@ pub async fn copy_prompt_fix_burn_check_target(
     Ok(outcome)
 }
 
-/// Cancel Checks work when the popover renderer is released.
+/// Returns a bounded generic prompt only when a failed check has no exact target.
+#[tauri::command]
+pub async fn copy_prompt_fix_burn_check(
+    window: tauri::WebviewWindow,
+    detector: BurnCheckDetectorId,
+) -> CommandResult<CopyPromptFixBurnCheckOutcome> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = insights_report_request(epoch_now());
+        match app
+            .state::<RemediationController>()
+            .copy_prompt_fix_burn_check(
+                &app.state::<Store>(),
+                detector.into(),
+                BurnCheckTargetContext {
+                    environment_key: request.environment_key,
+                    window: request.window,
+                },
+            ) {
+            Ok(result) => Ok(CopyPromptFixBurnCheckOutcome::PromptReady {
+                prompt: result.prompt,
+            }),
+            Err(ControllerError::CheckPromptUnavailable) => {
+                Ok(CopyPromptFixBurnCheckOutcome::Unavailable)
+            }
+            Err(_) => Err("unable to copy burn check prompt".to_owned()),
+        }
+    })
+    .await
+    .map_err(|_| "unable to copy burn check prompt".to_owned())?
+}
+
+/// Returns one bounded prompt for all selected current targets in one check.
+#[tauri::command]
+pub async fn copy_prompt_fix_burn_check_targets(
+    window: tauri::WebviewWindow,
+    action_ids: Vec<String>,
+) -> CommandResult<CopyPromptFixBurnCheckOutcome> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    let action_app = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        match action_app
+            .state::<RemediationController>()
+            .copy_prompt_fix_burn_check_targets(&action_app.state::<Store>(), &action_ids)
+        {
+            Ok(result) => Ok(CopyPromptFixBurnCheckOutcome::PromptReady {
+                prompt: result.prompt,
+            }),
+            Err(ControllerError::TargetExpired)
+            | Err(ControllerError::TargetChanged)
+            | Err(ControllerError::TargetNotFound)
+            | Err(ControllerError::CheckPromptUnavailable)
+            | Err(ControllerError::PromptUnavailable(_)) => {
+                Ok(CopyPromptFixBurnCheckOutcome::Unavailable)
+            }
+            Err(_) => Err("unable to copy burn check prompt".to_owned()),
+        }
+    })
+    .await
+    .map_err(|_| "unable to copy burn check prompt".to_owned())??;
+    if matches!(outcome, CopyPromptFixBurnCheckOutcome::PromptReady { .. }) {
+        crate::insights_worker::wake(&app);
+    }
+    Ok(outcome)
+}
+
+/// Returns bounded durable wins without reading current findings.
+#[tauri::command]
+pub async fn get_burn_check_aggregate_wins(
+    window: tauri::WebviewWindow,
+) -> CommandResult<AggregateWinsPayload> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<RemediationController>()
+            .aggregate_wins(&app.state::<Store>())
+            .map(Into::into)
+            .map_err(|_| "unable to read burn check aggregate wins".to_owned())
+    })
+    .await
+    .map_err(|_| "unable to read burn check aggregate wins".to_owned())?
+}
+
+/// Release one Checks consumer without affecting another visible surface.
 #[tauri::command]
 pub fn cancel_checks_report(
     window: tauri::WebviewWindow,
     consumer_id: String,
 ) -> CommandResult<()> {
-    if window.label() != popover::LABEL {
-        return Err(fail("only the popover can cancel the Checks report"));
+    if !matches!(window.label(), popover::LABEL | crate::main_window::LABEL) {
+        return Err(fail("only Checks surfaces can cancel the Checks report"));
     }
     if consumer_id.is_empty() || consumer_id.len() > 128 {
         return Err(fail("the Checks consumer ID is invalid"));
@@ -1681,17 +1994,20 @@ pub fn cancel_checks_report(
 
 /// Report calculation state plus the evidence backlog for the report's scope.
 #[tauri::command]
-pub fn get_insights_status(app: tauri::AppHandle) -> CommandResult<InsightsStatusPayload> {
-    let calculating = app.state::<InsightsController>().is_calculating();
-    let backlog = app
-        .state::<Store>()
-        .evidence_backlog_counts(&environment_key(None))
-        .map_err(fail)?;
-    Ok(InsightsStatusPayload {
-        calculating,
-        pending: backlog.pending,
-        processing: backlog.processing,
+pub async fn get_insights_status(app: tauri::AppHandle) -> CommandResult<InsightsStatusPayload> {
+    run_blocking(move || {
+        let calculating = app.state::<InsightsController>().is_calculating();
+        let backlog = app
+            .state::<Store>()
+            .evidence_backlog_counts(&environment_key(None))
+            .map_err(fail)?;
+        Ok(InsightsStatusPayload {
+            calculating,
+            pending: backlog.pending,
+            processing: backlog.processing,
+        })
     })
+    .await
 }
 
 /// The aggregate hygiene numbers for the sessions in the activity window.
@@ -1920,8 +2236,8 @@ pub fn cancel_insights_report(app: tauri::AppHandle) {
 
 /// Every repository antiburn knows about on this machine.
 #[tauri::command]
-pub fn list_repositories(app: tauri::AppHandle) -> CommandResult<Vec<RepositoryItem>> {
-    repositories::list(&app.state::<Store>()).map_err(fail)
+pub async fn list_repositories(app: tauri::AppHandle) -> CommandResult<Vec<RepositoryItem>> {
+    run_blocking(move || repositories::list(&app.state::<Store>()).map_err(fail)).await
 }
 
 /// Include or ignore one repository.
@@ -1938,41 +2254,50 @@ pub async fn set_repository_enabled(
             .map_err(fail)?;
     }
     // Disabling purges the repository's rows; the open popover re-reads its
-    // list on this event rather than waiting for a scan. Re-enabling asks for
+    // list on this fact rather than waiting for a scan. Re-enabling asks for
     // a pass so the rows come back without the reader doing anything.
-    let _ = app.emit(SESSIONS_INVALIDATED_EVENT, ());
+    crate::session_lifecycle::report(
+        &app,
+        crate::session_lifecycle::Observation::IndexChanged {
+            reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
+        },
+    );
     if enabled {
         app.state::<ScanController>()
             .request(ScanTrigger::RepositoryToggle);
     }
-    list_repositories(app)
+    list_repositories(app).await
 }
 
-/// Event the shell emits when stored sessions were removed outside a scan
-/// (repository opt-out, index clearing). The popover re-queries on it.
-pub const SESSIONS_INVALIDATED_EVENT: &str = "sessions:invalidated";
-
-/// Event the shell emits when one session's cached analysis changes outside a
-/// scan. The payload is the fresh [`ActivityEntry`] for that session, so the
-/// popover can update the one row without a re-query.
-pub const SESSION_ENTRY_CHANGED_EVENT: &str = "sessions:entry-changed";
-
 /// Event the shell emits for every transition on the session lifecycle bus.
-/// The payload is one [`crate::session_lifecycle::SessionEvent`].
+/// The payload is one [`crate::session_lifecycle::LifecycleEnvelope`]: the
+/// event plus the registry sequence a reader orders deltas by.
 pub const SESSION_LIFECYCLE_EVENT: &str = "session:lifecycle";
+
+/// Event the shell emits with one enriched row projection per coalesced
+/// registry update. The payload is one
+/// [`crate::session_projection::SessionUpdatedPayload`]. Only the
+/// projection worker emits it.
+pub const SESSION_UPDATED_EVENT: &str = "session:updated";
+
+/// Event the shell emits when list membership changes: a removal, a scan
+/// pass, a broad invalidation, or a resync. The payload is one
+/// [`crate::session_projection::IndexChangedPayload`].
+pub const SESSION_INDEX_CHANGED_EVENT: &str = "session:index-changed";
 pub const CHECKS_REPORT_CHANGED_EVENT: &str = "checks:report-changed";
 
 /// Re-derive the repository list from what is on disk right now.
 #[tauri::command]
 pub async fn refresh_repositories(app: tauri::AppHandle) -> CommandResult<Vec<RepositoryItem>> {
     repositories::refresh(&app).await.map_err(fail)?;
-    list_repositories(app)
+    list_repositories(app).await
 }
 
 /// The extra directories the reader pointed the scanner at.
 #[tauri::command]
-pub fn list_scan_roots(app: tauri::AppHandle) -> CommandResult<Vec<String>> {
-    app.state::<Store>().scan_roots().map_err(fail)
+pub async fn list_scan_roots(app: tauri::AppHandle) -> CommandResult<Vec<String>> {
+    let store = app.state::<Store>().inner().clone();
+    run_blocking(move || store.scan_roots().map_err(fail)).await
 }
 
 /// The directories the engine already searches without being asked, shown in
@@ -1992,11 +2317,12 @@ pub fn default_scan_roots() -> Vec<String> {
 /// Add a directory to scan, and mirror the list into the engine's own store.
 #[tauri::command]
 pub async fn add_scan_root(app: tauri::AppHandle, path: String) -> CommandResult<Vec<String>> {
-    let roots = {
-        let store = app.state::<Store>();
+    let store = app.state::<Store>().inner().clone();
+    let roots = run_blocking(move || {
         store.add_scan_root(&path).map_err(fail)?;
-        store.scan_roots().map_err(fail)?
-    };
+        store.scan_roots().map_err(fail)
+    })
+    .await?;
     mirror_scan_roots(&app, &roots).await.map_err(fail)?;
     app.state::<ScanController>()
         .request(ScanTrigger::ScanRootAdded);
@@ -2006,11 +2332,12 @@ pub async fn add_scan_root(app: tauri::AppHandle, path: String) -> CommandResult
 /// Stop scanning a directory, and mirror the list into the engine's own store.
 #[tauri::command]
 pub async fn remove_scan_root(app: tauri::AppHandle, path: String) -> CommandResult<Vec<String>> {
-    let roots = {
-        let store = app.state::<Store>();
+    let store = app.state::<Store>().inner().clone();
+    let roots = run_blocking(move || {
         store.remove_scan_root(&path).map_err(fail)?;
-        store.scan_roots().map_err(fail)?
-    };
+        store.scan_roots().map_err(fail)
+    })
+    .await?;
     mirror_scan_roots(&app, &roots).await.map_err(fail)?;
     Ok(roots)
 }
@@ -2059,16 +2386,30 @@ pub async fn export_diagnostics(app: tauri::AppHandle, dest_path: String) -> Com
 /// and the relations, so the session disappears from antiburn's views until
 /// a future scan rediscovers it on disk.
 #[tauri::command]
-pub fn delete_session_data(
+pub async fn delete_session_data(
     app: tauri::AppHandle,
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
 ) -> CommandResult<bool> {
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    let removed = app.state::<Store>().delete_session(&key).map_err(fail)?;
+    let action_app = app.clone();
+    let delete_key = key.clone();
+    let removed = run_blocking(move || {
+        action_app
+            .state::<Store>()
+            .delete_session(&delete_key)
+            .map_err(fail)
+    })
+    .await?;
     if removed {
-        let _ = app.emit(SESSIONS_INVALIDATED_EVENT, ());
+        crate::session_lifecycle::report(
+            &app,
+            crate::session_lifecycle::Observation::Removed {
+                session: Some(key),
+                reason: crate::session_lifecycle::RemovalReason::Deleted,
+            },
+        );
     }
     Ok(removed)
 }
@@ -2084,11 +2425,15 @@ pub fn delete_session_data(
 /// Returns how many sessions were dropped, so the confirmation can report a
 /// number rather than a shrug.
 #[tauri::command]
-pub fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
-    let removed = app
-        .state::<Store>()
-        .clear_local_session_data()
-        .map_err(fail)?;
+pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
+    let action_app = app.clone();
+    let removed = run_blocking(move || {
+        action_app
+            .state::<Store>()
+            .clear_local_session_data()
+            .map_err(fail)
+    })
+    .await?;
     // The index is empty and the popover is showing it. Refill it rather than
     // leaving a reader looking at an empty list until the next tick.
     app.state::<ScanController>()
@@ -2127,15 +2472,18 @@ pub struct FolderAccessOutcome {
 
 /// Which directories need permission, and which already have it.
 #[tauri::command]
-pub fn get_folder_permissions(app: tauri::AppHandle) -> CommandResult<FolderPermissions> {
-    let store = app.state::<Store>();
-    let mut granted: Vec<String> = store.granted_dirs().map_err(fail)?.into_iter().collect();
-    granted.sort();
-    Ok(FolderPermissions {
-        deferred: store.deferred_permission_dirs().map_err(fail)?,
-        granted,
-        supported: !protected::protected_dir_names().is_empty(),
+pub async fn get_folder_permissions(app: tauri::AppHandle) -> CommandResult<FolderPermissions> {
+    run_blocking(move || {
+        let store = app.state::<Store>();
+        let mut granted: Vec<String> = store.granted_dirs().map_err(fail)?.into_iter().collect();
+        granted.sort();
+        Ok(FolderPermissions {
+            deferred: store.deferred_permission_dirs().map_err(fail)?,
+            granted,
+            supported: !protected::protected_dir_names().is_empty(),
+        })
     })
+    .await
 }
 
 /// Ask the operating system for one protected directory.
@@ -2172,22 +2520,27 @@ pub async fn request_folder_access(
         let _ = window.set_focus();
     }
 
-    let (outcome, recorded) = {
+    let outcome = {
         let store = app.state::<Store>();
         let consent = consent::StoreConsentGrants::new(&store);
-        let outcome = consent.probe_and_record(&home.join(&dir)).await;
-        let recorded = match outcome {
-            consent::ProbeOutcome::Granted { .. } => consent.grant(&dir),
-            _ => Ok(()),
-        };
-        (outcome, recorded)
+        consent.probe_and_record(&home.join(&dir)).await
     };
 
     // Released before anything can fail. An early `?` between the two would
     // leave the hold in place for the rest of the run, and the popover would
     // stop dismissing on focus loss with nothing on screen to explain why.
     popover::end_focus_hold(&app);
-    recorded.map_err(fail)?;
+
+    if matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
+        let store = app.state::<Store>().inner().clone();
+        let granted_dir = dir.clone();
+        run_blocking(move || {
+            consent::StoreConsentGrants::new(&store)
+                .grant(&granted_dir)
+                .map_err(fail)
+        })
+        .await?;
+    }
 
     if matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
         app.state::<ScanController>()
@@ -2254,22 +2607,45 @@ pub fn get_consent_diagnostics() -> Vec<consent::ProbeRecord> {
 /// explicit action in settings — never from a background pass.
 #[tauri::command]
 pub async fn recheck_folder_permissions(app: tauri::AppHandle) -> CommandResult<Vec<String>> {
-    let deferred: HashSet<String> = app
-        .state::<Store>()
-        .deferred_permission_dirs()
-        .map_err(fail)?
-        .into_iter()
-        .map(|entry| entry.dir)
-        .collect();
+    let store = app.state::<Store>().inner().clone();
+    let deferred: HashSet<String> = run_blocking(move || {
+        Ok(store
+            .deferred_permission_dirs()
+            .map_err(fail)?
+            .into_iter()
+            .map(|entry| entry.dir)
+            .collect())
+    })
+    .await?;
     if deferred.is_empty() {
         return Ok(Vec::new());
     }
 
-    let discovered = {
-        let store = app.state::<Store>();
-        let consent = consent::StoreConsentGrants::new(&store);
-        consent.discover_external_grants(&deferred).await
+    let Some(home) = home_dir() else {
+        return Ok(Vec::new());
     };
+    let mut discovered = HashSet::new();
+    for dir in deferred {
+        let outcome = {
+            let store = app.state::<Store>();
+            let consent = consent::StoreConsentGrants::new(&store);
+            consent.probe_and_record(&home.join(&dir)).await
+        };
+        if !matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
+            continue;
+        }
+        let store = app.state::<Store>().inner().clone();
+        let granted_dir = dir.clone();
+        let recorded = run_blocking(move || {
+            consent::StoreConsentGrants::new(&store)
+                .grant(&granted_dir)
+                .map_err(fail)
+        })
+        .await;
+        if recorded.is_ok() {
+            discovered.insert(dir);
+        }
+    }
 
     if !discovered.is_empty() {
         app.state::<ScanController>()
@@ -2331,36 +2707,97 @@ fn presentable(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::time::Duration;
 
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_command_work_keeps_the_current_thread_runtime_responsive() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let operation = tokio::spawn(run_blocking(move || {
+            let _ = started_tx.send(());
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(fail)
+        }));
+
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .expect("the blocking operation starts without occupying the runtime")
+            .expect("the blocking operation reports that it started");
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            tokio::time::sleep(Duration::from_millis(1)),
+        )
+        .await
+        .expect("the current-thread runtime advances while blocking work remains");
+        assert!(!operation.is_finished());
+        release_tx
+            .send(())
+            .expect("the blocking operation accepts release");
+        operation
+            .await
+            .expect("the command task joins")
+            .expect("the blocking operation succeeds");
+    }
 
     #[test]
     fn burn_check_remediation_rejects_unrelated_windows() {
         assert!(ensure_checks_window(popover::LABEL).is_ok());
+        assert!(ensure_checks_window(crate::main_window::LABEL).is_ok());
         assert!(ensure_checks_window("settings").is_err());
         assert!(ensure_checks_window("onboarding").is_err());
+        assert!(ensure_checks_window(crate::popover_peek::LABEL).is_err());
+    }
+
+    #[test]
+    fn sample_sessions_are_unique_across_a_combined_target_list() {
+        let sample = |session_id: &str| BurnCheckSampleSession {
+            environment_key: "native".to_owned(),
+            agent: "codex".to_owned(),
+            session_id: session_id.to_owned(),
+            observed_at_ms: 1,
+        };
+        let mut seen = BTreeSet::new();
+
+        let first = unique_sample_sessions(&[sample("one"), sample("two")], &mut seen);
+        let second = unique_sample_sessions(&[sample("two"), sample("three")], &mut seen);
+
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            second
+                .iter()
+                .map(|sample| sample.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["three"]
+        );
     }
 
     #[test]
     fn expected_auto_fix_failures_map_to_closed_outcomes() {
         assert!(matches!(
-            auto_fix_outcome(Err(ControllerError::TargetExpired)).unwrap(),
-            AutoFixBurnCheckTargetOutcome::Expired
+            apply_prepared_outcome(Err(ControllerError::TargetExpired)).unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::Expired
         ));
         assert!(matches!(
-            auto_fix_outcome(Err(ControllerError::TargetChanged)).unwrap(),
-            AutoFixBurnCheckTargetOutcome::Stale
+            apply_prepared_outcome(Err(ControllerError::TargetChanged)).unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::Stale
         ));
         assert!(matches!(
-            auto_fix_outcome(Err(ControllerError::ApplyFailed(
+            apply_prepared_outcome(Err(ControllerError::ApplyFailed(
                 crate::agent_config::ApplyError::Conflict(
                     crate::agent_config::ApplyConflict::ChangedContent
                 )
             )))
             .unwrap(),
-            AutoFixBurnCheckTargetOutcome::Conflict
+            ApplyPreparedBurnCheckOperationOutcome::Conflict
         ));
-        assert!(auto_fix_outcome(Err(ControllerError::Internal)).is_err());
+        assert!(apply_prepared_outcome(Err(ControllerError::Internal)).is_err());
+        assert!(matches!(
+            prepare_auto_fix_outcome(Err(ControllerError::TargetExpired)).unwrap(),
+            PrepareAutoFixBurnCheckTargetOutcome::Expired
+        ));
     }
 
     #[test]

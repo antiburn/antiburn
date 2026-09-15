@@ -151,8 +151,10 @@ struct FallbackOverflow {
     output_tokens: u64,
     new_input_tokens: f64,
     new_cache_tokens: f64,
+    new_cache_1h_tokens: f64,
     rewrite_input_tokens: f64,
     rewrite_cache_tokens: f64,
+    rewrite_cache_1h_tokens: f64,
     cache_read_tokens: u64,
     turns: u64,
 }
@@ -389,11 +391,18 @@ fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> Price
         .saturating_add(usage.cache_creation_tokens);
     let rewrite_tokens = derived_rewrite_tokens(usage, growth);
     let new_tokens = fresh.saturating_sub(rewrite_tokens);
+    // A one-hour cache write bills at 2x the input rate, versus the
+    // catalogue's default (five-minute) cache-write rate.
+    let one_hour_tokens = usage
+        .cache_creation_1h_tokens
+        .min(usage.cache_creation_tokens);
+    let default_cache_tokens = usage.cache_creation_tokens - one_hour_tokens;
     let fresh_rate = if fresh == 0 {
         0.0
     } else {
         (usage.input_tokens as f64 * price.input_cost_per_token
-            + usage.cache_creation_tokens as f64 * price.cache_write_cost_per_token)
+            + default_cache_tokens as f64 * price.cache_write_cost_per_token
+            + one_hour_tokens as f64 * price.input_cost_per_token * 2.0)
             / fresh as f64
     };
     PricedAmounts {
@@ -427,27 +436,40 @@ fn add_priced(totals: &mut EfficiencyTotals, amounts: PricedAmounts, turns: u64)
 ///
 /// The op order matters. `metrics_sink::reference` keeps this same order,
 /// independently, to stay bit-exact with this function: compute
-/// `input_share = input / fresh`. Then add, in this order, `new_tokens *
-/// input_share`, `new_tokens * (1.0 - input_share)`, `rewrite_tokens *
-/// input_share`, and `rewrite_tokens * (1.0 - input_share)` to the four
-/// token totals. Add cache-read tokens, growth, and output as integer sums.
+/// `input_share = input / fresh` and `one_hour_share = one_hour / fresh`.
+/// Then add, in this order, `new_tokens * input_share`,
+/// `new_tokens * (1.0 - input_share - one_hour_share)`,
+/// `new_tokens * one_hour_share`, `rewrite_tokens * input_share`,
+/// `rewrite_tokens * (1.0 - input_share - one_hour_share)`, and
+/// `rewrite_tokens * one_hour_share` to the six token totals. Add
+/// cache-read tokens, growth, and output as integer sums.
 fn add_fallback_overflow(target: &mut FallbackOverflow, usage: Usage, growth: u64) {
     let fresh = usage
         .input_tokens
         .saturating_add(usage.cache_creation_tokens);
     let rewrite_tokens = derived_rewrite_tokens(usage, growth);
     let new_tokens = fresh.saturating_sub(rewrite_tokens);
+    let one_hour_tokens = usage
+        .cache_creation_1h_tokens
+        .min(usage.cache_creation_tokens);
     let input_share = if fresh == 0 {
         0.0
     } else {
         usage.input_tokens as f64 / fresh as f64
     };
+    let one_hour_share = if fresh == 0 {
+        0.0
+    } else {
+        one_hour_tokens as f64 / fresh as f64
+    };
     target.growth_tokens = target.growth_tokens.saturating_add(growth);
     target.output_tokens = target.output_tokens.saturating_add(usage.output_tokens);
     target.new_input_tokens += new_tokens as f64 * input_share;
-    target.new_cache_tokens += new_tokens as f64 * (1.0 - input_share);
+    target.new_cache_tokens += new_tokens as f64 * (1.0 - input_share - one_hour_share);
+    target.new_cache_1h_tokens += new_tokens as f64 * one_hour_share;
     target.rewrite_input_tokens += rewrite_tokens as f64 * input_share;
-    target.rewrite_cache_tokens += rewrite_tokens as f64 * (1.0 - input_share);
+    target.rewrite_cache_tokens += rewrite_tokens as f64 * (1.0 - input_share - one_hour_share);
+    target.rewrite_cache_1h_tokens += rewrite_tokens as f64 * one_hour_share;
     target.cache_read_tokens = target
         .cache_read_tokens
         .saturating_add(usage.cache_read_tokens);
@@ -459,7 +481,9 @@ fn add_fallback_overflow(target: &mut FallbackOverflow, usage: Usage, growth: u6
 ///
 /// The op order matters for bit-exactness with `metrics_sink::reference`:
 /// compute `new_work`, then `carry`, then `rewrite`, and add `new_work +
-/// carry + rewrite` to `total_usd` in that order.
+/// carry + rewrite` to `total_usd` in that order. Each of `new_work` and
+/// `rewrite` adds its one-hour cache share last, priced at `input_rate *
+/// 2.0`.
 fn apply_fallback_overflow(
     totals: &mut EfficiencyTotals,
     contribution: FallbackOverflow,
@@ -480,10 +504,12 @@ fn apply_fallback_overflow(
     };
     let new_work = contribution.output_tokens as f64 * price.output_cost_per_token
         + contribution.new_input_tokens * price.input_cost_per_token
-        + contribution.new_cache_tokens * price.cache_write_cost_per_token;
+        + contribution.new_cache_tokens * price.cache_write_cost_per_token
+        + contribution.new_cache_1h_tokens * price.input_cost_per_token * 2.0;
     let carry = contribution.cache_read_tokens as f64 * price.cache_read_cost_per_token;
     let rewrite = contribution.rewrite_input_tokens * price.input_cost_per_token
-        + contribution.rewrite_cache_tokens * price.cache_write_cost_per_token;
+        + contribution.rewrite_cache_tokens * price.cache_write_cost_per_token
+        + contribution.rewrite_cache_1h_tokens * price.input_cost_per_token * 2.0;
     add_priced(
         totals,
         PricedAmounts {
@@ -555,6 +581,7 @@ mod tests {
             output_tokens: output,
             cache_read_tokens: cache_read,
             cache_creation_tokens: cache_write,
+            cache_creation_1h_tokens: 0,
         };
         ev
     }
@@ -582,6 +609,39 @@ mod tests {
         assert_eq!(totals.output_tokens, 200);
         assert_eq!(totals.priced_turns, 1);
         assert_eq!(totals.unpriced_turns, 0);
+    }
+
+    #[test]
+    fn one_hour_cache_writes_price_higher_than_five_minute_writes() {
+        // The catalogue's default cache-write rate is 1.25x the input rate;
+        // a one-hour write bills at 2x instead. The same token count must
+        // cost exactly `tokens * input_rate * (2.0 - 1.25)` more as a
+        // one-hour write than as a five-minute (default-rate) write.
+        let price = ModelPricing {
+            input_cost_per_token: 4e-6,
+            output_cost_per_token: 20e-6,
+            cache_read_cost_per_token: 0.4e-6,
+            cache_write_cost_per_token: 5e-6,
+        };
+        let five_minute_write = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 1_000,
+            cache_creation_1h_tokens: 0,
+        };
+        let one_hour_write = Usage {
+            cache_creation_1h_tokens: 1_000,
+            ..five_minute_write
+        };
+        let growth = 1_000;
+        let five_minute_amounts = priced_contribution(five_minute_write, growth, &price);
+        let one_hour_amounts = priced_contribution(one_hour_write, growth, &price);
+        let expected_delta = 1_000.0 * price.input_cost_per_token * 0.75;
+        assert!(close(
+            one_hour_amounts.new_work - five_minute_amounts.new_work,
+            expected_delta
+        ));
     }
 
     #[test]
@@ -688,6 +748,7 @@ mod tests {
             output_tokens: 1_200,
             cache_read_tokens: 40_000,
             cache_creation_tokens: 9_000,
+            cache_creation_1h_tokens: 0,
         };
         let totals = thread_efficiency(&[ev], None);
         let p = lookup_pricing(GPT_56).expect("gpt-5.6 has a price");
@@ -859,6 +920,7 @@ mod tests {
                     output_tokens: 1,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
+                    cache_creation_1h_tokens: 0,
                 },
             });
         }

@@ -76,6 +76,46 @@ fn insert_turn(store: &Store, key: &SessionKey, ts_ms: i64, input_tokens: i64) {
         .expect("stores synthetic turn");
 }
 
+/// Publish one turn whose cache-write tokens are all one-hour writes, so the
+/// attribution query's cache-write pricing can be checked at the double rate.
+fn insert_turn_with_one_hour_cache_write(
+    store: &Store,
+    key: &SessionKey,
+    ts_ms: i64,
+    cache_write_tokens: i64,
+) {
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO session_evidence (
+                 environment_key, agent, session_id, status, published_fence
+             ) VALUES (?1, ?2, ?3, 'ready', 1)",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .expect("publishes synthetic evidence");
+    connection
+        .execute(
+            "INSERT INTO turn (
+                 environment_key, agent, session_id, claim_fence, source_key,
+                 thread_id, turn_index, scope, role, ts_ms, model, effort, speed,
+                 input_tokens, cache_read_tokens, cache_write_tokens,
+                 cache_write_1h_tokens, output_tokens,
+                 is_compaction_boundary, message_id, uuid, parent_uuid
+             ) VALUES (?1, ?2, ?3, 1, 'synthetic', 'synthetic', 0, 'main', 'assistant',
+                       ?4, ?5, NULL, NULL, 0, 0, ?6, ?7, 0, 0, NULL, NULL, NULL)",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                ts_ms,
+                MODEL,
+                cache_write_tokens,
+                cache_write_tokens
+            ],
+        )
+        .expect("stores synthetic turn");
+}
+
 fn bind_account(store: &Store, key: &SessionKey, account_key: &str) {
     store
         .lock()
@@ -170,6 +210,24 @@ fn an_unbound_session_with_one_known_account_falls_back_to_it() {
     // claude-opus-4-6 test pricing: 5e-6 dollars per input token.
     assert!((dollars[0].input_usd - 1.0).abs() < 1e-9);
     assert_eq!(dollars[0].turn_count, 1);
+}
+
+#[test]
+fn attribution_prices_one_hour_cache_writes_at_double_the_input_rate() {
+    let store = memory_store();
+    let key = insert_session(&store, "session");
+    insert_turn_with_one_hour_cache_write(&store, &key, 150_000, 100_000);
+    observe_account(&store, &account('a'));
+
+    let dollars = store
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    assert_eq!(dollars.len(), 1);
+    assert_eq!(dollars[0].key, key);
+    // claude-opus-4-6 test pricing: 5e-6 dollars per input token, so the
+    // one-hour cache-write subset prices at 1e-5 dollars per token.
+    assert!((dollars[0].cache_write_usd - 1.0).abs() < 1e-9);
 }
 
 #[test]

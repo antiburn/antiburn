@@ -996,6 +996,8 @@ fn opencode_usage(tokens: &Map<String, Value>) -> Usage {
         output_tokens: number("output").saturating_add(number("reasoning")),
         cache_read_tokens: cache_number("read"),
         cache_creation_tokens: cache_number("write"),
+        // OpenCode does not report a one-hour cache-write split.
+        cache_creation_1h_tokens: 0,
     }
 }
 

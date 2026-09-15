@@ -49,6 +49,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::read_source;
+use crate::analysis::evidence::{
+    ProviderIncident, ProviderIncidentKind, QuotaConfidence, QuotaHitSeverity, QuotaIncident,
+    QuotaLimitKind,
+};
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::CodexContextAccumulator;
 use crate::analysis::interface::{
@@ -384,7 +388,10 @@ struct CodexStreamState {
     fork_attribution_incomplete: bool,
     /// See [`json_text_codec`].
     #[serde(with = "json_text_codec")]
-    previous_usage_key: Option<(UsageRecordKey, bool)>,
+    previous_usage_key: Option<UsageRecordSeen>,
+    /// See [`json_text_codec`].
+    #[serde(with = "json_text_codec")]
+    recent_cross_format_usage: Option<UsageRecordSeen>,
     previous_event_was_boundary: bool,
     previous_boundary_ts: Option<i64>,
     context_window: Option<u64>,
@@ -404,7 +411,7 @@ struct CodexStreamState {
 
 /// Snapshot codec for a `CodexStreamState` field whose type carries
 /// `serde_json::Value` data at any depth (`pending_rows`,
-/// `previous_usage_key`).
+/// `previous_usage_key`, `recent_cross_format_usage`).
 ///
 /// `serde_json::Value`'s `Deserialize` impl calls `deserialize_any`, a
 /// self-describing lookahead `postcard` explicitly does not implement (its
@@ -566,16 +573,21 @@ impl CodexStreamState {
                     },
                 )));
             }
+            if let Some(observation) =
+                task_complete_observation(&value, self.current_model.as_deref())
+            {
+                sink.record(NormalizedRecord::Observation(Box::new(observation)));
+            }
         }
 
         if is_usage_record {
-            if let Some(key) = usage_record_key(&value) {
-                let key_with_ownership = (key, usage_is_owned);
-                let duplicate = self.previous_usage_key.as_ref() == Some(&key_with_ownership);
-                self.previous_usage_key = Some(key_with_ownership);
-                if duplicate {
-                    return;
-                }
+            if usage_record_is_duplicate(
+                &mut self.previous_usage_key,
+                &mut self.recent_cross_format_usage,
+                &value,
+                usage_is_owned,
+            ) {
+                return;
             }
             if !usage_is_owned {
                 return;
@@ -639,6 +651,7 @@ impl CodexStreamState {
         if settings || matches!(record_type, Some("session_meta" | "turn_context")) {
             // A new request context separates equal usage totals from different requests.
             self.previous_usage_key = None;
+            self.recent_cross_format_usage = None;
         }
         let provider = if record_type == Some("session_meta") {
             value.pointer("/payload/model_provider")
@@ -978,6 +991,121 @@ fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>
     )
 }
 
+/// Maps one `event_msg`/`task_complete` record's non-null `error` object to
+/// a quota incident or a provider incident, for the reviewed
+/// `codex_error_info` codes. `server_overloaded` and `internal_server_error`
+/// name a provider-side failure the user's own usage did not cause, so they
+/// map to a `ProviderIncident` instead of a `QuotaIncident`.
+///
+/// `codex_error_info` is the pinned `openai/codex` `CodexErrorInfo` enum's
+/// serde form: a unit variant serializes as a bare string
+/// (`"server_overloaded"`); a struct variant serializes as a single-key
+/// object (`{"http_connection_failed":{"http_status_code":503}}`). The four
+/// transport struct variants (`http_connection_failed`,
+/// `response_stream_connection_failed`, `response_stream_disconnected`,
+/// `response_too_many_failed_attempts`) carry an optional
+/// `http_status_code`: `500..=599` maps to `ServerError`; an absent or
+/// `null` status maps to `Connection`; any other status is ambiguous and
+/// maps to `None`, because the retry wrapper hides which layer produced it.
+///
+/// Ignored on purpose: `context_window_exceeded` and
+/// `session_budget_exceeded` name the user's own context or configured
+/// budget, not a provider or quota event. `cyber_policy`,
+/// `misalignment_policy_violation`, `unauthorized`, `bad_request`,
+/// `sandbox_error`, `active_turn_not_steerable`, `thread_rollback_failed`,
+/// and `other` are not provider incidents or quota incidents.
+///
+/// Every other code, an absent or non-object `error`, or a missing top-level
+/// `timestamp` returns `None`; the record stays allowlisted-eventless with
+/// no diagnostic. The observation never carries the error's `message` text.
+fn task_complete_observation(value: &Value, model: Option<&str>) -> Option<EvidenceObservation> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("task_complete") {
+        return None;
+    }
+    let error = payload.get("error")?.as_object()?;
+    let info = error.get("codex_error_info")?;
+    let ts_ms = value.get("timestamp").and_then(parse_ts)?;
+    // `task_complete` with a non-null error means the turn terminated, so
+    // every mapped code is a hard hit, never an advance warning.
+    let (code, struct_fields) = match info {
+        Value::String(code) => (code.as_str(), None),
+        Value::Object(fields) if fields.len() == 1 => {
+            let (code, inner) = fields.iter().next()?;
+            (code.as_str(), Some(inner))
+        }
+        _ => return None,
+    };
+    match code {
+        "server_overloaded" => Some(EvidenceObservation::ProviderIncident(ProviderIncident {
+            ts_ms,
+            kind: ProviderIncidentKind::Capacity,
+            model: model.map(ToOwned::to_owned),
+        })),
+        "internal_server_error" => Some(EvidenceObservation::ProviderIncident(ProviderIncident {
+            ts_ms,
+            kind: ProviderIncidentKind::ServerError,
+            model: model.map(ToOwned::to_owned),
+        })),
+        "http_connection_failed"
+        | "response_stream_connection_failed"
+        | "response_stream_disconnected"
+        | "response_too_many_failed_attempts" => {
+            let kind = transport_incident_kind(struct_fields?)?;
+            Some(EvidenceObservation::ProviderIncident(ProviderIncident {
+                ts_ms,
+                kind,
+                model: model.map(ToOwned::to_owned),
+            }))
+        }
+        "rate_limit_exceeded" => Some(EvidenceObservation::QuotaIncident(QuotaIncident {
+            ts_ms,
+            limit_kind: QuotaLimitKind::RateLimit,
+            severity: QuotaHitSeverity::HardHit,
+            model: model.map(ToOwned::to_owned),
+            reset_ts_ms: None,
+            utilization_pct: None,
+            confidence: QuotaConfidence::Observed,
+        })),
+        "usage_limit_exceeded" => Some(EvidenceObservation::QuotaIncident(QuotaIncident {
+            ts_ms,
+            limit_kind: QuotaLimitKind::UsageLimit,
+            severity: QuotaHitSeverity::HardHit,
+            model: model.map(ToOwned::to_owned),
+            reset_ts_ms: None,
+            utilization_pct: None,
+            confidence: QuotaConfidence::Observed,
+        })),
+        _ => None,
+    }
+}
+
+/// Reads `http_status_code` from one Codex transport error's struct-variant
+/// fields and names the provider incident it maps to. The value must be a
+/// JSON object. A status in `500..=599` names a `ServerError`; an absent or
+/// `null` status names a `Connection` failure; any other status is
+/// ambiguous, because the retry wrapper hides which layer produced it, so
+/// this returns `None`.
+fn transport_incident_kind(fields: &Value) -> Option<ProviderIncidentKind> {
+    let fields = fields.as_object()?;
+    match fields.get("http_status_code") {
+        None => Some(ProviderIncidentKind::Connection),
+        Some(Value::Null) => Some(ProviderIncidentKind::Connection),
+        Some(Value::Number(status)) => {
+            let status = status.as_u64()?;
+            if (500..=599).contains(&status) {
+                Some(ProviderIncidentKind::ServerError)
+            } else {
+                None
+            }
+        }
+        Some(_) => None,
+    }
+}
+
 /// The subset of `is_recognized_eventless` names that must still pass the
 /// light structural check (`is_inert_codex_record`'s `reject_nested = false`
 /// pass) before an unrecognized-record observation is skipped. See
@@ -1212,14 +1340,13 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
             let is_usage_record = is_token_count_record(record_type, payload_type)
                 || record_type == Some("token_usage_record");
             let inherited_usage = !usage_is_owned && is_usage_record;
-            if let Some(key) = usage_record_key(&value) {
-                let key_with_ownership = (key, usage_is_owned);
-                let duplicate_usage =
-                    controls.previous_usage_key.as_ref() == Some(&key_with_ownership);
-                controls.previous_usage_key = Some(key_with_ownership);
-                if duplicate_usage {
-                    continue;
-                }
+            if usage_record_is_duplicate(
+                &mut controls.previous_usage_key,
+                &mut controls.recent_cross_format_usage,
+                &value,
+                usage_is_owned,
+            ) {
+                continue;
             }
             if !inherited_usage && let Some(mut ev) = record_to_event(&value) {
                 ev.provider = controls.current_provider.clone();
@@ -1323,9 +1450,11 @@ fn codex_fork_owned_offset(content: &str) -> Option<usize> {
 }
 
 /// Map one rollout envelope record to a normalized event, or `None` for framing
-/// / bookkeeping records that carry no analyzable signal (`session_meta`,
+/// / bookkeeping records that carry no cost or usage signal (`session_meta`,
 /// `turn_context`, `task_started`, and the `user_message` / `agent_message` UI
-/// echoes of `response_item` turns).
+/// echoes of `response_item` turns). `task_complete` also returns `None` here,
+/// but [`task_complete_observation`] reads its `error` object separately, for
+/// the `QuotaIncident` or `ProviderIncident` observation.
 fn record_to_event(record: &Value) -> Option<NormalizedEvent> {
     let obj = record.as_object()?;
     let ts = obj.get("timestamp").and_then(parse_ts);
@@ -1927,6 +2056,22 @@ fn is_usage_free_record(value: &Value) -> bool {
 
 /// The per-response and cumulative usage that identify one usage row.
 type UsageRecordKey = (Value, Value);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum UsageRecordFormat {
+    LegacyTokenCount,
+    TokenUsageRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct UsageRecordSeen {
+    key: UsageRecordKey,
+    format: UsageRecordFormat,
+    identity: Option<Value>,
+    owned: bool,
+    ts_ms: Option<i64>,
+}
+
 type TokenUsageObjects<'a> = (
     &'a Map<String, Value>,
     &'a Map<String, Value>,
@@ -1950,8 +2095,8 @@ fn token_usage_record_objects(payload: &Map<String, Value>) -> Option<TokenUsage
 /// Returns a common deduplication key for both Codex usage formats.
 ///
 /// Codex can write equivalent `token_usage_record` and `token_count` rows.
-/// It can also repeat the last usage row after a rollout resumes. Both parsing
-/// paths drop a row when this pair matches the prior row with the same owner.
+/// The first value is per-response usage; the second is cumulative usage.
+/// The dedupe policy compares these values with format and request identity.
 fn usage_record_key(value: &Value) -> Option<UsageRecordKey> {
     let record_type = value.get("type").and_then(Value::as_str);
     let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
@@ -1973,6 +2118,111 @@ fn usage_record_key(value: &Value) -> Option<UsageRecordKey> {
             .cloned()
             .unwrap_or(Value::Null),
     ))
+}
+
+fn usage_record_format(value: &Value) -> Option<UsageRecordFormat> {
+    let record_type = value.get("type").and_then(Value::as_str);
+    let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
+    if record_type == Some("token_usage_record") {
+        Some(UsageRecordFormat::TokenUsageRecord)
+    } else if is_token_count_record(record_type, payload_type) {
+        Some(UsageRecordFormat::LegacyTokenCount)
+    } else {
+        None
+    }
+}
+
+/// A match with different cumulative totals requires timestamps within this window.
+const CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS: u64 = 5_000;
+
+fn usage_record_is_duplicate(
+    previous: &mut Option<UsageRecordSeen>,
+    recent: &mut Option<UsageRecordSeen>,
+    value: &Value,
+    owned: bool,
+) -> bool {
+    let Some(key) = usage_record_key(value) else {
+        return false;
+    };
+    let Some(format) = usage_record_format(value) else {
+        return false;
+    };
+    let current = UsageRecordSeen {
+        key,
+        format,
+        identity: usage_record_identity(value),
+        owned,
+        ts_ms: value.get("timestamp").and_then(parse_ts),
+    };
+
+    let same_format_repeat = previous.as_ref().is_some_and(|prior| {
+        prior.owned == current.owned
+            && prior.format == current.format
+            && prior.key == current.key
+            && prior.identity == current.identity
+    });
+    let exact_cross_format_repeat = previous.as_ref().is_some_and(|prior| {
+        prior.owned == current.owned
+            && prior.format != current.format
+            && prior.key == current.key
+            && (prior
+                .key
+                .1
+                .as_object()
+                .is_some_and(|usage| !usage.is_empty())
+                || prior
+                    .ts_ms
+                    .zip(current.ts_ms)
+                    .is_some_and(|(prior, current)| {
+                        prior.abs_diff(current) <= CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS
+                    }))
+    });
+
+    let mismatched_cross_format_repeat = !same_format_repeat
+        && !exact_cross_format_repeat
+        && recent.as_ref().is_some_and(|prior| {
+            prior.owned == current.owned
+                && prior.format != current.format
+                && prior.key.0 == current.key.0
+                && prior.key.1 != current.key.1
+                && prior
+                    .ts_ms
+                    .zip(current.ts_ms)
+                    .is_some_and(|(prior, current)| {
+                        prior.abs_diff(current) <= CROSS_FORMAT_USAGE_DEDUPE_WINDOW_MS
+                    })
+        });
+
+    let duplicate =
+        same_format_repeat || exact_cross_format_repeat || mismatched_cross_format_repeat;
+    if exact_cross_format_repeat || mismatched_cross_format_repeat {
+        *recent = None;
+    }
+    *previous = Some(current.clone());
+    if !duplicate {
+        *recent = Some(current);
+    }
+    duplicate
+}
+
+fn usage_record_identity(value: &Value) -> Option<Value> {
+    if usage_record_format(value) != Some(UsageRecordFormat::TokenUsageRecord) {
+        return None;
+    }
+    let payload = value.get("payload")?.as_object()?;
+    let mut identity = Map::new();
+    for key in [
+        "thread_id",
+        "turn_id",
+        "session_id",
+        "root_turn_id",
+        "response_id",
+    ] {
+        if let Some(value) = payload.get(key) {
+            identity.insert(key.to_owned(), value.clone());
+        }
+    }
+    (!identity.is_empty()).then_some(Value::Object(identity))
 }
 
 fn is_token_count_record(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
@@ -2017,6 +2267,8 @@ fn codex_usage(u: &Map<String, Value>) -> Usage {
         output_tokens: get("output_tokens"),
         cache_read_tokens,
         cache_creation_tokens,
+        // Codex does not report a one-hour cache-write split.
+        cache_creation_1h_tokens: 0,
     }
 }
 
@@ -2237,7 +2489,18 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 6_996_697_630_133_459_451;
+        // `codex_usage` now sets `cache_creation_1h_tokens: 0`: Codex never
+        // reports a one-hour cache-write split, so this reads no new key.
+        // `task_complete_observation` now reads a `task_complete` event's
+        // `error` object and `process_value` emits the mapped quota or
+        // provider incident observation; `is_recognized_eventless` still
+        // allowlists `task_complete` as eventless, so coverage and
+        // diagnostics are unchanged. `task_complete_observation` now also
+        // maps `internal_server_error` and the four transport struct
+        // variants' `http_status_code` to a `ServerError` or `Connection`
+        // provider incident, through the new `transport_incident_kind`
+        // helper; this changed the fingerprinted byte range.
+        const EXPECTED_FINGERPRINT: u64 = 5_782_876_435_163_781_937;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -2501,6 +2764,188 @@ mod tests {
             streamed.events[0].ts_ms,
             parse_ts(&serde_json::json!("2026-09-01T00:00:01Z"))
         );
+    }
+
+    #[test]
+    fn mismatched_cumulative_usage_rows_deduplicate_by_per_response_usage() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:00:00Z","type":"session_meta","payload":{"model":"gpt-test","effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":60863,"cached_input_tokens":0,"output_tokens":107},"turn_token_usage":{"input_tokens":60863,"cached_input_tokens":0,"output_tokens":107},"thread_token_usage":{"input_tokens":60863,"cached_input_tokens":0,"output_tokens":107}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":200000,"last_token_usage":{"input_tokens":60863,"cached_input_tokens":0,"output_tokens":107},"total_token_usage":{"input_tokens":70000,"cached_input_tokens":50000,"output_tokens":200}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:03Z","type":"token_usage_record","payload":{"usage":{"input_tokens":67617,"cached_input_tokens":60800,"output_tokens":126},"turn_token_usage":{"input_tokens":67617,"cached_input_tokens":60800,"output_tokens":126},"thread_token_usage":{"input_tokens":128480,"cached_input_tokens":60800,"output_tokens":233}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":200000,"last_token_usage":{"input_tokens":67617,"cached_input_tokens":60800,"output_tokens":126},"total_token_usage":{"input_tokens":130000,"cached_input_tokens":110000,"output_tokens":350}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:05Z","type":"token_usage_record","payload":{"usage":{"input_tokens":67756,"cached_input_tokens":67584,"output_tokens":185},"turn_token_usage":{"input_tokens":67756,"cached_input_tokens":67584,"output_tokens":185},"thread_token_usage":{"input_tokens":196236,"cached_input_tokens":128384,"output_tokens":418}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":200000,"last_token_usage":{"input_tokens":67756,"cached_input_tokens":67584,"output_tokens":185},"total_token_usage":{"input_tokens":200000,"cached_input_tokens":180000,"output_tokens":500}}}}"#,
+            "\n",
+        );
+
+        let (coverage, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, context_window, model, _) = parse_codex(jsonl);
+
+        assert_eq!(coverage, crate::analysis::RecordCoverage::Complete);
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 3);
+        let usage = streamed
+            .events
+            .iter()
+            .fold(Usage::default(), |total, event| {
+                total.saturating_add(event.usage)
+            });
+        assert_eq!(usage.input_tokens, 67_852);
+        assert_eq!(usage.cache_read_tokens, 128_384);
+        assert_eq!(usage.output_tokens, 418);
+        assert_eq!(
+            streamed
+                .events
+                .iter()
+                .map(|event| event.usage.context_tokens())
+                .max(),
+            Some(67_756)
+        );
+        assert_eq!(streamed.context_window, Some(200_000));
+        assert_eq!(context_window, Some(200_000));
+        assert_eq!(streamed.model.as_deref(), Some("gpt-test"));
+        assert_eq!(model.as_deref(), Some("gpt-test"));
+    }
+
+    #[test]
+    fn equal_usage_requests_with_distinct_response_ids_are_preserved() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:10:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:10:01Z","type":"token_usage_record","payload":{"response_id":"response-a","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:10:02Z","type":"token_usage_record","payload":{"response_id":"response-b","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 2);
+        assert_eq!(streamed.events[0].usage, streamed.events[1].usage);
+    }
+
+    #[test]
+    fn mismatched_cross_format_usage_outside_window_is_preserved() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:20:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:20:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:20:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":15}}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 2);
+    }
+
+    #[test]
+    fn adjacent_equal_usage_pairs_are_consumed_independently() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:30:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:30:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:30:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":110,"cached_input_tokens":20,"output_tokens":6}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:30:03Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":200,"cached_input_tokens":40,"output_tokens":10}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:30:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":210,"cached_input_tokens":40,"output_tokens":11}}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 2);
+    }
+
+    #[test]
+    fn a_distinct_usage_row_blocks_an_older_cross_format_match() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:40:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:40:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:40:02Z","type":"token_usage_record","payload":{"usage":{"input_tokens":200,"cached_input_tokens":30,"output_tokens":6},"turn_token_usage":{"input_tokens":200,"cached_input_tokens":30,"output_tokens":6},"thread_token_usage":{"input_tokens":300,"cached_input_tokens":50,"output_tokens":11}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:40:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":400,"cached_input_tokens":80,"output_tokens":16}}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 3);
+    }
+
+    #[test]
+    fn reversed_cross_format_usage_rows_deduplicate() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T00:50:00Z","type":"session_meta","payload":{"effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:50:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":15}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T00:50:02Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+            "\n",
+        );
+
+        let (_, streamed) = collect_synthetic_codex(jsonl);
+        let (legacy_events, _, _, _) = parse_codex(jsonl);
+
+        assert_eq!(streamed.events, legacy_events);
+        assert_eq!(streamed.events.len(), 1);
+    }
+
+    #[test]
+    fn mismatched_cross_format_usage_without_timestamps_is_preserved() {
+        let new_record = serde_json::json!({
+            "type": "token_usage_record",
+            "payload": {
+                "usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 5},
+                "turn_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 5},
+                "thread_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 5}
+            }
+        });
+        let legacy_record = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 5},
+                    "total_token_usage": {"input_tokens": 300, "cached_input_tokens": 200, "output_tokens": 15}
+                }
+            }
+        });
+        let mut previous = None;
+        let mut recent = None;
+
+        assert!(!usage_record_is_duplicate(
+            &mut previous,
+            &mut recent,
+            &new_record,
+            true
+        ));
+        assert!(!usage_record_is_duplicate(
+            &mut previous,
+            &mut recent,
+            &legacy_record,
+            true
+        ));
     }
 
     #[test]
@@ -3252,7 +3697,7 @@ mod tests {
         }
 
         #[test]
-        fn a_resumed_legacy_usage_record_deduplicates_after_a_new_record() {
+        fn a_delayed_resumed_legacy_record_deduplicates_after_a_new_record() {
             let first_records = concat!(
                 r#"{"timestamp":"2026-09-02T00:00:00Z","type":"turn_context","payload":{"effort":"high"}}"#,
                 "\n",
@@ -3260,7 +3705,7 @@ mod tests {
                 "\n",
             );
             let legacy_record = concat!(
-                r#"{"timestamp":"2026-09-02T00:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":96000,"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":35},"total_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":35}}}}"#,
+                r#"{"timestamp":"2026-09-02T00:01:04Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":96000,"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":35},"total_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":35}}}}"#,
                 "\n",
             );
             let directory = TempDir::new().expect("tempdir");
@@ -3303,6 +3748,61 @@ mod tests {
             assert_eq!(second_visit.outcome, VisitOutcome::AcceptedFull);
             assert!(second_session.events.is_empty());
             assert_eq!(second_session.context_window, Some(96_000));
+        }
+
+        #[test]
+        fn a_resumed_mismatched_cumulative_usage_record_deduplicates() {
+            let first_records = concat!(
+                r#"{"timestamp":"2026-09-02T01:00:00Z","type":"turn_context","payload":{"effort":"high"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-09-02T01:00:01Z","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"turn_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"thread_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}}"#,
+                "\n",
+            );
+            let legacy_record = concat!(
+                r#"{"timestamp":"2026-09-02T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5},"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":15}}}}"#,
+                "\n",
+            );
+            let directory = TempDir::new().expect("tempdir");
+            let path = write_source(&directory, first_records.as_bytes());
+            let input = file_input(&path);
+            let first_claim = claim_for_path(&path);
+            let mut first_pass = SessionCollector::new("codex", "claimed-session");
+            let first_visit = CodexSessionReader
+                .visit_claimed_resumed(
+                    &input,
+                    &first_claim,
+                    &fresh_snapshot(),
+                    &|| false,
+                    &mut first_pass,
+                )
+                .expect("first resumed visit");
+            assert_eq!(first_pass.into_session().unwrap().events.len(), 1);
+            let snapshot = snapshot_from(first_visit.resume.expect("first pass resumes"));
+
+            OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open source for append")
+                .write_all(legacy_record.as_bytes())
+                .expect("append legacy usage record");
+            let second_claim = claim_for_path(&path);
+            let mut second_pass = SessionCollector::new("codex", "claimed-session");
+            let second_visit = CodexSessionReader
+                .visit_claimed_resumed(
+                    &input,
+                    &second_claim,
+                    &snapshot,
+                    &|| false,
+                    &mut second_pass,
+                )
+                .expect("second resumed visit");
+            let resumed_session = second_pass.into_session().unwrap();
+
+            assert_eq!(second_visit.outcome, VisitOutcome::AcceptedFull);
+            assert!(resumed_session.events.is_empty());
+            let mut full = SessionCollector::new("codex", "claimed-session");
+            CodexSessionReader.visit(&input, &mut full).unwrap();
+            assert_eq!(full.into_session().unwrap().events.len(), 1);
         }
 
         #[test]

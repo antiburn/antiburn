@@ -38,6 +38,7 @@ let settingsRevision = 0
 // subscription to the broadcast, rather than each racing its own.
 const settingsStore = createExternalStore<SettingsSnapshot>({
   initial: { settings: DEFAULT_SETTINGS, loaded: false },
+  resetOnStop: true,
   load: async () => {
     try {
       const stored = await getSettings()
@@ -65,6 +66,7 @@ export function useAppSettings(): AppSettingsController {
   )
 
   const update = useCallback(async (change: Partial<AppSettings>) => {
+    if (!settingsStore.getSnapshot().loaded) return
     // Optimistic, so a switch does not lag behind the pointer; the stored
     // answer replaces it a moment later and wins any disagreement. Reads the
     // current value from the store rather than closing over it, so this

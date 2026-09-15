@@ -20,6 +20,7 @@
         "tools": [],
         "tsMs": 1783936800000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 34000,
           "inputTokens": 1000,
@@ -41,6 +42,7 @@
         "tools": [],
         "tsMs": null,
         "usage": {
+          "cacheCreation1hTokens": 40000,
           "cacheCreationTokens": 40000,
           "cacheReadTokens": 2000,
           "inputTokens": 30000,
@@ -62,6 +64,7 @@
         "tools": [],
         "tsMs": 1783937400000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 31000,
           "inputTokens": 500,
@@ -4081,7 +4084,7 @@
       "model": "claude-3-5-haiku-20241022",
       "modelBreakdown": {
         "claude-3-5-haiku-20241022": {
-          "cache_creation_1h_tokens": 0,
+          "cache_creation_1h_tokens": 40000,
           "cache_creation_tokens": 40000,
           "cache_read_tokens": 67000,
           "input_tokens": 31500,
@@ -4096,7 +4099,7 @@
       "peakContextTokens": 72000,
       "pricingBreakdown": {
         "claude-3-5-haiku": {
-          "cache_creation_1h_tokens": 0,
+          "cache_creation_1h_tokens": 40000,
           "cache_creation_tokens": 40000,
           "cache_read_tokens": 67000,
           "input_tokens": 31500,

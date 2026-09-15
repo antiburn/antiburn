@@ -5,6 +5,27 @@ import { describe, expect, it, vi } from "vitest"
 
 import { SidebarNav, type SidebarNavItem } from "./SidebarNav"
 
+const NESTED_ITEMS: SidebarNavItem[] = [
+  {
+    id: "sessions",
+    label: "Sessions",
+    icon: Square,
+    count: 12,
+    children: [
+      { id: "notable", label: "Notable", count: 3 },
+      { id: "material", label: "Material", count: 5 },
+      {
+        id: "claude-code",
+        label: "Claude Code",
+        count: 4,
+        separatorBefore: true,
+        controls: "sessions-panel",
+      },
+    ],
+  },
+  { id: "checks", label: "Burn checks", icon: Triangle },
+]
+
 const ITEMS: SidebarNavItem[] = [
   { id: "first", label: "First", icon: Circle },
   { id: "second", label: "Second", icon: Square },
@@ -130,6 +151,161 @@ describe("SidebarNav", () => {
     render(<Harness />)
 
     expect(screen.queryByRole("button", { name: "Quit" })).toBeNull()
+  })
+
+  it("renders a count pill with tabular-nums", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    const pill = within(tab("Sessions")).getByText("12")
+    expect(pill).toHaveClass("font-mono", "tabular-nums")
+  })
+
+  it("points a child's aria-controls at its own panel by default", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    expect(tab("Notable").getAttribute("aria-controls")).toBe("notable-panel")
+  })
+
+  it("points a child's aria-controls at a shared panel when controls is set", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    expect(tab("Claude Code").getAttribute("aria-controls")).toBe("sessions-panel")
+  })
+
+  it("renders children indented and reachable by ArrowDown from the parent", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    for (const name of ["Notable", "Material", "Claude Code"]) {
+      expect(tab(name)).not.toBeNull()
+    }
+
+    const notable = tab("Notable")
+    expect(notable.className).toContain("pl-8")
+  })
+
+  it("moves ArrowDown from a parent onto its first child, in document order", () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={onChange}
+        ariaLabel="Sections"
+      />,
+    )
+
+    fireEvent.keyDown(tab("Sessions"), { key: "ArrowDown" })
+    expect(onChange).toHaveBeenCalledWith("notable")
+
+    rerender(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="notable"
+        onChange={onChange}
+        ariaLabel="Sections"
+      />,
+    )
+    fireEvent.keyDown(tab("Notable"), { key: "ArrowDown" })
+    expect(onChange).toHaveBeenCalledWith("material")
+  })
+
+  it("spans children with Home and End", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="material"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    fireEvent.keyDown(tab("Material"), { key: "End" })
+    expect(document.activeElement).toBe(tab("Burn checks"))
+
+    fireEvent.keyDown(tab("Burn checks"), { key: "Home" })
+    expect(document.activeElement).toBe(tab("Sessions"))
+  })
+
+  it("calls onChange with the child id on click", () => {
+    const onChange = vi.fn()
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={onChange}
+        ariaLabel="Sections"
+      />,
+    )
+
+    fireEvent.click(tab("Material"))
+    expect(onChange).toHaveBeenCalledWith("material")
+  })
+
+  it("renders a child separator indented to match the child rows", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    const tablist = screen.getByRole("tablist", { name: "Sections" })
+    const separators = tablist.querySelectorAll('[role="presentation"]')
+    const childSeparator = Array.from(separators).find((el) => el.className.includes("ml-8"))
+    expect(childSeparator).not.toBeUndefined()
+    expect(childSeparator?.hasAttribute("data-nested")).toBe(true)
+  })
+
+  it("marks child rows with data-nested and leaves top-level rows unmarked", () => {
+    render(
+      <SidebarNav
+        items={NESTED_ITEMS}
+        value="sessions"
+        onChange={vi.fn()}
+        ariaLabel="Sections"
+      />,
+    )
+
+    const parent = screen.getByRole("tab", { name: "Sessions" })
+    expect(parent.hasAttribute("data-nested")).toBe(false)
+    const nested = screen
+      .getAllByRole("tab")
+      .filter((tab) => tab.hasAttribute("data-nested"))
+      .map((tab) => tab.id)
+    const expected = NESTED_ITEMS.flatMap((item) =>
+      (item.children ?? []).map((child) => `${child.id}-tab`),
+    )
+    expect(nested).toEqual(expected)
   })
 
   it("never moves arrow-key navigation onto the footer", () => {

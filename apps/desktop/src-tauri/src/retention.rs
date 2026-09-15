@@ -2,9 +2,8 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
-use crate::commands::SESSIONS_INVALIDATED_EVENT;
 use crate::store::Store;
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -29,7 +28,14 @@ pub fn note_removed(app: &AppHandle, removed: usize) {
     if let Err(error) = crate::repositories::refresh_session_counts(&app.state::<Store>()) {
         tracing::warn!(event = "retention_repository_counts_failed", error = %error);
     }
-    let _ = app.emit(SESSIONS_INVALIDATED_EVENT, ());
+    // Retention knows only the count, not the keys: a keyless removal.
+    crate::session_lifecycle::report(
+        app,
+        crate::session_lifecycle::Observation::Removed {
+            session: None,
+            reason: crate::session_lifecycle::RemovalReason::Purged,
+        },
+    );
 }
 
 fn cleanup(app: &AppHandle) {

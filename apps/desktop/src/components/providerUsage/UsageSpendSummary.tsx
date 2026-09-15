@@ -1,5 +1,4 @@
 import type { ProviderUsageWindowsPayload } from "../../lib/ipc"
-import { cn } from "../../lib/cn"
 import {
   formatSpendFigure,
   formatTokenFigure,
@@ -25,7 +24,7 @@ export const EMPTY_USAGE_WINDOWS: ProviderUsageWindowsPayload = {
   last30Days: { ...EMPTY_USAGE_WINDOW },
 }
 
-/** The large figure: the cost when the models could be priced, else the tokens. */
+/** The primary figure shows the cost when pricing is available, or the token count otherwise. */
 function figure(window: UsageWindow): string {
   if (window.estimatedUsd != null) {
     return formatSpendFigure(window.estimatedUsd)
@@ -33,34 +32,12 @@ function figure(window: UsageWindow): string {
   return formatTokenFigure(windowTokens(window))
 }
 
-/**
- * The line under the figure: the token count behind a cost, or the unit alone
- * when the tokens are the figure. The first column includes the token unit.
- */
-function caption(window: UsageWindow, first: boolean): string {
-  if (window.estimatedUsd == null) return "tokens"
-  const tokens = formatTokenFigure(windowTokens(window))
-  return first ? `${tokens} tokens` : tokens
-}
-
-/**
- * The spend summary at the top of the popover: three windows, each a label
- * over a figure over a caption. The card has no heading. The figures are the
- * first ink, in the mono face the session cost badges use for a price. A
- * full-width band in the header surface carries the summary, so it reads as
- * the popover's header and not as one of the session cards. The band ends at
- * the ring row.
- *
- * Every column has the same three fixed-height lines, so the rows align
- * across columns without a shared grid row.
- */
+/** The shared card shows each cost above its token count and period. */
 export function UsageSpendSummary({
   totals,
-  compact = false,
   showApiPricingCaveat = false,
 }: {
   totals: ProviderUsageWindowsPayload
-  compact?: boolean
   showApiPricingCaveat?: boolean
 }) {
   return (
@@ -71,12 +48,16 @@ export function UsageSpendSummary({
           ? "You're on subscription, so these are just estimated dollar values."
           : undefined
       }
-      className={cn("bg-surface-header", compact ? "px-4 pt-3 pb-2.5" : "px-3 pt-3 pb-2.5")}
+      className="px-[var(--space-sm)] pt-[var(--space-md)]"
     >
-      <dl className="grid grid-cols-[1.35fr_1fr_1fr] gap-x-3">
-        <SpendColumn label="Today" window={totals.today} first />
-        <SpendColumn label="Last 7 days" window={totals.week} />
-        <SpendColumn label="Last 30 days" window={totals.last30Days} />
+      <dl className="grid grid-cols-3 gap-x-[var(--space-sm)] rounded-control bg-surface-card px-[var(--space-md)] py-[var(--space-sm)] shadow-stats-card">
+        <SpendColumn label="Today" accessibleLabel="Today" window={totals.today} />
+        <SpendColumn label="7 days" accessibleLabel="Last 7 days" window={totals.week} />
+        <SpendColumn
+          label="30 days"
+          accessibleLabel="Last 30 days"
+          window={totals.last30Days}
+        />
       </dl>
     </section>
   )
@@ -84,31 +65,34 @@ export function UsageSpendSummary({
 
 function SpendColumn({
   label,
+  accessibleLabel,
   window,
-  first = false,
 }: {
   label: string
+  accessibleLabel: string
   window: UsageWindow
-  first?: boolean
 }) {
+  const hasCost = window.estimatedUsd != null
   return (
-    // The column holds its text off its own left edge, so the three readings
-    // sit nearer the middle of their columns. The text stays left-aligned.
-    <div className="min-w-0 pl-2">
-      <dt className="type-caption text-label-secondary">{label}</dt>
-      {/* The important modifiers are necessary because the type-* classes
-          are unlayered CSS. The 17 px line is tighter than the type scale,
-          the way the status bar sets its own figure line. */}
-      <dd
-        className={cn(
-          first ? "type-title-3" : "type-body-large",
-          "font-mono tracking-tight! leading-[17px] whitespace-nowrap text-label",
-        )}
-      >
+    <div className="min-w-0">
+      <dt className="sr-only">{accessibleLabel}</dt>
+      <dd className="type-title-3 font-semibold! whitespace-nowrap text-label">
         <SegmentFigure>{figure(window)}</SegmentFigure>
+        {!hasCost && <span className="sr-only"> tokens</span>}
       </dd>
-      <dd className="type-caption whitespace-nowrap text-label-tertiary">
-        <SegmentFigure>{caption(window, first)}</SegmentFigure>
+      <dd className="type-footnote whitespace-nowrap text-label-secondary">
+        {hasCost && (
+          <>
+            <SegmentFigure>{formatTokenFigure(windowTokens(window))}</SegmentFigure>
+            <span className="sr-only"> tokens</span>
+            <span aria-hidden="true" className="mx-[var(--space-xs)] text-label-tertiary">
+              ·
+            </span>
+          </>
+        )}
+        <span aria-hidden="true" className="text-label-tertiary">
+          {label}
+        </span>
       </dd>
     </div>
   )

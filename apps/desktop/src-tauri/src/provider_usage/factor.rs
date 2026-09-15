@@ -56,6 +56,7 @@ pub struct LearnedFactor {
     pub lane: &'static str,
     pub usd_per_percent: f64,
     pub plan: Option<String>,
+    pub plan_tier: Option<String>,
     /// `(meter_percent, estimated_percent)` for the current period, when the
     /// pass could compute one.
     pub residual: Option<(f64, f64)>,
@@ -67,9 +68,8 @@ pub struct LearnedFactor {
 /// clones skips a pass already running, and a fixed ceiling on observation
 /// pairs caps the work. Call this wherever `ledger::reconcile` runs today.
 ///
-/// Returns the `(provider, account, lane)` groups this pass touched, for a
-/// caller that wants to report on what changed without querying the store a
-/// second time.
+/// Returns the `(provider, account, lane)` groups this pass touched, with plan
+/// and tier values for analytics, without querying the store a second time.
 pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
     let Some(_in_flight) = store.try_begin_limit_factor_learn() else {
         return Vec::new();
@@ -149,6 +149,7 @@ pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
                 lane,
                 usd_per_percent: point.usd_per_percent,
                 plan: point.plan,
+                plan_tier: point.plan_tier,
                 residual,
             });
         }

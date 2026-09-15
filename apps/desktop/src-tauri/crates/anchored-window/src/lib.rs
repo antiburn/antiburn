@@ -4,6 +4,7 @@
 //! cancellable task. The host owns the target type, IPC authorization, and
 //! data policy.
 
+mod companion;
 mod geometry;
 mod lifecycle;
 #[cfg(target_os = "linux")]
@@ -27,3 +28,6 @@ pub const REQUEST_EVENT: &str = "anchored-window-request";
 
 /// The event that reports companion lifecycle changes to the anchor window.
 pub const STATE_EVENT: &str = "anchored-window-state";
+
+#[cfg(target_os = "macos")]
+pub use macos::NativeRequestHandler;

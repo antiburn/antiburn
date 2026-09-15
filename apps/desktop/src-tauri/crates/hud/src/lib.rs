@@ -18,8 +18,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 #[cfg(target_os = "macos")]
@@ -177,6 +175,10 @@ impl ResizeState {
 
     fn wants_visible(&self) -> bool {
         self.wanted_visible.load(Ordering::SeqCst)
+    }
+
+    fn wants_detail_visible(&self, detail_requested: &AtomicBool) -> bool {
+        self.wants_visible() && detail_requested.load(Ordering::Relaxed)
     }
 }
 
@@ -568,63 +570,92 @@ pub fn resize(
     Ok(())
 }
 
-/// Put the window above every other window, on every space, and over the
-/// full-screen space of another application.
-///
-/// The level must clear a full-screen space. The status level does not: macOS
-/// composites a full-screen space above it, so the HUD stays hidden behind a
-/// full-screen window. The screen-saver level clears it.
-///
-/// The collection behavior shows one window on all spaces. macOS moves that
-/// window with the reader, so the crate does not make a copy for each space.
-/// `FullScreenAuxiliary` adds the full-screen spaces of other applications.
-/// `Stationary` holds the position during a space switch and in Mission
-/// Control. `IgnoresCycle` keeps the window out of the window cycle.
 #[cfg(target_os = "macos")]
-fn apply_float_over_all_spaces(ns_window: &NSWindow) {
-    ns_window.setLevel(NSScreenSaverWindowLevel);
-    ns_window.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::IgnoresCycle,
-    );
+mod macos {
+    use tauri::{Manager, WebviewWindow};
+    use tauri_nspanel::objc2_app_kit::{
+        NSScreenSaverWindowLevel, NSWindowCollectionBehavior, NSWindowStyleMask,
+    };
+    use tauri_nspanel::objc2_foundation::NSThread;
+    use tauri_nspanel::{ManagerExt, PanelHandle, WebviewPanelManager, WebviewWindowExt};
+
+    tauri_nspanel::tauri_panel! {
+        panel!(HudPanel {
+            config: {
+                can_become_key_window: false,
+                can_become_main_window: false,
+                hides_on_deactivate: false
+            }
+        })
+    }
+
+    /// Resolve or convert the passive panel before each reveal on the main thread.
+    pub(super) fn configured_panel(window: &WebviewWindow) -> Option<PanelHandle<tauri::Wry>> {
+        debug_assert!(NSThread::isMainThread_class());
+        if window
+            .try_state::<WebviewPanelManager<tauri::Wry>>()
+            .is_none()
+        {
+            tracing::error!(
+                label = window.label(),
+                "HUD panel plugin is missing; the window remains hidden"
+            );
+            return None;
+        }
+        let panel = match window.get_webview_panel(window.label()) {
+            Ok(panel) => panel,
+            Err(_) => match window.to_panel::<HudPanel>() {
+                Ok(panel) => panel,
+                Err(error) => {
+                    tracing::error!(label = window.label(), %error, "HUD panel conversion failed; the window remains hidden");
+                    return None;
+                }
+            },
+        };
+        // The nonactivating panel can join another application's full-screen Space while antiburn retains its regular activation policy.
+        panel.set_style_mask(NSWindowStyleMask::NonactivatingPanel);
+        panel.set_level(NSScreenSaverWindowLevel as i64);
+        panel.set_collection_behavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        Some(panel)
+    }
 }
 
-/// Apply {@link apply_float_over_all_spaces} to a Tauri window.
+/// Configure the hidden panel without revealing it or requesting keyboard focus.
 #[cfg(target_os = "macos")]
 fn float_over_all_spaces(window: &WebviewWindow) -> tauri::Result<()> {
     let native_window = window.clone();
-    window.run_on_main_thread(move || {
-        let Ok(pointer) = native_window.ns_window() else {
-            return;
-        };
-        // SAFETY: The callback runs on the main thread and the pointer is the live NSWindow.
-        let ns_window = unsafe { &*pointer.cast::<NSWindow>() };
-        apply_float_over_all_spaces(ns_window);
-    })
+    window
+        .run_on_main_thread(move || {
+            let _ = macos::configured_panel(&native_window);
+        })
+        .inspect_err(|error| {
+            tracing::error!(label = window.label(), %error, "HUD panel configuration dispatch failed");
+        })
 }
 
 #[cfg(target_os = "macos")]
 fn show_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
     let native_window = window.clone();
     let app = window.app_handle().clone();
-    window.run_on_main_thread(move || {
-        if !RESIZE_STATE.wants_visible() {
-            return;
-        }
-        if let Ok(pointer) = native_window.ns_window() {
-            // SAFETY: The callback runs on the main thread and the pointer is the live NSWindow.
-            let ns_window = unsafe { &*pointer.cast::<NSWindow>() };
-            // The window is built hidden and revealed later. Set the level and
-            // the collection behavior again here, because the toolkit can
-            // reset them when it shows a window.
-            apply_float_over_all_spaces(ns_window);
-            ns_window.orderFrontRegardless();
-            set_overlay_visible(true);
-            let _ = app.emit(OVERLAY_VISIBILITY_EVENT, true);
-        }
-    })
+    window
+        .run_on_main_thread(move || {
+            if !RESIZE_STATE.wants_visible() {
+                return;
+            }
+            if let Some(panel) = macos::configured_panel(&native_window) {
+                panel.order_front_regardless();
+                set_overlay_visible(true);
+                let _ = app.emit(OVERLAY_VISIBILITY_EVENT, true);
+            }
+        })
+        .inspect_err(|error| {
+            tracing::error!(%error, "HUD panel reveal dispatch failed");
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -851,7 +882,10 @@ pub fn show_detail(app: &AppHandle, state: serde_json::Value) {
         }
         DETAIL_SHOULD_SHOW.store(true, Ordering::Relaxed);
     }
-    if app.get_webview_window(DETAIL_LABEL).is_none() && build_detail(app).is_err() {
+    if app.get_webview_window(DETAIL_LABEL).is_none()
+        && let Err(error) = build_detail(app)
+    {
+        tracing::error!(%error, "HUD detail window creation failed");
         return;
     }
     let _ = app.emit_to(DETAIL_LABEL, DETAIL_STATE_EVENT, state);
@@ -860,6 +894,31 @@ pub fn show_detail(app: &AppHandle, state: serde_json::Value) {
 /// Keep the detail window unavailable where the HUD itself is unavailable.
 #[cfg(not(target_os = "macos"))]
 pub fn show_detail(_app: &AppHandle, _state: serde_json::Value) {}
+
+/// Show the detail window without activating the app or taking keyboard focus.
+///
+/// Apply the native policy before reveal. Check visibility requests again after dispatch to prevent a stale reveal.
+#[cfg(target_os = "macos")]
+fn show_detail_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
+    let native_window = window.clone();
+    let app = window.app_handle().clone();
+    window
+        .run_on_main_thread(move || {
+            if !RESIZE_STATE.wants_detail_visible(&DETAIL_SHOULD_SHOW) {
+                return;
+            }
+            if let Some(panel) = macos::configured_panel(&native_window) {
+                let was_visible = panel.is_visible();
+                panel.order_front_regardless();
+                if should_emit_detail_shown(was_visible, panel.is_visible()) {
+                    let _ = app.emit_to(OVERLAY_LABEL, DETAIL_SHOWN_EVENT, ());
+                }
+            }
+        })
+        .inspect_err(|error| {
+            tracing::error!(%error, "HUD detail panel reveal dispatch failed");
+        })
+}
 
 /// Size the detail window, place it against the drawn panel, and show it.
 ///
@@ -884,12 +943,8 @@ pub fn apply_detail_size(app: &AppHandle, height: f64) {
     if position_detail_window(&detail, &hud, height).is_none() {
         return;
     }
-    if RESIZE_STATE.wants_visible() && DETAIL_SHOULD_SHOW.load(Ordering::Relaxed) {
-        let was_visible = detail.is_visible().unwrap_or(false);
-        let show_succeeded = detail.show().is_ok();
-        if should_emit_detail_shown(was_visible, show_succeeded) {
-            let _ = app.emit_to(OVERLAY_LABEL, DETAIL_SHOWN_EVENT, ());
-        }
+    if RESIZE_STATE.wants_detail_visible(&DETAIL_SHOULD_SHOW) {
+        let _ = show_detail_without_activation(&detail);
     }
 }
 
@@ -959,6 +1014,7 @@ fn build_detail(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     .resizable(false)
     .visible(false)
     .focused(false)
+    .focusable(false)
     .shadow(false)
     .skip_taskbar(true)
     .always_on_top(true)
@@ -1148,6 +1204,26 @@ mod tests {
         assert!(!state.wants_visible());
         state.request_open();
         assert!(state.wants_visible());
+    }
+
+    #[test]
+    fn a_queued_detail_reveal_rechecks_both_requests() {
+        let state = ResizeState::new(OVERLAY_SEED_HEIGHT);
+        let detail_requested = AtomicBool::new(true);
+        let reveal_requested = || state.wants_detail_visible(&detail_requested);
+        assert!(reveal_requested());
+
+        detail_requested.store(false, Ordering::Relaxed);
+        assert!(!reveal_requested());
+        detail_requested.store(true, Ordering::Relaxed);
+        assert!(reveal_requested());
+
+        state.request_hide();
+        assert!(!reveal_requested());
+        state.request_open();
+        assert!(reveal_requested());
+        detail_requested.store(false, Ordering::Relaxed);
+        assert!(!reveal_requested());
     }
 
     #[test]

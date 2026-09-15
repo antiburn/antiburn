@@ -420,6 +420,11 @@ impl ManagedWindowReadiness for PopoverState {
 }
 
 impl PopoverState {
+    #[cfg(any(target_os = "macos", test))]
+    fn owns_renderer(&self, generation: u64) -> bool {
+        self.renderer_generation.load(Ordering::SeqCst) == generation
+    }
+
     fn record_auto_hide(&self) {
         if let Ok(mut slot) = self.auto_hidden_at.lock() {
             *slot = Some(Instant::now());
@@ -726,14 +731,13 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
 /// Give the popover keyboard focus.
 ///
 /// On macOS this goes through the non-activating panel, so the frontmost
-/// application stays active and keeps its full visual state. The plain
-/// `set_focus` fallback covers a window the panel plugin never converted.
+/// application stays active and keeps its full visual state.
 fn focus_popover(window: &WebviewWindow) {
     #[cfg(target_os = "macos")]
-    if panel::focus_without_activation(window) {
-        return;
-    }
-    if let Err(error) = window.set_focus() {
+    let result = panel::focus_without_activation(window);
+    #[cfg(not(target_os = "macos"))]
+    let result = window.set_focus();
+    if let Err(error) = result {
         ::tracing::warn!(event = "window_focus_failed", window = LABEL, error = %error);
     }
 }
@@ -1486,7 +1490,7 @@ pub fn refocus_after_nudge(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL)
         && window.is_visible().unwrap_or(false)
     {
-        let _ = window.set_focus();
+        focus_popover(&window);
     }
 }
 
@@ -1697,7 +1701,22 @@ fn reveal(window: &WebviewWindow) {
     if let Some(state) = app.try_state::<PopoverState>() {
         state.cancel_eviction();
     }
-    if let Err(error) = window.show() {
+    #[cfg(target_os = "macos")]
+    {
+        let shown_window = window.clone();
+        if let Err(error) = panel::show_without_activation(window, generation, move |result| {
+            complete_reveal(&shown_window, generation, result);
+        }) {
+            complete_reveal(window, generation, Err(error));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    complete_reveal(window, generation, window.show());
+}
+
+fn complete_reveal(window: &WebviewWindow, generation: u64, result: tauri::Result<()>) {
+    let app = window.app_handle();
+    if let Err(error) = result {
         ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
         schedule_prewarm_eviction(app);
         return;
@@ -2197,6 +2216,32 @@ mod tests {
         handoff.clear();
         assert!(!handoff.on_expected_release());
         assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn renderer_replacement_rejects_a_queued_native_reveal() {
+        let state = PopoverState::default();
+        state.renderer_generation.store(1, Ordering::SeqCst);
+        assert!(state.owns_renderer(1));
+
+        state.renderer_generation.store(2, Ordering::SeqCst);
+        assert!(!state.owns_renderer(1));
+        assert!(state.owns_renderer(2));
+    }
+
+    #[test]
+    fn dismissal_cancels_nudge_restoration_without_blocking_a_later_handoff() {
+        let state = PopoverState::default();
+        state.begin_nudge_key_handoff(true);
+        state.abandon_nudge_key_restoration();
+        assert!(!state.release_nudge_key_handoff());
+        assert!(state.suppress_blur_for_nudge_handoff());
+        assert!(!state.suppress_blur_for_nudge_handoff());
+
+        state.begin_nudge_key_handoff(true);
+        assert!(state.suppress_blur_for_nudge_handoff());
+        assert!(state.release_nudge_key_handoff());
+        assert!(!state.release_nudge_key_handoff());
     }
 
     #[test]

@@ -137,6 +137,19 @@ ALTER TABLE turn ADD COLUMN provider TEXT;
 ALTER TABLE turn ADD COLUMN api TEXT;
 "#;
 
+/// DDL that adds the one-hour cache-write subset column
+/// [`TurnRow::cache_write_1h_tokens`] to an existing `turn` table.
+///
+/// This is a subset of the existing `cache_write_tokens` column. Existing
+/// rows default to `0` until a full parse replaces them with the parsed
+/// split (`records::parse_record`). A Claude record with no nested
+/// `cache_creation` breakdown counts its whole cache-write total as
+/// one-hour writes, since Claude Code has run with one-hour caching
+/// configured throughout; a present breakdown reports the exact split.
+pub const TURN_SCHEMA_V8_SQL: &str = r#"
+ALTER TABLE turn ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0;
+"#;
+
 /// DDL for the `session_coverage` table: one row per `(environment_key,
 /// agent, session_id, claim_fence)`, holding the serialized
 /// [`SessionCoverageRecord`] a pass wrote alongside its turn rows under the
@@ -207,8 +220,8 @@ CREATE TABLE source_resume (
 /// [`TURN_SCHEMA_V2_SQL`], [`TURN_SCHEMA_V3_SQL`],
 /// [`SESSION_COVERAGE_SCHEMA_SQL`], [`TURN_SCHEMA_V4_SQL`],
 /// [`SOURCE_RESUME_SCHEMA_SQL`], [`TURN_SCHEMA_V5_SQL`], and
-/// [`TURN_SCHEMA_V6_SQL`], and [`TURN_SCHEMA_V7_SQL`] as its own migrations instead, since
-/// [`TURN_SCHEMA_SQL`] is already applied on user machines.
+/// [`TURN_SCHEMA_V6_SQL`], [`TURN_SCHEMA_V7_SQL`], and [`TURN_SCHEMA_V8_SQL`] as its own
+/// migrations instead, since [`TURN_SCHEMA_SQL`] is already applied on user machines.
 pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_SQL,
     TURN_SCHEMA_V2_SQL,
@@ -219,6 +232,7 @@ pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_V5_SQL,
     TURN_SCHEMA_V6_SQL,
     TURN_SCHEMA_V7_SQL,
+    TURN_SCHEMA_V8_SQL,
 ];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
@@ -275,6 +289,9 @@ pub struct TurnRow {
     pub input_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    /// The subset of `cache_write_tokens` written with a one-hour TTL.
+    /// Mirrors [`crate::analysis::model::Usage::cache_creation_1h_tokens`].
+    pub cache_write_1h_tokens: u64,
     pub output_tokens: u64,
     pub is_compaction_boundary: bool,
     pub message_id: Option<String>,
@@ -368,6 +385,7 @@ pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index
         input_tokens: event.usage.input_tokens,
         cache_read_tokens: event.usage.cache_read_tokens,
         cache_write_tokens: event.usage.cache_creation_tokens,
+        cache_write_1h_tokens: event.usage.cache_creation_1h_tokens,
         output_tokens: event.usage.output_tokens,
         is_compaction_boundary: event.is_compaction_boundary,
         message_id: event.message_id.clone(),
@@ -656,10 +674,10 @@ const INSERT_TURN_SQL: &str = "INSERT INTO turn (
     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
     is_compaction_boundary, message_id, uuid, parent_uuid,
     compaction_trigger, compaction_pre_tokens, compaction_post_tokens,
-    has_thinking, last_tool, subagent_launches, provider, api
+    has_thinking, last_tool, subagent_launches, provider, api, cache_write_1h_tokens
 ) VALUES (
     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
+    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
 )";
 
 const INSERT_TURN_CONTENT_SQL: &str = "INSERT INTO turn_content (
@@ -712,6 +730,7 @@ pub fn insert_turn_rows(
             row.subagent_launches as i64,
             row.provider,
             row.api,
+            row.cache_write_1h_tokens as i64,
         ])?;
         if !row.content.is_empty() {
             let turn_rowid = conn.last_insert_rowid();
@@ -1388,6 +1407,7 @@ mod tests {
             input_tokens: 10,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             output_tokens: 5,
             is_compaction_boundary: false,
             message_id: None,
@@ -1413,7 +1433,11 @@ mod tests {
             INSERT INTO session VALUES ('native', 'pi', 's1');",
         )
         .unwrap();
-        for migration in &TURN_MIGRATIONS[..TURN_MIGRATIONS.len() - 1] {
+        // Stop before V7 and V8 so the test can apply each in isolation:
+        // V7 adds `provider`/`api` to a legacy row, and V8 (applied right
+        // after) adds `cache_write_1h_tokens`, which `query_turn_rows`
+        // needs present to run at all.
+        for migration in &TURN_MIGRATIONS[..TURN_MIGRATIONS.len() - 2] {
             conn.execute_batch(migration).unwrap();
         }
         conn.execute_batch(
@@ -1426,6 +1450,7 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(TURN_SCHEMA_V7_SQL).unwrap();
+        conn.execute_batch(TURN_SCHEMA_V8_SQL).unwrap();
         let key = TurnSessionKey {
             environment_key: "native",
             agent: "pi",
@@ -1656,6 +1681,20 @@ mod tests {
         let row = turn_row_from_event(&event, "parent-1", 0);
         assert_eq!(row.last_tool.as_deref(), Some("Read"));
         assert_eq!(row.subagent_launches, 3);
+    }
+
+    #[test]
+    fn turn_row_from_event_counts_codex_spawn_agent_calls_as_subagent_launches() {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.tools = vec![
+            ToolCall::new("spawn_agent"),
+            ToolCall::new("spawn_agent"),
+            ToolCall::new("wait_agent"),
+            ToolCall::new("send_message"),
+        ];
+
+        let row = turn_row_from_event(&event, "parent-1", 0);
+        assert_eq!(row.subagent_launches, 2);
     }
 
     #[test]

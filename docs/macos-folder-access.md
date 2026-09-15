@@ -11,10 +11,12 @@ branch below is dead.
 
 ## The problem this exists to solve
 
-antiburn is a menu-bar application: no Dock icon, no window at launch. Its scan
-scheduler runs a pass immediately at startup, and that pass resolves the working
-directories of recorded agent sessions to repository roots — which means running
-`git` with a working directory inside whatever folder the session used.
+antiburn starts without an ordinary window at launch. Its menu-bar and Dock
+icons are visible by default, and General settings can hide either one while
+keeping the other visible. Its scan scheduler runs a pass immediately at
+startup, and that pass resolves the working directories of recorded agent
+sessions to repository roots — which means running `git` with a working
+directory inside whatever folder the session used.
 
 If any session ever ran under a protected folder, that pass touches it. macOS
 responds with a permission dialog. The user sees a system alert naming an

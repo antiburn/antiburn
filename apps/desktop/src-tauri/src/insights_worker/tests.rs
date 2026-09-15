@@ -126,6 +126,45 @@ async fn a_dirty_watch_has_priority_and_a_restart_loses_no_work() {
     );
 }
 
+#[tokio::test]
+async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
+    let store = store();
+    seed_dirty_remediation(&store);
+    store
+        .upsert_sessions(
+            &[record("fair-evidence")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let passes = AtomicUsize::new(0);
+    let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+        passes.fetch_add(1, Ordering::SeqCst);
+        let pass = published_pass(record);
+        Box::pin(async move { pass }) as PassFuture
+    };
+    assert!(
+        process_next_work(&store, &|| 100, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE remediation SET dirty_revision = dirty_revision + 1,
+                    updated_at_epoch = 101 WHERE remediation_id = 'worker-remediation'",
+                [],
+            )
+            .unwrap();
+    }
+    assert!(
+        process_next_work(&store, &|| 101, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+    assert_eq!(passes.load(Ordering::SeqCst), 1);
+}
+
 fn failed_pass(outcome: PassOutcome) -> EvidencePass {
     EvidencePass {
         analysis: analysis::SessionAnalysis::unavailable(),
@@ -243,6 +282,7 @@ fn no_capabilities() -> SourceCapabilities {
         record_identity: false,
         linear_record_order: false,
         quota_incidents: false,
+        provider_incidents: false,
         harness_version: false,
         repeated_context_accounting: None,
     }
@@ -929,7 +969,7 @@ async fn the_store_is_lockable_while_a_pass_runs() {
 }
 
 #[tokio::test]
-async fn a_published_completion_announces_one_list_entry() {
+async fn a_published_completion_announces_one_session_key() {
     let store = store();
     store
         .upsert_sessions(&[record("announcement")], &crate::agents::evidence_cohort())
@@ -941,16 +981,17 @@ async fn a_published_completion_announces_one_list_entry() {
     let announced = Mutex::new(Vec::new());
 
     assert!(
-        process_next(&store, &|| 100, &runner, &|entry| {
-            announced.lock().unwrap().push(entry);
+        process_next(&store, &|| 100, &runner, &|key| {
+            announced.lock().unwrap().push(key.clone());
         })
         .await
         .unwrap()
     );
-    let entries = announced.lock().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].session_id, "announcement");
-    // The synthetic pass has no priceable model breakdown, so this test checks the event contract only.
+    let keys = announced.lock().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].session_id, "announcement");
+    // The compact key is the whole contract now: the projection worker owns
+    // the rich row reconstruction.
 }
 
 #[tokio::test]
@@ -968,8 +1009,8 @@ async fn a_backed_off_outcome_announces_nothing() {
     let announced = Mutex::new(Vec::new());
 
     assert!(
-        process_next(&store, &|| 100, &runner, &|entry| {
-            announced.lock().unwrap().push(entry);
+        process_next(&store, &|| 100, &runner, &|key| {
+            announced.lock().unwrap().push(key.clone());
         })
         .await
         .unwrap()
@@ -1345,10 +1386,10 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     let stored = store.evidence(&pi.key).unwrap().unwrap();
     assert_eq!(stored.status, EvidenceStatus::Ready);
     let evidence_json = stored.evidence_json.as_deref().unwrap();
-    assert!(evidence_json.contains("\"schemaRevision\":18"));
+    assert!(evidence_json.contains("\"schemaRevision\":19"));
     let evidence: SessionEvidence = serde_json::from_str(evidence_json).unwrap();
     assert_eq!(evidence.capabilities, SourceCapabilities::pi());
-    assert_eq!(evidence.schema_revision, 18);
+    assert_eq!(evidence.schema_revision, 19);
 
     let report = crate::insights_report::reduce_report(
         data_dir.path().to_path_buf(),

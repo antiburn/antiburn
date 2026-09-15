@@ -49,4 +49,29 @@ describe("ToggleRow", () => {
     fireEvent.click(control)
     expect(onChange).not.toHaveBeenCalled()
   })
+
+  it("shows the disabled reason from a hoverable switch wrapper", async () => {
+    render(
+      <ToggleRow
+        label="Show in Dock"
+        checked
+        onChange={vi.fn()}
+        disabled
+        disabledTooltip="Turn on Show in menubar first."
+      />,
+    )
+
+    const trigger = screen.getByRole("switch", { name: "Show in Dock" })
+    expect(trigger).toHaveAttribute("aria-checked", "true")
+    expect(trigger).toHaveAttribute("aria-disabled", "true")
+    expect(trigger).toHaveAttribute("tabindex", "0")
+    expect(trigger).toHaveClass("min-h-10")
+    expect(trigger).toHaveAttribute("data-disabled-tooltip-trigger")
+    expect(document.querySelector(".ui-switch")?.closest('[aria-hidden="true"]')).not.toBeNull()
+    fireEvent.pointerMove(trigger, { pointerType: "mouse" })
+
+    const tooltip = await screen.findByRole("tooltip")
+    expect(tooltip).toHaveTextContent("Turn on Show in menubar first.")
+    expect(tooltip).toHaveAttribute("data-side", "top")
+  })
 })

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-copy-prompt-fix-burn-check-targets"
+description = "Enables the copy_prompt_fix_burn_check_targets command without any pre-configured scope."
+commands.allow = ["copy_prompt_fix_burn_check_targets"]
+
+[[permission]]
+identifier = "deny-copy-prompt-fix-burn-check-targets"
+description = "Denies the copy_prompt_fix_burn_check_targets command without any pre-configured scope."
+commands.deny = ["copy_prompt_fix_burn_check_targets"]

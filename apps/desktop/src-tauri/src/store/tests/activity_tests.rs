@@ -50,35 +50,6 @@ fn sessions_active_since_query_plan_uses_the_coalesced_recency_index() {
     );
 }
 #[test]
-fn latest_session_activity_ignores_null_epochs() {
-    let store = store();
-    assert_eq!(
-        store.latest_session_activity().unwrap(),
-        None,
-        "empty store"
-    );
-
-    let mut no_heartbeat = session("no-heartbeat", 0);
-    no_heartbeat.updated_at_epoch = None;
-    store
-        .upsert_sessions(&[no_heartbeat], &crate::agents::evidence_cohort())
-        .unwrap();
-    assert_eq!(
-        store.latest_session_activity().unwrap(),
-        None,
-        "a NULL epoch is not activity"
-    );
-
-    store
-        .upsert_sessions(
-            &[session("recent", 5_000)],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-    assert_eq!(store.latest_session_activity().unwrap(), Some(5_000));
-}
-
-#[test]
 fn native_file_session_activity_keys_keep_full_identity() {
     let store = store();
     let record = session("by-label", 4_000);
@@ -144,6 +115,97 @@ fn native_file_session_activity_keys_cross_the_query_chunk_boundary() {
     assert_eq!(found.len(), 2);
     assert!(found.contains_key(&first.source_label));
     assert!(found.contains_key(&last.source_label));
+}
+
+#[test]
+fn session_keys_for_activity_keys_returns_identities_without_records() {
+    let store = store();
+    let native = session("identity-native", 4_000);
+    let mut wsl = native.clone();
+    wsl.key.environment_key = "wsl:Ubuntu".into();
+    wsl.key.session_id = "identity-wsl".into();
+    wsl.wsl_distro = Some("Ubuntu".into());
+    store
+        .upsert_sessions(
+            &[native.clone(), wsl.clone()],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let native_key = SessionActivityKey::new("native", "claude-code", &native.source_label);
+    let wsl_key = SessionActivityKey::new("wsl:Ubuntu", "claude-code", &wsl.source_label);
+    let missing = SessionActivityKey::new("native", "codex", "/nowhere/unknown.jsonl");
+
+    let identities = store
+        .session_keys_for_activity_keys(&[native_key.clone(), wsl_key.clone(), missing.clone()])
+        .unwrap();
+
+    assert_eq!(identities.len(), 2, "an unknown activity key finds nothing");
+    assert_eq!(identities.get(&native_key), Some(&native.key));
+    assert_eq!(identities.get(&wsl_key), Some(&wsl.key));
+    assert!(!identities.contains_key(&missing));
+}
+
+#[test]
+fn session_keys_for_activity_keys_cross_the_query_chunk_boundary() {
+    let store = store();
+    let mut records = Vec::new();
+    let mut keys = Vec::new();
+    for index in 0..=SCAN_HISTORY_KEY_BATCH_SIZE {
+        let mut record = session(&format!("chunk-{index:03}"), 4_000 + index as i64);
+        record.source_label = format!("/chunk/{index:03}.jsonl");
+        keys.push(SessionActivityKey::new(
+            "native",
+            "claude-code",
+            &record.source_label,
+        ));
+        records.push(record);
+    }
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let identities = store.session_keys_for_activity_keys(&keys).unwrap();
+
+    assert_eq!(identities.len(), SCAN_HISTORY_KEY_BATCH_SIZE + 1);
+    assert_eq!(
+        identities.get(&keys[0]),
+        Some(&SessionKey::new("native", "claude-code", "chunk-000"))
+    );
+    assert_eq!(
+        identities.get(&keys[SCAN_HISTORY_KEY_BATCH_SIZE]),
+        Some(&records[SCAN_HISTORY_KEY_BATCH_SIZE].key)
+    );
+}
+
+#[test]
+fn identity_only_activity_lookup_query_plan_uses_the_source_index() {
+    let store = store();
+    let connection = store.lock();
+    let sql = session_keys_for_activity_keys_sql(2);
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap();
+    let plan = statement
+        .query_map(
+            params![
+                "native",
+                "claude-code",
+                "/one.jsonl",
+                "wsl:ubuntu",
+                "codex",
+                "/two.jsonl",
+            ],
+            |row| row.get::<_, String>(3),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join("\n");
+    assert!(
+        plan.contains("session_source_lookup") && !plan.contains("SCAN s"),
+        "query plan did not search the source lookup index: {plan}"
+    );
 }
 
 #[test]

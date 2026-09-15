@@ -493,19 +493,23 @@ struct ReferenceEfficiencyTurn<'a> {
 /// This mirrors `crate::analysis::efficiency`'s `FallbackOverflow`, but as
 /// an independent sum: it does not call the reducer's helpers. The op
 /// order matters for bit-exactness with the reducer. Per turn, compute
-/// `input_share = input / fresh`. Then add, in this order,
-/// `new_tokens * input_share`, `new_tokens * (1.0 - input_share)`,
-/// `rewrite_tokens * input_share`, and `rewrite_tokens * (1.0 - input_share)`
-/// to the four running token totals. Add cache-read tokens, growth, and
-/// output tokens as integer sums.
+/// `input_share = input / fresh` and `one_hour_share = one_hour / fresh`.
+/// Then add, in this order, `new_tokens * input_share`,
+/// `new_tokens * (1.0 - input_share - one_hour_share)`,
+/// `new_tokens * one_hour_share`, `rewrite_tokens * input_share`,
+/// `rewrite_tokens * (1.0 - input_share - one_hour_share)`, and
+/// `rewrite_tokens * one_hour_share` to the six running token totals. Add
+/// cache-read tokens, growth, and output tokens as integer sums.
 #[derive(Default)]
 struct ReferenceFallbackAggregate {
     growth_tokens: u64,
     output_tokens: u64,
     new_input_tokens: f64,
     new_cache_tokens: f64,
+    new_cache_1h_tokens: f64,
     rewrite_input_tokens: f64,
     rewrite_cache_tokens: f64,
+    rewrite_cache_1h_tokens: f64,
     cache_read_tokens: u64,
     turns: u64,
 }
@@ -607,17 +611,28 @@ fn reference_efficiency(
                 .saturating_add(usage.cache_creation_tokens);
             let new_tokens = fresh.min(growth);
             let rewrite_tokens = fresh.saturating_sub(new_tokens);
+            let one_hour_tokens = usage
+                .cache_creation_1h_tokens
+                .min(usage.cache_creation_tokens);
             let input_share = if fresh == 0 {
                 0.0
             } else {
                 usage.input_tokens as f64 / fresh as f64
             };
+            let one_hour_share = if fresh == 0 {
+                0.0
+            } else {
+                one_hour_tokens as f64 / fresh as f64
+            };
             fallback.growth_tokens = fallback.growth_tokens.saturating_add(growth);
             fallback.output_tokens = fallback.output_tokens.saturating_add(usage.output_tokens);
             fallback.new_input_tokens += new_tokens as f64 * input_share;
-            fallback.new_cache_tokens += new_tokens as f64 * (1.0 - input_share);
+            fallback.new_cache_tokens += new_tokens as f64 * (1.0 - input_share - one_hour_share);
+            fallback.new_cache_1h_tokens += new_tokens as f64 * one_hour_share;
             fallback.rewrite_input_tokens += rewrite_tokens as f64 * input_share;
-            fallback.rewrite_cache_tokens += rewrite_tokens as f64 * (1.0 - input_share);
+            fallback.rewrite_cache_tokens +=
+                rewrite_tokens as f64 * (1.0 - input_share - one_hour_share);
+            fallback.rewrite_cache_1h_tokens += rewrite_tokens as f64 * one_hour_share;
             fallback.cache_read_tokens = fallback
                 .cache_read_tokens
                 .saturating_add(usage.cache_read_tokens);
@@ -639,11 +654,16 @@ fn reference_efficiency(
             .saturating_add(usage.cache_creation_tokens);
         let new_tokens = fresh.min(growth);
         let rewrite_tokens = fresh.saturating_sub(new_tokens);
+        let one_hour_tokens = usage
+            .cache_creation_1h_tokens
+            .min(usage.cache_creation_tokens);
+        let default_cache_tokens = usage.cache_creation_tokens - one_hour_tokens;
         let fresh_rate = if fresh == 0 {
             0.0
         } else {
             (usage.input_tokens as f64 * price.input_cost_per_token
-                + usage.cache_creation_tokens as f64 * price.cache_write_cost_per_token)
+                + default_cache_tokens as f64 * price.cache_write_cost_per_token
+                + one_hour_tokens as f64 * price.input_cost_per_token * 2.0)
                 / fresh as f64
         };
         let new_work = usage.output_tokens as f64 * price.output_cost_per_token
@@ -673,10 +693,12 @@ fn reference_efficiency(
             Some(price) => {
                 let new_work = fallback.output_tokens as f64 * price.output_cost_per_token
                     + fallback.new_input_tokens * price.input_cost_per_token
-                    + fallback.new_cache_tokens * price.cache_write_cost_per_token;
+                    + fallback.new_cache_tokens * price.cache_write_cost_per_token
+                    + fallback.new_cache_1h_tokens * price.input_cost_per_token * 2.0;
                 let carry = fallback.cache_read_tokens as f64 * price.cache_read_cost_per_token;
                 let rewrite = fallback.rewrite_input_tokens * price.input_cost_per_token
-                    + fallback.rewrite_cache_tokens * price.cache_write_cost_per_token;
+                    + fallback.rewrite_cache_tokens * price.cache_write_cost_per_token
+                    + fallback.rewrite_cache_1h_tokens * price.input_cost_per_token * 2.0;
                 totals.new_work_usd += new_work;
                 totals.carry_usd += carry;
                 totals.rewrite_usd += rewrite;
@@ -931,6 +953,9 @@ pub(crate) fn finalize_metrics(
                 entry.cache_creation_tokens = entry
                     .cache_creation_tokens
                     .saturating_add(usage.cache_creation_tokens);
+                entry.cache_creation_1h_tokens = entry
+                    .cache_creation_1h_tokens
+                    .saturating_add(usage.cache_creation_1h_tokens);
                 let pricing_key = turn_pricing_key(&model, turn.speed.as_deref());
                 let pricing_entry = pricing_breakdown.entry(pricing_key).or_default();
                 pricing_entry.input_tokens = pricing_entry
@@ -945,6 +970,9 @@ pub(crate) fn finalize_metrics(
                 pricing_entry.cache_creation_tokens = pricing_entry
                     .cache_creation_tokens
                     .saturating_add(usage.cache_creation_tokens);
+                pricing_entry.cache_creation_1h_tokens = pricing_entry
+                    .cache_creation_1h_tokens
+                    .saturating_add(usage.cache_creation_1h_tokens);
             }
         }
     }

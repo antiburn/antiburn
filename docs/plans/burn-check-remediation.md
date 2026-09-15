@@ -1,265 +1,143 @@
-# Burn check coverage and remediation
+# Burn Check Remediation Plan
 
-Status (2026-09-09): Phase 1 and Phase 2 implementation and acceptance
-validation are complete. Phase 3 remains deferred.
+Status (2026-09-10): implementation is complete. Local validation passed.
+Real-machine and data-dependent validation remain release checks.
 
-## Architecture
+[`docs/remediation.md`](../remediation.md) is the current implementation guide.
+[`docs/check-coverage.md`](../check-coverage.md) defines check, prompt, Auto Fix,
+verification, and savings support. [`docs/session-coverage.md`](../session-coverage.md)
+defines accepted source contracts.
 
-The implementation uses these boundaries:
+## Delivered Scope
 
-| Name | Responsibility |
-| --- | --- |
-| `SessionReader` | Read native session files and databases into normalized observations with explicit coverage. |
-| `ModelCatalog` | Resolve reviewed provider, API, model, option, accounting, replacement, and pricing policy. |
-| `AgentConfigEditor` | Inspect the effective agent model setting and prepare one supported minimal edit. |
+- Phase 1 characterized the reviewed Claude Code, Codex, OpenCode, Pi, and
+  Antigravity passive sources. It kept unsupported evidence fail-closed.
+- Phase 2 added exact findings, bounded prompts, initial model editors, durable
+  watches, recurrence, and old-model savings.
+- Phase 3 added the main Burn checks workspace, passive enrollment, action
+  joins, four distinct ID types, two-step Auto Fix, all nine estimate methods,
+  aggregate wins, sample navigation, recovery, and reviewed analytics.
+- Auto Fix supports Claude Code model and reasoning settings, Codex model and
+  reasoning settings, OpenCode model settings, and Pi model and reasoning
+  settings.
+- macOS and Linux support apply. Native Windows supports safe read attribution
+  but not apply. WSL remains a separate environment.
+- Antigravity supports prompts for D and O findings. It has no safe automatic
+  editor or positive fix verifier.
 
-The implementation reads existing local files and databases only. It does not
-install hooks, plugins, collectors, or runtime subscriptions. It does not launch
-an agent to collect evidence. Missing evidence remains unavailable.
+## Architecture Record
 
-## Phase 1: Burn check coverage
+The engine owns typed findings, prompt construction, pure verification, and
+typed estimates. The desktop shell owns target grouping, trusted roots,
+publication attribution, local persistence, file changes, recovery, IPC, UI,
+and analytics.
 
-Phase 1 covers the accepted source contracts for OpenCode, Pi, Codex, Claude
-Code, and Antigravity. It does not claim all historical versions. Cursor and
-other agents keep their existing limited support. The current source and check
-contracts are:
+Vendor evidence policy uses `VendorRemediationPolicy` under
+`src-tauri/src/remediation/vendors/`. Vendor config parsing and edits use
+`VendorConfig` under `src-tauri/src/agent_config/vendors/`. Shared lifecycle,
+storage, and atomic-write code contain no vendor-specific branches.
 
-- [`docs/session-coverage.md`](../session-coverage.md) for discovery, framing,
-  parsing, companions, fingerprints, resume state, and provider routes.
-- [`docs/check-coverage.md`](../check-coverage.md) for the nine checks, finding
-  eligibility, clean-result limits, and confirmed unsupported cases.
+The implementation reads existing local files and databases. It installs no
+hooks, plugins, collectors, or runtime subscriptions. It does not launch an
+agent to collect check evidence.
 
-The implementation keeps all 26 `SourceFormat` values in each required
-inventory and matrix. A schema, header, or pinned producer shape with synthetic
-fixtures defines an accepted boundary when no release range is available.
-Unknown changed evidence fails partial or unavailable.
+## Historical Phase 2 Record
 
-Implemented results include:
+This section records the 2026-09-09 Phase 2 boundary. It does not describe the
+current product boundary.
 
-- Claude Code and Codex assess D/T/S/O/F/C on complete accepted sessions and
-  reviewed routes.
-- OpenCode delegation requires native task metadata, matching ancestry, and the
-  actual child model. Its export and SQLite readers use validated request order.
-- Pi T uses the saved agent-selected policy. Pi S is finding-only for reviewed
-  persisted output from the official example extension.
-- M/B/K findings stay limited to complete observed subsets and calls. They do
-  not claim a full historical inventory or a session-wide clean result.
-- Cache accounting uses persisted provider and API values. `CacheWrite` selects
-  Claude policy. `UncachedInput` selects OpenAI policy, including mixed-family
-  sessions.
-- Cursor and Antigravity keep direct findings only where the matrix permits
-  them. Their source gates deny clean results.
+Phase 2 exposed backend remediation without a remediation UI. Auto Fix covered
+only publication-attributed Claude Code and Codex old-model settings. It used
+one command that prepared and applied the edit. Phase 3 replaced that contract
+with separate prepare and apply commands and expanded editor support.
 
-CoreV2 `session_message` remains outside `OpenCodeSqliteV2`. That reader accepts
-the `session`, `message`, and `part` cluster only. OpenCode WSL executable export,
-Cursor synthesis, and Antigravity private identity and route gaps remain stated
-limits.
+Phase 2 validation passed engine formatting, strict Clippy, 1,366 unit tests,
+integration tests, and doctests. Desktop Rust formatting, strict Clippy, and
+1,107 tests passed. Desktop lint, type checks, 1,294 frontend tests, and the
+production build passed. Coverage, quality, secret, and whitespace checks
+passed.
 
-## Phase 2: Backend remediation
+## Phase 3 Completion Record
 
-Phase 2 implements exact backend targets, Copy Prompt Fix, Claude Code and Codex
-old-model Auto Fix, durable verification watches, recurrence, and supported
-old-model savings. No remediation UI is available.
+### Phase 3A: Mock UI
 
-### Target listing
+The maintainer approved the mock on 2026-09-10. It established the main-window
+navigation, shared check presentation, expandable target rows, review dialog,
+prompt action, samples, aggregate wins, and loading and error states. It did not
+call production remediation commands.
 
-`list_burn_check_targets` scans at most 512 current sessions and retains at most
-512 raw findings before exact grouping. The server returns at most 100 grouped
-targets and sets `truncated` when either internal bound is exceeded. The opaque
-target cache holds 100 entries.
+### Phase 3B: Contracts And Persistence
 
-Target IDs expire after 10 minutes. The command has no pagination and accepts no
-`maxTargets` input. A row is included only when its supported bounded prompt was
-built successfully.
+Desktop schema V44 added safe display snapshots and durable contributions. The
+public contract separated durable finding IDs, durable attempt IDs, expiring
+action IDs, and expiring prepared-operation IDs. It also added bounded aggregate
+wins and opaque sample navigation.
 
-Each target identity includes the detector, agent, exact `SourceFormat`, scope,
-and detector-specific cause. Old-model grouping keeps provider, API, observed
-model, and replacement separate. Private selectors also bind the environment,
-workspace when applicable, source generations, publication fences,
-fingerprints, and current parser, analyzer, evidence, metrics, catalog, and
-source revisions. Each action revalidates its cached findings.
+### Phase 3C: Passive Verification And Estimates
 
-Public target rows contain an opaque ID, bounded display facts, occurrence
-count, Auto Fix availability, watch state, coverage limits, expiry, and savings
-state. They do not contain raw paths, session IDs, transcript text, config
-content, credentials, or evidence bodies.
+Desktop schema V45 added publication-time passive enrollment and action joins.
+It preserved the passive boundary and origin when an action joined an attempt.
+All nine estimate methods gained typed inputs, units, revisions, and unavailable
+results. Contribution writes became atomic with verification transitions.
 
-### Copy Prompt Fix
+### Phase 3D: Automatic Editors
 
-`copy_prompt_fix_burn_check_target` returns a deterministic prompt only for a
-supported current finding. The prompt is at most 8 KiB UTF-8. It includes at
-most eight sanitized identities, each at most 256 bytes. It removes control
-characters and excludes secrets, transcripts, config content, private paths,
-and unrelated history.
+The editor matrix is complete for the advertised scope:
 
-The prompt states the observed problem, exact scope, objective, quality limits,
-permission limits, and evidence needed for verification. It treats quoted
-values as data. If required facts cannot fit safely, the command returns a typed
-unavailable result. A successful command starts or reuses one exact durable
-watch. It does not accept an external completion claim.
+| Agent       | Model                                                                           | Reasoning                                                          |
+| ----------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Claude Code | Complete                                                                        | Complete                                                           |
+| Codex       | Complete                                                                        | Complete                                                           |
+| OpenCode    | Complete                                                                        | Unavailable because accepted sources have no historical effort map |
+| Pi          | Complete                                                                        | Complete                                                           |
+| Antigravity | Unavailable because accepted sources do not bind one effective physical setting | Unavailable                                                        |
 
-### Old-model Auto Fix
+The editors resolve current project and global precedence. They distinguish the
+trusted repository root from the session cwd. They reject unsafe roots,
+symlinks, unsupported ownership, runtime and managed overrides, malformed
+config, and changed targets. They preserve unrelated data and verify semantic
+readback. An uncertain replacement enters durable recovery.
 
-Automatic edits support only old-model findings for Claude Code and Codex. The
-finding must have publication-time attribution to an existing effective global
-or project model setting. The attributed effective value must match the
-observed old model. This condition prevents current configuration from becoming
-historical source truth.
+### Phase 3E: Production UI And Analytics
 
-The supported existing files and precedence are:
+`BurnChecksSession` uses `useSyncExternalStore`. It loads the report only while
+the section is active and visible. It loads targets only for open failed checks.
+It coalesces refreshes, rejects stale results, and retains previous data after a
+refresh error. The production view has no fixture fallback.
 
-| Agent | Project preference | Global fallback | Format |
-| --- | --- | --- | --- |
-| Claude Code | `.claude/settings.local.json`, then `.claude/settings.json` | `~/.claude/settings.json` | JSON top-level `model` |
-| Codex | `.codex/config.toml` | `~/.codex/config.toml` | TOML top-level `model` |
+The main window and popover share names, icons, ordering, assessed counts,
+token-burn formatting, and status colors. The main view hides not-assessed rows.
+It uses simple target detail text, opaque sample navigation, a two-step review,
+and a shaped loading skeleton.
 
-Project files apply only when they contain the model key. Otherwise, the global
-file remains the effective target. Claude JSON output preserves unrelated data
-but is rewritten as formatted JSON. Codex uses `toml_edit` to preserve unrelated
-TOML formatting where possible.
+Analytics distinguishes visible report states, Auto Fix review, confirmation,
+typed apply results, prompt preparation, clipboard success, and visible later
+outcomes. It sends no work data, values, IDs, paths, exact tokens, or exact
+costs.
 
-Auto Fix supports native environments on non-Windows platforms. Windows apply
-is unavailable. Runtime model or home overrides, managed configuration, Codex
-profiles, unsupported agents, ambiguous or missing targets, and untrusted
-workspaces make Auto Fix unavailable. The editor does not create a file. It
-rejects symlinks, non-regular files, wrong ownership on Unix, unsafe roots,
-invalid model values, malformed or duplicate definitions, and files larger
-than 256 KiB.
+### Phase 3F: Local Acceptance
 
-The command reads the selected file, prepares one replacement, rechecks file
-identity and bytes, writes an atomic same-directory replacement, preserves file
-permissions, syncs the directory, reads the file again, and verifies the model
-value. A conflict does not retry against new content. An uncertain post-write
-result enters durable recovery. A successful write enters `watching`, not
-`fixed`.
+Local validation passed on 2026-09-10:
 
-### Publication attribution
+- Engine formatting, strict Clippy, 1,370 unit tests, integration tests, and
+  doctests passed.
+- Desktop Rust formatting, strict Clippy, and 1,141 tests passed.
+- The analytics-enabled suite passed 1,217 tests. Two ignored tests did not run.
+- Desktop lint, type checks, 1,312 frontend tests, and the production build
+  passed.
+- Coverage, design drift, secrets, whitespace, and changed-code quality checks
+  passed.
+- Browser fallback review covered the unavailable state at 1000 x 560 and a
+  constrained frame in light, dark, and reduced-motion modes.
 
-Ready evidence publication can store three nullable desktop-derived values for
-Claude Code and Codex: a hashed physical target, the effective scope, and the
-effective model. Publication stores them only when the current effective value
-matches a model observed in complete model evidence. Non-ready publication
-stores no attribution.
+## Release Validation
 
-The hash uses the local store secret and includes the agent, physical path, and
-the model-setting key. The values exist only to select and verify later
-remediation scope. They are not session-source evidence or historical truth.
+Release validation must use native macOS, Linux, and Windows machines. It must
+cover the advertised read and apply matrix with real supported agent config. It
+must also cover data-dependent checks, prompt copy, clipboard errors, action
+expiry, changed config, recovery, recurrence, sample navigation, both themes,
+keyboard use, screen readers, reduced motion, and constrained windows.
 
-### Watches and verification
-
-The durable lifecycle is:
-
-```text
-reserved -> writing -> recoveryNeeded -> watching -> fixed -> recurred
-```
-
-Copy Prompt Fix starts or reuses `watching`. Auto Fix uses the first three
-states for write and crash safety, then enters `watching`. Startup reconciliation
-removes unused reservations and checks uncertain writes against the same
-physical target and effective scope.
-
-Generic prompt watches use a conservative post-boundary rule. They keep the
-exact source format and canonical target identity. A finding remains unresolved.
-Only a fresh complete assessment that proves the exact target absent can mark
-the watch fixed. A later exact finding marks it recurred. Positive-only source
-coverage cannot verify absence.
-
-Old-model watches use a stricter rule. They accept only main-thread sessions
-that started after the boundary and have matching publication-time physical
-target, scope, and effective old or replacement model attribution. The observed
-turn must also match the provider and API. Actual replacement use after the
-latest old-model use marks the watch fixed. Actual old-model use after fixed
-marks it recurred. Missing eligible evidence leaves the watch watching.
-
-The watch records the exact observed fixed and recurrence times from evidence.
-It does not use config readback, inactivity, report age, deletion, or a changed
-policy as proof. Verification DTOs include `evidenceRevision` for watching,
-fixed, unresolved, and recurred results when evidence was evaluated.
-
-### Savings
-
-Only old-model replacement has numeric savings. The implementation recomputes
-the cumulative API-equivalent price difference from eligible replacement token
-classes assigned to the exact physical target:
-
-```text
-sum(observed token class * pinned old rate)
-  - sum(observed token class * pinned replacement rate)
-```
-
-The watch pins both rate sets and `pricingRevision` at creation. Savings close
-at the exact recurrence time. Known zero and negative values remain known.
-Missing rates, evidence, or a pricing revision remain typed unknown results.
-Arithmetic overflow also remains unknown. The API exposes
-`apiEquivalentCostAvoidedUsd`; it does not expose `tokenEquivalent`, a percent
-fallback, or a forced positive minimum.
-
-### Persistence and work scheduling
-
-Desktop migration V43 is the final unreleased remediation schema. It stores
-exactly two versioned JSON envelopes: `definition_json` and `result_json`. Each
-envelope has a 32 KiB database and application limit. Indexed columns retain
-target identity, lifecycle state, `dirty_revision`, `evaluated_revision`, the
-effective boundary, and exact creation, update, fixed, and recurrence times.
-
-Evidence publication increments `dirty_revision` for matching active watches in
-its guarded transaction. The existing evidence worker evaluates a snapshot
-outside the write lock. It commits only when the observed dirty revision still
-matches. Otherwise, the worker evaluates the newer revision later. There is no
-new queue, lease, scheduler, or window-open dependency.
-
-Session retention does not cascade-delete watches. The schema adds no preview,
-event, claim, contribution, queue, or lease table.
-
-### Backend contract
-
-The backend exposes exactly three commands:
-
-```text
-list_burn_check_targets
-auto_fix_burn_check_target
-copy_prompt_fix_burn_check_target
-```
-
-Only the `popover` window has permissions for these commands. The Rust DTOs and
-TypeScript mirrors use typed outcomes, actions, lifecycle states, verification
-reasons, and savings reasons. The verification payload carries
-`evidenceRevision`. Known savings carries `pricingRevision`.
-
-No command accepts a path, command, JSON pointer, replacement bytes, completion
-claim, page cursor, or target-count option. There is no preview, history,
-recommendation, generic apply, or backend pagination operation.
-
-## Acceptance
-
-Acceptance validation passed on 2026-09-09:
-
-- Engine formatting and strict Clippy passed. The engine ran 1,366 unit tests,
-  all integration suites, and its doctest. Two ignored unit tests did not run.
-- Desktop Rust formatting and strict Clippy passed. All 1,107 tests passed.
-- The check coverage contract ran four tests and passed.
-- Desktop lint, type checks, all 1,294 frontend tests, and the production build
-  passed. The existing large-chunk warning remains non-failing.
-- The full quality scan, secrets scan, and whitespace checks passed.
-
-## Completion record
-
-- Phase 1 source and check contracts are complete for the documented limits.
-- Phase 2 engine APIs, desktop persistence, commands, TypeScript mirrors,
-  prompts, editors, watches, verification, recurrence, and savings are complete.
-- No analytics event was added because Phase 2 has no user-visible remediation
-  action. Phase 3 must review action and outcome analytics before UI work ships.
-- No remediation UI is implemented.
-- Final acceptance validation passed on 2026-09-09.
-- Phase 3 remains deferred.
-
-## Phase 3: Deferred UI and wider fixes
-
-Phase 3 can add the Burn Checks target-row UI after final acceptance. It can
-also evaluate automatic fixes for reasoning, unused MCP servers, and unused
-skills, plus wider agent support.
-
-Each future editor must keep the Phase 2 privacy, source coverage, exact target,
-freshness, trusted path, atomic write, and semantic readback rules. It must not
-infer a safe edit from one unused observation or add arbitrary filesystem paths
-or commands.
+Windows must remain read-only for remediation until native apply semantics,
+ACL preservation, reparse points, sharing conflicts, file identity, atomic
+replacement, and uncertain-write recovery pass review and tests.

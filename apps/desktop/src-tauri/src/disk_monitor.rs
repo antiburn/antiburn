@@ -121,7 +121,7 @@ pub fn refresh_title<R: Runtime>(app: &AppHandle<R>) {
 
     let title = app
         .try_state::<Store>()
-        .and_then(|store| store.settings().ok())
+        .map(|store| store.settings_snapshot())
         .and_then(|settings| {
             title_for(
                 settings.disk_space_display,

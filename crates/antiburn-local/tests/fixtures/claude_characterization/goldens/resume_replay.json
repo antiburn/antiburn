@@ -21,6 +21,7 @@
         "tools": [],
         "tsMs": 1787648400000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -45,6 +46,7 @@
         "tools": [],
         "tsMs": 1787648405000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 30,
@@ -69,6 +71,7 @@
         "tools": [],
         "tsMs": 1787648410000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 10,
@@ -93,6 +96,7 @@
         "tools": [],
         "tsMs": 1787648415000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -117,6 +121,7 @@
         "tools": [],
         "tsMs": 1787648420000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -141,6 +146,7 @@
         "tools": [],
         "tsMs": 1787648425000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 12,
@@ -165,6 +171,7 @@
         "tools": [],
         "tsMs": 1787648430000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 8,
@@ -189,6 +196,7 @@
         "tools": [],
         "tsMs": 1787648700000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 14,

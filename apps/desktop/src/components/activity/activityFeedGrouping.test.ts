@@ -51,6 +51,16 @@ describe("newestFirst", () => {
     const input = [{ key: "broken", at: "", isActive: false }, item("real", 1)]
     expect(newestFirst(input).map((i) => i.key)).toEqual(["real", "broken"])
   })
+
+  it("keeps input order for items with identical timestamps", () => {
+    const at = item("a", 0).at
+    const input = [
+      { key: "first", at, isActive: false },
+      { key: "second", at, isActive: false },
+    ]
+    expect(newestFirst(input).map((i) => i.key)).toEqual(["first", "second"])
+    expect(newestFirst([...input].reverse()).map((i) => i.key)).toEqual(["second", "first"])
+  })
 })
 
 describe("activityDayLabel", () => {

@@ -20,6 +20,7 @@
         "tools": [],
         "tsMs": 1782986400000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 34000,
           "inputTokens": 1000,
@@ -41,6 +42,7 @@
         "tools": [],
         "tsMs": 1782986700000,
         "usage": {
+          "cacheCreation1hTokens": 40000,
           "cacheCreationTokens": 40000,
           "cacheReadTokens": 1000,
           "inputTokens": 500,
@@ -62,6 +64,7 @@
         "tools": [],
         "tsMs": 1782987000000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 28000,
           "inputTokens": 400,
@@ -83,6 +86,7 @@
         "tools": [],
         "tsMs": 1782987300000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -104,6 +108,7 @@
         "tools": [],
         "tsMs": 1782987600000,
         "usage": {
+          "cacheCreation1hTokens": 35000,
           "cacheCreationTokens": 35000,
           "cacheReadTokens": 1000,
           "inputTokens": 500,
@@ -125,6 +130,7 @@
         "tools": [],
         "tsMs": 1782987900000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 30000,
           "inputTokens": 400,
@@ -146,6 +152,7 @@
         "tools": [],
         "tsMs": 1782988200000,
         "usage": {
+          "cacheCreation1hTokens": 36000,
           "cacheCreationTokens": 36000,
           "cacheReadTokens": 1000,
           "inputTokens": 500,
@@ -4174,7 +4181,7 @@
       "model": "claude-3-5-haiku-20241022",
       "modelBreakdown": {
         "claude-3-5-haiku-20241022": {
-          "cache_creation_1h_tokens": 0,
+          "cache_creation_1h_tokens": 111000,
           "cache_creation_tokens": 111000,
           "cache_read_tokens": 95000,
           "input_tokens": 3300,
@@ -4189,7 +4196,7 @@
       "peakContextTokens": 41500,
       "pricingBreakdown": {
         "claude-3-5-haiku": {
-          "cache_creation_1h_tokens": 0,
+          "cache_creation_1h_tokens": 111000,
           "cache_creation_tokens": 111000,
           "cache_read_tokens": 95000,
           "input_tokens": 3300,

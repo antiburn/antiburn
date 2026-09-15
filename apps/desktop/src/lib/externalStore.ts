@@ -27,6 +27,8 @@ export type ExternalStoreConfig<T> = {
   initial: T
   /** Fetched once when the store starts, before `subscribe` is awaited. */
   load?: () => Promise<T>
+  /** Restore `initial` after the final listener leaves. */
+  resetOnStop?: boolean
   /**
    * Attach a push channel that calls `set` with every update it sees, and
    * resolve to the function that detaches it. Modeled on the app's `onXxx`
@@ -77,6 +79,7 @@ export function createExternalStore<T>(config: ExternalStoreConfig<T>): External
     generation += 1
     unlisten?.()
     unlisten = null
+    if (config.resetOnStop) snapshot = config.initial
   }
 
   return {

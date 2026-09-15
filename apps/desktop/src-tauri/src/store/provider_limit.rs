@@ -168,7 +168,7 @@ const ATTRIBUTED_TURN_SQL: &str = "SELECT t.environment_key, t.agent, t.session_
             ), '[]'),
             t.model, t.speed,
             SUM(t.input_tokens), SUM(t.cache_read_tokens), SUM(t.cache_write_tokens),
-            SUM(t.output_tokens), COUNT(*)
+            SUM(t.output_tokens), COUNT(*), SUM(t.cache_write_1h_tokens)
        FROM turn t INDEXED BY turn_usage_timestamp
        JOIN session_evidence e
          ON e.environment_key = t.environment_key
@@ -1038,6 +1038,7 @@ fn attributed_turn_dollars_between_in(
         let cache_write_tokens: i64 = row.get(9)?;
         let output_tokens: i64 = row.get(10)?;
         let turn_count: i64 = row.get(11)?;
+        let cache_write_1h_tokens: i64 = row.get(12)?;
 
         let resolved = resolve_account(&accounts_json, known_accounts.get(&key.agent));
         if resolved.as_deref() != Some(account_key) {
@@ -1055,7 +1056,7 @@ fn attributed_turn_dollars_between_in(
             output_tokens: output_tokens.max(0) as u64,
             cache_read_tokens: cache_read_tokens.max(0) as u64,
             cache_creation_tokens: cache_write_tokens.max(0) as u64,
-            cache_creation_1h_tokens: 0,
+            cache_creation_1h_tokens: cache_write_1h_tokens.max(0) as u64,
         };
         if !has_tokens(&tokens) {
             continue;

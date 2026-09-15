@@ -260,6 +260,7 @@ fn saturated_metrics(record_count: usize) -> SessionMetricsAccumulator {
             output_tokens: 3,
             cache_read_tokens: 20_000,
             cache_creation_tokens: 2,
+            cache_creation_1h_tokens: 0,
         };
         let mut skill = ToolCall::new("Skill");
         skill.detail = Some(format!("skill-{}", index.min(300)));

@@ -66,6 +66,8 @@ fn bounded_reducer_matches_the_retained_reference_for_small_streams() {
                 (current.role == Role::Assistant).then(|| format!("message-{}", ordinal / 2));
             current.usage.cache_read_tokens = state % 2_000;
             current.usage.cache_creation_tokens = state % 500;
+            current.usage.cache_creation_1h_tokens =
+                state % current.usage.cache_creation_tokens.saturating_add(1);
             current.thinking_mode = state.is_multiple_of(5).then(|| "high".to_string());
             current.speed = state.is_multiple_of(11).then(|| "fast".to_string());
             current.has_thinking = state.is_multiple_of(13);

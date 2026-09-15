@@ -95,7 +95,7 @@ pub fn dismiss(app: &AppHandle) {
 pub fn deliver(app: &AppHandle, mut nudge: Nudge) {
     let settings = app
         .try_state::<Store>()
-        .and_then(|store| store.settings().ok());
+        .map(|store| store.settings_snapshot());
 
     if let Some(settings) = &settings {
         nudge.timeout_ms = Some(settings.nudge_auto_dismiss_secs.saturating_mul(1000));
@@ -136,7 +136,7 @@ fn placement(app: &AppHandle) -> NudgePlacement {
         .is_some_and(|override_| override_.take());
     let pref = app
         .try_state::<Store>()
-        .and_then(|store| store.settings().ok())
+        .map(|store| store.settings_snapshot())
         .map(|settings| settings.nudge_placement)
         .unwrap_or_default();
     if (forced || pref == PlacementPref::MenuBar)
@@ -149,9 +149,22 @@ fn placement(app: &AppHandle) -> NudgePlacement {
     NudgePlacement::NativeCorner
 }
 
-/// A clicked CTA. Dismissal is the crate's own affair; anything else lands on
-/// the settings pane that can act on the nudge's subject — except the one CTA
-/// whose subject is the menu-bar item itself.
+/// A clicked CTA. Dismissal is the crate's own affair. Other actions open the
+/// applicable settings pane or the entry point described by the nudge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuBarLocationTarget {
+    LaunchSurface,
+    Tray,
+}
+
+fn menu_bar_location_target(tray_visible: bool) -> MenuBarLocationTarget {
+    if tray_visible {
+        MenuBarLocationTarget::Tray
+    } else {
+        MenuBarLocationTarget::LaunchSurface
+    }
+}
+
 fn on_action(app: &AppHandle, event: NudgeActionEvent) {
     if let Some(plan) = plan_for_notification_settings_action(&event.action_id) {
         if plan.focus_policy == NudgeFocusPolicy::AbandonPopover {
@@ -166,10 +179,16 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
     // Every other CTA opens or focuses a different window. The key release
     // from the CTA's dismissal must not pull focus back to the popover.
     crate::popover::clear_nudge_yield(app);
-    // "Show me" opens the popover under the glyph the notification is already
-    // pointing at, so the reader's first sight of it is the thing the icon
-    // does rather than a settings pane about it.
+    // Show the visible application entry point described by the notification.
     if event.kind == NudgeKind::MenuBarLocation {
+        let tray_visible = app
+            .try_state::<Store>()
+            .map(|store| store.settings_snapshot())
+            .is_none_or(|settings| settings.tray_icon_visible);
+        if menu_bar_location_target(tray_visible) == MenuBarLocationTarget::LaunchSurface {
+            let _ = crate::open_launch_surface(app, crate::main_window::OpenTrigger::Interaction);
+            return;
+        }
         match app
             .tray_by_id("antiburn")
             .and_then(|tray| tray.rect().ok().flatten())
@@ -287,6 +306,15 @@ mod tests {
         // The next notification is somebody else's — a disk warning, an
         // update — and must land wherever the reader's preference says.
         assert!(!override_.take());
+    }
+
+    #[test]
+    fn a_hidden_tray_routes_the_location_action_to_the_launch_surface() {
+        assert_eq!(
+            menu_bar_location_target(false),
+            MenuBarLocationTarget::LaunchSurface
+        );
+        assert_eq!(menu_bar_location_target(true), MenuBarLocationTarget::Tray);
     }
 
     #[test]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-apply-prepared-burn-check-operation"
+description = "Enables the apply_prepared_burn_check_operation command without any pre-configured scope."
+commands.allow = ["apply_prepared_burn_check_operation"]
+
+[[permission]]
+identifier = "deny-apply-prepared-burn-check-operation"
+description = "Denies the apply_prepared_burn_check_operation command without any pre-configured scope."
+commands.deny = ["apply_prepared_burn_check_operation"]

@@ -20,6 +20,7 @@
         "tools": [],
         "tsMs": 1780308000000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -46,6 +47,7 @@
         ],
         "tsMs": 1780308005000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 50,
@@ -67,6 +69,7 @@
         "tools": [],
         "tsMs": 1780308015000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 30,

@@ -32,6 +32,7 @@ import {
 import { providerInitial } from "../../lib/presentation/providerUsage"
 import { SegmentedMeter } from "../ui/SegmentedMeter"
 import { SegmentFigure } from "../ui/SegmentFigure"
+import { Tooltip } from "../presentation/Tooltip"
 import { providerMark } from "./ProviderUsagePrimitives"
 import { UsageRing } from "./UsageRing"
 import { useStableAccountNumbers } from "./useStableAccountNumbers"
@@ -118,7 +119,7 @@ export function UsageLimitsBar({
   return (
     <div data-testid="usage-limits-bar" className="relative shrink-0">
       {!expanded && (
-        <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-[var(--space-md)] pt-2.5 pr-3 pb-1.5 pl-[var(--space-lg)]">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             {limited.map(({ reading, key }) => (
               <ProviderRadial
@@ -126,6 +127,7 @@ export function UsageLimitsBar({
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 status={liveProviderStatus(live, reading)}
+                now={at}
                 onHover={onHoverProvider}
                 activation={
                   activeProvider?.provider === reading.provider
@@ -149,7 +151,7 @@ export function UsageLimitsBar({
           aria-label="Usage limits"
           // The top space keeps the disclosure near its closed position.
           // The group padding gives each hover highlight clear space.
-          className="space-y-1 px-2 pt-3 pb-2"
+          className="space-y-1 px-2 pt-3 pb-1"
         >
           {limited.map(({ reading, key }, index) => (
             <ProviderGroup
@@ -193,8 +195,7 @@ function accountDisplayName(
 /**
  * The chart-icon disclosure, and the refresh spinner that sits beside it.
  *
- * The same size, weight, and grey as the settings gear in the popover footer
- * (`PopoverView.tsx`), and the same in both states. The control marks itself
+ * The control keeps the same size, weight, and grey in both states. It marks itself
  * pressed for assistive technology, but the meters under it are the sighted
  * answer to "is it open", and an orange glyph competed with the orange arcs
  * and segments it sits among.
@@ -234,10 +235,9 @@ function LimitsDisclosure({
         aria-pressed={expanded}
         aria-controls={expanded ? regionId : undefined}
         aria-label={expanded ? "Collapse usage limits" : "Expand usage limits"}
-        // The pseudo-element extends the hit area past the glyph box. It
-        // stops at the gap before the last ring, so the two do not overlap.
+        // The centered hit area measures 40px without changing the visible button.
         className={cn(
-          "relative flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] before:absolute before:-inset-x-2 before:-inset-y-2.5 before:content-[''] hover:bg-surface-hover",
+          "relative flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] before:absolute before:top-1/2 before:left-1/2 before:size-[calc(var(--space-xl)*2)] before:-translate-x-1/2 before:-translate-y-1/2 before:content-[''] hover:bg-surface-hover",
           compact && "-my-1.5",
         )}
       >
@@ -319,58 +319,94 @@ function ProviderRadial({
   provider,
   displayName,
   status,
+  now,
   onHover,
   activation,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   status: LiveProviderStatus
+  now: number
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const percent = maxLiveUsedPercent(provider)
-  const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
+  const window =
+    percent == null
+      ? undefined
+      : liveWindows(provider).find((window) => window.usedPercent === percent)
+  const expectedFraction = window ? liveWindowElapsed(window, now) : null
+  const windowLabel = window ? liveWindowLabel(window) : null
+  const elapsedPercent = expectedFraction == null ? null : Math.round(expectedFraction * 100)
+  const roundedPercent = percent == null ? null : Math.round(percent)
+  const figure = roundedPercent == null ? "no stated figure" : `${roundedPercent}% used`
   const graceNote =
     status.kind === "grace"
       ? liveGraceNote(status.category, provider.provider, status.ageMs)
       : null
-  const title = graceNote
-    ? `${displayName} — ${figure} — ${graceNote}`
-    : `${displayName} — ${figure}`
   const baseLabel = `${displayName}${
-    percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
+    roundedPercent != null ? ` at ${roundedPercent} percent` : ", no stated figure"
   }`
-  const ariaLabel = graceNote ? `${baseLabel}. ${graceNote}` : baseLabel
-  return (
-    <div
-      role="img"
-      tabIndex={0}
-      onMouseEnter={(event) =>
-        onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
-      }
-      onMouseLeave={() => onHover?.(null, null)}
-      data-state={activation ?? "idle"}
-      title={title}
-      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
-      aria-label={ariaLabel}
-    >
-      <UsageRing
-        percent={percent}
-        mark={providerMark(provider.provider)}
-        glyph={providerInitial(displayName)}
-        size={RING_SIZE}
-        className="block text-label-secondary"
-      />
-      <span
-        aria-hidden="true"
-        className={cn(
-          "type-footnote leading-none",
-          graceNote ? "text-label-tertiary" : "text-label",
-        )}
-      >
-        <SegmentFigure>{percent != null ? `${Math.round(percent)}%` : "—"}</SegmentFigure>
-      </span>
+  const ariaLabel = [
+    baseLabel,
+    windowLabel,
+    elapsedPercent == null ? null : `Pace marker at ${elapsedPercent} percent`,
+    graceNote,
+  ]
+    .filter(Boolean)
+    .join(". ")
+  const tooltip = (
+    <div className="space-y-0.5">
+      <p className="font-medium text-label">
+        {displayName}
+        {windowLabel && ` · ${windowLabel}`}
+      </p>
+      <p className="text-label">
+        <SegmentFigure>{figure}</SegmentFigure>
+      </p>
+      {elapsedPercent != null && (
+        <p className="text-label-secondary">
+          <SegmentFigure>{`${elapsedPercent}% would be on pace by now`}</SegmentFigure>
+        </p>
+      )}
+      {graceNote && <p className="text-label-secondary">{graceNote}</p>}
     </div>
+  )
+  return (
+    <Tooltip label={tooltip} side="bottom" delayMs={1000}>
+      <div
+        role="img"
+        tabIndex={0}
+        onMouseEnter={(event) =>
+          onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
+        }
+        onMouseLeave={() => onHover?.(null, null)}
+        data-state={activation ?? "idle"}
+        className="flex shrink-0 items-center gap-1.5 rounded-full px-[var(--space-xs)] py-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
+        aria-label={ariaLabel}
+      >
+        <UsageRing
+          percent={percent}
+          expectedFraction={expectedFraction}
+          mark={providerMark(provider.provider)}
+          glyph={providerInitial(displayName)}
+          size={RING_SIZE}
+          className="block text-label-secondary"
+        />
+        <span
+          aria-hidden="true"
+          className={cn(
+            "inline-grid type-footnote leading-none",
+            graceNote ? "text-label-tertiary" : "text-label",
+          )}
+        >
+          <SegmentFigure className="invisible col-start-1 row-start-1">100%</SegmentFigure>
+          <SegmentFigure className="col-start-1 row-start-1">
+            {roundedPercent != null ? `${roundedPercent}%` : "—"}
+          </SegmentFigure>
+        </span>
+      </div>
+    </Tooltip>
   )
 }
 
@@ -391,7 +427,7 @@ function UnavailableRadial({ entry }: { entry: UnavailableLiveProvider }) {
   return (
     <div
       data-testid="usage-limits-unavailable"
-      className="shrink-0 p-1"
+      className="shrink-0 px-[var(--space-xs)] py-1"
       title={`${entry.displayName} — ${reason}`}
       aria-label={`${entry.displayName}, usage unavailable (${reason})`}
     >
@@ -436,11 +472,17 @@ function UnavailableGroup({
 /**
  * One limit window: label, segmented VU meter with the linear-use notch,
  * figure.
+ *
+ * The popover keeps this row private in spirit: Overview shares it so both
+ * surfaces draw one meter, with `segments` and `resetPlacement` as the only
+ * differences.
  */
-function WindowMeterRow({
+export function WindowMeterRow({
   window,
   now,
   resetOnHover = false,
+  resetPlacement = "inline",
+  segments,
 }: {
   window: LiveUsageWindowPayload
   /** The instant the elapsed notch is measured from. */
@@ -453,8 +495,17 @@ function WindowMeterRow({
    * A surface that shows one provider keeps the reset in view instead.
    */
   resetOnHover?: boolean
+  /**
+   * Where the reset time sits: beside the figure, or as a caption under the
+   * meter. The caption is for a surface with one provider per card, where
+   * the reset has room of its own.
+   */
+  resetPlacement?: "inline" | "caption"
+  /** The dot count of the meter; see `SegmentedMeter` for the default. */
+  segments?: number
 }) {
   const percent = window.usedPercent
+  const reset = window.resetsAt ? liveResetLabel(window, now) : null
   return (
     <div className="group/meter">
       <div className="flex items-baseline justify-between gap-2 pb-0.5">
@@ -466,14 +517,14 @@ function WindowMeterRow({
               stated one — there is no seat for "reset unavailable" here. The
               hidden state fades and does not unmount, so the row keeps the
               space and the figure does not move on hover. */}
-          {window.resetsAt && (
+          {reset && resetPlacement === "inline" && (
             <span
               className={cn(
                 "type-footnote text-label-tertiary transition-opacity duration-[var(--duration-fast)]",
                 resetOnHover && "opacity-0 group-hover/meter:opacity-100",
               )}
             >
-              {liveResetLabel(window, now)}
+              {reset}
             </span>
           )}
           <span className="type-footnote text-label">
@@ -484,7 +535,11 @@ function WindowMeterRow({
       <SegmentedMeter
         percent={percent ?? null}
         expectedFraction={liveWindowElapsed(window, now)}
+        {...(segments != null ? { segments } : {})}
       />
+      {reset && resetPlacement === "caption" && (
+        <p className="pt-1 type-caption text-label-tertiary">{reset}</p>
+      )}
     </div>
   )
 }

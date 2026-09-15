@@ -32,6 +32,10 @@ where
     S: ManagedWindowReadiness + Send + Sync + 'static,
 {
     let action = app.state::<S>().readiness().renderer_ready(generation, now);
+    ready_action_reveals(action, label)
+}
+
+fn ready_action_reveals(action: ReadyAction, label: &'static str) -> bool {
     match action {
         ReadyAction::Reveal { loading_for } => {
             ::tracing::info!(
@@ -104,7 +108,8 @@ where
     });
 }
 
-/// Reset the lifecycle when the matching renderer build fails.
+/// Reset a lifecycle only when no native window can still own its label.
+/// Main-window failures use `resolve_load_failure` to preserve label ownership.
 pub(crate) fn cancel_load<S>(app: &AppHandle, generation: u64)
 where
     S: ManagedWindowReadiness + Send + Sync + 'static,
@@ -113,5 +118,22 @@ where
     let mut readiness = state.readiness();
     if readiness.loading_generation() == Some(generation) {
         readiness.reset();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn stay_hidden_does_not_reveal_through_the_tauri_adapter() {
+        assert!(!ready_action_reveals(
+            ReadyAction::StayHidden {
+                loading_for: Duration::from_millis(8),
+            },
+            "test",
+        ));
     }
 }

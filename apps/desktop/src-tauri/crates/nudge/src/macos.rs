@@ -44,31 +44,44 @@ tauri_nspanel::tauri_panel! {
 /// menus / pop-ups), so the notification reliably sits on top.
 const STATUS_WINDOW_LEVEL: i64 = 25;
 
-/// Convert the notification window into a non-activating floating panel and
-/// apply the notification behaviors. Requires the nspanel plugin (registered via
-/// [`crate::register`]); a no-op if it isn't present. Safe to call from any
-/// thread — the work is marshaled onto the main thread.
-pub(crate) fn to_nonactivating_panel(window: &WebviewWindow) {
+/// Resolve or convert the panel and restore its configuration on the main thread.
+fn configured_panel(window: &WebviewWindow) -> Option<tauri_nspanel::PanelHandle<tauri::Wry>> {
+    debug_assert!(NSThread::isMainThread_class());
     if window
         .try_state::<WebviewPanelManager<tauri::Wry>>()
         .is_none()
     {
-        return;
+        tracing::error!(target: "nudge", "nspanel plugin is missing; the nudge remains hidden because interaction requires the plugin");
+        return None;
     }
+    let panel = match window.get_webview_panel(window.label()) {
+        Ok(panel) => panel,
+        Err(_) => match window.to_panel::<NudgePanel>() {
+            Ok(panel) => panel,
+            Err(error) => {
+                tracing::error!(target: "nudge", %error, "could not convert the nudge panel; the nudge remains hidden");
+                return None;
+            }
+        },
+    };
+    panel.set_style_mask(NSWindowStyleMask::NonactivatingPanel);
+    panel.set_level(STATUS_WINDOW_LEVEL);
+    panel.set_collection_behavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    Some(panel)
+}
+
+/// Configure the notification panel on the main thread without showing it.
+/// A missing plugin or conversion failure leaves the notification hidden and logs an error.
+pub(crate) fn to_nonactivating_panel(window: &WebviewWindow) {
     let window = window.clone();
-    let _ = window.clone().run_on_main_thread(move || {
-        let Ok(panel) = window.to_panel::<NudgePanel>() else {
-            return;
-        };
-        // Borderless + never activate the app on key.
-        panel.set_style_mask(NSWindowStyleMask::NonactivatingPanel);
-        // Float above other windows; show on every Space and above fullscreen apps.
-        panel.set_level(STATUS_WINDOW_LEVEL);
-        panel.set_collection_behavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        );
-    });
+    if let Err(error) = window.clone().run_on_main_thread(move || {
+        let _ = configured_panel(&window);
+    }) {
+        tracing::error!(target: "nudge", %error, "could not dispatch nudge panel configuration");
+    }
 }
 
 /// Convert the notification panel back to its original window class and remove
@@ -98,26 +111,13 @@ pub(crate) fn prepare_for_destroy(window: &WebviewWindow) -> bool {
 /// attention has already shifted there.
 pub(crate) fn show(window: &WebviewWindow) {
     let window = window.clone();
-    let _ = window.clone().run_on_main_thread(move || {
-        match window.get_webview_panel(crate::NUDGE_LABEL) {
-            Ok(panel) => panel.order_front_regardless(),
-            Err(_) => {
-                // The panel subclass isn't attached yet (cold-start race, since
-                // `to_nonactivating_panel` converts asynchronously). Order the
-                // underlying NSWindow front *without* activating antiburn — a plain
-                // `window.show()` here would make the window key and steal focus
-                // from the user's frontmost app, the very thing this crate avoids.
-                if let Ok(ptr) = window.ns_window() {
-                    // SAFETY: on the main thread; `ns_window` is the live NSWindow
-                    // backing the notification. `orderFrontRegardless` takes no
-                    // arguments and returns void.
-                    unsafe {
-                        (&*ptr.cast::<NSWindow>()).orderFrontRegardless();
-                    }
-                }
-            }
+    if let Err(error) = window.clone().run_on_main_thread(move || {
+        if let Some(panel) = configured_panel(&window) {
+            panel.order_front_regardless();
         }
-    });
+    }) {
+        tracing::error!(target: "nudge", %error, "could not dispatch nudge presentation");
+    }
 }
 
 /// Acquire or release key-window status for the notification, driven by the
@@ -129,10 +129,7 @@ pub(crate) fn show(window: &WebviewWindow) {
 /// that point carries none of the risk a forced acquire on an unprompted [`show`]
 /// would. Resigns key on mouse-leave so the notification goes back to being a
 /// purely passive, non-key panel the moment the user looks away, ready for the
-/// next unprompted show. A no-op if the panel isn't registered yet (mirrors
-/// [`show`]'s cold-start fallback — a nudge shown via the raw
-/// `orderFrontRegardless` fallback is never hovered before its own next
-/// `show` re-resolves the panel).
+/// next unprompted show. This function does nothing if the panel is not registered.
 ///
 /// On acquire, also makes the content view first responder — mirroring what
 /// `RawNSPanel::show()` used to do unconditionally. `makeKeyWindow` alone

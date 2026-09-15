@@ -114,7 +114,11 @@ fn the_windows_are_local_calendar_boundaries_around_now() {
     // Mid-month, the month reaches further back than the week does — the two
     // windows are independent, not nested.
     assert!(bounds.month_start < bounds.week_start);
-    assert_eq!(lookback_start(NOW, 0), bounds.last_30_days_start);
+    // 2026-11-17T00:00:00Z, thirty days before the trailing-30 window opens
+    // on 2026-12-17.
+    assert_eq!(bounds.last_30_days_start, 1_797_465_600);
+    assert_eq!(bounds.previous_30_days_start, 1_794_873_600);
+    assert_eq!(lookback_start(NOW, 0), bounds.previous_30_days_start);
 }
 
 #[test]
@@ -125,7 +129,7 @@ fn early_in_a_month_the_week_reaches_further_back_than_the_month() {
     assert_eq!(bounds.month_start, 1_801_440_000); // 2027-02-01T00:00:00Z
     assert_eq!(bounds.week_start, 1_801_008_000); // 2027-01-27T00:00:00Z
     assert!(bounds.week_start < bounds.month_start);
-    assert_eq!(lookback_start(now, 0), bounds.last_30_days_start);
+    assert_eq!(lookback_start(now, 0), bounds.previous_30_days_start);
 }
 
 #[test]
@@ -179,10 +183,142 @@ fn a_session_older_than_every_window_is_ignored_entirely() {
     let bounds = window_bounds(NOW, 0);
     let rows = [row(
         "claude-code",
-        bounds.last_30_days_start - 1,
+        bounds.previous_30_days_start - 1,
         &[(PRICED_MODEL, tokens(1_000_000, 0, 0, 0))],
     )];
-    assert!(summarize(&rows, NOW, 0).providers.is_empty());
+    let summary = summarize(&rows, NOW, 0);
+    assert!(summary.providers.is_empty());
+    assert!(
+        summary
+            .previous_days
+            .iter()
+            .all(|day| day.usage.session_count == 0)
+    );
+}
+
+/* -------------------------------------------------------------------------
+ * Daily series
+ * ---------------------------------------------------------------------- */
+
+#[test]
+fn both_daily_series_always_hold_thirty_dated_days_oldest_first() {
+    let summary = summarize(&[], NOW, 0);
+    assert_eq!(summary.days.len(), 30);
+    assert_eq!(summary.previous_days.len(), 30);
+    assert_eq!(summary.days[0].local_date, "2026-12-17");
+    assert_eq!(summary.days[29].local_date, "2027-01-15");
+    assert_eq!(summary.previous_days[0].local_date, "2026-11-17");
+    assert_eq!(summary.previous_days[29].local_date, "2026-12-16");
+    assert!(
+        summary
+            .days
+            .iter()
+            .all(|day| day.usage == ProviderUsageWindow::default())
+    );
+}
+
+#[test]
+fn a_session_lands_in_the_day_of_its_activity_and_the_days_sum_to_the_window() {
+    let bounds = window_bounds(NOW, 0);
+    let rows = [
+        row(
+            "claude-code",
+            bounds.last_30_days_start + 3 * 86_400 + 60,
+            &[(PRICED_MODEL, tokens(1_000, 10, 0, 0))],
+        ),
+        row(
+            "codex",
+            bounds.today_start + 60,
+            &[(PRICED_MODEL, tokens(500, 0, 20, 0))],
+        ),
+    ];
+    let summary = summarize(&rows, NOW, 0);
+
+    assert_eq!(summary.days[3].usage.tokens_in, 1_000);
+    assert_eq!(summary.days[3].usage.session_count, 1);
+    assert_eq!(summary.days[29].usage.tokens_in, 500);
+    assert_eq!(summary.days[29].usage.cache_read, 20);
+    assert!(summary.days[3].usage.estimated_usd.is_some());
+
+    let summed = summary
+        .days
+        .iter()
+        .fold(ProviderUsageWindow::default(), |mut total, day| {
+            add_window(&mut total, &day.usage);
+            total
+        });
+    assert_eq!(summed, summary.totals.last_30_days);
+}
+
+#[test]
+fn a_day_boundary_follows_the_readers_offset() {
+    // 2027-01-14T22:00:00Z: the 29th day in UTC, the 30th (today) in +13:00.
+    let at = 1_799_971_200 - 2 * 3_600;
+    let rows = [row(
+        "claude-code",
+        at,
+        &[(PRICED_MODEL, tokens(1_000, 0, 0, 0))],
+    )];
+
+    let utc = summarize(&rows, NOW, 0);
+    assert_eq!(utc.days[28].usage.tokens_in, 1_000);
+    assert_eq!(utc.days[28].local_date, "2027-01-14");
+
+    let auckland = summarize(&rows, NOW, 13 * 60);
+    assert_eq!(auckland.days[29].usage.tokens_in, 1_000);
+    assert_eq!(auckland.days[29].local_date, "2027-01-15");
+}
+
+#[test]
+fn an_unpriced_model_marks_its_day_incomplete_and_no_other() {
+    let bounds = window_bounds(NOW, 0);
+    let rows = [
+        row(
+            "claude-code",
+            bounds.last_30_days_start + 60,
+            &[(UNPRICED_MODEL, tokens(1_000, 0, 0, 0))],
+        ),
+        row(
+            "claude-code",
+            bounds.today_start + 60,
+            &[(PRICED_MODEL, tokens(1_000, 0, 0, 0))],
+        ),
+    ];
+    let summary = summarize(&rows, NOW, 0);
+    assert!(!summary.days[0].usage.cost_complete);
+    assert_eq!(summary.days[0].usage.estimated_usd, None);
+    assert!(summary.days[29].usage.cost_complete);
+    assert!(
+        summary.days[1].usage.cost_complete,
+        "an empty day is complete"
+    );
+}
+
+#[test]
+fn a_session_in_the_comparison_period_feeds_only_the_previous_series() {
+    let bounds = window_bounds(NOW, 0);
+    let rows = [
+        row(
+            "claude-code",
+            bounds.last_30_days_start - 1,
+            &[(PRICED_MODEL, tokens(1_000, 0, 0, 0))],
+        ),
+        row(
+            "claude-code",
+            bounds.previous_30_days_start,
+            &[(PRICED_MODEL, tokens(10, 0, 0, 0))],
+        ),
+    ];
+    let summary = summarize(&rows, NOW, 0);
+
+    assert!(
+        summary.providers.is_empty(),
+        "no provider row from the past"
+    );
+    assert_eq!(summary.totals.last_30_days.session_count, 0);
+    assert_eq!(summary.previous_days[29].usage.tokens_in, 1_000);
+    assert_eq!(summary.previous_days[0].usage.tokens_in, 10);
+    assert!(summary.days.iter().all(|day| day.usage.session_count == 0));
 }
 
 #[test]

@@ -1,11 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "checks-remediation",
-  "description": "Allows the Checks surface to list and act on remediation targets.",
+  "description": "Allows the popover Burn checks surface to read and act on remediation targets.",
   "windows": ["popover"],
   "permissions": [
     "allow-list-burn-check-targets",
-    "allow-auto-fix-burn-check-target",
-    "allow-copy-prompt-fix-burn-check-target"
+    "allow-prepare-auto-fix-burn-check-target",
+    "allow-apply-prepared-burn-check-operation",
+    "allow-copy-prompt-fix-burn-check-target",
+    "allow-copy-prompt-fix-burn-check",
+    "allow-copy-prompt-fix-burn-check-targets",
+    "allow-get-burn-check-aggregate-wins"
   ]
 }

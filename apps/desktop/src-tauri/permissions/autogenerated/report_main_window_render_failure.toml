@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-main-window-render-failure"
+description = "Enables the report_main_window_render_failure command without any pre-configured scope."
+commands.allow = ["report_main_window_render_failure"]
+
+[[permission]]
+identifier = "deny-report-main-window-render-failure"
+description = "Denies the report_main_window_render_failure command without any pre-configured scope."
+commands.deny = ["report_main_window_render_failure"]

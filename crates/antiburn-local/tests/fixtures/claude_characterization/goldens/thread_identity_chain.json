@@ -21,6 +21,7 @@
         "tools": [],
         "tsMs": 1785920400000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -45,6 +46,7 @@
         "tools": [],
         "tsMs": 1785920405000,
         "usage": {
+          "cacheCreation1hTokens": 9000,
           "cacheCreationTokens": 9000,
           "cacheReadTokens": 0,
           "inputTokens": 40,
@@ -68,6 +70,7 @@
         "tools": [],
         "tsMs": 1785920410000,
         "usage": {
+          "cacheCreation1hTokens": 4,
           "cacheCreationTokens": 4,
           "cacheReadTokens": 0,
           "inputTokens": 12,
@@ -92,6 +95,7 @@
         "tools": [],
         "tsMs": 1785920415000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 10,
@@ -116,6 +120,7 @@
         "tools": [],
         "tsMs": 1785920420000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -140,6 +145,7 @@
         "tools": [],
         "tsMs": 1785920425000,
         "usage": {
+          "cacheCreation1hTokens": 8000,
           "cacheCreationTokens": 8000,
           "cacheReadTokens": 0,
           "inputTokens": 9040,
@@ -4153,14 +4159,14 @@
       "model": "claude-opus-4-6",
       "modelBreakdown": {
         "claude-opus-4-6": {
-          "cache_creation_1h_tokens": 0,
+          "cache_creation_1h_tokens": 17000,
           "cache_creation_tokens": 17000,
           "cache_read_tokens": 0,
           "input_tokens": 9080,
           "output_tokens": 14
         },
         "claude-sonnet-4-6": {
-          "cache_creation_1h_tokens": 0,
+          "cache_creation_1h_tokens": 4,
           "cache_creation_tokens": 4,
           "cache_read_tokens": 0,
           "input_tokens": 22,
@@ -4178,14 +4184,14 @@
       "peakContextTokens": 17040,
       "pricingBreakdown": {
         "claude-opus-4-6": {
-          "cache_creation_1h_tokens": 0,
+          "cache_creation_1h_tokens": 17000,
           "cache_creation_tokens": 17000,
           "cache_read_tokens": 0,
           "input_tokens": 9080,
           "output_tokens": 14
         },
         "claude-sonnet-4-6": {
-          "cache_creation_1h_tokens": 0,
+          "cache_creation_1h_tokens": 4,
           "cache_creation_tokens": 4,
           "cache_read_tokens": 0,
           "input_tokens": 22,

@@ -9,6 +9,7 @@ const NOTICES_PATH = resolve(ROOT, "THIRD_PARTY_NOTICES");
 const GENERATED_START = "----- BEGIN GENERATED DEPENDENCY NOTICES -----";
 const GENERATED_END = "----- END GENERATED DEPENDENCY NOTICES -----";
 const LEGAL_FILE = /^(licen[cs]e|copying|notice|copyright)(?:[._-].*)?$/i;
+const VENDORED_RUST_CRATES = new Set(["tray-icon"]);
 const FRONTEND_LICENSE_OVERRIDES = new Map([
   [
     "react-remove-scroll-bar@2.3.8",
@@ -123,7 +124,7 @@ export function frontendLegalTexts(key, paths) {
 
 export function rustPackages(report) {
   return report.crates
-    .filter((item) => item.package.source)
+    .filter((item) => isThirdPartyRustCrate(item.package))
     .map((item) => {
       const { package: crate } = item;
       return {
@@ -144,6 +145,10 @@ export function rustPackages(report) {
     );
 }
 
+function isThirdPartyRustCrate(crate) {
+  return Boolean(crate.source) || VENDORED_RUST_CRATES.has(crate.name);
+}
+
 export function legalBodies(frontend, rustReport) {
   const packagesByText = new Map();
   const add = (text, packageName) => {
@@ -159,7 +164,7 @@ export function legalBodies(frontend, rustReport) {
   }
   for (const license of rustReport.licenses) {
     for (const item of license.used_by) {
-      if (item.crate.source) {
+      if (isThirdPartyRustCrate(item.crate)) {
         add(license.text, `${item.crate.name}@${item.crate.version}`);
       }
     }

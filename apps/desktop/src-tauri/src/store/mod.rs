@@ -16,10 +16,9 @@
 //!
 //! # Concurrency
 //!
-//! The connection lives behind a mutex and every method is short and
-//! synchronous. Callers that hold the runtime's attention (the scan task) run
-//! their long work — reading transcripts, analyzing them — outside the lock and
-//! come here only to write the result.
+//! The connection lives behind a mutex and database methods are synchronous.
+//! Native callbacks read a separate last-committed settings snapshot. Callers
+//! run long work outside the connection lock and come here to write the result.
 
 pub(crate) mod codex_rollout_checkpoint;
 pub mod model;
@@ -30,6 +29,7 @@ mod schema;
 
 #[cfg(test)]
 mod privacy_tests;
+mod publication;
 #[cfg(test)]
 mod publish_tests;
 #[cfg(test)]
@@ -39,7 +39,8 @@ mod tests;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
@@ -50,7 +51,7 @@ use antiburn_local::analysis::{
     delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
     insert_source_resume, insert_turn_rows, query_coverage_record, query_model_breakdown,
     query_model_runs, query_pricing_breakdown, query_source_resume, query_turn_facts,
-    query_turn_rows, restamp_source_rows,
+    query_turn_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
@@ -66,6 +67,9 @@ pub use model::{
     RemediationResult, RemediationState, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
     SessionKey, SessionRecord, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
     ThemePreference, UsageEvidenceRecord,
+};
+pub(crate) use remediation::{
+    PassiveRemediation, RemediationContribution, RemediationDisplaySnapshot,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -124,8 +128,8 @@ const ANALYTICS_QUEUE_LIMIT: u32 = 500;
 /// limit. A scan can issue more batches, but it never loads unrelated rows.
 const SCAN_HISTORY_KEY_BATCH_SIZE: usize = 256;
 
-fn session_records_for_activity_keys_sql(key_count: usize) -> String {
-    let predicates = (0..key_count)
+fn session_activity_key_predicates(key_count: usize) -> String {
+    (0..key_count)
         .map(|index| {
             let first = index * 3 + 1;
             format!(
@@ -135,8 +139,21 @@ fn session_records_for_activity_keys_sql(key_count: usize) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join(" OR ");
-    format!("{SESSION_SELECT_SQL}\n WHERE {predicates}")
+        .join(" OR ")
+}
+
+fn session_records_for_activity_keys_sql(key_count: usize) -> String {
+    format!(
+        "{SESSION_SELECT_SQL}\n WHERE {}",
+        session_activity_key_predicates(key_count)
+    )
+}
+
+fn session_keys_for_activity_keys_sql(key_count: usize) -> String {
+    format!(
+        "SELECT s.environment_key, s.agent, s.session_id, s.source_label\n       FROM session s\n      WHERE {}",
+        session_activity_key_predicates(key_count)
+    )
 }
 
 /// File name of the database inside the app data directory.
@@ -185,7 +202,9 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 #[derive(Clone)]
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
+    settings_snapshot: Arc<RwLock<AppSettings>>,
     limit_factor_learn: Arc<Mutex<()>>,
+    remediation_turn: Arc<AtomicBool>,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
@@ -313,16 +332,23 @@ impl Store {
         connection.pragma_update(None, "foreign_keys", true)?;
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
+            settings_snapshot: Arc::new(RwLock::new(AppSettings::default())),
             limit_factor_learn: Arc::new(Mutex::new(())),
+            remediation_turn: Arc::new(AtomicBool::new(true)),
             state_dir,
         };
         store.migrate()?;
+        store.update_settings_snapshot(&store.settings()?);
         Ok(store)
     }
 
     /// The directory the engine's state files live in.
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    pub(crate) fn take_remediation_work_turn(&self) -> bool {
+        self.remediation_turn.fetch_xor(true, Ordering::Relaxed)
     }
 
     /// Apply every migration the database has not seen yet.
@@ -468,6 +494,21 @@ impl Store {
         read_settings(&connection)
     }
 
+    /// Return the last committed preferences without waiting for the database.
+    pub fn settings_snapshot(&self) -> AppSettings {
+        self.settings_snapshot
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn update_settings_snapshot(&self, settings: &AppSettings) {
+        *self
+            .settings_snapshot
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = settings.clone();
+    }
+
     /// Replace every preference, returning what was there and what was stored.
     ///
     /// Reading and writing share one transaction so callers can decide which
@@ -484,13 +525,23 @@ impl Store {
         settings: &AppSettings,
         apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings) -> Result<T>,
     ) -> Result<(AppSettings, AppSettings, T)> {
+        self.replace_settings_with_transition(settings, |tx, _previous, saved| apply(tx, saved))
+    }
+
+    /// Replace preferences and expose both sides of the transition in one transaction.
+    pub fn replace_settings_with_transition<T>(
+        &self,
+        settings: &AppSettings,
+        apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings, &AppSettings) -> Result<T>,
+    ) -> Result<(AppSettings, AppSettings, T)> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         let previous = read_settings(&tx)?;
         let saved = settings.clone().normalized();
         write_settings(&tx, &saved)?;
-        let result = apply(&tx, &saved)?;
+        let result = apply(&tx, &previous, &saved)?;
         tx.commit()?;
+        self.update_settings_snapshot(&saved);
         Ok((previous, saved, result))
     }
 
@@ -518,6 +569,7 @@ impl Store {
         let saved = saved.normalized();
         write_settings(&tx, &saved)?;
         tx.commit()?;
+        self.update_settings_snapshot(&saved);
         Ok((previous, saved))
     }
 
@@ -536,6 +588,7 @@ impl Store {
             [],
         )?;
         tx.commit()?;
+        self.update_settings_snapshot(&saved);
         Ok((previous, saved))
     }
 
@@ -648,6 +701,47 @@ impl Store {
         Ok(())
     }
 
+    /// Queue an analytics event in a transaction that also changes settings.
+    #[cfg(feature = "analytics")]
+    pub(crate) fn queue_analytics_event_in(
+        transaction: &rusqlite::Transaction<'_>,
+        name: &str,
+        payload: &str,
+    ) -> Result<()> {
+        transaction.execute(
+            "INSERT INTO analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
+            params![name, payload, now_rfc3339()],
+        )?;
+        transaction.execute(
+            "DELETE FROM analytics_event WHERE id NOT IN
+                 (SELECT id FROM analytics_event ORDER BY id DESC LIMIT ?1)",
+            params![ANALYTICS_QUEUE_LIMIT],
+        )?;
+        Ok(())
+    }
+
+    /// Read the current analytics identity inside a settings transaction.
+    #[cfg(feature = "analytics")]
+    pub(crate) fn analytics_identity_in(
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> Result<Option<(String, String)>> {
+        let mut statement = transaction
+            .prepare("SELECT install_id, minted_at FROM analytics_identity WHERE id = 1")?;
+        let mut rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Whether a durable opt-out event still waits for its final flush.
+    pub fn analytics_opt_out_pending(&self) -> Result<bool> {
+        Ok(self.lock().query_row(
+            "SELECT EXISTS(SELECT 1 FROM analytics_event WHERE name = 'antiburn.analytics_opted_out')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
+
     /// Return the current delivery backlog depth.
     pub fn analytics_event_count(&self) -> Result<u32> {
         Ok(self
@@ -660,8 +754,11 @@ impl Store {
     /// The next batch to attempt, oldest first, as `(id, payload)`.
     pub fn pending_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
         let connection = self.lock();
-        let mut statement =
-            connection.prepare("SELECT id, payload FROM analytics_event ORDER BY id LIMIT ?1")?;
+        let mut statement = connection.prepare(
+            "SELECT id, payload FROM analytics_event
+                 ORDER BY CASE WHEN name = 'antiburn.analytics_opted_out' THEN 0 ELSE 1 END, id
+                 LIMIT ?1",
+        )?;
         let rows = statement.query_map(params![limit], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -888,18 +985,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// The newest recorded session activity, epoch seconds. `None` when no
-    /// session has one yet — an empty store, or every row still on its
-    /// filesystem-mtime fallback with a missing source.
-    pub fn latest_session_activity(&self) -> Result<Option<i64>> {
-        let connection = self.lock();
-        Ok(
-            connection.query_row("SELECT MAX(updated_at_epoch) FROM session", [], |row| {
-                row.get(0)
-            })?,
-        )
-    }
-
     /// The analysis state of every session in the activity window, for the
     /// aggregate hygiene summary.
     ///
@@ -1015,6 +1100,42 @@ impl Store {
             }
         }
         Ok(records)
+    }
+
+    /// Return only session identities for the activity sources of one
+    /// watcher burst. The touch report needs keys, not full records, so
+    /// this query does not load a row's metadata columns.
+    pub fn session_keys_for_activity_keys(
+        &self,
+        keys: &[SessionActivityKey],
+    ) -> Result<HashMap<SessionActivityKey, SessionKey>> {
+        let connection = self.lock();
+        let mut identities = HashMap::with_capacity(keys.len());
+        for keys in keys.chunks(SCAN_HISTORY_KEY_BATCH_SIZE) {
+            let mut values = Vec::with_capacity(keys.len() * 3);
+            for key in keys {
+                values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::Text(key.agent.clone()));
+                values.push(rusqlite::types::Value::Text(key.source_label.clone()));
+            }
+            let mut statement =
+                connection.prepare(&session_keys_for_activity_keys_sql(keys.len()))?;
+            let rows = statement.query_map(params_from_iter(values.iter()), |row| {
+                let environment_key = row.get::<_, String>(0)?;
+                let agent = row.get::<_, String>(1)?;
+                let session_id = row.get::<_, String>(2)?;
+                let source_label = row.get::<_, String>(3)?;
+                Ok((
+                    SessionActivityKey::new(environment_key.clone(), agent.clone(), source_label),
+                    SessionKey::new(environment_key, agent, session_id),
+                ))
+            })?;
+            for row in rows {
+                let (activity_key, session_key) = row?;
+                identities.insert(activity_key, session_key);
+            }
+        }
+        Ok(identities)
     }
 
     /// Return native session identities for one agent title index.
@@ -1622,6 +1743,7 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
+        tx.execute("DELETE FROM remediation_contribution", [])?;
         tx.execute("DELETE FROM remediation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
@@ -1685,12 +1807,16 @@ impl Store {
         relations: &[RelationRecord],
         sources: &[SourcePublishOutcome],
     ) -> Result<bool> {
-        let model_attribution = crate::remediation::publication_model_attribution(
+        let source_sets = publication::SourceSets::new(sources)?;
+        let config_attribution = crate::remediation::publication_config_attribution(
             self,
             &record.key,
             completion.status,
             &completion.evidence_json,
         )?;
+        let remediation_secret = (completion.status == PublishedEvidence::Ready)
+            .then(|| self.provider_account_secret())
+            .transpose()?;
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         // The fence every source's rows will share once this pass
@@ -1700,6 +1826,17 @@ impl Store {
         // never published. Read before the claim-race UPDATE below so this
         // still names the *pre*-publish value.
         let existing_published_fence = read_published_fence(&transaction, &record.key)?;
+        let correction_replay = existing_published_fence.is_some()
+            && transaction.query_row(
+                "SELECT analyzed_generation FROM session_evidence
+                      WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id
+                ],
+                |row| row.get::<_, Option<i64>>(0),
+            )? == Some(record.analyzed_generation);
         let target_fence = existing_published_fence.unwrap_or(completion.claim_fence);
         transaction.execute(
             "INSERT INTO session_analysis (
@@ -1763,7 +1900,9 @@ impl Store {
                     claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
                      next_attempt_at_epoch = NULL, published_fence = ?12,
                      effective_model_target_hash = ?14,
-                     effective_model_scope = ?15, effective_model = ?16
+                     effective_model_scope = ?15, effective_model = ?16,
+                     effective_reasoning_target_hash = ?17,
+                     effective_reasoning_scope = ?18, effective_reasoning = ?19
               WHERE evidence.environment_key = ?1
                 AND evidence.agent = ?2 AND evidence.session_id = ?3
                 AND evidence.status = 'processing' AND evidence.claim_fence = ?13
@@ -1788,9 +1927,30 @@ impl Store {
                 time::OffsetDateTime::now_utc().unix_timestamp(),
                 target_fence,
                 completion.claim_fence,
-                model_attribution.as_ref().map(|value| value.0.as_str()),
-                model_attribution.as_ref().map(|value| value.1.as_str()),
-                model_attribution.as_ref().map(|value| value.2.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.0.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.1.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.2.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.0.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.1.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.2.as_str()),
             ],
         )?;
         if updated == 0 {
@@ -1813,125 +1973,23 @@ impl Store {
             return Ok(false);
         }
         let key = turn_session_key(&record.key);
-        // Every source this pass named explicitly: a resumed source's new
-        // rows join the row set already at `target_fence`; a fully-read
-        // source's old rows there are replaced outright. Either way its
-        // resume snapshot (if any) replaces what was stored, and a source
-        // with none has its stored snapshot dropped instead of leaving a
-        // stale one behind.
-        let mut named_sources = HashSet::with_capacity(sources.len());
+        publication::publish_turn_rows(
+            &transaction,
+            &key,
+            completion.claim_fence,
+            target_fence,
+            &source_sets,
+        )?;
+        // Each named source replaces its stored resume snapshot. The
+        // set-based publication above already removes snapshots for sources
+        // that vanished from this pass.
         for source in sources {
-            named_sources.insert(source.source_key.as_str());
-            match source.mode {
-                SourcePublishMode::Resumed => {
-                    restamp_source_rows(
-                        &transaction,
-                        &key,
-                        &source.source_key,
-                        completion.claim_fence,
-                        target_fence,
-                    )?;
-                }
-                SourcePublishMode::Full => {
-                    // On a session's first-ever publish, `target_fence`
-                    // already equals `completion.claim_fence`: the rows
-                    // this pass wrote are already the only row set there is
-                    // no older published set to replace. Deleting at
-                    // `target_fence` here would delete the rows this same
-                    // pass just wrote.
-                    if target_fence != completion.claim_fence {
-                        delete_source_rows_at_fence(
-                            &transaction,
-                            &key,
-                            &source.source_key,
-                            target_fence,
-                        )?;
-                        restamp_source_rows(
-                            &transaction,
-                            &key,
-                            &source.source_key,
-                            completion.claim_fence,
-                            target_fence,
-                        )?;
-                    }
-                }
-            }
             match &source.resume {
                 Some(stored) => {
                     insert_source_resume(&transaction, &key, &source.source_key, stored)?
                 }
                 None => delete_source_resume(&transaction, &key, &source.source_key)?,
             }
-        }
-        // Every source this pass touched but did not name explicitly is a
-        // full read by default: its rows sit under the claim fence with no
-        // counterpart at `target_fence` to preserve, so the old published
-        // set for it is replaced outright, the same way `delete_turn_rows_except_fence`
-        // used to treat every source at once.
-        let mut unnamed_sources_statement = transaction.prepare(
-            "SELECT DISTINCT source_key FROM turn
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND claim_fence = ?4",
-        )?;
-        let unnamed_sources: Vec<String> = unnamed_sources_statement
-            .query_map(
-                params![
-                    key.environment_key,
-                    key.agent,
-                    key.session_id,
-                    completion.claim_fence
-                ],
-                |row| row.get(0),
-            )?
-            .collect::<rusqlite::Result<Vec<String>>>()?
-            .into_iter()
-            .filter(|source_key| !named_sources.contains(source_key.as_str()))
-            .collect();
-        drop(unnamed_sources_statement);
-        for source_key in &unnamed_sources {
-            // Same first-ever-publish carve-out as the named `Full` branch
-            // above: nothing to replace when the claim fence is already
-            // the target.
-            if target_fence != completion.claim_fence {
-                delete_source_rows_at_fence(&transaction, &key, source_key, target_fence)?;
-                restamp_source_rows(
-                    &transaction,
-                    &key,
-                    source_key,
-                    completion.claim_fence,
-                    target_fence,
-                )?;
-            }
-        }
-        // A source published by an earlier pass but absent from this one
-        // (a removed or unreadable child transcript) is neither named nor
-        // unnamed above, so nothing above touches its rows. Left alone,
-        // they would sit under `target_fence` forever and skew coverage.
-        // Drop them, and the stale resume snapshot with them, the same way
-        // a full pass on main already would.
-        let touched_this_pass: HashSet<&str> = named_sources
-            .iter()
-            .copied()
-            .chain(unnamed_sources.iter().map(String::as_str))
-            .collect();
-        let mut published_sources_statement = transaction.prepare(
-            "SELECT DISTINCT source_key FROM turn
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND claim_fence = ?4",
-        )?;
-        let vanished_sources: Vec<String> = published_sources_statement
-            .query_map(
-                params![key.environment_key, key.agent, key.session_id, target_fence],
-                |row| row.get(0),
-            )?
-            .collect::<rusqlite::Result<Vec<String>>>()?
-            .into_iter()
-            .filter(|source_key| !touched_this_pass.contains(source_key.as_str()))
-            .collect();
-        drop(published_sources_statement);
-        for source_key in &vanished_sources {
-            delete_source_rows_at_fence(&transaction, &key, source_key, target_fence)?;
-            delete_source_resume(&transaction, &key, source_key)?;
         }
         // The coverage record this pass wrote under the claim fence (R3
         // rebuilds it every pass, resumed or full) becomes the published
@@ -1950,11 +2008,30 @@ impl Store {
         delete_turn_rows_except_fence(&transaction, &key, target_fence)?;
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
         if completion.status == PublishedEvidence::Ready {
+            let publication_epoch = time::OffsetDateTime::now_utc();
             remediation::mark_remediations_dirty_in(
                 &transaction,
                 &record.key.environment_key,
                 &record.key.agent,
-                time::OffsetDateTime::now_utc().unix_timestamp(),
+                publication_epoch.unix_timestamp(),
+                correction_replay,
+            )?;
+            let findings =
+                crate::insights_report::publication_findings_in(&transaction, &record.key)?;
+            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
+            let candidates = crate::remediation::passive_remediations(
+                &transaction,
+                remediation_secret
+                    .as_ref()
+                    .expect("ready publication has a remediation secret"),
+                findings,
+                boundary_ms,
+            )?;
+            remediation::enroll_passive_remediations_in(
+                &transaction,
+                &candidates,
+                publication_epoch.unix_timestamp(),
             )?;
         }
         transaction.commit()?;
@@ -2748,6 +2825,14 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("launchAtLogin")
             .map(|value| value == "true")
             .unwrap_or(defaults.launch_at_login),
+        tray_icon_visible: stored
+            .get("trayIconVisible")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.tray_icon_visible),
+        dock_icon_visible: stored
+            .get("dockIconVisible")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.dock_icon_visible),
         auto_update: stored
             .get("autoUpdate")
             .map(|value| value == "true")
@@ -2841,6 +2926,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("sessionBadgeMetric")
             .and_then(|value| SessionBadgeMetric::parse(value))
             .unwrap_or(defaults.session_badge_metric),
+        session_filter: stored
+            .get("sessionFilter")
+            .cloned()
+            .unwrap_or_else(|| defaults.session_filter.clone()),
     }
     .normalized())
 }
@@ -2867,6 +2956,14 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "launchAtLogin",
         bool_text(settings.launch_at_login)
+    ])?;
+    put.execute(params![
+        "trayIconVisible",
+        bool_text(settings.tray_icon_visible)
+    ])?;
+    put.execute(params![
+        "dockIconVisible",
+        bool_text(settings.dock_icon_visible)
     ])?;
     put.execute(params!["autoUpdate", bool_text(settings.auto_update)])?;
     put.execute(params![
@@ -2943,6 +3040,7 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         "sessionBadgeMetric",
         settings.session_badge_metric.as_str()
     ])?;
+    put.execute(params!["sessionFilter", settings.session_filter.as_str()])?;
     Ok(())
 }
 

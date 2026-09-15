@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
 import type { ProviderUsageWindowsPayload } from "../../lib/ipc"
@@ -24,13 +24,42 @@ describe("UsageSpendSummary", () => {
     )
 
     expect(screen.getAllByText("$1.25")).toHaveLength(3)
-    expect(screen.getByText("1.25k tokens")).toBeInTheDocument()
-    expect(screen.getAllByText("1.25k")).toHaveLength(2)
-    expect(screen.getByText("Today")).toBeInTheDocument()
-    expect(screen.getByText("Last 7 days")).toBeInTheDocument()
-    expect(screen.getByText("Last 30 days")).toBeInTheDocument()
+    expect(screen.getAllByText("1.25k")).toHaveLength(3)
+    for (const [label, accessibleLabel] of [
+      ["Today", "Today"],
+      ["7 days", "Last 7 days"],
+      ["30 days", "Last 30 days"],
+    ]) {
+      const column = screen
+        .getAllByRole("term")
+        .find((term) => term.textContent === accessibleLabel)
+      expect(column).toBeDefined()
+      const reading = within(column!.parentElement!)
+      expect(reading.getByText("$1.25")).toBeInTheDocument()
+      expect(reading.getByText("$1.25").parentElement).toHaveClass(
+        "type-title-3",
+        "font-semibold!",
+      )
+      expect(reading.getByText("1.25k").parentElement).toHaveTextContent(
+        `1.25k tokens·${label}`,
+      )
+      expect(reading.getByText("·")).toHaveClass("text-label-tertiary")
+      expect(reading.getByText("1.25k").parentElement).not.toHaveClass(
+        "mt-[calc(var(--space-xs)/2)]",
+      )
+    }
+    expect(screen.getByText("Last 7 days")).toHaveClass("sr-only")
+    expect(screen.getByText("Last 30 days")).toHaveClass("sr-only")
+    expect(screen.getByText("7 days")).toHaveClass("text-label-tertiary")
+    expect(screen.getByText("30 days")).toHaveClass("text-label-tertiary")
     expect(screen.queryByRole("heading")).not.toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Usage and spend" })).not.toHaveAttribute("title")
+    expect(screen.getByRole("region", { name: "Usage and spend" })).toHaveClass(
+      "pt-[var(--space-md)]",
+    )
+    expect(
+      screen.getByRole("region", { name: "Usage and spend" }).firstElementChild,
+    ).toHaveClass("px-[var(--space-md)]", "py-[var(--space-sm)]", "shadow-stats-card")
   })
 
   it("shows the API pricing caveat for subscription usage", () => {
@@ -69,6 +98,12 @@ describe("UsageSpendSummary", () => {
     )
 
     expect(screen.getAllByText("1.25k")).toHaveLength(3)
-    expect(screen.getAllByText("tokens")).toHaveLength(3)
+    expect(screen.getAllByText("Today")).toHaveLength(2)
+    expect(screen.getByText("7 days")).toBeInTheDocument()
+    expect(screen.getByText("30 days")).toBeInTheDocument()
+    expect(screen.getByText("Last 7 days")).toHaveClass("sr-only")
+    expect(screen.getByText("Last 30 days")).toHaveClass("sr-only")
+    expect(screen.queryByText("·")).not.toBeInTheDocument()
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument()
   })
 })

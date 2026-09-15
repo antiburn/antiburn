@@ -1005,6 +1005,8 @@ fn decode_usage(data: &[u8]) -> Option<UsageInvocation> {
             output_tokens,
             cache_read_tokens: cache_read,
             cache_creation_tokens: cache_write,
+            // Antigravity does not report a one-hour cache-write split.
+            cache_creation_1h_tokens: 0,
         },
         identity: identity_hash(identity),
     })
@@ -1915,6 +1917,8 @@ impl UsageFields {
                 .or(self.cache_creation_tokens)
                 .or(self.cache_write)
                 .unwrap_or(0),
+            // Antigravity does not report a one-hour cache-write split.
+            cache_creation_1h_tokens: 0,
         }
     }
 }

@@ -10,10 +10,10 @@ use antiburn_local::insights::{DetectorId, eligible};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
 use tokio::sync::Notify;
+use tokio::task::JoinSet;
 
 use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
 use crate::commands;
-use crate::dto::ActivityEntry;
 use crate::fork_lineage;
 use crate::store::{
     EvidenceClaim, EvidenceCompletion, EvidenceFailure, FencedTurnRowStore, PublishedEvidence,
@@ -23,6 +23,8 @@ use crate::store::{
 pub(crate) const LEASE_SECS: i64 = 300;
 pub(crate) const LEASE_RENEW_SECS: u64 = 60;
 pub(crate) const IDLE_POLL_SECS: u64 = 60;
+/// Parse several independent transcripts at once without saturating the machine.
+const WORKER_CONCURRENCY: usize = 4;
 pub(crate) const BACKOFF_BASE_SECS: i64 = 30;
 pub(crate) const BACKOFF_MAX_SECS: i64 = 900;
 pub(crate) const MAX_EVIDENCE_ATTEMPTS: i64 = 5;
@@ -139,31 +141,51 @@ fn run_record_pass_with(
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let store_handle: Store = (*app.state::<Store>()).clone();
-        let run_pass = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
-            run_record_pass(record, signal, claim_fence, store_handle.clone())
-        };
-        let announce_app = app.clone();
-        let announce = move |entry: ActivityEntry| {
-            let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
-        };
-        let report_app = app.clone();
-        let announce_idle = move || {
-            let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
-        };
-        let clock = || unix_now();
-        let store = app.state::<Store>();
-        let handle = app.state::<WorkerHandle>();
-        worker_loop(
-            &store,
-            &handle,
-            &clock,
-            &run_pass,
-            &announce,
-            &announce_idle,
-        )
-        .await;
+        let mut workers = JoinSet::new();
+        for _ in 0..WORKER_CONCURRENCY {
+            workers.spawn(run_worker(app.clone()));
+        }
+        while workers.join_next().await.is_some() {}
     })
+}
+
+async fn run_worker(app: tauri::AppHandle) {
+    let store_handle: Store = (*app.state::<Store>()).clone();
+    let run_pass = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
+        run_record_pass(record, signal, claim_fence, store_handle.clone())
+    };
+    let announce_app = app.clone();
+    // The worker reports a typed fact only. The projection worker
+    // rebuilds the rich row and emits the frontend events.
+    let announce = move |key: &SessionKey| {
+        crate::session_lifecycle::report(
+            &announce_app,
+            crate::session_lifecycle::Observation::RowChanged {
+                session: key.clone(),
+                facets: crate::session_lifecycle::UpdateFacets {
+                    analysis: true,
+                    ..Default::default()
+                },
+                at: unix_now(),
+            },
+        );
+    };
+    let report_app = app.clone();
+    let announce_idle = move || {
+        let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+    };
+    let clock = || unix_now();
+    let store = app.state::<Store>();
+    let handle = app.state::<WorkerHandle>();
+    worker_loop(
+        &store,
+        &handle,
+        &clock,
+        &run_pass,
+        &announce,
+        &announce_idle,
+    )
+    .await;
 }
 
 pub fn wake(app: &tauri::AppHandle) {
@@ -193,12 +215,6 @@ fn published_status(evidence: &SessionEvidence) -> PublishedEvidence {
     } else {
         PublishedEvidence::Unsupported
     }
-}
-
-pub(crate) fn completion_entry(store: &Store, key: &SessionKey, now: i64) -> Option<ActivityEntry> {
-    let session = store.session(key).ok()??;
-    let repositories = store.repositories().ok()?;
-    commands::activity_entry(store, &repositories, session, now).ok()
 }
 
 pub(crate) fn apply_outcome(
@@ -321,7 +337,7 @@ pub(crate) async fn process_next(
     store: &Store,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
-    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    announce: &(dyn Fn(&SessionKey) + Send + Sync),
 ) -> anyhow::Result<bool> {
     let Some(claim) =
         store.claim_next_evidence(&crate::agents::evidence_cohort(), clock(), LEASE_SECS)?
@@ -364,9 +380,7 @@ pub(crate) async fn process_next(
     let published = applied && pass.outcome == PassOutcome::Published;
     if published {
         fork_lineage::link_claude_fork(store, &claim.key)?;
-    }
-    if published && let Some(entry) = completion_entry(store, &claim.key, clock()) {
-        announce(entry);
+        announce(&claim.key);
     }
     Ok(true)
 }
@@ -375,14 +389,15 @@ pub(crate) async fn process_next_work(
     store: &Store,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
-    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    announce: &(dyn Fn(&SessionKey) + Send + Sync),
 ) -> anyhow::Result<bool> {
     let now = clock();
     if let Some(recovery) = store.next_remediation_write_recovery(now)? {
         crate::remediation::recover_uncertain_write(store, &recovery, now)?;
         return Ok(true);
     }
-    if let Some(remediation) = store.next_dirty_remediation()? {
+    let remediation_first = store.take_remediation_work_turn();
+    if remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
         let _ = crate::remediation::evaluate_dirty_remediation(
             store.state_dir(),
             store,
@@ -391,7 +406,20 @@ pub(crate) async fn process_next_work(
         )?;
         return Ok(true);
     }
-    process_next(store, clock, run_pass, announce).await
+    let processed = process_next(store, clock, run_pass, announce).await?;
+    if processed {
+        return Ok(true);
+    }
+    if !remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
+        let _ = crate::remediation::evaluate_dirty_remediation(
+            store.state_dir(),
+            store,
+            &remediation,
+            clock(),
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub(crate) async fn worker_loop(
@@ -399,7 +427,7 @@ pub(crate) async fn worker_loop(
     handle: &WorkerHandle,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
-    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    announce: &(dyn Fn(&SessionKey) + Send + Sync),
     announce_idle: &(dyn Fn() + Send + Sync),
 ) {
     let mut processed = false;
@@ -407,6 +435,7 @@ pub(crate) async fn worker_loop(
         match process_next_work(store, clock, run_pass, announce).await {
             Ok(true) => {
                 processed = true;
+                announce_idle();
                 continue;
             }
             Ok(false) => {

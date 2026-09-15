@@ -64,6 +64,7 @@ beforeEach(() => {
             },
           ],
           quotaPressure: { assessed: false, findings: null },
+          providerIncidents: { assessed: false, findings: null },
           unrecognizedRecords: {
             types: [],
             typesTruncated: false,

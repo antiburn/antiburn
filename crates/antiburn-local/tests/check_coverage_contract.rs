@@ -53,7 +53,6 @@ source_formats! {
 }
 
 fn complete_evidence(format: SourceFormat) -> SessionEvidence {
-    // The format changes without changing facts, so source gates cannot hide behind missing capabilities.
     let mut facts = TurnFacts::default();
     facts.eligibility.assistant_turns = 1;
     let mut row = SessionEvidenceAccumulator::new(EvidenceSource {

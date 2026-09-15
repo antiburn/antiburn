@@ -60,6 +60,7 @@ function report(overrides: Partial<InsightsReportPayload> = {}): InsightsReportP
     assessedSessions: 0,
     categories: [],
     quotaPressure: { assessed: false, findings: null },
+    providerIncidents: { assessed: false, findings: null },
     unrecognizedRecords: {
       types: [],
       typesTruncated: false,

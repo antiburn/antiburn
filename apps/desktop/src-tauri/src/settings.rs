@@ -230,13 +230,16 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     window.set_focus()?;
     ::tracing::info!(event = "window_revealed", window = LABEL);
     if !was_exposed {
-        crate::analytics::record_interaction(
-            window.app_handle(),
-            crate::analytics::event::Interaction::SurfaceViewed {
-                surface: crate::analytics::event::Surface::Settings,
-                origin: crate::analytics::event::Origin::User,
-            },
-        );
+        let analytics_app = window.app_handle().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::analytics::record_interaction(
+                &analytics_app,
+                crate::analytics::event::Interaction::SurfaceViewed {
+                    surface: crate::analytics::event::Surface::Settings,
+                    origin: crate::analytics::event::Origin::User,
+                },
+            );
+        });
         let _ = window.emit(EVENT_SHOWN, ());
     }
     Ok(())

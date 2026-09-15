@@ -14,18 +14,12 @@
 //!
 //! The finding fires only when `repeated_tokens > 0` and the multiple
 //! reaches the bound.
-//! `unique_paid_tokens == 0` (every paid token in a considered pair was
+//! `unique_paid_tokens == 0` (every eligible paid token was
 //! a repeat) is treated as an infinite multiple, so it is always a
 //! finding.
 //!
-//! Partial-evidence rules:
-//! - Partial cache evidence still permits a finding: repeated and paid
-//!   tokens read from partial evidence prove presence.
-//! - Partial cache evidence prevents clean. A missed record may hide
-//!   repeated context or understate the paid total.
-//! - `repeated_context` `Unsupported` reports a contract gap: the
-//!   source supports neither cache-write nor uncached-input
-//!   accounting.
+//! Partial evidence cannot establish the session ratio or a clean result.
+//! Missing payments can change the denominator and the threshold outcome.
 
 use crate::analysis::{EvidenceValue, SessionEvidence};
 use crate::remediation::FindingCause;
@@ -33,12 +27,14 @@ use crate::remediation::FindingCause;
 use super::{ModelFamily, Observation, ReportCatalogs, model_family, observed};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> Observation {
-    let Some(cache) = observed(&evidence.cache) else {
-        return Observation::ContractIncomplete;
+    let cache = match &evidence.cache {
+        EvidenceValue::Complete(cache) => cache,
+        EvidenceValue::Partial { .. } => return Observation::NoFinding,
+        EvidenceValue::Unsupported => return Observation::ContractIncomplete,
     };
     let repeated_context = match &cache.repeated_context {
+        EvidenceValue::Partial { .. } => return Observation::NoFinding,
         EvidenceValue::Unsupported => return Observation::ContractIncomplete,
-        EvidenceValue::Partial { observed, .. } => observed,
         EvidenceValue::Complete(observed) => observed,
     };
     if repeated_context.repeated_tokens == 0 {
@@ -165,9 +161,14 @@ mod tests {
             });
             set_dominant_main_model(&mut evidence, "claude-sonnet-4-6");
 
-            assert_eq!(evaluate(&evidence, &ReportCatalogs::default()), {
-                Observation::Finding
-            });
+            assert_eq!(
+                evaluate(&evidence, &ReportCatalogs::default()),
+                if partial {
+                    Observation::NoFinding
+                } else {
+                    Observation::Finding
+                }
+            );
         }
     }
 
@@ -353,6 +354,21 @@ mod tests {
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
             Observation::Finding
+        );
+    }
+
+    #[test]
+    fn partial_repeated_context_cannot_establish_a_ratio() {
+        let mut evidence = claude_evidence("partial-ratio");
+        edit_cache(&mut evidence, false, |cache| {
+            cache.repeated_context = EvidenceValue::Partial {
+                observed: repeated_context(RepeatedContextAccounting::CacheWrite, 100, 100),
+                reason: CoverageReason::MalformedRecord,
+            };
+        });
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::NoFinding
         );
     }
 

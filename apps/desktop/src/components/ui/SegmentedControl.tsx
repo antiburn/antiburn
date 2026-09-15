@@ -197,7 +197,7 @@ export function SegmentedControl<T extends string>({
               <span
                 aria-hidden="true"
                 className={cn(
-                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-accent transition-opacity duration-[var(--duration-quick)] ease-out-quart",
+                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label transition-opacity duration-[var(--duration-quick)] ease-out-quart",
                   selected ? "opacity-100" : "opacity-0",
                 )}
               />

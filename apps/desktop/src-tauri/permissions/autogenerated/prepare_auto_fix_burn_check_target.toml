@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-prepare-auto-fix-burn-check-target"
+description = "Enables the prepare_auto_fix_burn_check_target command without any pre-configured scope."
+commands.allow = ["prepare_auto_fix_burn_check_target"]
+
+[[permission]]
+identifier = "deny-prepare-auto-fix-burn-check-target"
+description = "Denies the prepare_auto_fix_burn_check_target command without any pre-configured scope."
+commands.deny = ["prepare_auto_fix_burn_check_target"]

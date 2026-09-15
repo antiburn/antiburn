@@ -37,6 +37,14 @@
 }
 
 /* Main navigation uses a denser rhythm than the Settings source list. */
+.main-window-sidebar {
+  --main-window-nav-icon-size: 14px;
+  /* A nested row starts its label at the parent label column, past the icon. */
+  --main-window-nav-indent: calc(
+    var(--space-sm) + var(--main-window-nav-icon-size) + var(--space-sm)
+  );
+}
+
 .main-window-sidebar [role="tab"] {
   block-size: calc(var(--space-2xl) + var(--space-xs));
   flex-shrink: 0;
@@ -44,9 +52,17 @@
   padding-inline: var(--space-sm);
 }
 
+.main-window-sidebar [role="tab"][data-nested] {
+  padding-inline-start: var(--main-window-nav-indent);
+}
+
+.main-window-sidebar [role="presentation"][data-nested] {
+  margin-inline-start: var(--main-window-nav-indent);
+}
+
 .main-window-sidebar [role="tab"] svg {
-  inline-size: 14px;
-  block-size: 14px;
+  inline-size: var(--main-window-nav-icon-size);
+  block-size: var(--main-window-nav-icon-size);
 }
 
 .main-window-workspace,
@@ -111,4 +127,36 @@
   position: absolute;
   inset: 0 0 auto;
   block-size: var(--main-window-titlebar-height);
+}
+
+/* Use the brand hover treatment only in Burn Checks. */
+.burn-check-action {
+  background: var(--color-surface-window);
+  border-color: var(--color-separator);
+  color: var(--color-label);
+  transition:
+    background-color var(--duration-fast) ease-out,
+    border-color var(--duration-fast) ease-out,
+    color var(--duration-fast) ease-out,
+    box-shadow var(--duration-fast) ease-out,
+    transform var(--duration-quick) ease-out;
+}
+
+.burn-check-action:enabled:hover {
+  background: var(--color-brand);
+  border-color: var(--color-brand);
+  color: var(--color-selected-ink);
+  box-shadow: var(--shadow-raised);
+}
+
+.burn-check-action:enabled:active {
+  background: color-mix(in srgb, var(--color-brand) 90%, var(--color-label));
+  border-color: var(--color-brand);
+  box-shadow: none;
+}
+
+.burn-check-action:disabled {
+  opacity: 1;
+  transform: none;
+  box-shadow: none;
 }

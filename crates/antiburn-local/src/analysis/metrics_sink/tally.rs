@@ -273,6 +273,9 @@ pub(crate) fn add_usage(target: &mut crate::pricing::ModelTokens, usage: Usage) 
     target.cache_creation_tokens = target
         .cache_creation_tokens
         .saturating_add(usage.cache_creation_tokens);
+    target.cache_creation_1h_tokens = target
+        .cache_creation_1h_tokens
+        .saturating_add(usage.cache_creation_1h_tokens);
 }
 
 pub(crate) fn add_model_tokens(

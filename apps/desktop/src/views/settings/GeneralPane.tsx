@@ -17,6 +17,7 @@ import {
   type AppInfo,
   type ScanStatus,
 } from "../../lib/ipc"
+import { isMacOS } from "../../lib/platform"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { scanStatusStore } from "../../lib/scanStatusStore"
 import type { AppSettingsController } from "./useAppSettings"
@@ -63,12 +64,9 @@ export interface GeneralPaneProps extends AppSettingsController {
  * General preferences: how much history the popover shows, whether antiburn
  * keeps looking on its own, and how much it has accumulated.
  *
- * The monitoring toggle here and the pause control in the popover footer are
- * the same preference. That is deliberate: the footer is where a reader notices
- * background work happening, and Settings is where they go looking for the
- * switch that stops it.
+ * The monitoring toggle controls whether antiburn continues to scan in the background.
  */
-export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
+export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps) {
   const [restartingSetup, setRestartingSetup] = useState(false)
   const [restartFailed, setRestartFailed] = useState(false)
   const scanStatus = useSyncExternalStore(
@@ -106,6 +104,14 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
   }
 
   const running = scanStatus?.running ?? false
+  const macOS = isMacOS()
+  const trayRequired = macOS && !settings.dockIconVisible
+  const dockRequired = macOS && !settings.trayIconVisible
+  const trayDisabled = !loaded || trayRequired
+  const dockDisabled = !loaded || dockRequired
+  const recoveryDescription = "Keep one icon visible so you can reopen antiburn."
+  const trayRequiredTooltip = "Turn on Show in Dock first."
+  const dockRequiredTooltip = "Turn on Show in menubar first."
 
   return (
     <Pane title="General">
@@ -176,11 +182,39 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
         </Card>
       </SectionGroup>
 
-      <SectionGroup title="Startup">
+      <SectionGroup title="Application">
         <Card>
           <ToggleRow
-            label="Launch antiburn on startup"
-            description="Starts automatically in the menu bar."
+            label={macOS ? "Show in menubar" : "Show system tray icon"}
+            description={
+              trayRequired
+                ? recoveryDescription
+                : macOS
+                  ? "Keep antiburn in the menu bar when the main window is closed"
+                  : "When hidden, closing the main window quits antiburn."
+            }
+            checked={settings.trayIconVisible}
+            onChange={(next) => void update({ trayIconVisible: next })}
+            disabled={trayDisabled}
+            dimmed={trayDisabled}
+            disabledTooltip={trayRequired ? trayRequiredTooltip : undefined}
+          />
+          {macOS && (
+            <ToggleRow
+              label="Show in Dock"
+              description={
+                dockRequired ? recoveryDescription : "Keep antiburn available from the Dock."
+              }
+              checked={settings.dockIconVisible}
+              onChange={(next) => void update({ dockIconVisible: next })}
+              disabled={dockDisabled}
+              dimmed={dockDisabled}
+              disabledTooltip={dockRequired ? dockRequiredTooltip : undefined}
+            />
+          )}
+          <ToggleRow
+            label="Start at login"
+            description="Starts antiburn automatically at login."
             checked={settings.launchAtLogin}
             onChange={(next) => void update({ launchAtLogin: next })}
           />

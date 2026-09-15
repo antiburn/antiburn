@@ -2,6 +2,7 @@
 
 mod badges;
 pub(crate) mod detectors;
+mod provider_incidents;
 mod quota;
 mod report;
 mod status;
@@ -11,6 +12,10 @@ pub use detectors::{
     DetectorFindings, DetectorStatus, EffortPolicy, FamilyPolicy, ModelFamily, ModelRegistry,
     ModelReplacementEntry, ModelReplacementRule, NotAssessedReason, PremiumPolicy,
     REGISTRY_REVISION, ReportCatalogs, SpeedPolicy, model_family,
+};
+pub use provider_incidents::{
+    MAX_PROVIDER_AFFECTED_MODELS, MAX_PROVIDER_OBSERVED_TIMES, MAX_PROVIDER_SESSION_EXAMPLES,
+    ProviderIncidentFindings, ProviderIncidentsSection,
 };
 pub use quota::{
     MAX_QUOTA_AFFECTED_MODELS, MAX_QUOTA_OBSERVED_TIMES, MAX_QUOTA_SESSION_EXAMPLES,

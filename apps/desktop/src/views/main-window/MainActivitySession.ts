@@ -12,28 +12,38 @@ import {
   getLiveUsage,
   getSessionLimitAllocations,
   getMainWindowVisible,
+  acknowledgeMainWindowSessionTarget,
+  noteInteraction,
   onMainWindowSessionTarget,
   onMainWindowVisibilityChanged,
   onSettingsChanged,
-  onSessionEntryChanged,
-  onSessionsInvalidated,
-  onScanEvent,
+  onSessionIndexChanged,
+  onSessionUpdated,
   onLiveUsageChanged,
-  takeMainWindowSessionTarget,
+  peekMainWindowSessionTarget,
   type AppSettings,
   type SessionAnalysisPayload,
   type LiveUsageSummaryPayload,
   type SessionLimitAllocationSummaryPayload,
   type MainWindowSessionRequest,
+  type SessionUpdatedPayload,
   type SurfaceOrigin,
 } from "../../lib/ipc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { liveSessions } from "../../lib/sessionLifecycle"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
+import { AGENT_SLUGS } from "../../lib/presentation/agents"
+import {
+  parseSessionFilterId,
+  sessionFilterId,
+  type SessionFilter,
+} from "../../lib/sessionFilters"
 import { sessionKey, loadSessionAnalysis, type SessionSubject } from "../../lib/sessionSubject"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 
 export interface MainActivitySnapshot {
   active: boolean
+  /** The full, unfiltered list. The sidebar's selected filter applies at render time. */
   entries: SessionListEntry[] | null
   listError: boolean
   settings: AppSettings
@@ -46,6 +56,8 @@ export interface MainActivitySnapshot {
   now: number
   liveUsage: LiveUsageSummaryPayload
   allocations: SessionLimitAllocationSummaryPayload
+  /** The selected Sessions sidebar filter, parsed from `settings.sessionFilter`. */
+  filter: SessionFilter
 }
 
 export function subjectForEntry(entry: SessionListEntry): SessionSubject {
@@ -108,6 +120,7 @@ export class MainActivitySession {
     now: Date.now(),
     liveUsage: EMPTY_LIVE_USAGE,
     allocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
+    filter: parseSessionFilterId(DEFAULT_SETTINGS.sessionFilter),
   }
   private listeners = new Set<() => void>()
   private activeListeners = new Set<() => void>()
@@ -196,8 +209,8 @@ export class MainActivitySession {
         generation,
         onMainWindowSessionTarget((request) => {
           if (generation !== this.generation) return
-          this.applySessionTarget(request)
-          void this.takeSessionTarget(generation)
+          this.applyAndAcknowledgeSessionTarget(request)
+          void this.peekSessionTarget(generation)
         }),
       ),
       this.listen(
@@ -210,20 +223,15 @@ export class MainActivitySession {
       ),
       this.listen(
         generation,
-        onSessionsInvalidated(() => {
+        onSessionIndexChanged((change) => {
           if (generation !== this.generation) return
-          this.invalidated = true
+          // A removal or broad invalidation can take the selected session
+          // with it; `loadList` clears the selection when the refetched
+          // list no longer holds it.
+          if (change.cause !== "scan_pass") this.invalidated = true
           this.refreshList()
           this.refreshUsage()
-          this.refreshAnalysis()
-        }),
-      ),
-      this.listen(
-        generation,
-        onScanEvent((_status, phase) => {
-          if (generation !== this.generation || phase !== "finished") return
-          this.refreshList()
-          this.refreshUsage()
+          if (change.cause !== "scan_pass") this.refreshAnalysis()
         }),
       ),
       this.listen(
@@ -237,57 +245,100 @@ export class MainActivitySession {
       ),
       this.listen(
         generation,
-        onSessionEntryChanged((entry) => {
+        onSessionUpdated((update) => {
           if (generation !== this.generation || !this.snapshot.active) return
-          this.listVersion += 1
-          const entries = this.snapshot.entries
-          const key = localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
-          if (
-            entries?.some(
-              (item) =>
-                localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key,
-            )
-          ) {
-            const threshold = costOutlierThreshold(
-              entries.flatMap((item) => (item.cost ? [item.cost.totalUsd] : [])),
-            )
-            this.update({
-              entries: entries.map((item) =>
-                localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key
-                  ? toActivityEntry(entry, threshold)
-                  : item,
-              ),
-            })
-            this.selectDefaultEntry()
-          } else this.refreshList()
-          const subject = this.snapshot.subject
-          if (
-            subject &&
-            localSessionKey(
-              subject.agent,
-              subject.subagent?.parentSessionId ?? subject.sessionId,
-              subject.wslDistro,
-            ) === key
-          )
-            this.refreshAnalysis()
-          this.refreshUsage()
+          this.applySessionUpdate(update)
         }),
       ),
     ])
+    if (generation === this.generation) {
+      // The registry, not row data, decides which rows show as active.
+      this.stops.push(
+        liveSessions.subscribe(() => {
+          if (generation !== this.generation) return
+          const entries = this.snapshot.entries
+          if (entries) this.update({ entries: this.withRegistryActivity(entries) })
+        }),
+      )
+    }
     if (generation !== this.generation) return
     const settingsVersion = this.settingsVersion
     const revision = visibilityRevision
+    const rendererGeneration = this.rendererGeneration()
     const [settings, visible, target] = await Promise.all([
       getSettings().catch(() => DEFAULT_SETTINGS),
       getMainWindowVisible().catch(() => false),
-      takeMainWindowSessionTarget().catch(() => null),
+      rendererGeneration === null
+        ? Promise.resolve(null)
+        : peekMainWindowSessionTarget(rendererGeneration).catch(() => null),
     ])
     if (generation !== this.generation) return
-    if (target) this.applySessionTarget(target)
+    if (target) this.applyAndAcknowledgeSessionTarget(target)
     if (settingsVersion === this.settingsVersion) this.applySettings(settings)
     if (revision === visibilityRevision) this.visible = visible
     this.initialized = true
     this.syncActive()
+  }
+
+  private rendererGeneration(): number | null {
+    const generation = window.__ANTIBURN_WINDOW_GENERATION__
+    return typeof generation === "number" && Number.isSafeInteger(generation)
+      ? generation
+      : null
+  }
+
+  private applySessionUpdate(update: SessionUpdatedPayload): void {
+    const entry = update.entry
+    this.listVersion += 1
+    const entries = this.snapshot.entries
+    const key = localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
+    if (
+      entries?.some(
+        (item) => localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key,
+      )
+    ) {
+      const threshold = costOutlierThreshold(
+        entries.flatMap((item) => (item.cost ? [item.cost.totalUsd] : [])),
+      )
+      this.update({
+        entries: this.withRegistryActivity(
+          entries.map((item) =>
+            localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key
+              ? toActivityEntry(entry, threshold)
+              : item,
+          ),
+        ),
+      })
+      this.selectDefaultEntry()
+    } else this.refreshList()
+    const subject = this.snapshot.subject
+    // The analysis surface reloads only when the change touched what it
+    // renders, and only for the session on screen.
+    if (
+      (update.facets.analysis || update.facets.checks || update.facets.metadata) &&
+      subject &&
+      localSessionKey(
+        subject.agent,
+        subject.subagent?.parentSessionId ?? subject.sessionId,
+        subject.wslDistro,
+      ) === key
+    )
+      this.refreshAnalysis()
+    if (update.facets.usage || update.facets.limits || update.facets.analysis) {
+      this.refreshUsage()
+    }
+  }
+
+  /** Active pills come from the lifecycle registry's live snapshot. */
+  private withRegistryActivity(entries: SessionListEntry[]): SessionListEntry[] {
+    const live = liveSessions.getSnapshot()
+    if (!live.ready) return entries
+    return entries.map((entry) => {
+      const isActive = live.sessions.has(
+        localSessionKey(entry.agent, entry.sessionId ?? "", entry.wslDistro),
+      )
+      return entry.isActive === isActive ? entry : { ...entry, isActive }
+    })
   }
 
   private applySessionTarget(request: MainWindowSessionRequest): void {
@@ -296,14 +347,32 @@ export class MainActivitySession {
     this.open(request.target, [], "user")
   }
 
-  private async takeSessionTarget(generation: number): Promise<void> {
-    const request = await takeMainWindowSessionTarget().catch(() => null)
-    if (generation === this.generation && request) this.applySessionTarget(request)
+  private applyAndAcknowledgeSessionTarget(request: MainWindowSessionRequest): void {
+    if (request.revision < this.targetRevision) return
+    this.applySessionTarget(request)
+    const generation = this.rendererGeneration()
+    if (generation === null) return
+    void acknowledgeMainWindowSessionTarget(generation, request.revision).catch(() => {
+      console.error("The main window could not acknowledge its session target.")
+    })
+  }
+
+  private async peekSessionTarget(generation: number): Promise<void> {
+    const rendererGeneration = this.rendererGeneration()
+    if (rendererGeneration === null) return
+    const request = await peekMainWindowSessionTarget(rendererGeneration).catch(() => null)
+    if (generation === this.generation && request) {
+      this.applyAndAcknowledgeSessionTarget(request)
+    }
   }
 
   private applySettings(settings: AppSettings): void {
     const previous = this.snapshot.settings
-    this.update({ settings, settingsError: false })
+    this.update({
+      settings,
+      settingsError: false,
+      filter: parseSessionFilterId(settings.sessionFilter),
+    })
     if (
       settings.activityWindowDays !== previous.activityWindowDays ||
       settings.disabledAgents.join() !== previous.disabledAgents.join()
@@ -363,7 +432,9 @@ export class MainActivitySession {
       const invalidated = this.invalidated
       this.invalidated = false
       try {
-        const entries = toActivityEntries(await listRecentSessions(days))
+        const entries = this.withRegistryActivity(
+          toActivityEntries(await listRecentSessions(days)),
+        )
         if (
           version !== this.workVersion ||
           settingsVersion !== this.settingsVersion ||
@@ -538,5 +609,38 @@ export class MainActivitySession {
     } catch {
       this.update({ settingsError: true })
     }
+  }
+
+  /**
+   * Select a Sessions sidebar filter and persist the choice.
+   *
+   * Optimistic, the same way the popover's badge-metric setter writes: the
+   * sidebar selection must not lag behind the click, and the stored answer
+   * replaces this one a moment later. A no-op reselection neither writes nor
+   * reports, so restoring the persisted filter on load — which calls
+   * `applySettings`, not this method — never reports a selection either.
+   */
+  setFilter = (filter: SessionFilter): void => {
+    const current = this.snapshot.settings
+    const id = sessionFilterId(filter)
+    if (current.sessionFilter === id) return
+    const next = { ...current, sessionFilter: id }
+    this.update({ settings: next, filter })
+    void setSettings(next)
+      .then((saved) =>
+        this.update({ settings: saved, filter: parseSessionFilterId(saved.sessionFilter) }),
+      )
+      .catch(() => this.update({ settingsError: true }))
+    noteInteraction(
+      filter.kind === "agent"
+        ? {
+            kind: "sessionFilterSelected",
+            filter: "agent",
+            // Only a slug the shell's closed agent enum recognizes; an
+            // unrecognized harness omits the field rather than send one.
+            ...(AGENT_SLUGS.includes(filter.agent) ? { agent: filter.agent } : {}),
+          }
+        : { kind: "sessionFilterSelected", filter: filter.kind },
+    )
   }
 }

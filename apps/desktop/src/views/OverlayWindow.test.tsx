@@ -8,7 +8,7 @@ import { OverlayWindow } from "./OverlayWindow"
 const REFRESH_TEST_MS = 60_000
 
 const getLiveUsage = vi.hoisted(() => vi.fn())
-const getLatestSessionActivity = vi.hoisted(() => vi.fn())
+const getLiveSessions = vi.hoisted(() => vi.fn())
 const isOverlayWorkActive = vi.hoisted(() => vi.fn())
 const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
@@ -29,7 +29,7 @@ vi.mock("../lib/ipc", async () => {
   return {
     ...actual,
     getLiveUsage,
-    getLatestSessionActivity,
+    getLiveSessions,
     isOverlayWorkActive,
     showHudDetail,
     hideHudDetail,
@@ -92,6 +92,14 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: listenNative }))
 
 function emitNative(event: string, payload: unknown): void {
   for (const handler of nativeEvents.get(event) ?? []) handler({ payload })
+}
+
+const lifecycle = { seq: 0 }
+
+/** Push one sequenced lifecycle envelope at the mocked native listener. */
+function emitLifecycle(event: Record<string, unknown>): void {
+  lifecycle.seq += 1
+  emitNative("session:lifecycle", { seq: lifecycle.seq, ...event })
 }
 
 const setPosition = vi.hoisted(() => vi.fn(async () => {}))
@@ -230,8 +238,9 @@ describe("OverlayWindow", () => {
     vi.stubGlobal("localStorage", storage)
     getLiveUsage.mockReset()
     getLiveUsage.mockResolvedValue(summary())
-    getLatestSessionActivity.mockReset()
-    getLatestSessionActivity.mockResolvedValue(null)
+    getLiveSessions.mockReset()
+    getLiveSessions.mockResolvedValue({ seq: 0, sessions: [] })
+    lifecycle.seq = 0
     isOverlayWorkActive.mockReset()
     isOverlayWorkActive.mockResolvedValue(true)
     showHudDetail.mockClear()
@@ -289,8 +298,9 @@ describe("OverlayWindow", () => {
       await advance(0)
 
       expect(getLiveUsage).not.toHaveBeenCalled()
-      expect(getLatestSessionActivity).not.toHaveBeenCalled()
+      expect(getLiveSessions).not.toHaveBeenCalled()
       expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
+      expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
       await advance(5 * 60_000)
       expect(getLiveUsage).not.toHaveBeenCalled()
       unmount()
@@ -309,17 +319,19 @@ describe("OverlayWindow", () => {
       act(() => emitNative("overlay_work_changed", true))
       await advance(0)
       expect(getLiveUsage).toHaveBeenCalledTimes(1)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
+      expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(1)
 
       act(() => emitNative("overlay_work_changed", false))
       expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
+      expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
       await advance(2 * REFRESH_TEST_MS)
       expect(getLiveUsage).toHaveBeenCalledTimes(1)
 
       act(() => emitNative("overlay_work_changed", true))
       await advance(0)
       expect(getLiveUsage).toHaveBeenCalledTimes(2)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(2)
+      expect(getLiveSessions).toHaveBeenCalledTimes(2)
 
       act(() => emitNative("overlay_work_changed", false))
       act(() => emitNative("overlay_work_changed", true))
@@ -384,7 +396,7 @@ describe("OverlayWindow", () => {
     await act(async () => resolveActive(true))
 
     expect(getLiveUsage).not.toHaveBeenCalled()
-    expect(getLatestSessionActivity).not.toHaveBeenCalled()
+    expect(getLiveSessions).not.toHaveBeenCalled()
   })
 
   it("retries a transient native work-listener failure", async () => {
@@ -397,56 +409,90 @@ describe("OverlayWindow", () => {
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
   })
 
-  it("expires live activity once without polling", async () => {
+  it("lights working activity from the registry snapshot and clears it on quiet", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    getLiveSessions.mockResolvedValue({
+      seq: 1,
+      sessions: [
+        {
+          session: { environmentKey: "native", agent: "claude-code", sessionId: "busy" },
+          agent: "claude-code",
+          lastActivityAt: Math.floor(Date.now() / 1000),
+          quiet: false,
+        },
+      ],
+    })
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
       expect(container.querySelector(".led-blink")).not.toBeNull()
 
-      await advance(90_001)
+      // The snapshot already carries sequence 1; the delta must be newer.
+      lifecycle.seq = 1
+      // The registry, not a local timer, ends the working state.
+      act(() =>
+        emitLifecycle({
+          kind: "quiet",
+          session: { environmentKey: "native", agent: "claude-code", sessionId: "busy" },
+          agent: "claude-code",
+          at: Math.floor(Date.now() / 1000) + 30,
+        }),
+      )
       expect(container.querySelector(".led-blink")).toBeNull()
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it("keeps a far-future activity expiry inside the browser timer bound", async () => {
+  it("expires anonymous agent activity after the registry's quiet window", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    const day = 24 * 60 * 60 * 1000
-    getLatestSessionActivity.mockResolvedValue((Date.now() + 40 * day) / 1000)
-    const timeout = vi.spyOn(window, "setTimeout")
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
+      expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(1)
+
+      act(() =>
+        emitLifecycle({
+          kind: "activity",
+          session: null,
+          agent: "codex",
+          at: Math.floor(Date.now() / 1000),
+          resumed: false,
+        }),
+      )
       expect(container.querySelector(".led-blink")).not.toBeNull()
-      expect(timeout).toHaveBeenCalledWith(expect.any(Function), 2_147_483_647)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+
+      // No quiet event exists for an unindexed session; the tracker
+      // expires it after the registry's own quiet window.
+      await advance(30_000)
+      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
-      timeout.mockRestore()
       vi.useRealTimers()
     }
   })
 
-  it("uses pushed session activity and cleans its subscriptions on hide", async () => {
+  it("uses pushed lifecycle activity and cleans its subscriptions on hide", async () => {
     const { container, unmount } = render(<OverlayWindow />)
-    await waitFor(() => expect(nativeEvents.get("sessions:entry-changed")?.size).toBe(1))
+    await waitFor(() => expect(nativeEvents.get("session:lifecycle")?.size).toBe(1))
 
     act(() =>
-      emitNative("sessions:entry-changed", {
-        timestamp: new Date().toISOString(),
+      emitLifecycle({
+        kind: "activity",
+        session: { environmentKey: "native", agent: "claude-code", sessionId: "live" },
+        agent: "claude-code",
+        at: Math.floor(Date.now() / 1000),
+        resumed: false,
       }),
     )
-    expect(container.querySelector(".led-blink")).not.toBeNull()
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
 
     act(() => emitNative("overlay_work_changed", false))
-    expect(nativeEvents.get("sessions:entry-changed")?.size ?? 0).toBe(0)
+    expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("scan:finished")?.size ?? 0).toBe(0)
-    expect(nativeEvents.get("sessions:invalidated")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
 
     unmount()

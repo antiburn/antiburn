@@ -1,0 +1,257 @@
+/* ==========================================================================
+   Overview daily spend chart.
+
+   Thirty day slots, each a pair of pill bars: this period in `token-in` and
+   the thirty days before it in tertiary ink. The bar is the same diameter as
+   a `SegmentedMeter` dot, so an empty day is a single dot and a bar is a
+   stretched dot. Geometry stays here; every color is a Tailwind utility on
+   the element.
+   ========================================================================== */
+
+.overview-chart {
+  /* One meter dot. */
+  --overview-bar-width: 7px;
+  --overview-chart-height: 90px;
+  /* Between the two bars of a day, and between days. */
+  --overview-pair-gap: 2px;
+  --overview-day-gap: 3px;
+  /* Left-to-right delay per day on first paint. */
+  --overview-bar-stagger: 12ms;
+  /* Room for the scale figures to the right of the bars. */
+  --overview-scale-gutter: 44px;
+  --overview-day-count: 30;
+  /* The bars, the gaps, and the gutter at their natural size. */
+  --overview-min-width: calc(
+    var(--overview-day-count) * (2 * var(--overview-bar-width) + var(--overview-pair-gap)) +
+      var(--overview-day-count) * var(--overview-day-gap) + var(--overview-scale-gutter)
+  );
+}
+
+/* The chart is the last block on the page and takes the height the window
+   has to spare, so a taller window shows taller bars. Each layer down to
+   the plot grows with it; the chart height is the floor. */
+.overview-chart,
+.overview-chart-scroll,
+.overview-chart-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-block-size: 0;
+}
+
+/* The bars keep one size at every width. When the page is narrower than
+   the chart, the chart scrolls sideways instead of shrinking the bars. The
+   padding keeps a focused day's ring inside the scroll box. */
+.overview-chart-scroll {
+  margin: calc(-1 * var(--space-xs));
+  padding: var(--space-xs);
+  overflow-x: auto;
+}
+
+.overview-chart-body {
+  min-inline-size: var(--overview-min-width);
+}
+
+/* The bars and the scale figures side by side, at least the chart height. */
+.overview-plot {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) var(--overview-scale-gutter);
+  column-gap: var(--overview-day-gap);
+  min-block-size: var(--overview-chart-height);
+}
+
+.overview-days {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--overview-day-gap);
+  block-size: 100%;
+}
+
+.overview-day {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  gap: var(--overview-pair-gap);
+  block-size: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  cursor: default;
+}
+
+.overview-bar {
+  display: block;
+  inline-size: var(--overview-bar-width);
+  min-block-size: var(--overview-bar-width);
+  border-radius: 9999px;
+  transform-origin: bottom;
+  transition: block-size var(--duration-slow) ease-out;
+  animation: overview-bar-grow var(--duration-slow) ease-out both;
+  animation-delay: calc(var(--overview-bar-index, 0) * var(--overview-bar-stagger));
+}
+
+/* A day with tokens that no price covers: an outline the height of a dot,
+   so it is visibly a reading with no figure rather than a zero. */
+.overview-bar[data-unpriced] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentcolor;
+}
+
+@keyframes overview-bar-grow {
+  from {
+    transform: scaleY(0);
+  }
+
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* The global clamp in motion.css shortens the grow-in but keeps its delay,
+   which would show the bars one after another. Remove the delay too, so
+   every bar is present on first paint. */
+@media (prefers-reduced-motion: reduce) {
+  .overview-bar {
+    animation-delay: 0s !important;
+  }
+}
+
+/* The x-axis: one cell per day; a label sits at the left edge of its cell,
+   and the last label hangs from the right edge so "Today" ends on the bar. */
+.overview-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--overview-day-gap);
+  padding-inline-end: calc(var(--overview-scale-gutter) + var(--overview-day-gap));
+}
+
+.overview-axis-day {
+  position: relative;
+  flex: 0 0 auto;
+  inline-size: calc(var(--overview-bar-width) * 2 + var(--overview-pair-gap));
+  block-size: 1.4em;
+}
+
+.overview-axis-label {
+  position: absolute;
+  inset-inline-start: 0;
+  white-space: nowrap;
+}
+
+.overview-axis-day:last-child .overview-axis-label {
+  inset-inline-start: auto;
+  inset-inline-end: 0;
+}
+
+/* ==========================================================================
+   Overview page width.
+
+   The page measures itself as a container. The three spend totals sit in a
+   row and stack below 540px, where three hero figures no longer fit. The
+   stack card and the limits card sit in a row and stack below 700px, where
+   the meter dots of the limits card no longer fit beside the checks.
+   ========================================================================== */
+
+.overview-page {
+  container-type: inline-size;
+  flex: 1 0 auto;
+}
+
+/* Radix wraps the scroll viewport's children in a div of its own. Give
+   that div the viewport's height, so the page can fill it and the chart
+   at the bottom can grow. */
+/* Radix's viewport wrapper has no set height, so a percent min-height on
+   the page cannot resolve through it. Make the wrapper a column that fills
+   the viewport and let the page grow inside it. The chart, last on the
+   page, takes that spare height. */
+[data-radix-scroll-area-viewport]:has(> div > .overview-page) > div {
+  display: flex !important;
+  flex-direction: column;
+  min-block-size: 100%;
+}
+
+/* The pointer or the keyboard picks one day; every other day fades so the
+   picked pair stands alone under its tooltip. */
+.overview-day {
+  transition: opacity var(--duration-fast) ease-out;
+}
+
+.overview-days:has(.overview-day:hover) .overview-day:not(:hover),
+.overview-days:has(.overview-day:focus-visible) .overview-day:not(:focus-visible) {
+  opacity: 0.25;
+}
+
+.overview-legend {
+  position: absolute;
+  inset-block-start: var(--space-xs);
+  inset-inline-start: var(--space-xs);
+  z-index: 1;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-control);
+  background-color: var(--color-surface-key);
+  box-shadow: var(--shadow-stats-card);
+  pointer-events: none;
+}
+
+.overview-totals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.overview-totals-cell + .overview-totals-cell {
+  border-left-width: 1px;
+  padding-inline: var(--space-lg);
+}
+
+.overview-totals-cell:first-child {
+  padding-inline-end: var(--space-lg);
+}
+
+/* The sessions card fills the space beside the fixed-width provider limits card. */
+.overview-panels {
+  --overview-provider-width: 180px;
+
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--overview-provider-width);
+  align-items: stretch;
+  gap: var(--space-xl);
+}
+
+.overview-provider-limits {
+  inline-size: var(--overview-provider-width);
+}
+
+/* Inside the stack card, a rule and a gap separate the sessions from the
+   checks above them. */
+.overview-stack > * + * {
+  margin-block-start: var(--space-lg);
+  border-block-start: 1px solid var(--color-separator);
+  padding-block-start: var(--space-md);
+}
+
+@container (max-width: 700px) {
+  .overview-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container (max-width: 540px) {
+  .overview-totals {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-md);
+  }
+
+  .overview-totals-cell:first-child {
+    padding-inline-end: 0;
+  }
+
+  .overview-totals-cell + .overview-totals-cell {
+    border-left-width: 0;
+    border-top-width: 1px;
+    padding-inline: 0;
+    padding-block-start: var(--space-md);
+  }
+}

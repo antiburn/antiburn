@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { SettingsWindowSession } from "./SettingsWindowSession"
 
 const appInfo = vi.hoisted(() => vi.fn())
-const onSessionsInvalidated = vi.hoisted(() => vi.fn())
+const onSessionIndexChanged = vi.hoisted(() => vi.fn())
 const onSettingsPaneRequest = vi.hoisted(() => vi.fn())
 const onSettingsShown = vi.hoisted(() => vi.fn())
 const noteInteraction = vi.hoisted(() => vi.fn())
@@ -14,7 +14,7 @@ const shell = vi.hoisted(() => ({ present: true }))
 vi.mock("../../lib/ipc", () => ({
   appInfo,
   hasShell: () => shell.present,
-  onSessionsInvalidated,
+  onSessionIndexChanged,
   onSettingsPaneRequest,
   onSettingsShown,
   noteInteraction,
@@ -29,8 +29,8 @@ describe("SettingsWindowSession", () => {
   beforeEach(() => {
     appInfo.mockReset()
     appInfo.mockResolvedValue(null)
-    onSessionsInvalidated.mockReset()
-    onSessionsInvalidated.mockResolvedValue(() => {})
+    onSessionIndexChanged.mockReset()
+    onSessionIndexChanged.mockResolvedValue(() => {})
     onSettingsPaneRequest.mockReset()
     onSettingsPaneRequest.mockResolvedValue(() => {})
     onSettingsShown.mockReset()
@@ -329,9 +329,9 @@ describe("SettingsWindowSession", () => {
     unsubscribe()
   })
 
-  it("refreshes app info after sessions are invalidated", async () => {
+  it("refreshes app info after the session index changes", async () => {
     const invalidation: { current: (() => void) | null } = { current: null }
-    onSessionsInvalidated.mockImplementation(async (handler: () => void) => {
+    onSessionIndexChanged.mockImplementation(async (handler: () => void) => {
       invalidation.current = handler
       return () => {}
     })

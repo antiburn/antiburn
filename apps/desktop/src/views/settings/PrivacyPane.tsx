@@ -268,7 +268,10 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   A second such label when an event has two things to tell apart, such as native
                   versus WSL.
                 </li>
-                <li>Whether a visible state followed a user or automatic exposure.</li>
+                <li>
+                  Whether a visible state followed a user or automatic exposure, or whether a
+                  Burn Check watch started passively or from an action.
+                </li>
                 <li>A range for Claude&rsquo;s current five-hour usage.</li>
                 <li>Whether Claude returned reset data, null, or a malformed value.</li>
                 <li>Claude&rsquo;s reset eligibility state.</li>

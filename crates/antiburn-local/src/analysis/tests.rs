@@ -77,7 +77,8 @@ fn claude_capabilities_are_false_for_every_unevidenced_signal() {
     // `Unsupported` below.
     assert!(capabilities.tool_definitions);
     assert!(!capabilities.service_tier);
-    assert!(!capabilities.quota_incidents);
+    assert!(capabilities.quota_incidents);
+    assert!(capabilities.provider_incidents);
     assert!(!capabilities.harness_version);
     assert!(matches!(
         evidence.context_sources,
@@ -96,7 +97,11 @@ fn claude_capabilities_are_false_for_every_unevidenced_signal() {
     ));
     assert!(matches!(
         evidence.quota_incidents,
-        EvidenceValue::Unsupported
+        EvidenceValue::Complete(ref quota) if quota.incidents.is_empty()
+    ));
+    assert!(matches!(
+        evidence.provider_incidents,
+        EvidenceValue::Complete(ref provider) if provider.incidents.is_empty()
     ));
     assert!(matches!(
         evidence.subagents,

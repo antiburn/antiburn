@@ -1,4 +1,4 @@
-import { ChevronRight, CircleCheck, CircleX, type LucideIcon } from "lucide-react"
+import { ChevronRight } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
@@ -8,6 +8,7 @@ import {
   type SessionHygieneCheck,
 } from "../../../lib/presentation/sessionHygiene"
 import { Tooltip } from "../../presentation/Tooltip"
+import { BURN_CHECK_MARKS, type BurnCheckMark } from "../../burn-checks/burnCheckMarks"
 import { RowInfo } from "./RowInfo"
 
 export interface HygieneBreakdownProps {
@@ -22,10 +23,8 @@ export interface HygieneBreakdownProps {
   inlineGuidance?: boolean
 }
 
-interface HygieneStatusPresentation {
-  Icon: LucideIcon
+interface HygieneStatusPresentation extends BurnCheckMark {
   label: string
-  textClass: string
   /** The ink of the status word. A passing word stays neutral. */
   wordClass: string
 }
@@ -41,15 +40,13 @@ const STATUS_ICON_SIZE = 14
 
 const STATUS_PRESENTATION: Record<AssessedHygieneCheck["status"], HygieneStatusPresentation> = {
   finding: {
-    Icon: CircleX,
+    ...BURN_CHECK_MARKS.finding,
     label: "Failed",
-    textClass: "text-share-waste-text",
-    wordClass: "text-share-waste-text",
+    wordClass: "text-burn-check-failure-text",
   },
   clean: {
-    Icon: CircleCheck,
+    ...BURN_CHECK_MARKS.clean,
     label: "Passed",
-    textClass: "text-share-work-text",
     wordClass: "text-label-secondary",
   },
 }
@@ -60,7 +57,7 @@ function HygieneGuidance({ check }: { check: AssessedHygieneCheck }) {
   return (
     <div className="mt-1 flex flex-col gap-2 rounded-control border border-separator p-3 text-pretty type-callout text-label-secondary">
       {documentation.findingDetails.length > 0 && (
-        <div className="flex flex-col gap-1 text-share-waste-text">
+        <div className="flex flex-col gap-1 text-burn-check-failure-text">
           {documentation.findingDetails.map((sentence) => (
             <p key={sentence}>{sentence}</p>
           ))}
@@ -119,9 +116,9 @@ function HygieneRow({
         <span className={cn("pointer-events-none", status.wordClass)}>{status.label}</span>
         <status.Icon
           size={STATUS_ICON_SIZE}
-          strokeWidth={2}
+          strokeWidth={status.strokeWidth}
           aria-hidden="true"
-          className={cn("pointer-events-none shrink-0", status.textClass)}
+          className={cn("pointer-events-none shrink-0", status.iconClass)}
         />
       </div>
 
@@ -145,7 +142,7 @@ function InlineHygieneTooltip({ check }: { check: AssessedHygieneCheck }) {
   return (
     <div className="space-y-1 text-pretty">
       {documentation.findingDetails.map((sentence) => (
-        <p key={sentence} className="text-share-waste-text">
+        <p key={sentence} className="text-burn-check-failure-text">
           {sentence}
         </p>
       ))}
@@ -189,8 +186,9 @@ function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
           <span className="min-w-0 text-pretty text-label">{check.name}</span>
           <status.Icon
             size={STATUS_ICON_SIZE}
+            strokeWidth={status.strokeWidth}
             aria-hidden="true"
-            className={cn("shrink-0 self-center", status.textClass)}
+            className={cn("shrink-0 self-center", status.iconClass)}
           />
           <span className="session-check-word">{status.label}</span>
         </div>

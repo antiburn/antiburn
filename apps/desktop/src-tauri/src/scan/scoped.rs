@@ -15,11 +15,11 @@ use antiburn_local::discovery::{Explorers, SessionLog, SessionSource, WatchRoot}
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
 use antiburn_local::platform::environment::DiscoveryEnvironment;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::time::Instant;
 
 use crate::agents;
-use crate::dto::{ActivityEntry, ScanStatus};
+use crate::dto::ScanStatus;
 use crate::storage_health::checked;
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
@@ -488,10 +488,6 @@ async fn refresh_indexed_titles_locked(
 ) -> anyhow::Result<ScopedSummary> {
     let store = app.state::<Store>();
     let now = super::unix_now();
-    let announce_app = app.clone();
-    let announce = move |entry: ActivityEntry| {
-        let _ = announce_app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
-    };
     let mut session_count = 0;
     let mut changed_count = 0;
 
@@ -550,7 +546,9 @@ async fn refresh_indexed_titles_locked(
                     store.upsert_sessions(&changed_records, &agents::evidence_cohort()),
                 )?;
             }
-            super::announce_changed_rows(&store, &changed, &previous_map, now, &announce);
+            // A title-store refresh changes titles only, so the diff below
+            // reports `title` facets without a metadata reload.
+            super::report_row_changes(app, &records, &changed, &previous_map, now);
             changed_count += changed.len();
         }
     }
@@ -600,11 +598,6 @@ async fn refresh_sessions_locked(
         previous_map.insert(key.clone(), record);
     }
 
-    let announce_app = app.clone();
-    let announce = move |entry: ActivityEntry| {
-        let _ = announce_app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
-    };
-
     let described = super::describe_with_states(logs, &home, &ignored, &previous_map).await;
     let record_keys = described
         .records
@@ -632,12 +625,36 @@ async fn refresh_sessions_locked(
             &previous_map,
         );
     }
-    super::announce_changed_rows(&store, &described.changed, &previous_map, now, &announce);
+    super::report_row_changes(
+        app,
+        &described.records,
+        &described.changed,
+        &previous_map,
+        now,
+    );
     for key in &described.rejected {
         let removed = checked(app, "The session index", store.delete_session(key))?;
         if removed {
             super::wake_session_workers(app);
+            crate::session_lifecycle::report(
+                app,
+                crate::session_lifecycle::Observation::Removed {
+                    session: Some(key.clone()),
+                    reason: crate::session_lifecycle::RemovalReason::Rejected,
+                },
+            );
         }
+    }
+    // A targeted refresh can still change list membership: a reused source
+    // label can carry a new session identity, and a rejection evicts a
+    // row. The full pass reports the same fact from `scan/mod.rs::pass`.
+    if described.list_changed {
+        crate::session_lifecycle::report(
+            app,
+            crate::session_lifecycle::Observation::IndexChanged {
+                reason: crate::session_lifecycle::IndexChangeReason::ScanPass,
+            },
+        );
     }
 
     Ok(ScopedSummary {

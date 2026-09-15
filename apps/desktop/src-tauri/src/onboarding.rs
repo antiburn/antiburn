@@ -252,7 +252,10 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     window.set_focus()?;
     ::tracing::info!(event = "window_revealed", window = LABEL);
     if !was_exposed {
-        crate::analytics::record_onboarding_started(window.app_handle());
+        let analytics_app = window.app_handle().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::analytics::record_onboarding_started(&analytics_app);
+        });
     }
     Ok(())
 }
@@ -313,13 +316,11 @@ pub fn finish(app: &AppHandle) {
 
 /// Whether the first-run flow still owes the reader something.
 ///
-/// An unreadable store answers `false`: the flow's whole job is the *first*
-/// run, and re-running it because a read failed would be worse than skipping
-/// it. Every caller has a working fallback for that answer — the popover opens
-/// normally, and setup simply shows no window.
+/// Missing managed state answers `false`: setup has not finished installing
+/// the snapshot, so no native callback can open this window yet.
 pub fn is_pending(app: &AppHandle) -> bool {
     app.try_state::<crate::store::Store>()
-        .and_then(|store| store.settings().ok())
+        .map(|store| store.settings_snapshot())
         .is_some_and(|settings| !settings.onboarding_completed)
 }
 

@@ -67,9 +67,7 @@ pub struct TurnFacts {
     /// The same sum under uncached-input billing: paid context
     /// (`input_tokens`) beyond positive growth.
     pub repeated_context_uncached_input_tokens: u64,
-    /// Sum of the raw cache-write bucket over every considered pair's
-    /// current turn, before subtracting growth
-    /// (`RepeatedContext::paid_tokens` under cache-write accounting).
+    /// Sum the paid cache-write bucket across all eligible requests.
     pub repeated_context_cache_write_paid_tokens: u64,
     /// The same sum under uncached-input accounting.
     pub repeated_context_uncached_input_paid_tokens: u64,
@@ -359,7 +357,8 @@ const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, ch
         role, ts_ms, model, effort, speed, input_tokens, cache_read_tokens,
         cache_write_tokens, output_tokens, is_compaction_boundary, message_id,
         uuid, parent_uuid, compaction_trigger, compaction_pre_tokens,
-        compaction_post_tokens, has_thinking, last_tool, subagent_launches, provider, api
+        compaction_post_tokens, has_thinking, last_tool, subagent_launches, provider, api,
+        cache_write_1h_tokens
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
   ORDER BY source_key, turn_index";
@@ -424,6 +423,7 @@ pub fn query_turn_rows(
                 input_tokens: as_u64(row.get(10)?),
                 cache_read_tokens: as_u64(row.get(11)?),
                 cache_write_tokens: as_u64(row.get(12)?),
+                cache_write_1h_tokens: as_u64(row.get(26)?),
                 output_tokens: as_u64(row.get(13)?),
                 is_compaction_boundary: is_compaction_boundary != 0,
                 message_id: row.get(15)?,
@@ -600,7 +600,7 @@ fn add_model_tokens(
  * ----------------------------------------------------------------- */
 
 const MODEL_BREAKDOWN_SQL: &str = "SELECT model, input_tokens, output_tokens,
-        cache_read_tokens, cache_write_tokens
+        cache_read_tokens, cache_write_tokens, cache_write_1h_tokens
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND role = 'assistant' AND model IS NOT NULL
@@ -619,13 +619,11 @@ const MODEL_BREAKDOWN_SQL: &str = "SELECT model, input_tokens, output_tokens,
 /// as a map key; a row whose model is blank after that is dropped, since
 /// the accumulator drops it too instead of folding it in unattributed.
 ///
-/// `cache_creation_1h_tokens` always stays `0`. No vendor adapter
-/// populates a 1h split on the events `add_usage`
+/// `cache_creation_1h_tokens` sums the row's own `cache_write_1h_tokens`
+/// column, the same subset `add_usage`
 /// (`crates/antiburn-local/src/analysis/metrics_sink/tally.rs`) folds into
-/// `SessionMetricsAccumulator::model_breakdown` — that function only ever
-/// touches `input_tokens`, `output_tokens`, `cache_read_tokens`, and
-/// `cache_creation_tokens` — so the accumulator path stores `0` there too,
-/// and parity holds.
+/// `SessionMetricsAccumulator::model_breakdown` from `Usage::cache_creation_1h_tokens`,
+/// so the two paths stay in parity.
 pub fn query_model_breakdown(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
@@ -652,6 +650,7 @@ pub fn query_model_breakdown(
         let output: i64 = row.get(2)?;
         let cache_read: i64 = row.get(3)?;
         let cache_write: i64 = row.get(4)?;
+        let cache_write_1h: i64 = row.get(5)?;
         let entry = breakdown.entry(model.to_string()).or_default();
         entry.input_tokens = entry.input_tokens.saturating_add(as_u64(input));
         entry.output_tokens = entry.output_tokens.saturating_add(as_u64(output));
@@ -659,12 +658,15 @@ pub fn query_model_breakdown(
         entry.cache_creation_tokens = entry
             .cache_creation_tokens
             .saturating_add(as_u64(cache_write));
+        entry.cache_creation_1h_tokens = entry
+            .cache_creation_1h_tokens
+            .saturating_add(as_u64(cache_write_1h));
     }
     Ok(breakdown)
 }
 
 const PRICING_BREAKDOWN_SQL: &str = "SELECT model, speed, input_tokens, output_tokens,
-        cache_read_tokens, cache_write_tokens
+        cache_read_tokens, cache_write_tokens, cache_write_1h_tokens
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND role = 'assistant' AND model IS NOT NULL
@@ -703,6 +705,9 @@ pub fn query_pricing_breakdown(
         entry.cache_creation_tokens = entry
             .cache_creation_tokens
             .saturating_add(as_u64(row.get(5)?));
+        entry.cache_creation_1h_tokens = entry
+            .cache_creation_1h_tokens
+            .saturating_add(as_u64(row.get(6)?));
     }
     Ok(breakdown)
 }
@@ -1243,7 +1248,7 @@ fn query_duplicate_turn_identities(
 /// Scan all main rows so intervening links and compactions can break request pairs.
 const REPEATED_CONTEXT_SCAN_SQL: &str = "SELECT thread_id, ts_ms, input_tokens,
         cache_read_tokens, cache_write_tokens, is_compaction_boundary,
-        source_key, role, model, provider, api, uuid, parent_uuid, turn_index
+        source_key, role, model, provider, api, uuid, parent_uuid, turn_index, output_tokens
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main'
@@ -1254,9 +1259,7 @@ struct RepeatedContextTotals {
     incomplete: bool,
     cache_write_tokens: u64,
     uncached_input_tokens: u64,
-    /// Sum of the raw cache-write bucket (`RepeatedContext::paid_tokens`
-    /// under `CacheAccounting::CacheWrite`) over every considered pair's
-    /// current turn, before subtracting growth.
+    /// Sum the paid cache-write bucket across all eligible requests.
     cache_write_paid_tokens: u64,
     /// The same sum under uncached-input accounting.
     uncached_input_paid_tokens: u64,
@@ -1378,6 +1381,9 @@ fn query_repeated_context(
         let depth = as_u64(input_tokens)
             .saturating_add(as_u64(cache_read_tokens))
             .saturating_add(as_u64(cache_write));
+        if key.agent == "codex" && depth == 0 && row.get::<_, i64>(14)? == 0 {
+            continue;
+        }
         if mode.is_none()
             || mode != accounting
             || model.as_deref().is_none_or(|model| model.trim().is_empty())
@@ -1387,6 +1393,9 @@ fn query_repeated_context(
             pairs_skipped = pairs_skipped.saturating_add(u64::from(previous.take().is_some()));
             continue;
         }
+        cache_write_paid_tokens = cache_write_paid_tokens.saturating_add(as_u64(cache_write));
+        uncached_input_paid_tokens =
+            uncached_input_paid_tokens.saturating_add(as_u64(input_tokens));
         let route = (model, provider, api);
         if let Some((previous_ts, previous_depth, previous_route)) = previous {
             let in_order = matches!((previous_ts, ts_ms), (Some(previous_ts), Some(ts_ms)) if ts_ms >= previous_ts);
@@ -1399,9 +1408,6 @@ fn query_repeated_context(
                     cache_write_tokens.saturating_add(paid_cache_write.saturating_sub(growth));
                 uncached_input_tokens = uncached_input_tokens
                     .saturating_add(paid_uncached_input.saturating_sub(growth));
-                cache_write_paid_tokens = cache_write_paid_tokens.saturating_add(paid_cache_write);
-                uncached_input_paid_tokens =
-                    uncached_input_paid_tokens.saturating_add(paid_uncached_input);
             } else {
                 pairs_skipped = pairs_skipped.saturating_add(1);
                 incomplete = true;
@@ -1473,6 +1479,7 @@ mod tests {
             input_tokens: 10,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             output_tokens: 5,
             is_compaction_boundary: false,
             message_id: None,
@@ -2182,6 +2189,24 @@ mod tests {
     }
 
     #[test]
+    fn paid_totals_include_initial_requests_and_new_segments() {
+        for agent in ["claude", "codex"] {
+            let mut rows: Vec<_> = (0..3).map(|index| cache_row("s1", index)).collect();
+            for row in &mut rows {
+                row.input_tokens = 100;
+                row.cache_write_tokens = 100;
+            }
+            rows[2].model = Some("different-model".to_owned());
+            let facts = route_facts(agent, &rows);
+            assert_eq!(facts.repeated_context_cache_write_paid_tokens, 300);
+            assert_eq!(facts.repeated_context_uncached_input_paid_tokens, 300);
+            assert_eq!(facts.repeated_context_cache_write_tokens, 100);
+            assert_eq!(facts.repeated_context_pairs_considered, 1);
+            assert!(facts.repeated_context_incomplete);
+        }
+    }
+
+    #[test]
     fn known_request_contracts_use_disjoint_input_buckets() {
         use RepeatedContextAccounting::{CacheWrite, UncachedInput};
         for (agent, provider, api, expected) in [
@@ -2315,7 +2340,7 @@ mod tests {
         };
         assert_eq!(observed.accounting, RepeatedContextAccounting::CacheWrite);
         assert_eq!(observed.repeated_tokens, 200);
-        assert_eq!(observed.paid_tokens, 200);
+        assert_eq!(observed.paid_tokens, 400);
 
         let reversed: Vec<_> = rows
             .into_iter()

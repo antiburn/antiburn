@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type {
@@ -108,9 +108,97 @@ function filledSegments(): number {
 }
 
 describe("UsageLimitsBar — the ring row", () => {
+  const shortWindow = liveWindow({
+    usedPercent: 42,
+    startsAt: "2027-01-15T09:00:00Z",
+    resetsAt: "2027-01-15T14:00:00Z",
+  })
+  const longWindow = liveWindow({
+    id: "weekly",
+    role: "primaryLong",
+    usedPercent: 75,
+    startsAt: "2027-01-12T00:00:00Z",
+    resetsAt: "2027-01-19T00:00:00Z",
+  })
+
+  it("marks the highest-usage window for each account independently", () => {
+    bar({
+      live: liveSummary({
+        providers: [
+          liveProvider({ accountKey: "first", windows: [shortWindow, longWindow] }),
+          liveProvider({ accountKey: "second", windows: [shortWindow] }),
+        ],
+      }),
+    })
+    const first = screen.getByRole("img", {
+      name: "Claude account 1 at 75 percent. Long-term limit. Pace marker at 50 percent",
+    })
+    const second = screen.getByRole("img", {
+      name: "Claude account 2 at 42 percent. 5-hour limit. Pace marker at 60 percent",
+    })
+    expect(within(first).getByTestId("usage-ring-notch")).toHaveAttribute(
+      "transform",
+      "rotate(180 16 16)",
+    )
+    expect(within(second).getByTestId("usage-ring-notch")).toHaveAttribute(
+      "transform",
+      "rotate(216 16 16)",
+    )
+  })
+
+  it("breaks equal-usage ties in display order", () => {
+    bar({
+      live: liveSummary({
+        providers: [
+          liveProvider({ windows: [longWindow, { ...shortWindow, usedPercent: 75 }] }),
+        ],
+      }),
+    })
+    expect(screen.getByTestId("usage-ring-notch")).toHaveAttribute(
+      "transform",
+      "rotate(216 16 16)",
+    )
+  })
+
+  it("does not borrow timing when the displayed window has no reset", () => {
+    bar({
+      live: liveSummary({
+        providers: [
+          liveProvider({ windows: [shortWindow, { ...longWindow, resetsAt: null }] }),
+        ],
+      }),
+    })
+    expect(screen.queryByTestId("usage-ring-notch")).not.toBeInTheDocument()
+    expect(screen.getByRole("img")).not.toHaveAttribute("title")
+    expect(screen.getByRole("img")).toHaveAccessibleName(
+      "Claude at 75 percent. Long-term limit",
+    )
+  })
+
+  it("uses the same snapshot time for collapsed and expanded markers", () => {
+    const live = liveSummary({ providers: [liveProvider({ windows: [shortWindow] })] })
+    const { rerender } = bar({ live })
+    const dial = screen.getByRole("img", {
+      name: "Claude at 42 percent. 5-hour limit. Pace marker at 60 percent",
+    })
+    fireEvent.focus(dial)
+    const tooltip = screen.getByRole("tooltip")
+    expect(tooltip).toHaveTextContent("Claude · 5-hour limit")
+    expect(tooltip).toHaveTextContent("42% used")
+    expect(tooltip).toHaveTextContent("60% would be on pace by now")
+    expect(screen.getByTestId("usage-ring-notch")).toHaveAttribute(
+      "transform",
+      "rotate(216 16 16)",
+    )
+    rerender(
+      <UsageLimitsBar live={live} expanded onToggleExpanded={vi.fn()} refreshing={false} />,
+    )
+    expect(screen.getByTestId("segmented-meter-notch")).toHaveStyle({ left: "60%" })
+  })
+
   it("states each provider's worst window as an accessible percentage", () => {
     bar()
-    const dial = screen.getByRole("img", { name: "Claude at 42 percent" })
+    const dial = screen.getByRole("img", { name: "Claude at 42 percent. 5-hour limit" })
     expect(dial).toBeInTheDocument()
     expect(dial).toHaveAttribute("tabindex", "0")
     expect(dial).toHaveClass("transition-[background-color]")
@@ -118,7 +206,7 @@ describe("UsageLimitsBar — the ring row", () => {
     dial.focus()
     expect(dial).toHaveFocus()
     expect(
-      screen.queryByRole("button", { name: "Claude at 42 percent" }),
+      screen.queryByRole("button", { name: "Claude at 42 percent. 5-hour limit" }),
     ).not.toBeInTheDocument()
   })
 
@@ -127,7 +215,7 @@ describe("UsageLimitsBar — the ring row", () => {
       activeProvider: { provider: "anthropic", activation: "hovered" },
     })
 
-    const trigger = screen.getByRole("img", { name: "Claude at 42 percent" })
+    const trigger = screen.getByRole("img", { name: "Claude at 42 percent. 5-hour limit" })
     expect(trigger).toHaveAttribute("data-state", "hovered")
     expect(trigger).toHaveClass("data-[state=hovered]:bg-surface-secondary/50")
   })
@@ -144,14 +232,18 @@ describe("UsageLimitsBar — the ring row", () => {
   it("reports a refresh in flight without hiding the readings it already has", () => {
     bar({ refreshing: true })
     expect(screen.getByRole("status")).toHaveTextContent("Refreshing usage limits")
-    expect(screen.getByRole("img", { name: "Claude at 42 percent" })).toBeInTheDocument()
+    expect(
+      screen.getByRole("img", { name: "Claude at 42 percent. 5-hour limit" }),
+    ).toBeInTheDocument()
   })
 
   it("shows the percentage beside the ring", () => {
     bar()
-    const seat = screen.getByRole("img", { name: "Claude at 42 percent" })
+    const seat = screen.getByRole("img", { name: "Claude at 42 percent. 5-hour limit" })
     expect(within(seat).getByText("42%")).toBeInTheDocument()
-    expect(seat).toHaveAttribute("title", "Claude — 42%")
+    expect(seat).not.toHaveAttribute("title")
+    fireEvent.focus(seat)
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Claude · 5-hour limit42% used")
   })
 
   it("shows a dash beside the ring when the provider states no figure", () => {
@@ -166,6 +258,24 @@ describe("UsageLimitsBar — the ring row", () => {
 })
 
 describe("UsageLimitsBar — the disclosure", () => {
+  it("keeps the compact spacing above the Burn Checks summary", () => {
+    const { rerender } = bar()
+    expect(screen.getByTestId("usage-limits-bar").firstElementChild).toHaveClass(
+      "pt-2.5",
+      "pb-1.5",
+    )
+
+    rerender(
+      <UsageLimitsBar
+        live={liveSummary()}
+        expanded
+        onToggleExpanded={vi.fn()}
+        refreshing={false}
+      />,
+    )
+    expect(screen.getByRole("region", { name: "Usage limits" })).toHaveClass("pt-3", "pb-1")
+  })
+
   it("marks itself pressed only while the meters are open", () => {
     const { rerender } = bar()
     const collapsed = screen.getByRole("button", { name: "Expand usage limits" })
@@ -188,7 +298,9 @@ describe("UsageLimitsBar — the disclosure", () => {
 
   it("drops the ring row and moves the disclosure beside the first provider", () => {
     bar({ expanded: true })
-    expect(screen.queryByRole("img", { name: "Claude at 42 percent" })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("img", { name: "Claude at 42 percent. 5-hour limit" }),
+    ).not.toBeInTheDocument()
     const region = screen.getByRole("region", { name: "Usage limits" })
     const group = within(region).getByRole("group", { name: "Claude" })
     const providerRow = within(group).getByRole("heading").parentElement
@@ -486,8 +598,11 @@ describe("UsageLimitsBar — grace period", () => {
         errors: [sourceError()],
       }),
     })
-    const seat = screen.getByRole("img", { name: `Claude at 42 percent. ${GRACE_NOTE}` })
-    expect(seat).toHaveAttribute("title", `Claude — 42% — ${GRACE_NOTE}`)
+    const seat = screen.getByRole("img", {
+      name: `Claude at 42 percent. 5-hour limit. ${GRACE_NOTE}`,
+    })
+    fireEvent.focus(seat)
+    expect(screen.getByRole("tooltip")).toHaveTextContent(GRACE_NOTE)
     const figureWrapper = within(seat).getByText("42%").closest('span[aria-hidden="true"]')
     expect(figureWrapper).toHaveClass("text-label-tertiary")
   })

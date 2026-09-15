@@ -18,6 +18,8 @@ pub const MAX_SUBAGENT_CHILDREN: usize = 64;
 pub const MAX_SUBAGENT_MODELS: usize = 32;
 pub const MAX_MODEL_TRANSITIONS: usize = 64;
 pub const MAX_COMPACTION_BOUNDARIES: usize = 64;
+pub const MAX_QUOTA_INCIDENTS: usize = 64;
+pub const MAX_PROVIDER_INCIDENTS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvidenceValue<T> {
@@ -390,12 +392,8 @@ pub struct RepeatedContext {
     pub repeated_tokens: u64,
     pub pairs_considered: u64,
     pub pairs_skipped: u64,
-    /// Sum of `paid` (the accounting's billed bucket) over every
-    /// considered pair's current turn, same accounting as
-    /// `repeated_tokens`. `repeated_tokens <= paid_tokens` by
-    /// construction: a pair's overpay never exceeds what it paid.
-    /// Old persisted evidence has no field here, so it deserializes as
-    /// `0`.
+    /// Sum the accounting's paid bucket across all eligible requests, including each segment's first request.
+    /// Old persisted evidence uses zero until analysis refreshes it.
     #[serde(default)]
     pub paid_tokens: u64,
 }
@@ -427,6 +425,8 @@ pub enum QuotaLimitKind {
     ModelSpecific,
     WeightedUsage,
     RateLimit,
+    /// A plan usage limit. The source does not name the limit's window.
+    UsageLimit,
 }
 
 /// Distinguishes a hard limit hit from an advance warning.
@@ -465,6 +465,35 @@ pub struct QuotaIncident {
 #[serde(rename_all = "camelCase")]
 pub struct SessionQuotaEvidence {
     pub incidents: Vec<QuotaIncident>,
+}
+
+/// Names the provider-side failure class of a transcript-observed incident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderIncidentKind {
+    /// The provider refused the request because the model or server was at capacity.
+    Capacity,
+    /// The provider returned a server-side failure (HTTP 5xx or an equivalent code).
+    ServerError,
+    /// The client could not reach the provider or the response stream broke off.
+    Connection,
+}
+
+/// One transcript-observed provider-side failure. The user's usage did not cause it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderIncident {
+    pub ts_ms: i64,
+    pub kind: ProviderIncidentKind,
+    pub model: Option<String>,
+}
+
+/// Transcript-attributable provider incidents for one session.
+/// The parser bounds the collection and overflows to `Partial`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionProviderEvidence {
+    pub incidents: Vec<ProviderIncident>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -512,6 +541,8 @@ pub struct SourceCapabilities {
     #[serde(default)]
     pub linear_record_order: bool,
     pub quota_incidents: bool,
+    #[serde(default)]
+    pub provider_incidents: bool,
     pub harness_version: bool,
     pub repeated_context_accounting: Option<RepeatedContextAccounting>,
 }
@@ -527,6 +558,14 @@ impl SourceCapabilities {
     /// `context_sources.tool_definitions` still reports `Unsupported` when
     /// the catalogue cannot resolve either — this flag only says Claude
     /// carries the version and model signal the catalogue lookup needs.
+    ///
+    /// `quota_incidents` and `provider_incidents` are set: the reader maps
+    /// an `isApiErrorMessage` assistant record's `apiErrorStatus` and
+    /// `error` fields to a quota incident (`429` or `error: "rate_limit"`)
+    /// or a provider incident (`529`, another `5xx` status, or
+    /// `error: "server_error"` with no status). `ProviderIncidentKind::Connection`
+    /// stays unset for Claude: its `error: "unknown"` label is too broad to
+    /// claim a connection failure without reading the message text.
     pub fn claude() -> Self {
         Self {
             source_format: SourceFormat::ClaudeJsonl,
@@ -548,7 +587,8 @@ impl SourceCapabilities {
             thread_identity: true,
             record_identity: true,
             linear_record_order: false,
-            quota_incidents: false,
+            quota_incidents: true,
+            provider_incidents: true,
             harness_version: false,
             repeated_context_accounting: Some(RepeatedContextAccounting::CacheWrite),
         }
@@ -587,6 +627,13 @@ impl SourceCapabilities {
     /// trusts only the reported token count. `evidence_sink` still pins
     /// Codex to uncached-input accounting for repeated context, as its
     /// source capability contract documents.
+    ///
+    /// `quota_incidents` is set: the reader maps a `task_complete` event's
+    /// non-null `error` object to a quota incident for the two reviewed
+    /// user-allocation `codex_error_info` codes, `rate_limit_exceeded` and
+    /// `usage_limit_exceeded`. `provider_incidents` is set: the same event
+    /// maps its `server_overloaded` code to a provider incident instead,
+    /// since a provider outage is not caused by the user's own usage.
     pub fn codex() -> Self {
         Self {
             source_format: SourceFormat::CodexRolloutJsonl,
@@ -608,7 +655,8 @@ impl SourceCapabilities {
             thread_identity: true,
             record_identity: false,
             linear_record_order: true,
-            quota_incidents: false,
+            quota_incidents: true,
+            provider_incidents: true,
             harness_version: true,
             repeated_context_accounting: Some(RepeatedContextAccounting::UncachedInput),
         }
@@ -654,6 +702,7 @@ impl SourceCapabilities {
             record_identity: false,
             linear_record_order: true,
             quota_incidents: false,
+            provider_incidents: false,
             harness_version: false,
             repeated_context_accounting: None,
         }
@@ -703,6 +752,7 @@ impl SourceCapabilities {
             record_identity: true,
             linear_record_order: false,
             quota_incidents: false,
+            provider_incidents: false,
             harness_version: false,
             repeated_context_accounting: None,
         }
@@ -749,6 +799,7 @@ impl SourceCapabilities {
             record_identity: false,
             linear_record_order: false,
             quota_incidents: false,
+            provider_incidents: false,
             harness_version: false,
             repeated_context_accounting: None,
         }
@@ -794,6 +845,7 @@ impl SourceCapabilities {
             record_identity: false,
             linear_record_order: false,
             quota_incidents: false,
+            provider_incidents: false,
             harness_version: false,
             repeated_context_accounting: None,
         }
@@ -828,6 +880,7 @@ impl SourceCapabilities {
             record_identity: false,
             linear_record_order: false,
             quota_incidents: false,
+            provider_incidents: false,
             harness_version: false,
             repeated_context_accounting: None,
         }
@@ -1081,6 +1134,24 @@ pub struct SessionCoverageRecord {
     pub deferred_tools: BTreeSet<String>,
     pub summary_observed: bool,
     pub child_loss_reason: Option<CoverageReason>,
+    /// Transcript-observed quota incidents. Old persisted evidence has no
+    /// field here, so it deserializes as empty.
+    #[serde(default)]
+    pub quota_incidents: Vec<QuotaIncident>,
+    /// True when a bounded pass dropped an incident past
+    /// [`MAX_QUOTA_INCIDENTS`]. Old persisted evidence has no field here,
+    /// so it deserializes as `false`.
+    #[serde(default)]
+    pub quota_incidents_capped: bool,
+    /// Transcript-observed provider incidents. Old persisted evidence has
+    /// no field here, so it deserializes as empty.
+    #[serde(default)]
+    pub provider_incidents: Vec<ProviderIncident>,
+    /// True when a bounded pass dropped an incident past
+    /// [`MAX_PROVIDER_INCIDENTS`]. Old persisted evidence has no field
+    /// here, so it deserializes as `false`.
+    #[serde(default)]
+    pub provider_incidents_capped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1102,6 +1173,7 @@ pub struct SessionEvidence {
     pub cache: EvidenceValue<CacheEvidence>,
     pub compactions: EvidenceValue<CompactionEvidence>,
     pub quota_incidents: EvidenceValue<SessionQuotaEvidence>,
+    pub provider_incidents: EvidenceValue<SessionProviderEvidence>,
 }
 
 #[cfg(test)]
@@ -1128,7 +1200,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 18,
+            "schemaRevision": 19,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -1151,15 +1223,16 @@ mod tests {
                 "threadIdentity": true,
                 "recordIdentity": true,
                 "linearRecordOrder": false,
-                "quotaIncidents": false,
+                "quotaIncidents": true,
+                "providerIncidents": true,
                 "harnessVersion": false,
                 "repeatedContextAccounting": "cache_write"
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 32,
-                "analyzerRevision": 22,
-                "evidenceSchemaRevision": 18,
+                "parserRevision": 38,
+                "analyzerRevision": 24,
+                "evidenceSchemaRevision": 19,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -1186,7 +1259,8 @@ mod tests {
             "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "delegatedModels": [], "children": [], "examples": []}},
             "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0, "paidTokens": 0}}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},
-            "quotaIncidents": {"state": "unsupported"}
+            "quotaIncidents": {"state": "complete", "value": {"incidents": []}},
+            "providerIncidents": {"state": "complete", "value": {"incidents": []}}
         })
     }
 
@@ -1448,6 +1522,7 @@ mod tests {
                 record_identity: false,
                 linear_record_order: false,
                 quota_incidents: false,
+                provider_incidents: false,
                 harness_version: false,
                 repeated_context_accounting: None,
             }

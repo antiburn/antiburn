@@ -1,10 +1,13 @@
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 
+use crate::companion::CompanionWindow;
 use serde::Serialize;
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Manager, WebviewWindow};
 #[cfg(not(target_os = "macos"))]
 use tauri::{PhysicalPosition, PhysicalSize};
+#[cfg(not(target_os = "macos"))]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::geometry::CursorProximity;
 #[cfg(not(target_os = "macos"))]
@@ -18,8 +21,8 @@ where
     T: Clone + PartialEq + Send + Sync + Serialize + 'static,
     P: Clone + Send + Sync + Serialize + 'static,
 {
-    pub(super) fn ensure_window(&self, app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
-        if let Some(window) = app.get_webview_window(&self.inner.config.label) {
+    pub(super) fn ensure_window(&self, app: &tauri::AppHandle) -> tauri::Result<CompanionWindow> {
+        if let Some(window) = self.companion(app) {
             #[cfg(target_os = "linux")]
             crate::linux::install_pointer_tracking(
                 &window,
@@ -33,38 +36,70 @@ where
             lifecycle.renderer_ready = false;
             (lifecycle.renderer_generation, lifecycle.height)
         };
-        let script = format!(
-            "Object.defineProperty(globalThis, \"__ANTIBURN_WINDOW_GENERATION__\", {{ value: {renderer_generation}, writable: false, configurable: false }});"
-        );
-        let builder = WebviewWindowBuilder::new(
-            app,
-            &self.inner.config.label,
-            WebviewUrl::App(self.inner.config.route.clone().into()),
-        )
-        .initialization_script(script)
-        .title(&self.inner.config.title)
-        .inner_size(self.inner.config.width, initial_height)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .decorations(false)
-        .shadow(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .focused(false)
-        .transparent(cfg!(target_os = "macos"))
-        .focusable(false);
-        let window = platform::configure(builder, self.inner.config.corner_radius).build()?;
-        #[cfg(target_os = "linux")]
-        crate::linux::install_pointer_tracking(&window, Arc::clone(&self.inner.pointer_tracker))?;
+        #[cfg(target_os = "macos")]
+        let window = {
+            let manager = std::sync::Arc::downgrade(&self.inner);
+            let failure_app = app.clone();
+            let handler = self.inner.native_handler.ok_or_else(|| {
+                tauri::Error::Io(std::io::Error::other("native companion handler is missing"))
+            })?;
+            let window = crate::macos::NativeWindow::create(
+                app,
+                &self.inner.config,
+                renderer_generation,
+                initial_height,
+                handler,
+                move || {
+                    if let Some(inner) = manager.upgrade() {
+                        Self { inner }.native_renderer_failed(&failure_app, renderer_generation);
+                    }
+                },
+            )?;
+            *self
+                .inner
+                .native_window
+                .lock()
+                .expect("native companion slot mutex must not be poisoned") = Some(window.clone());
+            window
+        };
+        #[cfg(not(target_os = "macos"))]
+        let window = {
+            let script = format!(
+                "Object.defineProperty(globalThis, \"__ANTIBURN_WINDOW_GENERATION__\", {{ value: {renderer_generation}, writable: false, configurable: false }});"
+            );
+            let builder = WebviewWindowBuilder::new(
+                app,
+                &self.inner.config.label,
+                WebviewUrl::App(self.inner.config.route.clone().into()),
+            )
+            .initialization_script(script)
+            .title(&self.inner.config.title)
+            .inner_size(self.inner.config.width, initial_height)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .decorations(false)
+            .shadow(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .focused(false)
+            .focusable(false);
+            let window = platform::configure(builder).build()?;
+            #[cfg(target_os = "linux")]
+            crate::linux::install_pointer_tracking(
+                &window,
+                Arc::clone(&self.inner.pointer_tracker),
+            )?;
+            window
+        };
         Ok(window)
     }
 
     pub(super) fn apply_size_and_position(
         &self,
         app: &tauri::AppHandle,
-        companion: &WebviewWindow,
+        companion: &CompanionWindow,
     ) -> tauri::Result<()> {
         let Some(anchor) = app.get_webview_window(&self.inner.config.anchor_label) else {
             return Ok(());
@@ -81,7 +116,7 @@ where
     fn apply_platform_frame(
         &self,
         anchor: &WebviewWindow,
-        companion: &WebviewWindow,
+        companion: &CompanionWindow,
         gap: f64,
         screen_margin: f64,
     ) -> tauri::Result<()> {
@@ -108,7 +143,7 @@ where
     fn apply_platform_frame(
         &self,
         anchor: &WebviewWindow,
-        companion: &WebviewWindow,
+        companion: &CompanionWindow,
         gap: f64,
         screen_margin: f64,
     ) -> tauri::Result<()> {
@@ -175,7 +210,7 @@ where
         app: &tauri::AppHandle,
         edge_tolerance: f64,
     ) -> Option<CursorProximity> {
-        let Some(window) = app.get_webview_window(&self.inner.config.label) else {
+        let Some(window) = self.companion(app) else {
             return Some(CursorProximity::Outside);
         };
         match window.is_visible() {
@@ -231,7 +266,7 @@ where
     pub(super) fn reveal_placeholder(
         &self,
         app: &tauri::AppHandle,
-        window: &WebviewWindow,
+        window: &CompanionWindow,
     ) -> tauri::Result<()> {
         if let Err(error) = self.apply_size_and_position(app, window) {
             self.lock_lifecycle().force_hidden();

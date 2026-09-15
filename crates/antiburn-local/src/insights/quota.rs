@@ -252,6 +252,33 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_and_usage_limit_hits_key_their_own_bucket() {
+        let mut accumulator = QuotaPressureAccumulator::default();
+        accumulator.observe_session(
+            &identity("s1"),
+            &EvidenceValue::Complete(SessionQuotaEvidence {
+                incidents: vec![
+                    incident(100, QuotaLimitKind::RateLimit, "gpt-6-astra"),
+                    incident(200, QuotaLimitKind::UsageLimit, "gpt-6-astra"),
+                ],
+            }),
+        );
+
+        let QuotaPressureSection::Findings(findings) = accumulator.finish() else {
+            panic!("expected findings");
+        };
+        assert_eq!(findings.total_hits, 2);
+        assert_eq!(
+            findings.hits_by_limit_kind,
+            BTreeMap::from([
+                (QuotaLimitKind::RateLimit, 1),
+                (QuotaLimitKind::UsageLimit, 1),
+            ])
+        );
+        assert_eq!(findings.hard_hits, 2);
+    }
+
+    #[test]
     fn a_relogged_incident_with_shifted_metadata_counts_once() {
         // The dedup key is (time, limit kind, severity, model).
         // Fields outside the key must not split one incident in two.

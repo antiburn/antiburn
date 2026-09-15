@@ -112,6 +112,7 @@ fn turn_row(turn_index: u64) -> TurnRow {
         input_tokens: 10,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         output_tokens: 5,
         is_compaction_boundary: false,
         message_id: None,
@@ -680,5 +681,128 @@ fn published_turn_rows_serves_the_last_published_fence_after_a_requeue() {
         store.published_turn_rows(&key).unwrap(),
         Some(vec![turn_row(0), turn_row(1)]),
         "a requeue must not hide the last published pass's rows"
+    );
+}
+
+#[test]
+#[ignore = "Runs the large synthetic session reproduction."]
+fn large_resumed_publication_reports_contention() {
+    use std::time::Instant;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let record = session("synthetic-large-session", 1_000);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let start = Instant::now();
+    {
+        let mut connection = store.lock();
+        let tx = connection.transaction().unwrap();
+        tx.execute_batch(
+            "WITH RECURSIVE sequence(i) AS (
+                 SELECT 0 UNION ALL SELECT i + 1 FROM sequence WHERE i < 310906
+             ), rows AS (
+                 SELECT i,
+                        CASE WHEN i < 310841 THEN 1 ELSE 2 END AS fence,
+                        CASE WHEN i < 36787 OR (i >= 310841 AND i < 310883)
+                             THEN 'main' ELSE 'delegated' END AS scope,
+                        CASE WHEN i < 36787 OR (i >= 310841 AND i < 310883)
+                             THEN 'main'
+                             WHEN i >= 310883 THEN 'child-0'
+                             ELSE 'child-' || (i % 855) END AS source
+                   FROM sequence
+             )
+             INSERT INTO turn (
+                 environment_key, agent, session_id, claim_fence, source_key,
+                 thread_id, turn_index, scope, child_id, role, ts_ms, model,
+                 input_tokens, cache_read_tokens, cache_write_tokens,
+                 output_tokens, is_compaction_boundary, uuid
+             )
+             SELECT 'native', 'claude-code', 'synthetic-large-session', fence,
+                    source, source, i, scope,
+                    CASE WHEN scope = 'main' THEN NULL ELSE source END,
+                    CASE WHEN i % 2 = 0 THEN 'assistant' ELSE 'user' END,
+                    1700000000000 + i * 5000, 'claude-opus-4-6',
+                    1000, 2000, 100, 100, 0, 'synthetic-' || i
+               FROM rows;
+             INSERT INTO turn_content
+                 SELECT rowid, 0, 'text', zeroblob(1275), 0 FROM turn;
+             UPDATE session_evidence
+                SET status = 'processing', claim_fence = 2,
+                    published_fence = 1, evidence_json = '{}';",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    eprintln!("REPRO seed_seconds={:.3}", start.elapsed().as_secs_f64());
+    let generation: i64 = store
+        .lock()
+        .query_row("SELECT source_generation FROM session", [], |r| r.get(0))
+        .unwrap();
+    let projection = projection_record(record.key.clone(), "synthetic", generation);
+    let completion = EvidenceCompletion {
+        claim_fence: 2,
+        status: PublishedEvidence::Ready,
+        evidence_schema_revision: 1,
+        evidence_json: crate::store::test_support::evidence_json(&record.key),
+    };
+    let sources: Vec<SourcePublishOutcome> = std::iter::once("main".to_string())
+        .chain((0..855).map(|i| format!("child-{i}")))
+        .map(|source_key| SourcePublishOutcome {
+            source_key,
+            mode: SourcePublishMode::Resumed,
+            resume: None,
+        })
+        .collect();
+    std::thread::scope(|scope| {
+        let task = scope.spawn(|| {
+            let start = Instant::now();
+            assert!(
+                store
+                    .publish_projections(&projection, None, &completion, &[], &sources)
+                    .unwrap()
+            );
+            eprintln!("REPRO publish_seconds={:.3}", start.elapsed().as_secs_f64());
+        });
+        let mut maximum_wait = std::time::Duration::ZERO;
+        while !task.is_finished() {
+            let start = Instant::now();
+            store.settings().unwrap();
+            maximum_wait = maximum_wait.max(start.elapsed());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        eprintln!(
+            "REPRO publish_settings_max_wait_seconds={:.3}",
+            maximum_wait.as_secs_f64()
+        );
+        task.join().unwrap();
+    });
+    {
+        let connection = store.lock();
+        let (rows, published, sources, content_rows): (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), SUM(claim_fence = 1), COUNT(DISTINCT source_key),
+                        (SELECT COUNT(*) FROM turn_content) FROM turn",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (rows, published, sources, content_rows),
+            (310_907, 310_907, 856, 310_907)
+        );
+    }
+    let start = Instant::now();
+    let export = crate::diagnostics_export::build(directory.path(), "0.5.2".into())
+        .unwrap()
+        .to_json()
+        .unwrap();
+    eprintln!(
+        "REPRO export_seconds={:.3} export_bytes={}",
+        start.elapsed().as_secs_f64(),
+        export.len()
     );
 }

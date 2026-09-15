@@ -167,8 +167,8 @@ Frontend packages
 @reduxjs/toolkit@2.12.0 | MIT | https://redux-toolkit.js.org
 @standard-schema/spec@1.1.0 | MIT | https://standardschema.dev
 @standard-schema/utils@0.3.0 | MIT | https://github.com/standard-schema/standard-schema#readme
-@tanstack/react-virtual@3.14.10 | MIT | https://tanstack.com/virtual
-@tanstack/virtual-core@3.17.8 | MIT | https://tanstack.com/virtual
+@tanstack/react-virtual@3.14.11 | MIT | https://tanstack.com/virtual
+@tanstack/virtual-core@3.17.9 | MIT | https://tanstack.com/virtual
 @tauri-apps/api@2.11.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri#readme
 @tauri-apps/plugin-dialog@2.7.3 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace#readme
 @types/d3-array@3.2.2 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-array
@@ -180,8 +180,8 @@ Frontend packages
 @types/d3-shape@3.1.8 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-shape
 @types/d3-time@3.0.4 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-time
 @types/d3-timer@3.0.2 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-timer
-@types/react-dom@19.2.7 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react-dom
-@types/react@19.2.18 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react
+@types/react-dom@19.3.0 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react-dom
+@types/react@19.3.0 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react
 @types/use-sync-external-store@0.0.6 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/use-sync-external-store
 aria-hidden@1.2.6 | MIT | https://github.com/theKashey/aria-hidden#readme
 clsx@2.1.1 | MIT | https://github.com/lukeed/clsx#readme
@@ -204,20 +204,20 @@ eventemitter3@5.0.4 | MIT | https://github.com/primus/eventemitter3#readme
 get-nonce@1.0.1 | MIT | https://github.com/theKashey/get-nonce
 immer@11.1.16 | MIT | https://github.com/immerjs/immer#readme
 internmap@2.0.3 | ISC | https://github.com/mbostock/internmap/
-lucide-react@1.41.0 | ISC | https://lucide.dev
-react-dom@19.2.8 | MIT | https://react.dev/
+lucide-react@1.44.0 | ISC | https://lucide.dev
+react-dom@19.3.0 | MIT | https://react.dev/
 react-is@17.0.2 | MIT | https://reactjs.org/
 react-redux@9.3.0 | MIT | https://github.com/reduxjs/react-redux
 react-remove-scroll-bar@2.3.8 | MIT | https://github.com/theKashey/react-remove-scroll-bar#readme
 react-remove-scroll@2.7.2 | MIT | https://github.com/theKashey/react-remove-scroll#readme
 react-style-singleton@2.2.3 | MIT | https://github.com/theKashey/react-style-singleton#readme
-react@19.2.8 | MIT | https://react.dev/
+react@19.3.0 | MIT | https://react.dev/
 recharts@3.10.1 | MIT | https://github.com/recharts/recharts
 redux-thunk@3.1.0 | MIT | https://github.com/reduxjs/redux-thunk
 redux@5.0.1 | MIT | http://redux.js.org
 reselect@5.2.0 | MIT | https://github.com/reduxjs/reselect#readme
-scheduler@0.27.0 | MIT | https://react.dev/
-simple-icons@16.29.0 | CC0-1.0 | https://simpleicons.org
+scheduler@0.28.0 | MIT | https://react.dev/
+simple-icons@16.30.0 | CC0-1.0 | https://simpleicons.org
 tiny-invariant@1.3.3 | MIT | https://github.com/alexreardon/tiny-invariant#readme
 tslib@2.8.1 | 0BSD | https://www.typescriptlang.org/
 use-callback-ref@1.3.3 | MIT | https://github.com/theKashey/use-callback-ref#readme
@@ -295,7 +295,7 @@ cpal@0.17.3 | Apache-2.0 | https://github.com/RustAudio/cpal
 cpufeatures@0.2.17 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 cpufeatures@0.3.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 crc32fast@1.5.0 | MIT OR Apache-2.0 | https://github.com/srijs/rust-crc32fast
-crossbeam-channel@0.5.16 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam
+crossbeam-channel@0.5.17 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam
 crossbeam-utils@0.8.22 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam
 crypto-common@0.1.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
 crypto-common@0.2.2 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
@@ -316,6 +316,7 @@ digest@0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
 digest@0.11.3 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
 dirs-sys@0.5.0 | MIT OR Apache-2.0 | https://github.com/dirs-dev/dirs-sys-rs
 dirs@6.0.0 | MIT OR Apache-2.0 | https://github.com/soc/dirs-rs
+dirs@7.0.0 | MIT OR Apache-2.0 | https://codeberg.org/dirs/dirs-rs
 dispatch2@0.3.1 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2
 displaydoc@0.2.7 | MIT OR Apache-2.0 | https://github.com/yaahc/displaydoc
 dlopen2@0.8.2 | MIT | https://github.com/OpenByteDev/dlopen2
@@ -549,7 +550,7 @@ realfft@3.5.0 | MIT | https://github.com/HEnquist/realfft
 regex-automata@0.4.18 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex
 regex-syntax@0.8.11 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex
 regex@1.13.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex
-reqwest@0.13.4 | MIT OR Apache-2.0 | https://github.com/seanmonstar/reqwest
+reqwest@0.13.5 | MIT OR Apache-2.0 | https://github.com/seanmonstar/reqwest
 resampler@0.4.1 | Apache-2.0 OR MIT | https://github.com/hasenbanck/resampler
 rfd@0.16.0 | MIT | https://github.com/PolyMeilex/rfd
 ring@0.17.14 | Apache-2.0 AND ISC | https://github.com/briansmith/ring
@@ -566,7 +567,7 @@ rustls-native-certs@0.8.4 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls
 rustls-pki-types@1.15.1 | MIT OR Apache-2.0 | https://github.com/rustls/pki-types
 rustls-platform-verifier@0.7.0 | MIT OR Apache-2.0 | https://github.com/rustls/rustls-platform-verifier
 rustls-webpki@0.103.14 | ISC | https://github.com/rustls/webpki
-rustls@0.23.43 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls
+rustls@0.23.44 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls
 rustversion@1.0.23 | MIT OR Apache-2.0 | https://github.com/dtolnay/rustversion
 ryu@1.0.23 | Apache-2.0 OR BSL-1.0 | https://github.com/dtolnay/ryu
 safe_arch@1.1.0 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/safe_arch
@@ -692,7 +693,7 @@ toml_datetime@0.7.5+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/
 toml_datetime@1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_edit@0.19.15 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_edit@0.20.2 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
-toml_edit@0.25.13+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
+toml_edit@0.25.15+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_parser@1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_writer@1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 tower-http@0.6.11 | MIT | https://github.com/tower-rs/tower-http
@@ -705,7 +706,7 @@ tracing-serde@0.2.0 | MIT | https://github.com/tokio-rs/tracing
 tracing-subscriber@0.3.23 | MIT | https://github.com/tokio-rs/tracing
 tracing@0.1.44 | MIT | https://github.com/tokio-rs/tracing
 transpose@0.2.3 | MIT OR Apache-2.0 | https://github.com/ejmahler/transpose
-tray-icon@0.24.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tray-icon
+tray-icon@0.24.2 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tray-icon
 try-lock@0.2.5 | MIT | https://github.com/seanmonstar/try-lock
 typeid@1.0.3 | MIT OR Apache-2.0 | https://github.com/dtolnay/typeid
 typenum@1.20.1 | MIT OR Apache-2.0 | https://github.com/paholg/typenum
@@ -721,7 +722,7 @@ untrusted@0.9.0 | ISC | https://github.com/briansmith/untrusted
 url@2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url
 urlpattern@0.3.0 | MIT | https://github.com/denoland/rust-urlpattern
 utf8_iter@1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter
-uuid@1.26.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
+uuid@1.26.1 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
 vcpkg@0.2.15 | MIT OR Apache-2.0 | https://github.com/mcgoo/vcpkg-rs
 version-compare@0.2.1 | MIT | https://gitlab.com/timvisee/version-compare
 version_check@0.9.5 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/version_check
@@ -756,6 +757,7 @@ windows-result@0.3.4 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-
 windows-result@0.4.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-strings@0.4.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-strings@0.5.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
+windows-sys@0.52.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-sys@0.59.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-sys@0.60.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-sys@0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
@@ -1070,8 +1072,8 @@ SOFTWARE.
 ========================================
 
 Used by:
-  @tanstack/react-virtual@3.14.10
-  @tanstack/virtual-core@3.17.8
+  @tanstack/react-virtual@3.14.11
+  @tanstack/virtual-core@3.17.9
 
 MIT License
 
@@ -1342,8 +1344,8 @@ Used by:
   @types/d3-shape@3.1.8
   @types/d3-time@3.0.4
   @types/d3-timer@3.0.2
-  @types/react-dom@19.2.7
-  @types/react@19.2.18
+  @types/react-dom@19.3.0
+  @types/react@19.3.0
   @types/use-sync-external-store@0.0.6
 
 MIT License
@@ -2111,6 +2113,7 @@ Used by:
   windows-result@0.4.1
   windows-strings@0.4.2
   windows-strings@0.5.1
+  windows-sys@0.52.0
   windows-sys@0.59.0
   windows-sys@0.60.2
   windows-sys@0.61.2
@@ -2839,7 +2842,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  crossbeam-channel@0.5.16
+  crossbeam-channel@0.5.17
   crossbeam-utils@0.8.22
 
 The MIT License (MIT)
@@ -3751,6 +3754,7 @@ DEALINGS IN THE SOFTWARE.
 Used by:
   dirs-sys@0.5.0
   dirs@6.0.0
+  dirs@7.0.0
 
 Copyright (c) 2018-2019 dirs-rs contributors
 
@@ -5289,7 +5293,7 @@ THE SOFTWARE.
 Used by:
   hyper-rustls@0.27.9
   rustls-native-certs@0.8.4
-  rustls@0.23.43
+  rustls@0.23.44
 
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 
@@ -6069,7 +6073,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  lucide-react@1.41.0
+  lucide-react@1.44.0
 
 ISC License
 
@@ -6546,7 +6550,7 @@ Apache License
 
 Used by:
   muda@0.19.3
-  tray-icon@0.24.1
+  tray-icon@0.24.2
 
 MIT License
 
@@ -7530,9 +7534,9 @@ SOFTWARE.
 ========================================
 
 Used by:
-  react-dom@19.2.8
-  react@19.2.8
-  scheduler@0.27.0
+  react-dom@19.3.0
+  react@19.3.0
+  scheduler@0.28.0
   use-sync-external-store@1.6.0
 
 MIT License
@@ -7670,7 +7674,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  reqwest@0.13.4
+  reqwest@0.13.5
 
 Copyright (c) 2016-2026 Sean McArthur
 
@@ -9097,7 +9101,7 @@ Used by:
   toml_datetime@1.1.1+spec-1.1.0
   toml_edit@0.19.15
   toml_edit@0.20.2
-  toml_edit@0.25.13+spec-1.1.0
+  toml_edit@0.25.15+spec-1.1.0
   toml_parser@1.1.3+spec-1.1.0
   toml_writer@1.1.2+spec-1.1.0
 
@@ -9422,7 +9426,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  simple-icons@16.29.0
+  simple-icons@16.30.0
 
 # CC0 1.0 Universal
 
@@ -10740,7 +10744,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  uuid@1.26.0
+  uuid@1.26.1
 
 Copyright (c) 2014 The Rust Project Developers
 Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon

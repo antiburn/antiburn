@@ -609,41 +609,94 @@ fn a_plan_tier_change_with_the_same_plan_drops_earlier_samples_and_appends_a_poi
     let key = insert_session(&store, "s1");
     let period_id = insert_period(&store, 0, 18_000);
 
-    // Three "max" / "standard"-tier delta pairs, $1.00 each for a 5-point
+    // Three "max" / "max_5x"-tier delta pairs, $1.00 each for a 5-point
     // delta: factor 0.2. The plan itself never changes.
-    push_observation_with_tier(&store, period_id, 100, 10.0, Some("max"), Some("standard"));
-    push_observation_with_tier(&store, period_id, 200, 15.0, Some("max"), Some("standard"));
-    push_observation_with_tier(&store, period_id, 300, 20.0, Some("max"), Some("standard"));
-    push_observation_with_tier(&store, period_id, 400, 25.0, Some("max"), Some("standard"));
+    push_observation_with_tier(
+        &store,
+        period_id,
+        100,
+        10.0,
+        Some("max"),
+        Some("default_claude_max_5x"),
+    );
+    push_observation_with_tier(
+        &store,
+        period_id,
+        200,
+        15.0,
+        Some("max"),
+        Some("default_claude_max_5x"),
+    );
+    push_observation_with_tier(
+        &store,
+        period_id,
+        300,
+        20.0,
+        Some("max"),
+        Some("default_claude_max_5x"),
+    );
+    push_observation_with_tier(
+        &store,
+        period_id,
+        400,
+        25.0,
+        Some("max"),
+        Some("default_claude_max_5x"),
+    );
     insert_turn(&store, &key, 150_000, 200_000); // $1.00
     insert_turn(&store, &key, 250_000, 200_000); // $1.00
     insert_turn(&store, &key, 350_000, 200_000); // $1.00
-    learn(&store, 450);
+    let learned = learn(&store, 450);
+    assert_eq!(learned.len(), 1);
+    assert_eq!(learned[0].plan.as_deref(), Some("max"));
+    assert_eq!(
+        learned[0].plan_tier.as_deref(),
+        Some("default_claude_max_5x")
+    );
 
-    let standard_point = store
+    let max_5x_point = store
         .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
         .unwrap()
-        .expect("the standard-tier samples seed a point");
-    assert_eq!(standard_point.plan.as_deref(), Some("max"));
-    assert_eq!(standard_point.plan_tier.as_deref(), Some("standard"));
-    assert!((standard_point.usd_per_percent - 0.2).abs() < 1e-9);
+        .expect("the Max 5x samples seed a point");
+    assert_eq!(max_5x_point.plan.as_deref(), Some("max"));
+    assert_eq!(
+        max_5x_point.plan_tier.as_deref(),
+        Some("default_claude_max_5x")
+    );
+    assert!((max_5x_point.usd_per_percent - 0.2).abs() < 1e-9);
 
     // A tier change alone (plan stays "max") priced twice as expensive per
     // token: the factor should reflect only the new-tier sample.
-    push_observation_with_tier(&store, period_id, 500, 30.0, Some("max"), Some("pro"));
+    push_observation_with_tier(
+        &store,
+        period_id,
+        500,
+        30.0,
+        Some("max"),
+        Some("default_claude_max_20x"),
+    );
     insert_turn(&store, &key, 450_000, 400_000); // $2.00
-    learn(&store, 600);
+    let learned = learn(&store, 600);
+    assert_eq!(learned.len(), 1);
+    assert_eq!(learned[0].plan.as_deref(), Some("max"));
+    assert_eq!(
+        learned[0].plan_tier.as_deref(),
+        Some("default_claude_max_20x")
+    );
 
-    let pro_point = store
+    let max_20x_point = store
         .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
         .unwrap()
-        .expect("the tier change appends a new point");
-    assert_eq!(pro_point.plan.as_deref(), Some("max"));
-    assert_eq!(pro_point.plan_tier.as_deref(), Some("pro"));
+        .expect("the Max 20x tier change appends a new point");
+    assert_eq!(max_20x_point.plan.as_deref(), Some("max"));
+    assert_eq!(
+        max_20x_point.plan_tier.as_deref(),
+        Some("default_claude_max_20x")
+    );
     assert!(
-        (pro_point.usd_per_percent - 0.4).abs() < 1e-9,
+        (max_20x_point.usd_per_percent - 0.4).abs() < 1e-9,
         "expected the new-tier sample alone (0.4), got {}",
-        pro_point.usd_per_percent
+        max_20x_point.usd_per_percent
     );
     assert_eq!(count_points(&store), 2);
 }

@@ -30,7 +30,9 @@
 use std::collections::BTreeMap;
 
 use crate::analysis::tool_catalog::{comparable_tool_name, situational_tools};
-use crate::analysis::{EvidenceValue, SessionEvidence, ToolDefinition};
+use crate::analysis::{EvidenceCoverage, EvidenceValue, SessionEvidence, ToolDefinition};
+use crate::insights::SessionTokenBurnEvidence;
+use crate::insights::report::{Fact, FactState};
 use crate::remediation::{BuiltInToolTokens, FindingCause};
 
 use super::{Observation, complete};
@@ -62,6 +64,33 @@ pub(crate) fn evaluate(evidence: &SessionEvidence) -> Observation {
                 Observation::NoFinding
             }
         }
+    }
+}
+
+pub(super) fn source_assessable(
+    evidence: &SessionEvidence,
+    source_evidence: Option<&SessionTokenBurnEvidence>,
+) -> bool {
+    source_evidence
+        .and_then(|value| value.built_in_tool_sources.as_ref())
+        .is_some()
+        && Fact::ToolDefinitions.state(evidence) == FactState::Unsupported
+        && matches!(evidence.coverage, EvidenceCoverage::Complete)
+        && matches!(&evidence.tools, EvidenceValue::Complete(_))
+        && complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns > 0)
+}
+
+pub(super) fn evaluate_with_source_evidence(
+    evidence: &SessionEvidence,
+    source_evidence: Option<&SessionTokenBurnEvidence>,
+) -> Observation {
+    if !source_assessable(evidence, source_evidence) {
+        return evaluate(evidence);
+    }
+    if unused_sources(evidence, source_evidence).next().is_some() {
+        Observation::Finding
+    } else {
+        Observation::NoFinding
     }
 }
 
@@ -103,8 +132,54 @@ pub(super) fn finding_causes(evidence: &SessionEvidence) -> Vec<FindingCause> {
         .map(|(tool, definition)| FindingCause::UnusedBuiltInTool {
             tool: tool.clone(),
             tokens: BuiltInToolTokens::Definition(u64::from(definition.tokens)),
+            cost_usd: None,
+            pricing_revision: None,
         })
         .collect()
+}
+
+pub(super) fn finding_causes_with_source_evidence(
+    evidence: &SessionEvidence,
+    source_evidence: Option<&SessionTokenBurnEvidence>,
+) -> Vec<FindingCause> {
+    if !source_assessable(evidence, source_evidence) {
+        return finding_causes(evidence);
+    }
+    let pricing_revision = source_evidence.and_then(|value| value.pricing_revision.clone());
+    let mut causes = unused_sources(evidence, source_evidence)
+        .map(|source| FindingCause::UnusedBuiltInTool {
+            tool: source.name.clone(),
+            tokens: BuiltInToolTokens::Replicated(source.replicated_tokens),
+            cost_usd: source.replicated_cost_usd,
+            pricing_revision: pricing_revision.clone(),
+        })
+        .collect::<Vec<_>>();
+    causes.sort_by(|left, right| match (left, right) {
+        (
+            FindingCause::UnusedBuiltInTool { tool: left, .. },
+            FindingCause::UnusedBuiltInTool { tool: right, .. },
+        ) => left.cmp(right),
+        _ => core::cmp::Ordering::Equal,
+    });
+    causes
+}
+
+fn unused_sources<'a>(
+    evidence: &'a SessionEvidence,
+    source_evidence: Option<&'a SessionTokenBurnEvidence>,
+) -> impl Iterator<Item = &'a crate::insights::TokenBurnSourceEvidence> {
+    let situational = situational_tools(&evidence.identity.agent);
+    source_evidence
+        .and_then(|value| value.built_in_tool_sources.as_ref())
+        .into_iter()
+        .flatten()
+        .filter(move |source| {
+            source.replicated_tokens > 0
+                && !source.invoked
+                && !situational
+                    .iter()
+                    .any(|name| comparable_tool_name(name) == comparable_tool_name(&source.name))
+        })
 }
 
 #[cfg(test)]
@@ -114,6 +189,7 @@ mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
     use crate::analysis::CoverageReason;
+    use crate::insights::TokenBurnSourceEvidence;
 
     fn unused(tokens: u32) -> ToolDefinition {
         ToolDefinition {
@@ -230,5 +306,64 @@ mod tests {
         };
         eligibility.assistant_turns = 0;
         assert_eq!(evaluate(&evidence), Observation::NoFinding);
+    }
+
+    #[test]
+    fn source_attribution_produces_a_replicated_token_cause() {
+        let mut evidence = with_definition("bash", unused(100));
+        let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+            unreachable!()
+        };
+        sources.tool_definitions = EvidenceValue::Unsupported;
+        let mut source_evidence = SessionTokenBurnEvidence::default();
+        source_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:bundled".to_owned(),
+            name: "Write".to_owned(),
+            replicated_tokens: u128::from(u64::MAX) + 9,
+            invoked: false,
+            replicated_cost_usd: None,
+        }]);
+
+        assert_eq!(
+            evaluate_with_source_evidence(&evidence, Some(&source_evidence)),
+            Observation::Finding
+        );
+        assert_eq!(
+            finding_causes_with_source_evidence(&evidence, Some(&source_evidence)),
+            vec![FindingCause::UnusedBuiltInTool {
+                tool: "Write".to_owned(),
+                tokens: BuiltInToolTokens::Replicated(u128::from(u64::MAX) + 9),
+                cost_usd: None,
+                pricing_revision: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn source_attribution_carries_the_priced_cost_and_pricing_revision() {
+        let mut evidence = with_definition("bash", unused(100));
+        let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+            unreachable!()
+        };
+        sources.tool_definitions = EvidenceValue::Unsupported;
+        let mut source_evidence = SessionTokenBurnEvidence::default();
+        source_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:bundled".to_owned(),
+            name: "Write".to_owned(),
+            replicated_tokens: 200,
+            invoked: false,
+            replicated_cost_usd: Some(0.02),
+        }]);
+        source_evidence.pricing_revision = Some("pricing-generation-3".to_owned());
+
+        assert_eq!(
+            finding_causes_with_source_evidence(&evidence, Some(&source_evidence)),
+            vec![FindingCause::UnusedBuiltInTool {
+                tool: "Write".to_owned(),
+                tokens: BuiltInToolTokens::Replicated(200),
+                cost_usd: Some(0.02),
+                pricing_revision: Some("pricing-generation-3".to_owned()),
+            }]
+        );
     }
 }

@@ -40,6 +40,27 @@ described in [Network](#network).
 live language-server APIs those two editors expose aren't read, so a session that
 exists only in memory will not appear.
 
+## Burn Check remediation
+
+The main Burn checks workspace shows supported findings for Claude Code, Codex,
+OpenCode, Pi, and Antigravity. Safe bounded prompts cover the exact check matrix
+in [Burn Check Source Coverage](check-coverage.md#automatic-editor-support).
+
+| Agent       | Auto Fix on macOS and Linux | Other current support         |
+| ----------- | --------------------------- | ----------------------------- |
+| Claude Code | Model and reasoning         | Prompts for all nine checks   |
+| Codex       | Model and reasoning         | Prompts for all nine checks   |
+| OpenCode    | Model                       | Prompts for D, S, K, O, and C |
+| Pi          | Model and reasoning         | Prompts for D, T, S, O, and C |
+| Antigravity | None                        | Prompts for D and O           |
+
+Auto Fix changes one existing effective global or project setting after a
+separate review and confirmation. Native Windows can read supported setting
+attribution but cannot apply a change. Pi session discovery remains unavailable
+on native Windows. WSL is separate and cannot edit native host config. See the
+[implementation guide](remediation.md) for precedence, verification, savings,
+privacy, and exact unavailable cases.
+
 **Session analysis** — the timeline, phases, context, token, and cost views — need a
 transcript format antiburn understands in detail. Where it has only a generic parse,
 the session is still listed and the analysis view says so rather than showing an
@@ -164,7 +185,8 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   a short label naming a surface, Settings pane, provider, setting, agent
   category, or failure category, never work content or an entered value; a
   second fixed label where needed; whether a visible state followed a user or
-  automatic exposure; a coarse five-hour usage
+  automatic exposure, or whether a Burn Check watch started passively or from
+  an action; a coarse five-hour usage
   band; the reset response shape; eligibility, experiment membership, experiment
   arm, and availability states; an allowlisted ineligibility reason; a reset-count
   bucket; whether a next-reset date was present; a learned session-limit

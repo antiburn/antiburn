@@ -119,6 +119,21 @@ describe("createExternalStore", () => {
     expect(store.getSnapshot()).toBe("second")
   })
 
+  it("can restore the initial value after the final listener leaves", async () => {
+    const store = createExternalStore({
+      initial: "initial",
+      load: async () => "loaded",
+      resetOnStop: true,
+    })
+    const unsubscribe = store.subscribe(() => {})
+    await flush()
+    expect(store.getSnapshot()).toBe("loaded")
+
+    unsubscribe()
+
+    expect(store.getSnapshot()).toBe("initial")
+  })
+
   it("set publishes a value directly, without going through load", async () => {
     const load = vi.fn(async () => "from load")
     const store = createExternalStore({ initial: "initial", load })

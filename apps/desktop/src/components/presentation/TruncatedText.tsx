@@ -14,11 +14,7 @@ import { cn } from "../../lib/cn"
  * `ResizeObserver` reports later box size changes.
  * A text or line change starts a new subscription and checks the content again.
  */
-function useTruncated(
-  ref: RefObject<HTMLElement | null>,
-  text: string,
-  lines: number,
-): boolean {
+function useOverflow(ref: RefObject<HTMLElement | null>, text: string, lines: number): number {
   const subscribe = useCallback(
     (onChange: () => void) => {
       const element = ref.current
@@ -32,20 +28,19 @@ function useTruncated(
     [ref, text, lines],
   )
 
-  const getSnapshot = useCallback(
-    () =>
-      ref.current
-        ? ref.current.scrollWidth > ref.current.clientWidth ||
-          (lines > 1 && ref.current.scrollHeight > ref.current.clientHeight)
-        : false,
-    [lines, ref],
-  )
+  const getSnapshot = useCallback(() => {
+    if (!ref.current) return 0
+    const horizontal = Math.max(0, ref.current.scrollWidth - ref.current.clientWidth)
+    const vertical =
+      lines > 1 ? Math.max(0, ref.current.scrollHeight - ref.current.clientHeight) : 0
+    return Math.max(horizontal, vertical)
+  }, [lines, ref])
 
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
 }
 
-function getServerSnapshot(): boolean {
-  return false
+function getServerSnapshot(): number {
+  return 0
 }
 
 export interface TruncatedTextProps {
@@ -58,6 +53,8 @@ export interface TruncatedTextProps {
    * The text is duplicated into `data-text` for the CSS overlay to paint.
    */
   shimmer?: boolean
+  /** Reveal a truncated single line by moving it horizontally on parent hover. */
+  scrollOnHover?: boolean
 }
 
 /**
@@ -69,12 +66,44 @@ export function TruncatedText({
   text,
   lines = 1,
   shimmer = false,
+  scrollOnHover = false,
 }: TruncatedTextProps) {
   const lineLimit = Number.isFinite(lines) ? Math.max(1, Math.floor(lines)) : 1
   const ref = useRef<HTMLDivElement | null>(null)
-  const truncated = useTruncated(ref, text, lineLimit)
+  const overflow = useOverflow(ref, text, lineLimit)
+  const truncated = overflow > 0
   const lineStyle =
     lineLimit > 1 ? ({ "--truncated-text-lines": lineLimit } as CSSProperties) : undefined
+
+  if (scrollOnHover && lineLimit === 1) {
+    const scrollStyle = {
+      "--truncated-text-offset": `${-overflow}px`,
+      "--truncated-text-duration": `${Math.max(900, overflow * 22)}ms`,
+    } as CSSProperties
+
+    return (
+      <div
+        className={cn(className, "session-title-scroll")}
+        style={scrollStyle}
+        title={truncated ? text : undefined}
+        data-scroll-on-hover=""
+        data-truncated={truncated ? "true" : undefined}
+        aria-label={shimmer ? text : undefined}
+      >
+        <div
+          ref={ref}
+          className={cn(
+            "session-title-scroll-rest truncate",
+            shimmer && "activity-row-title-shimmer",
+          )}
+          data-text={shimmer ? text : undefined}
+        >
+          {text}
+        </div>
+        <span className="session-title-scroll-copy" data-text={text} aria-hidden="true" />
+      </div>
+    )
+  }
 
   return (
     <div

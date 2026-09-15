@@ -21,6 +21,7 @@
         "tools": [],
         "tsMs": 1786024800000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -45,6 +46,7 @@
         "tools": [],
         "tsMs": 1786024805000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 20,
@@ -68,6 +70,7 @@
         "tools": [],
         "tsMs": 1786024810000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 22,
@@ -91,6 +94,7 @@
         "tools": [],
         "tsMs": 1786024815000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 24,

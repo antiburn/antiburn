@@ -32,6 +32,7 @@
       "linearRecordOrder": false,
       "mcpInventory": false,
       "modelIdentity": true,
+      "providerIncidents": false,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
       "recordIdentity": true,
@@ -137,20 +138,23 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 22,
-      "evidenceSchemaRevision": 18,
+      "analyzerRevision": 24,
+      "evidenceSchemaRevision": 19,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 32,
+      "parserRevision": 38,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
+    },
+    "providerIncidents": {
+      "state": "unsupported"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 18,
+    "schemaRevision": 19,
     "subagents": {
       "state": "unsupported"
     },
@@ -4209,6 +4213,7 @@
         "tools": [],
         "tsMs": 1767225601000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 7,
           "cacheReadTokens": 5,
           "inputTokens": 2,
@@ -4233,6 +4238,7 @@
         "tools": [],
         "tsMs": 1767225602000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 2,
           "cacheReadTokens": 11,
           "inputTokens": 3,

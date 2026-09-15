@@ -53,6 +53,8 @@ const SETTINGS = {
   sessionDataRetentionDays: -1,
   onboardingCompleted: true,
   launchAtLogin: false,
+  trayIconVisible: true,
+  dockIconVisible: true,
   autoUpdate: true,
   discoveryPaused: false,
   notificationsEnabled: true,
@@ -169,6 +171,7 @@ describe("SettingsView", () => {
     saveDialog.mockReset()
     closeWindow.mockReset()
     listeners.clear()
+    platform.mac = false
     delete document.documentElement.dataset["theme"]
     mockCommands()
   })
@@ -218,8 +221,8 @@ describe("SettingsView", () => {
   it("persists the launch-at-login preference and describes the applied behavior", async () => {
     render(<SettingsView />)
 
-    const toggle = await screen.findByRole("switch", { name: "Launch antiburn on startup" })
-    expect(screen.getByText("Starts automatically in the menu bar.")).toBeInTheDocument()
+    const toggle = await screen.findByRole("switch", { name: "Start at login" })
+    expect(screen.getByText("Starts antiburn automatically at login.")).toBeInTheDocument()
 
     fireEvent.click(toggle)
 
@@ -233,7 +236,7 @@ describe("SettingsView", () => {
   it("reflects the launch-at-login choice made during onboarding", async () => {
     render(<SettingsView />)
 
-    const toggle = await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    const toggle = await screen.findByRole("switch", { name: "Start at login" })
     expect(toggle).not.toBeChecked()
 
     emit("settings:changed", {
@@ -243,6 +246,113 @@ describe("SettingsView", () => {
     })
 
     expect(toggle).toBeChecked()
+  })
+
+  it("shows cross-platform tray presence without a Dock control", async () => {
+    render(<SettingsView />)
+
+    expect(await screen.findByRole("heading", { name: "Application" })).toBeVisible()
+    expect(screen.queryByRole("heading", { name: "Startup" })).toBeNull()
+    const tray = await screen.findByRole("switch", { name: "Show system tray icon" })
+    expect(tray).toBeChecked()
+    expect(
+      screen.getByText("When hidden, closing the main window quits antiburn."),
+    ).toBeVisible()
+    expect(screen.queryByRole("switch", { name: "Show in Dock" })).toBeNull()
+
+    fireEvent.click(tray)
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: { ...SETTINGS, trayIconVisible: false },
+      }),
+    )
+  })
+
+  it("blocks app-presence writes until stored settings load", () => {
+    platform.mac = true
+    mockCommands({ get_settings: () => new Promise(() => {}) })
+    render(<SettingsView />)
+
+    const menuBar = screen.getByRole("switch", { name: "Show in menubar" })
+    const dock = screen.getByRole("switch", { name: "Show in Dock" })
+    expect(menuBar).toBeDisabled()
+    expect(dock).toBeDisabled()
+
+    fireEvent.click(menuBar)
+    fireEvent.click(dock)
+    expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
+  })
+
+  it("keeps one macOS app-presence entry point available", async () => {
+    platform.mac = true
+    render(<SettingsView />)
+
+    const menuBar = await screen.findByRole("switch", { name: "Show in menubar" })
+    const dock = screen.getByRole("switch", { name: "Show in Dock" })
+    expect(
+      screen.getByText("Keep antiburn in the menu bar when the main window is closed"),
+    ).toBeVisible()
+    expect(menuBar).toBeChecked()
+    expect(dock).toBeChecked()
+
+    fireEvent.click(menuBar)
+
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Show in menubar" })).not.toBeChecked(),
+    )
+    expect(screen.getByRole("switch", { name: "Show in Dock" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    )
+    expect(screen.getByText("Keep one icon visible so you can reopen antiburn.")).toBeVisible()
+
+    const disabledDock = screen.getByRole("switch", { name: "Show in Dock" })
+    fireEvent.pointerMove(disabledDock.closest("[data-disabled-tooltip-trigger]")!, {
+      pointerType: "mouse",
+    })
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Turn on Show in menubar first.",
+    )
+  })
+
+  it("protects the menu-bar icon when the Dock icon is hidden", async () => {
+    platform.mac = true
+    mockCommands({ get_settings: { ...SETTINGS, dockIconVisible: false } })
+    render(<SettingsView />)
+
+    await screen.findByRole("switch", { name: "Show in menubar" })
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Show in menubar" })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      ),
+    )
+    expect(screen.getByRole("switch", { name: "Show in Dock" })).not.toBeChecked()
+    expect(screen.getByText("Keep one icon visible so you can reopen antiburn.")).toBeVisible()
+
+    const disabledMenuBar = screen.getByRole("switch", { name: "Show in menubar" })
+    const tooltipTrigger = disabledMenuBar.closest("[data-disabled-tooltip-trigger]")!
+    fireEvent.pointerMove(tooltipTrigger, { pointerType: "mouse" })
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Turn on Show in Dock first.")
+  })
+
+  it("persists macOS Dock visibility changes", async () => {
+    platform.mac = true
+    render(<SettingsView />)
+
+    const dock = await screen.findByRole("switch", { name: "Show in Dock" })
+    fireEvent.click(dock)
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: { ...SETTINGS, dockIconVisible: false },
+      }),
+    )
+    expect(screen.getByRole("switch", { name: "Show in menubar" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    )
   })
 
   it("persists the monitoring switch as the same preference the popover pauses", async () => {
@@ -1100,7 +1210,7 @@ describe("SettingsView", () => {
   it("moves an already-open window to a requested pane", async () => {
     render(<SettingsView />)
 
-    await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    await screen.findByRole("switch", { name: "Start at login" })
     emit("settings:pane", "sources")
 
     await waitFor(() =>
@@ -1114,7 +1224,7 @@ describe("SettingsView", () => {
   it("resets the shared content viewport to the top when the pane changes", async () => {
     const { container } = render(<SettingsView />)
 
-    await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    await screen.findByRole("switch", { name: "Start at login" })
     const viewport = container.querySelector(".ui-scroll-viewport") as HTMLDivElement
     viewport.scrollTop = 240
 
@@ -1126,7 +1236,7 @@ describe("SettingsView", () => {
   it("ignores a pane id it does not recognize rather than rendering nothing", async () => {
     render(<SettingsView />)
 
-    await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    await screen.findByRole("switch", { name: "Start at login" })
     emit("settings:pane", "account")
 
     expect(screen.getByRole("tab", { name: "General" })).toHaveAttribute(
@@ -1203,7 +1313,7 @@ describe("SettingsView — window chrome", () => {
   it("renders the drag strip on macOS, empty and inert", async () => {
     platform.mac = true
     const { container } = render(<SettingsView />)
-    await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    await screen.findByRole("switch", { name: "Start at login" })
 
     const strip = container.querySelector("[data-tauri-drag-region]")
     expect(strip).not.toBeNull()
@@ -1215,14 +1325,14 @@ describe("SettingsView — window chrome", () => {
 
   it("renders no drag strip where the native title bar exists", async () => {
     const { container } = render(<SettingsView />)
-    await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    await screen.findByRole("switch", { name: "Start at login" })
 
     expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
   })
 
   it("closes the window on ⌘W so the shell can destroy it", async () => {
     render(<SettingsView />)
-    await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    await screen.findByRole("switch", { name: "Start at login" })
 
     fireEvent.keyDown(document, { key: "w", metaKey: true })
 
@@ -1231,7 +1341,7 @@ describe("SettingsView — window chrome", () => {
 
   it("does not close on Escape: a settings window is not a modal", async () => {
     render(<SettingsView />)
-    await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    await screen.findByRole("switch", { name: "Start at login" })
 
     fireEvent.keyDown(document, { key: "Escape" })
 
@@ -1240,7 +1350,7 @@ describe("SettingsView — window chrome", () => {
 
   it("orders the sidebar with everyday panes first and provenance last", async () => {
     render(<SettingsView />)
-    await screen.findByRole("switch", { name: "Launch antiburn on startup" })
+    await screen.findByRole("switch", { name: "Start at login" })
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "General",

@@ -1,22 +1,12 @@
 /**
- * The typed edge of the shell's IPC surface.
- *
- * Every command the Rust side exposes has exactly one wrapper here, and the
- * views call nothing else. That keeps the command names in one file, gives the
- * payloads a declared shape, and means the whole surface can be mocked at one
- * module boundary in tests.
- *
- * The bundle also has to load in a plain browser (`pnpm dev:web`, unit tests)
- * where no shell is attached. Every wrapper therefore reports *absence* rather
- * than throwing, so views render a degraded state instead of crashing.
- *
- * None of these payloads comes from a service of ours. The local engine
- * produces them on this machine.
+ * Typed shell IPC edge, including re-exported feature edges.
+ * Wrappers tolerate a browser without the shell and expose one test boundary.
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
+import { nativePeekBridge } from "./nativePeekBridge"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -31,6 +21,7 @@ import type {
   SessionLimitAllocationSummaryPayload,
 } from "./providerUsageIpc"
 
+export * from "./mainWindowIpc"
 export * from "./providerUsageIpc"
 export type { SettingsPane } from "./settingsPanes"
 
@@ -61,6 +52,10 @@ export interface AppSettings {
   onboardingCompleted: boolean
   /** Recorded; applied by the platform at next launch. */
   launchAtLogin: boolean
+  /** Whether the menu-bar or system-tray icon is visible. */
+  trayIconVisible: boolean
+  /** Whether the app is visible in the macOS Dock. */
+  dockIconVisible: boolean
   /** Whether the shell may install and restart for updates on its schedule. */
   autoUpdate: boolean
   /**
@@ -153,6 +148,12 @@ export interface AppSettings {
   skillsMcpExpanded: boolean
   /** The metric shown in each activity-session badge. */
   sessionBadgeMetric: "cost" | "weeklyPercent" | "fiveHourPercent"
+  /**
+   * The selected Sessions sidebar filter, as its persisted id (see
+   * `sessionFilterId`/`parseSessionFilterId` in `lib/sessionFilters.ts`). An
+   * id this release does not recognize parses back to `all`.
+   */
+  sessionFilter: string
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -210,6 +211,92 @@ export interface ActivityEntryPayload {
   modelRuns: ModelRunPayload[]
 }
 
+/**
+ * Identity of one session on the lifecycle bus. Mirrors Rust `SessionRef`
+ * in `src-tauri/src/session_lifecycle.rs`.
+ */
+export interface SessionRefPayload {
+  environmentKey: string
+  agent: string
+  sessionId: string
+}
+
+/** Which parts of a session row changed. Mirrors Rust `UpdateFacets`. */
+export interface UpdateFacetsPayload {
+  metadata: boolean
+  title: boolean
+  analysis: boolean
+  usage: boolean
+  checks: boolean
+  limits: boolean
+}
+
+/**
+ * One `session:lifecycle` envelope. Mirrors Rust `LifecycleEnvelope`: the
+ * flattened event plus the registry sequence a reader orders deltas by.
+ * A reader applies only events with a sequence above its snapshot's, and
+ * re-reads the snapshot on `resync`. `activity` with a null `session` is
+ * anonymous agent-level activity: a watched write the store has not
+ * indexed yet. Sequences are global across every session event scope, so
+ * gaps between lifecycle events are normal; only `resync` means loss.
+ */
+export type SessionLifecycleEventPayload =
+  | { seq: number; kind: "started"; session: SessionRefPayload; agent: string; at: number }
+  | {
+      seq: number
+      kind: "activity"
+      session: SessionRefPayload | null
+      agent: string
+      at: number
+      /** True when the write follows quiet or idle. */
+      resumed: boolean
+    }
+  | { seq: number; kind: "quiet"; session: SessionRefPayload; agent: string; at: number }
+  | { seq: number; kind: "idle"; session: SessionRefPayload; agent: string; at: number }
+  | { seq: number; kind: "resync" }
+
+/** One `session:updated` payload. Mirrors Rust `SessionUpdatedPayload`. */
+export interface SessionUpdatedPayload {
+  seq: number
+  session: SessionRefPayload
+  facets: UpdateFacetsPayload
+  entry: ActivityEntryPayload
+}
+
+/** Why a session left the store. Mirrors Rust `RemovalReason`. */
+export type SessionRemovalReason = "deleted" | "purged" | "rejected"
+
+/** Why list membership changed. Mirrors Rust `IndexChangeCause`. */
+export type SessionIndexChangeCause = "scan_pass" | "invalidated" | "removed" | "resync"
+
+/** One `session:index-changed` payload. Mirrors Rust `IndexChangedPayload`. */
+export interface SessionIndexChangedPayload {
+  seq: number
+  cause: SessionIndexChangeCause
+  session?: SessionRefPayload
+  removal?: SessionRemovalReason
+}
+
+/** One live session in the registry snapshot. Mirrors Rust `LiveSession`. */
+export interface LiveSessionPayload {
+  session: SessionRefPayload
+  agent: string
+  /** Unix seconds of the session's last observed write. */
+  lastActivityAt: number
+  /** True when the registry has published `quiet` for that write. */
+  quiet: boolean
+}
+
+/**
+ * The versioned live-session snapshot. Mirrors Rust `LiveSnapshot`. `seq`
+ * is the sequence of the last event whose effect the snapshot includes: a
+ * subscriber applies only lifecycle deltas with a higher sequence.
+ */
+export interface LiveSnapshotPayload {
+  seq: number
+  sessions: LiveSessionPayload[]
+}
+
 /** Identity of one local session, as the analysis view carries it. */
 export interface SessionIdentityPayload {
   agent: string
@@ -221,6 +308,14 @@ export interface SessionIdentityPayload {
 export interface MainWindowSessionRequest {
   revision: number
   target: SessionIdentityPayload
+}
+
+export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
+
+/** One revisioned request to select a retained main-window section. */
+export interface MainWindowSectionRequest {
+  revision: number
+  section: MainWindowSectionId
 }
 
 /** One end of a local fork relation. */
@@ -473,6 +568,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sessionDataRetentionDays: -1,
   onboardingCompleted: false,
   launchAtLogin: true,
+  trayIconVisible: true,
+  dockIconVisible: true,
   autoUpdate: true,
   discoveryPaused: false,
   notificationsEnabled: true,
@@ -494,11 +591,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   overviewLimitsExpanded: true,
   skillsMcpExpanded: false,
   sessionBadgeMetric: "cost",
+  sessionFilter: "all",
 }
-
-/* -------------------------------------------------------------------------
- * Commands
- * ---------------------------------------------------------------------- */
 
 /** Tell the shell that React committed this renderer generation. */
 export async function windowReady(generation: number): Promise<void> {
@@ -524,6 +618,18 @@ export async function openMainWindowSession(target: SessionIdentityPayload): Pro
   await invoke("open_main_window_session", { target })
 }
 
+/** Open or focus the main window and select one top-level section. */
+export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_main_window_section", { section })
+}
+
+/** Take the latest section that arrived before the main renderer could listen. */
+export async function takeMainWindowSectionTarget(): Promise<MainWindowSectionRequest | null> {
+  if (!hasShell()) return null
+  return invoke<MainWindowSectionRequest | null>("take_main_window_section_target")
+}
+
 /** Take the latest target that arrived before the main renderer could listen. */
 export async function takeMainWindowSessionTarget(): Promise<MainWindowSessionRequest | null> {
   if (!hasShell()) return null
@@ -536,9 +642,7 @@ export async function popoverContentReady(generation: number): Promise<void> {
   await invoke("popover_content_ready", { generation })
 }
 
-/**
- * Version stamp of the active runtime pricing catalog.
- */
+/** Version stamp of the active runtime pricing catalog. */
 export async function engineCatalogVersion(): Promise<string | null> {
   if (!hasShell()) return null
   return invoke<string>("engine_catalog_version")
@@ -575,9 +679,9 @@ export async function takeSettingsPane(): Promise<string | null> {
  * `core:window:allow-close` in `capabilities/default.json` — the ACL's
  * `core:window:default` set is read-only.
  *
- * Used by the two windows that own a ⌘W: settings, and the first-run flow.
- * Both are accessory-app windows with no application menu, so the standard
- * shortcut has no owner unless the view handles it.
+ * Used by the two windows that own Command-W: Settings and the first-run flow.
+ * Their view handlers keep Command-W and Control-W available across platform
+ * menu configurations.
  */
 export async function closeCurrentWindow(): Promise<void> {
   if (!hasShell()) return
@@ -785,6 +889,27 @@ export type Interaction =
       state: LiveUsageState
       origin: SurfaceOrigin
     }
+  | { kind: "burnCheckAutoFixReviewed"; outcome: AutoFixReviewAnalyticsOutcome }
+  | { kind: "burnCheckAutoFixConfirmed" }
+  | { kind: "burnCheckAutoFixCompleted"; outcome: AutoFixAnalyticsOutcome }
+  | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
+  | { kind: "burnCheckPromptCopied" }
+  | {
+      kind: "burnCheckOutcomeObserved"
+      outcome: "verified" | "recurred"
+      origin: "passive" | "action"
+    }
+  | {
+      kind: "sessionFilterSelected"
+      filter: SessionFilterAnalyticsKind
+      /**
+       * Only when `filter` is `agent`, and only for a slug the shell's own
+       * closed agent enum recognizes. Deserializes into that enum, so an
+       * unrecognized slug is a rejected command rather than a new value
+       * appearing in the data — omit the field instead of sending one.
+       */
+      agent?: string
+    }
 
 export type Surface =
   | "activity"
@@ -794,6 +919,7 @@ export type Surface =
   | "hud"
   | "hud_detail"
   | "settings"
+  | "burn_checks"
 
 export type StateSurface = Surface | "insights"
 export type SurfaceOrigin = "user" | "automatic"
@@ -801,6 +927,35 @@ export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
 export type LiveUsageState =
   "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
+export type AutoFixReviewAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
+export type AutoFixAnalyticsOutcome =
+  | "applied_awaiting_verification"
+  | "recovery_needed"
+  | "stale"
+  | "expired"
+  | "conflict"
+  | "unavailable"
+  | "failed"
+export type PromptPreparationAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "unavailable" | "failed"
+/** The closed vocabulary `sessionFilterSelected` reports its filter as. */
+export type SessionFilterAnalyticsKind =
+  "notable" | "material" | "agent" | "failing" | "passing" | "all"
+
+function isNativePeekInteraction(interaction: Interaction): boolean {
+  switch (interaction.kind) {
+    case "surfaceViewed":
+    case "surfaceStateObserved":
+      return (
+        interaction.surface === "provider_preview" || interaction.surface === "checks_preview"
+      )
+    case "liveUsageStateObserved":
+      return true
+    default:
+      return false
+  }
+}
 
 /**
  * Report one interaction. Fire-and-forget, and silent on failure.
@@ -811,6 +966,14 @@ export type LiveUsageState =
  * one gate rather than two that can drift apart.
  */
 export function noteInteraction(interaction: Interaction): void {
+  const native = nativePeekBridge()
+  if (native) {
+    if (!isNativePeekInteraction(interaction)) return
+    void native.invoke("note_interaction", { interaction }).catch(() => {
+      // Analytics errors must not interrupt the preview.
+    })
+    return
+  }
   if (!hasShell()) return
   void invoke("note_interaction", { interaction }).catch(() => {
     // Analytics must never surface an error into something the reader asked
@@ -947,6 +1110,8 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
     },
   },
   agents: [],
+  days: [],
+  previousDays: [],
   generatedAt: "",
 }
 
@@ -987,10 +1152,15 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   generatedAt: "",
 }
 
-/** Return the newest recent transcript write as epoch seconds. */
-export async function getLatestSessionActivity(): Promise<number | null> {
+/**
+ * The most recent live sessions from the lifecycle registry, bounded to
+ * `limit`, with the registry sequence. A reader subscribes to
+ * `session:lifecycle` first, takes this snapshot, then applies only
+ * deltas with a higher sequence.
+ */
+export async function getLiveSessions(limit?: number): Promise<LiveSnapshotPayload | null> {
   if (!hasShell()) return null
-  return invoke<number | null>("get_latest_session_activity")
+  return invoke<LiveSnapshotPayload>("get_live_sessions", { limit: limit ?? null })
 }
 
 /** Return whether the retained HUD renderer should run background work. */
@@ -1256,10 +1426,6 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
   await invoke("nudge_set_hovered", { hovered })
 }
 
-/* -------------------------------------------------------------------------
- * Events
- * ---------------------------------------------------------------------- */
-
 const noShellUnlisten: UnlistenFn = () => undefined
 
 /** Event the shell emits when the main renderer can start or stop presenting work. */
@@ -1267,6 +1433,9 @@ export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 
 /** Event carrying a revisioned session target to an existing main renderer. */
 export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
+
+/** Event carrying a revisioned section target to an existing main renderer. */
+export const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
 
 /** Subscribe to main-window presentation visibility. */
 export async function onMainWindowVisibilityChanged(
@@ -1284,6 +1453,16 @@ export async function onMainWindowSessionTarget(
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<MainWindowSessionRequest>(MAIN_WINDOW_SESSION_TARGET_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/** Subscribe to section targets sent to the retained main renderer. */
+export async function onMainWindowSectionTarget(
+  handler: (request: MainWindowSectionRequest) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<MainWindowSectionRequest>(MAIN_WINDOW_SECTION_TARGET_EVENT, (event) =>
     handler(event.payload),
   )
 }
@@ -1341,31 +1520,53 @@ export async function onSettingsShown(handler: () => void): Promise<UnlistenFn> 
 }
 
 /**
- * Event the shell emits when stored sessions were removed outside a scan
- * (repository opt-out, index clearing, retention cleanup). Mirrors `SESSIONS_INVALIDATED_EVENT`
- * in `src-tauri/src/commands.rs`.
+ * Event the projection bridge emits for every transition on the session
+ * lifecycle bus. Mirrors `SESSION_LIFECYCLE_EVENT` in
+ * `src-tauri/src/commands.rs`. Only the bridge emits it.
  */
-export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"
+export const SESSION_LIFECYCLE_EVENT = "session:lifecycle"
 
-/** Subscribe to out-of-band session-index changes. The result unsubscribes. */
-export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
+/** Subscribe to lifecycle transitions and resync metadata. */
+export async function onSessionLifecycleEvent(
+  handler: (event: SessionLifecycleEventPayload) => void,
+): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
-  return listen(SESSIONS_INVALIDATED_EVENT, () => handler())
+  return listen<SessionLifecycleEventPayload>(SESSION_LIFECYCLE_EVENT, (event) =>
+    handler(event.payload),
+  )
 }
 
 /**
- * Event the shell emits when one session's cached analysis changes outside a
- * scan. Mirrors `SESSION_ENTRY_CHANGED_EVENT` in `src-tauri/src/commands.rs`.
- * The payload is the fresh entry for that session.
+ * Event the projection bridge emits with one enriched row per coalesced
+ * registry update. Mirrors `SESSION_UPDATED_EVENT` in
+ * `src-tauri/src/commands.rs`. Replaces the removed `sessions:entry-changed`.
  */
-export const SESSION_ENTRY_CHANGED_EVENT = "sessions:entry-changed"
+export const SESSION_UPDATED_EVENT = "session:updated"
 
-/** Subscribe to one session's entry changing. The result unsubscribes. */
-export async function onSessionEntryChanged(
-  handler: (entry: ActivityEntryPayload) => void,
+/** Subscribe to enriched row projections. The result unsubscribes. */
+export async function onSessionUpdated(
+  handler: (update: SessionUpdatedPayload) => void,
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
-  return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) =>
+  return listen<SessionUpdatedPayload>(SESSION_UPDATED_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/**
+ * Event the projection bridge emits when list membership changes: a
+ * removal, a scan pass, a broad invalidation, or a resync. Mirrors
+ * `SESSION_INDEX_CHANGED_EVENT` in `src-tauri/src/commands.rs`. Replaces
+ * the removed `sessions:invalidated`.
+ */
+export const SESSION_INDEX_CHANGED_EVENT = "session:index-changed"
+
+/** Subscribe to list-membership changes. The result unsubscribes. */
+export async function onSessionIndexChanged(
+  handler: (change: SessionIndexChangedPayload) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<SessionIndexChangedPayload>(SESSION_INDEX_CHANGED_EVENT, (event) =>
     handler(event.payload),
   )
 }

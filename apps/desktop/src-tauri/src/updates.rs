@@ -489,7 +489,8 @@ pub fn restart(app: &AppHandle) -> Result<(), &'static str> {
     if !installed {
         return Err("No installed update is waiting for a restart");
     }
-    app.restart()
+    crate::main_window::restart_after_placement_flush(app);
+    Ok(())
 }
 
 async fn install_simulation(
@@ -594,7 +595,7 @@ async fn automatic_update(app: &AppHandle) {
     let status = download_and_install(app, update, true).await;
     if status.kind == "installed" {
         ::tracing::info!(event = "auto_update_installed", version = %version);
-        app.restart();
+        crate::main_window::restart_after_placement_flush(app);
     }
 }
 

@@ -69,6 +69,7 @@ function report(overrides: Partial<InsightsReportPayload> = {}): InsightsReportP
     assessedSessions: 0,
     categories: notAssessedCategories(),
     quotaPressure: { assessed: false, findings: null },
+    providerIncidents: { assessed: false, findings: null },
     unrecognizedRecords: {
       types: [],
       typesTruncated: false,
@@ -506,6 +507,76 @@ describe("InsightsPane quota pressure", () => {
     expect(screen.getByText("Weekly: 2 hits")).toBeInTheDocument()
     expect(screen.getByText("Rate limit: 1 hit")).toBeInTheDocument()
     expect(screen.getByText("Models: claude-3-5-haiku-20241022")).toBeInTheDocument()
+  })
+})
+
+describe("InsightsPane provider incidents", () => {
+  it("renders the not-assessed case as not assessed, without a clean look", async () => {
+    render(<InsightsPane />)
+
+    expect(
+      await screen.findByText(
+        "Not assessed — the sessions in this window carry no provider incident evidence.",
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it("renders an assessed section with one capacity hit across one session", async () => {
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 1, ready: 1 }),
+        assessedSessions: 1,
+        providerIncidents: {
+          assessed: true,
+          findings: {
+            totalHits: 1,
+            affectedSessionCount: 1,
+            hitsByKind: [{ kind: "capacity", hits: 1 }],
+            affectedModels: ["gpt-6-astra"],
+            affectedModelsTruncated: false,
+            firstObservedTsMs: 1_000,
+            lastObservedTsMs: 1_000,
+          },
+        },
+      }),
+    })
+    render(<InsightsPane />)
+
+    expect(await screen.findByText("1 provider failure across 1 session")).toBeInTheDocument()
+    expect(screen.getByText("Provider incidents")).toBeInTheDocument()
+    expect(screen.getByText("Model or server at capacity: 1 hit")).toBeInTheDocument()
+    expect(screen.getByText("Models: gpt-6-astra")).toBeInTheDocument()
+  })
+
+  it("renders every provider incident kind's reader-facing label", async () => {
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 2, ready: 2 }),
+        assessedSessions: 2,
+        providerIncidents: {
+          assessed: true,
+          findings: {
+            totalHits: 3,
+            affectedSessionCount: 2,
+            hitsByKind: [
+              { kind: "capacity", hits: 1 },
+              { kind: "server_error", hits: 1 },
+              { kind: "connection", hits: 1 },
+            ],
+            affectedModels: ["gpt-6-astra", "claude-sonnet-4-6"],
+            affectedModelsTruncated: false,
+            firstObservedTsMs: 1_000,
+            lastObservedTsMs: 3_000,
+          },
+        },
+      }),
+    })
+    render(<InsightsPane />)
+
+    expect(await screen.findByText("3 provider failures across 2 sessions")).toBeInTheDocument()
+    expect(screen.getByText("Model or server at capacity: 1 hit")).toBeInTheDocument()
+    expect(screen.getByText("Provider server error: 1 hit")).toBeInTheDocument()
+    expect(screen.getByText("Connection to provider failed: 1 hit")).toBeInTheDocument()
   })
 })
 

@@ -1063,6 +1063,7 @@ fn pi_capabilities_match_published_evidence_and_session_cache_support() {
         record_identity: true,
         linear_record_order: false,
         quota_incidents: false,
+        provider_incidents: false,
         harness_version: false,
         repeated_context_accounting: None,
     };
@@ -1087,6 +1088,10 @@ fn pi_capabilities_match_published_evidence_and_session_cache_support() {
         assert!(matches!(evidence.subagents, EvidenceValue::Unsupported));
         assert!(matches!(
             evidence.quota_incidents,
+            EvidenceValue::Unsupported
+        ));
+        assert!(matches!(
+            evidence.provider_incidents,
             EvidenceValue::Unsupported
         ));
         assert!(matches!(

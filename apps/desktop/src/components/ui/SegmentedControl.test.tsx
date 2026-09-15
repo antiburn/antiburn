@@ -164,7 +164,7 @@ describe("SegmentedControl", () => {
       expect(tablist.className).not.toContain(chrome)
     }
     expect(tablist.getAttribute("style")).toBeNull()
-    expect(document.querySelector(".bg-accent-fill")).toBeNull()
+    expect(document.querySelector(".segmented-control-text-indicator.bg-label")).not.toBeNull()
     expect(document.querySelector(".duration-\\[var\\(--duration-fast\\)\\]")).toBeNull()
 
     const selected = screen.getByRole("tab", { name: "B" })

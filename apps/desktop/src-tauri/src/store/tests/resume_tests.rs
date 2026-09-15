@@ -6,6 +6,7 @@
 //! `docs/plans/continuous-session-ingest.md`.
 
 use super::*;
+use antiburn_local::analysis::{ContentKind, ContentPart, count_turn_content_rows};
 
 fn sample_resume(source_fingerprint: &str) -> StoredResume {
     StoredResume {
@@ -28,6 +29,63 @@ fn turn_row_for(source_key: &str, turn_index: u64) -> TurnRow {
         thread_id: source_key.to_owned(),
         ..turn_row(turn_index)
     }
+}
+
+fn turn_row_with_content_for(source_key: &str, turn_index: u64, text: &str) -> TurnRow {
+    TurnRow {
+        content: vec![ContentPart::new(ContentKind::AssistantText, text)],
+        ..turn_row_for(source_key, turn_index)
+    }
+}
+
+fn publish_single_full_source(store: &Store, source_key: &str) -> (SessionKey, i64) {
+    let (record, claim) = claimed_projection(store, source_key, 100, 60);
+    let key = record.key.clone();
+    FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence)
+        .write_turn_rows(&[turn_row_with_content_for(source_key, 0, "first content")])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    let sources = [SourcePublishOutcome {
+        source_key: source_key.into(),
+        mode: SourcePublishMode::Full,
+        resume: Some(sample_resume("fp-first")),
+    }];
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &sources)
+            .unwrap()
+    );
+    (key, claim.claim_fence)
+}
+
+fn claim_source_with_next_row(
+    store: &Store,
+    key: &SessionKey,
+    source_key: &str,
+) -> (AnalysisRecord, EvidenceClaim, EvidenceCompletion) {
+    mark_evidence_pending_in(&store.lock(), key).unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("reclaimable");
+    let record = projection_record(
+        key.clone(),
+        &format!("sv1:{source_key}-next"),
+        claim.source_generation,
+    );
+    FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence)
+        .write_turn_rows(&[turn_row_with_content_for(source_key, 1, "next content")])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    (record, claim, completion)
 }
 
 #[test]
@@ -57,6 +115,16 @@ fn a_winning_publish_writes_the_resume_snapshot_named_for_its_source() {
         query_source_resume(&connection, &turn_session_key(&key), "resume-write").unwrap(),
         Some(sample_resume("fp1"))
     );
+}
+
+#[test]
+fn a_named_full_source_keeps_its_rows_on_the_first_publish() {
+    let store = store();
+    let (key, _) = publish_single_full_source(&store, "resume-first-full");
+
+    let published = store.published_turn_rows(&key).unwrap().expect("ready");
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].source_key, "resume-first-full");
 }
 
 #[test]
@@ -240,9 +308,11 @@ fn a_full_read_source_replaces_only_its_own_published_rows() {
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer
         .write_turn_rows(&[
-            turn_row_for("resume-full-replace", 0),
-            turn_row_for("resume-full-replace", 1),
-            turn_row_for("child-1", 0),
+            turn_row_with_content_for("resume-full-replace", 0, "old parent zero"),
+            turn_row_with_content_for("resume-full-replace", 1, "old parent one"),
+            turn_row_with_content_for("child-1", 0, "unchanged child"),
+            turn_row_with_content_for("empty-full", 0, "removed full source"),
+            turn_row_with_content_for("unnamed-full", 0, "old unnamed source"),
         ])
         .unwrap();
     let completion = evidence_completion(
@@ -255,6 +325,7 @@ fn a_full_read_source_replaces_only_its_own_published_rows() {
             .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
+    let first_published_fence = store.evidence(&key).unwrap().unwrap().published_fence;
 
     // Second pass: the parent forces a full read (a tail rewrite, say) and
     // rewrites its rows from scratch; the child writes nothing new but is
@@ -273,7 +344,10 @@ fn a_full_read_source_replaces_only_its_own_published_rows() {
     );
     let next_writer = FencedTurnRowStore::new(store.clone(), key.clone(), next_claim.claim_fence);
     next_writer
-        .write_turn_rows(&[turn_row_for("resume-full-replace", 0)])
+        .write_turn_rows(&[
+            turn_row_with_content_for("resume-full-replace", 0, "new parent zero"),
+            turn_row_with_content_for("unnamed-full", 1, "new unnamed source"),
+        ])
         .unwrap();
     let next_completion = evidence_completion(
         &next_claim,
@@ -289,6 +363,11 @@ fn a_full_read_source_replaces_only_its_own_published_rows() {
         SourcePublishOutcome {
             source_key: "child-1".into(),
             mode: SourcePublishMode::Resumed,
+            resume: None,
+        },
+        SourcePublishOutcome {
+            source_key: "empty-full".into(),
+            mode: SourcePublishMode::Full,
             resume: None,
         },
     ];
@@ -308,6 +387,14 @@ fn a_full_read_source_replaces_only_its_own_published_rows() {
         .iter()
         .filter(|row| row.source_key == "child-1")
         .collect();
+    let empty_full_rows: Vec<_> = published
+        .iter()
+        .filter(|row| row.source_key == "empty-full")
+        .collect();
+    let unnamed_rows: Vec<_> = published
+        .iter()
+        .filter(|row| row.source_key == "unnamed-full")
+        .collect();
     assert_eq!(
         parent_rows.len(),
         1,
@@ -317,6 +404,35 @@ fn a_full_read_source_replaces_only_its_own_published_rows() {
         child_rows.len(),
         1,
         "the untouched child's row must survive, not be deleted"
+    );
+    assert!(
+        empty_full_rows.is_empty(),
+        "a named full source with no new rows must remove its old rows"
+    );
+    assert_eq!(
+        unnamed_rows.len(),
+        1,
+        "an unnamed source must replace its old rows as a full read"
+    );
+    assert_eq!(unnamed_rows[0].turn_index, 1);
+    let connection = store.lock();
+    assert_eq!(
+        count_turn_content_rows(
+            &connection,
+            &turn_session_key(&key),
+            first_published_fence.unwrap()
+        )
+        .unwrap(),
+        3
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM turn_content", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap(),
+        3,
+        "the replaced source's old content must not remain orphaned"
     );
 }
 
@@ -345,12 +461,41 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
             mode: SourcePublishMode::Full,
             resume: Some(sample_resume("fp-child")),
         },
+        SourcePublishOutcome {
+            source_key: "empty-child".into(),
+            mode: SourcePublishMode::Full,
+            resume: Some(sample_resume("fp-empty-child")),
+        },
     ];
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &sources)
             .unwrap()
     );
+
+    let other = session("resume-vanish-other", 1_000);
+    let other_key = other.key.clone();
+    store.upsert_sessions(&[other], &[]).unwrap();
+    FencedTurnRowStore::new(store.clone(), other_key.clone(), 777)
+        .write_turn_rows(&[turn_row_for("child-1", 0)])
+        .unwrap();
+    {
+        let connection = store.lock();
+        insert_source_resume(
+            &connection,
+            &turn_session_key(&other_key),
+            "child-1",
+            &sample_resume("fp-other-child"),
+        )
+        .unwrap();
+        insert_source_resume(
+            &connection,
+            &turn_session_key(&other_key),
+            "empty-child",
+            &sample_resume("fp-other-empty"),
+        )
+        .unwrap();
+    }
 
     // Second pass: the child transcript is gone (removed from disk, or
     // unreadable this time), so this pass names and reads only the parent.
@@ -410,17 +555,149 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
         None,
         "a vanished source's stale resume snapshot must be dropped too"
     );
+    assert_eq!(
+        query_source_resume(&connection, &turn_session_key(&key), "empty-child").unwrap(),
+        None,
+        "a vanished source must not need published turn rows for snapshot cleanup"
+    );
+    assert_eq!(
+        query_source_resume(&connection, &turn_session_key(&other_key), "child-1").unwrap(),
+        Some(sample_resume("fp-other-child"))
+    );
+    assert_eq!(
+        query_source_resume(&connection, &turn_session_key(&other_key), "empty-child").unwrap(),
+        Some(sample_resume("fp-other-empty"))
+    );
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&other_key), 777).unwrap(),
+        1,
+        "publication must keep another session's matching source keys"
+    );
+}
+
+#[test]
+fn a_late_publish_error_rolls_back_set_row_changes_and_resume_updates() {
+    let store = store();
+    let (key, first_fence) = publish_single_full_source(&store, "resume-rollback");
+    let (next_record, next_claim, next_completion) =
+        claim_source_with_next_row(&store, &key, "resume-rollback");
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TRIGGER fail_resume_insert
+             BEFORE INSERT ON source_resume
+             WHEN NEW.source_key = 'resume-rollback'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced resume write failure');
+             END;",
+        )
+        .unwrap();
+    let next_sources = [SourcePublishOutcome {
+        source_key: "resume-rollback".into(),
+        mode: SourcePublishMode::Full,
+        resume: Some(sample_resume("fp-next")),
+    }];
+
+    let error = store
+        .publish_projections(&next_record, None, &next_completion, &[], &next_sources)
+        .expect_err("the trigger must abort the publish");
+    assert!(error.to_string().contains("forced resume write failure"));
+
+    let published = store.published_turn_rows(&key).unwrap().expect("ready");
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].turn_index, 0);
+    let connection = store.lock();
+    assert_eq!(
+        query_source_resume(&connection, &turn_session_key(&key), "resume-rollback").unwrap(),
+        Some(sample_resume("fp-first"))
+    );
+    let row_fences = connection
+        .prepare(
+            "SELECT turn_index, claim_fence FROM turn
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+              ORDER BY turn_index",
+        )
+        .unwrap()
+        .query_map(
+            params![key.environment_key, key.agent, key.session_id],
+            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        row_fences,
+        vec![(0, first_fence), (1, next_claim.claim_fence)]
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM turn_content", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap(),
+        2,
+        "rollback must restore old content and keep unpublished content"
+    );
+}
+
+#[test]
+fn conflicting_duplicate_source_outcomes_are_rejected_without_publishing() {
+    let store = store();
+    let (key, _) = publish_single_full_source(&store, "resume-duplicate");
+    let (next_record, next_claim, next_completion) =
+        claim_source_with_next_row(&store, &key, "resume-duplicate");
+    let duplicate_sources = [
+        SourcePublishOutcome {
+            source_key: "resume-duplicate".into(),
+            mode: SourcePublishMode::Resumed,
+            resume: Some(sample_resume("fp-next")),
+        },
+        SourcePublishOutcome {
+            source_key: "resume-duplicate".into(),
+            mode: SourcePublishMode::Full,
+            resume: None,
+        },
+    ];
+
+    let error = store
+        .publish_projections(
+            &next_record,
+            None,
+            &next_completion,
+            &[],
+            &duplicate_sources,
+        )
+        .expect_err("duplicate sources must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate source publication outcome")
+    );
+
+    let published = store.published_turn_rows(&key).unwrap().expect("ready");
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].turn_index, 0);
+    let connection = store.lock();
+    assert_eq!(
+        query_source_resume(&connection, &turn_session_key(&key), "resume-duplicate").unwrap(),
+        Some(sample_resume("fp-first"))
+    );
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), next_claim.claim_fence).unwrap(),
+        1,
+        "validation must leave the unpublished claim rows unchanged"
+    );
 }
 
 #[test]
 fn current_resume_revisions_reject_each_prior_batch_revision() {
     let current = crate::analysis::resume_revisions();
-    assert_eq!(current.snapshot_revision, 6);
-    assert_eq!(current.parser_revision, 32);
-    assert_eq!(current.analyzer_revision, 22);
+    assert_eq!(current.snapshot_revision, 9);
+    assert_eq!(current.parser_revision, 38);
+    assert_eq!(current.analyzer_revision, 24);
     assert_eq!(current.metrics_schema_revision, 8);
-    assert_eq!(current.evidence_schema_revision, 18);
-    assert_eq!(current.coverage_schema_revision, 4);
+    assert_eq!(current.evidence_schema_revision, 19);
+    assert_eq!(current.coverage_schema_revision, 5);
     let mut stored = sample_resume("current");
     stored.snapshot_revision = current.snapshot_revision;
     stored.parser_revision = current.parser_revision;
@@ -432,8 +709,8 @@ fn current_resume_revisions_reject_each_prior_batch_revision() {
     for field in 0..6 {
         let mut stale = stored.clone();
         match field {
-            0 => stale.snapshot_revision = 5,
-            1 => stale.parser_revision = 30,
+            0 => stale.snapshot_revision = 6,
+            1 => stale.parser_revision = 32,
             2 => stale.analyzer_revision = 20,
             3 => stale.metrics_schema_revision = 7,
             4 => stale.evidence_schema_revision = 16,

@@ -398,12 +398,29 @@ pub fn model_control_target(
     {
         return target;
     }
+    if normalized_label(agent) == "opencode"
+        && let (Some(provider), None) = (provider, api)
+        && let Some(api) = opencode_direct_provider_api(provider)
+    {
+        return ModelTarget::new(agent, provider, api, model);
+    }
     ModelTarget::new(
         agent,
         provider.unwrap_or_default(),
         api.unwrap_or_default(),
         model,
     )
+}
+
+/// OpenCode stores direct provider IDs but not a request API discriminator.
+/// These reviewed providers each have one native API route in OpenCode.
+fn opencode_direct_provider_api(provider: &str) -> Option<&'static str> {
+    match normalized_label(provider).as_str() {
+        "openai" => Some("responses"),
+        "anthropic" => Some("messages"),
+        "google" => Some("generate-content"),
+        _ => None,
+    }
 }
 
 fn normalized_label(value: &str) -> String {
@@ -572,6 +589,26 @@ mod tests {
                     }
                 );
             }
+        }
+    }
+
+    #[test]
+    fn opencode_direct_providers_supply_their_reviewed_native_api_only() {
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
+        for (provider, api, model) in [
+            ("openai", "responses", "gpt-5.6"),
+            ("anthropic", "messages", "claude-sonnet-5"),
+            ("google", "generate-content", "gemini-3.8-pro"),
+        ] {
+            let target = model_control_target("opencode", Some(provider), None, model);
+            assert_eq!(target.api, api);
+            assert!(matches!(catalog.resolve(&target), Support::Supported(_)));
+        }
+        for provider in ["opencode", "github-copilot", "bedrock", "custom-proxy"] {
+            let target = model_control_target("opencode", Some(provider), None, "gpt-5.6");
+            assert!(target.api.is_empty());
+            assert!(!matches!(catalog.resolve(&target), Support::Supported(_)));
         }
     }
 

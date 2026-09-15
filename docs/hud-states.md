@@ -162,24 +162,40 @@ outside the visible HUD reach the application underneath it.
 
 ## Stacking and spaces
 
-The HUD and its detail window use the macOS screen-saver window level. A lower
-level is not enough: macOS composites a full-screen space above the status
-level, which hides the HUD behind any full-screen window. The shell sets the
-level again each time it reveals the window, because the toolkit can reset it.
+The HUD and its detail window use nonactivating `NSPanel` subclasses that cannot
+become key or main windows. Hidden creation and native reveal use the same
+panel conversion mechanism as the menu-bar popover, without its keyboard-focus
+step. The app keeps its regular activation policy for ordinary windows.
 
-Both windows join all spaces, so one window follows the reader between spaces.
-The app draws no copy for each space. The windows also join the full-screen
-spaces of other applications, and they hold their position during a space
-switch and in Mission Control.
+Before each reveal, the main-thread callback resolves or converts the panel,
+sets its nonactivating style, and restores its stacking and Space policy. It
+then uses `orderFrontRegardless()` without activating the app. Pending hide
+requests still prevent a queued reveal. Conversion failure leaves the window
+hidden instead of falling back to an ordinary window.
+
+The panels retain the existing screen-saver level (1000) and
+`CanJoinAllSpaces | FullScreenAuxiliary | Stationary | IgnoresCycle` policy.
+The level controls stacking; it does not establish fullscreen-Space eligibility.
+Manual QA of the prior ordinary-window implementation found that level 1000
+alone did not make the HUD appear over another app's fullscreen Space.
+
+The policy requests visibility across Spaces on the HUD's remembered display,
+including fullscreen Spaces. There is only one HUD, not a copy on each display,
+and it does not move to another display merely because an app there enters
+fullscreen. Fullscreen visibility, Space switches, and passive interaction need
+live macOS validation after changes to the native window mechanism.
 
 ## Data and timing
 
 - Each LED bar has 20 segments.
 - Only the first bar blinks during a live session, and only on the HUD. The
   detail window does not blink.
-- A transcript write stays live for 90 seconds.
-- The renderer reads liveness once when shown. Session and scan events push
-  later changes, and one timer clears the live state at its expiry.
+- Liveness comes from the session lifecycle registry: the renderer
+  subscribes to `session:lifecycle`, then reads the versioned
+  `get_live_sessions` snapshot, and applies only deltas with a higher
+  sequence. A session works until the registry says `quiet` (30 seconds
+  without a write); anonymous agent activity expires locally on the same
+  window. See `docs/session-lifecycle-events.md`.
 - The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
 - Hiding the HUD parks the native polls and the retained renderer's timers.

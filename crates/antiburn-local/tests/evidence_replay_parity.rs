@@ -191,6 +191,13 @@ fn compare_evidence(
         replayed.quota_incidents.clone(),
         live.quota_incidents.clone(),
     );
+    diff(
+        mismatches,
+        fixture,
+        "providerIncidents",
+        replayed.provider_incidents.clone(),
+        live.provider_incidents.clone(),
+    );
 }
 
 /// Streams `input` through the real adapter and the real evidence and
@@ -248,8 +255,8 @@ fn run_fixture_and_replay(
         (facts, record)
     });
     let replayed = evidence_from_facts(&facts, &record);
-    assert_eq!(record.coverage_schema_revision, 4);
-    assert_eq!(replayed.schema_revision, 18);
+    assert_eq!(record.coverage_schema_revision, 5);
+    assert_eq!(replayed.schema_revision, 19);
     let json_evidence: SessionEvidence =
         serde_json::from_str(&serde_json::to_string(&replayed).unwrap()).unwrap();
     assert_eq!(replayed, json_evidence);

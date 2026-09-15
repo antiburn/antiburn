@@ -21,7 +21,7 @@
           "value": {
             "observed": {
               "accounting": "uncached_input",
-              "paidTokens": 0,
+              "paidTokens": 400,
               "pairsConsidered": 0,
               "pairsSkipped": 1,
               "repeatedTokens": 0
@@ -42,7 +42,8 @@
       "linearRecordOrder": true,
       "mcpInventory": false,
       "modelIdentity": true,
-      "quotaIncidents": false,
+      "providerIncidents": true,
+      "quotaIncidents": true,
       "reasoningEffortTier": true,
       "recordIdentity": false,
       "repeatedContextAccounting": "uncached_input",
@@ -201,21 +202,30 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 22,
-      "evidenceSchemaRevision": 18,
+      "analyzerRevision": 24,
+      "evidenceSchemaRevision": 19,
       "harnessVersion": {
         "state": "complete",
         "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 32,
+      "parserRevision": 38,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
-    "quotaIncidents": {
-      "state": "unsupported"
+    "providerIncidents": {
+      "state": "complete",
+      "value": {
+        "incidents": []
+      }
     },
-    "schemaRevision": 18,
+    "quotaIncidents": {
+      "state": "complete",
+      "value": {
+        "incidents": []
+      }
+    },
+    "schemaRevision": 19,
     "subagents": {
       "state": "complete",
       "value": {
@@ -4300,6 +4310,7 @@
         "tools": [],
         "tsMs": 1785578402000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -4321,6 +4332,7 @@
         "tools": [],
         "tsMs": 1785578403000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -4342,6 +4354,7 @@
         "tools": [],
         "tsMs": 1785578404000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -4368,6 +4381,7 @@
         ],
         "tsMs": 1785578405000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -4389,6 +4403,7 @@
         "tools": [],
         "tsMs": 1785578406000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -4415,6 +4430,7 @@
         ],
         "tsMs": 1785578407000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,
@@ -4436,6 +4452,7 @@
         "tools": [],
         "tsMs": 1785578408000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 600,
           "inputTokens": 400,
@@ -4457,6 +4474,7 @@
         "tools": [],
         "tsMs": 1785578409000,
         "usage": {
+          "cacheCreation1hTokens": 0,
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
           "inputTokens": 0,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-request-main-window-recovery"
+description = "Enables the request_main_window_recovery command without any pre-configured scope."
+commands.allow = ["request_main_window_recovery"]
+
+[[permission]]
+identifier = "deny-request-main-window-recovery"
+description = "Denies the request_main_window_recovery command without any pre-configured scope."
+commands.deny = ["request_main_window_recovery"]

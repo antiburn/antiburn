@@ -20,6 +20,15 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code cache writes now price at the one-hour rate (2x input) instead
+  of the default five-minute rate, since Claude Code has run with one-hour
+  caching configured throughout. A transcript that carries the explicit
+  five-minute/one-hour split uses it instead. Previously analyzed sessions
+  are reprocessed. Insights savings estimates, old-model remediation savings,
+  and provider-limit factor learning now use the same one-hour rate.
+
 ## [0.5.2] - 2026-09-10
 
 ### Changed

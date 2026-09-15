@@ -13,7 +13,12 @@ pub const URL: &str = "main.html";
 /// The first inner width in logical pixels.
 pub const DEFAULT_WIDTH: f64 = 1100.0;
 /// The first inner height in logical pixels.
-pub const DEFAULT_HEIGHT: f64 = 600.0;
+///
+/// This value is taller than a small display can show. `centered_default`
+/// limits the first size to `INITIAL_WORK_AREA_FRACTION` of the work area. A
+/// tall value shows more session rows on a large display. A small display gets
+/// the same size as before.
+pub const DEFAULT_HEIGHT: f64 = 800.0;
 /// The minimum inner width in logical pixels.
 pub const MIN_WIDTH: f64 = 1000.0;
 /// The minimum inner height in logical pixels.
@@ -389,15 +394,38 @@ mod tests {
         height: 876,
     };
 
+    /// A work area that is tall enough for the full `DEFAULT_HEIGHT`.
+    const TALL: Frame = Frame {
+        x: 0,
+        y: 24,
+        width: 1_920,
+        height: 1_176,
+    };
+
     #[test]
     fn default_geometry_centers_inside_the_work_area() {
+        assert_eq!(
+            validated_placement(None, &[TALL], Some(TALL), 1.0, 0, 0),
+            Placement {
+                x: 410,
+                y: 212,
+                width: 1100,
+                height: 800,
+                maximized: false,
+                scale_factor: 1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn default_geometry_shrinks_to_a_short_work_area() {
         assert_eq!(
             validated_placement(None, &[PRIMARY], Some(PRIMARY), 1.0, 0, 0),
             Placement {
                 x: 170,
-                y: 162,
+                y: 90,
                 width: 1100,
-                height: 600,
+                height: 744,
                 maximized: false,
                 scale_factor: 1.0,
             }
@@ -518,7 +546,7 @@ mod tests {
             height: 1_920,
         };
         let placement = validated_placement(None, &[retina], Some(retina), 2.0, 0, 0);
-        assert_eq!((placement.width, placement.height), (2_200, 1_200));
+        assert_eq!((placement.width, placement.height), (2_200, 1_600));
         assert!(!placement.maximized);
     }
 
