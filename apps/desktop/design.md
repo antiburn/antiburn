@@ -196,6 +196,31 @@ colors:
   led-notch-highlight: # the light line beside it; the pair reads on a light document and on a dark one
     light: "hsl(0 0% 100% / 0.85)"
     dark: "hsl(0 0% 100% / 0.85)"
+  # Token-map work modes: one colour per kind of work a turn did. Each mirrors
+  # a system colour above; they are separate tokens so the map can re-tune
+  # without moving product chrome. `talking` is a neutral: plain text is the
+  # quiet mode.
+  mode-looking: # read + search; mirrors system-blue
+    light: "hsl(211.2 100% 50%)"
+    dark: "hsl(210 100% 51.9%)"
+  mode-running: # shell + tests; mirrors system-green
+    light: "hsl(135 59% 34%)"
+    dark: "hsl(135 70% 52.3%)"
+  mode-changing: # edits; mirrors brand-tint
+    light: "hsl(17.6 100% 58.6%)"
+    dark: "hsl(17.6 100% 58.6%)"
+  mode-delegating: # sub-agent spawns and sub-agent turns; mirrors system-indigo
+    light: "hsl(241 61% 58.8%)"
+    dark: "hsl(241 73% 63%)"
+  mode-thinking: # extended thinking with no tool; mirrors system-gold
+    light: "hsl(40.6 96% 40.4%)"
+    dark: "hsl(48 100% 50%)"
+  mode-talking: # plain assistant text
+    light: "hsl(0 0% 0% / 0.35)"
+    dark: "hsl(0 0% 100% / 0.4)"
+  mode-other: # MCP, skills, web; mirrors system-orange-tint
+    light: "hsl(35 100% 50%)"
+    dark: "hsl(36.4 100% 52%)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-stroke: # the context line; a cool blue, lit at rest
     light: "hsl(221.2 83% 53.3%)"

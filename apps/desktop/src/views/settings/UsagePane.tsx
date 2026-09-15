@@ -15,7 +15,11 @@ import {
   type LiveUsageMeterPayload,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
-import { HudVisibilitySession } from "../../lib/overlayWindow"
+import {
+  HudVisibilitySession,
+  isHudTokenMapEnabled,
+  setHudTokenMapEnabled,
+} from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import {
   liveDetectionNote,
@@ -86,6 +90,12 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
   const hidden = settings?.liveUsageHiddenProviders ?? []
   const meters = roster(live)
 
+  const [tokenMapShown, setTokenMapShown] = useState(isHudTokenMapEnabled)
+  function handleTokenMapChange(next: boolean) {
+    setHudTokenMapEnabled(next)
+    setTokenMapShown(next)
+  }
+
   function handleHudChange(next: boolean) {
     hudVisibility.set(next)
   }
@@ -133,6 +143,12 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               description="A small always-on-top readout of your plan limits. It expands when you hover over it, and you can drag it anywhere on screen. It shows the same figures as this pane, so it is only as current as they are — the refresh switch above is what keeps them moving."
               checked={hudShown}
               onChange={handleHudChange}
+            />
+            <ToggleRow
+              label="Show what live sessions are doing"
+              description="A small map above the bars: one blob per session that wrote in the last five minutes, one dot per unit of tokens a minute, coloured by the kind of work (looking, running, changing, delegating, thinking, talking)."
+              checked={tokenMapShown}
+              onChange={handleTokenMapChange}
             />
           </Card>
         </SectionGroup>

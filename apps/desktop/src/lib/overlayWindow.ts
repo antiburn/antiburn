@@ -56,6 +56,25 @@ export function setFloatingHudEnabled(enabled: boolean): void {
   }
 }
 
+const TOKEN_MAP_PREF_KEY = "antiburn.showHudTokenMap"
+
+/** Whether the HUD draws the token map above its bars. On until switched off. */
+export function isHudTokenMapEnabled(): boolean {
+  try {
+    return localStorage.getItem(TOKEN_MAP_PREF_KEY) !== "0"
+  } catch {
+    return true
+  }
+}
+
+export function setHudTokenMapEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(TOKEN_MAP_PREF_KEY, enabled ? "1" : "0")
+  } catch {
+    // The map still draws when preference storage is unavailable.
+  }
+}
+
 export async function isCurrentWindowVisible(): Promise<boolean> {
   try {
     return await getCurrentWindow().isVisible()

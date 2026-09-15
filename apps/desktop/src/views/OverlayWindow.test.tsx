@@ -10,6 +10,7 @@ const REFRESH_TEST_MS = 60_000
 const getLiveUsage = vi.hoisted(() => vi.fn())
 const getLatestSessionActivity = vi.hoisted(() => vi.fn())
 const isOverlayWorkActive = vi.hoisted(() => vi.fn())
+const getHudTokenMap = vi.hoisted(() => vi.fn())
 const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const resizeOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
@@ -31,6 +32,7 @@ vi.mock("../lib/ipc", async () => {
     getLiveUsage,
     getLatestSessionActivity,
     isOverlayWorkActive,
+    getHudTokenMap,
     showHudDetail,
     hideHudDetail,
     resizeOverlayWindow,
@@ -234,6 +236,8 @@ describe("OverlayWindow", () => {
     getLatestSessionActivity.mockResolvedValue(null)
     isOverlayWorkActive.mockReset()
     isOverlayWorkActive.mockResolvedValue(true)
+    getHudTokenMap.mockReset()
+    getHudTokenMap.mockResolvedValue(null)
     showHudDetail.mockClear()
     hideHudDetail.mockClear()
     resizeOverlayWindow.mockClear()
@@ -614,6 +618,47 @@ describe("OverlayWindow", () => {
     await act(async () => livePush.emit!(payload))
 
     expect(resizeOverlayWindow).toHaveBeenCalledTimes(resizeCount)
+  })
+
+  it("draws the token map above the bars when a session is live", async () => {
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      sessions: [
+        {
+          agent: "claude-code",
+          sessionId: "s1",
+          title: null,
+          lastTurnEpoch: 990,
+          tokensPerMin: 1_000,
+          modes: {
+            looking: 5_000,
+            running: 0,
+            changing: 0,
+            delegating: 0,
+            thinking: 0,
+            talking: 0,
+            other: 0,
+          },
+          subagents: [],
+        },
+      ],
+    })
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() =>
+      expect(container.querySelectorAll("svg[data-dot-value] circle")).toHaveLength(4),
+    )
+    const svg = container.querySelector("svg[data-dot-value]")!
+    const bars = container.querySelector(".space-y-\\[3px\\]")
+    expect(svg.compareDocumentPosition(bars!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("draws no map when the preference is off", async () => {
+    stored.set("antiburn.showHudTokenMap", "0")
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    expect(getHudTokenMap).not.toHaveBeenCalled()
+    expect(container.querySelector("svg[data-dot-value]")).toBeNull()
   })
 
   it("reveals at the measured collapsed height", async () => {

@@ -14,7 +14,7 @@ each dot coloured by the mode of work it paid for, smaller dots for sub-agents.
 | 1. Engine: turn → mode attribution + tests        | done        |
 | 2. Desktop Rust: `get_hud_token_map` command      | done        |
 | 3. Frontend: `deriveTokenMap` layout + tests      | done        |
-| 4. Frontend: `TokenMap` SVG in the HUD + setting  | in progress |
+| 4. Frontend: `TokenMap` SVG in the HUD + setting  | done        |
 | 5. Detail window: legend + per-session rows       | not started |
 | 6. Docs (`hud-states.md`, `design.md`), slop pass | not started |
 

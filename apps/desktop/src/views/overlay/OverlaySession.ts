@@ -5,6 +5,7 @@ import type { MouseEvent as ReactMouseEvent } from "react"
 import { flushSync } from "react-dom"
 
 import {
+  getHudTokenMap,
   getLatestSessionActivity,
   getLiveUsage,
   hideHudDetail,
@@ -20,6 +21,7 @@ import {
 } from "../../lib/ipc"
 import {
   hideOverlayWindow,
+  isHudTokenMapEnabled,
   onOverlayWorkChanged,
   recordHudPosition,
   setFloatingHudEnabled,
@@ -28,12 +30,17 @@ import {
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
+import { deriveTokenMap, type TokenMapLayout } from "../../lib/tokenMap"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
 const LIVE_WINDOW_SECS = 90
 const SHOW_DELAY_MS = 400
 const MAX_TIMEOUT_MS = 2_147_483_647
+const TOKEN_MAP_WINDOW_SECS = 300
+const TOKEN_MAP_POLL_MS = 5_000
+
+const EMPTY_TOKEN_MAP = deriveTokenMap(null)
 
 export type OverlaySnapshot = {
   bars: UsageBarItem[]
@@ -42,6 +49,7 @@ export type OverlaySnapshot = {
   sessionLive: boolean
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
+  tokenMap: TokenMapLayout
 }
 
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
@@ -50,6 +58,7 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   dragging: false,
   sessionLive: false,
   noMeterSelected: false,
+  tokenMap: EMPTY_TOKEN_MAP,
 }
 
 type DragOrigin = {
@@ -90,6 +99,10 @@ export class OverlaySession {
   private showTimer: number | null = null
   private detailShown = false
   private usagePoll: number | null = null
+  private tokenMapPoll: number | null = null
+  /** The dot value the map last used, held for a window so a burst does not flicker the scale. */
+  private dotValueFloor = 0
+  private dotValueFloorSince = 0
   private livenessExpiry: number | null = null
   private latestActivity: number | null = null
   private livenessRevision = 0
@@ -253,6 +266,28 @@ export class OverlaySession {
     this.listenForActivity(generation)
     this.refreshLatestActivity(generation)
 
+    const refreshTokenMap = () => {
+      if (!isHudTokenMapEnabled()) {
+        if (this.snapshot.tokenMap.dots.length > 0) {
+          this.commitLayout({ tokenMap: EMPTY_TOKEN_MAP })
+          void this.syncWindow(true, generation)
+        }
+        return
+      }
+      void getHudTokenMap(TOKEN_MAP_WINDOW_SECS)
+        .then((payload) => {
+          if (!this.isCurrent(generation)) return
+          const tokenMap = deriveTokenMap(payload, { minDotValue: this.dotValueFloor })
+          this.holdDotValue(tokenMap.dotValue, payload?.windowSecs ?? TOKEN_MAP_WINDOW_SECS)
+          const hadDots = this.snapshot.tokenMap.dots.length > 0
+          this.commitLayout({ tokenMap })
+          if (hadDots !== tokenMap.dots.length > 0) void this.syncWindow(true, generation)
+        })
+        .catch(() => {})
+    }
+    refreshTokenMap()
+    this.tokenMapPoll = window.setInterval(refreshTokenMap, TOKEN_MAP_POLL_MS)
+
     void listen<boolean>("overlay_hover", (event) => {
       if (this.isCurrent(generation)) this.requestHover(Boolean(event.payload))
     })
@@ -310,6 +345,7 @@ export class OverlaySession {
     this.clearShowTimer()
     this.hideDetail()
     this.clearUsagePoll()
+    this.clearTokenMapPoll()
     this.clearLivenessExpiry()
     this.stopHoverListening?.()
     this.stopHoverListening = null
@@ -345,6 +381,28 @@ export class OverlaySession {
   private clearUsagePoll(): void {
     if (this.usagePoll != null) window.clearInterval(this.usagePoll)
     this.usagePoll = null
+  }
+
+  private clearTokenMapPoll(): void {
+    if (this.tokenMapPoll != null) window.clearInterval(this.tokenMapPoll)
+    this.tokenMapPoll = null
+  }
+
+  /**
+   * Keep the scale from stepping down until a full window has passed. A step
+   * up applies at once, so the square never overflows.
+   */
+  private holdDotValue(dotValue: number, windowSecs: number): void {
+    const now = Date.now()
+    if (dotValue > this.dotValueFloor) {
+      this.dotValueFloor = dotValue
+      this.dotValueFloorSince = now
+      return
+    }
+    if (now - this.dotValueFloorSince >= windowSecs * 1000) {
+      this.dotValueFloor = 0
+      this.dotValueFloorSince = now
+    }
   }
 
   private clearLivenessExpiry(): void {
@@ -546,7 +604,8 @@ export class OverlaySession {
       this.snapshot.hovered === next.hovered &&
       this.snapshot.dragging === next.dragging &&
       this.snapshot.sessionLive === next.sessionLive &&
-      this.snapshot.noMeterSelected === next.noMeterSelected
+      this.snapshot.noMeterSelected === next.noMeterSelected &&
+      this.snapshot.tokenMap === next.tokenMap
     ) {
       return false
     }

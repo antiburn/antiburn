@@ -4,6 +4,7 @@ import { X } from "lucide-react"
 
 import { LedBar } from "../components/ui/LedBar"
 import { LABEL_BAR_COLOR } from "../lib/usageBars"
+import { TokenMap } from "../components/ui/TokenMap"
 import { OverlaySession } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
@@ -48,6 +49,12 @@ export function OverlayWindow() {
         >
           <X size={10} />
         </button>
+
+        {state.tokenMap.dots.length > 0 && (
+          <div className="pointer-events-none mb-2">
+            <TokenMap layout={state.tokenMap} />
+          </div>
+        )}
 
         {state.bars.length === 0 ? (
           <div className="hud-leds pointer-events-none">

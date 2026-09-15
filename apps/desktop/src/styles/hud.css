@@ -13,6 +13,13 @@
   --color-led-off: var(--color-led-off-val);
   --color-led-notch: var(--color-led-notch-val);
   --color-led-notch-highlight: var(--color-led-notch-highlight-val);
+  --color-mode-looking: var(--color-mode-looking-val);
+  --color-mode-running: var(--color-mode-running-val);
+  --color-mode-changing: var(--color-mode-changing-val);
+  --color-mode-delegating: var(--color-mode-delegating-val);
+  --color-mode-thinking: var(--color-mode-thinking-val);
+  --color-mode-talking: var(--color-mode-talking-val);
+  --color-mode-other: var(--color-mode-other-val);
 }
 
 :root {
@@ -50,6 +57,13 @@
    */
   --color-hud-control-ink-val: hsl(0 0% 32%);
   --color-hud-control-edge-val: hsl(0 0% 80%);
+  --color-mode-looking-val: hsl(211.2 100% 50%);
+  --color-mode-running-val: hsl(135 59% 34%);
+  --color-mode-changing-val: hsl(17.6 100% 58.6%);
+  --color-mode-delegating-val: hsl(241 61% 58.8%);
+  --color-mode-thinking-val: hsl(40.6 96% 40.4%);
+  --color-mode-talking-val: hsl(0 0% 0% / 0.35);
+  --color-mode-other-val: hsl(35 100% 50%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -63,6 +77,13 @@
     --color-led-off-val: hsl(0 0% 50% / 0.45);
     --color-led-notch-val: hsl(0 0% 20% / 0.95);
     --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
+    --color-mode-looking-val: hsl(210 100% 51.9%);
+    --color-mode-running-val: hsl(135 70% 52.3%);
+    --color-mode-changing-val: hsl(17.6 100% 58.6%);
+    --color-mode-delegating-val: hsl(241 73% 63%);
+    --color-mode-thinking-val: hsl(48 100% 50%);
+    --color-mode-talking-val: hsl(0 0% 100% / 0.4);
+    --color-mode-other-val: hsl(36.4 100% 52%);
   }
 }
 
@@ -76,6 +97,13 @@
   --color-led-off-val: hsl(0 0% 50% / 0.45);
   --color-led-notch-val: hsl(0 0% 20% / 0.95);
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
+  --color-mode-looking-val: hsl(211.2 100% 50%);
+  --color-mode-running-val: hsl(135 59% 34%);
+  --color-mode-changing-val: hsl(17.6 100% 58.6%);
+  --color-mode-delegating-val: hsl(241 61% 58.8%);
+  --color-mode-thinking-val: hsl(40.6 96% 40.4%);
+  --color-mode-talking-val: hsl(0 0% 0% / 0.35);
+  --color-mode-other-val: hsl(35 100% 50%);
 }
 
 :root[data-theme="dark"] {
@@ -88,6 +116,13 @@
   --color-led-off-val: hsl(0 0% 50% / 0.45);
   --color-led-notch-val: hsl(0 0% 20% / 0.95);
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
+  --color-mode-looking-val: hsl(210 100% 51.9%);
+  --color-mode-running-val: hsl(135 70% 52.3%);
+  --color-mode-changing-val: hsl(17.6 100% 58.6%);
+  --color-mode-delegating-val: hsl(241 73% 63%);
+  --color-mode-thinking-val: hsl(48 100% 50%);
+  --color-mode-talking-val: hsl(0 0% 100% / 0.4);
+  --color-mode-other-val: hsl(36.4 100% 52%);
 }
 
 /*
@@ -154,8 +189,20 @@ body[data-transparent-window] #root {
   }
 }
 
+/* The newest turn on the token map. */
+.token-map-live {
+  animation: token-map-live 1.6s ease-in-out infinite;
+}
+
+@keyframes token-map-live {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .led-blink {
+  .led-blink,
+  .token-map-live {
     animation: none;
   }
 }
