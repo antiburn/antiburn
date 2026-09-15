@@ -1,6 +1,6 @@
 # HUD v2: frame, live LEDs, per-agent boxes, edge dock
 
-_Plan. Branch `claude/token-usage-breakdown-f921e8`. 2026-09-16. Not started._
+_Plan. Branch `feat/hud-v2` (off `origin/main`, token-map commits replayed on top). 2026-09-16. Not started._
 
 Eight asks from Keith, grouped into four PRs that each stand alone. The token
 map (`hud-token-map.md`, shipped on this branch) and the LED spend-rate design
@@ -13,6 +13,7 @@ signals that item 8 needs and is planned separately.
 | Step                                                   | State       |
 | ------------------------------------------------------ | ----------- |
 | 0. Plan reviewed, open questions decided               | done        |
+| 0b. Token-map commits replayed onto `feat/hud-v2`      | done        |
 | A. Frame + round dots + mode palette retune (1, 2, 7)  | not started |
 | B. LED blink follows spend, in mode colour (3, 7)      | not started |
 | C. Agent boxes at LED scale, per-box detail (4, 5, 6)  | not started |
