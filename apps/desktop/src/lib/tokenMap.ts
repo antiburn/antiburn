@@ -45,8 +45,11 @@ function trimZero(value: number): string {
   return value.toFixed(1).replace(/\.0$/, "")
 }
 
-/** A turn newer than this, in seconds, pulses. */
-const LIVE_SECS = 90
+/**
+ * A session whose last turn is older than this, in seconds, leaves the map.
+ * The newest turn inside it pulses. It matches the VU meter's live window.
+ */
+export const LIVE_SECS = 90
 
 export type TokenMapDot = {
   /** Grid cell column and row, in cells. */
@@ -95,7 +98,8 @@ export type TokenMapOptions = {
   minDotValue?: number
 }
 
-const DEFAULT_CELLS = 12
+/** One cell per LED, so the map shares the VU meter's grid. */
+const DEFAULT_CELLS = 20
 const GAP = 1
 
 type DotSpec = { mode: WorkMode; small: boolean }
@@ -195,9 +199,12 @@ export function deriveTokenMap(
   options: TokenMapOptions = {},
 ): TokenMapLayout {
   const cells = options.cells ?? DEFAULT_CELLS
-  const sessions = [...(payload?.sessions ?? [])].sort(
-    (a, b) => sessionRate(b) - sessionRate(a),
-  )
+  const now = payload?.nowEpoch ?? 0
+  const sessions = (payload?.sessions ?? [])
+    .filter(
+      (session) => session.lastTurnEpoch != null && now - session.lastTurnEpoch <= LIVE_SECS,
+    )
+    .sort((a, b) => sessionRate(b) - sessionRate(a))
   const empty: TokenMapLayout = {
     cells,
     dotValue: DOT_VALUE_LADDER[0],

@@ -30,7 +30,8 @@ function session(
     agent: "claude-code",
     sessionId: id,
     title: null,
-    lastTurnEpoch: null,
+    // The default fixture wrote at `nowEpoch`, so it is live.
+    lastTurnEpoch: 1_000,
     // Five-minute window: rate is total / 5.
     tokensPerMin: total / 5,
     modes: full,
@@ -52,7 +53,7 @@ describe("deriveTokenMap", () => {
   })
 
   it("picks the finest dot value at which everything fits", () => {
-    // 6k tokens/min at 250 per dot = 24 dots, fits a 12x12 square.
+    // 6k tokens/min at 250 per dot = 24 dots, fits a 20x20 square.
     const layout = deriveTokenMap(payload([session("a", { looking: 30_000 })]))
     expect(layout.dotValue).toBe(250)
     expect(layout.dots).toHaveLength(24)
@@ -60,11 +61,11 @@ describe("deriveTokenMap", () => {
   })
 
   it("steps the ladder up when a burst would overflow", () => {
-    // 200k tokens/min: 800 dots at 250, 100 dots at 2k, which fits 144 cells.
+    // 200k tokens/min: 800 dots at 250, 400 dots at 500, which fills 400 cells.
     const layout = deriveTokenMap(payload([session("a", { running: 1_000_000 })]))
-    expect(layout.dotValue).toBe(2_000)
-    expect(layout.dots).toHaveLength(100)
-    expect(layout.blobs[0]).toMatchObject({ w: 10, h: 10 })
+    expect(layout.dotValue).toBe(500)
+    expect(layout.dots).toHaveLength(400)
+    expect(layout.blobs[0]).toMatchObject({ w: 20, h: 20 })
   })
 
   it("splits dots across modes with an exact sum and mode order", () => {
@@ -128,16 +129,19 @@ describe("deriveTokenMap", () => {
     expect(layout.dots.filter((dot) => !dot.small)).toHaveLength(4)
   })
 
-  it("flags the newest turn live only when it is recent", () => {
+  it("drops a session that stopped writing and pulses the newest turn", () => {
     const recent = session("a", { looking: 5_000 }, { lastTurnEpoch: 990 })
-    const stale = session("b", { looking: 5_000 }, { lastTurnEpoch: 500 })
-    const layout = deriveTokenMap(payload([recent, stale], 1_000))
+    const older = session("b", { looking: 5_000 }, { lastTurnEpoch: 920 })
+    const stale = session("c", { looking: 5_000 }, { lastTurnEpoch: 500 })
+    const unknown = session("d", { looking: 5_000 }, { lastTurnEpoch: null })
+    const layout = deriveTokenMap(payload([recent, older, stale, unknown], 1_000))
+    expect(layout.blobs.map((blob) => blob.sessionId)).toEqual(["a", "b"])
     const live = layout.dots.filter((dot) => dot.live)
     expect(live).toHaveLength(1)
     expect(live[0].blob).toBe(0)
 
     const none = deriveTokenMap(payload([stale], 1_000))
-    expect(none.dots.some((dot) => dot.live)).toBe(false)
+    expect(none.dots).toEqual([])
   })
 
   it("honours a minimum dot value", () => {

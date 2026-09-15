@@ -1,9 +1,8 @@
-import { useCallback, useState, useSyncExternalStore, type CSSProperties } from "react"
+import { useCallback, useState, useSyncExternalStore } from "react"
 
 import { X } from "lucide-react"
 
 import { LedBar } from "../components/ui/LedBar"
-import { LABEL_BAR_COLOR } from "../lib/usageBars"
 import { TokenMap } from "../components/ui/TokenMap"
 import { OverlaySession } from "./overlay/OverlaySession"
 
@@ -57,20 +56,14 @@ export function OverlayWindow() {
         )}
 
         {state.bars.length === 0 ? (
-          <div className="hud-leds pointer-events-none">
+          <div className="pointer-events-none">
             <LedBar segments={HUD_SEGMENTS} split={[]} />
           </div>
         ) : (
-          <div className="hud-leds pointer-events-none space-y-[3px]">
+          <div className="pointer-events-none space-y-[3px]">
             {state.bars.map((bar, index) => (
               <LedBar
                 key={bar.key}
-                className={bar.color === LABEL_BAR_COLOR ? "hud-leds-label" : "hud-leds-color"}
-                style={
-                  bar.color === LABEL_BAR_COLOR
-                    ? undefined
-                    : ({ "--hud-led-color": bar.color } as CSSProperties)
-                }
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
                 blinkLast={state.sessionLive && index === 0}

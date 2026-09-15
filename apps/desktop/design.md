@@ -181,16 +181,16 @@ colors:
   bg-hud-hover: # the HUD surface on hover; the desktop stays visible through it
     light: "hsl(0 0% 96.4% / 0.9)"
     dark: "hsl(0 0% 12.5% / 0.9)"
-  bg-hud-frame: # the HUD frame at rest, half alpha; reduced-transparency: the bg-hud value
+  bg-hud-frame: # the HUD frame at rest, half-alpha white in both themes; reduced-transparency: hsl(0 0% 100%)
     light: "hsl(0 0% 100% / 0.5)"
-    dark: "hsl(0 0% 0% / 0.5)"
+    dark: "hsl(0 0% 100% / 0.5)"
   hud-control-ink: # the close control's glyph; no alpha, so it stays solid on the hover surface
     light: "hsl(0 0% 32%)"
     dark: "hsl(0 0% 78%)"
   hud-control-edge: # the close control's edge; no alpha, for the same reason
     light: "hsl(0 0% 80%)"
     dark: "hsl(0 0% 32%)"
-  led-off: # unlit LED segment; one mid grey for both themes, because the HUD frame is half alpha and floats over any background
+  led-off: # unlit LED segment; one mid grey for both themes, because the desktop tints the half-alpha HUD frame
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
   led-notch: # the dark line of the linear-use notch; one value for both themes, for the same reason as led-off
@@ -1015,23 +1015,12 @@ The loading collection header provides the same drag region. The empty error sta
 uses an absolute 40px fallback drag region without reserving layout space.
 Windows and Linux use native title bars without these attributes.
 
-### Floating HUD LED rings
+### Floating HUD frame
 
-The HUD frame is half alpha (`bg-hud-frame`), so the desktop shows through
-behind its LEDs. The desktop can be any colour, and it can match a lit segment and hide
-it. Each lit segment therefore takes a 1px ring at 75% alpha. A ring holds a 6px
-dot better than a blurred shadow, which only softens the edge at that size.
-Unlit segments take no ring, so they stay quiet.
-
-A coloured LED rings in its own colour, darkened to 70% in oklab, so the ring
-reads as the edge of the LED rather than as a second mark. An LED that takes
-`label` has no colour of its own: it is near-black in the light theme and
-near-white in the dark theme, so it rings in the opposite tone, white on light
-and black on dark. `OverlayWindow` chooses between the two with the
-`hud-leds-color` and `hud-leds-label` classes and passes the row's colour in
-`--hud-led-color`.
-
-Inside the HUD, unlit segments raise `led-off` to full opacity. The token keeps
-its 45% alpha everywhere else, because the popover and the detail card paint
-their own surfaces to hold it. The HUD has none. These ring and opacity values
-are local to `src/styles/hud.css` and are not palette or shadow tokens.
+The HUD paints a half-alpha white frame (`bg-hud-frame`) with a `separator`
+hairline at rest, and firms it up to `bg-hud-hover` under the pointer. The
+frame is white in both themes, because the desktop behind it can be any
+colour and a dark frame vanished on a dark desktop. LEDs and token-map dots
+sit on it without rings or shadows; the frame is what holds them apart from
+the desktop. The token map draws in HUD pixels on the LED grid, so a dot is
+the size of an LED and a sub-agent dot is smaller.

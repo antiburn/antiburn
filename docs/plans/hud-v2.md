@@ -56,9 +56,13 @@ The HUD panel (`OverlayWindow.tsx`, the `rounded-xl border-transparent` div)
 gets a visible material: `bg-hud-frame` at 50% alpha with a 1 px `separator`
 hairline. New tokens in `hud.css` and `design.md`:
 
-| Token          | Light                  | Dark                 |
-| -------------- | ---------------------- | -------------------- |
-| `bg-hud-frame` | `hsl(0 0% 100% / 0.5)` | `hsl(0 0% 0% / 0.5)` |
+| Token          | Light                  | Dark                   |
+| -------------- | ---------------------- | ---------------------- |
+| `bg-hud-frame` | `hsl(0 0% 100% / 0.5)` | `hsl(0 0% 100% / 0.5)` |
+
+White in both themes (Keith, 2026-09-16, after seeing a dark frame vanish on a
+dark desktop). The frame replaces the LED rings and the HUD's full-strength
+off grey: with a constant backing they are noise.
 
 The frame is always on, not hover-only. The close ✕ keeps its own opaque
 `bg-hud` disc so it still reads on the translucent frame. The webview stays
@@ -68,6 +72,11 @@ transparent outside the panel, so the drop area is unchanged.
 rule the popover already follows.
 
 ### Round dots
+
+Dots draw in HUD pixels on the LED grid: 20 columns, a 6px dot (4px for a
+sub-agent), corner radius that hugs a dot. A session leaves the map 90 s after
+its last turn, the same window that drives the live LED (Keith, 2026-09-16:
+dots lingered for the full five-minute rate window).
 
 `TokenMap` already draws circles. The change is the blob frame: `rx` goes from
 `UNIT / 2` to a full pill radius so nothing on the HUD has a square corner.
