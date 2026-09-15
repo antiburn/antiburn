@@ -18,6 +18,33 @@ export const DOT_VALUE_LADDER: readonly number[] = [
   250, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000, 200_000, 500_000,
 ]
 
+/** Thin frame colours, one per blob in order. Distinct from the mode palette. */
+export const FRAME_COLORS: readonly string[] = [
+  "var(--color-label-tertiary)",
+  "var(--color-system-red)",
+  "var(--color-system-indigo-text)",
+  "var(--color-system-gold-text)",
+  "var(--color-system-blue)",
+  "var(--color-system-green)",
+]
+
+/** The frame colour of the blob at `index`. */
+export function frameColor(index: number): string {
+  return FRAME_COLORS[index % FRAME_COLORS.length]
+}
+
+/** Format a tokens-per-minute rate for a label: 60, 4.2k, 12k, 1.3M. */
+export function formatRate(rate: number): string {
+  if (rate >= 1_000_000) return `${trimZero(rate / 1_000_000)}M`
+  if (rate >= 10_000) return `${Math.round(rate / 1_000)}k`
+  if (rate >= 1_000) return `${trimZero(rate / 1_000)}k`
+  return `${Math.round(rate)}`
+}
+
+function trimZero(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, "")
+}
+
 /** A turn newer than this, in seconds, pulses. */
 const LIVE_SECS = 90
 
@@ -47,6 +74,8 @@ export type TokenMapBlob = {
   h: number
   tokensPerMin: number
   dots: number
+  /** The mode that paid for most of the session's tokens in the window. */
+  topMode: WorkMode
 }
 
 export type TokenMapLayout = {
@@ -117,10 +146,14 @@ function sessionDots(
   ]
   if (specs.length > 0) return { specs, dim: false }
   // A quiet session keeps one dim dot in its top mode, so it is not lost.
-  const top = WORK_MODES.reduce((best, mode) =>
+  return { specs: [{ mode: topMode(session), small: false }], dim: true }
+}
+
+/** The mode with the most parent tokens; the first mode in order on a tie. */
+function topMode(session: HudTokenMapSession): WorkMode {
+  return WORK_MODES.reduce((best, mode) =>
     session.modes[mode] > session.modes[best] ? mode : best,
   )
-  return { specs: [{ mode: top, small: false }], dim: true }
 }
 
 type Placed = { x: number; y: number; w: number; h: number }
@@ -249,6 +282,7 @@ function build(
       h: rect.h,
       tokensPerMin: sessionRate(session),
       dots: specs.length,
+      topMode: topMode(session),
     })
     specs.forEach((spec, position) => {
       dots.push({

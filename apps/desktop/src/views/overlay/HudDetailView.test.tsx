@@ -44,7 +44,30 @@ function detailState(overrides: Partial<HudDetailState> = {}): HudDetailState {
         expectedFraction: 0.6,
       },
     ],
+    map: null,
     ...overrides,
+  }
+}
+
+function detailMap(): NonNullable<HudDetailState["map"]> {
+  return {
+    dotValue: 500,
+    sessions: [
+      {
+        key: "claude:hud",
+        label: "HUD token map",
+        tokensPerMin: 9_200,
+        topMode: "looking",
+        frameColor: "var(--color-label-tertiary)",
+      },
+      {
+        key: "codex:quiet",
+        label: "codex",
+        tokensPerMin: 60,
+        topMode: "talking",
+        frameColor: "var(--color-system-red)",
+      },
+    ],
   }
 }
 
@@ -139,6 +162,26 @@ describe("HudDetailView", () => {
     act(() => push.emit!(detailState()))
     expect(screen.getByText("5-hour limit")).toBeInTheDocument()
     expect(setHudDetailSize).toHaveBeenCalledWith(120)
+  })
+
+  it("lists each live session with its rate, top mode, and the dot value", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ map: detailMap() })))
+    expect(screen.getByText("HUD token map")).toBeInTheDocument()
+    expect(screen.getByText("9.2k/min")).toBeInTheDocument()
+    expect(screen.getByText("60/min")).toBeInTheDocument()
+    expect(screen.getByLabelText("mostly looking")).toBeInTheDocument()
+    expect(screen.getByLabelText("mostly talking")).toBeInTheDocument()
+    expect(screen.getByText("● = 500 tokens/min")).toBeInTheDocument()
+    expect(screen.getByText("delegating")).toBeInTheDocument()
+  })
+
+  it("draws no map section when the payload carries none", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState()))
+    expect(screen.queryByTestId("hud-detail-map")).not.toBeInTheDocument()
   })
 
   it("shows the exact empty copy when no limits exist", async () => {

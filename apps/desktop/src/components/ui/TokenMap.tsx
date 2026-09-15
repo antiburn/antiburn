@@ -1,20 +1,10 @@
-import type { TokenMapLayout } from "../../lib/tokenMap"
+import { frameColor, type TokenMapLayout } from "../../lib/tokenMap"
 
 /** One cell in SVG units. Dots are drawn inside it with a gap. */
 const UNIT = 10
 const DOT_R = 3.6
 const SMALL_R = 2.2
 const FRAME_PAD = 2.5
-
-/** Thin frame colours, one per blob in order. Distinct from the mode palette. */
-const FRAME_COLORS = [
-  "var(--color-label-tertiary)",
-  "var(--color-system-red)",
-  "var(--color-system-indigo-text)",
-  "var(--color-system-gold-text)",
-  "var(--color-system-blue)",
-  "var(--color-system-green)",
-]
 
 /** Draw the token map: one dot blob per live session inside a fixed square. */
 export function TokenMap({
@@ -41,7 +31,7 @@ export function TokenMap({
           height={blob.h * UNIT + FRAME_PAD * 2}
           rx={UNIT / 2}
           fill="none"
-          stroke={FRAME_COLORS[index % FRAME_COLORS.length]}
+          stroke={frameColor(index)}
           strokeOpacity={0.55}
           strokeWidth={0.8}
           data-session={blob.sessionId}

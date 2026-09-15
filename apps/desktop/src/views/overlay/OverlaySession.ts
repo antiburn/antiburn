@@ -30,7 +30,7 @@ import {
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
-import { deriveTokenMap, type TokenMapLayout } from "../../lib/tokenMap"
+import { deriveTokenMap, frameColor, type TokenMapLayout } from "../../lib/tokenMap"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
@@ -282,6 +282,9 @@ export class OverlaySession {
           const hadDots = this.snapshot.tokenMap.dots.length > 0
           this.commitLayout({ tokenMap })
           if (hadDots !== tokenMap.dots.length > 0) void this.syncWindow(true, generation)
+          if (this.detailShown) {
+            void showHudDetail(this.detailState("refresh")).catch(() => {})
+          }
         })
         .catch(() => {})
     }
@@ -523,6 +526,22 @@ export class OverlaySession {
         resetsAt: bar.resetsAt ? bar.resetsAt.toISOString() : null,
         color: bar.color,
         expectedFraction: bar.expectedFraction,
+      })),
+      map: this.detailMap(),
+    }
+  }
+
+  private detailMap(): HudDetailState["map"] {
+    const { tokenMap } = this.snapshot
+    if (tokenMap.dots.length === 0) return null
+    return {
+      dotValue: tokenMap.dotValue,
+      sessions: tokenMap.blobs.map((blob, index) => ({
+        key: blob.key,
+        label: blob.title ?? blob.agent,
+        tokensPerMin: blob.tokensPerMin,
+        topMode: blob.topMode,
+        frameColor: frameColor(index),
       })),
     }
   }

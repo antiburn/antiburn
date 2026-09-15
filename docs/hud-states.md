@@ -22,17 +22,19 @@ stateDiagram-v2
     Dragging --> Collapsed: mouse up
 
     note right of Collapsed
-        Bars only. No panel, no
+        Bars only, plus the token map
+        above them while a session
+        writes. No panel, no
         background, no chrome. A small
         ✕ fades in while the pointer
         rests on the bars.
     end note
     note right of DetailShown
         A separate display-only window
-        next to the HUD: wordmark, and
-        for each limit a label, a
-        percentage, a bar and its
-        reset time.
+        next to the HUD: wordmark, the
+        map spelled out, and for each
+        limit a label, a percentage, a
+        bar and its reset time.
     end note
     note right of Dragging
         The detail window hides and the
@@ -43,9 +45,35 @@ stateDiagram-v2
 | State            | What you see                                                | Purpose                              |
 | ---------------- | ----------------------------------------------------------- | ------------------------------------ |
 | **Hidden**       | Nothing                                                     | The HUD is opt-in.                   |
-| **Collapsed**    | Bare LED bars on a transparent background                   | It stays ambient.                    |
+| **Collapsed**    | Bare LED bars, and the token map while a session writes     | It stays ambient.                    |
 | **Detail shown** | The bars, plus a separate window with the spelled-out stats | It shows detail on request.          |
 | **Dragging**     | The collapsed bars only                                     | It does not cover the drop position. |
+
+### The token map
+
+A fixed square above the bars answers "what are my agents doing right now". It
+draws one blob per session that wrote tokens in the last 5 minutes. Each full
+dot stands for a fixed number of tokens per minute, coloured by the mode of
+work that paid for it: looking, running, changing, delegating, thinking,
+talking, other. A thin frame in a per-session colour bounds each blob. Smaller
+dots are sub-agents of that session. The newest turn on the map pulses.
+
+| Map state         | What you see                                              |
+| ----------------- | --------------------------------------------------------- |
+| **Idle**          | No square. The bars sit alone, as before.                 |
+| **One session**   | One framed blob, top left, busiest mode first.            |
+| **Many sessions** | Blobs packed busiest first, left to right, then down.     |
+| **Sub-agents**    | Small dots after the parent's dots inside the same frame. |
+| **Quiet session** | One dim dot, so a session that rounds to zero stays seen. |
+
+The dot value climbs a ladder (250, 500, 1k … 500k tokens/min) until every blob
+fits the square. It steps up at once and steps down only after a full window
+has passed below the coarser value, so a burst does not flicker the scale. The
+detail window states the current dot value.
+
+The detail window lists each session with its rate, its top mode, and its frame
+colour, followed by a mode legend. Settings → Usage → "Show what live sessions
+are doing" turns the map off. Reduced motion stops the pulse.
 
 ### Transition details
 
@@ -193,6 +221,10 @@ live macOS validation after changes to the native window mechanism.
 - A transcript write stays live for 90 seconds.
 - The renderer reads liveness once when shown. Session and scan events push
   later changes, and one timer clears the live state at its expiry.
+- The renderer polls the token map every 5 seconds over a 5 minute window. The
+  shell caches parsed samples per transcript fingerprint and keeps at most one
+  hour of samples per session.
+- The shell memoizes session discovery for 60 seconds.
 - The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
 - Hiding the HUD parks the native polls and the retained renderer's timers.

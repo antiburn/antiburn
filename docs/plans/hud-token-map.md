@@ -15,8 +15,8 @@ each dot coloured by the mode of work it paid for, smaller dots for sub-agents.
 | 2. Desktop Rust: `get_hud_token_map` command      | done        |
 | 3. Frontend: `deriveTokenMap` layout + tests      | done        |
 | 4. Frontend: `TokenMap` SVG in the HUD + setting  | done        |
-| 5. Detail window: legend + per-session rows       | not started |
-| 6. Docs (`hud-states.md`, `design.md`), slop pass | not started |
+| 5. Detail window: legend + per-session rows       | done        |
+| 6. Docs (`hud-states.md`, `design.md`), slop pass | done        |
 
 Steps 1–2 ship as one PR (Rust only, dark). Steps 3–6 ship as a second PR
 stacked on the first, so each review stays under ~1k lines.

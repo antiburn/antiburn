@@ -1133,6 +1133,25 @@ export interface HudDetailBar {
   expectedFraction: number | null
 }
 
+/** One live session as the hover detail window lists it. */
+export interface HudDetailSession {
+  key: string
+  /** The session title, or the agent name when the title is unknown. */
+  label: string
+  tokensPerMin: number
+  /** The mode that paid for most of the session's tokens: a `HudModeTokens` key. */
+  topMode: keyof HudModeTokens
+  /** The blob's frame colour on the map, as a CSS colour value. */
+  frameColor: string
+}
+
+/** The token-map summary the hover detail window spells out. */
+export interface HudDetailMap {
+  /** Tokens per minute one full dot stands for. */
+  dotValue: number
+  sessions: HudDetailSession[]
+}
+
 /** The payload the HUD pushes to the hover detail window. */
 export interface HudDetailState {
   /** "show" restarts the enter animation; "refresh" repaints in place. */
@@ -1147,6 +1166,8 @@ export interface HudDetailState {
    * reporting a reader's own setting as something antiburn cannot find.
    */
   noMeterSelected: boolean
+  /** Null when the map is off or no session wrote in the window. */
+  map: HudDetailMap | null
 }
 
 /** Request the hover detail window with the newest usage payload. */

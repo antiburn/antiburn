@@ -653,6 +653,55 @@ describe("OverlayWindow", () => {
     expect(svg.compareDocumentPosition(bars!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it("spells the map out in the detail payload", async () => {
+    vi.useFakeTimers()
+    try {
+      getHudTokenMap.mockResolvedValue({
+        nowEpoch: 1_000,
+        windowSecs: 300,
+        sessions: [
+          {
+            agent: "claude-code",
+            sessionId: "s1",
+            title: "HUD token map",
+            lastTurnEpoch: 990,
+            tokensPerMin: 1_000,
+            modes: {
+              looking: 5_000,
+              running: 0,
+              changing: 0,
+              delegating: 0,
+              thinking: 0,
+              talking: 0,
+              other: 0,
+            },
+            subagents: [],
+          },
+        ],
+      })
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(frame(container))
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          map: {
+            dotValue: 250,
+            sessions: [
+              expect.objectContaining({
+                label: "HUD token map",
+                tokensPerMin: 1_000,
+                topMode: "looking",
+              }),
+            ],
+          },
+        }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("draws no map when the preference is off", async () => {
     stored.set("antiburn.showHudTokenMap", "0")
     const { container } = render(<OverlayWindow />)

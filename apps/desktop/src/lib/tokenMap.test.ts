@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest"
 
 import type { HudModeTokens, HudTokenMapPayload, HudTokenMapSession } from "./ipc"
-import { DOT_VALUE_LADDER, deriveTokenMap, sessionRate } from "./tokenMap"
+import {
+  DOT_VALUE_LADDER,
+  deriveTokenMap,
+  formatRate,
+  frameColor,
+  sessionRate,
+} from "./tokenMap"
 
 const zero: HudModeTokens = {
   looking: 0,
@@ -86,6 +92,7 @@ describe("deriveTokenMap", () => {
     const quietDots = layout.dots.filter((dot) => dot.blob === 1)
     expect(quietDots).toHaveLength(1)
     expect(quietDots[0]).toMatchObject({ mode: "thinking", dim: true })
+    expect(layout.blobs.map((blob) => blob.topMode)).toEqual(["running", "thinking"])
   })
 
   it("orders blobs busiest first and never overlaps them", () => {
@@ -150,5 +157,19 @@ describe("deriveTokenMap", () => {
     expect(layout.overflow).toBe(true)
     expect(layout.blobs.length).toBeLessThan(sessions.length)
     expect(layout.blobs.length).toBeGreaterThan(0)
+  })
+
+  it("formats rates for labels", () => {
+    expect(formatRate(60)).toBe("60")
+    expect(formatRate(999.6)).toBe("1000")
+    expect(formatRate(1_000)).toBe("1k")
+    expect(formatRate(4_250)).toBe("4.3k")
+    expect(formatRate(12_400)).toBe("12k")
+    expect(formatRate(1_300_000)).toBe("1.3M")
+  })
+
+  it("cycles the frame colours", () => {
+    expect(frameColor(0)).toBe(frameColor(6))
+    expect(frameColor(1)).not.toBe(frameColor(0))
   })
 })

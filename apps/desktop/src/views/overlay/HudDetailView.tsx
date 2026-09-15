@@ -9,12 +9,14 @@ import {
   setHudDetailSize,
   type HudDetailState,
 } from "../../lib/ipc"
+import { formatRate, WORK_MODES } from "../../lib/tokenMap"
 import { resetsIn } from "../../lib/usageBars"
 
 const HUD_SEGMENTS = 20
 
 type DetailSnapshot = {
   bars: HudDetailState["bars"]
+  map: HudDetailState["map"]
   now: number
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
@@ -30,6 +32,7 @@ const INITIAL_SNAPSHOT: DetailSnapshot = {
   shown: 0,
   concealed: false,
   noMeterSelected: false,
+  map: null,
 }
 
 function resetDate(resetsAt: string | null): Date | null {
@@ -125,6 +128,7 @@ class HudDetailSession {
         shown,
         concealed: false,
         noMeterSelected: state.noMeterSelected,
+        map: state.map ?? null,
       }
       for (const listener of this.listeners) listener()
     })
@@ -160,6 +164,52 @@ class HudDetailSession {
   }
 }
 
+/** Spell out the token map: one row per session, then the mode colours. */
+function MapLegend({ map }: { map: NonNullable<HudDetailState["map"]> }) {
+  return (
+    <div className="mb-2 border-b border-separator pb-2" data-testid="hud-detail-map">
+      <ul className="space-y-0.5">
+        {map.sessions.map((session) => (
+          <li key={session.key} className="flex items-baseline gap-1.5 type-caption">
+            <span
+              aria-hidden="true"
+              className="inline-block size-2 shrink-0 self-center rounded-sm border"
+              style={{ borderColor: session.frameColor }}
+            />
+            <span className="text-label truncate">{session.label}</span>
+            <span className="stats-number text-label shrink-0 ml-auto">
+              {formatRate(session.tokensPerMin)}/min
+            </span>
+            <span
+              aria-label={`mostly ${session.topMode}`}
+              className="inline-block size-2 shrink-0 self-center rounded-full"
+              style={{ backgroundColor: `var(--color-mode-${session.topMode})` }}
+            />
+          </li>
+        ))}
+      </ul>
+      <ul className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5">
+        {WORK_MODES.map((mode) => (
+          <li
+            key={mode}
+            className="flex items-center gap-1 led-caption type-footnote text-label-secondary"
+          >
+            <span
+              aria-hidden="true"
+              className="inline-block size-1.5 rounded-full"
+              style={{ backgroundColor: `var(--color-mode-${mode})` }}
+            />
+            {mode}
+          </li>
+        ))}
+      </ul>
+      <p className="led-caption type-footnote text-label-secondary mt-1">
+        ● = {formatRate(map.dotValue)} tokens/min
+      </p>
+    </div>
+  )
+}
+
 /** Render the hover detail window: the HUD's stats, spelled out. */
 export function HudDetailView() {
   const [session] = useState(() => new HudDetailSession())
@@ -187,6 +237,7 @@ export function HudDetailView() {
         <p className="font-bitcount text-[11px] text-label-tertiary lowercase mb-1.5">
           antiburn
         </p>
+        {state.map && <MapLegend map={state.map} />}
         {state.bars.length === 0 ? (
           <p className="type-caption text-label-tertiary">
             {state.noMeterSelected ? "No meter selected." : "No usage limits detected yet."}
