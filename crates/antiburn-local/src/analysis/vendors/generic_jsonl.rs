@@ -27,10 +27,7 @@ impl SessionReader for GenericJsonlSessionReader {
         "generic"
     }
 
-    fn capabilities(
-        &self,
-        _source: &crate::analysis::RawSource,
-    ) -> crate::analysis::SourceCapabilities {
+    fn capabilities(&self, _input: &SessionInput) -> crate::analysis::SourceCapabilities {
         crate::analysis::SourceCapabilities::generic()
     }
 
@@ -133,6 +130,7 @@ mod tests {
             session_id: "generic-session".to_owned(),
             source: RawSource::Jsonl(String::new()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
 
         let session = GenericJsonlSessionReader

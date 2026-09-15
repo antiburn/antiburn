@@ -2,11 +2,13 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use antiburn_local::analysis::{
-    EvidenceSource, MemoryTurnRowStore, RawSource, SessionEvidenceAccumulator, SessionInput,
+    EvidenceSource, EvidenceValue, MemoryTurnRowStore, ProviderIncident, ProviderIncidentKind,
+    RawSource, SessionEvidenceAccumulator, SessionInput, SessionProviderEvidence,
     SourceCapabilities, SourceKind, TurnFacts, TurnRowStore,
 };
 
 use super::*;
+use crate::analytics::ingested_incidents::IngestedIncidentKind;
 use crate::store::EvidenceStatus;
 use crate::store::{Remediation, RemediationEvidenceGuard, RemediationState};
 
@@ -50,7 +52,7 @@ fn seed_dirty_remediation(store: &Store) {
     let source = store.session(&claim.key).unwrap().unwrap();
     let mut pass = published_pass(&source);
     pass.analysis.analyzed_generation = claim.source_generation;
-    assert!(apply_outcome(store, &claim, &pass, 10).unwrap());
+    assert!(apply_outcome(store, &claim, &pass, 10).unwrap().applied);
     let evidence = store.evidence(&claim.key).unwrap().unwrap();
     let guard = RemediationEvidenceGuard {
         environment_key: "native".into(),
@@ -91,7 +93,7 @@ async fn a_dirty_watch_has_priority_and_a_restart_loses_no_work() {
         Box::pin(async move { pass }) as PassFuture
     };
     assert!(
-        process_next_work(&store, &|| 100, &runner, &|_| {})
+        process_next_work(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
             .await
             .unwrap()
     );
@@ -112,7 +114,7 @@ async fn a_dirty_watch_has_priority_and_a_restart_loses_no_work() {
         Box::pin(async move { pass }) as PassFuture
     };
     assert!(
-        process_next_work(&restarted, &|| 101, &no_evidence, &|_| {})
+        process_next_work(&restarted, &|| 101, &no_evidence, &|_| {}, &|_, _| {})
             .await
             .unwrap()
     );
@@ -143,7 +145,7 @@ async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
         Box::pin(async move { pass }) as PassFuture
     };
     assert!(
-        process_next_work(&store, &|| 100, &runner, &|_| {})
+        process_next_work(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
             .await
             .unwrap()
     );
@@ -158,7 +160,7 @@ async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
             .unwrap();
     }
     assert!(
-        process_next_work(&store, &|| 101, &runner, &|_| {})
+        process_next_work(&store, &|| 101, &runner, &|_| {}, &|_, _| {})
             .await
             .unwrap()
     );
@@ -178,16 +180,14 @@ fn published_pass(record: &SessionRecord) -> EvidencePass {
     let store: Arc<dyn TurnRowStore> =
         MemoryTurnRowStore::new("claude", record.key.session_id.clone());
     let mut pass = analysis::evidence_pass_with_turn_rows(
-        &[SessionInput {
-            agent: "claude".into(),
-            session_id: record.key.session_id.clone(),
-            source: RawSource::Jsonl(
-                r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}
-"#
-                .into(),
-            ),
-            fork_parent_session_id: None,
-        }],
+        &[SessionInput { agent: "claude".into(),
+        session_id: record.key.session_id.clone(),
+        source: RawSource::Jsonl(
+            r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}
+        "#
+            .into(),
+        ),
+        fork_parent_session_id: None, source_format: Default::default() }],
         &|| false,
         Some(store),
     );
@@ -211,11 +211,12 @@ fn generic_published_pass(record: &SessionRecord) -> EvidencePass {
             session_id: record.key.session_id.clone(),
             source: RawSource::Jsonl(
                 r#"{"role":"user","content":"hi"}
-{"role":"assistant","content":"hello","usage":{"prompt_tokens":2,"completion_tokens":3}}
-"#
+        {"role":"assistant","content":"hello","usage":{"prompt_tokens":2,"completion_tokens":3}}
+        "#
                 .into(),
             ),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         }],
         &|| false,
         Some(store),
@@ -331,23 +332,18 @@ fn a_capability_free_source_publishes_as_unsupported() {
     // that already-derived evidence untouched.
     published.evidence = Some(evidence_with(no_capabilities()));
 
-    assert!(apply_outcome(&store, &claim, &published, 100).unwrap());
+    assert!(
+        apply_outcome(&store, &claim, &published, 100)
+            .unwrap()
+            .applied
+    );
     assert_eq!(
         store.evidence(&claim.key).unwrap().unwrap().status,
         EvidenceStatus::Unsupported
     );
 }
 
-/// The widened cohort now enqueues generic-JSONL agents (Copilot, Cline,
-/// Kiro, Amp, Windsurf) alongside the vendors with a dedicated adapter.
-/// Before capabilities_for_vendor was made total, a Published pass with
-/// no evidence (the legacy analyze_sources_with path's shape) made
-/// apply_outcome error, leaving the claim stuck reprocessing forever.
-/// With every vendor streaming through a real `SourceCapabilities`
-/// profile, a generic-agent session must instead complete terminally —
-/// here, `SourceCapabilities::generic()` is all-unset, so no detector is
-/// eligible and the terminal status is `Unsupported`, never a stuck
-/// `Processing` claim or an `apply_outcome` error.
+/// A generic session must complete through the normal terminal path.
 #[tokio::test]
 async fn a_generic_agent_session_completes_terminally_through_process_next() {
     let store = store();
@@ -361,7 +357,7 @@ async fn a_generic_agent_session_completes_terminally_through_process_next() {
         Box::pin(async move { pass }) as PassFuture
     };
 
-    let processed = process_next(&store, &|| 100, &runner, &|_| {})
+    let processed = process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
         .await
         .unwrap();
     assert!(processed);
@@ -370,8 +366,8 @@ async fn a_generic_agent_session_completes_terminally_through_process_next() {
     let evidence = store.evidence(&key).unwrap().unwrap();
     assert_eq!(
         evidence.status,
-        EvidenceStatus::Unsupported,
-        "a capability-free source publishes as unsupported, not stuck processing"
+        EvidenceStatus::Ready,
+        "a parsed source publishes ready evidence, not a stuck processing claim"
     );
     assert_ne!(evidence.status, EvidenceStatus::Processing);
 }
@@ -405,6 +401,7 @@ fn a_repeatedly_changing_transcript_backs_off_without_spinning() {
                 now
             )
             .unwrap()
+            .applied
         );
         let row = store.evidence(&claim.key).unwrap().unwrap();
         assert_eq!(row.status, EvidenceStatus::Pending);
@@ -420,7 +417,11 @@ fn source_changed_leaves_both_stored_projections_untouched() {
     let source = store.session(&first.key).unwrap().unwrap();
     let mut published = published_pass(&source);
     published.analysis.analyzed_generation = first.source_generation;
-    assert!(apply_outcome(&store, &first, &published, 100).unwrap());
+    assert!(
+        apply_outcome(&store, &first, &published, 100)
+            .unwrap()
+            .applied
+    );
     let analysis_before = store.analysis(&first.key).unwrap().unwrap();
     let evidence_before = store.evidence(&first.key).unwrap().unwrap();
     let mut changed = source;
@@ -441,6 +442,7 @@ fn source_changed_leaves_both_stored_projections_untouched() {
             101,
         )
         .unwrap()
+        .applied
     );
     assert_eq!(
         store.analysis(&first.key).unwrap().unwrap(),
@@ -581,7 +583,11 @@ fn a_newer_pending_generation_preserves_the_last_payload() {
     let source = store.session(&claim.key).unwrap().unwrap();
     let mut published = published_pass(&source);
     published.analysis.analyzed_generation = claim.source_generation;
-    assert!(apply_outcome(&store, &claim, &published, 100).unwrap());
+    assert!(
+        apply_outcome(&store, &claim, &published, 100)
+            .unwrap()
+            .applied
+    );
     let payload = store.evidence(&claim.key).unwrap().unwrap().evidence_json;
     let mut next = record("payload");
     next.source_fingerprint = Some("sv1:payload-next".into());
@@ -649,6 +655,7 @@ async fn progress_renews_the_lease() {
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
+            &|_, _| {},
         )
         .await
         .unwrap()
@@ -710,6 +717,7 @@ async fn a_stalled_pass_stops_renewing() {
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
+            &|_, _| {},
         )
         .await
         .unwrap()
@@ -766,6 +774,7 @@ async fn a_lost_renewal_cancels_without_a_post_claim_write() {
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
+            &|_, _| {},
         )
         .await
         .unwrap()
@@ -816,6 +825,7 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
             &|| first_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
+            &|_, _| {},
         )
         .await
         .unwrap()
@@ -853,6 +863,7 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
             &|| second_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
+            &|_, _| {},
         )
         .await
         .unwrap()
@@ -926,7 +937,16 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
                 failed_pass(PassOutcome::SourceMissing)
             }) as PassFuture
         };
-        worker_loop(&task_store, &task_handle, &|| 100, &runner, &|_| {}, &|| {}).await;
+        worker_loop(
+            &task_store,
+            &task_handle,
+            &|| 100,
+            &runner,
+            &|_| {},
+            &|| {},
+            &|_, _| {},
+        )
+        .await;
     });
 
     tokio::time::timeout(Duration::from_secs(1), all_completed.notified())
@@ -951,7 +971,7 @@ async fn the_store_is_lockable_while_a_pass_runs() {
             failed_pass(PassOutcome::SourceMissing)
         }) as PassFuture
     };
-    let future = process_next(&store, &|| 100, &runner, &|_| {});
+    let future = process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {});
     tokio::pin!(future);
     assert!(
         tokio::time::timeout(Duration::from_millis(10), &mut future)
@@ -981,9 +1001,15 @@ async fn a_published_completion_announces_one_session_key() {
     let announced = Mutex::new(Vec::new());
 
     assert!(
-        process_next(&store, &|| 100, &runner, &|key| {
-            announced.lock().unwrap().push(key.clone());
-        })
+        process_next(
+            &store,
+            &|| 100,
+            &runner,
+            &|key| {
+                announced.lock().unwrap().push(key.clone());
+            },
+            &|_, _| {}
+        )
         .await
         .unwrap()
     );
@@ -1009,9 +1035,15 @@ async fn a_backed_off_outcome_announces_nothing() {
     let announced = Mutex::new(Vec::new());
 
     assert!(
-        process_next(&store, &|| 100, &runner, &|key| {
-            announced.lock().unwrap().push(key.clone());
-        })
+        process_next(
+            &store,
+            &|| 100,
+            &runner,
+            &|key| {
+                announced.lock().unwrap().push(key.clone());
+            },
+            &|_, _| {}
+        )
         .await
         .unwrap()
     );
@@ -1031,7 +1063,7 @@ async fn a_changed_source_backs_off_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceChanged) }) as PassFuture
     };
 
-    process_next(&store, &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-changed");
@@ -1054,7 +1086,7 @@ async fn an_unsupported_pass_is_terminal_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::Unsupported) }) as PassFuture
     };
 
-    process_next(&store, &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-unsupported");
@@ -1076,7 +1108,7 @@ async fn a_missing_source_stops_being_claimed_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
     };
 
-    process_next(&store, &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-missing");
@@ -1107,9 +1139,15 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
     let key = SessionKey::new("native", "claude-code", "worker-unreadable");
 
     for attempt in 0..=MAX_EVIDENCE_ATTEMPTS {
-        process_next(&store, &|| clock.load(Ordering::SeqCst), &runner, &|_| {})
-            .await
-            .unwrap();
+        process_next(
+            &store,
+            &|| clock.load(Ordering::SeqCst),
+            &runner,
+            &|_| {},
+            &|_, _| {},
+        )
+        .await
+        .unwrap();
         let row = store.evidence(&key).unwrap().unwrap();
         if attempt == MAX_EVIDENCE_ATTEMPTS {
             assert_eq!(row.status, EvidenceStatus::Failed);
@@ -1147,18 +1185,16 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
                     _fork_parent_session_id: Option<String>| {
         Box::pin(async move {
             let mut pass = analysis::evidence_pass_with_turn_rows(
-                &[SessionInput {
-                    agent: "claude".into(),
-                    session_id,
-                    source: RawSource::Jsonl(concat!(
-                        r#"{"type":"assistant","timestamp":100,"message":{"id":"m1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}"#,
-                        "\n",
-                        r#"{"type":"assistant","timestamp":200,"message":{"id":"m2","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":4,"output_tokens":6},"content":[]}}"#,
-                        "\n",
-                    )
-                    .into()),
-                    fork_parent_session_id: None,
-                }],
+                &[SessionInput { agent: "claude".into(),
+                session_id,
+                source: RawSource::Jsonl(concat!(
+                    r#"{"type":"assistant","timestamp":100,"message":{"id":"m1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}"#,
+                    "\n",
+                    r#"{"type":"assistant","timestamp":200,"message":{"id":"m2","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":4,"output_tokens":6},"content":[]}}"#,
+                    "\n",
+                )
+                .into()),
+                fork_parent_session_id: None, source_format: Default::default() }],
                 &|| signal.observe(),
                 turn_row_store,
             );
@@ -1180,7 +1216,7 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
     };
 
     assert!(
-        process_next(&store, &|| 100, &runner, &|_| {})
+        process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
             .await
             .unwrap()
     );
@@ -1259,6 +1295,7 @@ async fn a_linked_forks_pass_publishes_turn_rows_only_for_its_own_turns() {
                     session_id,
                     source: RawSource::File(path),
                     fork_parent_session_id,
+                    source_format: Default::default(),
                 }],
                 &|| signal.observe(),
                 turn_row_store,
@@ -1281,7 +1318,7 @@ async fn a_linked_forks_pass_publishes_turn_rows_only_for_its_own_turns() {
     };
 
     assert!(
-        process_next(&store, &|| 100, &runner, &|_| {})
+        process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
             .await
             .unwrap()
     );
@@ -1353,6 +1390,7 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
             agent: crate::agents::vendor_label(agent).to_owned(),
             session_id,
             source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         };
         Box::pin(async move {
@@ -1379,7 +1417,7 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     };
 
     assert!(
-        process_next(&store, &|| 1_767_225_610, &runner, &|_| {},)
+        process_next(&store, &|| 1_767_225_610, &runner, &|_| {}, &|_, _| {})
             .await
             .unwrap()
     );
@@ -1449,7 +1487,11 @@ fn errors_carry_no_transcript_content() {
         let store = store();
         let id = format!("{SOURCE_CONTENT}-{index}");
         let claim = claim(&store, &id, 100);
-        assert!(apply_outcome(&store, &claim, &failed_pass(outcome), 100).unwrap());
+        assert!(
+            apply_outcome(&store, &claim, &failed_pass(outcome), 100)
+                .unwrap()
+                .applied
+        );
 
         let error = store
             .evidence(&claim.key)
@@ -1470,4 +1512,141 @@ async fn a_wake_releases_the_idle_wait() {
     tokio::time::timeout(Duration::from_millis(10), handle.wake.notified())
         .await
         .unwrap();
+}
+
+/* --------------------------------------------------------------------
+ * `antiburn.provider_incidents_ingested`: `apply_outcome`'s `ingested`
+ * result.
+ *
+ * `tauri::AppHandle` cannot be constructed in this crate's unit tests (no
+ * test builds one anywhere in this codebase), so these tests stop at the
+ * boundary `apply_outcome` itself draws: they assert its returned
+ * `AppliedOutcome::ingested`, the same value `process_next_work`'s real
+ * worker loop would hand to `analytics::record_provider_incidents_ingested`.
+ * That function's own `allowed(app)` gate — exercised nowhere in this crate
+ * for the same reason — is unit tested by construction: it is a pure
+ * `if !allowed(app) { return; }` guard ahead of a loop over this exact
+ * value, mirroring `record_quota_incidents` and `record_provider_incidents`,
+ * neither of which has an app-handle-driven test either.
+ * ----------------------------------------------------------------- */
+
+/// Like [`published_pass`], but the published evidence also carries one
+/// provider incident.
+fn published_pass_with_provider_incident(record: &SessionRecord, ts_ms: i64) -> EvidencePass {
+    let mut pass = published_pass(record);
+    let evidence = pass
+        .evidence
+        .as_mut()
+        .expect("a published pass has evidence");
+    evidence.provider_incidents = EvidenceValue::Complete(SessionProviderEvidence {
+        incidents: vec![ProviderIncident {
+            ts_ms,
+            kind: ProviderIncidentKind::Capacity,
+            model: None,
+        }],
+    });
+    pass
+}
+
+/// Test 9: a first publish with a fresh incident reports it.
+#[test]
+fn a_first_publish_with_a_fresh_incident_is_ingested() {
+    let store = store();
+    let claim = claim(&store, "ingest-first", 1_000);
+    let source = store.session(&claim.key).unwrap().unwrap();
+    let mut pass = published_pass_with_provider_incident(&source, 1_000_000);
+    pass.analysis.analyzed_generation = claim.source_generation;
+
+    let outcome = apply_outcome(&store, &claim, &pass, 1_000).unwrap();
+    assert!(outcome.applied);
+    let (agent, ingested) = outcome.ingested.expect("a fresh incident is ingested");
+    assert_eq!(agent, AgentKind::Claude);
+    assert_eq!(
+        ingested.counts.get(&IngestedIncidentKind::Capacity),
+        Some(&1)
+    );
+}
+
+/// Test 10: republishing identical evidence (a revision-bump requeue)
+/// reports nothing: the incident is already in the previously published
+/// evidence.
+#[test]
+fn republishing_identical_evidence_ingests_nothing() {
+    let store = store();
+    let claim = claim(&store, "ingest-requeue", 1_000);
+    let source = store.session(&claim.key).unwrap().unwrap();
+    let mut first_pass = published_pass_with_provider_incident(&source, 1_000_000);
+    first_pass.analysis.analyzed_generation = claim.source_generation;
+    let first = apply_outcome(&store, &claim, &first_pass, 1_000).unwrap();
+    assert!(first.applied);
+    assert!(first.ingested.is_some());
+
+    // Simulate a revision-bump requeue: the same session re-derives the
+    // same evidence from the same transcript.
+    store.requeue_session_evidence(&claim.key).unwrap();
+    let second_claim = store
+        .claim_next_evidence(&crate::agents::evidence_cohort(), 1_001, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    let mut second_pass = published_pass_with_provider_incident(&source, 1_000_000);
+    second_pass.analysis.analyzed_generation = second_claim.source_generation;
+    let second = apply_outcome(&store, &second_claim, &second_pass, 1_001).unwrap();
+    assert!(second.applied);
+    assert!(
+        second.ingested.is_none(),
+        "an incident already in the previously published evidence is not new"
+    );
+}
+
+/// Test 11: a previous `evidence_json` that fails to deserialize (an
+/// older schema revision) still reports the fresh incidents, exactly as a
+/// first publish would.
+#[test]
+fn an_unreadable_previous_blob_still_reports_the_fresh_incident() {
+    let store = store();
+    let claim = claim(&store, "ingest-unreadable-previous", 1_000);
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE session_evidence SET status = 'ready', evidence_json = ?1
+                  WHERE environment_key = 'native' AND agent = 'claude-code'
+                    AND session_id = 'ingest-unreadable-previous'",
+                rusqlite::params!["not valid json"],
+            )
+            .unwrap();
+    }
+    store.requeue_session_evidence(&claim.key).unwrap();
+    let second_claim = store
+        .claim_next_evidence(&crate::agents::evidence_cohort(), 1_001, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    let source = store.session(&second_claim.key).unwrap().unwrap();
+    let mut pass = published_pass_with_provider_incident(&source, 1_000_000);
+    pass.analysis.analyzed_generation = second_claim.source_generation;
+
+    let outcome = apply_outcome(&store, &second_claim, &pass, 1_001).unwrap();
+    assert!(outcome.applied);
+    let (_, ingested) = outcome
+        .ingested
+        .expect("an unreadable previous blob is treated as no previous evidence");
+    assert_eq!(
+        ingested.counts.get(&IngestedIncidentKind::Capacity),
+        Some(&1)
+    );
+}
+
+/// Test 12: a publish with nothing new to report still succeeds;
+/// computing `ingested` never affects whether the pass publishes.
+#[test]
+fn a_publish_with_no_incidents_still_succeeds_and_ingests_nothing() {
+    let store = store();
+    let claim = claim(&store, "ingest-none", 100);
+    let source = store.session(&claim.key).unwrap().unwrap();
+    let mut pass = published_pass(&source);
+    pass.analysis.analyzed_generation = claim.source_generation;
+
+    let outcome = apply_outcome(&store, &claim, &pass, 100).unwrap();
+    assert!(outcome.applied);
+    assert!(outcome.ingested.is_none());
 }

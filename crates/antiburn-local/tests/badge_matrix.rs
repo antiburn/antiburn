@@ -144,8 +144,17 @@ fn evidence_for(
     let input = SessionInput {
         agent: agent.to_owned(),
         session_id: name.to_owned(),
-        source: RawSource::Jsonl(text.to_owned()),
+        source: RawSource::Jsonl(
+            if agent == "pi" && !text.starts_with("{\"type\":\"session\"") {
+                format!(
+                    "{{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{text}"
+                )
+            } else {
+                text.to_owned()
+            },
+        ),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -426,13 +435,14 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
         session_id: input.session_id.clone(),
         kind: SourceKind::from(&input.source),
-        capabilities: reader_for("opencode").capabilities(&input.source),
+        capabilities: reader_for("opencode").capabilities(&input),
     });
     let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
     let turn_rows = TurnRowSink::new(

@@ -1,0 +1,1 @@
+{"version":1,"sessionId":"child_1","agent":"subagent","messages":[{"id":"child-answer-1","role":"assistant","content":[{"type":"text","text":"not retained"}],"ts":1200,"modelInfo":{"id":"model-child","provider":"synthetic"},"metrics":{"inputTokens":4,"outputTokens":3,"cacheReadTokens":0,"cacheWriteTokens":0,"cost":0}}]}

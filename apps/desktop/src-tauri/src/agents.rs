@@ -76,6 +76,9 @@ mod tests {
                     | AgentKind::OpenCode
                     | AgentKind::Pi
                     | AgentKind::Antigravity
+                    | AgentKind::Copilot
+                    | AgentKind::Cline
+                    | AgentKind::Kiro
             );
             assert_eq!(supports_analysis(kind), expected, "{kind:?}");
         }

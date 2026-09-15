@@ -1,0 +1,1 @@
+{"version":"v1","kind":"AssistantMessage","data":{"message_id":"child-message","content":[{"kind":"toolUse","data":{"toolUseId":"child-tool","name":"read","input":{}}}]}}

@@ -122,6 +122,8 @@ export interface InsightsReportPayload {
 }
 
 export interface ChecksCategoryPayload {
+  /** Agents with findings, or complete clean results when no finding exists. */
+  agents?: string[]
   /** Stable category identifier, e.g. `sessionsOverDepth`. */
   id: BurnCheckDetectorId
   /** Applicable sessions with a confirmed finding. */
@@ -191,6 +193,7 @@ export type BurnCheckSourceFormat =
   | "cursorJsonl"
   | "cursorCliAgentJsonl"
   | "cursorCliStoreDb"
+  | "cursorChatStoreDb"
   | "cursorIdeComposer"
   | "cursorLegacyChatJson"
   | "antigravityJson"
@@ -318,6 +321,9 @@ export interface BurnCheckTargetPayload {
   finding: BurnCheckFindingPayload
   display: BurnCheckDisplayFactsPayload
   occurrenceCount: number
+  affectedSessionCount?: number
+  projectName?: string | null
+  projectLocation?: string | null
   autoFix: AutoFixAvailabilityPayload
   promptFix: PromptFixAvailabilityPayload
   watch: BurnCheckWatchPayload | null
@@ -351,12 +357,38 @@ export interface AutoFixReviewPayload {
   expiresAtEpoch: number
   agent: string
   scope: "global" | "project" | "session" | "worker"
-  setting: "model" | "reasoning"
+  setting:
+    | "model"
+    | "reasoning"
+    | "compaction"
+    | "subagentModel"
+    | "mcpServer"
+    | "builtInTool"
+    | "skill"
+    | "fastMode"
   configFile: string
+  selectorLabel: string
   currentValue: string
   proposedValue: string
-  effect: "futureModelSelection" | "futureReasoningEffort"
-  sideEffect: "modelBehaviorMayChange" | "responsesMayUseLessReasoning"
+  behaviorOverrideWarning: boolean
+  effect:
+    | "modelSelection"
+    | "reasoningEffort"
+    | "sessionCompaction"
+    | "workerModelSelection"
+    | "mcpAvailability"
+    | "toolAvailability"
+    | "skillAvailability"
+    | "serviceTierSelection"
+  sideEffect:
+    | "modelBehaviorMayChange"
+    | "responsesMayUseLessReasoning"
+    | "earlierSessionSummarization"
+    | "workerBehaviorMayChange"
+    | "serverWillNotBeAvailable"
+    | "toolWillNotBeAvailable"
+    | "skillWillNotBeAvailable"
+    | "responsesMayTakeLonger"
 }
 
 export type PrepareAutoFixBurnCheckTargetOutcome =
@@ -378,6 +410,7 @@ export type PromptFixUnavailableReason =
   | "targetNotFound"
   | "promptSizeLimit"
   | "essentialIdentityUnavailable"
+  | "protectedBuiltInTool"
   | "deferredAgent"
   | "unsupportedSourceFormat"
   | "checkUnsupportedForAgent"

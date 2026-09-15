@@ -14,7 +14,10 @@ use super::model::{
     Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageScope,
     UsageSource, UsageWindowKind, WindowRole,
 };
-use super::{LiveUsageSource, SourceOutcome, roster, sources, summarize, summarize_collected};
+use super::{
+    Detection, DetectionMap, LiveUsageSource, LoginCarrier, Presence, SourceOutcome, detect_all,
+    roster, sources, summarize, summarize_collected,
+};
 use crate::store::HiddenMeters;
 
 const NOW: i64 = 1_800_000_000;
@@ -925,7 +928,7 @@ fn the_roster_keeps_a_hidden_provider() {
     ];
 
     let all_hidden = HiddenMeters::parse("anthropic,openai");
-    let meters = roster(&sources, &all_hidden);
+    let meters = roster(&sources, &all_hidden, &DetectionMap::default());
 
     assert_eq!(meters.len(), 2);
     assert!(meters.iter().all(|meter| !meter.shown));
@@ -933,7 +936,7 @@ fn the_roster_keeps_a_hidden_provider() {
     assert_eq!(meters[0].display_name, "Claude");
     assert_eq!(meters[1].display_name, "Codex");
 
-    let none_hidden = roster(&sources, &HiddenMeters::default());
+    let none_hidden = roster(&sources, &HiddenMeters::default(), &DetectionMap::default());
     assert!(none_hidden.iter().all(|meter| meter.shown));
 }
 
@@ -953,7 +956,10 @@ fn two_sources_for_one_provider_are_one_meter() {
         )),
     ];
 
-    assert_eq!(roster(&sources, &HiddenMeters::default()).len(), 1);
+    assert_eq!(
+        roster(&sources, &HiddenMeters::default(), &DetectionMap::default()).len(),
+        1
+    );
 }
 
 #[test]
@@ -967,10 +973,199 @@ fn the_registered_google_meter_is_online_gated() {
     assert!(google.requires_online_opt_in());
 
     let hidden = HiddenMeters::parse("google");
-    let meter = roster(&sources, &hidden)
+    let meter = roster(&sources, &hidden, &DetectionMap::default())
         .into_iter()
         .find(|meter| meter.provider == "google")
         .expect("Google meter");
     assert_eq!(meter.display_name, "Google");
     assert!(!meter.shown);
+}
+
+struct Detected(&'static str, Option<Detection>);
+
+impl LiveUsageSource for Detected {
+    fn id(&self) -> &'static str {
+        "detection-fixture"
+    }
+
+    fn provider(&self) -> &'static str {
+        self.0
+    }
+
+    fn detect(&self, _online: bool) -> Presence {
+        Presence::new(self.1.expect("roster must not call detect"))
+    }
+
+    fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
+        panic!("detection must not fetch usage")
+    }
+}
+
+#[test]
+fn the_roster_defaults_to_unknown_without_detecting() {
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
+        Box::new(Detected("anthropic", None)),
+        Box::new(Detected("google", None)),
+    ];
+    let meters = roster(&sources, &HiddenMeters::default(), &DetectionMap::default());
+    assert_eq!(meters.len(), 2);
+    assert!(
+        meters
+            .iter()
+            .all(|meter| meter.detection == Detection::Unknown)
+    );
+    assert_eq!(
+        Fixed("default-detector", vec![]).detect(true),
+        Presence::UNKNOWN
+    );
+}
+
+#[test]
+fn detection_keeps_the_strongest_evidence_in_either_source_order() {
+    let values = [
+        Detection::Unknown,
+        Detection::NotInstalled,
+        Detection::InstalledNotSignedIn,
+        Detection::SignedIn,
+    ];
+    for (index, &weaker) in values.iter().enumerate() {
+        for &stronger in &values[index..] {
+            for pair in [[weaker, stronger], [stronger, weaker]] {
+                let sources: Vec<Box<dyn LiveUsageSource>> = vec![
+                    Box::new(Detected("anthropic", Some(pair[0]))),
+                    Box::new(Detected("anthropic", Some(pair[1]))),
+                    Box::new(Detected("google", Some(Detection::Unknown))),
+                ];
+                assert_eq!(
+                    detect_all(&sources, false),
+                    DetectionMap::from([
+                        ("anthropic".into(), Presence::new(stronger)),
+                        ("google".into(), Presence::UNKNOWN),
+                    ])
+                );
+            }
+        }
+    }
+    assert!(detect_all(&[], true).is_empty());
+}
+
+#[test]
+fn a_tie_keeps_the_first_carrier_and_a_stronger_rank_replaces_it() {
+    let keychain = Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain);
+    let file = Presence::via(Detection::SignedIn, LoginCarrier::ClaudeCredentialsFile);
+    assert_eq!(keychain.strongest(file), keychain);
+    let pi = Presence::via(Detection::Unknown, LoginCarrier::Pi);
+    assert_eq!(pi.strongest(file), file);
+    assert_eq!(file.strongest(pi), file);
+    assert_eq!(
+        pi.strongest(Presence::new(Detection::NotInstalled)).carrier,
+        None
+    );
+}
+
+#[test]
+fn the_roster_labels_the_carrier_for_the_views() {
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Detected("anthropic", None))];
+    let detection = DetectionMap::from([(
+        "anthropic".into(),
+        Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain),
+    )]);
+    let meters = roster(&sources, &HiddenMeters::default(), &detection);
+    assert_eq!(meters[0].carrier, Some(LoginCarrier::ClaudeKeychain));
+    assert_eq!(
+        meters[0].carrier_label.as_deref(),
+        Some("Claude Code (Keychain)")
+    );
+    let unlabelled = roster(&sources, &HiddenMeters::default(), &DetectionMap::default());
+    assert_eq!(unlabelled[0].carrier_label, None);
+}
+
+#[test]
+fn only_a_clean_provider_snapshot_upgrades_detection() {
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Detected("anthropic", None))];
+    for has_snapshot in [false, true] {
+        for error_provider in [None, Some("anthropic"), Some("google")] {
+            let collected = sources::Collected {
+                snapshots: if has_snapshot {
+                    vec![snapshot(Freshness::Fresh, NOW, 20.0)]
+                } else {
+                    vec![]
+                },
+                errors: error_provider
+                    .map(|provider| sources::SourceFailure {
+                        source: "fixture",
+                        provider,
+                        error: ProviderUsageError::Unavailable,
+                        detail: None,
+                    })
+                    .into_iter()
+                    .collect(),
+            };
+            let summary = summarize_collected(
+                collected,
+                roster(&sources, &HiddenMeters::default(), &DetectionMap::default()),
+                None,
+                None,
+                NOW,
+                0,
+            );
+            let expected = if has_snapshot && error_provider != Some("anthropic") {
+                Detection::SignedIn
+            } else {
+                Detection::Unknown
+            };
+            assert_eq!(summary.meters[0].detection, expected);
+        }
+    }
+}
+
+#[test]
+fn collection_and_summary_preserve_optional_error_details() {
+    use super::SourceErrorDetail;
+
+    struct DetailedFailure(ProviderUsageError, Option<SourceErrorDetail>);
+    impl LiveUsageSource for DetailedFailure {
+        fn id(&self) -> &'static str {
+            "detail-fixture"
+        }
+        fn provider(&self) -> &'static str {
+            "anthropic"
+        }
+        fn fetch(&self, _: std::time::Duration) -> SourceOutcome {
+            match self.1 {
+                Some(detail) => SourceOutcome::failed_with_detail(self.0, detail),
+                None => SourceOutcome::failed(self.0),
+            }
+        }
+    }
+
+    for (error, detail, wire) in [
+        (
+            ProviderUsageError::Unavailable,
+            Some(SourceErrorDetail::KeychainUnreadable),
+            Some("keychainUnreadable"),
+        ),
+        (
+            ProviderUsageError::Authentication,
+            Some(SourceErrorDetail::RefreshUnsupported),
+            Some("refreshUnsupported"),
+        ),
+        (ProviderUsageError::Unavailable, None, None),
+    ] {
+        let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(DetailedFailure(error, detail))];
+        let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
+        assert_eq!(collected.errors[0].detail, detail);
+        let summary = summarize_collected(collected, vec![], None, None, NOW, 0);
+        assert_eq!(summary.errors[0].category, error.category());
+        assert_eq!(summary.errors[0].detail, detail);
+        let json = serde_json::to_value(summary).unwrap();
+        assert_eq!(
+            json["errors"][0]
+                .get("detail")
+                .and_then(serde_json::Value::as_str),
+            wire
+        );
+    }
+    assert_eq!(SourceOutcome::absent().detail, None);
+    assert_eq!(SourceOutcome::found(vec![]).detail, None);
 }

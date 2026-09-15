@@ -12,14 +12,14 @@ was unused because its data never loaded.
 
 ## Implementation status
 
-Phase 1 is implemented in the current source. The closed catalog now records
+The first delivered analytics set is implemented in the current source. The closed catalog now records
 successful surface and Settings-pane visibility, visible surface outcomes,
 deliberately viewed provider states, and classified setup starts and
 completions. `no_credentials` is an accepted provider-state value but remains
 dormant because the current product boundary cannot prove it. The queue now
 wakes at a bounded depth and uses protected drain and retry delays. The reviewed
-Burn Checks part of Phase 3 is implemented as of 2026-09-10. Other Phase 2 and
-Phase 3 proposals remain unimplemented. Collector verification, production
+Burn Checks instrumentation is implemented as of 2026-09-10. Its typed-operation
+review UI is implemented as of 2026-09-15. Other proposals remain unimplemented. Collector verification, production
 reports, and cohort review remain operational work.
 
 The limit-factor plan mapping was refined on 2026-09-11. Claude's `max` plan
@@ -58,8 +58,9 @@ buckets; the Claude diagnostic had nine additional optional fields.
 | `antiburn.error_occurred`                | Full scan failure, with `scan_failed`; repeated identical outcomes suppressed.                                                                                     | Shows some discovery failures. Misses scoped failures and other feature failures; cannot supply an operation failure rate.              |
 | `antiburn.unrecognized_records_observed` | Nonempty unknown-record summary returned to Settings Insights; changed category/count bucket within the process. Clean results reset suppression without an event. | Diagnoses reader-selected cohorts. Does not count all Insights visits or population parser failure rates.                               |
 | `antiburn.claude_limit_reset_observed`   | Changed Claude reset diagnostic after normal usage refresh, with a separate five-minute cooldown and additional enablement gates.                                  | Answers a narrow provider experiment question. Does not establish that anyone viewed usage or used a reset.                             |
-| `antiburn.quota_incidents_observed`      | Settings → Insights report with an assessed quota-pressure section; fires per limit kind, only when that kind's bucketed hit count changes within the process.     | Diagnoses reader-selected cohorts read afterward. Does not count incidents at ingest time, so an outage is only observed when a reader opens Insights afterward. |
-| `antiburn.provider_incidents_observed`   | Settings → Insights report with an assessed provider-incidents section; fires per incident kind, only when that kind's bucketed hit count changes within the process. | Diagnoses reader-selected cohorts read afterward. Does not count incidents at ingest time, so an outage is only observed when a reader opens Insights afterward. |
+| `antiburn.quota_incidents_observed`      | Settings → Insights report with an assessed quota-pressure section; fires per limit kind, only when that kind's bucketed hit count changes within the process.     | Diagnoses reader-selected cohorts read afterward. Does not count incidents at ingest time; see `antiburn.provider_incidents_ingested` below for that. |
+| `antiburn.provider_incidents_observed`   | Settings → Insights report with an assessed provider-incidents section; fires per incident kind, only when that kind's bucketed hit count changes within the process. | Diagnoses reader-selected cohorts read afterward. Does not count incidents at ingest time; see `antiburn.provider_incidents_ingested` below for that. |
+| `antiburn.provider_incidents_ingested`   | The durable evidence worker publishes a session whose evidence gained an incident within the last two hours that its previously published evidence did not carry; fires per incident kind present, content-deduplicated against the previous evidence blob. | Counts incidents at ingest time, independent of whether a reader ever opens Insights. Counts installations that ingested a failure, not requests; a closed laptop reports nothing. |
 
 Evidence: [event schema](../apps/desktop/src-tauri/src/analytics/event.rs),
 [recording and delivery](../apps/desktop/src-tauri/src/analytics/mod.rs),
@@ -119,7 +120,7 @@ Documentation discrepancies found at the audit revision:
   includes the ID on disk. Public descriptions of inactivity also need to say
   analytics-event inactivity, not imply user inactivity.
 
-The foundation documentation change corrected those disclosures. The Phase 1
+The foundation documentation change corrected those disclosures. The implemented catalog
 implementation status is separate from these historical findings.
 
 ## Measurement definitions
@@ -128,7 +129,7 @@ Use reporting installations, not people. Installation IDs rotate after 30 days
 and reset after opt-out/re-enable. Do not add a stable identifier or use IP,
 user-agent, or device information to join rotations.
 
-| Question                                           | Definition after the first implementation phase                                                                                                                                                                                                    | Decision supported                                               |
+| Question                                           | Definition after the first implementation                                                                                                                                                                                                          | Decision supported                                               |
 | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | Are people deliberately returning?                 | Daily/weekly distinct `anonymousId` with a user-initiated core `surface_viewed` event or `settings_pane_viewed` for `insights`. Exclude setup, other Settings-only visits, automatic restores, nudges merely appearing, and all background events. | Whether the core utility earns repeat attention.                 |
 | Does setup lead to visible value?                  | Among distinct IDs completing a new setup flow, fraction that see a core surface with `ready` data within 24 hours of completion. Also report empty, error, and timeout outcomes.                                                                  | Whether to improve setup or the first data experience.           |
@@ -157,13 +158,13 @@ Neither tray visibility nor a persistent HUD proves that someone looked at it.
 
 ## Event additions and proposals
 
-All names below use the `antiburn.` prefix. The Phase 1 dimensions are
+All names below use the `antiburn.` prefix. The implemented dimensions are
 implemented closed vocabularies, not arbitrary strings or permission to upload
 payloads. Use event-specific Rust types even when serializing into existing
 `label`, `detail`, and `bucket` fields. Update disclosures for new meanings even
 when the wire field count stays unchanged.
 
-### Phase 1: visible use and value (implemented)
+### Visible use and value (implemented)
 
 | Event/change                                       | Trigger and safe dimensions                                                                                                                                                                                                              | Owner and volume rule                                                                                                                                                                                                                                                          |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -214,7 +215,7 @@ The existing seams are
 Carry an internal exposure generation through readiness and loading callbacks
 to reject duplicates and stale results. It need not leave the process.
 
-### Phase 2: adoption and actions
+### Adoption and actions (proposed)
 
 | Proposed event                                | Trigger and safe dimensions                                                                                                                                                                                                                                                                                                            | Owner and volume rule                                                                                                                                                                                                                         |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -236,7 +237,7 @@ attempts and late delivery to settle. Process exits can leave unmatched
 attempts; expose that category instead of treating every missing completion as
 failure. Do not introduce persistent operation or work identifiers.
 
-### Phase 3: targeted diagnostics and measurement quality
+### Targeted diagnostics and measurement quality
 
 #### Session filters (implemented 2026-09-12)
 
@@ -288,12 +289,12 @@ reports segment the refined mapping at its first app-version boundary.
 
 #### Burn Checks integration (implemented 2026-09-10)
 
-| Product question and decision                                                                                                                                          | Metric and denominator                                                                                                                                                                                                   | Trigger and closed fields                                                                                                                                                                                                                                                                                      | Suppression and maximum volume                                                                                                                                                                                                                                 |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Does deliberate Burn Checks use reach usable results? Improve discovery or report reliability.                                                                         | Distinct reporting installations with `burn_checks` `ready`, `empty`, `error`, or `loading_timeout`, divided by installations with a user-origin `burn_checks` `surface_viewed`, on app versions from 2026-09-10 onward. | The main-window section is both selected and natively visible. `surface_viewed` uses `label=burn_checks`, `detail=user`. `surface_state_observed` uses `label=burn_checks`, the four existing state values, and `origin=user`. Ready requires a finding or clean result; an all-unassessed report is empty.    | Hidden sections, stale results, remounts, and refreshes do not create exposures. Each state occurs once per exposure. Maximum: one view and four state events per exposure.                                                                                    |
-| Do readers proceed from Auto Fix review to confirmation, and what result follows? Improve review copy or operation reliability.                                        | Confirmations divided by `burn_check_auto_fix_reviewed` with `detail=ready`; each typed completion outcome divided by confirmations. Allow in-flight and late-delivery time before finalizing.                           | A Fix request completes with review `detail`: `ready`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`. Apply selection emits `burn_check_auto_fix_confirmed`. Completion `detail`: `applied_awaiting_verification`, `recovery_needed`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`. | Busy controls suppress duplicate concurrent requests. Each explicit retry is a new attempt. Maximum: one review event per Fix request, one confirmation and one completion per Apply request. No automatic retry emits another event.                          |
+| Product question and decision                                                                                                                                          | Metric and denominator                                                                                                                                                                                                   | Trigger and closed fields                                                                                                                                                                                                                                                                                      | Suppression and maximum volume                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Does deliberate Burn Checks use reach usable results? Improve discovery or report reliability.                                                                         | Distinct reporting installations with `burn_checks` `ready`, `empty`, `error`, or `loading_timeout`, divided by installations with a user-origin `burn_checks` `surface_viewed`, on app versions from 2026-09-10 onward. | The main-window section is both selected and natively visible. `surface_viewed` uses `label=burn_checks`, `detail=user`. `surface_state_observed` uses `label=burn_checks`, the four existing state values, and `origin=user`. Ready requires a finding or clean result; an all-unassessed report is empty.    | Hidden sections, stale results, remounts, and refreshes do not create exposures. Each state occurs once per exposure. Maximum: one view and four state events per exposure.                                                                                                                                      |
+| Do readers proceed from Auto Fix review to confirmation, and what result follows? Improve review copy or operation reliability.                                        | Confirmations divided by `burn_check_auto_fix_reviewed` with `detail=ready`; each typed completion outcome divided by confirmations. Allow in-flight and late-delivery time before finalizing.                           | A Fix request completes with review `detail`: `ready`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`. Apply selection emits `burn_check_auto_fix_confirmed`. Completion `detail`: `applied_awaiting_verification`, `recovery_needed`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`. | Busy controls suppress duplicate concurrent requests. Each explicit retry is a new attempt. Maximum: one review event per Fix request, one confirmation and one completion per Apply request. No automatic retry emits another event.                                                                            |
 | Does prompt preparation reach a usable clipboard result? Improve prompt preparation or clipboard handling.                                                             | Successful `burn_check_prompt_copied` divided by `burn_check_prompt_prepared` with `detail=ready`. Report preparation failures separately.                                                                               | A Copy fix prompt request emits preparation `detail`: `ready`, `stale`, `expired`, `unavailable`, or `failed`. A successful clipboard write emits `burn_check_prompt_copied` with no properties.                                                                                                               | A clipboard failure emits no copy event. Clipboard retry reuses the prepared prompt and emits no second preparation event. Busy and copied controls suppress duplicate calls. Maximum: one preparation and one successful copy for one rendered action. A non-named check submits selected current targets once. |
-| Do later improvements and recurrences become visible, and did their watch start passively or from an action? Improve verification coverage without claiming causation. | Distinct reporting installations with each `(detail, origin)` tuple among deliberate Burn Checks exposures. Use exposed installations as the denominator. Never use background transitions as visits.                    | `burn_check_outcome_observed`: `detail=verified` or `recurred`; `origin=passive` or `action`. Verified comes from the visible aggregate summary or an expanded target. Recurred comes only from a deliberately expanded visible target.                                                                        | Background evaluation, hidden sections, hidden target lists, and refresh callbacks emit nothing. Deduplicate each tuple per exposure. Maximum: four events per exposure, independent of finding count.                                                         |
+| Do later improvements and recurrences become visible, and did their watch start passively or from an action? Improve verification coverage without claiming causation. | Distinct reporting installations with each `(detail, origin)` tuple among deliberate Burn Checks exposures. Use exposed installations as the denominator. Never use background transitions as visits.                    | `burn_check_outcome_observed`: `detail=verified` or `recurred`; `origin=passive` or `action`. Verified comes from the visible aggregate summary or an expanded target. Recurred comes only from a deliberately expanded visible target.                                                                        | Background evaluation, hidden sections, hidden target lists, and refresh callbacks emit nothing. Deduplicate each tuple per exposure. Maximum: four events per exposure, independent of finding count.                                                                                                           |
 
 These events use only the existing `detail` and `origin` wire fields. They never
 include prompts, resource or model strings from work, paths, finding, action,
@@ -340,7 +341,50 @@ about all users or a causal conclusion. Resource bands can reveal coarse app
 work intensity and data volume, so the public catalog, privacy policy, and
 in-product disclosure name that consequence.
 
-Phase 1 adds bounded queue-depth-triggered draining, protected retry backoff, and
+The second background exception is `antiburn.provider_incidents_ingested`. It
+answers: "When a provider degrades, is a given user's failure part
+of a wider outage?" The metric is distinct reporting installations per
+`(agent, incident kind)` per hour, compared against installations that sent
+any event that hour; the decision it supports is telling a reader in-app and
+telling support, during a live incident, whether a capacity or server failure
+is fleet-wide or local to them — something the report-time
+`quota_incidents_observed` and `provider_incidents_observed` events cannot do,
+because they fire only when a reader happens to open Settings → Insights,
+possibly days later. The trigger and owning boundary is a background
+completed outcome: the durable evidence worker publishes a session's evidence
+(`insights_worker::apply_outcome`, the `PassOutcome::Published` arm) — never a
+per-record, per-poll, per-scan, or UI-driven trigger. Its properties are
+`label` (the agent that recorded the session, the same fixed list
+`session_opened` uses), `detail` (the incident kind — `capacity`,
+`server_error`, `connection`, `rate_limit`, or `usage_limit`), and `bucket`
+(the bucketed count of newly reported incidents for that pair in this
+publish); it carries no model name, session id, timestamp, path, or message
+text. Two mandatory filters bound its dedup and volume: an incident is new
+only when its `(ts_ms, kind)` pair is absent from the session's previously
+published evidence (so a revision-bump re-ingest of unchanged evidence
+reports nothing, and file growth reports only the appended incidents), and it
+must fall within `INGESTED_INCIDENT_FRESHNESS_MS` (two hours) of the worker's
+publish clock (bounding first-install backfill, a parser reclassification of
+old records, and an unreadable previous evidence blob). There is no
+in-memory suppression map — dedup is entirely by content — and the maximum
+volume is five events per publish, one per kind present. The owner is Dave
+Slutzkin; review date 2026-12-14, to confirm whether the signal is used in a
+fleet status view or a support workflow, or should be removed. Validation
+drives the real `apply_outcome` path against a store and asserts its computed
+result, the same boundary `insights_worker::process_next_work` hands to
+`analytics::record_provider_incidents_ingested` — this codebase has no
+`tauri::AppHandle` test harness, so, like `record_quota_incidents` and
+`record_provider_incidents` before it, the `allowed(app)` gate itself is
+exercised by inspection rather than by an app-driven test.
+
+This event counts installations that ingested a failure, not requests: a
+closed laptop, or an installation that never re-scans the affected session,
+reports nothing even during a real outage. The two-hour freshness window
+means a late ingest can report up to two hours after the actual incident, and
+opted-out installations are unobserved. Segment reports at the app version
+this event ships in.
+
+The implemented delivery changes add bounded queue-depth-triggered draining, protected retry backoff, and
 a request budget. Before expanding volume further, simulate normal repeated
 visits, preview use, and an offline backlog against the 50-event drain and
 500-row queue. Preserve the opt-out recheck before each request and silent
@@ -383,11 +427,11 @@ merely requires an analytics file to change in every feature PR.
 
 ## Delivery sequence and acceptance
 
-1. The source now contains the disclosure corrections, Phase 1 events, and
+1. The source now contains the disclosure corrections, implemented events, and
    bounded delivery changes. Establish baseline collector queries by app version.
    Verify configured release ingestion, retry deduplication, and delivery delay.
    Do not claim production behavior from source alone.
-2. Verify Phase 1 with a loopback recording of setup → activity → preview →
+2. Verify the implemented events with a loopback recording of setup → activity → preview →
    session detail → Settings Insights → return visit. Also exercise empty/error
    data, hidden prewarm, renderer recreation, automatic HUD restore, and opt-out.
    Assert the expected sequence and absence of duplicate use events.
@@ -395,11 +439,11 @@ merely requires an analytics file to change in every feature PR.
    visible reliability reports using the definitions above. Show reporting
    installation counts and observation limits alongside percentages.
 4. Review at least two complete weeks of supported-version cohorts, then choose
-   Phase 2 actions based on observed gaps. Assign each report and diagnostic a
+   follow-up actions based on observed gaps. Assign each report and diagnostic a
    maintainer; review whether its events still support an actual decision.
 
 The historical audit changed documentation, current public disclosures, and
-contributor expectations. Phase 1 and the reviewed Burn Checks Phase 3
+contributor expectations. The implemented catalog and the reviewed Burn Checks
 integration now add runtime instrumentation with bounded delivery behavior.
-Collector configuration, dashboards, and the remaining Phase 2 and Phase 3
-implementation remain work described above.
+Collector configuration, dashboards, and the remaining proposed work remain
+described above.

@@ -4,6 +4,29 @@ import type { AutoFixReviewPayload } from "../../../lib/insightsIpc"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { scopeLabel } from "./BurnCheckTargetPresentation"
 
+const settingLabels: Record<AutoFixReviewPayload["setting"], string> = {
+  model: "Model",
+  reasoning: "Reasoning effort",
+  compaction: "Compaction",
+  subagentModel: "Subagent model",
+  mcpServer: "MCP server",
+  builtInTool: "Built-in tool",
+  skill: "Skill",
+  fastMode: "Fast mode",
+}
+
+const sideEffectDescriptions: Record<AutoFixReviewPayload["sideEffect"], string> = {
+  modelBehaviorMayChange:
+    "Responses can change when future requests use the replacement model.",
+  responsesMayUseLessReasoning: "Future responses can use less reasoning.",
+  earlierSessionSummarization: "Future sessions can summarize earlier.",
+  workerBehaviorMayChange: "Future worker responses can change.",
+  serverWillNotBeAvailable: "This server will not be available for future requests.",
+  toolWillNotBeAvailable: "This built-in tool will not be available for future requests.",
+  skillWillNotBeAvailable: "This skill will not be available for future requests.",
+  responsesMayTakeLonger: "Future responses can take longer.",
+}
+
 export function BurnCheckReviewDialog({
   title,
   titleId,
@@ -54,47 +77,35 @@ export function BurnCheckReviewDialog({
         className="w-full max-w-md rounded-control border border-separator bg-surface-card p-5 text-label shadow-raised"
       >
         <h4 id={titleId} className="type-title-3 text-label">
-          Fix {title}
+          Review change
         </h4>
-        <p className="mt-2 type-body text-label-secondary">
-          {review.effect === "futureModelSelection"
-            ? "This plan changes future model selection. Existing sessions do not change."
-            : "This plan lowers reasoning effort for future requests. Existing sessions do not change."}
+        <p className="mt-2 type-body font-semibold text-label">{title}</p>
+        <p className="mt-1 type-body text-label-secondary">
+          {sideEffectDescriptions[review.sideEffect]}
         </p>
-        <dl className="mt-5 grid grid-cols-2 gap-3 rounded-control bg-surface-secondary px-3 py-3">
-          <div>
-            <dt className="type-footnote text-label-tertiary">Agent</dt>
-            <dd className="mt-0.5 type-callout text-label">{agentDisplayName(review.agent)}</dd>
-          </div>
-          <div>
-            <dt className="type-footnote text-label-tertiary">Setting</dt>
-            <dd className="mt-0.5 type-callout text-label">
-              {review.setting === "model" ? "Model" : "Reasoning effort"}
-            </dd>
-          </div>
-          <div className="col-span-2">
-            <dt className="type-footnote text-label-tertiary">Scope</dt>
-            <dd className="mt-0.5 type-callout text-label">{scopeLabel(review.scope)}</dd>
-          </div>
-          <div className="col-span-2">
-            <dt className="type-footnote text-label-tertiary">Config file</dt>
-            <dd className="mt-0.5 break-all type-callout font-mono text-label">
-              {review.configFile}
-            </dd>
-          </div>
-          <div className="col-span-2">
-            <dt className="type-footnote text-label-tertiary">Config change</dt>
-            <dd className="mt-0.5 type-callout font-mono text-label">
-              {review.currentValue} → {review.proposedValue}
-            </dd>
-          </div>
-        </dl>
+        <div className="mt-5 rounded-control bg-surface-secondary px-3 py-3">
+          <p className="type-callout text-label-secondary">
+            {agentDisplayName(review.agent)} · {settingLabels[review.setting]} ·{" "}
+            {scopeLabel(review.scope)}
+          </p>
+          <p className="mt-2 break-all type-footnote font-mono text-label-tertiary">
+            {review.configFile} · {review.selectorLabel}
+          </p>
+          <p className="mt-2 type-callout font-mono text-label">
+            {review.currentValue} → {review.proposedValue}
+          </p>
+        </div>
+        {review.behaviorOverrideWarning && (
+          <p role="alert" className="mt-4 type-callout text-system-yellow-text">
+            An active override can keep current behavior unchanged after this edit.
+          </p>
+        )}
         {status && (
           <p role="alert" className="mt-4 type-callout text-system-red-text">
             {status}
           </p>
         )}
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button
             type="button"
             autoFocus

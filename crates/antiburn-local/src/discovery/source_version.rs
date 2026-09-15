@@ -1,6 +1,7 @@
 //! Storage-neutral source identity and version values.
 
 use super::SessionSource;
+use crate::analysis::SourceFormat;
 use crate::model::AgentKind;
 use crate::platform::environment::DiscoveryEnvironment;
 use std::path::Path;
@@ -46,6 +47,10 @@ pub struct SourceDescriptor {
     pub session_id: String,
     pub environment: DiscoveryEnvironment,
     pub source: SessionSource,
+    /// The bounded contract selected while discovery still knows the source route.
+    pub source_format: SourceFormat,
+    /// The discovered agent surface. Do not reconstruct it from a path later.
+    pub surface: String,
     pub updated_at_epoch: Option<i64>,
 }
 
@@ -54,6 +59,8 @@ pub struct SourceVersion {
     pub fingerprint: String,
     pub estimated_bytes: Option<u64>,
     pub streamability: Streamability,
+    pub source_format: SourceFormat,
+    pub surface: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +89,7 @@ impl super::Explorers {
                 .fingerprint();
                 let streamability = if matches!(
                     descriptor.agent,
-                    AgentKind::Claude | AgentKind::Codex | AgentKind::Pi
+                    AgentKind::Claude | AgentKind::Codex | AgentKind::Pi | AgentKind::Copilot
                 ) {
                     Streamability::RecordStream
                 } else {
@@ -92,6 +99,8 @@ impl super::Explorers {
                     fingerprint,
                     estimated_bytes,
                     streamability,
+                    source_format: descriptor.source_format,
+                    surface: descriptor.surface.clone(),
                 })
             }
             SessionSource::ProviderDb {
@@ -106,6 +115,8 @@ impl super::Explorers {
                     fingerprint: provider_db_fingerprint(latest, rows),
                     estimated_bytes: None,
                     streamability: Streamability::DatabaseRows,
+                    source_format: descriptor.source_format,
+                    surface: descriptor.surface.clone(),
                 })
             }
             SessionSource::Inline { content, .. } => {
@@ -123,6 +134,8 @@ impl super::Explorers {
                     .fingerprint(),
                     estimated_bytes: Some(content.len() as u64),
                     streamability: Streamability::InlineMaterialized,
+                    source_format: descriptor.source_format,
+                    surface: descriptor.surface.clone(),
                 })
             }
         }
@@ -443,6 +456,8 @@ mod tests {
             session_id: "session-1".to_string(),
             environment: DiscoveryEnvironment::default(),
             source,
+            source_format: SourceFormat::Uncharacterized,
+            surface: "unknown".to_owned(),
             updated_at_epoch: Some(100),
         }
     }

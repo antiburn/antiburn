@@ -362,6 +362,7 @@ pub enum SourceFormat {
     CursorJsonl,
     CursorCliAgentJsonl,
     CursorCliStoreDb,
+    CursorChatStoreDb,
     CursorIdeComposer,
     CursorLegacyChatJson,
     AntigravityJson,
@@ -372,8 +373,12 @@ pub enum SourceFormat {
     CopilotCliJsonl,
     CopilotIdeChatJson,
     ClineSessionJson,
+    ClineMessagesContractV1,
     KiroSessionJson,
     KiroChat,
+    KiroCliV2Bundle,
+    KiroCliV3Bundle,
+    KiroChatSaveExport,
     AmpThreadJson,
     AmpFileChanges,
     WindsurfWorkspaceJson,
@@ -851,6 +856,22 @@ impl SourceCapabilities {
         }
     }
 
+    /// Cline v1 bundles retain terminal assistant usage, model identity, tool
+    /// names, and direct database child rows. They do not prove request depth,
+    /// inventories, effort, speed, or cache accounting.
+    pub fn cline_messages_contract_v1() -> Self {
+        Self {
+            source_format: SourceFormat::ClineMessagesContractV1,
+            timestamps_and_order: true,
+            tool_invocations: true,
+            model_identity: true,
+            token_classes: true,
+            subagent_relationships: true,
+            subagent_models: true,
+            ..Self::generic()
+        }
+    }
+
     /// The generic JSONL fallback's profile: every field unset.
     ///
     /// An unknown vendor's transcript proves no vendor-specific contract —
@@ -915,6 +936,8 @@ impl From<&RawSource> for SourceKind {
             RawSource::Jsonl(_) => Self::Jsonl,
             RawSource::File(_) => Self::File,
             RawSource::Sqlite(_) => Self::Sqlite,
+            RawSource::ClineBundle { .. } => Self::Sqlite,
+            RawSource::KiroCliV2Bundle { .. } => Self::Jsonl,
         }
     }
 }
@@ -1417,17 +1440,15 @@ mod tests {
         use crate::analysis::model::Usage;
         use crate::analysis::vendors::reader_for;
 
-        let input = SessionInput {
-            agent: "cursor".to_owned(),
-            session_id: "cursor-probe".to_owned(),
-            source: RawSource::Jsonl(
-                r#"{"role":"user","content":"hi","timestamp":"2026-01-01T00:00:00.000Z"}
-{"role":"assistant","model":"gpt-5","content":"working on it","tool_calls":[{"name":"read_file","arguments":"{}"}],"timestamp":"2026-01-01T00:00:05.000Z"}
-"#
-                .to_owned(),
-            ),
-            fork_parent_session_id: None,
-        };
+        let input = SessionInput { agent: "cursor".to_owned(),
+        session_id: "cursor-probe".to_owned(),
+        source: RawSource::Jsonl(
+            r#"{"role":"user","content":"hi","timestamp":"2026-01-01T00:00:00.000Z"}
+        {"role":"assistant","model":"gpt-5","content":"working on it","tool_calls":[{"name":"read_file","arguments":"{}"}],"timestamp":"2026-01-01T00:00:05.000Z"}
+        "#
+            .to_owned(),
+        ),
+        fork_parent_session_id: None, source_format: Default::default() };
         let session = reader_for("cursor")
             .normalize(&input)
             .expect("a synthetic Cursor session normalizes");
@@ -1462,17 +1483,15 @@ mod tests {
         use crate::analysis::interface::SessionInput;
         use crate::analysis::vendors::reader_for;
 
-        let input = SessionInput {
-            agent: "antigravity".to_owned(),
-            session_id: "antigravity-probe".to_owned(),
-            source: RawSource::Jsonl(
-                r#"{"type":"USER_INPUT","created_at":"2026-01-01T00:00:00.000Z","content":"hi"}
-{"type":"PLANNER_RESPONSE","created_at":"2026-01-01T00:00:05.000Z","content":"working on it","model":"MODEL_PLACEHOLDER_M35","usage":{"input_tokens":10,"output_tokens":2},"tool_calls":[{"name":"read_file"}]}
-"#
-                .to_owned(),
-            ),
-            fork_parent_session_id: None,
-        };
+        let input = SessionInput { agent: "antigravity".to_owned(),
+        session_id: "antigravity-probe".to_owned(),
+        source: RawSource::Jsonl(
+            r#"{"type":"USER_INPUT","created_at":"2026-01-01T00:00:00.000Z","content":"hi"}
+        {"type":"PLANNER_RESPONSE","created_at":"2026-01-01T00:00:05.000Z","content":"working on it","model":"MODEL_PLACEHOLDER_M35","usage":{"input_tokens":10,"output_tokens":2},"tool_calls":[{"name":"read_file"}]}
+        "#
+            .to_owned(),
+        ),
+        fork_parent_session_id: None, source_format: SourceFormat::AntigravityBrainJsonl };
         let session = reader_for("antigravity")
             .normalize(&input)
             .expect("a synthetic Antigravity session normalizes");

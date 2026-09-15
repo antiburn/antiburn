@@ -20,7 +20,10 @@
  */
 
 import type {
+  LiveUsageMeterPayload,
+  LiveUsageSourceErrorDetail,
   LiveProviderUsagePayload,
+  LiveUsageDetection,
   LiveUsageFreshness,
   LiveUsagePlanPayload,
   LiveUsageSourceErrorPayload,
@@ -35,6 +38,7 @@ export interface UnavailableLiveProvider {
   displayName: string
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
+  detail?: LiveUsageSourceErrorPayload["detail"]
 }
 import { relativeTime } from "./relativeTime"
 
@@ -309,6 +313,12 @@ export function liveSourceNote(provider: LiveProviderUsagePayload): string {
   return `Live ${relativeTime(provider.observedAt)}`
 }
 
+/** "3m ago", or "just now" when the reading carries no time. */
+export function liveSourceAge(provider: LiveProviderUsagePayload): string {
+  if (!provider.observedAt) return "just now"
+  return relativeTime(provider.observedAt)
+}
+
 /**
  * Tailwind classes for the provenance line. Orange only once a reading has
  * gone stale — a fresh reading is not news.
@@ -433,8 +443,8 @@ export function liveForProvider(
 /** Whether a provider's reading is live, standing in during its grace period, or too old to show. */
 export type LiveProviderStatus =
   | { kind: "live" }
-  | { kind: "grace"; category: string; ageMs: number }
-  | { kind: "failed"; category: string }
+  | { kind: "grace"; category: string; ageMs: number; detail?: LiveUsageSourceErrorDetail }
+  | { kind: "failed"; category: string; detail?: LiveUsageSourceErrorDetail }
 
 /**
  * A provider's live status: live, within grace after a failed check, or
@@ -451,11 +461,23 @@ export function liveProviderStatus(
 ): LiveProviderStatus {
   const error = summary.errors.find((entry) => entry.provider === provider.provider)
   if (!error) return { kind: "live" }
+  const detail = error.detail ? { detail: error.detail } : {}
   const ageMs = Date.parse(summary.generatedAt) - Date.parse(provider.observedAt)
-  if (Number.isNaN(ageMs) || ageMs <= LIVE_USAGE_GRACE_MS) {
-    return { kind: "grace", category: error.category, ageMs: Number.isNaN(ageMs) ? 0 : ageMs }
+  // A pending delegated refresh is not a failure yet: the next check the
+  // reader starts runs it. Keep the reading in grace rather than fail it.
+  if (
+    Number.isNaN(ageMs) ||
+    ageMs <= LIVE_USAGE_GRACE_MS ||
+    error.detail === "refreshPending"
+  ) {
+    return {
+      kind: "grace",
+      category: error.category,
+      ageMs: Number.isNaN(ageMs) ? 0 : ageMs,
+      ...detail,
+    }
   }
-  return { kind: "failed", category: error.category }
+  return { kind: "failed", category: error.category, ...detail }
 }
 
 /**
@@ -505,8 +527,12 @@ export function liveGraceNote(
   category: string,
   provider: string | undefined,
   ageMs: number,
+  detail?: LiveUsageSourceErrorDetail,
 ): string {
   const name = liveProviderDisplayName(provider) ?? "Your provider"
+  if (detail === "refreshPending") {
+    return `${name} login expired; it refreshes on the next check. Reading from ${formatGraceAge(ageMs)} ago.`
+  }
   return `${name} ${graceVerb(category)}; reading from ${formatGraceAge(ageMs)} ago.`
 }
 
@@ -553,13 +579,19 @@ export function liveUnavailableProviders(
       provider: error.provider,
       displayName: error.displayName || error.provider,
       category: error.category,
+      ...(error.detail ? { detail: error.detail } : {}),
     })
   }
   return unavailable
 }
 
 /** A failure category as two or three words, for a row with no room. */
-export function liveUnavailableReason(category: string): string {
+export function liveUnavailableReason(
+  category: string,
+  detail?: LiveUsageSourceErrorDetail,
+): string {
+  if (detail === "refreshPending") return "refreshing sign-in"
+  if (detail === "cliMissing") return "stale token"
   switch (category) {
     case "authentication":
       return "sign-in needed"
@@ -583,8 +615,96 @@ function liveProviderDisplayName(provider?: string): string | null {
         : null
 }
 
+/**
+ * What each metered provider's login tool is called. One row per provider.
+ * Carrier names are not here — they ride the wire as `carrierLabel`, named
+ * by the backend enum that owns them.
+ */
+interface LiveTool {
+  /** The tool, as a noun: "Claude Code". */
+  tool: string
+}
+
+const LIVE_TOOLS: Readonly<Record<string, LiveTool>> = {
+  [ANTHROPIC]: { tool: "Claude Code" },
+  [GOOGLE]: { tool: "Antigravity" },
+  [OPENAI]: { tool: "Codex" },
+}
+
+/** The tool's name for a detection marker, or the meter's own display name. */
+function liveToolName(meter: Pick<LiveUsageMeterPayload, "provider" | "displayName">): string {
+  return LIVE_TOOLS[meter.provider]?.tool ?? meter.displayName
+}
+
+/**
+ * A one-glyph summary of a meter's detection for a compact line, or null
+ * when there is nothing definite to say.
+ */
+export function liveDetectionMarker(
+  meter: Pick<LiveUsageMeterPayload, "provider" | "displayName" | "detection" | "carrierLabel">,
+): string | null {
+  const via = meter.carrierLabel === "Pi" ? " via Pi" : ""
+  switch (meter.detection) {
+    case "signedIn":
+      return `${liveToolName(meter)} ✓${via}`
+    case "notInstalled":
+    case "installedNotSignedIn":
+      return `${liveToolName(meter)} ✗${via}`
+    default:
+      return via ? `${liveToolName(meter)} ?${via}` : null
+  }
+}
+
+/**
+ * The one line a meter with no reading needs: found and signed in, found
+ * but not signed in, or not found. Signing in happens in the tool, so the
+ * note never names a command.
+ */
+export function liveDetectionNote(
+  provider: string,
+  detection: LiveUsageDetection | undefined,
+  shown: boolean,
+  carrierLabel?: string,
+): string {
+  if (!shown) return "Turn the switch above back on to ask for current plan limits."
+  const tool = LIVE_TOOLS[provider]?.tool ?? "this tool"
+  switch (detection) {
+    case "signedIn":
+      return carrierLabel ? `Signed in through ${carrierLabel}.` : "Signed in."
+    case "installedNotSignedIn":
+      return carrierLabel === "Pi"
+        ? `Found Pi, but it isn't signed in to ${tool}.`
+        : `Found ${tool}, but it isn't signed in.`
+    case "notInstalled":
+      return `Couldn't find ${tool} or ${tool} usage on this computer.`
+    default:
+      return "Not checked yet."
+  }
+}
+
 /** One action for a failed source, with the provider name when it is known. */
-export function liveErrorNote(category: string, provider?: string): string {
+export function liveErrorNote(
+  category: string,
+  provider?: string,
+  detail?: LiveUsageSourceErrorDetail,
+): string {
+  if (category === "authentication" && provider === ANTHROPIC) {
+    if (detail === "cliMissing") {
+      return "Claude Code's login has expired and there's nothing here to refresh it. Sign in inside Claude Code."
+    }
+    if (detail === "signInRequired") {
+      return "Claude Code's login has expired. Sign in inside Claude Code again."
+    }
+    if (detail === "refreshPending") {
+      return "Claude Code's login has expired. It refreshes on the next check."
+    }
+  }
+  if (category === "unavailable" && detail === "keychainUnreadable") {
+    return "Couldn't read Claude Code's login from the Keychain. If a prompt appears, choose Always Allow."
+  }
+  if (category === "authentication" && provider === GOOGLE && detail === "refreshUnsupported") {
+    return "Antigravity's login has expired. Sign in inside Antigravity again."
+  }
   const providerName = liveProviderDisplayName(provider)
   switch (category) {
     case "authentication":

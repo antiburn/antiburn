@@ -12,8 +12,19 @@ pub(super) struct Pi;
 pub(super) static PI: Pi = Pi;
 
 impl VendorConfig for Pi {
-    fn policy(&self, _: ConfigSetting) -> VendorPolicy {
-        VendorPolicy::AutomaticEdit
+    fn policy(&self, setting: ConfigSetting) -> VendorPolicy {
+        match setting {
+            ConfigSetting::Model | ConfigSetting::Reasoning | ConfigSetting::Compaction => {
+                VendorPolicy::AutomaticEdit
+            }
+            ConfigSetting::BuiltInTool => VendorPolicy::AutomaticEdit,
+            ConfigSetting::SubagentModel
+            | ConfigSetting::McpServer
+            | ConfigSetting::Skill
+            | ConfigSetting::FastMode => {
+                VendorPolicy::Unsupported(ConfigUnavailableReason::UnsupportedSetting)
+            }
+        }
     }
 
     fn resolve_target(
@@ -73,6 +84,169 @@ impl VendorConfig for Pi {
                     .ok_or(ConfigUnavailableReason::MissingTarget)?;
                 Ok(target(&path, &global_root, ConfigScope::Global, operation))
             }
+            ConfigSetting::Compaction => {
+                for (path, document, root, scope) in project
+                    .iter()
+                    .map(|(path, document)| {
+                        (
+                            path,
+                            document,
+                            trusted_workspace_root.unwrap() as &Path,
+                            ConfigScope::Project,
+                        )
+                    })
+                    .chain(global.iter().map(|(path, document)| {
+                        (path, document, &global_root as &Path, ConfigScope::Global)
+                    }))
+                {
+                    for key in ["enabled", "reserveTokens", "keepRecentTokens"] {
+                        let Some(value) = document
+                            .get("compaction")
+                            .and_then(Value::as_object)
+                            .and_then(|value| value.get(key))
+                        else {
+                            continue;
+                        };
+                        if (key == "enabled" && value == &Value::Bool(false))
+                            || (key != "enabled" && value.is_number())
+                        {
+                            return Ok(target(
+                                path,
+                                root,
+                                scope,
+                                OperationSelector::JsonPath(vec!["compaction", key]),
+                            ));
+                        }
+                    }
+                }
+                Err(ConfigUnavailableReason::MissingTarget)
+            }
+            ConfigSetting::SubagentModel
+            | ConfigSetting::McpServer
+            | ConfigSetting::BuiltInTool
+            | ConfigSetting::Skill
+            | ConfigSetting::FastMode => Err(ConfigUnavailableReason::UnsupportedSetting),
+        }
+    }
+
+    fn resolve_target_for_value(
+        &self,
+        setting: ConfigSetting,
+        expected: Option<&str>,
+        home: &Path,
+        workspace_cwd: Option<&Path>,
+        trusted_workspace_root: Option<&Path>,
+    ) -> Result<Target, ConfigUnavailableReason> {
+        if setting != ConfigSetting::BuiltInTool {
+            return self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root);
+        }
+        let name = expected.ok_or(ConfigUnavailableReason::MissingTarget)?;
+        let global_root = global_root(home)?;
+        let global_path = global_root.join("settings.json");
+        let project_path = workspace_cwd.map(|cwd| cwd.join(".pi/settings.json"));
+        if let (Some(path), Some(root)) = (project_path.as_ref(), trusted_workspace_root)
+            && path_entry_exists(path)?
+            && default_tool_value(&parse_strict(&read_checked(path, root)?.bytes)?, name)?.is_some()
+        {
+            return Ok(target(
+                path,
+                root,
+                ConfigScope::Project,
+                OperationSelector::NamedPiDefaultTool(name.to_owned()),
+            ));
+        }
+        if path_entry_exists(&global_path)?
+            && default_tool_value(
+                &parse_strict(&read_checked(&global_path, &global_root)?.bytes)?,
+                name,
+            )?
+            .is_some()
+        {
+            return Ok(target(
+                &global_path,
+                &global_root,
+                ConfigScope::Global,
+                OperationSelector::NamedPiDefaultTool(name.to_owned()),
+            ));
+        }
+        Err(ConfigUnavailableReason::MissingTarget)
+    }
+
+    #[cfg(not(windows))]
+    fn resolve_targets(
+        &self,
+        setting: ConfigSetting,
+        home: &Path,
+        workspace_cwd: Option<&Path>,
+        trusted_workspace_root: Option<&Path>,
+    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
+        let primary = self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)?;
+        let mut targets = vec![primary];
+        let global_root = global_root(home)?;
+        let global = global_root.join("settings.json");
+        if path_entry_exists(&global)?
+            && !targets.iter().any(|target| target.path == global)
+            && self
+                .read_value(
+                    &read_checked(&global, &global_root)?.bytes,
+                    &targets[0].operation,
+                )?
+                .is_some()
+        {
+            targets.push(target(
+                &global,
+                &global_root,
+                ConfigScope::Global,
+                targets[0].operation.clone(),
+            ));
+        }
+        if let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root) {
+            let project = cwd.join(".pi/settings.json");
+            if path_entry_exists(&project)?
+                && !targets.iter().any(|target| target.path == project)
+                && self
+                    .read_value(&read_checked(&project, root)?.bytes, &targets[0].operation)?
+                    .is_some()
+            {
+                targets.push(target(
+                    &project,
+                    root,
+                    ConfigScope::Project,
+                    targets[0].operation.clone(),
+                ));
+            }
+        }
+        Ok(targets)
+    }
+
+    #[cfg(not(windows))]
+    fn standalone_global(
+        &self,
+        setting: ConfigSetting,
+        home: &Path,
+        proposed: &str,
+    ) -> Result<(std::path::PathBuf, Vec<u8>), ConfigUnavailableReason> {
+        let value = match setting {
+            ConfigSetting::Model => {
+                let (provider, model) = split_route(proposed)?;
+                serde_json::json!({ "defaultProvider": provider, "defaultModel": model })
+            }
+            ConfigSetting::Reasoning => serde_json::json!({ "defaultThinkingLevel": proposed }),
+            _ => return Err(ConfigUnavailableReason::UnsupportedSetting),
+        };
+        Ok((
+            global_root(home)?.join("settings.json"),
+            serde_json::to_vec_pretty(&value)
+                .map_err(|_| ConfigUnavailableReason::MalformedConfig)?,
+        ))
+    }
+
+    #[cfg(not(windows))]
+    fn standalone_selector(&self, setting: ConfigSetting) -> &'static str {
+        match setting {
+            ConfigSetting::Model => "defaultProvider+defaultModel",
+            ConfigSetting::Reasoning => "defaultThinkingLevel",
+            _ => "standalone",
         }
     }
 
@@ -98,6 +272,17 @@ impl VendorConfig for Pi {
                         .ok_or(ConfigUnavailableReason::MalformedConfig)
                 })
                 .transpose(),
+            OperationSelector::JsonPath(path) if path.len() == 2 => document
+                .get(path[0])
+                .and_then(Value::as_object)
+                .and_then(|object| object.get(path[1]))
+                .map(|value| match value {
+                    Value::Bool(value) => Ok(value.to_string()),
+                    Value::Number(value) => Ok(value.to_string()),
+                    _ => Err(ConfigUnavailableReason::MalformedConfig),
+                })
+                .transpose(),
+            OperationSelector::NamedPiDefaultTool(name) => default_tool_value(&document, name),
             _ => Err(ConfigUnavailableReason::UnsupportedSetting),
         }
     }
@@ -144,6 +329,48 @@ impl VendorConfig for Pi {
                 }
                 levels.insert(route.clone(), Value::String(proposed.into()));
             }
+            OperationSelector::JsonPath(path) if path.len() == 2 => {
+                let value = if path[1] == "enabled" {
+                    Value::Bool(
+                        proposed
+                            .parse()
+                            .map_err(|_| ConfigUnavailableReason::InvalidTarget)?,
+                    )
+                } else {
+                    Value::Number(
+                        proposed
+                            .parse::<u64>()
+                            .map_err(|_| ConfigUnavailableReason::InvalidTarget)?
+                            .into(),
+                    )
+                };
+                let compaction = document
+                    .get_mut(path[0])
+                    .and_then(Value::as_object_mut)
+                    .ok_or(ConfigUnavailableReason::MalformedConfig)?;
+                if !compaction.contains_key(path[1]) {
+                    return Err(ConfigUnavailableReason::MissingTarget);
+                }
+                compaction.insert(path[1].into(), value);
+            }
+            OperationSelector::NamedPiDefaultTool(name) => {
+                let tools = document
+                    .get_mut("defaultTools")
+                    .and_then(Value::as_array_mut)
+                    .ok_or(ConfigUnavailableReason::MissingTarget)?;
+                if tools.iter().any(|tool| !tool.is_string()) {
+                    return Err(ConfigUnavailableReason::MalformedConfig);
+                }
+                let positions = tools
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, tool)| (tool.as_str() == Some(name)).then_some(index))
+                    .collect::<Vec<_>>();
+                if positions.len() != 1 {
+                    return Err(ConfigUnavailableReason::CurrentValueMismatch);
+                }
+                tools.remove(positions[0]);
+            }
             _ => return Err(ConfigUnavailableReason::UnsupportedSetting),
         }
         let mut output = serde_json::to_vec_pretty(&document)
@@ -173,6 +400,29 @@ fn target(path: &Path, root: &Path, scope: ConfigScope, operation: OperationSele
         scope,
         operation,
     }
+}
+
+fn default_tool_value(
+    document: &Value,
+    name: &str,
+) -> Result<Option<String>, ConfigUnavailableReason> {
+    let Some(tools) = document.get("defaultTools") else {
+        return Ok(None);
+    };
+    let tools = tools
+        .as_array()
+        .ok_or(ConfigUnavailableReason::MalformedConfig)?;
+    if tools.iter().any(|tool| !tool.is_string()) {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    let matches = tools
+        .iter()
+        .filter(|tool| tool.as_str() == Some(name))
+        .count();
+    if matches > 1 {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    Ok(Some(format!("{name}={}", matches == 1)))
 }
 
 fn effective_model(

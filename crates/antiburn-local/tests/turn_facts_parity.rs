@@ -93,6 +93,7 @@ fn run_fixture(
             session_id: fixture.to_owned(),
             source: RawSource::Jsonl(jsonl.to_owned()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
         capabilities,
     );
@@ -594,6 +595,7 @@ fn claude_model_projections_match_the_accumulator_for_every_fixture() {
             session_id: name.to_owned(),
             source: RawSource::Jsonl(claude_fixture(name).to_owned()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
             run_fixture_with_row_projections("claude", name, &input, SourceCapabilities::claude());
@@ -708,6 +710,7 @@ fn codex_model_projections_match_the_accumulator_for_every_fixture() {
             session_id: name.to_owned(),
             source: RawSource::Jsonl(codex_fixture(name).to_owned()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
             run_fixture_with_row_projections("codex", name, &input, SourceCapabilities::codex());
@@ -855,6 +858,7 @@ fn pi_model_projections_match_the_accumulator_for_every_fixture() {
             session_id: name.to_owned(),
             source: RawSource::Jsonl(pi_fixture(name).to_owned()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
             run_fixture_with_row_projections("pi", name, &input, SourceCapabilities::pi());
@@ -958,6 +962,7 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -1101,6 +1106,7 @@ fn opencode_fixture_export_jsonl_child_delegation() -> SessionInput {
         session_id: "root".to_owned(),
         source: RawSource::Jsonl(jsonl.to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 

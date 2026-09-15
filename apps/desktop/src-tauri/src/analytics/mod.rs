@@ -26,6 +26,7 @@ pub mod config;
 #[cfg(feature = "analytics")]
 mod delivery;
 pub mod event;
+pub mod ingested_incidents;
 #[cfg(feature = "analytics")]
 mod resources;
 
@@ -170,6 +171,15 @@ pub fn record_provider_incidents(
 }
 
 #[cfg(not(feature = "analytics"))]
+pub fn record_provider_incidents_ingested(
+    _app: &tauri::AppHandle,
+    _agent: antiburn_local::model::AgentKind,
+    _ingested: &ingested_incidents::IngestedIncidents,
+) {
+    let _ = event::EventName::ProviderIncidentsIngested;
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn record_usage_observed(
     _app: &tauri::AppHandle,
     _snapshots: &[crate::provider_usage::live::ProviderUsageSnapshot],
@@ -220,6 +230,7 @@ mod enabled {
     use antiburn_local::insights::{
         ProviderIncidentsSection, QuotaPressureSection, UnrecognizedRecords,
     };
+    use antiburn_local::model::AgentKind;
     use tauri::Manager as _;
 
     use crate::provider_usage::factor::LearnedFactor;
@@ -1257,6 +1268,40 @@ mod enabled {
             ProviderIncidentKind::Capacity => "capacity",
             ProviderIncidentKind::ServerError => "server_error",
             ProviderIncidentKind::Connection => "connection",
+        }
+    }
+
+    /// Record every newly reportable incident from one evidence publish.
+    ///
+    /// This fires one event per `(kind, count)` pair with `count > 0`. That
+    /// is at most five events per publish, one for each kind
+    /// [`ingested_incidents::IngestedIncidentKind`] names. This function
+    /// keeps no in-memory suppression state. The caller's own content-based
+    /// dedup against the session's previously published evidence, plus the
+    /// freshness window, bound this event instead. See
+    /// `insights_worker::apply_outcome`.
+    pub fn record_provider_incidents_ingested(
+        app: &tauri::AppHandle,
+        agent: AgentKind,
+        ingested: &super::ingested_incidents::IngestedIncidents,
+    ) {
+        if !allowed(app) {
+            return;
+        }
+        for (&kind, &count) in &ingested.counts {
+            if count == 0 {
+                continue;
+            }
+            record(
+                app,
+                EventName::ProviderIncidentsIngested,
+                Facts {
+                    label: Some(agent.slug()),
+                    detail: Some(kind.label()),
+                    bucket: Some(event::bucket(count as u64)),
+                    ..Facts::default()
+                },
+            );
         }
     }
 

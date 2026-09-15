@@ -1,7 +1,10 @@
 import { Check, Clipboard, Wrench } from "lucide-react"
 import { useCallback, useRef, useState } from "react"
 
+import { cn } from "../../../lib/cn"
+import { Tooltip } from "../../../components/presentation/Tooltip"
 import { noteInteraction } from "../../../lib/ipc"
+import { writeClipboardText } from "../../../lib/clipboard"
 import {
   copyPromptFixBurnCheckTargets,
   copyPromptFixBurnCheck,
@@ -9,9 +12,11 @@ import {
   type BurnCheckTargetPayload,
 } from "../../../lib/insightsIpc"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
+import { RemindLaterAction } from "./RemindLaterAction"
 import { SampleSessions, watchStatus } from "./BurnCheckTargetPresentation"
+import { BurnCheckTargetChooserDialog } from "./BurnCheckTargetChooserDialog"
 
-const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
+export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   sessionsOverDepth: "Some sessions carried context after it stopped helping.",
   modelOverthinking: "Some work used more reasoning than it needed.",
   overpoweredSubagents: "Some helper work used more model power than it needed.",
@@ -34,14 +39,16 @@ function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
   return <SampleSessions samples={samples} />
 }
 
-function CheckPromptAction({
+export function CheckPromptAction({
   detector,
   targets,
   refresh,
+  comingSoon = false,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
   refresh: () => void
+  comingSoon?: boolean
 }) {
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -79,7 +86,7 @@ function CheckPromptAction({
     setStatus(null)
     let nextPrompt = prompt
     try {
-      if (!nextPrompt) {
+      if (nextPrompt === null) {
         const outcome =
           targets.length === 0
             ? await copyPromptFixBurnCheck(detector)
@@ -104,7 +111,7 @@ function CheckPromptAction({
         }
         nextPrompt = outcome.prompt
       }
-      await navigator.clipboard.writeText(nextPrompt)
+      await writeClipboardText(nextPrompt)
       if (key.current !== startedKey) return
       noteInteraction({ kind: "burnCheckPromptCopied" })
       setPrompt(nextPrompt)
@@ -112,21 +119,41 @@ function CheckPromptAction({
       setBusy(false)
       scheduleCopiedReset(startedKey)
     } catch {
-      if (!nextPrompt) noteInteraction({ kind: "burnCheckPromptPrepared", outcome: "failed" })
+      const preparationFailed = nextPrompt === null
+      if (preparationFailed)
+        noteInteraction({ kind: "burnCheckPromptPrepared", outcome: "failed" })
       if (key.current !== startedKey) return
       setPrompt(nextPrompt)
       setBusy(false)
-      setStatus("Could not copy the prompt. Check clipboard access and try again.")
+      setStatus(
+        preparationFailed
+          ? "Could not prepare the prompt. Try again."
+          : "Could not copy the prompt. Try again.",
+      )
     }
   }
   if (targets.length > 0 && promptTargets.length === 0) return null
+  if (comingSoon) {
+    return (
+      <Tooltip label="Coming soon" side="bottom">
+        <button
+          type="button"
+          aria-disabled="true"
+          className="burn-check-action type-callout gap-1"
+        >
+          <Clipboard size={12} aria-hidden="true" />
+          Copy fix prompt
+        </button>
+      </Tooltip>
+    )
+  }
   return (
     <div ref={bindKey}>
       <button
         type="button"
         disabled={busy || copied}
         onClick={() => void copy()}
-        className="ui-push-button burn-check-action type-callout gap-1 disabled:opacity-100"
+        className="burn-check-action type-callout gap-1 disabled:opacity-100"
       >
         {copied ? (
           <Check size={12} className="text-token-in" aria-hidden="true" />
@@ -152,9 +179,7 @@ function FixAction({
   refresh: () => void
 }) {
   const [choosing, setChoosing] = useState(false)
-  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null)
   const eligible = targets.filter((target) => target.autoFix.status === "available")
-  const selected = eligible.find((target) => target.findingId === selectedFindingId) ?? null
   if (eligible.length === 0) return null
   if (eligible.length === 1)
     return (
@@ -166,52 +191,50 @@ function FixAction({
       />
     )
   return (
-    <div className="mt-3">
-      {selected ? (
-        <>
-          <BurnCheckTargetActions
-            target={selected}
-            refresh={refresh}
-            showPromptFix={false}
-            embedded
-          />
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedFindingId(null)
-              setChoosing(true)
-            }}
-            className="mt-2 type-callout text-label-secondary hover:text-label"
-          >
-            Choose another change
-          </button>
-        </>
-      ) : (
-        <>
-          <button
-            type="button"
-            onClick={() => setChoosing(true)}
-            className="ui-push-button burn-check-action type-callout gap-1"
-          >
-            <Wrench size={12} aria-hidden="true" />
-            Fix
-          </button>
-          {choosing && (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {eligible.map((target) => (
-                <button
-                  key={target.actionId}
-                  type="button"
-                  onClick={() => setSelectedFindingId(target.findingId)}
-                  className="ui-push-button burn-check-action type-callout"
-                >
-                  {target.display.currentValue ?? "Review change"}
-                </button>
-              ))}
-            </div>
-          )}
-        </>
+    <div>
+      <button
+        type="button"
+        onClick={() => setChoosing(true)}
+        className="burn-check-action type-callout gap-1"
+      >
+        <Wrench size={12} aria-hidden="true" />
+        Fix
+      </button>
+      {choosing && (
+        <BurnCheckTargetChooserDialog
+          targets={eligible}
+          refresh={refresh}
+          close={() => setChoosing(false)}
+        />
       )}
+    </div>
+  )
+}
+
+export function CheckDetailActions({
+  detector,
+  targets,
+  refresh,
+  reportRow = false,
+  snoozed = false,
+}: {
+  detector: BurnCheckDetectorId
+  targets: BurnCheckTargetPayload[]
+  refresh: () => void
+  reportRow?: boolean
+  snoozed?: boolean
+}) {
+  return (
+    <div className="flex flex-wrap items-start gap-2">
+      {reportRow && !snoozed && <RemindLaterAction detector={detector} />}
+      <CheckPromptAction
+        comingSoon={reportRow}
+        key={targets.map((target) => target.actionId).join(":")}
+        detector={detector}
+        targets={targets}
+        refresh={refresh}
+      />
+      <FixAction targets={targets} refresh={refresh} />
     </div>
   )
 }
@@ -220,26 +243,35 @@ export function BurnCheckDetail({
   detector,
   targets,
   refresh,
+  contained = false,
+  reportRow = false,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
   refresh: () => void
+  contained?: boolean
+  reportRow?: boolean
 }) {
   const statuses = Array.from(
     new Set(targets.map(watchStatus).filter((status): status is string => status !== null)),
   )
   return (
-    <article className="m-4 min-w-0 rounded-control bg-surface-card/75 p-4">
-      <p className="type-body text-label-secondary">{CHECK_SENTENCES[detector]}</p>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <CheckPromptAction
-          key={targets.map((target) => target.actionId).join(":")}
-          detector={detector}
-          targets={targets}
-          refresh={refresh}
-        />
-        <FixAction targets={targets} refresh={refresh} />
-      </div>
+    <article
+      className={cn(
+        "min-w-0",
+        contained && !reportRow && "max-w-3xl rounded-control bg-surface-card/75 p-4",
+      )}
+    >
+      {!reportRow && (
+        <div>
+          <p className="type-body text-pretty text-label-secondary">
+            {CHECK_SENTENCES[detector]}
+          </p>
+          <div className="mt-2">
+            <CheckDetailActions detector={detector} targets={targets} refresh={refresh} />
+          </div>
+        </div>
+      )}
       {statuses.length === 1 && (
         <p role="status" className="mt-3 type-callout text-label-secondary">
           {statuses[0]}

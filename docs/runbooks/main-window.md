@@ -56,15 +56,15 @@ position and focus. Test an installed build for taskbar icon grouping.
 | Visible warm open                            | Native focus is immediate and emits no health check                                  |
 | Hidden warm open                             | One generation/request check acknowledges before reveal                              |
 | Close during forced recovery, then reopen    | The watched replacement completes or reaches the terminal dialog                     |
-| Hidden recovery exhausts its budget          | No dialog appears until the next open                                                 |
-| Dead or absent main WebContent               | The native terminal dialog remains usable                                             |
-| Terminal Try Again                           | One fresh watched generation starts; no label overlap occurs                          |
-| Terminal Dismiss, then open                  | The terminal dialog returns with a fresh token                                        |
-| Delayed or duplicate destruction             | Terminal state and its failure budget remain intact                                   |
+| Hidden recovery exhausts its budget          | No dialog appears until the next open                                                |
+| Dead or absent main WebContent               | The native terminal dialog remains usable                                            |
+| Terminal Try Again                           | One fresh watched generation starts; no label overlap occurs                         |
+| Terminal Dismiss, then open                  | The terminal dialog returns with a fresh token                                       |
+| Delayed or duplicate destruction             | Terminal state and its failure budget remain intact                                  |
 | Fallback Reload                              | The fallback's generation starts one watched replacement                             |
-| Commit-phase descendant failure              | Fallback reports without an earlier healthy status                                    |
-| Targeted open during replacement             | The replacement peeks, applies, and acknowledges the requested session                |
-| Navigate after target, then recover           | Recovery does not replay the retired target                                           |
+| Commit-time descendant failure               | Fallback reports without an earlier healthy status                                   |
+| Targeted open during replacement             | The replacement peeks, applies, and acknowledges the requested session               |
+| Navigate after target, then recover          | Recovery does not replay the retired target                                          |
 | Minimize then open                           | The window restores and becomes usable                                               |
 | macOS minimize, switch away, activate        | The main window restores through native unminimize; minimizing alone stays minimized |
 | Switch applications                          | Normal Dock/taskbar switching works; the main window does not hide on blur           |

@@ -11,7 +11,7 @@ use crate::analysis::{
     CompositeSink, ContextWindowSource, EvidenceSource, EvidenceValue, NormalizedRecord,
     PartialReason, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionCoverageRecord,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SessionSummary, SourceCapabilities, SourceKind, VisitOutcome, analyze_sources,
+    SessionSummary, SourceCapabilities, SourceFormat, SourceKind, VisitOutcome, analyze_sources,
     normalize_source, reader_for,
 };
 
@@ -60,6 +60,7 @@ fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
         session_id: "s".into(),
         source: RawSource::Jsonl(jsonl.into()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -382,6 +383,7 @@ fn the_characterization_fixtures_report_their_expected_coverage() {
                 session_id: name.clone(),
                 source: RawSource::Jsonl(claude_characterization_fixture(name).to_string()),
                 fork_parent_session_id: None,
+                source_format: Default::default(),
             };
             let mut collector = SessionCollector::new("claude", name);
             reader_for("claude")
@@ -479,6 +481,8 @@ fn active_time_excludes_idle_gaps() {
 #[test]
 fn pi_jsonl_tool_calls_classify_into_tool_categories() {
     let pi_fixture = concat!(
+        r#"{"type":"session","version":3,"timestamp":"2024-06-01T12:00:00Z"}"#,
+        "\n",
         r#"{"type":"message","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll inspect first."},{"type":"toolCall","id":"call_read","name":"read","arguments":{"path":"src/lib.rs"}}]}}"#,
         "\n",
         r#"{"type":"message","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit","name":"edit","arguments":{"path":"src/lib.rs","old":"a","new":"b"}}]}}"#,
@@ -598,7 +602,11 @@ fn openai_cached_tokens_no_longer_double_count_downstream() {
 
 #[test]
 fn pi_sessions_report_real_local_usage_downstream() {
-    let raw = r#"{"type":"message","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input":2,"output":8,"cacheRead":0,"cacheWrite":14792,"totalTokens":14802},"content":[{"type":"text","text":"done"}]}}"#;
+    let raw = concat!(
+        r#"{"type":"session","version":3,"timestamp":"2024-06-01T12:00:00Z"}"#,
+        "\n",
+        r#"{"type":"message","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input":2,"output":8,"cacheRead":0,"cacheWrite":14792,"totalTokens":14802},"content":[{"type":"text","text":"done"}]}}"#,
+    );
     let session = normalize_source(&jsonl_input("pi", raw)).unwrap();
     let m = analyze_session(&session);
 
@@ -654,6 +662,7 @@ fn opencode_sqlite_vendor_is_extracted() {
         session_id: "x".into(),
         source: RawSource::Sqlite(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).unwrap();
     assert_eq!(session.events.len(), 1);
@@ -2358,12 +2367,14 @@ fn initial_context_grafts_to_each_session_by_distinct_id() {
             agent: "claude".into(),
             session_id: "sess-a".into(),
             source: RawSource::Jsonl(session("skill-a")),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         },
         SessionInput {
             agent: "claude".into(),
             session_id: "sess-b".into(),
             source: RawSource::Jsonl(session("skill-b")),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         },
     ];
@@ -2517,7 +2528,9 @@ const ANTIGRAVITY_BRAIN_FIXTURE: &str = concat!(
 
 #[test]
 fn antigravity_brain_transcript_normalizes_steps() {
-    let session = normalize_source(&jsonl_input("antigravity", ANTIGRAVITY_BRAIN_FIXTURE)).unwrap();
+    let mut input = jsonl_input("antigravity", ANTIGRAVITY_BRAIN_FIXTURE);
+    input.source_format = SourceFormat::AntigravityBrainJsonl;
+    let session = normalize_source(&input).unwrap();
     // Header line is skipped; the five steps become events.
     assert_eq!(session.events.len(), 5);
 
@@ -2551,8 +2564,9 @@ const ANTIGRAVITY_CASCADE_FIXTURE: &str = concat!(
 
 #[test]
 fn antigravity_cascade_document_normalizes_steps() {
-    let session =
-        normalize_source(&jsonl_input("antigravity", ANTIGRAVITY_CASCADE_FIXTURE)).unwrap();
+    let mut input = jsonl_input("antigravity", ANTIGRAVITY_CASCADE_FIXTURE);
+    input.source_format = SourceFormat::AntigravityCascadeJson;
+    let session = normalize_source(&input).unwrap();
     // The wrapping document is not itself an event; only its two steps are.
     assert_eq!(session.events.len(), 2);
 
@@ -2576,8 +2590,9 @@ const ANTIGRAVITY_CASCADE_TS_FIXTURE: &str = concat!(
 
 #[test]
 fn antigravity_cascade_reads_timestamp_from_metadata() {
-    let session =
-        normalize_source(&jsonl_input("antigravity", ANTIGRAVITY_CASCADE_TS_FIXTURE)).unwrap();
+    let mut input = jsonl_input("antigravity", ANTIGRAVITY_CASCADE_TS_FIXTURE);
+    input.source_format = SourceFormat::AntigravityCascadeJson;
+    let session = normalize_source(&input).unwrap();
     assert_eq!(session.events.len(), 2);
     let t0 = session.events[0]
         .ts_ms
@@ -2590,10 +2605,9 @@ fn antigravity_cascade_reads_timestamp_from_metadata() {
 
 #[test]
 fn antigravity_aggregates_alongside_claude() {
-    let summary = analyze_sources(vec![
-        jsonl_input("antigravity", ANTIGRAVITY_BRAIN_FIXTURE),
-        jsonl_input("claude", CLAUDE_FIXTURE),
-    ]);
+    let mut antigravity = jsonl_input("antigravity", ANTIGRAVITY_BRAIN_FIXTURE);
+    antigravity.source_format = SourceFormat::AntigravityBrainJsonl;
+    let summary = analyze_sources(vec![antigravity, jsonl_input("claude", CLAUDE_FIXTURE)]);
     assert_eq!(summary.session_count, 2);
     // The Antigravity session contributes a non-empty, analyzed session: its five
     // steps (see `antigravity_brain_transcript_normalizes_steps`) all parse.

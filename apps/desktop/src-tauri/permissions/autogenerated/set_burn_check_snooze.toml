@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-burn-check-snooze"
+description = "Enables the set_burn_check_snooze command without any pre-configured scope."
+commands.allow = ["set_burn_check_snooze"]
+
+[[permission]]
+identifier = "deny-set-burn-check-snooze"
+description = "Denies the set_burn_check_snooze command without any pre-configured scope."
+commands.deny = ["set_burn_check_snooze"]

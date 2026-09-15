@@ -5,6 +5,7 @@ import { renderAgentIcon } from "../../lib/agentIcon"
 import { filterSessionEntries } from "../../lib/sessionFilters"
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 import { isMacOS } from "../../lib/platform"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import type { SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
 import { SessionEmptyDetail } from "./SessionEmptyDetail"
 import { CollectionDetailPane, type CollectionItem } from "./CollectionDetailPane"
@@ -44,10 +45,12 @@ export function MainActivityView({
     session.getSnapshot,
     session.getSnapshot,
   )
+  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
   const filteredEntries = filterSessionEntries(
     state.entries ?? [],
     hygieneBySession,
     state.filter,
+    snoozedDetectors,
   )
   const ordered = orderedActivityEntries({ ...state, entries: filteredEntries }).filter(
     (entry) => entry.sessionId,
@@ -123,6 +126,7 @@ export function MainActivityView({
               liveUsage={state.liveUsage}
               sessionLimitAllocations={state.allocations}
               hygieneBySession={hygieneBySession}
+              snoozedDetectors={snoozedDetectors}
             />
           )}
         </div>

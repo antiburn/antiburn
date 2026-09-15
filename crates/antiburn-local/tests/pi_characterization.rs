@@ -108,6 +108,7 @@ fn fixture(name: &str) -> &'static str {
         "message_without_id" => {
             include_str!("fixtures/pi_characterization/message_without_id.jsonl")
         }
+        "branched_tree" => include_str!("fixtures/pi_characterization/branched_tree.jsonl"),
         "session_overdepth_finding" => {
             include_str!("fixtures/pi_characterization/session_overdepth_finding.jsonl")
         }
@@ -121,7 +122,7 @@ fn fixture(name: &str) -> &'static str {
     }
 }
 
-fn fixture_names() -> [&'static str; 35] {
+fn fixture_names() -> [&'static str; 36] {
     [
         "minimal_session",
         "role_ordering",
@@ -155,6 +156,7 @@ fn fixture_names() -> [&'static str; 35] {
         "fork_child_one_thread",
         "unresolved_parent_link",
         "message_without_id",
+        "branched_tree",
         "session_overdepth_finding",
         "model_overthinking_finding",
         "excess_cache_rehydration_finding",
@@ -165,9 +167,24 @@ fn input(name: &str) -> SessionInput {
     SessionInput {
         agent: "pi".to_owned(),
         session_id: name.to_owned(),
-        source: RawSource::Jsonl(fixture(name).to_owned()),
+        source: RawSource::Jsonl(admitted_jsonl(fixture(name))),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
+}
+
+fn admitted_jsonl(source: &str) -> String {
+    let has_session_header = source
+        .lines()
+        .next()
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        .is_some_and(|row| row.get("type").and_then(Value::as_str) == Some("session"));
+    if has_session_header {
+        return source.to_owned();
+    }
+    format!(
+        "{{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{source}"
+    )
 }
 
 fn collect(input: &SessionInput) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
@@ -449,11 +466,10 @@ fn every_recognized_inert_family_fails_closed_on_hidden_signals() {
         BTreeSet::from([
             "custom".to_owned(),
             "custom_message".to_owned(),
-            "session".to_owned(),
             "session_info".to_owned(),
         ])
     );
-    assert_eq!(evidence.diagnostics.records_unusable, 7);
+    assert_eq!(evidence.diagnostics.records_unusable, 6);
     assert_eq!(metrics.metrics().billable_input_tokens, 1);
     assert!(
         !serde_json::to_string(&evidence)
@@ -495,17 +511,15 @@ fn pi_skill_identity_rejects_paths_commands_prompts_and_oversized_names() {
         json!({"name": "private"}),
         json!("{\"skill\":\"private\"}"),
     ] {
-        let input = SessionInput {
-            source: RawSource::Jsonl(json!({
-                "type": "message", "id": "a", "parentId": null, "timestamp": 1,
-                "message": {"role": "assistant", "content": [
-                    {"type": "toolCall", "name": "Skill", "arguments": arguments},
-                    {"type": "toolCall", "name": "read", "arguments": {"path": "/synthetic/private/SKILL.md"}},
-                    {"type": "toolCall", "name": "skill", "arguments": {"skill": "review-code", "prompt": "private prompt"}}
-                ]}
-            }).to_string()),
-            ..input("skill_tool_privacy")
-        };
+        let input = SessionInput { source: RawSource::Jsonl(admitted_jsonl(&json!({
+            "type": "message", "id": "a", "parentId": null, "timestamp": 1,
+            "message": {"role": "assistant", "content": [
+                {"type": "toolCall", "name": "Skill", "arguments": arguments},
+                {"type": "toolCall", "name": "read", "arguments": {"path": "/synthetic/private/SKILL.md"}},
+                {"type": "toolCall", "name": "skill", "arguments": {"skill": "review-code", "prompt": "private prompt"}}
+            ]}
+        }).to_string())),
+        ..input("skill_tool_privacy") };
         let (_, _, session) = collect(&input);
         assert_eq!(session.events[0].tools[0].detail, None);
         assert_eq!(
@@ -533,7 +547,7 @@ fn pi_native_policy_drives_checks_without_borrowing_provider_effort_or_routes() 
     ] {
         for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
             let input = SessionInput {
-                source: RawSource::Jsonl(format!(
+                source: RawSource::Jsonl(admitted_jsonl(&format!(
                     "{}\n{}",
                     json!({
                         "type": "thinking_level_change", "id": "a", "parentId": null,
@@ -545,7 +559,7 @@ fn pi_native_policy_drives_checks_without_borrowing_provider_effort_or_routes() 
                             "providerThinkingLevel": "max", "content": [],
                             "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}
                     })
-                )),
+                ))),
                 ..input("minimal_session")
             };
             let (_, _, session) = collect(&input);
@@ -610,12 +624,13 @@ fn pi_missing_policy_or_route_is_not_filled_from_provider_effort_or_an_earlier_m
                 "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}}),
         );
         let input = SessionInput {
-            source: RawSource::Jsonl(
-                rows.iter()
+            source: RawSource::Jsonl(admitted_jsonl(
+                &rows
+                    .iter()
                     .map(Value::to_string)
                     .collect::<Vec<_>>()
                     .join("\n"),
-            ),
+            )),
             ..input("minimal_session")
         };
         let (evidence, _) = composite(&input);
@@ -658,12 +673,13 @@ fn malformed_incomplete_unsupported_and_header_only_sources_are_honest() {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("active.jsonl");
-    fs::write(&path, fixture("incomplete_final_record")).unwrap();
+    fs::write(&path, admitted_jsonl(fixture("incomplete_final_record"))).unwrap();
     let file_input = SessionInput {
         agent: "pi".to_owned(),
         session_id: "active".to_owned(),
         source: RawSource::File(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let (coverage, reasons, session) = collect(&file_input);
     assert_eq!(coverage, RecordCoverage::Partial);
@@ -676,7 +692,7 @@ fn malformed_incomplete_unsupported_and_header_only_sources_are_honest() {
         reasons,
         BTreeSet::from([PartialReason::UnrecognizedRecordType])
     );
-    assert_eq!(session.events.len(), 1);
+    assert!(session.events.is_empty());
 
     let (coverage, reasons, session) = collect(&input("header_only"));
     assert_eq!(coverage, RecordCoverage::Complete);
@@ -689,18 +705,16 @@ fn missing_required_fields_degrade_without_discarding_valid_rows() {
     let input = SessionInput {
         agent: "pi".to_owned(),
         session_id: "missing-required-fields".to_owned(),
-        source: RawSource::Jsonl(
-            concat!(
-                r#"{"type":"model_change","timestamp":"2026-01-01T00:00:00Z"}"#,
-                "\n",
-                r#"{"type":"session_info","name":"synthetic title"}"#,
-                "\n",
-                r#"{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}"#,
-                "\n"
-            )
-            .to_owned(),
-        ),
+        source: RawSource::Jsonl(admitted_jsonl(concat!(
+            r#"{"type":"model_change","timestamp":"2026-01-01T00:00:00Z"}"#,
+            "\n",
+            r#"{"type":"session_info","name":"synthetic title"}"#,
+            "\n",
+            r#"{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}"#,
+            "\n"
+        ))),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let (coverage, reasons, session) = collect(&input);
     assert_eq!(coverage, RecordCoverage::Partial);
@@ -712,9 +726,11 @@ fn missing_required_fields_degrade_without_discarding_valid_rows() {
 fn oversized_records_are_skipped_and_valid_neighbours_remain() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("oversized.jsonl");
+    let header = fixture("minimal_session").lines().next().unwrap();
     let before = fixture("minimal_session").lines().nth(1).unwrap();
     let after = fixture("minimal_session").lines().nth(2).unwrap();
     let mut file = fs::File::create(&path).unwrap();
+    writeln!(file, "{header}").unwrap();
     writeln!(file, "{before}").unwrap();
     file.write_all(&vec![b'x'; MAX_RECORD_BYTES + 1]).unwrap();
     writeln!(file).unwrap();
@@ -726,6 +742,7 @@ fn oversized_records_are_skipped_and_valid_neighbours_remain() {
         session_id: "oversized".to_owned(),
         source: RawSource::File(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let (coverage, reasons, session) = collect(&file_input);
     assert_eq!(coverage, RecordCoverage::Partial);
@@ -744,6 +761,7 @@ fn claimed_reads_accept_stable_files_and_reject_changes_without_finishing() {
         session_id: "claimed".to_owned(),
         source: RawSource::File(path.clone()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut collector = SessionCollector::new("pi", "claimed");
     let outcome = PiSessionReader
@@ -772,6 +790,7 @@ fn claimed_reads_accept_stable_files_and_reject_changes_without_finishing() {
         session_id: "changed".to_owned(),
         source: RawSource::File(changed_path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut collector = SessionCollector::new("pi", "changed");
     let outcome = PiSessionReader
@@ -804,6 +823,7 @@ fn claimed_reads_reject_short_or_replaced_sources_without_finishing() {
         session_id: "short".to_owned(),
         source: RawSource::File(short_path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut short_collector = SessionCollector::new("pi", "short");
     let outcome = PiSessionReader
@@ -828,6 +848,7 @@ fn claimed_reads_reject_short_or_replaced_sources_without_finishing() {
         session_id: "replaced".to_owned(),
         source: RawSource::File(replaced_path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut replaced_collector = SessionCollector::new("pi", "replaced");
     let outcome = PiSessionReader
@@ -854,6 +875,7 @@ fn claimed_reads_honor_cancellation_without_publishing() {
         session_id: "synthetic-private-session-marker".to_owned(),
         source: RawSource::File(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut collector = SessionCollector::new("pi", "cancelled");
     let error = PiSessionReader
@@ -942,13 +964,18 @@ fn unresolved_fork_ownership_fails_closed_without_guessing() {
             session_id: name.to_owned(),
             source: RawSource::Jsonl(source.to_owned()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let (coverage, reasons, session) = collect(&input);
         assert_eq!(coverage, RecordCoverage::Partial, "coverage for {name}");
-        assert!(
-            reasons.contains(&PartialReason::AttributionIncomplete),
-            "attribution reason for {name}"
-        );
+        if name == "missing-row-timestamp" {
+            assert!(
+                reasons.contains(&PartialReason::AttributionIncomplete),
+                "attribution reason for {name}"
+            );
+        } else {
+            assert_eq!(reasons, BTreeSet::from([PartialReason::MalformedRecord]));
+        }
         assert!(session.events.is_empty(), "owned events for {name}");
     }
 }
@@ -982,21 +1009,94 @@ fn top_level_timestamps_and_session_start_are_authoritative() {
 }
 
 #[test]
-fn headerless_synthetic_inputs_keep_complete_metrics() {
-    let (_, tools) = composite(&input("headerless_tools"));
-    assert_eq!(summary("headerless_tools").started_at_ms, None);
-    assert_eq!(tools.metrics().event_count, 5);
-    assert_eq!(tools.metrics().tool_calls_by_name.values().sum::<u32>(), 3);
+fn headerless_sources_do_not_emit_pi_v3_evidence() {
+    for name in ["headerless_tools", "headerless_usage"] {
+        let input = SessionInput {
+            source: RawSource::Jsonl(fixture(name).to_owned()),
+            ..input(name)
+        };
+        let (coverage, reasons, session) = collect(&input);
+        assert_eq!(coverage, RecordCoverage::Partial, "{name}");
+        assert_eq!(
+            reasons,
+            BTreeSet::from([PartialReason::UnrecognizedRecordType]),
+            "{name}"
+        );
+        assert!(session.events.is_empty(), "{name}");
+        let (evidence, metrics) = composite(&input);
+        assert_eq!(metrics.metrics().event_count, 0, "{name}");
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(
+                antiburn_local::analysis::CoverageReason::UnrecognizedRecordType
+            ),
+            "{name}"
+        );
+    }
+}
 
-    let (evidence, usage) = composite(&input("headerless_usage"));
-    assert_eq!(summary("headerless_usage").started_at_ms, None);
-    let metrics = usage.metrics();
-    assert_eq!(metrics.billable_input_tokens, 3);
-    assert_eq!(metrics.billable_output_tokens, 5);
-    assert_eq!(metrics.billable_cache_read_tokens, 7);
-    assert_eq!(metrics.billable_cache_creation_tokens, 11);
-    assert_eq!(metrics.peak_context_tokens, 21);
-    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+#[test]
+fn pi_v3_file_admission_accepts_only_one_valid_header_and_unique_ids() {
+    let directory = tempfile::tempdir().unwrap();
+    let cases = [
+        (
+            "v3",
+            fixture("minimal_session"),
+            RecordCoverage::Complete,
+            2,
+        ),
+        (
+            "missing-header",
+            fixture("headerless_usage"),
+            RecordCoverage::Partial,
+            0,
+        ),
+        (
+            "unsupported-version",
+            fixture("unsupported_version"),
+            RecordCoverage::Partial,
+            0,
+        ),
+        (
+            "malformed-header",
+            "{\"type\":\"session\",\"version\":3}\n",
+            RecordCoverage::Partial,
+            0,
+        ),
+    ];
+    for (name, source, expected_coverage, expected_events) in cases {
+        let path = directory.path().join(format!("{name}.jsonl"));
+        fs::write(&path, source).unwrap();
+        let input = SessionInput {
+            agent: "pi".to_owned(),
+            session_id: name.to_owned(),
+            source: RawSource::File(path),
+            fork_parent_session_id: None,
+            source_format: Default::default(),
+        };
+        let (coverage, _, session) = collect(&input);
+        assert_eq!(coverage, expected_coverage, "{name}");
+        assert_eq!(session.events.len(), expected_events, "{name}");
+    }
+
+    let duplicate = format!(
+        "{}{}\n",
+        fixture("minimal_session"),
+        fixture("minimal_session").lines().nth(2).unwrap()
+    );
+    let path = directory.path().join("duplicate-id.jsonl");
+    fs::write(&path, duplicate).unwrap();
+    let input = SessionInput {
+        agent: "pi".to_owned(),
+        session_id: "duplicate-id".to_owned(),
+        source: RawSource::File(path),
+        fork_parent_session_id: None,
+        source_format: Default::default(),
+    };
+    let (coverage, reasons, session) = collect(&input);
+    assert_eq!(coverage, RecordCoverage::Partial);
+    assert_eq!(reasons, BTreeSet::from([PartialReason::MalformedRecord]));
+    assert_eq!(session.events.len(), 2);
 }
 
 #[test]
@@ -1337,6 +1437,12 @@ fn an_unresolved_parent_link_degrades_without_panicking_or_looping() {
             ..
         }
     ));
+}
+
+#[test]
+fn a_persisted_pi_tree_without_a_durable_leaf_denies_clean_results() {
+    let (evidence, _) = composite(&input("branched_tree"));
+    assert!(matches!(evidence.coverage, EvidenceCoverage::Partial(_)));
 }
 
 #[test]

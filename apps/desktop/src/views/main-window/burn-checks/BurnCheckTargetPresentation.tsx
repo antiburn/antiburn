@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react"
+import { ChevronDown, ChevronRight } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
@@ -16,7 +16,7 @@ export function DisclosureChevron({ open }: { open: boolean }) {
       size={14}
       strokeWidth={2}
       className={cn(
-        "text-label-tertiary transition-transform duration-[var(--duration-fast)]",
+        "text-label-tertiary transition-transform duration-[var(--duration-fast)] ease-out-quart",
         open && "rotate-180",
       )}
       aria-hidden="true"
@@ -25,7 +25,16 @@ export function DisclosureChevron({ open }: { open: boolean }) {
 }
 
 export function scopeLabel(scope: BurnCheckTargetPayload["display"]["scopeKind"]): string {
-  return `${scope.charAt(0).toUpperCase()}${scope.slice(1)} scope`
+  switch (scope) {
+    case "global":
+      return "Global configuration"
+    case "project":
+      return "Project configuration"
+    case "session":
+      return "Session scope"
+    case "worker":
+      return "Worker scope"
+  }
 }
 
 export function targetTitle(target: BurnCheckTargetPayload): string {
@@ -78,25 +87,57 @@ export function ActionLimit({ target }: { target: BurnCheckTargetPayload }) {
   return <p className="mt-2 type-callout text-label-tertiary">{reason}</p>
 }
 
-export function SampleSessions({ samples }: { samples: BurnCheckSamplePayload[] }) {
-  const [open, setOpen] = useState(false)
+export function SampleSessions({
+  samples,
+  affectedSessionCount,
+  insetRows = false,
+}: {
+  samples: BurnCheckSamplePayload[]
+  affectedSessionCount?: number
+  insetRows?: boolean
+}) {
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [busyHandle, setBusyHandle] = useState<string | null>(null)
   const id = useId()
   const displayedSamples = samples.slice(0, 3)
   if (displayedSamples.length === 0) return null
+  const open = manualOpen ?? displayedSamples.length === 1
   return (
-    <div className="mt-3">
+    <div className="burn-check-samples">
       <button
         type="button"
         aria-expanded={open}
         aria-controls={id}
-        onClick={() => setOpen((value) => !value)}
-        className="-mx-2 inline-flex items-center gap-1.5 rounded-control px-2 py-1 text-left type-callout font-semibold! text-label-secondary transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 hover:text-label active:transform-none active:opacity-100"
+        aria-describedby={
+          affectedSessionCount != null && affectedSessionCount >= displayedSamples.length
+            ? `${id}-summary`
+            : undefined
+        }
+        onClick={() => setManualOpen(!open)}
+        className="-mx-2 inline-flex min-h-10 items-center gap-1.5 rounded-control px-2 py-1 text-left type-callout font-semibold! text-label-secondary transition-colors duration-[var(--duration-fast)] ease-out-quart hover:text-label active:transform-none active:opacity-100"
       >
-        {displayedSamples.length} Sample sessions
+        <ChevronRight
+          size={12}
+          className={cn(
+            "transition-transform duration-[var(--duration-fast)] ease-out-quart",
+            open && "rotate-90",
+          )}
+          aria-hidden="true"
+        />
+        <span>{displayedSamples.length === 1 ? "Sample session" : "Sample sessions"}</span>{" "}
+        <span className="burn-check-group-count type-footnote tabular-nums text-label-tertiary">
+          {displayedSamples.length}
+        </span>
       </button>
-      <div id={id} hidden={!open} className="mt-1 space-y-1">
+      {affectedSessionCount != null && affectedSessionCount >= displayedSamples.length && (
+        <span id={`${id}-summary`} className="sr-only">
+          {displayedSamples.length} sample{" "}
+          {displayedSamples.length === 1 ? "session" : "sessions"} out of {affectedSessionCount}{" "}
+          affected.
+        </span>
+      )}
+      <div id={id} hidden={!open} className="mt-1 flex flex-col gap-1">
         {displayedSamples.map((sample) => (
           <SessionSampleRow
             key={sample.navigationHandle}
@@ -105,6 +146,8 @@ export function SampleSessions({ samples }: { samples: BurnCheckSamplePayload[] 
             surface={sample.surface}
             observedAtMs={sample.observedAtMs}
             busy={busyHandle !== null}
+            trailing="up-right"
+            appearance={insetRows ? "inset" : "card"}
             onOpen={async () => {
               if (busyHandle) return
               setBusyHandle(sample.navigationHandle)

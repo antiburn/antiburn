@@ -29,11 +29,10 @@ fn counter(store: &Store) -> u64 {
         .unwrap()
 }
 
-/// A database at the shipped v47 head with one session row, as an installed
-/// copy holds before v48 runs.
-fn v47_store_with_row(session_id: &str) -> Store {
+/// The database contains one session row at v48 before the v49 incarnation migration.
+fn v48_store_with_row(session_id: &str) -> Store {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..47] {
+    for &sql in &super::schema::MIGRATIONS[..48] {
         connection.execute_batch(sql).unwrap();
     }
     connection
@@ -46,12 +45,12 @@ fn v47_store_with_row(session_id: &str) -> Store {
             params![session_id, format!("/pre/{session_id}.jsonl")],
         )
         .unwrap();
-    connection.pragma_update(None, "user_version", 47).unwrap();
+    connection.pragma_update(None, "user_version", 48).unwrap();
     Store::from_connection(
         connection,
         Path::new("/tmp/antiburn-incarnation-migration-test").to_path_buf(),
     )
-    .expect("v48 migrates the shipped schema")
+    .expect("v49 migrates the v48 schema")
 }
 
 #[test]
@@ -303,9 +302,9 @@ fn a_clear_keeps_the_incarnation_counter() {
 
 #[test]
 fn pre_migration_rows_have_incarnation_zero_and_a_recreate_exceeds_it() {
-    let store = v47_store_with_row("upgraded");
+    let store = v48_store_with_row("upgraded");
     let key = SessionKey::new("native", "claude-code", "upgraded");
-    assert_eq!(store.schema_version().unwrap(), 48);
+    assert_eq!(store.schema_version().unwrap(), 49);
     assert_eq!(stored_incarnation(&store, &key), Some(0));
     assert_eq!(counter(&store), 0);
 

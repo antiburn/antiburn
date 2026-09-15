@@ -285,6 +285,7 @@ fn run_fixture(
         session_id: fixture.to_owned(),
         source: RawSource::Jsonl(jsonl.to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     run_fixture_and_replay(agent, fixture, &input, capabilities)
 }
@@ -685,6 +686,7 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 

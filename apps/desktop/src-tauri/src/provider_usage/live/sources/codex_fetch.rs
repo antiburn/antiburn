@@ -105,7 +105,8 @@ use time::OffsetDateTime;
 
 use crate::provider_usage::live::codex;
 use crate::provider_usage::live::model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, UsageSource,
+    Confidence, Detection, Freshness, LoginCarrier, Presence, ProviderUsageError,
+    ProviderUsageSnapshot, UsageSource,
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
@@ -113,7 +114,8 @@ use super::codex_app_server;
 use super::cooldown::{Cooldown, FetchFailure};
 use super::http;
 use super::pi_auth;
-use super::pi_refresh::{PiRefresher, Recovery};
+use super::pi_refresh::{PiRefresher, PiStatus, Recovery};
+use super::presence::{self, PresenceProbe, SystemPresenceProbe};
 
 /// `auth.json` is a small, purpose-built token store — cap the read
 /// defensively rather than trust that.
@@ -148,6 +150,54 @@ pub fn default_auth_path() -> Option<PathBuf> {
 /// reads out of it.
 fn default_sessions_root() -> Option<PathBuf> {
     Some(codex_home_dir()?.join("sessions"))
+}
+
+/// The CLI's own executable name on `PATH`.
+const BINARY: &str = "codex";
+
+/// Presence rules, in order: `auth.json` is a login; the shared Pi file is
+/// answered by `pi_status` — Pi's own verdict when the caller may ask,
+/// inconclusive otherwise; the Codex home directory or the binary is an
+/// install without a login; nothing is no install. The Codex CLI keeps no
+/// Keychain item, so the metadata path never spawns a process.
+fn detect_presence(
+    probe: &impl PresenceProbe,
+    auth_path: Option<&Path>,
+    pi_auth_path: Option<&Path>,
+    pi_status: impl FnOnce() -> PiStatus,
+) -> Presence {
+    let Some(auth_path) = auth_path else {
+        return Presence::UNKNOWN;
+    };
+    match presence::path_exists(probe, auth_path) {
+        Ok(true) => return Presence::via(Detection::SignedIn, LoginCarrier::CodexAuthFile),
+        Ok(false) => {}
+        Err(_) => return Presence::UNKNOWN,
+    }
+    if let Some(path) = pi_auth_path {
+        match presence::path_exists(probe, path) {
+            Ok(true) => {
+                return match pi_status() {
+                    PiStatus::Ready => Presence::via(Detection::SignedIn, LoginCarrier::Pi),
+                    PiStatus::NotReady => {
+                        Presence::via(Detection::InstalledNotSignedIn, LoginCarrier::Pi)
+                    }
+                    PiStatus::Unknown => Presence::via(Detection::Unknown, LoginCarrier::Pi),
+                };
+            }
+            Ok(false) => {}
+            Err(_) => return Presence::UNKNOWN,
+        }
+    }
+    let Some(home) = auth_path.parent() else {
+        return Presence::UNKNOWN;
+    };
+    match presence::path_exists(probe, home) {
+        Ok(true) => Presence::new(Detection::InstalledNotSignedIn),
+        Err(_) => Presence::UNKNOWN,
+        Ok(false) if probe.binary_present(BINARY) => Presence::new(Detection::InstalledNotSignedIn),
+        Ok(false) => Presence::new(Detection::NotInstalled),
+    }
 }
 
 /// What this source needs out of the CLI's own `auth.json`.
@@ -464,6 +514,21 @@ impl LiveUsageSource for CodexDirectFetch {
         true
     }
 
+    fn detect(&self, online: bool) -> Presence {
+        detect_presence(
+            &SystemPresenceProbe {
+                #[cfg(target_os = "macos")]
+                try_keychain: false,
+            },
+            self.auth_path.as_deref(),
+            self.pi_auth_path.as_deref(),
+            || match (online, self.pi_auth_path.as_deref()) {
+                (true, Some(path)) => self.pi_refresh.status(path, pi_auth::CODEX_KEY),
+                _ => PiStatus::Unknown,
+            },
+        )
+    }
+
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
         let now = OffsetDateTime::now_utc();
         // Read inside the cooldown gate so skipped polls do not touch disk.
@@ -534,6 +599,7 @@ impl LiveUsageSource for CodexDirectFetch {
                 Ok(snapshot) => Ok(snapshot),
                 Err(fallback_error) => Err(FetchFailure {
                     error: preferred_error(carrier_error, fallback_error),
+                    detail: None,
                     last_known: auth.as_ref().and_then(|auth| {
                         self.rollout_reading(now)
                             .map(|reading| Box::new(rollout_snapshot(reading, auth)))
@@ -761,10 +827,145 @@ fn build_snapshot(
 
 #[cfg(test)]
 mod tests {
+    use super::super::presence::RecordingPresence;
     use super::*;
+    use std::io;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use time::format_description::well_known::Rfc3339;
+
+    const PRESENCE_AUTH: &str = "/fixture/.codex/auth.json";
+    const PRESENCE_PI: &str = "/fixture/.pi/agent/auth.json";
+    const PRESENCE_HOME: &str = "/fixture/.codex";
+
+    fn presence(probe: &impl PresenceProbe) -> Presence {
+        detect_presence(
+            probe,
+            Some(Path::new(PRESENCE_AUTH)),
+            Some(Path::new(PRESENCE_PI)),
+            || PiStatus::Unknown,
+        )
+    }
+
+    fn detected(probe: &impl PresenceProbe) -> Detection {
+        presence(probe).detection
+    }
+
+    #[test]
+    fn detection_without_carriers_or_tool_uses_only_presence_calls() {
+        let probe = RecordingPresence::default();
+        assert_eq!(detected(&probe), Detection::NotInstalled);
+        assert_eq!(
+            *probe.calls.borrow(),
+            [
+                format!("path_exists:{PRESENCE_AUTH}"),
+                format!("path_exists:{PRESENCE_PI}"),
+                format!("path_exists:{PRESENCE_HOME}"),
+                "binary_present".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn detection_short_circuits_on_auth_file_metadata() {
+        let mut probe = RecordingPresence::default();
+        probe.paths.insert(PRESENCE_AUTH.into(), Ok(true));
+        assert_eq!(detected(&probe), Detection::SignedIn);
+        assert_eq!(
+            *probe.calls.borrow(),
+            [format!("path_exists:{PRESENCE_AUTH}")]
+        );
+    }
+
+    #[test]
+    fn detection_does_not_parse_a_malformed_auth_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(&path, "not valid JSON").unwrap();
+        assert_eq!(
+            CodexDirectFetch::at(path).detect(true),
+            Presence::via(Detection::SignedIn, LoginCarrier::CodexAuthFile)
+        );
+    }
+
+    #[test]
+    fn detection_of_the_shared_pi_file_is_inconclusive_but_names_pi() {
+        let mut probe = RecordingPresence::default();
+        probe.paths.insert(PRESENCE_PI.into(), Ok(true));
+        assert_eq!(
+            presence(&probe),
+            Presence::via(Detection::Unknown, LoginCarrier::Pi)
+        );
+        assert_eq!(probe.calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn online_detection_lets_pi_answer_for_its_codex_entry() {
+        use super::super::pi_refresh::RunOutcome;
+        for (store, outcome, expected) in [
+            (
+                r#"{"openai-codex":{}}"#,
+                RunOutcome::Completed,
+                Detection::SignedIn,
+            ),
+            (
+                r#"{"openai-codex":{}}"#,
+                RunOutcome::Rejected,
+                Detection::InstalledNotSignedIn,
+            ),
+            (
+                r#"{"anthropic":{}}"#,
+                RunOutcome::Completed,
+                Detection::InstalledNotSignedIn,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let pi = dir.path().join("auth.json");
+            fs::write(&pi, store).unwrap();
+            let source = CodexDirectFetch::with_paths(
+                Some(dir.path().join(".codex/auth.json")),
+                Some(pi),
+                Box::new(AlwaysFails),
+            )
+            .with_pi_refresh(PiRefresher::with_runner(Box::new(FakePiRunner {
+                outcome,
+                rewrite: None,
+            })));
+            assert_eq!(
+                source.detect(true),
+                Presence::via(expected, LoginCarrier::Pi)
+            );
+            assert_eq!(
+                source.detect(false),
+                Presence::via(Detection::Unknown, LoginCarrier::Pi)
+            );
+        }
+    }
+
+    #[test]
+    fn detection_accepts_the_home_directory_or_binary_without_a_login() {
+        let mut probe = RecordingPresence::default();
+        probe.paths.insert(PRESENCE_HOME.into(), Ok(true));
+        assert_eq!(detected(&probe), Detection::InstalledNotSignedIn);
+        assert!(!probe.calls.borrow().iter().any(|c| c == "binary_present"));
+
+        let probe = RecordingPresence {
+            binary: true,
+            ..Default::default()
+        };
+        assert_eq!(detected(&probe), Detection::InstalledNotSignedIn);
+    }
+
+    #[test]
+    fn detection_keeps_metadata_errors_unknown() {
+        for path in [PRESENCE_AUTH, PRESENCE_PI, PRESENCE_HOME] {
+            let mut probe = RecordingPresence::default();
+            probe
+                .paths
+                .insert(path.into(), Err(io::ErrorKind::PermissionDenied));
+            assert_eq!(detected(&probe), Detection::Unknown);
+        }
+    }
 
     const NOW: i64 = 1_800_000_000;
 
@@ -1271,6 +1472,9 @@ mod tests {
             }
             self.outcome
         }
+        fn check(&self, _provider_key: &str) -> super::super::pi_refresh::RunOutcome {
+            self.outcome
+        }
     }
 
     #[test]
@@ -1360,6 +1564,9 @@ mod tests {
         struct PanicRunner;
         impl super::super::pi_refresh::RefreshRunner for PanicRunner {
             fn run(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                panic!("a live Pi entry must never spawn the refresh")
+            }
+            fn check(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
                 panic!("a live Pi entry must never spawn the refresh")
             }
         }

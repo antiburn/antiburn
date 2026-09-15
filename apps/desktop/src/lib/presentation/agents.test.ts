@@ -17,7 +17,6 @@ describe("defaultAgentSurface", () => {
   })
 
   it("returns 'ide_desktop' for editor-only agents", () => {
-    expect(defaultAgentSurface("kiro")).toBe("ide_desktop")
     expect(defaultAgentSurface("windsurf")).toBe("ide_desktop")
   })
 
@@ -28,6 +27,7 @@ describe("defaultAgentSurface", () => {
     expect(defaultAgentSurface("cline")).toBe("unknown")
     expect(defaultAgentSurface("antigravity")).toBe("unknown")
     expect(defaultAgentSurface("cursor")).toBe("unknown")
+    expect(defaultAgentSurface("kiro")).toBe("unknown")
   })
 
   it("returns 'unknown' for unrecognised slugs", () => {
@@ -55,16 +55,18 @@ describe("agentDisplayName / agentIconName", () => {
 })
 
 describe("agentSupportsAnalysis", () => {
-  it("is true for the six functional session parsers", () => {
+  it("is true for the functional session parsers", () => {
     expect(agentSupportsAnalysis("claude-code")).toBe(true)
     expect(agentSupportsAnalysis("codex")).toBe(true)
     expect(agentSupportsAnalysis("cursor")).toBe(true)
     expect(agentSupportsAnalysis("opencode")).toBe(true)
     expect(agentSupportsAnalysis("antigravity")).toBe(true)
     expect(agentSupportsAnalysis("pi")).toBe(true)
+    expect(agentSupportsAnalysis("cline")).toBe(true)
+    expect(agentSupportsAnalysis("kiro")).toBe(true)
   })
 
-  it.each(["copilot", "cline", "kiro", "amp-code", "windsurf"])(
+  it.each(["copilot", "amp-code", "windsurf"])(
     "keeps %s registered without enabling session analysis",
     (slug) => {
       expect(AGENT_SLUGS).toContain(slug)

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-burn-check-snoozes"
+description = "Enables the list_burn_check_snoozes command without any pre-configured scope."
+commands.allow = ["list_burn_check_snoozes"]
+
+[[permission]]
+identifier = "deny-list-burn-check-snoozes"
+description = "Denies the list_burn_check_snoozes command without any pre-configured scope."
+commands.deny = ["list_burn_check_snoozes"]

@@ -8,6 +8,7 @@ import {
   type AutoFixReviewAnalyticsOutcome,
   type PromptPreparationAnalyticsOutcome,
 } from "../../../lib/ipc"
+import { writeClipboardText } from "../../../lib/clipboard"
 import {
   applyPreparedBurnCheckOperation,
   copyPromptFixBurnCheckTarget,
@@ -143,11 +144,13 @@ export function BurnCheckTargetActions({
   refresh,
   showPromptFix = true,
   embedded = false,
+  compact = false,
 }: {
   target: BurnCheckTargetPayload
   refresh: () => void
   showPromptFix?: boolean
   embedded?: boolean
+  compact?: boolean
 }) {
   const key = attemptKey(target)
   const [action, setAction] = useState(() => initialAction(key))
@@ -310,7 +313,7 @@ export function BurnCheckTargetActions({
     let prompt = action.prompt
     let acceptedWatchId = action.acceptedWatchId
     try {
-      if (!prompt) {
+      if (prompt === null) {
         const outcome = await copyPromptFixBurnCheckTarget(target.actionId)
         const completedWatchId =
           outcome?.outcome === "promptReady" ? outcome.watch.watchId : null
@@ -331,8 +334,7 @@ export function BurnCheckTargetActions({
         prompt = outcome.prompt
         acceptedWatchId = outcome.watch.watchId
       }
-      if (!navigator.clipboard) throw new Error("Clipboard unavailable")
-      await navigator.clipboard.writeText(prompt)
+      await writeClipboardText(prompt)
       if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
       noteInteraction({ kind: "burnCheckPromptCopied" })
       setAction((value) => ({
@@ -346,13 +348,17 @@ export function BurnCheckTargetActions({
       scheduleSuccessReset("copied", startedAttemptKey, acceptedWatchId)
       refresh()
     } catch {
-      if (!prompt) noteInteraction({ kind: "burnCheckPromptPrepared", outcome: "failed" })
+      const preparationFailed = prompt === null
+      if (preparationFailed)
+        noteInteraction({ kind: "burnCheckPromptPrepared", outcome: "failed" })
       if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
       setAction((value) => ({
         ...value,
         busy: null,
         prompt,
-        status: "Could not copy the prompt. Check clipboard access and try again.",
+        status: preparationFailed
+          ? "Could not prepare the prompt. Try again."
+          : "Could not copy the prompt. Try again.",
       }))
     }
   }
@@ -366,7 +372,7 @@ export function BurnCheckTargetActions({
       {hasAction && (
         <div
           ref={bindActionRoot}
-          className={`${embedded ? "" : "mt-3 "}flex flex-col items-center gap-2`}
+          className={`${embedded ? "" : "mt-3 "}flex ${compact ? "flex-row flex-wrap justify-end" : "flex-col items-center"} gap-2`}
         >
           {target.autoFix.status === "available" && (
             <button
@@ -374,7 +380,7 @@ export function BurnCheckTargetActions({
               type="button"
               disabled={action.applied || action.busy !== null}
               onClick={() => void prepare()}
-              className="ui-push-button burn-check-action type-callout gap-1 disabled:opacity-100"
+              className="burn-check-action type-callout gap-1 disabled:opacity-100"
             >
               {action.applied ? (
                 <Check size={12} className="text-token-in" aria-hidden="true" />
@@ -393,7 +399,7 @@ export function BurnCheckTargetActions({
               type="button"
               disabled={action.copied || action.busy !== null}
               onClick={() => void copy()}
-              className="ui-push-button burn-check-action mx-auto w-full max-w-sm type-callout gap-1 disabled:opacity-100"
+              className={`burn-check-action type-callout gap-1 disabled:opacity-100 ${compact ? "" : "mx-auto w-full max-w-sm"}`}
             >
               {action.copied ? (
                 <Check size={12} className="text-token-in" aria-hidden="true" />

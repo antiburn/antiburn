@@ -1862,6 +1862,8 @@ async fn describe_one_with_activity(
         session_id: session_id.clone(),
         environment: log.environment.clone(),
         source: log.source.clone(),
+        source_format: crate::analysis::source_format(log.agent_type, &log.source),
+        surface: log.surface_label(home).to_string(),
         updated_at_epoch: log.updated_at,
     };
     let source_fingerprint = Explorers::DISK

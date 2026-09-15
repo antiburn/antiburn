@@ -10,6 +10,7 @@
 //! around them belongs to the views — so these payloads carry values and facts,
 //! never labels.
 
+use crate::provider_usage::live::{Detection, LoginCarrier, SourceErrorDetail};
 use antiburn_local::analysis::{
     ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, ModelRun,
     ProviderIncidentKind, QuotaLimitKind, RepeatedContextAccounting, SessionCost, SessionEvidence,
@@ -653,6 +654,8 @@ pub struct InsightsReportPayload {
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
     pub finding: u64,
+    /// Agents with findings, or complete clean results when no finding exists.
+    pub agents: Vec<String>,
     pub clean: u64,
     pub unavailable: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
@@ -686,6 +689,23 @@ pub enum BurnCheckDetectorId {
     CacheChurn,
 }
 
+/// A reader-owned suppression for one entire burn check.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckSnoozePayload {
+    pub detector: BurnCheckDetectorId,
+    /// This release supports the whole check. The field reserves target scope.
+    pub scope: BurnCheckSnoozeScope,
+    /// Milliseconds since the Unix epoch. `None` means the reader chose forever.
+    pub until: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckSnoozeScope {
+    Check,
+}
+
 impl From<BurnCheckDetectorId> for DetectorId {
     fn from(value: BurnCheckDetectorId) -> Self {
         match value {
@@ -713,6 +733,7 @@ pub enum BurnCheckSourceFormat {
     CursorJsonl,
     CursorCliAgentJsonl,
     CursorCliStoreDb,
+    CursorChatStoreDb,
     CursorIdeComposer,
     CursorLegacyChatJson,
     AntigravityJson,
@@ -723,8 +744,12 @@ pub enum BurnCheckSourceFormat {
     CopilotCliJsonl,
     CopilotIdeChatJson,
     ClineSessionJson,
+    ClineMessagesContractV1,
     KiroSessionJson,
     KiroChat,
+    KiroCliV2Bundle,
+    KiroCliV3Bundle,
+    KiroChatSaveExport,
     AmpThreadJson,
     AmpFileChanges,
     WindsurfWorkspaceJson,
@@ -744,6 +769,7 @@ impl From<SourceFormat> for BurnCheckSourceFormat {
             SourceFormat::CursorJsonl => Self::CursorJsonl,
             SourceFormat::CursorCliAgentJsonl => Self::CursorCliAgentJsonl,
             SourceFormat::CursorCliStoreDb => Self::CursorCliStoreDb,
+            SourceFormat::CursorChatStoreDb => Self::CursorChatStoreDb,
             SourceFormat::CursorIdeComposer => Self::CursorIdeComposer,
             SourceFormat::CursorLegacyChatJson => Self::CursorLegacyChatJson,
             SourceFormat::AntigravityJson => Self::AntigravityJson,
@@ -754,8 +780,12 @@ impl From<SourceFormat> for BurnCheckSourceFormat {
             SourceFormat::CopilotCliJsonl => Self::CopilotCliJsonl,
             SourceFormat::CopilotIdeChatJson => Self::CopilotIdeChatJson,
             SourceFormat::ClineSessionJson => Self::ClineSessionJson,
+            SourceFormat::ClineMessagesContractV1 => Self::ClineMessagesContractV1,
             SourceFormat::KiroSessionJson => Self::KiroSessionJson,
             SourceFormat::KiroChat => Self::KiroChat,
+            SourceFormat::KiroCliV2Bundle => Self::KiroCliV2Bundle,
+            SourceFormat::KiroCliV3Bundle => Self::KiroCliV3Bundle,
+            SourceFormat::KiroChatSaveExport => Self::KiroChatSaveExport,
             SourceFormat::AmpThreadJson => Self::AmpThreadJson,
             SourceFormat::AmpFileChanges => Self::AmpFileChanges,
             SourceFormat::WindsurfWorkspaceJson => Self::WindsurfWorkspaceJson,
@@ -1019,6 +1049,9 @@ pub struct BurnCheckTargetPayload {
     pub finding: BurnCheckFindingPayload,
     pub display: BurnCheckDisplayFactsPayload,
     pub occurrence_count: u64,
+    pub affected_session_count: u64,
+    pub project_name: Option<String>,
+    pub project_location: Option<String>,
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
@@ -1086,8 +1119,10 @@ pub struct AutoFixReviewPayload {
     pub scope: BurnCheckScopeKind,
     pub setting: AutoFixSetting,
     pub config_file: String,
+    pub selector_label: String,
     pub current_value: String,
     pub proposed_value: String,
+    pub behavior_override_warning: bool,
     pub effect: AutoFixEffect,
     pub side_effect: AutoFixSideEffect,
 }
@@ -1097,13 +1132,25 @@ pub struct AutoFixReviewPayload {
 pub enum AutoFixSetting {
     Model,
     Reasoning,
+    Compaction,
+    SubagentModel,
+    McpServer,
+    BuiltInTool,
+    Skill,
+    FastMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AutoFixEffect {
-    FutureModelSelection,
-    FutureReasoningEffort,
+    ModelSelection,
+    ReasoningEffort,
+    SessionCompaction,
+    WorkerModelSelection,
+    McpAvailability,
+    ToolAvailability,
+    SkillAvailability,
+    ServiceTierSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1111,6 +1158,12 @@ pub enum AutoFixEffect {
 pub enum AutoFixSideEffect {
     ModelBehaviorMayChange,
     ResponsesMayUseLessReasoning,
+    EarlierSessionSummarization,
+    WorkerBehaviorMayChange,
+    ServerWillNotBeAvailable,
+    ToolWillNotBeAvailable,
+    SkillWillNotBeAvailable,
+    ResponsesMayTakeLonger,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1168,6 +1221,7 @@ pub enum PromptFixUnavailableReason {
     TargetNotFound,
     PromptSizeLimit,
     EssentialIdentityUnavailable,
+    ProtectedBuiltInTool,
     DeferredAgent,
     UnsupportedSourceFormat,
     CheckUnsupportedForAgent,
@@ -1628,6 +1682,7 @@ impl From<antiburn_local::remediation::RemediationUnavailableReason>
             RemediationUnavailableReason::EssentialIdentityUnavailable => {
                 Self::EssentialIdentityUnavailable
             }
+            RemediationUnavailableReason::ProtectedBuiltInTool => Self::ProtectedBuiltInTool,
             RemediationUnavailableReason::DeferredAgent => Self::DeferredAgent,
             RemediationUnavailableReason::UnsupportedSourceFormat => Self::UnsupportedSourceFormat,
             RemediationUnavailableReason::CheckUnsupportedForAgent => {
@@ -1910,6 +1965,9 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             },
             display: value.display.into(),
             occurrence_count: u64::try_from(value.occurrences).unwrap_or(u64::MAX),
+            affected_session_count: u64::try_from(value.affected_sessions).unwrap_or(u64::MAX),
+            project_name: value.project_name,
+            project_location: value.project_location,
             auto_fix: match value.auto_fix {
                 crate::remediation::AutoFixAvailability::Available => {
                     AutoFixAvailabilityPayload::Available
@@ -1956,16 +2014,40 @@ impl From<crate::remediation::AutoFixReview> for AutoFixReviewPayload {
             setting: match value.setting {
                 crate::remediation::AutoFixSetting::Model => AutoFixSetting::Model,
                 crate::remediation::AutoFixSetting::Reasoning => AutoFixSetting::Reasoning,
+                crate::remediation::AutoFixSetting::Compaction => AutoFixSetting::Compaction,
+                crate::remediation::AutoFixSetting::SubagentModel => AutoFixSetting::SubagentModel,
+                crate::remediation::AutoFixSetting::McpServer => AutoFixSetting::McpServer,
+                crate::remediation::AutoFixSetting::BuiltInTool => AutoFixSetting::BuiltInTool,
+                crate::remediation::AutoFixSetting::Skill => AutoFixSetting::Skill,
+                crate::remediation::AutoFixSetting::FastMode => AutoFixSetting::FastMode,
             },
             config_file: value.config_file,
+            selector_label: value.selector_label,
             current_value: value.current_value,
             proposed_value: value.proposed_value,
+            behavior_override_warning: value.behavior_override_warning,
             effect: match value.effect {
-                crate::remediation::AutoFixEffect::FutureModelSelection => {
-                    AutoFixEffect::FutureModelSelection
+                crate::remediation::AutoFixEffect::ModelSelection => AutoFixEffect::ModelSelection,
+                crate::remediation::AutoFixEffect::ReasoningEffort => {
+                    AutoFixEffect::ReasoningEffort
                 }
-                crate::remediation::AutoFixEffect::FutureReasoningEffort => {
-                    AutoFixEffect::FutureReasoningEffort
+                crate::remediation::AutoFixEffect::SessionCompaction => {
+                    AutoFixEffect::SessionCompaction
+                }
+                crate::remediation::AutoFixEffect::WorkerModelSelection => {
+                    AutoFixEffect::WorkerModelSelection
+                }
+                crate::remediation::AutoFixEffect::McpAvailability => {
+                    AutoFixEffect::McpAvailability
+                }
+                crate::remediation::AutoFixEffect::ToolAvailability => {
+                    AutoFixEffect::ToolAvailability
+                }
+                crate::remediation::AutoFixEffect::SkillAvailability => {
+                    AutoFixEffect::SkillAvailability
+                }
+                crate::remediation::AutoFixEffect::ServiceTierSelection => {
+                    AutoFixEffect::ServiceTierSelection
                 }
             },
             side_effect: match value.side_effect {
@@ -1974,6 +2056,24 @@ impl From<crate::remediation::AutoFixReview> for AutoFixReviewPayload {
                 }
                 crate::remediation::AutoFixSideEffect::ResponsesMayUseLessReasoning => {
                     AutoFixSideEffect::ResponsesMayUseLessReasoning
+                }
+                crate::remediation::AutoFixSideEffect::EarlierSessionSummarization => {
+                    AutoFixSideEffect::EarlierSessionSummarization
+                }
+                crate::remediation::AutoFixSideEffect::WorkerBehaviorMayChange => {
+                    AutoFixSideEffect::WorkerBehaviorMayChange
+                }
+                crate::remediation::AutoFixSideEffect::ServerWillNotBeAvailable => {
+                    AutoFixSideEffect::ServerWillNotBeAvailable
+                }
+                crate::remediation::AutoFixSideEffect::ToolWillNotBeAvailable => {
+                    AutoFixSideEffect::ToolWillNotBeAvailable
+                }
+                crate::remediation::AutoFixSideEffect::SkillWillNotBeAvailable => {
+                    AutoFixSideEffect::SkillWillNotBeAvailable
+                }
+                crate::remediation::AutoFixSideEffect::ResponsesMayTakeLonger => {
+                    AutoFixSideEffect::ResponsesMayTakeLonger
                 }
             },
         }
@@ -2180,6 +2280,14 @@ impl ChecksReportPayload {
                 ChecksCategoryPayload {
                     id: id.into(),
                     finding: counts.finding,
+                    agents: if counts.finding > 0 {
+                        &report.finding_agents[id.index()]
+                    } else {
+                        &report.clean_agents[id.index()]
+                    }
+                    .iter()
+                    .cloned()
+                    .collect(),
                     clean: counts.clean,
                     unavailable: counts.unavailable,
                     estimated_token_burn_basis_points: report
@@ -2413,6 +2521,8 @@ pub struct LiveUsageSourceError {
     pub display_name: String,
     /// `authentication`, `rateLimited`, `schema`, or `unavailable`.
     pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<SourceErrorDetail>,
 }
 
 /// One provider antiburn can meter, and whether the reader shows it.
@@ -2429,6 +2539,15 @@ pub struct LiveUsageMeter {
     pub display_name: String,
     /// False when the reader turned this meter off.
     pub shown: bool,
+    #[serde(default)]
+    pub detection: Detection,
+    /// Where the login was found, when a carrier was. Kept through the
+    /// `signedIn` upgrade so the note can name the tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier: Option<LoginCarrier>,
+    /// `carrier`'s display name, so the views never restate the enum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier_label: Option<String>,
 }
 
 /// Live provider usage, as one snapshot.
@@ -2459,6 +2578,74 @@ pub struct LiveUsageSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_live_errors_round_trip_without_a_detail_field() {
+        let json = serde_json::json!({
+            "source": "fixture", "provider": "anthropic", "displayName": "Claude", "category": "unavailable"
+        });
+        let error: LiveUsageSourceError = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(error.detail, None);
+        assert_eq!(serde_json::to_value(error).unwrap(), json);
+    }
+
+    #[test]
+    fn live_error_details_use_closed_camel_case_values() {
+        for (detail, wire, provider, category) in [
+            (
+                SourceErrorDetail::KeychainUnreadable,
+                "keychainUnreadable",
+                "anthropic",
+                "unavailable",
+            ),
+            (
+                SourceErrorDetail::RefreshUnsupported,
+                "refreshUnsupported",
+                "google",
+                "authentication",
+            ),
+        ] {
+            let json = serde_json::json!({
+                "source": "fixture", "provider": provider, "displayName": "Fixture",
+                "category": category, "detail": wire
+            });
+            let error: LiveUsageSourceError = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(error.detail, Some(detail));
+            assert_eq!(serde_json::to_value(error).unwrap(), json);
+        }
+    }
+
+    #[test]
+    fn a_legacy_live_meter_round_trips_with_unknown_detection() {
+        let meter: LiveUsageMeter = serde_json::from_value(serde_json::json!({
+            "provider": "anthropic", "displayName": "Claude", "shown": true
+        }))
+        .unwrap();
+        assert_eq!(meter.detection, Detection::Unknown);
+        let json = serde_json::to_value(&meter).unwrap();
+        assert_eq!(json["detection"], "unknown");
+        assert_eq!(
+            serde_json::from_value::<LiveUsageMeter>(json).unwrap(),
+            meter
+        );
+    }
+
+    #[test]
+    fn live_detection_uses_camel_case_wire_values() {
+        for (detection, wire) in [
+            (Detection::Unknown, "unknown"),
+            (Detection::NotInstalled, "notInstalled"),
+            (Detection::InstalledNotSignedIn, "installedNotSignedIn"),
+            (Detection::SignedIn, "signedIn"),
+        ] {
+            let json = serde_json::to_value(detection).unwrap();
+            assert_eq!(json, wire);
+            assert_eq!(
+                serde_json::from_value::<Detection>(json).unwrap(),
+                detection
+            );
+        }
+    }
 
     mod insights {
         use std::collections::{BTreeMap, BTreeSet};
@@ -2639,6 +2826,9 @@ mod tests {
         #[test]
         fn checks_report_serializes_only_display_fields() {
             let mut report = report();
+            report.finding_agents[0].extend(["codex".to_owned(), "claude-code".to_owned()]);
+            report.clean_agents[0].insert("cursor".to_owned());
+            report.clean_agents[1].insert("opencode".to_owned());
             report.estimated_token_burn_basis_points = Some(1_625);
             report.detector_estimated_token_burn_basis_points[0] = Some(500);
             report.detector_statuses[0] = DetectorStatus::Findings(DetectorFindings {
@@ -2659,6 +2849,14 @@ mod tests {
 
             let value =
                 serde_json::to_value(ChecksReportPayload::from_report(&report, true, 0)).unwrap();
+            assert_eq!(
+                value["categories"][0]["agents"],
+                serde_json::json!(["claude-code", "codex"])
+            );
+            assert_eq!(
+                value["categories"][1]["agents"],
+                serde_json::json!(["opencode"])
+            );
             assert!(value["categories"][0].get("examples").is_none());
             assert!(value.get("coverage").is_none());
             assert!(value.get("quotaPressure").is_none());
@@ -2696,6 +2894,7 @@ mod tests {
             assert_eq!(
                 category_keys,
                 [
+                    "agents",
                     "clean",
                     "estimatedTokenBurnBasisPoints",
                     "finding",
@@ -2892,9 +3091,11 @@ mod tests {
                 scope: BurnCheckScopeKind::Project,
                 setting: AutoFixSetting::Model,
                 config_file: "~/.claude/settings.json".into(),
+                selector_label: "model".into(),
                 current_value: "old-model".into(),
                 proposed_value: "new-model".into(),
-                effect: AutoFixEffect::FutureModelSelection,
+                behavior_override_warning: false,
+                effect: AutoFixEffect::ModelSelection,
                 side_effect: AutoFixSideEffect::ModelBehaviorMayChange,
             })
             .unwrap();
@@ -2909,13 +3110,58 @@ mod tests {
                 "reasoning"
             );
             assert_eq!(
-                serde_json::to_value(AutoFixEffect::FutureReasoningEffort).unwrap(),
-                "futureReasoningEffort"
+                serde_json::to_value(AutoFixEffect::ReasoningEffort).unwrap(),
+                "reasoningEffort"
             );
             assert_eq!(
                 serde_json::to_value(AutoFixSideEffect::ResponsesMayUseLessReasoning).unwrap(),
                 "responsesMayUseLessReasoning"
             );
+        }
+
+        #[test]
+        fn auto_fix_review_vocabulary_is_exhaustive_and_serialized() {
+            let settings = [
+                AutoFixSetting::Model,
+                AutoFixSetting::Reasoning,
+                AutoFixSetting::Compaction,
+                AutoFixSetting::SubagentModel,
+                AutoFixSetting::McpServer,
+                AutoFixSetting::BuiltInTool,
+                AutoFixSetting::Skill,
+                AutoFixSetting::FastMode,
+            ];
+            let effects = [
+                AutoFixEffect::ModelSelection,
+                AutoFixEffect::ReasoningEffort,
+                AutoFixEffect::SessionCompaction,
+                AutoFixEffect::WorkerModelSelection,
+                AutoFixEffect::McpAvailability,
+                AutoFixEffect::ToolAvailability,
+                AutoFixEffect::SkillAvailability,
+                AutoFixEffect::ServiceTierSelection,
+            ];
+            let side_effects = [
+                AutoFixSideEffect::ModelBehaviorMayChange,
+                AutoFixSideEffect::ResponsesMayUseLessReasoning,
+                AutoFixSideEffect::EarlierSessionSummarization,
+                AutoFixSideEffect::WorkerBehaviorMayChange,
+                AutoFixSideEffect::ServerWillNotBeAvailable,
+                AutoFixSideEffect::ToolWillNotBeAvailable,
+                AutoFixSideEffect::SkillWillNotBeAvailable,
+                AutoFixSideEffect::ResponsesMayTakeLonger,
+            ];
+            assert_eq!(settings.len(), effects.len());
+            assert_eq!(settings.len(), side_effects.len());
+            for value in settings {
+                assert!(serde_json::to_value(value).unwrap().is_string());
+            }
+            for value in effects {
+                assert!(serde_json::to_value(value).unwrap().is_string());
+            }
+            for value in side_effects {
+                assert!(serde_json::to_value(value).unwrap().is_string());
+            }
         }
 
         #[test]

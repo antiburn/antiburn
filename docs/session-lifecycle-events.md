@@ -33,6 +33,14 @@ Tauri events -> webviews
   blocking pool, coalesced and bounded) and is the only Tauri emitter for
   session events.
 
+## Store migration order
+
+V48 retains the typed remediation attribution fields in `session_evidence`.
+V49 adds the session `incarnation`, the increasing `session_incarnation_seq`
+counter, and the `session_recency_keyset` index. Existing session rows receive
+incarnation zero. Updates keep the incarnation; deleting and recreating a
+session assigns a higher value. Clearing local session data keeps the counter.
+
 ## Lifecycle state machine
 
 ```text

@@ -1,4 +1,4 @@
-import { cn } from "../../lib/cn"
+import { CollectionToolbar } from "./CollectionToolbar"
 import { SegmentedControl, type SegmentedOption } from "./SegmentedControl"
 
 export function ListDisplayToolbar<T extends string>({
@@ -19,14 +19,11 @@ export function ListDisplayToolbar<T extends string>({
   className?: string
 }) {
   return (
-    <div
-      data-list-display-toolbar=""
-      data-tauri-drag-region={dragRegion ? "deep" : undefined}
-      className={cn(
-        "mb-1 flex h-8 shrink-0 items-center px-3",
-        label ? "justify-between" : "justify-end",
-        className,
-      )}
+    <CollectionToolbar
+      dragRegion={dragRegion}
+      className={[label ? "justify-between" : "justify-end", className]
+        .filter(Boolean)
+        .join(" ")}
     >
       {label && <span className="type-caption font-medium text-label-tertiary">{label}</span>}
       <SegmentedControl
@@ -37,6 +34,6 @@ export function ListDisplayToolbar<T extends string>({
         className="normal-case"
         variant="text-tabs"
       />
-    </div>
+    </CollectionToolbar>
   )
 }

@@ -874,14 +874,16 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
 /**
  * The last provider limit snapshot. This command does not contact a provider.
  */
-export async function getLiveUsage(): Promise<LiveUsageSummaryPayload> {
+export async function getLiveUsage(
+  utcOffsetMinutes = -new Date().getTimezoneOffset(),
+): Promise<LiveUsageSummaryPayload> {
   if (!hasShell()) return EMPTY_LIVE_USAGE
   // Coerced rather than passed through: a shell that answered with nothing is
   // the same fact as a shell with no source, and the views should not each
   // carry a null branch for a state that has a perfectly good empty value.
   return (
     (await invoke<LiveUsageSummaryPayload | null>("get_live_usage", {
-      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+      utcOffsetMinutes,
     })) ?? EMPTY_LIVE_USAGE
   )
 }

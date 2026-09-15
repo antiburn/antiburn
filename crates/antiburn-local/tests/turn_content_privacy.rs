@@ -117,6 +117,7 @@ fn run_pipeline(
         session_id: session_id.to_string(),
         source,
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
 
     // The normalized model never carries message text.

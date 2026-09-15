@@ -22,11 +22,8 @@ impl SessionReader for CursorSessionReader {
         "cursor"
     }
 
-    fn capabilities(
-        &self,
-        source: &crate::analysis::RawSource,
-    ) -> crate::analysis::SourceCapabilities {
-        cursor_capabilities(source)
+    fn capabilities(&self, input: &SessionInput) -> crate::analysis::SourceCapabilities {
+        cursor_capabilities(input)
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -54,6 +51,10 @@ impl SessionReader for CursorSessionReader {
             }
             RawSource::Sqlite(_) => {
                 anyhow::bail!("Cursor SQLite input requires a synthesized transcript")
+            }
+            RawSource::ClineBundle { .. } => anyhow::bail!("Cline bundle is not a Cursor source"),
+            RawSource::KiroCliV2Bundle { .. } => {
+                anyhow::bail!("Kiro bundle is not a Cursor source")
             }
         };
         sink.finish(summary);
@@ -98,25 +99,10 @@ impl SessionReader for CursorSessionReader {
     }
 }
 
-fn cursor_capabilities(source: &RawSource) -> crate::analysis::SourceCapabilities {
+fn cursor_capabilities(input: &SessionInput) -> crate::analysis::SourceCapabilities {
     use crate::analysis::{SourceCapabilities, SourceFormat};
 
-    let format = match source {
-        RawSource::Sqlite(_) => SourceFormat::CursorCliStoreDb,
-        RawSource::File(path)
-            if path.extension().and_then(|value| value.to_str()) == Some("json") =>
-        {
-            SourceFormat::CursorLegacyChatJson
-        }
-        RawSource::File(_) => SourceFormat::CursorCliAgentJsonl,
-        RawSource::Jsonl(content) => content
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .filter(|line| line.len() <= crate::analysis::framing::MAX_RECORD_BYTES)
-            .and_then(|line| serde_json::from_str::<Value>(line).ok())
-            .and_then(|value| cursor_source_format(&value))
-            .unwrap_or(SourceFormat::CursorJsonl),
-    };
+    let format = input.source_format_or(SourceFormat::CursorJsonl);
     if matches!(format, SourceFormat::CursorLegacyChatJson) {
         SourceCapabilities::uncharacterized(format)
     } else {
@@ -124,19 +110,6 @@ fn cursor_capabilities(source: &RawSource) -> crate::analysis::SourceCapabilitie
             source_format: format,
             ..SourceCapabilities::cursor()
         }
-    }
-}
-
-fn cursor_source_format(value: &Value) -> Option<crate::analysis::SourceFormat> {
-    use crate::analysis::SourceFormat;
-    if value.get("role").is_some() || value.get("message").is_some() {
-        return None;
-    }
-    match value.get("cursor_source").and_then(Value::as_str)? {
-        "desktop_state_vscdb" => Some(SourceFormat::CursorIdeComposer),
-        "store_db" => Some(SourceFormat::CursorCliStoreDb),
-        "agent_transcript" => Some(SourceFormat::CursorCliAgentJsonl),
-        _ => None,
     }
 }
 
@@ -162,7 +135,7 @@ fn visit_cursor_reader(
                 if session_model.is_none() {
                     session_model = model_from(&value).map(str::to_owned);
                 }
-                if cursor_source_format(&value).is_some() {
+                if is_cursor_metadata(&value) {
                     header_model = model_from(&value).map(str::to_owned);
                     continue;
                 }
@@ -204,6 +177,10 @@ fn visit_cursor_reader(
             .collect(),
         ..SessionSummary::default()
     })
+}
+
+fn is_cursor_metadata(value: &Value) -> bool {
+    value.get("cursor_source").and_then(Value::as_str).is_some()
 }
 
 fn cursor_record_id(value: &Value) -> Option<&str> {

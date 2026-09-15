@@ -170,6 +170,7 @@ pub struct LiveUsage {
     ledger: std::sync::Mutex<provider_usage::live::MilestoneLedger>,
     summarizing: std::sync::Mutex<()>,
     snapshot: std::sync::Mutex<LiveUsageSummary>,
+    last_detection: std::sync::Mutex<provider_usage::live::DetectionMap>,
     utc_offset_minutes: std::sync::Mutex<i32>,
 }
 
@@ -180,6 +181,7 @@ impl LiveUsage {
             ledger: std::sync::Mutex::default(),
             summarizing: std::sync::Mutex::default(),
             snapshot: std::sync::Mutex::default(),
+            last_detection: std::sync::Mutex::default(),
             utc_offset_minutes: std::sync::Mutex::default(),
         }
     }
@@ -211,6 +213,21 @@ impl LiveUsage {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Return cached detection without reading provider metadata.
+    pub fn detection_snapshot(&self) -> provider_usage::live::DetectionMap {
+        self.last_detection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn store_detection(&self, map: provider_usage::live::DetectionMap) {
+        *self
+            .last_detection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = map;
     }
 
     /// Replace and persist the snapshot produced by one complete refresh.
@@ -353,6 +370,8 @@ pub(crate) fn refresh_publish_and_evaluate(
         .map(|settings| &settings.live_usage_hidden_providers)
         .cloned()
         .unwrap_or_default();
+    let detection = provider_usage::live::detect_all(&live.sources, online);
+    live.store_detection(detection.clone());
     let collected = provider_usage::live::sources::collect(&live.sources, online, &hidden, max_age);
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
         collected.snapshots.iter().map(milestone_snapshot).collect();
@@ -363,7 +382,7 @@ pub(crate) fn refresh_publish_and_evaluate(
     crate::analytics::record_usage_observed(app, &collected.snapshots);
     let summary = provider_usage::live::summarize_collected(
         collected,
-        provider_usage::live::roster(&live.sources, &hidden),
+        provider_usage::live::roster(&live.sources, &hidden, &detection),
         store.as_deref(),
         Some(app),
         now,
@@ -619,6 +638,42 @@ mod tests {
     }
 
     #[test]
+    fn an_inactive_roster_uses_cached_detection() {
+        use provider_usage::live::{Detection, DetectionMap, LoginCarrier, Presence, roster};
+
+        let live = LiveUsage::new();
+        assert!(live.detection_snapshot().is_empty());
+        let detection = DetectionMap::from([
+            (
+                "anthropic".into(),
+                Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain),
+            ),
+            (
+                "google".into(),
+                Presence::new(Detection::InstalledNotSignedIn),
+            ),
+        ]);
+        live.store_detection(detection.clone());
+        let mut detached = live.detection_snapshot();
+        detached.clear();
+        assert_eq!(live.detection_snapshot(), detection);
+
+        let meters = roster(
+            &live.sources,
+            &crate::store::HiddenMeters::parse("anthropic"),
+            &live.detection_snapshot(),
+        );
+        for meter in meters {
+            let presence = detection.get(&meter.provider).copied().unwrap_or_default();
+            assert_eq!(meter.detection, presence.detection);
+            assert_eq!(meter.carrier, presence.carrier);
+            assert_eq!(meter.shown, meter.provider != "anthropic");
+        }
+        live.store_detection(DetectionMap::default());
+        assert!(live.detection_snapshot().is_empty());
+    }
+
+    #[test]
     fn the_latest_live_usage_snapshot_survives_a_restart() {
         let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-live-usage-cache"))
             .expect("in-memory store");
@@ -644,6 +699,7 @@ mod tests {
                 provider: "openai".into(),
                 display_name: "Codex".into(),
                 category: "unavailable".into(),
+                detail: None,
             }],
             generated_at: "2026-08-20T00:00:00Z".into(),
         };

@@ -55,6 +55,7 @@ mod cooldown;
 pub(crate) mod http;
 mod pi_auth;
 mod pi_refresh;
+mod presence;
 
 use std::time::Duration;
 
@@ -123,6 +124,7 @@ pub fn collect(
                 source: source.id(),
                 provider: source.provider(),
                 error,
+                detail: outcome.detail,
             });
         }
         for snapshot in outcome.snapshots {
@@ -153,6 +155,7 @@ pub struct SourceFailure {
     /// The canonical provider id the source answers for.
     pub provider: &'static str,
     pub error: super::model::ProviderUsageError,
+    pub detail: Option<super::model::SourceErrorDetail>,
 }
 
 impl Collected {

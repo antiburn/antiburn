@@ -276,7 +276,7 @@ function ProviderGroup({
   const plan = livePlanAccountLabel(provider, accountCount)
   const graceNote =
     status.kind === "grace"
-      ? liveGraceNote(status.category, provider.provider, status.ageMs)
+      ? liveGraceNote(status.category, provider.provider, status.ageMs, status.detail)
       : null
   return (
     <div
@@ -342,7 +342,7 @@ function ProviderRadial({
   const figure = roundedPercent == null ? "no stated figure" : `${roundedPercent}% used`
   const graceNote =
     status.kind === "grace"
-      ? liveGraceNote(status.category, provider.provider, status.ageMs)
+      ? liveGraceNote(status.category, provider.provider, status.ageMs, status.detail)
       : null
   const baseLabel = `${displayName}${
     roundedPercent != null ? ` at ${roundedPercent} percent` : ", no stated figure"
@@ -423,7 +423,7 @@ function ProviderRadial({
  * part a glance needs.
  */
 function UnavailableRadial({ entry }: { entry: UnavailableLiveProvider }) {
-  const reason = liveUnavailableReason(entry.category)
+  const reason = liveUnavailableReason(entry.category, entry.detail)
   return (
     <div
       data-testid="usage-limits-unavailable"
@@ -462,7 +462,7 @@ function UnavailableGroup({
       className="flex items-center justify-between gap-2 rounded-md px-2 py-2"
     >
       <p className="type-footnote text-label-secondary">
-        {liveErrorNote(entry.category, entry.provider)}
+        {liveErrorNote(entry.category, entry.provider, entry.detail)}
       </p>
       {action}
     </div>

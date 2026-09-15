@@ -131,6 +131,7 @@ fn input(name: &str) -> SessionInput {
         session_id: name.to_owned(),
         source: RawSource::Jsonl(fixture(name).to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -184,6 +185,7 @@ fn provider_input(records: Vec<Value>) -> SessionInput {
                 .collect(),
         ),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -356,6 +358,7 @@ fn persisted_resource_exposure_keeps_exact_names_and_private_documents_out_of_ev
             include_str!("fixtures/codex_characterization/resource_exposure.jsonl").to_owned(),
         ),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let (evidence, _) = composite(&input);
     let persisted = serde_json::to_string(&evidence).unwrap();
@@ -717,18 +720,16 @@ fn codex_capabilities_match_published_evidence() {
 
 #[test]
 fn claude_capabilities_still_match_published_evidence() {
-    let input = SessionInput {
-        agent: "claude".to_owned(),
-        session_id: "claude-contract".to_owned(),
-        source: RawSource::Jsonl(
-            concat!(
-                r#"{"type":"assistant","uuid":"record-1","timestamp":"2026-08-01T10:00:00Z","message":{"id":"message-1","role":"assistant","model":"claude-test","usage":{"input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":3},"content":[]}}"#,
-                "\n"
-            )
-            .to_owned(),
-        ),
-        fork_parent_session_id: None,
-    };
+    let input = SessionInput { agent: "claude".to_owned(),
+    session_id: "claude-contract".to_owned(),
+    source: RawSource::Jsonl(
+        concat!(
+            r#"{"type":"assistant","uuid":"record-1","timestamp":"2026-08-01T10:00:00Z","message":{"id":"message-1","role":"assistant","model":"claude-test","usage":{"input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":3},"content":[]}}"#,
+            "\n"
+        )
+        .to_owned(),
+    ),
+    fork_parent_session_id: None, source_format: Default::default() };
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
@@ -899,22 +900,20 @@ fn streaming_metrics_equal_the_shipped_batch_for_every_fixture() {
 
 #[test]
 fn missing_event_timestamp_is_unusable_and_not_counted() {
-    let input = SessionInput {
-        agent: "codex".to_owned(),
-        session_id: "missing-event-timestamp".to_owned(),
-        source: RawSource::Jsonl(
-            concat!(
-                r#"{"timestamp":"2026-08-09T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-missing-timestamp","timestamp":"2026-08-09T10:00:00Z","source":"cli"}}"#,
-                "\n",
-                r#"{"timestamp":"2026-08-09T10:00:01Z","type":"turn_context","payload":{"model":"gpt-test","effort":"low"}}"#,
-                "\n",
-                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":20,"total_tokens":320},"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":20,"total_tokens":320},"model_context_window":100000}}}"#,
-                "\n"
-            )
-            .to_owned(),
-        ),
-        fork_parent_session_id: None,
-    };
+    let input = SessionInput { agent: "codex".to_owned(),
+    session_id: "missing-event-timestamp".to_owned(),
+    source: RawSource::Jsonl(
+        concat!(
+            r#"{"timestamp":"2026-08-09T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-missing-timestamp","timestamp":"2026-08-09T10:00:00Z","source":"cli"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-09T10:00:01Z","type":"turn_context","payload":{"model":"gpt-test","effort":"low"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":20,"total_tokens":320},"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":20,"total_tokens":320},"model_context_window":100000}}}"#,
+            "\n"
+        )
+        .to_owned(),
+    ),
+    fork_parent_session_id: None, source_format: Default::default() };
     let (coverage, reasons, streamed) = collect(&input);
     let (_, metrics) = composite(&input);
 
@@ -949,6 +948,7 @@ fn incomplete_active_writer_tail_is_partial_and_keeps_the_valid_prefix() {
         session_id: "active".to_owned(),
         source: RawSource::File(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let (coverage, reasons, session) = collect(&input);
     let (evidence, _) = composite(&input);
@@ -993,6 +993,7 @@ fn claimed_codex_source_rejects_a_change_instead_of_publishing() {
         session_id: "changed".to_owned(),
         source: RawSource::File(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut collector = SessionCollector::new("codex", "changed");
     let outcome = reader_for("codex")
@@ -1209,6 +1210,7 @@ fn quota_incidents_cap_at_the_bound_and_flag_the_overflow() {
         session_id: "quota-incidents-cap".to_owned(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let (evidence, _) = composite(&input);
 
@@ -1257,6 +1259,7 @@ fn provider_incidents_cap_at_the_bound_and_flag_the_overflow() {
         session_id: "provider-incidents-cap".to_owned(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let (evidence, _) = composite(&input);
 
@@ -1282,6 +1285,7 @@ fn collab_agent_records_are_allowlisted_and_add_no_signal() {
         session_id: "collab_agent_records_bare".to_owned(),
         source: RawSource::Jsonl(without_collab),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
 
     let (evidence, metrics) = composite(&collab_input);
@@ -1499,6 +1503,7 @@ fn item_completed_echoes_are_allowlisted_and_add_no_signal() {
         session_id: "item_completed_echo_bare".to_owned(),
         source: RawSource::Jsonl(without_echoes),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
 
     let (evidence, metrics) = composite(&echoed_input);

@@ -9,11 +9,12 @@ Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/D
 | Capability | State | Extracted source fact |
 | --- | --- | --- |
 | Request context tokens | yes | `token_count.info.last_token_usage.input_tokens` and cached input |
-| Cache-write tokens | no | The public type defaults the field, but the rollout does not reliably emit it |
+| Cache-write tokens | yes | `token_count.info.last_token_usage.cache_write_input_tokens` when the rollout emits it |
 | Timestamps and order | yes | Every public `RolloutLine` has `timestamp` |
 | Tool invocations | yes | Persisted response tool-call variants; unknown and paginated variants degrade coverage |
-| Skill and MCP attribution | no | Legacy calls do not reliably identify a server or skill source |
-| Tool definitions | no | No persisted complete tool catalogue |
+| Skill attribution | observed subset | Selected full skill documents can prove injection and invocation, not a full historical inventory |
+| MCP attribution | observed subset | Completed `tool_search_output` namespace records can prove named server exposure, not a full historical inventory |
+| Tool definitions | yes | The harness version and model resolve against the embedded built-in tool catalogue |
 | Model identity | yes | `turn_context.model` |
 | Token classes | yes | Input, cached input, output, and reasoning output are distinct |
 | Reasoning effort tier | yes | `turn_context.effort`; missing attribution degrades coverage |
@@ -26,9 +27,13 @@ Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/D
 | Record identity | no | Records carry no per-record id (`uuid`) or parent link, so `previous_turn` stays unsupported |
 | Quota incidents | yes | `event_msg`/`task_complete` with a non-null `error`; only `rate_limit_exceeded` and `usage_limit_exceeded` are mapped |
 | Provider incidents | yes | `event_msg`/`task_complete` with a non-null `error`; `server_overloaded` and `internal_server_error` map to `Capacity`/`ServerError`, and the four transport struct variants map by `http_status_code` to `ServerError` (5xx) or `Connection` (absent or null) |
-| Harness version | no | The evidence sink has no version ingestion path in this slice |
+| Harness version | yes | `session_meta.payload.cli_version` |
 
-Sessions Over Depth, Model Overthinking, Overpowered Subagents, Old Model Usage, and Fast-Mode Overuse have all capability prerequisites. Every other detector remains not assessed. Cache Churn needs record identity, which Codex does not claim, so it stays not assessed even though Codex claims thread identity. Fast-mode overuse needed Subagent relationships in addition to `fast_tier`; now that the adapter publishes the subagent relationship, both it and Overpowered Subagents move into the assessed set.
+Sessions Over Depth, Model Overthinking, Overpowered Subagents, Old Model Usage,
+Fast-Mode Overuse, and Cache Churn have the required capability prerequisites.
+MCP, built-in-tool, and skill evidence supports only observed-subset findings.
+No resource reader proves a full historical inventory, so M/B/K cannot report a
+session-wide clean result.
 
 An unrecognized `(type, payload.type)` combination no longer fails coverage closed by default (#229 parity). `is_inert_codex_record` proves a record structurally inert — no usage, model, effort, service tier, role, tool-shaped, or compaction-shaped keys at the depth its readers cover — before the record is skipped with `Complete` coverage and its discriminator retained. A record that fails the proof stays `Unusable(UnrecognizedRecordType)`, exactly as before. `event_msg`/`item_completed` and top-level `inter_agent_communication_metadata` are allowlisted as proven echoes of records this adapter already models (measured against 1,034 local rollouts: no sampled record of either family carried usage, a model, or an effort) and pass the lighter check that only reads the record's root and root `payload` object; every other unrecognized family is proved inert one record at a time by the strict, any-depth check. `session_meta`, `turn_context`, `world_state`, and the pre-existing `event_msg` housekeeping payloads bypass the structural check entirely: their own evidence-bearing fields (`turn_context.model`/`.effort`, `thread_settings_applied`'s `service_tier`) are read by `observe_model_and_effort` / `service_tier_speed` on every record, before classification runs, so nothing about them is left unproven.
 

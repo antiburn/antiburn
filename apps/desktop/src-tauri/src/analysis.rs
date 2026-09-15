@@ -17,16 +17,17 @@ use std::sync::{
 };
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, ActiveSessionsSummary, AdapterResume, COVERAGE_SCHEMA_REVISION,
-    CompositeSink, EVIDENCE_SCHEMA_REVISION, EfficiencyTotals, EvidenceResumeState,
-    EvidenceSnapshot, EvidenceSource, InitialContextBreakdown, MAX_PROVIDER_HINTS,
-    METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint, RESUME_SNAPSHOT_REVISION,
-    RawSource, ResumePoint, ResumeRevisions, ResumedVisit, SessionCost, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator,
-    SessionReader, SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StoredResume,
-    StreamSnapshot, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, aggregate_metrics,
-    append_only_guarantee, evidence_from_facts, merge_metrics, metrics_by_source,
-    metrics_from_rows, price_breakdown, pricing_generation, reader_for,
+    ANALYZER_REVISION, ActiveSessionsSummary, AdapterResume, AppendOnlyGuarantee,
+    COVERAGE_SCHEMA_REVISION, CompositeSink, EVIDENCE_SCHEMA_REVISION, EfficiencyTotals,
+    EvidenceResumeState, EvidenceSnapshot, EvidenceSource, InitialContextBreakdown,
+    MAX_PROVIDER_HINTS, METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint,
+    RESUME_SNAPSHOT_REVISION, RawSource, ResumePoint, ResumeRevisions, ResumedVisit, SessionCost,
+    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
+    SessionMetricsAccumulator, SessionReader, SessionSummary, SourceCapabilities, SourceClaim,
+    SourceFormat, SourceKind, StoredResume, StreamSnapshot, TurnRow, TurnRowSink, TurnRowStore,
+    TurnScope, VisitOutcome, aggregate_metrics, append_only_guarantee, evidence_from_facts,
+    merge_metrics, metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
+    reader_for,
 };
 use antiburn_local::discovery::source_version::claude_sidecar_fingerprint;
 use antiburn_local::discovery::{
@@ -523,7 +524,31 @@ pub async fn locate(
 }
 
 /// Shape a located source into the raw payload the analysis layer reads.
-async fn raw_source(source: &SessionSource) -> Option<RawSource> {
+async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSource> {
+    if agent == AgentKind::Cline
+        && source_format(agent, source) == SourceFormat::ClineMessagesContractV1
+    {
+        let SessionSource::File(manifest_path) = source else {
+            return None;
+        };
+        let session_id = manifest_path.file_stem()?.to_str()?;
+        let directory = manifest_path.parent()?;
+        let sessions_dir = directory.parent()?;
+        return Some(RawSource::ClineBundle {
+            db_path: sessions_dir.join("sessions.db"),
+            manifest_path: manifest_path.clone(),
+            messages_path: directory.join(format!("{session_id}.messages.json")),
+        });
+    }
+    if agent == AgentKind::Kiro && source_format(agent, source) == SourceFormat::KiroCliV2Bundle {
+        let SessionSource::File(metadata_path) = source else {
+            return None;
+        };
+        return Some(RawSource::KiroCliV2Bundle {
+            metadata_path: metadata_path.clone(),
+            messages_path: metadata_path.with_extension("jsonl"),
+        });
+    }
     match source {
         SessionSource::File(path) => Some(RawSource::File(path.clone())),
         SessionSource::Inline { content, .. } => Some(RawSource::Jsonl(content.clone())),
@@ -536,6 +561,122 @@ async fn raw_source(source: &SessionSource) -> Option<RawSource> {
             session_source_content(source).await.map(RawSource::Jsonl)
         }
     }
+}
+
+/// Select the source contract while discovery still identifies its route.
+/// Readers use this value and use `RawSource` only for I/O.
+pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceFormat {
+    match (agent, source) {
+        (AgentKind::Claude, _) => SourceFormat::ClaudeJsonl,
+        (AgentKind::Codex, _) => SourceFormat::CodexRolloutJsonl,
+        (AgentKind::Pi, _) => SourceFormat::PiV3Jsonl,
+        (AgentKind::OpenCode, SessionSource::ProviderDb { .. }) => SourceFormat::OpenCodeSqliteV2,
+        (AgentKind::OpenCode, _) => SourceFormat::OpenCodeJsonl,
+        (AgentKind::Cursor, SessionSource::ProviderDb { db_path, .. })
+            if db_path
+                .components()
+                .any(|component| component.as_os_str() == "chats") =>
+        {
+            SourceFormat::CursorChatStoreDb
+        }
+        (AgentKind::Cursor, SessionSource::ProviderDb { .. }) => SourceFormat::CursorCliStoreDb,
+        (AgentKind::Cursor, SessionSource::File(path))
+            if path.extension().and_then(|value| value.to_str()) == Some("json") =>
+        {
+            SourceFormat::CursorLegacyChatJson
+        }
+        (AgentKind::Cursor, SessionSource::File(_)) => SourceFormat::CursorCliAgentJsonl,
+        (AgentKind::Cursor, SessionSource::Inline { label, .. })
+            if label.contains("state.vscdb") =>
+        {
+            SourceFormat::CursorIdeComposer
+        }
+        (AgentKind::Cursor, SessionSource::Inline { .. }) => SourceFormat::CursorCliAgentJsonl,
+        (AgentKind::Antigravity, SessionSource::ProviderDb { .. }) => {
+            SourceFormat::AntigravitySqlite
+        }
+        (AgentKind::Antigravity, SessionSource::File(path))
+            if path.extension().and_then(|value| value.to_str()) == Some("jsonl") =>
+        {
+            SourceFormat::AntigravityBrainJsonl
+        }
+        (AgentKind::Antigravity, SessionSource::File(path))
+            if path.to_string_lossy().contains("chatSessions") =>
+        {
+            SourceFormat::AntigravityWorkspaceChatJson
+        }
+        (AgentKind::Antigravity, _) => SourceFormat::AntigravityCascadeJson,
+        (AgentKind::Copilot, SessionSource::File(path))
+            if path.file_name().and_then(|name| name.to_str()) == Some("events.jsonl")
+                && path
+                    .parent()
+                    .and_then(|parent| parent.parent())
+                    .is_some_and(|root| {
+                        root.file_name().and_then(|name| name.to_str()) == Some("session-state")
+                    }) =>
+        {
+            SourceFormat::CopilotCliJsonl
+        }
+        (AgentKind::Copilot, _) => SourceFormat::CopilotIdeChatJson,
+        (AgentKind::Cline, SessionSource::File(path))
+            if path
+                .parent()
+                .and_then(|parent| parent.parent())
+                .is_some_and(|sessions| {
+                    sessions.file_name().and_then(|name| name.to_str()) == Some("sessions")
+                })
+                && path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|id| {
+                        path.file_name().and_then(|name| name.to_str())
+                            == Some(&format!("{id}.json"))
+                    }) =>
+        {
+            SourceFormat::ClineMessagesContractV1
+        }
+        (AgentKind::Cline, _) => SourceFormat::ClineSessionJson,
+        (AgentKind::Kiro, SessionSource::File(path))
+            if path.parent().is_some_and(|parent| {
+                parent.file_name().and_then(|name| name.to_str()) == Some("cli")
+            }) && path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                && path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(is_uuid)
+                && path.with_extension("jsonl").is_file() =>
+        {
+            SourceFormat::KiroCliV2Bundle
+        }
+        (AgentKind::Kiro, SessionSource::File(path))
+            if path.file_name().and_then(|name| name.to_str()) == Some("session.json")
+                && path.parent().is_some_and(|parent| {
+                    parent.join("messages.jsonl").is_file()
+                        && parent
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .and_then(|name| name.strip_prefix("sess_"))
+                            .is_some_and(is_uuid)
+                }) =>
+        {
+            SourceFormat::KiroCliV3Bundle
+        }
+        (AgentKind::Kiro, SessionSource::File(path))
+            if path.extension().and_then(|extension| extension.to_str()) == Some("chat") =>
+        {
+            SourceFormat::KiroChat
+        }
+        (AgentKind::Kiro, _) => SourceFormat::KiroSessionJson,
+        _ => SourceFormat::Uncharacterized,
+    }
+}
+
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
 
 fn claim_file(path: &std::path::Path) -> anyhow::Result<SourceClaim> {
@@ -873,7 +1014,7 @@ fn stream_vendor_with_hooks(
         // remaining path that outcome still covers, further down.
         let kind = SourceKind::from(&input.source);
         let adapter = reader_for(&input.agent);
-        let capabilities = adapter.capabilities(&input.source);
+        let capabilities = adapter.capabilities(input);
         // Every input after the parent is a discovered child transcript, so
         // its rows get `Delegated` scope from position. The adapter's own
         // `EventSource` flag is not the only source of scope.
@@ -1087,6 +1228,34 @@ fn stream_vendor_with_hooks(
                 outcome
             }
             RawSource::Sqlite(_) => continue,
+            RawSource::ClineBundle { manifest_path, .. } if index == 0 => {
+                let claim = match claim_file(manifest_path) {
+                    Ok(claim) => claim,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::ClaimFailed);
+                    }
+                };
+                adapter.visit_claimed(
+                    input,
+                    &claim,
+                    AppendOnlyGuarantee::Absent,
+                    cancelled,
+                    &mut accumulator,
+                )
+            }
+            RawSource::ClineBundle { .. } => continue,
+            RawSource::KiroCliV2Bundle {
+                metadata_path,
+                messages_path,
+            } if index == 0 => {
+                parent_fingerprint = Some(format!(
+                    "{}:{}",
+                    fingerprint_of(&SessionSource::File(metadata_path.clone())),
+                    fingerprint_of(&SessionSource::File(messages_path.clone()))
+                ));
+                adapter.visit(input, &mut accumulator)
+            }
+            RawSource::KiroCliV2Bundle { .. } => continue,
         };
         match result {
             Ok(outcome @ VisitOutcome::SourceChanged(_)) => {
@@ -1361,7 +1530,7 @@ pub async fn analyze_for_evidence(
     let Some(source) = locate(agent, session_id, wsl_distro).await else {
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
     };
-    let Some(raw) = raw_source(&source).await else {
+    let Some(raw) = raw_source(agent, &source).await else {
         // Only a provider-database source reaches here: `raw_source` reads
         // its content directly, so a `None` means that read failed. Treated
         // the same as a file claim failure — the source could not be opened.
@@ -1377,6 +1546,7 @@ pub async fn analyze_for_evidence(
         agent: label.to_string(),
         session_id: session_id.to_string(),
         source: raw,
+        source_format: source_format(agent, &source),
         fork_parent_session_id: fork_parent_session_id.clone(),
     };
 
@@ -1408,6 +1578,10 @@ pub async fn analyze_for_evidence(
         let Some(subagent_id) = Explorers::DISK.subagent_id(&agent, path) else {
             continue;
         };
+        let source = SessionSource::File(path.clone());
+        let Some(raw) = raw_source(agent, &source).await else {
+            continue;
+        };
         let label_text = Explorers::DISK.subagent_label(&agent, path).await;
         subagents.push((
             subagent_id.clone(),
@@ -1415,7 +1589,8 @@ pub async fn analyze_for_evidence(
             SessionInput {
                 agent: label.to_string(),
                 session_id: subagent_id,
-                source: RawSource::File(path.clone()),
+                source: raw,
+                source_format: source_format(agent, &source),
                 fork_parent_session_id: fork_parent_session_id.clone(),
             },
         ));

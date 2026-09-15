@@ -25,8 +25,15 @@ const RUNTIME_OVERRIDE_NAMES: [&str; 6] = [
 impl VendorConfig for OpenCode {
     fn policy(&self, setting: ConfigSetting) -> VendorPolicy {
         match setting {
-            ConfigSetting::Model => VendorPolicy::AutomaticEdit,
+            ConfigSetting::Model | ConfigSetting::Compaction => VendorPolicy::AutomaticEdit,
             ConfigSetting::Reasoning => {
+                VendorPolicy::Unsupported(ConfigUnavailableReason::UnsupportedSetting)
+            }
+            ConfigSetting::SubagentModel => VendorPolicy::AutomaticEdit,
+            ConfigSetting::McpServer | ConfigSetting::BuiltInTool | ConfigSetting::Skill => {
+                VendorPolicy::AutomaticEdit
+            }
+            ConfigSetting::FastMode => {
                 VendorPolicy::Unsupported(ConfigUnavailableReason::UnsupportedSetting)
             }
         }
@@ -39,9 +46,6 @@ impl VendorConfig for OpenCode {
         workspace_cwd: Option<&Path>,
         trusted_workspace_root: Option<&Path>,
     ) -> Result<Target, ConfigUnavailableReason> {
-        if setting != ConfigSetting::Model {
-            return Err(ConfigUnavailableReason::UnsupportedSetting);
-        }
         reject_runtime_overrides()?;
         reject_remote_inputs(home)?;
         reject_managed_config()?;
@@ -53,6 +57,7 @@ impl VendorConfig for OpenCode {
             &global_root,
             &global_root,
             ConfigScope::Global,
+            setting,
             &mut winner,
             true,
         )?;
@@ -67,6 +72,7 @@ impl VendorConfig for OpenCode {
                     root,
                     safety_root,
                     ConfigScope::Project,
+                    setting,
                     &mut winner,
                     false,
                 )?;
@@ -79,6 +85,7 @@ impl VendorConfig for OpenCode {
                         &directory,
                         safety_root,
                         ConfigScope::Project,
+                        setting,
                         &mut winner,
                         false,
                     )?;
@@ -93,6 +100,7 @@ impl VendorConfig for OpenCode {
                 &home_directory,
                 home,
                 ConfigScope::Global,
+                setting,
                 &mut winner,
                 false,
             )?;
@@ -101,15 +109,205 @@ impl VendorConfig for OpenCode {
         winner.ok_or(ConfigUnavailableReason::MissingTarget)
     }
 
+    fn resolve_target_for_value(
+        &self,
+        setting: ConfigSetting,
+        expected: Option<&str>,
+        home: &Path,
+        workspace_cwd: Option<&Path>,
+        trusted_workspace_root: Option<&Path>,
+    ) -> Result<Target, ConfigUnavailableReason> {
+        if setting == ConfigSetting::McpServer {
+            let name = expected.ok_or(ConfigUnavailableReason::MissingTarget)?;
+            return self.mcp_target(name, home, workspace_cwd, trusted_workspace_root);
+        }
+        if setting == ConfigSetting::BuiltInTool {
+            return self.built_in_tool_target(
+                expected.ok_or(ConfigUnavailableReason::MissingTarget)?,
+                home,
+                workspace_cwd,
+                trusted_workspace_root,
+            );
+        }
+        if setting == ConfigSetting::Skill {
+            return self.skill_target(
+                expected.ok_or(ConfigUnavailableReason::MissingTarget)?,
+                home,
+                workspace_cwd,
+                trusted_workspace_root,
+            );
+        }
+        if setting != ConfigSetting::SubagentModel {
+            return self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root);
+        }
+        reject_runtime_overrides()?;
+        reject_remote_inputs(home)?;
+        reject_managed_config()?;
+        let expected = expected.ok_or(ConfigUnavailableReason::MissingTarget)?;
+        let directories = [
+            home.join(".opencode/agents"),
+            trusted_workspace_root
+                .map(|root| root.join(".opencode/agents"))
+                .unwrap_or_default(),
+        ];
+        let roots = [home, trusted_workspace_root.unwrap_or(home)];
+        let mut matches = Vec::new();
+        for (index, (directory, root)) in directories.iter().zip(roots).enumerate() {
+            if !path_entry_exists(directory)? {
+                continue;
+            }
+            for entry in std::fs::read_dir(directory)
+                .map_err(|_| ConfigUnavailableReason::PermissionDenied)?
+            {
+                let path = entry
+                    .map_err(|_| ConfigUnavailableReason::UnsafePath)?
+                    .path();
+                if path.extension().and_then(|value| value.to_str()) != Some("md") {
+                    continue;
+                }
+                if markdown_model(&read_checked(&path, root)?.bytes)?.as_deref() == Some(expected) {
+                    matches.push((
+                        path,
+                        root.to_path_buf(),
+                        if index == 0 {
+                            ConfigScope::Global
+                        } else {
+                            ConfigScope::Project
+                        },
+                    ));
+                }
+            }
+        }
+        if matches.len() != 1 {
+            return Err(ConfigUnavailableReason::MissingTarget);
+        }
+        let (path, root, scope) = matches.pop().expect("one match");
+        let name = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .ok_or(ConfigUnavailableReason::UnsafePath)?
+            .to_owned();
+        Ok(Target {
+            path,
+            safety_root: root,
+            scope,
+            operation: OperationSelector::NamedMarkdownModel(name),
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn resolve_targets(
+        &self,
+        setting: ConfigSetting,
+        home: &Path,
+        workspace_cwd: Option<&Path>,
+        trusted_workspace_root: Option<&Path>,
+    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
+        let primary = self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)?;
+        let mut targets = vec![primary];
+        let global_root = global_config_root(home)?;
+        collect_directory_targets(
+            &global_root,
+            &global_root,
+            ConfigScope::Global,
+            true,
+            &mut targets,
+        )?;
+        if !project_config_disabled()
+            && let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root)
+        {
+            for directory in project_hierarchy(cwd, root)? {
+                collect_directory_targets(
+                    &directory,
+                    root,
+                    ConfigScope::Project,
+                    false,
+                    &mut targets,
+                )?;
+            }
+            for directory in project_hierarchy(cwd, root)?.into_iter().rev() {
+                let directory = directory.join(".opencode");
+                if path_entry_exists(&directory)? {
+                    collect_directory_targets(
+                        &directory,
+                        root,
+                        ConfigScope::Project,
+                        false,
+                        &mut targets,
+                    )?;
+                }
+            }
+        }
+        let home_directory = home.join(".opencode");
+        if path_entry_exists(&home_directory)? {
+            collect_directory_targets(
+                &home_directory,
+                home,
+                ConfigScope::Global,
+                false,
+                &mut targets,
+            )?;
+        }
+        Ok(targets)
+    }
+
+    #[cfg(not(windows))]
+    fn standalone_global(
+        &self,
+        setting: ConfigSetting,
+        home: &Path,
+        proposed: &str,
+    ) -> Result<(PathBuf, Vec<u8>), ConfigUnavailableReason> {
+        if setting != ConfigSetting::Model {
+            return Err(ConfigUnavailableReason::UnsupportedSetting);
+        }
+        Ok((
+            global_config_root(home)?.join("opencode.json"),
+            serde_json::to_vec_pretty(&match setting { ConfigSetting::Model => serde_json::json!({ "model": proposed }), ConfigSetting::Compaction => serde_json::json!({ "compaction": { "auto": proposed.parse::<bool>().map_err(|_| ConfigUnavailableReason::InvalidTarget)? } }), _ => return Err(ConfigUnavailableReason::UnsupportedSetting) })
+                .map_err(|_| ConfigUnavailableReason::MalformedConfig)?,
+        ))
+    }
+
+    #[cfg(not(windows))]
+    fn standalone_selector(&self, setting: ConfigSetting) -> &'static str {
+        match setting {
+            ConfigSetting::Model => "model",
+            ConfigSetting::Compaction => "compaction.auto",
+            _ => "standalone",
+        }
+    }
+
     fn read_value(
         &self,
         bytes: &[u8],
         operation: &OperationSelector,
     ) -> Result<Option<String>, ConfigUnavailableReason> {
-        if operation != &OperationSelector::JsonKey("model") {
-            return Err(ConfigUnavailableReason::UnsupportedSetting);
+        match operation {
+            OperationSelector::JsonKey("model") => model(bytes),
+            OperationSelector::JsonPath(path)
+                if path.as_slice() == ["compaction", "auto"]
+                    || path.as_slice() == ["compaction", "reserved"] =>
+            {
+                let document = parse(bytes)?;
+                document
+                    .get("compaction")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|value| value.get(path[1]))
+                    .map(|value| match value {
+                        serde_json::Value::Bool(value) => Ok(value.to_string()),
+                        serde_json::Value::Number(value) => Ok(value.to_string()),
+                        _ => Err(ConfigUnavailableReason::MalformedConfig),
+                    })
+                    .transpose()
+            }
+            OperationSelector::NamedMarkdownModel(_) => markdown_model(bytes),
+            OperationSelector::NamedJsonMcpServer(name) => mcp_value(bytes, name),
+            OperationSelector::NamedOpenCodeBuiltInTool(name) => {
+                opencode_built_in_tool_value(bytes, name)
+            }
+            OperationSelector::NamedOpenCodeSkill(name) => opencode_skill_value(bytes, name),
+            _ => Err(ConfigUnavailableReason::UnsupportedSetting),
         }
-        model(bytes)
     }
 
     #[cfg(not(windows))]
@@ -119,17 +317,446 @@ impl VendorConfig for OpenCode {
         operation: &OperationSelector,
         proposed: &str,
     ) -> Result<Vec<u8>, ConfigUnavailableReason> {
-        if operation != &OperationSelector::JsonKey("model") {
-            return Err(ConfigUnavailableReason::UnsupportedSetting);
+        match operation {
+            OperationSelector::JsonKey("model") => edit_top_level_string(bytes, "model", proposed),
+            OperationSelector::JsonPath(path)
+                if path.as_slice() == ["compaction", "auto"]
+                    || path.as_slice() == ["compaction", "reserved"] =>
+            {
+                let mut document = parse(bytes)?;
+                let compaction = document
+                    .get_mut("compaction")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or(ConfigUnavailableReason::MalformedConfig)?;
+                let value = if path[1] == "auto" {
+                    serde_json::Value::Bool(
+                        proposed
+                            .parse()
+                            .map_err(|_| ConfigUnavailableReason::InvalidTarget)?,
+                    )
+                } else {
+                    serde_json::Value::Number(
+                        proposed
+                            .parse::<u64>()
+                            .map_err(|_| ConfigUnavailableReason::InvalidTarget)?
+                            .into(),
+                    )
+                };
+                if !compaction.contains_key(path[1]) {
+                    return Err(ConfigUnavailableReason::MissingTarget);
+                }
+                compaction.insert(path[1].into(), value);
+                let mut output = serde_json::to_vec_pretty(&document)
+                    .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+                output.push(b'\n');
+                Ok(output)
+            }
+            OperationSelector::NamedMarkdownModel(_) => edit_markdown_model(bytes, proposed),
+            OperationSelector::NamedJsonMcpServer(name) => edit_mcp_value(bytes, name),
+            OperationSelector::NamedOpenCodeBuiltInTool(name) => {
+                edit_opencode_built_in_tool(bytes, name)
+            }
+            OperationSelector::NamedOpenCodeSkill(name) => edit_opencode_skill(bytes, name),
+            _ => Err(ConfigUnavailableReason::UnsupportedSetting),
         }
-        edit_top_level_string(bytes, "model", proposed)
     }
+}
+
+impl OpenCode {
+    fn skill_target(
+        &self,
+        name: &str,
+        home: &Path,
+        workspace_cwd: Option<&Path>,
+        trusted_workspace_root: Option<&Path>,
+    ) -> Result<Target, ConfigUnavailableReason> {
+        reject_runtime_overrides()?;
+        reject_remote_inputs(home)?;
+        reject_managed_config()?;
+        let mut winner = None;
+        let mut collect = |skill_directory: &Path,
+                           config_directory: &Path,
+                           root: &Path,
+                           scope|
+         -> Result<(), ConfigUnavailableReason> {
+            let skill = skill_directory.join(name).join("SKILL.md");
+            if !path_entry_exists(&skill)? {
+                return Ok(());
+            }
+            for file in ["opencode.json", "opencode.jsonc"] {
+                let path = config_directory.join(file);
+                if path_entry_exists(&path)?
+                    && opencode_skill_value(&read_checked(&path, root)?.bytes, name)?.is_some()
+                {
+                    winner = Some((path, root.to_owned(), scope));
+                }
+            }
+            Ok(())
+        };
+        let global = global_config_root(home)?;
+        let home_config = home.join(".opencode");
+        collect(
+            &home_config.join("skills"),
+            &home_config,
+            home,
+            ConfigScope::Global,
+        )?;
+        collect(
+            &global.join("skills"),
+            &global,
+            &global,
+            ConfigScope::Global,
+        )?;
+        if !project_config_disabled()
+            && let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root)
+        {
+            for directory in project_hierarchy(cwd, root)? {
+                let config = directory.join(".opencode");
+                collect(&config.join("skills"), &config, root, ConfigScope::Project)?;
+            }
+        }
+        let (path, safety_root, scope) = winner.ok_or(ConfigUnavailableReason::MissingTarget)?;
+        Ok(Target {
+            path,
+            safety_root,
+            scope,
+            operation: OperationSelector::NamedOpenCodeSkill(name.to_owned()),
+        })
+    }
+    fn built_in_tool_target(
+        &self,
+        name: &str,
+        home: &Path,
+        workspace_cwd: Option<&Path>,
+        trusted_workspace_root: Option<&Path>,
+    ) -> Result<Target, ConfigUnavailableReason> {
+        reject_runtime_overrides()?;
+        reject_remote_inputs(home)?;
+        reject_managed_config()?;
+        let mut winner = None;
+        let mut collect =
+            |directory: &Path, root: &Path, scope| -> Result<(), ConfigUnavailableReason> {
+                for file in ["opencode.json", "opencode.jsonc"] {
+                    let path = directory.join(file);
+                    if path_entry_exists(&path)?
+                        && opencode_built_in_tool_value(&read_checked(&path, root)?.bytes, name)?
+                            .is_some()
+                    {
+                        winner = Some((path, root.to_owned(), scope));
+                    }
+                }
+                Ok(())
+            };
+        let global = global_config_root(home)?;
+        collect(&global, &global, ConfigScope::Global)?;
+        if !project_config_disabled()
+            && let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root)
+        {
+            let directories = project_hierarchy(cwd, root)?;
+            for directory in &directories {
+                collect(directory, root, ConfigScope::Project)?;
+            }
+            for directory in directories.iter().rev() {
+                let nested = directory.join(".opencode");
+                if path_entry_exists(&nested)? {
+                    collect(&nested, root, ConfigScope::Project)?;
+                }
+            }
+        }
+        let home_directory = home.join(".opencode");
+        if path_entry_exists(&home_directory)? {
+            collect(&home_directory, home, ConfigScope::Global)?;
+        }
+        let (path, safety_root, scope) = winner.ok_or(ConfigUnavailableReason::MissingTarget)?;
+        Ok(Target {
+            path,
+            safety_root,
+            scope,
+            operation: OperationSelector::NamedOpenCodeBuiltInTool(name.to_owned()),
+        })
+    }
+
+    fn mcp_target(
+        &self,
+        name: &str,
+        home: &Path,
+        workspace_cwd: Option<&Path>,
+        trusted_workspace_root: Option<&Path>,
+    ) -> Result<Target, ConfigUnavailableReason> {
+        reject_runtime_overrides()?;
+        reject_remote_inputs(home)?;
+        reject_managed_config()?;
+        let mut matches = Vec::new();
+        let mut collect =
+            |directory: &Path, root: &Path, scope| -> Result<(), ConfigUnavailableReason> {
+                for file in ["opencode.json", "opencode.jsonc"] {
+                    let path = directory.join(file);
+                    if path_entry_exists(&path)?
+                        && mcp_value(&read_checked(&path, root)?.bytes, name)?.is_some()
+                    {
+                        matches.push((path, root.to_owned(), scope));
+                    }
+                }
+                Ok(())
+            };
+        let global = global_config_root(home)?;
+        collect(&global, &global, ConfigScope::Global)?;
+        if !project_config_disabled()
+            && let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root)
+        {
+            for directory in project_hierarchy(cwd, root)? {
+                collect(&directory, root, ConfigScope::Project)?;
+                let nested = directory.join(".opencode");
+                if path_entry_exists(&nested)? {
+                    collect(&nested, root, ConfigScope::Project)?;
+                }
+            }
+        }
+        let home_directory = home.join(".opencode");
+        if path_entry_exists(&home_directory)? {
+            collect(&home_directory, home, ConfigScope::Global)?;
+        }
+        if matches.len() != 1 {
+            return Err(ConfigUnavailableReason::MissingTarget);
+        }
+        let (path, safety_root, scope) = matches.pop().expect("one exact MCP server");
+        Ok(Target {
+            path,
+            safety_root,
+            scope,
+            operation: OperationSelector::NamedJsonMcpServer(name.to_owned()),
+        })
+    }
+}
+
+fn mcp_value(bytes: &[u8], name: &str) -> Result<Option<String>, ConfigUnavailableReason> {
+    let document = parse(bytes)?;
+    let Some(server) = document
+        .get("mcp")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|servers| servers.get(name))
+    else {
+        return Ok(None);
+    };
+    let enabled = server
+        .as_object()
+        .and_then(|server| server.get("enabled"))
+        .and_then(serde_json::Value::as_bool)
+        .ok_or(ConfigUnavailableReason::MalformedConfig)?;
+    Ok(Some(format!("{name}={enabled}")))
+}
+
+fn opencode_built_in_tool_value(
+    bytes: &[u8],
+    name: &str,
+) -> Result<Option<String>, ConfigUnavailableReason> {
+    let action = opencode_v2_action(name)?;
+    let document = parse(bytes)?;
+    if document.get("agents").is_some() {
+        return Err(ConfigUnavailableReason::InvalidPrecedence);
+    }
+    let Some(rules) = document.get("permissions") else {
+        return Ok(None);
+    };
+    let rules = rules
+        .as_array()
+        .ok_or(ConfigUnavailableReason::MalformedConfig)?;
+    if rules.iter().any(|rule| !is_v2_permission_rule(rule)) {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    let enabled = !rules.iter().any(|rule| {
+        rule.get("action").and_then(serde_json::Value::as_str) == Some(action)
+            && rule.get("resource").and_then(serde_json::Value::as_str) == Some("*")
+            && rule.get("effect").and_then(serde_json::Value::as_str) == Some("deny")
+    });
+    Ok(Some(format!("{name}={enabled}")))
+}
+
+fn opencode_skill_value(
+    bytes: &[u8],
+    name: &str,
+) -> Result<Option<String>, ConfigUnavailableReason> {
+    let document = parse(bytes)?;
+    let Some(rules) = document.get("permissions") else {
+        return Ok(None);
+    };
+    let rules = rules
+        .as_array()
+        .ok_or(ConfigUnavailableReason::MalformedConfig)?;
+    if rules.iter().any(|rule| !is_v2_permission_rule(rule)) {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    Ok(Some(format!(
+        "{name}={}",
+        !rules.iter().any(|rule| {
+            rule.get("action").and_then(serde_json::Value::as_str) == Some("skill")
+                && rule.get("resource").and_then(serde_json::Value::as_str) == Some(name)
+                && rule.get("effect").and_then(serde_json::Value::as_str) == Some("deny")
+        })
+    )))
+}
+
+fn is_v2_permission_rule(rule: &serde_json::Value) -> bool {
+    rule.as_object().is_some_and(|rule| {
+        rule.get("action")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+            && rule
+                .get("resource")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+            && matches!(
+                rule.get("effect").and_then(serde_json::Value::as_str),
+                Some("allow" | "ask" | "deny")
+            )
+    })
+}
+
+fn opencode_v2_action(name: &str) -> Result<&str, ConfigUnavailableReason> {
+    match name.to_ascii_lowercase().as_str() {
+        "read" => Ok("read"),
+        "edit" | "write" | "patch" => Ok("edit"),
+        "glob" => Ok("glob"),
+        "grep" => Ok("grep"),
+        "bash" | "shell" => Ok("shell"),
+        "agent" | "task" | "subagent" => Ok("subagent"),
+        "skill" => Ok("skill"),
+        "question" => Ok("question"),
+        "webfetch" => Ok("webfetch"),
+        "websearch" => Ok("websearch"),
+        _ => Err(ConfigUnavailableReason::UnsupportedSetting),
+    }
+}
+
+#[cfg(not(windows))]
+fn edit_opencode_built_in_tool(
+    bytes: &[u8],
+    name: &str,
+) -> Result<Vec<u8>, ConfigUnavailableReason> {
+    let action = opencode_v2_action(name)?;
+    let mut document = parse(bytes)?;
+    let rules = document
+        .get_mut("permissions")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or(ConfigUnavailableReason::MissingTarget)?;
+    if rules.iter().any(|rule| !is_v2_permission_rule(rule)) {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    if rules.iter().any(|rule| {
+        rule.get("action").and_then(serde_json::Value::as_str) == Some(action)
+            && rule.get("resource").and_then(serde_json::Value::as_str) == Some("*")
+            && rule.get("effect").and_then(serde_json::Value::as_str) == Some("deny")
+    }) {
+        return Err(ConfigUnavailableReason::CurrentValueMismatch);
+    }
+    rules.push(serde_json::json!({ "action": action, "resource": "*", "effect": "deny" }));
+    let mut output = serde_json::to_vec_pretty(&document)
+        .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+    output.push(b'\n');
+    Ok(output)
+}
+
+#[cfg(not(windows))]
+fn edit_opencode_skill(bytes: &[u8], name: &str) -> Result<Vec<u8>, ConfigUnavailableReason> {
+    let mut document = parse(bytes)?;
+    let rules = document
+        .get_mut("permissions")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or(ConfigUnavailableReason::MissingTarget)?;
+    if rules.iter().any(|rule| !is_v2_permission_rule(rule)) {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    if rules.iter().any(|rule| {
+        rule.get("action").and_then(serde_json::Value::as_str) == Some("skill")
+            && rule.get("resource").and_then(serde_json::Value::as_str) == Some(name)
+            && rule.get("effect").and_then(serde_json::Value::as_str) == Some("deny")
+    }) {
+        return Err(ConfigUnavailableReason::CurrentValueMismatch);
+    }
+    rules.push(serde_json::json!({ "action": "skill", "resource": name, "effect": "deny" }));
+    let mut output = serde_json::to_vec_pretty(&document)
+        .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+    output.push(b'\n');
+    Ok(output)
+}
+
+#[cfg(not(windows))]
+fn edit_mcp_value(bytes: &[u8], name: &str) -> Result<Vec<u8>, ConfigUnavailableReason> {
+    let mut document = parse(bytes)?;
+    let enabled = document
+        .get_mut("mcp")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|servers| servers.get_mut(name))
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|server| server.get_mut("enabled"))
+        .ok_or(ConfigUnavailableReason::MissingTarget)?;
+    if enabled.as_bool() != Some(true) {
+        return Err(ConfigUnavailableReason::CurrentValueMismatch);
+    }
+    *enabled = serde_json::Value::Bool(false);
+    let mut output = serde_json::to_vec_pretty(&document)
+        .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+    output.push(b'\n');
+    Ok(output)
+}
+
+fn markdown_model(bytes: &[u8]) -> Result<Option<String>, ConfigUnavailableReason> {
+    let text = std::str::from_utf8(bytes).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+    let Some(frontmatter) = text.strip_prefix("---\n").and_then(|text| {
+        text.split_once("\n---\n")
+            .map(|(frontmatter, _)| frontmatter)
+    }) else {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    };
+    let values = frontmatter
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(key, _)| key.trim() == "model")
+        .map(|(_, value)| value.trim().to_owned())
+        .collect::<Vec<_>>();
+    match values.as_slice() {
+        [] => Ok(None),
+        [value] if !value.is_empty() => Ok(Some(value.clone())),
+        _ => Err(ConfigUnavailableReason::DuplicateDefinition),
+    }
+}
+
+#[cfg(not(windows))]
+fn edit_markdown_model(bytes: &[u8], proposed: &str) -> Result<Vec<u8>, ConfigUnavailableReason> {
+    let text = std::str::from_utf8(bytes).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+    let Some((frontmatter, body)) = text
+        .strip_prefix("---\n")
+        .and_then(|text| text.split_once("\n---\n"))
+    else {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    };
+    let mut found = false;
+    let frontmatter = frontmatter
+        .lines()
+        .map(|line| {
+            if line
+                .split_once(':')
+                .is_some_and(|(key, _)| key.trim() == "model")
+            {
+                found = true;
+                format!("model: {proposed}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !found {
+        return Err(ConfigUnavailableReason::MissingTarget);
+    }
+    Ok(format!("---\n{frontmatter}\n---\n{body}").into_bytes())
 }
 
 fn merge_directory_config(
     root: &Path,
     safety_root: &Path,
     scope: ConfigScope,
+    setting: ConfigSetting,
     winner: &mut Option<Target>,
     include_legacy: bool,
 ) -> Result<(), ConfigUnavailableReason> {
@@ -143,8 +770,38 @@ fn merge_directory_config(
         if !path_entry_exists(&path)? {
             continue;
         }
-        if model(&read_checked(&path, safety_root)?.bytes)?.is_some() {
+        if let Some(operation) = operation_for(&read_checked(&path, safety_root)?.bytes, setting)? {
             *winner = Some(Target {
+                path,
+                safety_root: safety_root.to_owned(),
+                scope,
+                operation,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn collect_directory_targets(
+    root: &Path,
+    safety_root: &Path,
+    scope: ConfigScope,
+    include_legacy: bool,
+    targets: &mut Vec<Target>,
+) -> Result<(), ConfigUnavailableReason> {
+    let names: &[&str] = if include_legacy {
+        &["config.json", "opencode.json", "opencode.jsonc"]
+    } else {
+        &["opencode.json", "opencode.jsonc"]
+    };
+    for name in names {
+        let path = root.join(name);
+        if path_entry_exists(&path)?
+            && model(&read_checked(&path, safety_root)?.bytes)?.is_some()
+            && !targets.iter().any(|target| target.path == path)
+        {
+            targets.push(Target {
                 path,
                 safety_root: safety_root.to_owned(),
                 scope,
@@ -153,6 +810,46 @@ fn merge_directory_config(
         }
     }
     Ok(())
+}
+
+fn operation(setting: ConfigSetting) -> OperationSelector {
+    match setting {
+        ConfigSetting::Model => OperationSelector::JsonKey("model"),
+        ConfigSetting::Compaction => OperationSelector::JsonPath(vec!["compaction", "auto"]),
+        _ => unreachable!(),
+    }
+}
+
+fn operation_for(
+    bytes: &[u8],
+    setting: ConfigSetting,
+) -> Result<Option<OperationSelector>, ConfigUnavailableReason> {
+    if setting == ConfigSetting::Model {
+        return model(bytes).map(|value| value.map(|_| operation(setting)));
+    }
+    let document = parse(bytes)?;
+    let Some(compaction) = document
+        .get("compaction")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Ok(None);
+    };
+    match compaction.get("auto") {
+        Some(serde_json::Value::Bool(false)) => Ok(Some(OperationSelector::JsonPath(vec![
+            "compaction",
+            "auto",
+        ]))),
+        Some(serde_json::Value::Bool(true)) => match compaction.get("reserved") {
+            Some(serde_json::Value::Number(_)) => Ok(Some(OperationSelector::JsonPath(vec![
+                "compaction",
+                "reserved",
+            ]))),
+            Some(_) => Err(ConfigUnavailableReason::MalformedConfig),
+            None => Ok(None),
+        },
+        Some(_) => Err(ConfigUnavailableReason::MalformedConfig),
+        None => Ok(None),
+    }
 }
 
 fn model(bytes: &[u8]) -> Result<Option<String>, ConfigUnavailableReason> {

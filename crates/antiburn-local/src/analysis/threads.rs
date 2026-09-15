@@ -32,6 +32,11 @@ pub(crate) struct ThreadResolver {
 }
 
 impl ThreadResolver {
+    /// Returns true when this stream already declared `uuid`.
+    pub(crate) fn contains(&self, uuid: &str) -> bool {
+        self.thread_by_uuid.contains_key(uuid)
+    }
+
     /// Resolves the thread for one record and records its uuid.
     ///
     /// Rules, in order: (a) `link` names a uuid this resolver has already

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="6.2 5.9 32.4 32.4">
+  <title>antiburn</title>
+  <g fill="currentColor">
+    <circle cx="16" cy="9.3" r="3.4"/>
+    <circle cx="22.4" cy="9.3" r="3.4"/>
+    <circle cx="28.8" cy="9.3" r="3.4"/>
+    <circle cx="35.2" cy="15.7" r="3.4"/>
+    <circle cx="16" cy="22.1" r="3.4"/>
+    <circle cx="22.4" cy="22.1" r="3.4"/>
+    <circle cx="28.8" cy="22.1" r="3.4"/>
+    <circle cx="35.2" cy="22.1" r="3.4"/>
+    <circle cx="9.6" cy="28.5" r="3.4"/>
+    <circle cx="35.2" cy="28.5" r="3.4"/>
+    <circle cx="16" cy="34.9" r="3.4"/>
+    <circle cx="22.4" cy="34.9" r="3.4"/>
+    <circle cx="35.2" cy="34.9" r="3.4"/>
+  </g>
+</svg>

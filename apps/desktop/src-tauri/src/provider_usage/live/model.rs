@@ -13,7 +13,97 @@
 //!    structurally trustworthy and six hours old; those are different
 //!    questions and the surfaces answer them separately.
 
+use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
+
+/// Detection values rank the available evidence, from unknown to a provider-specific login carrier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Detection {
+    #[default]
+    Unknown,
+    NotInstalled,
+    InstalledNotSignedIn,
+    /// A provider-specific login carrier is present. This does not verify the login.
+    SignedIn,
+}
+
+/// Where a login carrier was found. Names the tool that wrote it, so the
+/// reader can see which sign-in antiburn reuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LoginCarrier {
+    /// `~/.claude/.credentials.json`, written by the Claude Code CLI.
+    ClaudeCredentialsFile,
+    /// The `Claude Code-credentials` Keychain item, written by the Claude Code CLI.
+    ClaudeKeychain,
+    /// Pi's shared auth store. Its presence does not say which providers it holds.
+    Pi,
+    /// `~/.codex/auth.json`, written by the Codex CLI.
+    CodexAuthFile,
+    /// The `agy` CLI's token file.
+    AgyToken,
+    /// The Antigravity IDE's state database.
+    AntigravityIde,
+    /// The `gemini` keyring entry the `agy` CLI writes.
+    AntigravityKeyring,
+}
+
+impl LoginCarrier {
+    /// The tool the reader would name, for "found a login through …".
+    pub fn display_name(self) -> &'static str {
+        match self {
+            LoginCarrier::ClaudeCredentialsFile => "Claude Code",
+            LoginCarrier::ClaudeKeychain => "Claude Code (Keychain)",
+            LoginCarrier::Pi => "Pi",
+            LoginCarrier::CodexAuthFile => "Codex",
+            LoginCarrier::AgyToken => "agy",
+            LoginCarrier::AntigravityIde => "the Antigravity IDE",
+            LoginCarrier::AntigravityKeyring => "agy (keyring)",
+        }
+    }
+}
+
+/// What one source's `detect()` found: a rank, and where it looked when it
+/// found a carrier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Presence {
+    pub detection: Detection,
+    /// Set when `detection` rests on a carrier, including the inconclusive
+    /// Pi file. `None` when nothing was found or nothing could be checked.
+    pub carrier: Option<LoginCarrier>,
+}
+
+impl Presence {
+    pub const UNKNOWN: Presence = Presence {
+        detection: Detection::Unknown,
+        carrier: None,
+    };
+
+    pub fn new(detection: Detection) -> Presence {
+        Presence {
+            detection,
+            carrier: None,
+        }
+    }
+
+    pub fn via(detection: Detection, carrier: LoginCarrier) -> Presence {
+        Presence {
+            detection,
+            carrier: Some(carrier),
+        }
+    }
+
+    /// The stronger of two, by rank. A tie keeps `self`, so the first
+    /// source registered for a provider names the carrier.
+    pub fn strongest(self, other: Presence) -> Presence {
+        if other.detection > self.detection {
+            other
+        } else {
+            self
+        }
+    }
+}
 
 /// Epistemic strength of a fact, independent of how recently it was observed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -47,6 +137,22 @@ impl Freshness {
             Freshness::Stale
         }
     }
+}
+
+/// These details qualify a source error without changing its category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceErrorDetail {
+    /// The macOS Keychain could not say whether the item exists.
+    KeychainUnreadable,
+    /// The token expired and this build cannot refresh it.
+    RefreshUnsupported,
+    /// The token expired and no CLI exists to refresh it.
+    CliMissing,
+    /// A refresh ran and the credential is still dead. Only a new sign-in fixes this.
+    SignInRequired,
+    /// The token expired and a delegated refresh has not run or settled yet.
+    RefreshPending,
 }
 
 /// Why a payload was rejected outright rather than partly believed.
