@@ -52,4 +52,32 @@ describe("TokenMap", () => {
     expect(container.querySelectorAll("circle.token-map-live")).toHaveLength(1)
     expect(container.querySelector("svg")?.getAttribute("data-dot-value")).toBe("250")
   })
+
+  it("crops the square to the rows in use", () => {
+    const layout = deriveTokenMap({
+      nowEpoch: 0,
+      windowSecs: 300,
+      sessions: [
+        {
+          agent: "claude-code",
+          sessionId: "s1",
+          title: null,
+          lastTurnEpoch: null,
+          tokensPerMin: 1_000,
+          modes: {
+            looking: 1,
+            running: 0,
+            changing: 0,
+            delegating: 0,
+            thinking: 0,
+            talking: 0,
+            other: 0,
+          },
+          subagents: [],
+        },
+      ],
+    })
+    const { container } = render(<TokenMap layout={layout} />)
+    expect(container.querySelector("svg")?.getAttribute("viewBox")).toBe("0 0 120 20")
+  })
 })

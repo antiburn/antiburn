@@ -14,11 +14,15 @@ export function TokenMap({
   layout: TokenMapLayout
   className?: string
 }) {
-  const size = layout.cells * UNIT
+  const width = layout.cells * UNIT
+  // Crop to the rows in use, so the dots stay close to the bars below.
+  const rows = layout.blobs.reduce((max, blob) => Math.max(max, blob.y + blob.h), 1)
+  const height = rows * UNIT
   return (
     <svg
-      viewBox={`0 0 ${size} ${size}`}
-      className={`block aspect-square w-full ${className}`.trimEnd()}
+      viewBox={`0 0 ${width} ${height}`}
+      className={`block w-full overflow-visible ${className}`.trimEnd()}
+      style={{ aspectRatio: `${width} / ${height}` }}
       aria-hidden="true"
       data-dot-value={layout.dotValue}
     >
