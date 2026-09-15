@@ -63,6 +63,7 @@ mod dto;
 mod fork_lineage;
 mod global_click;
 mod hud;
+mod hud_token_map;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;

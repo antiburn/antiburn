@@ -459,6 +459,20 @@ pub fn fingerprint_of(source: &SessionSource) -> String {
     format!("{mtime}:{}", metadata.len())
 }
 
+/// Fingerprint the parent transcript and all current sub-agent transcripts.
+pub(crate) async fn fingerprint_with_subagents(
+    agent: AgentKind,
+    session_id: &str,
+    wsl_distro: Option<&str>,
+    source: &SessionSource,
+) -> String {
+    let mut subagent_paths = Explorers::DISK
+        .list_subagents_in_environment(&agent, session_id, wsl_distro)
+        .await;
+    subagent_paths.sort();
+    combined_fingerprint(agent, source, &subagent_paths)
+}
+
 /// Build one stable fingerprint from a parent and its sorted child paths.
 fn combined_fingerprint(
     agent: AgentKind,
@@ -524,7 +538,7 @@ pub async fn locate(
 }
 
 /// Shape a located source into the raw payload the analysis layer reads.
-async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSource> {
+pub(crate) async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSource> {
     if agent == AgentKind::Cline
         && source_format(agent, source) == SourceFormat::ClineMessagesContractV1
     {
