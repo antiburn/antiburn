@@ -44,7 +44,14 @@ describe("TokenMap", () => {
       ],
     })
     const { container } = render(<TokenMap layout={layout} />)
+    const frame = container.querySelector("rect")!
     expect(container.querySelectorAll("rect")).toHaveLength(1)
+    // A full pill: the radius is half the shorter side, so no corner is square.
+    const shorter = Math.min(
+      Number(frame.getAttribute("width")),
+      Number(frame.getAttribute("height")),
+    )
+    expect(Number(frame.getAttribute("rx"))).toBe(shorter / 2)
     const circles = container.querySelectorAll("circle")
     expect(circles).toHaveLength(6)
     expect(container.querySelectorAll('circle[data-mode="looking"]')).toHaveLength(2)

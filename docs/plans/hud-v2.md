@@ -10,14 +10,14 @@ signals that item 8 needs and is planned separately.
 
 ## Status
 
-| Step                                                   | State       |
-| ------------------------------------------------------ | ----------- |
-| 0. Plan reviewed, open questions decided               | done        |
-| 0b. Token-map commits replayed onto `feat/hud-v2`      | done        |
-| A. Frame + round dots + mode palette retune (1, 2, 7)  | not started |
-| B. LED blink follows spend, in mode colour (3, 7)      | not started |
-| C. Agent boxes at LED scale, per-box detail (4, 5, 6)  | not started |
-| D. Edge dock: off-screen, wake on edge/activity/burn   | not started |
+| Step                                                  | State                    |
+| ----------------------------------------------------- | ------------------------ |
+| 0. Plan reviewed, open questions decided              | done                     |
+| 0b. Token-map commits replayed onto `feat/hud-v2`     | done                     |
+| A. Frame + round dots + mode palette retune (1, 2, 7) | built, untested by Keith |
+| B. LED blink follows spend, in mode colour (3, 7)     | not started              |
+| C. Agent boxes at LED scale, per-box detail (4, 5, 6) | not started              |
+| D. Edge dock: off-screen, wake on edge/activity/burn  | not started              |
 
 ## What Keith asked for
 
@@ -56,9 +56,9 @@ The HUD panel (`OverlayWindow.tsx`, the `rounded-xl border-transparent` div)
 gets a visible material: `bg-hud-frame` at 50% alpha with a 1 px `separator`
 hairline. New tokens in `hud.css` and `design.md`:
 
-| Token           | Light                | Dark                 |
-| --------------- | -------------------- | -------------------- |
-| `bg-hud-frame`  | `hsl(0 0% 100% / 0.5)` | `hsl(0 0% 0% / 0.5)` |
+| Token          | Light                  | Dark                 |
+| -------------- | ---------------------- | -------------------- |
+| `bg-hud-frame` | `hsl(0 0% 100% / 0.5)` | `hsl(0 0% 0% / 0.5)` |
 
 The frame is always on, not hover-only. The close ✕ keeps its own opaque
 `bg-hud` disc so it still reads on the translucent frame. The webview stays
@@ -78,11 +78,11 @@ mostly confirms the current state and pins it with a test.
 
 Three of the seven mode tokens break rule 7 today:
 
-| Mode         | Today                         | Problem            | Proposed                              |
-| ------------ | ----------------------------- | ------------------ | ------------------------------------- |
-| `changing`   | brand-tint (coral)            | coral is reserved  | `system-purple` (light/dark variants) |
-| `other`      | `system-orange`               | orange is reserved | `system-teal`                         |
-| `talking`    | black / white at 35–40% alpha | black/white banned | `system-mint`, dimmed to 60%          |
+| Mode       | Today                         | Problem            | Proposed                              |
+| ---------- | ----------------------------- | ------------------ | ------------------------------------- |
+| `changing` | brand-tint (coral)            | coral is reserved  | `system-purple` (light/dark variants) |
+| `other`    | `system-orange`               | orange is reserved | `system-teal`                         |
+| `talking`  | black / white at 35–40% alpha | black/white banned | `system-mint`, dimmed to 60%          |
 
 `looking` (blue), `running` (green), `delegating` (indigo), `thinking` (gold)
 stay. All seven then sit away from the burn orange and from each other. The

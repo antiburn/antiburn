@@ -33,7 +33,8 @@ export function TokenMap({
           y={blob.y * UNIT - FRAME_PAD}
           width={blob.w * UNIT + FRAME_PAD * 2}
           height={blob.h * UNIT + FRAME_PAD * 2}
-          rx={UNIT / 2}
+          // A full pill, so nothing on the HUD has a square corner.
+          rx={(Math.min(blob.w, blob.h) * UNIT + FRAME_PAD * 2) / 2}
           fill="none"
           stroke={frameColor(index)}
           strokeOpacity={0.55}

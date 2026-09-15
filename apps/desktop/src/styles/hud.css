@@ -8,6 +8,7 @@
   --color-burn-muted: var(--color-burn-muted-val);
   --color-bg-hud: var(--color-bg-hud-val);
   --color-bg-hud-hover: var(--color-bg-hud-hover-val);
+  --color-bg-hud-frame: var(--color-bg-hud-frame-val);
   --color-hud-control-ink: var(--color-hud-control-ink-val);
   --color-hud-control-edge: var(--color-hud-control-edge-val);
   --color-led-off: var(--color-led-off-val);
@@ -29,14 +30,14 @@
 
   /*
    * The unlit LED segment. The same mid grey in each theme, because the HUD
-   * paints no surface: a segment sits directly on the desktop. A near-white
+   * frame is half alpha: the desktop shows through it. A near-white
    * segment disappeared on a light document, and a near-black segment
    * disappeared on a dark one. Only a mid grey holds on both.
    */
   --color-led-off-val: hsl(0 0% 50% / 0.45);
 
   /*
-   * The two lines of the linear-use notch. The HUD paints no surface, so one
+   * The two lines of the linear-use notch. The desktop shows through the frame, so one
    * grey cannot hold on every background: a dark line disappears on a dark
    * document and a light line disappears on a light one. The notch draws both
    * lines, side by side, so one of the two always holds. Each line keeps its
@@ -49,6 +50,12 @@
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
 
   /*
+   * The HUD frame at rest. Half alpha, so the bars read as one object and
+   * the desktop still shows through. Reduced transparency makes it solid.
+   */
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.5);
+
+  /*
    * The close control. Its glyph and its edge carry no alpha, because the
    * label and separator inks are partly transparent: on the hover surface,
    * which is itself partly transparent, the control read as see-through.
@@ -59,11 +66,11 @@
   --color-hud-control-edge-val: hsl(0 0% 80%);
   --color-mode-looking-val: hsl(211.2 100% 50%);
   --color-mode-running-val: hsl(135 59% 34%);
-  --color-mode-changing-val: hsl(17.6 100% 58.6%);
+  --color-mode-changing-val: hsl(280 68% 60%);
   --color-mode-delegating-val: hsl(241 61% 58.8%);
   --color-mode-thinking-val: hsl(40.6 96% 40.4%);
-  --color-mode-talking-val: hsl(0 0% 0% / 0.35);
-  --color-mode-other-val: hsl(35 100% 50%);
+  --color-mode-talking-val: hsl(177 100% 39% / 0.6);
+  --color-mode-other-val: hsl(189 61% 48%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -72,6 +79,7 @@
     --color-burn-muted-val: hsl(23 88.8% 54%);
     --color-bg-hud-val: hsl(0 0% 12.5%);
     --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
+    --color-bg-hud-frame-val: hsl(0 0% 0% / 0.5);
     --color-hud-control-ink-val: hsl(0 0% 78%);
     --color-hud-control-edge-val: hsl(0 0% 32%);
     --color-led-off-val: hsl(0 0% 50% / 0.45);
@@ -79,11 +87,11 @@
     --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
     --color-mode-looking-val: hsl(210 100% 51.9%);
     --color-mode-running-val: hsl(135 70% 52.3%);
-    --color-mode-changing-val: hsl(17.6 100% 58.6%);
+    --color-mode-changing-val: hsl(280 85% 65%);
     --color-mode-delegating-val: hsl(241 73% 63%);
     --color-mode-thinking-val: hsl(48 100% 50%);
-    --color-mode-talking-val: hsl(0 0% 100% / 0.4);
-    --color-mode-other-val: hsl(36.4 100% 52%);
+    --color-mode-talking-val: hsl(178 72% 64% / 0.6);
+    --color-mode-other-val: hsl(189 72% 56%);
   }
 }
 
@@ -92,6 +100,7 @@
   --color-burn-muted-val: hsl(18.1 88% 51.4%);
   --color-bg-hud-val: hsl(0 0% 96.4%);
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.5);
   --color-hud-control-ink-val: hsl(0 0% 32%);
   --color-hud-control-edge-val: hsl(0 0% 80%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
@@ -99,11 +108,11 @@
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
   --color-mode-looking-val: hsl(211.2 100% 50%);
   --color-mode-running-val: hsl(135 59% 34%);
-  --color-mode-changing-val: hsl(17.6 100% 58.6%);
+  --color-mode-changing-val: hsl(280 68% 60%);
   --color-mode-delegating-val: hsl(241 61% 58.8%);
   --color-mode-thinking-val: hsl(40.6 96% 40.4%);
-  --color-mode-talking-val: hsl(0 0% 0% / 0.35);
-  --color-mode-other-val: hsl(35 100% 50%);
+  --color-mode-talking-val: hsl(177 100% 39% / 0.6);
+  --color-mode-other-val: hsl(189 61% 48%);
 }
 
 :root[data-theme="dark"] {
@@ -111,6 +120,7 @@
   --color-burn-muted-val: hsl(23 88.8% 54%);
   --color-bg-hud-val: hsl(0 0% 12.5%);
   --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
+  --color-bg-hud-frame-val: hsl(0 0% 0% / 0.5);
   --color-hud-control-ink-val: hsl(0 0% 78%);
   --color-hud-control-edge-val: hsl(0 0% 32%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
@@ -118,16 +128,39 @@
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
   --color-mode-looking-val: hsl(210 100% 51.9%);
   --color-mode-running-val: hsl(135 70% 52.3%);
-  --color-mode-changing-val: hsl(17.6 100% 58.6%);
+  --color-mode-changing-val: hsl(280 85% 65%);
   --color-mode-delegating-val: hsl(241 73% 63%);
   --color-mode-thinking-val: hsl(48 100% 50%);
-  --color-mode-talking-val: hsl(0 0% 100% / 0.4);
-  --color-mode-other-val: hsl(36.4 100% 52%);
+  --color-mode-talking-val: hsl(178 72% 64% / 0.6);
+  --color-mode-other-val: hsl(189 72% 56%);
 }
 
 /*
- * The HUD window shows the desktop behind it, so it paints no surface. The
- * shell paints the window surface on `#root`, so this must clear both: `body`
+ * Reduced transparency makes the frame solid. These follow the theme blocks
+ * above, because a media query adds no specificity.
+ */
+@media (prefers-reduced-transparency: reduce) {
+  :root,
+  :root[data-theme="light"] {
+    --color-bg-hud-frame-val: hsl(0 0% 96.4%);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg-hud-frame-val: hsl(0 0% 12.5%);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-theme="dark"] {
+    --color-bg-hud-frame-val: hsl(0 0% 12.5%);
+  }
+}
+
+/*
+ * The HUD window shows the desktop around its frame, so it paints no window
+ * surface. The shell paints one on `#root`, so this must clear both: `body`
  * keeps the canvas transparent, and `#root` drops the surface the shell gives
  * every other window.
  */
@@ -247,7 +280,7 @@ body[data-transparent-window] #root {
 }
 
 /*
- * The HUD window paints no surface, so the LEDs sit on the desktop behind it.
+ * The HUD frame is half alpha, so the desktop shows through behind the LEDs.
  * The desktop can be any color, and it can match a lit LED and hide it. Each
  * lit segment gets a 1px ring to hold it apart. An unlit segment gets no ring,
  * because it must stay quiet. A ring holds a small dot better than a shadow,

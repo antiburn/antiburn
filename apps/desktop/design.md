@@ -181,13 +181,16 @@ colors:
   bg-hud-hover: # the HUD surface on hover; the desktop stays visible through it
     light: "hsl(0 0% 96.4% / 0.9)"
     dark: "hsl(0 0% 12.5% / 0.9)"
+  bg-hud-frame: # the HUD frame at rest, half alpha; reduced-transparency: the bg-hud value
+    light: "hsl(0 0% 100% / 0.5)"
+    dark: "hsl(0 0% 0% / 0.5)"
   hud-control-ink: # the close control's glyph; no alpha, so it stays solid on the hover surface
     light: "hsl(0 0% 32%)"
     dark: "hsl(0 0% 78%)"
   hud-control-edge: # the close control's edge; no alpha, for the same reason
     light: "hsl(0 0% 80%)"
     dark: "hsl(0 0% 32%)"
-  led-off: # unlit LED segment; one mid grey for both themes, because the HUD paints no surface and floats over any background
+  led-off: # unlit LED segment; one mid grey for both themes, because the HUD frame is half alpha and floats over any background
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
   led-notch: # the dark line of the linear-use notch; one value for both themes, for the same reason as led-off
@@ -196,31 +199,32 @@ colors:
   led-notch-highlight: # the light line beside it; the pair reads on a light document and on a dark one
     light: "hsl(0 0% 100% / 0.85)"
     dark: "hsl(0 0% 100% / 0.85)"
-  # Token-map work modes: one colour per kind of work a turn did. Each mirrors
-  # a system colour above; they are separate tokens so the map can re-tune
-  # without moving product chrome. `talking` is a neutral: plain text is the
-  # quiet mode.
+  # Token-map work modes: one colour per kind of work a turn did. They are
+  # separate tokens so the map can re-tune without moving product chrome.
+  # None of them is orange, coral, black, or white: orange and coral mean
+  # burn, and black and white vanish on the desktop. `talking` is dimmed:
+  # plain text is the quiet mode.
   mode-looking: # read + search; mirrors system-blue
     light: "hsl(211.2 100% 50%)"
     dark: "hsl(210 100% 51.9%)"
   mode-running: # shell + tests; mirrors system-green
     light: "hsl(135 59% 34%)"
     dark: "hsl(135 70% 52.3%)"
-  mode-changing: # edits; mirrors brand-tint
-    light: "hsl(17.6 100% 58.6%)"
-    dark: "hsl(17.6 100% 58.6%)"
+  mode-changing: # edits; the system purple
+    light: "hsl(280 68% 60%)"
+    dark: "hsl(280 85% 65%)"
   mode-delegating: # sub-agent spawns and sub-agent turns; mirrors system-indigo
     light: "hsl(241 61% 58.8%)"
     dark: "hsl(241 73% 63%)"
   mode-thinking: # extended thinking with no tool; mirrors system-gold
     light: "hsl(40.6 96% 40.4%)"
     dark: "hsl(48 100% 50%)"
-  mode-talking: # plain assistant text
-    light: "hsl(0 0% 0% / 0.35)"
-    dark: "hsl(0 0% 100% / 0.4)"
-  mode-other: # MCP, skills, web; mirrors system-orange-tint
-    light: "hsl(35 100% 50%)"
-    dark: "hsl(36.4 100% 52%)"
+  mode-talking: # plain assistant text; the system mint at 60%
+    light: "hsl(177 100% 39% / 0.6)"
+    dark: "hsl(178 72% 64% / 0.6)"
+  mode-other: # MCP, skills, web; the system teal
+    light: "hsl(189 61% 48%)"
+    dark: "hsl(189 72% 56%)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-stroke: # the context line; a cool blue, lit at rest
     light: "hsl(221.2 83% 53.3%)"
@@ -1013,8 +1017,8 @@ Windows and Linux use native title bars without these attributes.
 
 ### Floating HUD LED rings
 
-The HUD window paints no surface at rest, so its LEDs sit directly on the
-desktop. The desktop can be any colour, and it can match a lit segment and hide
+The HUD frame is half alpha (`bg-hud-frame`), so the desktop shows through
+behind its LEDs. The desktop can be any colour, and it can match a lit segment and hide
 it. Each lit segment therefore takes a 1px ring at 75% alpha. A ring holds a 6px
 dot better than a blurred shadow, which only softens the edge at that size.
 Unlit segments take no ring, so they stay quiet.

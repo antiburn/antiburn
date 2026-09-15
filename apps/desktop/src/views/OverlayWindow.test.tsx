@@ -721,11 +721,13 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(44, false, true))
   })
 
-  it("takes a surface on hover and drops it on leave", async () => {
-    // At rest the bars sit on the desktop with nothing behind them. The
-    // surface arrives with the pointer and groups them into one object.
+  it("paints a half-alpha frame at rest and firms it up on hover", async () => {
+    // At rest the frame groups the bars into one object without hiding the
+    // desktop. The pointer firms the surface up.
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    expect(panel(container).classList.contains("bg-hud-frame")).toBe(true)
+    expect(panel(container).classList.contains("border-separator")).toBe(true)
     expect(panel(container).style.backgroundColor).toBe("")
     fireEvent.mouseEnter(frame(container))
     expect(panel(container).style.backgroundColor).toBe("var(--color-bg-hud-hover)")
