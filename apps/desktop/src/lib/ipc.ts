@@ -1080,6 +1080,47 @@ export async function isOverlayWorkActive(): Promise<boolean> {
   return invoke<boolean>("is_overlay_work_active")
 }
 
+/** Tokens per mode over the token-map window. Mirrors `HudModeTokens`. */
+export interface HudModeTokens {
+  looking: number
+  running: number
+  changing: number
+  delegating: number
+  thinking: number
+  talking: number
+  other: number
+}
+
+export interface HudTokenMapSubagent {
+  subagentId: string
+  tokensPerMin: number
+  modes: HudModeTokens
+}
+
+/** One session in the token map. `modes` covers the parent transcript only. */
+export interface HudTokenMapSession {
+  agent: string
+  sessionId: string
+  title: string | null
+  lastTurnEpoch: number | null
+  tokensPerMin: number
+  modes: HudModeTokens
+  subagents: HudTokenMapSubagent[]
+}
+
+export interface HudTokenMapPayload {
+  nowEpoch: number
+  windowSecs: number
+  /** Busiest first. */
+  sessions: HudTokenMapSession[]
+}
+
+/** Tokens per minute by mode for every session that wrote in the window. */
+export async function getHudTokenMap(windowSecs?: number): Promise<HudTokenMapPayload | null> {
+  if (!hasShell()) return null
+  return invoke<HudTokenMapPayload>("get_hud_token_map", { windowSecs })
+}
+
 /** One usage bar as the hover detail window renders it. */
 export interface HudDetailBar {
   key: string
