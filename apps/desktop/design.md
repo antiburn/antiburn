@@ -743,7 +743,9 @@ extends its hit area to 40px without increasing the toolbar height. Passed and S
 separators use 8px spacing on each side; collapsed headings have no bottom margin.
 Their disclosure controls retain a 40px minimum hit area.
 Resource cards use `session-card` fill, `rounded-control`, 16px padding, and 16px separation.
-Project context appears once; a keyboard-accessible folder popover reveals its shortened location.
+Project context appears once below the title and actions, using the full text-column width.
+Keep it on one line, truncating overflow while retaining the inline folder control.
+A keyboard-accessible folder popover reveals its shortened location.
 Failed sessions use the shared session cards without a separate heading, count badge, or disclosure.
 Show all available cards. Lists longer than five cards scroll within the measured height of the
 first five cards. Counts and dates use tabular numerals.
