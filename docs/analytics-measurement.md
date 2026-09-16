@@ -287,6 +287,22 @@ under the existing changed-tuple rule. Background learning keeps its current
 cadence and maximum volume. Historical coarse values cannot be reclassified;
 reports segment the refined mapping at its first app-version boundary.
 
+#### Model-scoped weekly lane detail (implemented 2026-09-16)
+
+The factor learner now tracks a lane for a provider's supplemental weekly
+window scoped to one model, such as Claude's "Fable" limit, alongside the
+existing five-hour and weekly account lanes. The product question is whether
+this app's estimate accuracy for a model-scoped lane differs from the
+account-wide ones, without ever naming the model itself.
+
+`antiburn.limit_factor_observed`'s `detail` property gains one closed value,
+`model`, reported for every `model:<slug>` lane the learning pass touches; the
+model name and its slug never reach the event. The existing `short` and `long`
+values are unchanged. The first-per-pair rule, the 24-hour minimum between
+events for the same pair, and the plan and band mappings all apply unchanged
+to a `(provider, model)` pair. Reports segment `detail=model` from `short` and
+`long` at this app version's boundary; no historical event can be reclassified.
+
 #### Burn Checks integration (implemented 2026-09-10)
 
 | Product question and decision                                                                                                                                          | Metric and denominator                                                                                                                                                                                                   | Trigger and closed fields                                                                                                                                                                                                                                                                                      | Suppression and maximum volume                                                                                                                                                                                                                                                                                   |

@@ -605,11 +605,13 @@ mod enabled {
 
     /// The lane detail `antiburn.limit_factor_observed` reports, matching the
     /// vocabulary `antiburn.usage_observed` already uses for the same window
-    /// roles.
+    /// roles. Every model-scoped weekly lane collapses to the single value
+    /// `model`, never the model name or its slug.
     fn limit_factor_lane_detail(lane: &str) -> Option<&'static str> {
         match lane {
             crate::store::provider_limit::LANE_FIVE_HOUR => Some("short"),
             crate::store::provider_limit::LANE_WEEKLY => Some("long"),
+            lane if lane.starts_with("model:") => Some("model"),
             _ => None,
         }
     }
@@ -626,7 +628,7 @@ mod enabled {
             .filter_map(|factor| {
                 let provider = LiveUsageProvider::from_provider_id(&factor.provider)?;
                 let label = provider.as_str();
-                let detail = limit_factor_lane_detail(factor.lane)?;
+                let detail = limit_factor_lane_detail(&factor.lane)?;
                 Some(LimitFactorObservation {
                     label,
                     detail,
@@ -2137,7 +2139,7 @@ mod enabled {
         ) -> LearnedFactor {
             LearnedFactor {
                 provider: provider.to_string(),
-                lane,
+                lane: lane.to_string(),
                 usd_per_percent,
                 plan: plan.map(str::to_string),
                 plan_tier: plan_tier.map(str::to_string),
@@ -2165,6 +2167,21 @@ mod enabled {
                     residual_band: "within_5",
                 }]
             );
+        }
+
+        #[test]
+        fn a_model_scoped_lane_reports_the_single_detail_value_model_never_the_slug() {
+            let learned = vec![learned_factor(
+                crate::provider_usage::providers::ANTHROPIC,
+                "model:fable",
+                5.0,
+                None,
+                None,
+                None,
+            )];
+            let candidates = limit_factor_observed_candidates(&learned);
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].detail, "model");
         }
 
         #[test]
