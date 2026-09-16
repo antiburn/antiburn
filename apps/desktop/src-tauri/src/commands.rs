@@ -1304,6 +1304,7 @@ fn session_analysis(
         relations: (!relations.is_empty()).then_some(relations),
         started_at_epoch: analysis.started_at_epoch,
         source_path: stored_source_path(stored.as_ref()),
+        project_path: stored_project_path(stored.as_ref()),
         analysis_pending,
         analysis_stale,
     })
@@ -1316,6 +1317,14 @@ fn stored_source_path(stored: Option<&SessionRecord>) -> Option<String> {
     stored
         .filter(|record| record.source_kind == "file")
         .map(|record| record.source_label.clone())
+}
+
+/// Keep the recorded path available when a worktree no longer exists.
+fn stored_project_path(stored: Option<&SessionRecord>) -> Option<String> {
+    stored
+        .and_then(|record| record.cwd.as_ref())
+        .filter(|path| Path::new(path).is_absolute())
+        .cloned()
 }
 
 /// One sub-agent's own analysis, opened from the roster.
@@ -1386,6 +1395,7 @@ fn subagent_analysis(
         relations: None,
         started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
+        project_path: None,
         analysis_pending,
         analysis_stale,
     })
@@ -2681,6 +2691,28 @@ pub fn reveal_source(app: tauri::AppHandle, path: String) -> CommandResult<()> {
     app.opener().reveal_item_in_dir(target).map_err(fail)
 }
 
+/// Open an existing directory in the system file manager.
+#[tauri::command]
+pub async fn open_project_folder(app: tauri::AppHandle, path: String) -> CommandResult<()> {
+    run_blocking(move || {
+        let target = project_directory(&path)?;
+        let target = target
+            .into_os_string()
+            .into_string()
+            .map_err(|_| "The project path is not valid Unicode".to_string())?;
+        app.opener().open_path(target, None::<&str>).map_err(fail)
+    })
+    .await
+}
+
+fn project_directory(path: &str) -> CommandResult<PathBuf> {
+    let target = revealable_path(path)?;
+    if !target.is_dir() {
+        return Err("The project path is not a directory".into());
+    }
+    Ok(target)
+}
+
 /// Validate and resolve a path before it is handed to the platform opener.
 ///
 /// Absolute, existing, and canonical — in that order. Relative paths are
@@ -2886,6 +2918,7 @@ mod tests {
             affected_sessions: 3,
             project_name: None,
             project_location: None,
+            project_path: None,
             auto_fix: AutoFixAvailability::Unavailable(
                 crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
             ),
@@ -3174,6 +3207,24 @@ mod tests {
             fork_parent_session_id: None,
             source_fingerprint: None,
         }
+    }
+
+    #[test]
+    fn stored_project_path_preserves_missing_worktrees_and_ignores_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("missing worktree")
+            .to_string_lossy()
+            .into_owned();
+        let mut record = session_record("file", "/transcript/session.jsonl");
+        record.cwd = Some(path.clone());
+        assert_eq!(stored_project_path(Some(&record)), Some(path));
+        record.cwd = Some("relative/project".into());
+        assert_eq!(stored_project_path(Some(&record)), None);
+        record.cwd = None;
+        assert_eq!(stored_project_path(Some(&record)), None);
+        assert_eq!(stored_project_path(None), None);
     }
 
     #[test]
@@ -3808,6 +3859,42 @@ mod tests {
                 "the fixture must price the fast tier differently for this test to mean anything"
             );
             assert_eq!(weekly.percent, fast_cost.total_usd / 2.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod project_folder_tests {
+    use super::*;
+
+    #[test]
+    fn project_directory_accepts_directories_and_rejects_other_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(project_directory(dir.path().to_str().unwrap()).is_ok());
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "fixture").unwrap();
+        assert!(project_directory(file.to_str().unwrap()).is_err());
+        assert!(project_directory(dir.path().join("missing").to_str().unwrap()).is_err());
+        for path in ["", "relative/folder", "https://example.com", "file:///tmp"] {
+            assert!(project_directory(path).is_err());
+        }
+    }
+
+    #[test]
+    fn project_folder_analytics_rejects_path_fields_and_unknown_values() {
+        use crate::analytics::event::Interaction;
+        for value in [
+            serde_json::json!({"kind":"projectFolderAction","action":"open","outcome":"succeeded"}),
+            serde_json::json!({"kind":"projectFolderAction","action":"copy","outcome":"failed"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_ok());
+        }
+        for value in [
+            serde_json::json!({"kind":"projectFolderAction","action":"open","outcome":"succeeded","path":"/private/work"}),
+            serde_json::json!({"kind":"projectFolderAction","action":"delete","outcome":"succeeded"}),
+            serde_json::json!({"kind":"projectFolderAction","action":"copy","outcome":"unknown"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_err());
         }
     }
 }

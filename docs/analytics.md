@@ -426,3 +426,13 @@ later opt-in starts an identity that cannot be linked to the old one.
 | Endpoint configuration, and why a clean checkout is inert | [`analytics/config.rs`](../apps/desktop/src-tauri/src/analytics/config.rs) |
 | The setting, and the upgrade rule for existing installs   | [`store/mod.rs`](../apps/desktop/src-tauri/src/store/mod.rs)               |
 | The reader-facing copy                                    | [`PrivacyPane.tsx`](../apps/desktop/src/views/settings/PrivacyPane.tsx)    |
+
+### Project folder actions
+
+`antiburn.project_folder_action` records each explicit open or copy attempt after
+its native operation settles. `properties.label` is `open` or `copy`;
+`properties.detail` is `succeeded` or `failed`. It contains no path, folder name,
+session identifier, or error text. Hover and keyboard inspection emit nothing.
+A successful open means the OS accepted the request, not that the user viewed
+the folder. Failed requests remain retryable. This event measures action use and
+failure rates among consenting, configured builds, not folder-panel exposure.

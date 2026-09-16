@@ -418,9 +418,23 @@ pub(super) fn project_location(path: &Path) -> Option<String> {
     Some(format!("…/{parent}/{name}"))
 }
 
+pub(super) fn project_path(path: &Path) -> Option<String> {
+    path.is_absolute()
+        .then(|| path.to_str().map(str::to_owned))
+        .flatten()
+}
+
 #[cfg(test)]
 mod project_name_tests {
     use super::*;
+
+    #[test]
+    fn folder_actions_keep_the_full_local_path_even_after_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing project");
+        assert_eq!(project_path(&path), path.to_str().map(str::to_owned));
+        assert_eq!(project_path(Path::new("relative/project")), None);
+    }
 
     #[test]
     fn shows_only_a_sanitized_project_name() {

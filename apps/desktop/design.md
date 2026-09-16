@@ -766,18 +766,18 @@ while keeping its existing navigation behavior.
 Burn checks keeps a screen-reader-only page heading and a compact collection header.
 Both panes use `CollectionToolbar`: `pt-2`, `h-8`, `mb-1`, and `px-3` share Tailwind’s
 rem-based geometry. At the 13px root these resolve to 6.5px, 26px, 3.25px, and 9.75px.
-Burn checks adds no first-card top inset. Labels use `type-caption`; the info control
-extends its hit area to 40px without increasing the toolbar height. Passed and Snoozed
+Burn checks adds no first-card top inset. Labels use `type-caption`. Passed and Snoozed
 separators use 8px spacing on each side; collapsed headings have no bottom margin.
 Their disclosure controls retain a 40px minimum hit area.
 Resource cards use `session-card` fill, `rounded-control`, 16px padding, and 16px separation.
 Project context appears once below the title and actions, using the full text-column width.
 Keep it on one line, truncating overflow while retaining the inline folder control.
-A keyboard-accessible folder popover reveals its shortened location.
+The folder hover panel reveals the full recorded local path and supports open/copy actions
+on pointer hover or keyboard focus.
 Failed sessions use the shared session cards without a separate heading, count badge, or disclosure.
 Show all available cards. Lists longer than five cards scroll within the measured height of the
 first five cards. Counts and dates use tabular numerals.
-The project row keeps a 26px visible folder control with a 40px hit area and a `mt-1` count gap.
+The project row keeps a bare 14px folder icon in a 20px target and a `mt-1` count gap.
 Resource titles use a 16px vendor column and an 8px gap. Center each vendor against the
 first title line. Metadata, affected counts, and session cards share the title text column.
 Leave 8px before the session list.
@@ -984,8 +984,9 @@ metadata through the same presentation component. They also show “N session(s)
 from the report’s per-session finding count.
 Named MCP and skill checks append “affected resource” counts, with “shown” for truncated lists.
 Lead with affected sessions, then the shared check metadata. Explain the named check once in its header.
-Show each resource’s sanitized project name and two-component folder suffix when available.
-Keep full private paths and secret-looking components out of the renderer. Do not infer configuration filenames.
+Show each resource’s sanitized project name when available. The local folder panel and
+its explicit actions use the full recorded project path; other display labels remain sanitized.
+Do not infer configuration filenames.
 Show its distinct affected-session count from the backend, never the occurrence or sample count.
 Keep generic recommendations outside resource rows; retain cost, availability, and verification details.
 Show session cards directly without a failed-session heading or disclosure.
@@ -1064,3 +1065,28 @@ Inside the HUD, unlit segments raise `led-off` to full opacity. The token keeps
 its 45% alpha everywhere else, because the popover and the detail card paint
 their own surfaces to hold it. The HUD has none. These ring and opacity values
 are local to `src/styles/hud.css` and are not palette or shadow tokens.
+
+### Project folder actions
+
+Session and Burn Check project rows have a bare 14px folder icon in a 20px target. The folder
+panel opens after 300ms of pointer hover or immediately on keyboard focus.
+A 200ms leave delay lets the pointer cross the 8px gap into the panel. It stays
+open while the pointer or focus is inside. Escape, outside press, window blur,
+viewport resize, and surrounding scroll dismiss it. Hover never moves focus.
+
+The shared `.ui-menu` surface uses an opaque `surface-window`, `shadow-popover`,
+and `rounded-popover`, with no entry animation. The body portal uses layer 100
+and favors the detail pane when its 390px maximum width fits. It clamps to the
+window with 8px clearance and flips above the trigger when needed. Content size
+changes update its placement, including inline errors. The panel
+scrolls internally when its contents exceed the available window height.
+
+The header holds the Project folder label and bare open-folder and copy icons.
+Both use 14px glyphs, 20px targets, 8px separation, and color-only hover feedback.
+These compact desktop targets follow the approved bare-icon design. Keep button
+semantics and keyboard focus indicators without visible button chrome or press
+scaling. Action tooltips name the host file manager and Copy path. Copy success
+replaces its icon with a check for two seconds and announces the result. Errors
+stay inline. The selectable monospace path prefers directory-boundary wraps and
+gives the final directory primary ink. No path, folder name, or error text enters
+analytics. Unknown project paths hide the control; deleted paths remain copyable.
