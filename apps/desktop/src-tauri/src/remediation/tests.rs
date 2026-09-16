@@ -301,6 +301,7 @@ fn current_platform_matches_the_compile_target() {
     assert_eq!(current_editor_platform(), "windows");
 }
 
+#[cfg(not(windows))]
 #[test]
 fn indexed_resource_target_enables_auto_fix_for_the_exact_effective_entry() {
     let temporary = tempfile::tempdir().unwrap();
