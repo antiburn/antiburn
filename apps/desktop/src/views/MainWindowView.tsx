@@ -129,6 +129,9 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   // in MainWindowNavigationSession. A cross-window request always targets a
   // real MainWindowSectionId, so a fresh one always means "leave Quota".
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null)
+  // Stays true once Quota is first selected, so leaving it for another
+  // section keeps it mounted instead of tearing it down and refetching.
+  const [quotaVisited, setQuotaVisited] = useState(false)
   const [previousNavigationSelected, setPreviousNavigationSelected] = useState(
     navigation.selected,
   )
@@ -212,7 +215,9 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const selectedId = sections ? customSelectedId : (localSelectedId ?? navigation.selected)
   const visited: ReadonlySet<string> = sections
     ? customVisited
-    : new Set(localSelectedId ? [...navigation.visited, localSelectedId] : navigation.visited)
+    : new Set(
+        quotaVisited ? [...navigation.visited, LOCAL_ONLY_SECTION_ID] : navigation.visited,
+      )
   function selectSection(id: string): void {
     if (sections) {
       if (!availableSections.some((section) => section.id === id)) return
@@ -222,6 +227,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     }
     if (id === LOCAL_ONLY_SECTION_ID) {
       setLocalSelectedId(id)
+      setQuotaVisited(true)
       return
     }
     setLocalSelectedId(null)

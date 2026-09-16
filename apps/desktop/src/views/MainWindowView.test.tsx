@@ -382,5 +382,15 @@ describe("MainWindowView", () => {
         "true",
       )
     })
+
+    it("keeps Quota mounted after navigating away, instead of unmounting it", () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Quota"))
+      expect(document.querySelector("#quota-panel h1")).not.toBeNull()
+      fireEvent.click(tab("Checks"))
+      // Quota is hidden, not selected, but its content stays in the DOM: a
+      // return visit must not tear it down and refetch.
+      expect(document.querySelector("#quota-panel h1")).not.toBeNull()
+    })
   })
 })
