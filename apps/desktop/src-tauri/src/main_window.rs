@@ -1685,6 +1685,7 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
     ) {
         return;
     }
+    ::tracing::info!(event = "main_window_open_source", source = "app_activation");
     if let Err(error) = open(app, OpenTrigger::Interaction) {
         ::tracing::warn!(event = "main_window_activation_restore_failed", error = %error);
     }
@@ -1701,6 +1702,9 @@ fn window_is_visible(app: &AppHandle, label: &str) -> bool {
 /// activation, so the main window stays where it was.
 #[cfg(target_os = "macos")]
 fn hud_owns_activation(app: &AppHandle) -> bool {
+    if antiburn_hud::detail_requested() {
+        return true;
+    }
     [antiburn_hud::OVERLAY_LABEL, antiburn_hud::DETAIL_LABEL]
         .into_iter()
         .filter_map(|label| app.get_webview_window(label))

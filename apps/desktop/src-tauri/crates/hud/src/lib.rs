@@ -859,6 +859,16 @@ const DETAIL_MAX_HEIGHT: f64 = 600.0;
 #[cfg(target_os = "macos")]
 static DETAIL_SHOULD_SHOW: AtomicBool = AtomicBool::new(false);
 
+/// Report whether a detail show is requested or on screen.
+///
+/// The shell reads this when the app becomes active. The detail window
+/// activates the app before it is visible, so a visibility check alone lets
+/// the shell mistake a hover for a request to restore the main window.
+#[cfg(target_os = "macos")]
+pub fn detail_requested() -> bool {
+    DETAIL_SHOULD_SHOW.load(Ordering::Relaxed)
+}
+
 /// The newest detail payload, kept for a detail webview that mounts late.
 ///
 /// The first show request creates the window, so the webview subscribes after
