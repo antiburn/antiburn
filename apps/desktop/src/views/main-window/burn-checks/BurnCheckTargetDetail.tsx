@@ -58,10 +58,9 @@ export function BurnCheckTargetDetail({
       </div>
       <div className="burn-check-resource-metadata min-w-0">
         <div className="flex items-center gap-1.5 type-callout text-label-tertiary">
-          <span className="min-w-0 truncate">
-            {reportRow && target.display.scopeKind === "project"
-              ? "Project"
-              : scopeLabel(target.display.scopeKind)}
+          <span className="min-w-0 wrap-anywhere">
+            {scopeLabel(target.display.scopeKind)}
+            {target.configFile && ` (${target.configFile})`}
             {reportRow && target.projectName && (
               <span className="text-label"> · {target.projectName}</span>
             )}

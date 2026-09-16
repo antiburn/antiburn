@@ -52,25 +52,25 @@ export function targetTitle(target: BurnCheckTargetPayload): string {
 export function watchStatus(target: BurnCheckTargetPayload): string | null {
   const watch = target.watch
   if (watch?.lifecycle === "waitingForPromptUse") {
-    return "The prompt is ready. Verification starts after its reference appears in a later user message."
+    return "The prompt is ready. Verification starts after you use it."
   }
   const verification = watch?.verification
   if (!verification) return null
   switch (verification.status) {
     case "reserved":
-      return "The change is reserved. Verification has not started."
+      return "Verification has not started."
     case "watching":
-      return "Awaiting verification from a later complete session."
+      return "Waiting for a later complete session."
     case "fixed":
       return watch.origin === "passive" ? "Verified improvement." : "Verified after your fix."
     case "stillUnresolved":
-      return "Fresh evidence still shows this finding."
+      return "A later session still has this finding."
     case "recurred":
-      return "This finding returned after it was verified."
+      return "This finding returned."
     case "recoveryNeeded":
-      return "The write result is uncertain. Review the setting before another change."
+      return null
     case "verificationUnavailable":
-      return "Current evidence cannot verify this fix."
+      return null
   }
 }
 

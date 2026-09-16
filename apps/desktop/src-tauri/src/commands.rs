@@ -2933,6 +2933,7 @@ mod tests {
             project_name: None,
             project_location: None,
             project_path: None,
+            config_file: None,
             auto_fix: AutoFixAvailability::Unavailable(
                 crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
             ),

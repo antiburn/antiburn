@@ -232,6 +232,7 @@ export interface BurnCheckTargetPayload {
   projectLocation?: string | null
   /** Full local directory for explicit folder actions. Never send to analytics. */
   projectPath?: string | null
+  configFile?: string | null
   autoFix: AutoFixAvailabilityPayload
   promptFix: PromptFixAvailabilityPayload
   watch: BurnCheckWatchPayload | null

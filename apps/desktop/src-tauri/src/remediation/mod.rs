@@ -183,6 +183,7 @@ struct CachedConfig {
     additional_contexts: Vec<ConfigContext>,
     operation: ConfigOperation,
     physical_key: String,
+    display_path: String,
 }
 
 struct TargetIdentity {
@@ -430,6 +431,10 @@ impl RemediationController {
                             .and_then(display::project_path)
                     })
                     .flatten(),
+                config_file: target
+                    .config
+                    .as_ref()
+                    .map(|config| config.display_path.clone()),
                 auto_fix,
                 prompt_fix: match remediation_prompt(&target.findings[0].finding) {
                     Ok(_) => PromptFixAvailability::Available,
@@ -550,6 +555,10 @@ impl RemediationController {
                 project_name,
                 project_location: None,
                 project_path: None,
+                config_file: target
+                    .config
+                    .as_ref()
+                    .map(|config| config.display_path.clone()),
                 auto_fix,
                 prompt_fix: match remediation_prompt(target.finding()) {
                     Ok(_) => PromptFixAvailability::Available,
@@ -1266,11 +1275,16 @@ impl RemediationController {
                         if attributed_key == &key
                             && identity.scope_kind == scope_name(effective.scope)
                         {
+                            let display_path = display_config_file(
+                                effective.physical_identity().0,
+                                &context.home_root,
+                            );
                             config = Some(CachedConfig {
                                 context: context.clone(),
                                 additional_contexts: Vec::new(),
                                 operation: operation.clone(),
                                 physical_key: key,
+                                display_path,
                             });
                         }
                     } else {
@@ -1283,11 +1297,16 @@ impl RemediationController {
                             effective.scope,
                             &key,
                         );
+                        let display_path = display_config_file(
+                            effective.physical_identity().0,
+                            &context.home_root,
+                        );
                         config = Some(CachedConfig {
                             context: context.clone(),
                             additional_contexts: Vec::new(),
                             operation: operation.clone(),
                             physical_key: key,
+                            display_path,
                         });
                     }
                 } else if attributed_physical_key.is_none()
@@ -1306,11 +1325,13 @@ impl RemediationController {
                         ConfigScope::Global,
                         &key,
                     );
+                    let display_path = display_config_file(prepared.physical_identity().0, home);
                     config = Some(CachedConfig {
                         context,
                         additional_contexts: Vec::new(),
                         operation,
                         physical_key: key,
+                        display_path,
                     });
                 }
             }
@@ -1432,11 +1453,13 @@ impl RemediationController {
                     effective.scope,
                     &key,
                 );
+                let display_path = display_config_file(effective.physical_identity().0, home);
                 config = Some(CachedConfig {
                     context: config_context,
                     additional_contexts: Vec::new(),
                     operation,
                     physical_key: key,
+                    display_path,
                 });
             }
         }

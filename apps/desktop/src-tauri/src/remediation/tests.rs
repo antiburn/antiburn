@@ -462,6 +462,7 @@ fn missing_global_creation_revalidates_each_project_context() {
         additional_contexts: vec![second_context.clone()],
         operation,
         physical_key,
+        display_path: "~/.claude/settings.json".to_owned(),
     };
 
     assert!(

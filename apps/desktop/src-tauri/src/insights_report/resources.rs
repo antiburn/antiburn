@@ -167,6 +167,7 @@ struct SessionContext<'a> {
 pub(crate) struct ResourceAssessmentBuilder {
     candidates: BTreeMap<ResourceTargetKey, CandidateState>,
     uses: BTreeMap<ObservedUseKey, Vec<ResourceSupportingSession>>,
+    session_samples: BTreeMap<(AgentKind, Option<PathBuf>), Vec<ResourceSupportingSession>>,
     limited: BTreeSet<(AgentKind, ResourceKind)>,
     scanned: BTreeSet<(AgentKind, ResourceKind)>,
     cohort_agents: BTreeSet<AgentKind>,
@@ -250,6 +251,32 @@ impl ResourceAssessmentBuilder {
             project_root,
             observed_at_ms,
         };
+        let sample = session_sample(&context);
+        merge_samples(
+            self.session_samples.entry((agent, None)).or_default(),
+            [sample.clone()],
+        );
+        if let Some(project_root) = project_root {
+            merge_samples(
+                self.session_samples
+                    .entry((agent, Some(project_root.to_owned())))
+                    .or_default(),
+                [sample],
+            );
+        }
+        for (key, state) in &mut self.candidates {
+            let matching_scope = match (&key.scope, project_root) {
+                (ResourceAssessmentScope::Global, _) => true,
+                (ResourceAssessmentScope::Project(root), Some(project_root)) => {
+                    root == project_root
+                }
+                (ResourceAssessmentScope::Project(_), None) => false,
+            };
+            if key.agent != agent || !matching_scope {
+                continue;
+            }
+            merge_samples(&mut state.supporting_sessions, [session_sample(&context)]);
+        }
 
         self.observe_tool_uses(&context, evidence);
         self.observe_context_sources(&context, evidence);
@@ -381,10 +408,15 @@ impl ResourceAssessmentBuilder {
                     .count() as u64,
                 ..ResourceDetectorAssessment::default()
             };
+            let mut missing_supporting_session = false;
             let mut replicated_tokens_by_session = Some(BTreeMap::<usize, u128>::new());
             assessment.truncated = self.candidate_cap_exceeded.contains(&kind);
             for (key, state) in candidates {
                 if used.contains(key) || ambiguous.contains(key) {
+                    continue;
+                }
+                if state.supporting_sessions.is_empty() {
+                    missing_supporting_session = true;
                     continue;
                 }
                 if assessment.targets.len() == MAX_RESOURCE_TARGETS_PER_DETECTOR {
@@ -431,6 +463,8 @@ impl ResourceAssessmentBuilder {
                     supporting_sessions: state.supporting_sessions.clone(),
                 });
             }
+            assessment.truncated |= missing_supporting_session;
+            assessment.unused_count = assessment.targets.len() as u64;
             assessment.replicated_tokens_by_session = (!assessment.truncated)
                 .then_some(replicated_tokens_by_session)
                 .flatten();
@@ -490,6 +524,14 @@ impl ResourceAssessmentBuilder {
         scope: ResourceAssessmentScope,
         sample: Option<ResourceSupportingSession>,
     ) {
+        if resource.kind == ResourceKind::BuiltInTool
+            && !antiburn_local::analysis::tool_catalog::optional_built_in_tool(
+                resource.agent.slug(),
+                &resource.canonical_name,
+            )
+        {
+            return;
+        }
         let key = ResourceTargetKey {
             agent: resource.agent,
             kind: resource.kind,
@@ -524,6 +566,15 @@ impl ResourceAssessmentBuilder {
                 observations: 0,
                 supporting_sessions: Vec::new(),
             });
+        let scope_samples = match &state.scope {
+            ResourceAssessmentScope::Global => self.session_samples.get(&(resource.agent, None)),
+            ResourceAssessmentScope::Project(root) => self
+                .session_samples
+                .get(&(resource.agent, Some(root.clone()))),
+        };
+        if let Some(samples) = scope_samples {
+            merge_samples(&mut state.supporting_sessions, samples.iter().cloned());
+        }
         for provenance in &resource.provenance {
             if !state.resource.provenance.contains(provenance) {
                 state.resource.provenance.push(*provenance);

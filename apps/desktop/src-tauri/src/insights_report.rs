@@ -2338,7 +2338,7 @@ mod tests {
                             injected: true,
                             invoked: false,
                             token_count: None,
-                            origin: EvidenceValue::Unsupported,
+                            origin: EvidenceValue::Complete(SourceOrigin::User),
                         },
                     );
                 }

@@ -200,7 +200,8 @@ The desktop also has a bounded read-only advisory resource inventory for native
 Claude Code, Codex, OpenCode, and Pi contexts. It returns logical MCP server,
 skill, and built-in tool candidates with current enabled state, global or
 project scope, provenance, and explicit limits. It returns no path, selector, or
-writable target. Skill candidates can carry a proportional estimate for listing
+writable target. A displayed unused resource also needs a supporting failed
+session. Skill candidates can carry a proportional estimate for listing
 frontmatter only. The body is not read for the estimate. This inventory is not
 session evidence.
 

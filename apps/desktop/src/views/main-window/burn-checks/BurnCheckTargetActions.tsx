@@ -14,7 +14,6 @@ import {
   copyPromptFixBurnCheckTarget,
   prepareAutoFixBurnCheckTarget,
   type AutoFixReviewPayload,
-  type AutoFixUnavailableReason,
   type BurnCheckTargetPayload,
 } from "../../../lib/insightsIpc"
 import { BurnCheckReviewDialog } from "./BurnCheckReviewDialog"
@@ -31,29 +30,6 @@ type ActionState = {
   applied: boolean
   status: string | null
 }
-
-type FailedCommandOutcome<Outcome, Success extends string> = Exclude<
-  Outcome,
-  null | { outcome: Success }
->
-
-type FailedApplyOutcome = Exclude<
-  Awaited<ReturnType<typeof applyPreparedBurnCheckOperation>>,
-  null | { outcome: "appliedAwaitingVerification" } | { outcome: "applied" }
->
-
-type FailureInput =
-  | {
-      stage: "prepare"
-      outcome: FailedCommandOutcome<
-        Awaited<ReturnType<typeof prepareAutoFixBurnCheckTarget>>,
-        "reviewReady"
-      > | null
-    }
-  | {
-      stage: "apply"
-      outcome: FailedApplyOutcome | null
-    }
 
 function attemptKey(target: BurnCheckTargetPayload): string {
   const watch = target.watch
@@ -101,45 +77,6 @@ function promptAnalytics(
 ): PromptPreparationAnalyticsOutcome {
   if (!outcome) return "failed"
   return outcome.outcome === "promptReady" ? "ready" : outcome.outcome
-}
-
-function unavailableMessage(reason: AutoFixUnavailableReason): string {
-  switch (reason) {
-    case "activeWatch":
-      return "Another change for this finding is already being checked."
-    case "safetyCheckFailed":
-      return "The current setting no longer passes the write safety check."
-    case "targetNotFound":
-      return "This exact setting is no longer available."
-    case "unsupportedOrUnprovenTarget":
-      return "Antiburn can no longer prove a safe write target."
-  }
-}
-
-function commandFailure({ stage, outcome }: FailureInput): string {
-  if (!outcome) {
-    return stage === "prepare"
-      ? "Could not prepare this change. Try again."
-      : "Could not confirm the result. Check the setting before you try again."
-  }
-  switch (outcome.outcome) {
-    case "recoveryNeeded":
-      return "The write result is uncertain. Review the setting before another change."
-    case "expired":
-      return stage === "prepare"
-        ? "Checking the current change."
-        : "Checking the current change before another review."
-    case "stale":
-      return stage === "prepare"
-        ? "Checking the current change."
-        : "Checking the current change before another review."
-    case "conflict":
-      return stage === "prepare"
-        ? "Another prepared change conflicts with this setting. Refresh and review it again."
-        : "Another change now conflicts with this operation. Close this review and check the setting."
-    case "unavailable":
-      return unavailableMessage(outcome.reason)
-  }
 }
 
 export function BurnCheckTargetActions({
@@ -234,21 +171,13 @@ export function BurnCheckTargetActions({
           reviewBlocked: false,
         }))
       } else {
-        setAction((value) => ({
-          ...value,
-          busy: null,
-          status: commandFailure({ stage: "prepare", outcome }),
-        }))
+        setAction((value) => ({ ...value, busy: null, status: null }))
         if (outcome?.outcome === "expired" || outcome?.outcome === "stale") refresh()
       }
     } catch {
       noteInteraction({ kind: "burnCheckAutoFixReviewed", outcome: "failed" })
       if (completionIsStale(startedAttemptKey)) return
-      setAction((value) => ({
-        ...value,
-        busy: null,
-        status: commandFailure({ stage: "prepare", outcome: null }),
-      }))
+      setAction((value) => ({ ...value, busy: null, status: null }))
     }
   }
 
@@ -280,10 +209,7 @@ export function BurnCheckTargetActions({
             acceptedWatchId: watchId,
             busy: null,
             review: null,
-            status:
-              outcome.outcome === "applied"
-                ? "Change applied. Current evidence cannot verify this fix."
-                : null,
+            status: outcome.outcome === "applied" ? "Change applied." : null,
           }))
         })
         trigger.current?.focus()
@@ -298,7 +224,7 @@ export function BurnCheckTargetActions({
           outcome?.outcome === "recoveryNeeded" ? outcome.watchId : value.acceptedWatchId,
         busy: null,
         reviewBlocked: true,
-        status: commandFailure({ stage: "apply", outcome }),
+        status: null,
       }))
       if (outcome?.outcome === "recoveryNeeded") refresh()
       if (outcome?.outcome === "expired" || outcome?.outcome === "stale") {
@@ -312,7 +238,7 @@ export function BurnCheckTargetActions({
         ...value,
         busy: null,
         reviewBlocked: true,
-        status: commandFailure({ stage: "apply", outcome: null }),
+        status: null,
       }))
     }
   }

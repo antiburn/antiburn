@@ -24,6 +24,7 @@ pub struct BurnCheckTarget {
     pub project_name: Option<String>,
     pub project_location: Option<String>,
     pub project_path: Option<String>,
+    pub config_file: Option<String>,
     pub auto_fix: AutoFixAvailability,
     pub prompt_fix: PromptFixAvailability,
     pub watch: Option<WatchStatus>,

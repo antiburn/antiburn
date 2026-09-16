@@ -36,9 +36,7 @@ type ReportUiState = {
 }
 
 function isUnusedResourceDetector(id: ChecksCategoryPayload["id"]) {
-  return (
-    id === "unusedMcpServers" || id === "unusedBuiltInTools" || id === "unusedSkills"
-  )
+  return id === "unusedMcpServers" || id === "unusedBuiltInTools" || id === "unusedSkills"
 }
 
 function LoadingCheckDetail() {
@@ -102,7 +100,9 @@ function CheckDetailContent({
           {`No finding in ${check.clean} complete sessions.`}
         </p>
         {remediation?.outcome === "passed" && remediation.origin === "action" && (
-          <p className="mt-1 type-footnote text-burn-check-pass-fill">Verified after your fix.</p>
+          <p className="mt-1 type-footnote text-burn-check-pass-fill">
+            Verified after your fix.
+          </p>
         )}
       </div>
     )
@@ -172,10 +172,15 @@ function CheckDetail({
   const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
   const targetList = state.targets[check.id]?.data
   const named = isUnusedResourceDetector(check.id)
-  const resourceName = "affected resource"
+  const resourceNames =
+    check.id === "unusedSkills"
+      ? ["skill", "skills"]
+      : check.id === "unusedMcpServers"
+        ? ["MCP server", "MCP servers"]
+        : ["tool", "tools"]
   const resourceCount =
     named && targetList
-      ? `${targetList.targets.length} ${resourceName}${targetList.targets.length === 1 ? "" : "s"}${targetList.truncated ? " shown" : ""}`
+      ? `${targetList.targets.length} affected ${resourceNames[targetList.targets.length === 1 ? 0 : 1]}`
       : null
   const showFindingActions = check.finding > 0 && targetList
   const showSnoozedAction = snoozed && check.finding === 0
@@ -218,16 +223,11 @@ function CheckDetail({
                 </div>
               )}
             </div>
-            {resourceCount && (
-              <p className="mt-1 type-footnote tabular-nums text-label-tertiary">
-                {resourceCount}
-              </p>
-            )}
             <CheckMetadata
               check={check}
               presentation={presentation}
+              resourceCount={resourceCount}
               inline
-              {...(showFindingActions || showSnoozedAction ? { className: "-mt-2" } : {})}
             />
           </div>
           {check.finding > 0 && (
@@ -258,11 +258,13 @@ function CheckDetail({
 function CheckMetadata({
   check,
   presentation,
+  resourceCount,
   inline = false,
   className,
 }: {
   check: ChecksCategoryPayload
   presentation: ReturnType<typeof checkRowPresentation>
+  resourceCount?: string | null
   inline?: boolean
   className?: string
 }) {
@@ -291,6 +293,14 @@ function CheckMetadata({
         >
           {check.clean} passed
         </span>
+        {resourceCount && (
+          <>
+            <span className="mx-0.5 inline-block text-label-tertiary" aria-hidden="true">
+              ·
+            </span>
+            <span className="text-label-tertiary">{resourceCount}</span>
+          </>
+        )}
       </span>
       {(check.estimatedTokenBurnBasisPoints != null || presentation.costLine) && (
         <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -541,7 +551,10 @@ export function BurnChecksReport({
               {activeAwaiting.length > 0 && (
                 <section className="burn-checks-group" aria-labelledby="burn-checks-awaiting">
                   <h2 id="burn-checks-awaiting" className="flex items-center gap-2 px-1">
-                    <span className="h-2 w-2 rounded-full bg-system-orange" aria-hidden="true" />
+                    <span
+                      className="h-2 w-2 rounded-full bg-system-orange"
+                      aria-hidden="true"
+                    />
                     <span className="type-footnote font-medium! text-label-tertiary">
                       Awaiting verification
                     </span>

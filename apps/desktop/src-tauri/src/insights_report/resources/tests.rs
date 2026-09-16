@@ -105,6 +105,17 @@ fn set_complete_empty_sources(evidence: &mut SessionEvidence) {
     });
 }
 
+fn observe_complete_session(
+    builder: &mut ResourceAssessmentBuilder,
+    agent: AgentKind,
+    session_id: &str,
+    project_root: Option<&Path>,
+) {
+    let mut session = evidence(agent, session_id);
+    set_complete_empty_sources(&mut session);
+    builder.observe_session("native", agent, session_id, project_root, &session, None);
+}
+
 #[test]
 fn exact_use_suppresses_one_candidate_across_the_window() {
     let mut builder = ResourceAssessmentBuilder::default();
@@ -175,6 +186,12 @@ fn project_use_does_not_suppress_the_same_name_in_another_repository() {
         &evidence,
         None,
     );
+    observe_complete_session(
+        &mut builder,
+        AgentKind::OpenCode,
+        "unused",
+        Some(&project_b),
+    );
 
     let assessment = builder.finish(&report());
     let detector = assessment.detector(DetectorId::UnusedSkills).unwrap();
@@ -194,36 +211,36 @@ fn project_candidate_takes_precedence_over_the_same_global_name() {
     let mut builder = ResourceAssessmentBuilder::default();
     builder.observe_inventory(
         inventory(
-            AgentKind::Pi,
+            AgentKind::OpenCode,
             vec![
                 candidate(
-                    AgentKind::Pi,
-                    ResourceKind::BuiltInTool,
-                    "read",
+                    AgentKind::OpenCode,
+                    ResourceKind::Skill,
+                    "review",
                     ResourceScope::Global,
                 ),
                 candidate(
-                    AgentKind::Pi,
-                    ResourceKind::BuiltInTool,
-                    "read",
+                    AgentKind::OpenCode,
+                    ResourceKind::Skill,
+                    "review",
                     ResourceScope::Project,
                 ),
             ],
         ),
         Some(&project),
     );
-    let mut evidence = evidence(AgentKind::Pi, "used");
+    let mut evidence = evidence(AgentKind::OpenCode, "used");
     set_complete_empty_sources(&mut evidence);
     evidence.tools.as_complete_mut().unwrap().by_name.insert(
-        "read".into(),
+        "review".into(),
         ToolUse {
             calls: 1,
-            class: ToolClass::Unclassified,
+            class: ToolClass::Skill,
         },
     );
     builder.observe_session(
         "native",
-        AgentKind::Pi,
+        AgentKind::OpenCode,
         "used",
         Some(&project),
         &evidence,
@@ -231,7 +248,7 @@ fn project_candidate_takes_precedence_over_the_same_global_name() {
     );
 
     let assessment = builder.finish(&report());
-    let detector = assessment.detector(DetectorId::UnusedBuiltInTools).unwrap();
+    let detector = assessment.detector(DetectorId::UnusedSkills).unwrap();
     assert_eq!(detector.used_count, 1);
     assert_eq!(detector.targets.len(), 1);
     assert_eq!(detector.targets[0].scope, ResourceAssessmentScope::Global);
@@ -337,7 +354,7 @@ fn indexed_definitions_create_one_target_with_bounded_samples() {
             .as_complete_mut()
             .unwrap()
             .tool_definitions = EvidenceValue::Complete(BTreeMap::from([(
-            "Read".into(),
+            "WebSearch".into(),
             ToolDefinition {
                 tokens: 10,
                 invoked: false,
@@ -364,6 +381,7 @@ fn indexed_definitions_create_one_target_with_bounded_samples() {
 #[test]
 fn skill_target_and_category_use_the_same_replicated_listing_tokens() {
     let mut builder = ResourceAssessmentBuilder::default();
+    observe_complete_session(&mut builder, AgentKind::Claude, "session", None);
     let mut skill = candidate(
         AgentKind::Claude,
         ResourceKind::Skill,
@@ -395,6 +413,7 @@ fn skill_target_and_category_use_the_same_replicated_listing_tokens() {
 fn mcp_estimate_requires_measured_indexed_definition_tokens() {
     let make_builder = || {
         let mut builder = ResourceAssessmentBuilder::default();
+        observe_complete_session(&mut builder, AgentKind::Claude, "session", None);
         builder.observe_inventory(
             inventory(
                 AgentKind::Claude,
@@ -527,6 +546,7 @@ fn ambiguous_opencode_and_pi_mcp_tool_names_suppress_all_possible_findings() {
 #[test]
 fn claude_built_in_estimate_uses_measured_session_replication() {
     let mut builder = ResourceAssessmentBuilder::default();
+    observe_complete_session(&mut builder, AgentKind::Claude, "session", None);
     builder.observe_inventory(
         inventory(
             AgentKind::Claude,
@@ -559,7 +579,7 @@ fn claude_built_in_estimate_uses_measured_session_replication() {
 }
 
 #[test]
-fn pinned_pi_built_in_estimate_replicates_across_applicable_turns() {
+fn pi_core_built_in_tools_never_create_targets() {
     let mut builder = ResourceAssessmentBuilder::default();
     builder.observe_inventory(
         inventory(
@@ -573,15 +593,10 @@ fn pinned_pi_built_in_estimate_replicates_across_applicable_turns() {
         ),
         None,
     );
-    builder.observe_turn(AgentKind::Pi, None, 0, 1_000);
-
     let assessment = builder.finish(&report_with_tokens(1_000));
-    let target = &assessment
-        .detector(DetectorId::UnusedBuiltInTools)
-        .unwrap()
-        .targets[0];
-    assert_eq!(target.replicated_tokens, Some(155));
-    assert_eq!(target.estimated_token_burn_basis_points, Some(1_550));
+    let detector = assessment.detector(DetectorId::UnusedBuiltInTools).unwrap();
+    assert_eq!(detector.candidate_count, 0);
+    assert!(detector.targets.is_empty());
 }
 
 #[test]
@@ -635,6 +650,7 @@ fn ambiguous_skill_suffix_suppresses_no_candidate() {
 #[test]
 fn unrelated_inventory_limit_keeps_a_known_target() {
     let mut builder = ResourceAssessmentBuilder::default();
+    observe_complete_session(&mut builder, AgentKind::OpenCode, "session", None);
     builder.observe_inventory(
         ResourceInventory {
             agent: AgentKind::OpenCode,
@@ -662,6 +678,7 @@ fn unrelated_inventory_limit_keeps_a_known_target() {
 #[test]
 fn candidate_retention_is_bounded_per_detector() {
     let mut builder = ResourceAssessmentBuilder::default();
+    observe_complete_session(&mut builder, AgentKind::OpenCode, "session", None);
     let resources = (0..600)
         .map(|index| {
             candidate(
@@ -692,6 +709,7 @@ fn candidate_retention_is_bounded_per_detector() {
 #[test]
 fn measured_resource_session_retention_is_bounded() {
     let mut builder = ResourceAssessmentBuilder::default();
+    observe_complete_session(&mut builder, AgentKind::Claude, "session", None);
     builder.observe_inventory(
         inventory(
             AgentKind::Claude,

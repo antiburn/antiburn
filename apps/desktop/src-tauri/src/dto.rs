@@ -893,6 +893,8 @@ pub struct BurnCheckTargetPayload {
     pub project_location: Option<String>,
     /// Full local directory for explicit folder actions, excluded from analytics.
     pub project_path: Option<String>,
+    /// Local configuration file for a reviewed remediation target, excluded from analytics.
+    pub config_file: Option<String>,
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
@@ -1828,6 +1830,7 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             project_name: value.project_name,
             project_location: value.project_location,
             project_path: value.project_path,
+            config_file: value.config_file,
             auto_fix: match value.auto_fix {
                 crate::remediation::AutoFixAvailability::Available => {
                     AutoFixAvailabilityPayload::Available

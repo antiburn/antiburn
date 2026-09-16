@@ -271,7 +271,7 @@ physical key. M can disable one such MCP server for Claude Code or Codex. Claude
 editor, but its accepted sources do not yet provide M evidence. Antigravity
 remains unavailable until public source and precedence evidence identify one
 winning persisted field. Cursor never edits its private store or invokes its CLI.
-B can disable one exact optional web-search Claude Code built-in tool from a standard
+B can disable one exact optional specialized Claude Code built-in tool from a standard
 settings file. A project target requires the exact bare tool name in
 `permissions.allow`; inherited tools use the global target. It can add a missing
 deny list or create a missing global settings file. It adds the canonical tool
@@ -288,7 +288,7 @@ permission control. Other skill, worker, depth, speed, and cache edits remain
 prompt-only or unavailable.
 
 The B detector and prompt policy has a stricter scope than vendor controls:
-Claude Code `WebSearch`, `WebFetch`, and `Workflow`, Codex `web_search`, and OpenCode
+Claude Code `WebSearch`, `WebFetch`, `Workflow`, `ReportFindings`, and `ScheduleWakeup`, Codex `web_search`, and OpenCode
 `websearch` and `webfetch` are the only eligible suggestion targets. A vendor
 may permit configuration of other tools, but antiburn never suggests disabling
 shell, file, search, task, agent, or subagent tools.

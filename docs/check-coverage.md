@@ -173,7 +173,7 @@ Resource burn estimates use the report's existing total-token denominator and
 rounding. Skill listing tokens use the existing proportional `chars / 4`
 estimate and replicate across applicable assistant turns. MCP estimates use
 only measured indexed definition tokens. Claude Code and Codex built-in tools
-reuse measured catalog definitions. Only optional web-search tools can become B
+reuse measured catalog definitions. Only optional specialized tools can become B
 targets; required shell, read, write, edit, search, and subagent tools remain
 measured but never become findings. OpenCode 1.2.15 and Pi 0.52.12 use pinned
 default catalog captures. A matching positive use removes the target and its
@@ -184,10 +184,13 @@ category estimate unavailable.
 
 B tool eligibility is a product safety policy, not a claim that vendors make
 other tools impossible to disable. The only eligible names are Claude Code
-`WebSearch`, `WebFetch`, and `Workflow`, Codex `web_search`, and OpenCode `websearch` and
+`WebSearch`, `WebFetch`, `Workflow`, `ReportFindings`, and `ScheduleWakeup`, Codex `web_search`, and OpenCode `websearch` and
 `webfetch`. Pi, Cursor, Copilot, Cline, Kiro, Amp Code, Antigravity, and
 Windsurf have no B target. Shell, read, write, edit, search, task, agent, and
 subagent tools remain measured but never become B targets for any agent.
+Every displayed resource target has at least one supporting failed session. A
+resource without that session evidence makes the category unavailable instead
+of creating a target without a session to open.
 
 The reviewed primary sources are Claude Code [permissions](https://code.claude.com/docs/en/permissions)
 and [tools](https://code.claude.com/docs/en/tools), Codex [configuration
