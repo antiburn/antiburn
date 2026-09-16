@@ -2,12 +2,18 @@ import type { ReactNode } from "react"
 
 import { isMacOS } from "../../lib/platform"
 
+import { ScrollPane } from "../../components/ui/ScrollPane"
+
 /**
  * Keep navigation and feature panes beneath the native window controls.
  *
  * The optional panel floats at the top right, over the workspace. It holds
  * what every section shows, so the workspace under it holds only the section
  * the reader chose.
+ *
+ * The panel grows with its content to the height the window allows, then
+ * scrolls. A reader with many provider accounts reaches the last of them
+ * without the card leaving the window.
  */
 export function MainWindowLayout({
   sidebar,
@@ -28,7 +34,13 @@ export function MainWindowLayout({
       )}
       <div className="main-window-navigation">{sidebar}</div>
       <div className="main-window-workspace">{children}</div>
-      {panel && <div className="main-window-panel">{panel}</div>}
+      {panel && (
+        <div className="main-window-panel">
+          <ScrollPane className="min-h-0" topEdgeFade>
+            {panel}
+          </ScrollPane>
+        </div>
+      )}
     </main>
   )
 }
