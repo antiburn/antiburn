@@ -3008,7 +3008,7 @@ mod tests {
     }
 
     #[test]
-    fn check_level_prompt_is_denied_without_a_failed_check_or_when_a_target_exists() {
+    fn check_level_prompt_requires_a_failed_check_but_allows_current_targets() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
@@ -3026,10 +3026,10 @@ mod tests {
         );
 
         publish_mcp_findings(&store, "current-finding", 120, &["server-a"]);
-        assert_eq!(
-            controller.copy_prompt_fix_burn_check(&store, DetectorId::UnusedMcpServers, context),
-            Err(crate::remediation::ControllerError::CheckPromptUnavailable)
-        );
+        let prompt = controller
+            .copy_prompt_fix_burn_check(&store, DetectorId::UnusedMcpServers, context)
+            .unwrap();
+        assert!(prompt.prompt.contains("Failed check\nUnused MCP servers"));
     }
 
     #[test]

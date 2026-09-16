@@ -61,12 +61,21 @@ bounded prompts cover the exact check matrix in
 | Antigravity    | Finding-only D/O  | None                        | Prompts for D and O           |
 | Windsurf       | Unavailable       | None                        | No remediation prompt         |
 
-Auto Fix can batch existing active model layers after a separate review and
-confirmation. It never creates a project file or a missing global file. A
-controller-reported runtime or managed override can prevent an immediate behavior
-change; the review shows this warning. Native Windows can read supported setting
-attribution but cannot apply a change. Pi session discovery remains unavailable
-on native Windows. WSL is separate and cannot edit native host config. See the
+Each Auto Fix changes one winning control after a separate review and
+confirmation. It changes a global or user control when projects inherit it, and
+changes a project control only for that exact explicit project setting or
+resource. It does not batch scalar controls or create project config files.
+Findings across projects share one action when they resolve to the same global
+control, and every project context is checked again before the write. The only
+approved missing-global creation is Claude Code settings for an eligible
+optional built-in tool. Claude project scope requires the exact bare tool name
+in `permissions.allow`. Model and reasoning edits remain pinned to their saved
+attribution, and Claude fast mode writes `false`. A controller-reported runtime
+or managed override can prevent an immediate behavior change; the review shows
+this warning. When an exact prompt is unavailable, Copy can provide a bounded
+generic fallback. Native Windows can read supported setting attribution but
+cannot apply a change. Pi session discovery remains unavailable on native
+Windows. WSL is separate and cannot edit native host config. See the
 [implementation guide](remediation.md) for precedence, verification, savings,
 privacy, and exact unavailable cases.
 
