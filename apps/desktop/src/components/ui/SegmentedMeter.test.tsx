@@ -87,6 +87,73 @@ describe("SegmentedMeter", () => {
     expect(queryByTestId("segmented-meter-notch")).not.toBeInTheDocument()
   })
 
+  it("sweeps the lit segments while a session is live, and marks the next one to light", () => {
+    const { container } = render(<SegmentedMeter percent={50} live />)
+    const all = segments(container)
+    // 50% lights 16, and only those move.
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(16)
+    expect(all[16]).not.toHaveClass("led-sweep-dot")
+    expect(all[16]?.style.getPropertyValue("--led-index")).toBe("")
+    // Each segment knows its place along the sweep; the meter knows its
+    // length and its row. The stylesheet paints the band from those.
+    expect(all[5]?.style.getPropertyValue("--led-index")).toBe("5")
+    const meter = container.firstElementChild as HTMLElement
+    expect(meter.style.getPropertyValue("--led-segments")).toBe("32")
+    expect(meter.style.getPropertyValue("--led-row")).toBe("0")
+    // 50% lights 16. The lit segments carry the gleam; the seventeenth
+    // (index 16) is the still mark under reduced motion, and keeps its
+    // track tint below it.
+    expect(all[15]).toHaveAttribute("data-led-lit", "true")
+    expect(all[16]).not.toHaveAttribute("data-led-lit")
+    expect(container.querySelectorAll("[data-led-next]")).toHaveLength(1)
+    expect(all[16]).toHaveAttribute("data-led-next", "true")
+    expect(all[16]).toHaveClass("bg-brand-unlit/12")
+  })
+
+  it("carries its row for the sweep stagger", () => {
+    const { container } = render(<SegmentedMeter percent={50} live row={2} />)
+    const meter = container.firstElementChild as HTMLElement
+    expect(meter.style.getPropertyValue("--led-row")).toBe("2")
+    const { container: still } = render(<SegmentedMeter percent={50} row={2} />)
+    expect((still.firstElementChild as HTMLElement).style.getPropertyValue("--led-row")).toBe(
+      "",
+    )
+  })
+
+  it("flashes the first segment alone at zero, and marks the last at full", () => {
+    const { container: zero } = render(<SegmentedMeter percent={0} live />)
+    expect(segments(zero)[0]).toHaveAttribute("data-led-next", "true")
+    // Nothing is lit, so the first segment takes the sweep by itself, unlit.
+    expect(zero.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(segments(zero)[0]).toHaveClass("led-sweep-dot")
+    expect(segments(zero)[0]).not.toHaveAttribute("data-led-lit")
+    const { container: full } = render(<SegmentedMeter percent={100} live />)
+    expect(segments(full)[31]).toHaveAttribute("data-led-next", "true")
+    expect(segments(full)[31]).toHaveClass("bg-system-red-tint")
+  })
+
+  it("runs the sweep from the right, and marks past the mark on its own side, when it fills from the end", () => {
+    // 95% from the right lights the last two; the next to light is index 29.
+    const { container } = render(<SegmentedMeter percent={95} fillFrom="end" live />)
+    const all = segments(container)
+    expect(all[29]).toHaveAttribute("data-led-next", "true")
+    // The gleam runs in the fill direction: the last segment is first.
+    expect(all[31]?.style.getPropertyValue("--led-index")).toBe("0")
+    expect(all[30]?.style.getPropertyValue("--led-index")).toBe("1")
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(2)
+    // Nothing lit from the right: the last segment flashes alone.
+    const { container: none } = render(<SegmentedMeter percent={100} fillFrom="end" live />)
+    expect(none.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(segments(none)[31]).toHaveClass("led-sweep-dot")
+  })
+
+  it("does not sweep without a live session", () => {
+    const { container } = render(<SegmentedMeter percent={50} />)
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+    expect(container.querySelector("[data-led-next]")).toBeNull()
+    expect(container.querySelector("[data-led-lit]")).toBeNull()
+  })
+
   it("hides itself from the accessibility tree", () => {
     // The figure beside the meter carries the reading; the circles would
     // announce as noise.

@@ -188,12 +188,69 @@ live macOS validation after changes to the native window mechanism.
 ## Data and timing
 
 - Each LED bar has 20 segments.
-- Only the first bar blinks during a live session, and only on the HUD. The
-  detail window does not blink.
+- Every bar of a provider a live session draws on sweeps: a live Claude Code
+  session sweeps each Anthropic bar. The renderer maps the agent to its
+  provider (Claude Code to Anthropic, Codex to OpenAI, Antigravity to
+  Google); a live agent with no provider on screen sweeps nothing. The
+  detail window does not sweep. The popover sweeps the same providers from
+  the same events: every usage meter of the provider on the open bar, and
+  its ring on the closed bar.
+- A bar that holds one model sweeps only while a live session runs that
+  model. The Anthropic weekly Fable limit is such a bar: a session on Opus
+  leaves it still, and a session on Fable sweeps it. The shell reports the
+  model of each live session's newest analyzed turn, and the renderer
+  matches that model against the bar's model name. A session reports no
+  model until an analysis pass publishes its first turn, so a new session
+  sweeps the unscoped bars of its provider one pass before its model-scoped
+  bar. The ring on the closed popover bar keeps the provider rule, because
+  it shows the provider's highest meter rather than one window.
+- The sweep is a gleam about three segments wide that crosses the lit
+  segments from the left. An unlit segment does not move. A segment takes
+  two brightness levels, off and the peak, instead of a smooth ramp: the
+  three segments of the band hold the peak together, and the band hops a
+  segment at a time, like a lamp. The gleam peaks
+  at about a quarter of full strength on the HUD, which floats over the
+  reader's work, and at a bit over half in the popover, which the reader
+  opened. A
+  segment keeps its colour under it either way. Above a dark
+  segment the gleam is the shimmer white the session list runs across a
+  running session's title, because the bar colours sit too close to the
+  brand tint for a 6-pixel dot to show the tint above them. Above a light
+  segment it is a dark shade of the segment's own hue: the OpenAI bar takes
+  the label colour, which is near white in dark mode, and white above white
+  shows nothing. A bar with nothing lit flashes its first segment in the
+  brand tint as the sweep passes, so a session at zero usage still shows. On
+  the closed popover bar the gleam runs from twelve o'clock to the end of
+  the ring's arc and fades there; a ring under an eighth flashes its first
+  eighth in the brand tint.
+- The cycle is 4 seconds, the cycle of the shimmer the session list runs
+  across a running session's title, on the HUD and in the popover alike: a
+  live session moves at one pace on every surface. The two also share a
+  phase. A CSS animation starts when the browser applies it, so the
+  renderer sets the start time of each live animation from the wall clock
+  instead. A title shimmer and a meter sweep therefore hold the same point
+  of the cycle, however late either one starts. The renderer sets the start
+  time again when an animation starts, when the window comes back, and once
+  each cycle, so a window that stopped painting returns in step. It sets
+  the start time on an animation frame, where the animation clock and the
+  wall clock agree. The stylesheets declare no delay, because a delay would
+  move the phase on every render. The sweep then holds back 0.2 seconds. The shimmer's band is soft
+  and almost a title wide, so it fades in, and this band is sharp and three
+  segments wide, so it snaps on: equal centres look early on the meter. The band crosses the bar
+  in about 2 seconds, half the cycle, and the bar rests for the remainder.
+  A provider's rows run 100 milliseconds apart from the top. With no bars at
+  all, the one empty bar sweeps for any live session.
+- One animation drives every live meter on a surface, and each segment
+  reads the sweep position from it. A CSS animation starts when the browser
+  applies it, so a meter with its own animation keeps its own clock. The
+  shared clock holds the rows in phase, however late a row joins.
+- Under reduced motion the sweep stops, and the next segment to light holds
+  the brand tint instead, which is the first segment when usage is too low
+  to light one. The ring holds its next eighth.
 - Liveness comes from the session lifecycle registry: the renderer
   subscribes to `session:lifecycle`, then reads the versioned
   `get_live_sessions` snapshot, and applies only deltas with a higher
-  sequence. The bar blinks while the registry's exact `working` or
+  sequence. Global liveness remains true while the registry's exact `working` or
   `anonymous` count is above zero; the snapshot carries the counts and the
   last lifecycle event of each registry batch re-stamps them, so the
   snapshot's bounded rows never decide it. A session works until the
@@ -214,6 +271,18 @@ live macOS validation after changes to the native window mechanism.
   V49 persists incarnations internally; V48 remains attribution data.
   See `docs/session-lifecycle-events.md` for evidence guards, permissions,
   named presence, convergence, and resource limits.
+- Exact per-agent working and anonymous counts cover every canonical identity,
+  independently of the snapshot row limit. Positive current-model counts stay
+  within that agent's provider. Pending, failed, and anonymous evidence never
+  proves a model. Other unknown identities do not suppress a known matching model.
+- The existing projection worker reads compact published models in pages of at
+  most 256, outside the actor. Incarnation, metadata epoch, ticket, and writer
+  revision guard each answer. Publication fences identify row provenance, not
+  a version. A successful analysis observation invalidates old model evidence;
+  processing or failure alone does not. Metadata changes publish sequenced
+  `sweep_changed` events without changing activity timestamps.
+- Explicit recovery clears positive scoped evidence until a current snapshot or
+  aggregate arrives. A failed recovery cannot retain a stale model sweep.
 - The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
 - Hiding the HUD parks the native polls and the retained renderer's timers.

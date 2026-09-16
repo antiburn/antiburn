@@ -110,7 +110,22 @@ function emitLifecycleActivity(at = Date.now() / 1000): void {
     agent: "claude-code",
     at,
     resumed: false,
-    aggregate: { working: 1, total: 1, anonymous: 0 },
+    aggregate: {
+      working: 1,
+      total: 1,
+      anonymous: 0,
+      sweep: [
+        {
+          agent: "claude-code",
+          working: 1,
+          anonymous: 0,
+          modelPendingWorking: 1,
+          modelFailedWorking: 0,
+          modelNoneWorking: 0,
+          models: [],
+        },
+      ],
+    },
   }
   for (const handler of lifecycleHandlers) handler(event)
 }
@@ -148,7 +163,13 @@ beforeEach(() => {
   listRecentSessions.mockReset()
   listRecentSessions.mockResolvedValue([])
   getLiveSessions.mockReset()
-  getLiveSessions.mockResolvedValue({ seq: 0, working: 0, total: 0, sessions: [], anonymous: [] })
+  getLiveSessions.mockResolvedValue({
+    seq: 0,
+    working: 0,
+    total: 0,
+    sessions: [],
+    anonymous: [],
+  })
   getLiveSessionsFor.mockReset()
   getLiveSessionsFor.mockResolvedValue(null)
   onSessionUpdated.mockReset()
@@ -705,6 +726,84 @@ describe("PopoverSession surface presentation", () => {
   })
 })
 
+describe("PopoverSession live sessions", () => {
+  const ref = { environmentKey: "native", agent: "claude-code", sessionId: "session-1" }
+
+  it("follows the lifecycle bus and the snapshot", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(lifecycleHandlers.size).toBe(2))
+    await vi.waitFor(() => expect(getLiveSessions).toHaveBeenCalledTimes(1))
+    expect(session.getSnapshot().sessionLive).toBe(false)
+    expect(session.getSnapshot().liveProviders).toEqual([])
+
+    const at = Math.floor(Date.now() / 1000)
+    emitLifecycleActivity(at)
+    expect(session.getSnapshot().sessionLive).toBe(true)
+    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
+
+    for (const handler of lifecycleHandlers)
+      handler({
+        seq: ++updateSeq,
+        kind: "quiet",
+        session: ref,
+        agent: "claude-code",
+        at: at + 30,
+        aggregate: { working: 0, total: 1, anonymous: 0, sweep: [] },
+      })
+    expect(session.getSnapshot().sessionLive).toBe(false)
+    expect(session.getSnapshot().liveProviders).toEqual([])
+
+    unsubscribe()
+    expect(lifecycleHandlers.size).toBe(0)
+  })
+
+  it("starts live when the snapshot lists a session with a recent write", async () => {
+    getLiveSessions.mockResolvedValue({
+      seq: 0,
+      working: 1,
+      total: 1,
+      anonymous: [],
+      sessions: [
+        {
+          session: ref,
+          agent: "claude-code",
+          lastActivityAt: Math.floor(Date.now() / 1000),
+          quiet: false,
+        },
+      ],
+      sweep: [
+        {
+          agent: "claude-code",
+          working: 1,
+          anonymous: 0,
+          modelPendingWorking: 1,
+          modelFailedWorking: 0,
+          modelNoneWorking: 0,
+          models: [],
+        },
+      ],
+    })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+
+    await vi.waitFor(() => expect(session.getSnapshot().sessionLive).toBe(true))
+    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
+    unsubscribe()
+  })
+
+  it("keeps the shared registry subscription when the popover is shown", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    await vi.waitFor(() => expect(getLiveSessions).toHaveBeenCalledTimes(1))
+
+    popoverShownHandler?.()
+    expect(getLiveSessions).toHaveBeenCalledTimes(1)
+    unsubscribe()
+  })
+})
+
 /**
  * The event-driven refresh behind the activity list. Membership changes
  * arrive as `session:index-changed`; row changes as `session:updated`;
@@ -924,12 +1023,8 @@ describe("PopoverSession event-driven refresh", () => {
 
     await vi.waitFor(() => {
       const entries = session.getSnapshot().entries
-      expect(entries?.find((entry) => entry.sessionId === "session-live")?.isActive).toBe(
-        true,
-      )
-      expect(entries?.find((entry) => entry.sessionId === "session-idle")?.isActive).toBe(
-        false,
-      )
+      expect(entries?.find((entry) => entry.sessionId === "session-live")?.isActive).toBe(true)
+      expect(entries?.find((entry) => entry.sessionId === "session-idle")?.isActive).toBe(false)
     })
     // A complete snapshot needs no presence read.
     expect(getLiveSessionsFor).not.toHaveBeenCalled()

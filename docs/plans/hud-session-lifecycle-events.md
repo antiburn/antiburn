@@ -19,13 +19,13 @@ status: draft
 
 ## Status
 
-| Phase | What | Size | State |
-|---|---|---|---|
-| A | Leftmost LED blinks when nothing is lit | ~60 lines | built 2026-09-08, in review |
-| B | `SessionLifecycle` actor and broadcast bus in the Tauri shell | ~400 lines | built 2026-09-08, in review |
-| C | HUD and popover meter read the bus; the idle task folds into the actor | ~300 lines | built 2026-09-08, in review |
-| D | Session list and other consumers move onto the bus | follow-up | not planned here |
-| E, F, G | The manifest stop fix, the sweep, and the 30 s `quiet` event | see `hud-live-sweep.md` | in progress 2026-09-11 |
+| Phase   | What                                                                                 | Size                    | State                       |
+| ------- | ------------------------------------------------------------------------------------ | ----------------------- | --------------------------- |
+| A       | Leftmost LED blinks when nothing is lit                                              | ~60 lines               | built 2026-09-08, in review |
+| B       | `SessionLifecycle` actor and broadcast bus in the Tauri shell                        | ~400 lines              | built 2026-09-08, in review |
+| C       | HUD and popover meter read the bus; the idle task folds into the actor               | ~300 lines              | built 2026-09-08, in review |
+| D       | Session list and other consumers move onto the bus                                   | follow-up               | not planned here            |
+| E, F, G | The manifest stop fix, the sweep that replaced the blink, and the 30 s `quiet` event | see `hud-live-sweep.md` | built 2026-09-11            |
 
 Two pull requests (agreed 2026-09-08). The first, `feat/session-lifecycle-bus`,
 is the wiring: phase B and the shell half of phase C (the bridge to the
@@ -38,7 +38,8 @@ removes `get_latest_session_activity`.
 ## Two problems
 
 **1. Low usage hides the live blink.** The HUD blinks the last lit LED
-while a session is live. With 20 segments, the first segment lights only
+while a session is live. (Phase C later moves the blink to the next unlit
+LED; see its departures.) With 20 segments, the first segment lights only
 when usage passes 2.5 percent. Below that `litCount` is zero, no segment
 gets `led-blink`, and a fresh window or a light day shows nothing at all.
 The empty-bars branch (no usage snapshot yet, or every meter turned off)
@@ -59,12 +60,12 @@ backend idle task in `scan/idle.rs` applies 180 seconds again.
 
 Latency today, from a transcript write to the HUD blink:
 
-| Step | Cost |
-|---|---|
-| `notify` event to debounced burst | 1.5 s quiet, 5 s max under a steady stream |
-| Targeted refresh per session floor | up to 10 s (`TARGETED_MIN_INTERVAL`) |
-| Re-describe (stat, head read) and upsert | tens of ms |
-| `sessions:entry-changed` to `sessionLive` | immediate |
+| Step                                      | Cost                                       |
+| ----------------------------------------- | ------------------------------------------ |
+| `notify` event to debounced burst         | 1.5 s quiet, 5 s max under a steady stream |
+| Targeted refresh per session floor        | up to 10 s (`TARGETED_MIN_INTERVAL`)       |
+| Re-describe (stat, head read) and upsert  | tens of ms                                 |
+| `sessions:entry-changed` to `sessionLive` | immediate                                  |
 
 So the first write of a burst reaches the HUD in about two seconds, but every
 later write in a busy session waits on the 10 second floor plus a describe.
@@ -237,14 +238,31 @@ Built 2026-09-08, three small departures:
   indexed yet) has no `Idle` counterpart on the bus, so the renderers keep
   one local 180 second timer for that case only. A keyed session never runs
   a renderer timer.
-- The popover meter blinks the *next unlit* segment, not the last lit one: a
-  lit meter segment is already the brand tint, so only the segment past the
-  reading can alternate (brand on, the zone's track tint off). At zero both
-  rules land on the first segment. Only the first provider blinks: its first
-  meter on the open bar, and on the closed bar its ring, which blinks the
-  next eighth past the arc's end (agreed 2026-09-08, "yeah blink them"). A
-  thirty-second of a 26px ring is two pixels, so the ring's blink is an
-  eighth.
+- Both meters blink the _next unlit_ segment, not the last lit one: a lit
+  segment already carries a colour close to the brand tint, so only the
+  segment past the reading can alternate (brand on, the unlit colour off).
+  The Claude bar colour is 3 degrees of hue and 1 point of lightness from
+  the brand tint, which a 6px HUD dot cannot show, so the last-lit rule from
+  phase A made the HUD blink invisible. At zero both rules land on the first
+  segment, which keeps phase A's low-usage case. On the closed bar a
+  provider's ring blinks the next eighth past the arc's end (agreed
+  2026-09-08, "yeah blink them"). A thirty-second of a 26px ring is two
+  pixels, so the ring's blink is an eighth.
+- Every meter of the provider a live session draws on blinks, not only the
+  first (agreed 2026-09-08: "flash all the usage quotas/limits that are
+  being effected"). The renderer maps the agent slug to its provider in
+  `sessionLiveness.ts`, mirroring the fixed routes in `providers.rs`, and
+  both snapshots carry `liveProviders` beside `sessionLive`. Within a
+  provider the rows turn on from the top down, 100 ms apart, and turn off
+  together. One animation on an ancestor (`led-clock`) drives them all: it
+  animates a flash colour per step, and each meter paints the colour for its
+  row above its own resting colour. An animation on each meter would start
+  when the browser applied it, so a meter that began to blink later kept its
+  own clock and the rows stopped at different times. Confirmed in Chrome:
+  four rows, one joining 1.7 s late, turn on 100 ms apart and turn off on
+  the same frame. A live agent with no
+  provider on the limits surfaces (Cursor, Copilot) blinks nothing on the
+  bars; the empty HUD bar still blinks for it.
 - Both renderers re-read `get_live_sessions` on `scan:finished` and
   `sessions:invalidated` (the popover also on show), so a lagged bus reader
   recovers within one pass.
@@ -263,11 +281,11 @@ Built 2026-09-08, three small departures:
 
 ## Decisions to confirm
 
-| Decision | Proposal |
-|---|---|
-| Blink colour | brand orange as the on state in every case, alternating with the segment's resting colour (agreed 2026-09-08) |
+| Decision                 | Proposal                                                                                                                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Blink colour             | brand orange as the on state in every case, alternating with the segment's resting colour (agreed 2026-09-08)                                                                 |
 | Live window and surfaces | one 180 s window from the bus, no separate 90 s timer; the HUD, the popover's usage meter, and the closed bar's ring all flash (agreed 2026-09-08; "main one" is the popover) |
-| Discovery paused | the watcher still runs, so the HUD still blinks while paused; paused means no indexing work, not a dark light (agreed 2026-09-08) |
+| Discovery paused         | the watcher still runs, so the HUD still blinks while paused; paused means no indexing work, not a dark light (agreed 2026-09-08)                                             |
 
 ## How it is built
 

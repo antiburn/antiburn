@@ -39,6 +39,15 @@ pub struct Presence {
     pub epoch: i64,
 }
 
+/// An existing session has this published model evidence. Missing sessions produce no row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedModel {
+    pub key: SessionKey,
+    pub incarnation: Incarnation,
+    pub published_fence: Option<i64>,
+    pub model: Option<String>,
+}
+
 /// The next active-window page starts strictly after this full cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveCursor {

@@ -28,8 +28,8 @@ use tokio::time::{Duration, Instant};
 
 use crate::dto::ActivityEntry;
 use crate::session_lifecycle::{
-    IndexChangeReason, LifecycleEnvelope, RemovalReason, Sequenced, SessionEvent, SessionEvents,
-    SessionRef, UpdateFacets,
+    IndexChangeReason, LifecycleEnvelope, ModelRequest, ModelResult, RemovalReason, Sequenced,
+    SessionEvent, SessionEvents, SessionRef, UpdateFacets,
 };
 use crate::store::{SessionKey, Store};
 
@@ -224,7 +224,8 @@ impl Projector {
             SessionEvent::Started { .. }
             | SessionEvent::Activity { .. }
             | SessionEvent::Quiet { .. }
-            | SessionEvent::AnonymousCleared { .. } => vec![Immediate::Lifecycle(sequenced)],
+            | SessionEvent::AnonymousCleared { .. }
+            | SessionEvent::SweepChanged => vec![Immediate::Lifecycle(sequenced)],
             SessionEvent::Resync => {
                 // This defensive path accepts synthetic recovery markers. The registry
                 // never publishes `Resync`.
@@ -516,6 +517,17 @@ impl RowLoader for Store {
     }
 }
 
+/// This boundary reads compact published models outside the actor.
+pub(crate) trait ModelLoader: Send + Sync {
+    fn load_models(&self, keys: &[SessionKey]) -> ModelResult;
+}
+
+impl ModelLoader for Store {
+    fn load_models(&self, keys: &[SessionKey]) -> ModelResult {
+        self.published_models_for_keys(keys)
+    }
+}
+
 /// This boundary owns session event emission. Production uses Tauri; tests use a
 /// recorder.
 pub(crate) trait ProjectionEmitter: Send + Sync {
@@ -556,27 +568,81 @@ pub fn spawn(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
         let emitter: Arc<dyn ProjectionEmitter> = Arc::new(app.clone());
         let events = app.state::<SessionEvents>();
         let watermark = || events.current_seq();
-        run(bus, loader, emitter, &watermark, &crate::scan::unix_now).await;
+        let models: Arc<dyn ModelLoader> = Arc::new((*app.state::<Store>()).clone());
+        run_with_models(
+            bus,
+            loader,
+            emitter,
+            &watermark,
+            &crate::scan::unix_now,
+            Some((&events, models)),
+        )
+        .await;
     })
 }
 
 /// Keep receiving bus events during blocking loads. Process queued changes before
 /// emitting completed rows. Fixed deadlines start batches without waiting for producer
 /// silence.
+#[cfg(test)]
 pub(crate) async fn run(
-    mut bus: broadcast::Receiver<Sequenced>,
+    bus: broadcast::Receiver<Sequenced>,
     loader: Arc<dyn RowLoader>,
     emitter: Arc<dyn ProjectionEmitter>,
     watermark: &(dyn Fn() -> u64 + Send + Sync),
     now: &(dyn Fn() -> i64 + Send + Sync),
 ) {
+    run_with_models(bus, loader, emitter, watermark, now, None).await;
+}
+
+pub(crate) async fn run_with_models(
+    mut bus: broadcast::Receiver<Sequenced>,
+    loader: Arc<dyn RowLoader>,
+    emitter: Arc<dyn ProjectionEmitter>,
+    watermark: &(dyn Fn() -> u64 + Send + Sync),
+    now: &(dyn Fn() -> i64 + Send + Sync),
+    models: Option<(&SessionEvents, Arc<dyn ModelLoader>)>,
+) {
     let mut projector = Projector::default();
     let mut flush_at: Option<Instant> = None;
     let mut load: Option<JoinHandle<LoadResult>> = None;
+    let mut model_load: Option<JoinHandle<ModelResult>> = None;
+    let mut model_requests: Vec<ModelRequest> = Vec::new();
+    let mut model_ack: Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>,
+    > = None;
+    let mut model_at = models.as_ref().map(|_| Instant::now());
     loop {
+        if model_load.is_none()
+            && model_ack.is_none()
+            && let Some((events, loader)) = &models
+        {
+            let (requests, next) = events.model_page();
+            model_at = next;
+            if !requests.is_empty() {
+                let keys: Vec<_> = requests.iter().map(|request| request.key.clone()).collect();
+                model_requests = requests;
+                let loader = Arc::clone(loader);
+                model_load = Some(tokio::task::spawn_blocking(move || {
+                    loader.load_models(&keys)
+                }));
+            }
+        }
         let mut finished = None;
         tokio::select! {
             biased;
+            outcome = async { model_load.as_mut().expect("model load exists").await }, if model_load.is_some() => {
+                model_load = None;
+                let result = outcome.unwrap_or_else(|error| Err(anyhow::anyhow!("model read task failed: {error}")));
+                let events = models.as_ref().expect("model loader exists").0;
+                model_ack = Some(Box::pin(events.submit_models(std::mem::take(&mut model_requests), result)));
+            }
+            () = async { model_ack.as_mut().expect("model ack exists").await }, if model_ack.is_some() => {
+                model_ack = None;
+            }
+            () = async { models.as_ref().expect("model loader exists").0.models_changed().await },
+                if models.is_some() && model_load.is_none() && model_ack.is_none() => {}
+            () = sleep_until_instant(model_at), if model_at.is_some() && model_load.is_none() && model_ack.is_none() => {}
             outcome = join_load(&mut load), if load.is_some() => {
                 load = None;
                 finished = Some(outcome);

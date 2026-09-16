@@ -15,6 +15,7 @@ import {
   getLiveSessionsFor,
   LIVE_PRESENCE_REQUEST_LIMIT,
   onSessionLifecycleEvent,
+  type SweepCountsPayload,
   type LivePresencePayload,
   type LiveSnapshotPayload,
   type SessionLifecycleEventPayload,
@@ -62,6 +63,7 @@ export interface LiveSessionsSnapshot {
   total: number
   /** This exact count includes agents with anonymous activity. */
   anonymous: number
+  sweep: readonly SweepCountsPayload[]
   /** A complete base snapshot names every live session. */
   complete: boolean
   /** The registry confirms these registered interests are absent. */
@@ -76,6 +78,7 @@ const EMPTY_SNAPSHOT: LiveSessionsSnapshot = {
   working: 0,
   total: 0,
   anonymous: 0,
+  sweep: [],
   complete: false,
   absent: new Set(),
 }
@@ -175,6 +178,7 @@ export class LiveSessionsTracker implements LiveSessionsSource {
   private baseSeq = 0
   /** This sequence orders aggregate counts independently of presence answers. */
   private aggregateSeq = 0
+  private sweepFloor = 0
   /** This map records the sequence of present evidence for each key. */
   private presentAsOf = new Map<string, number>()
   /** This map records absence sequences only for registered interests. */
@@ -263,6 +267,7 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     this.snapshot = EMPTY_SNAPSHOT
     this.baseSeq = 0
     this.aggregateSeq = 0
+    this.sweepFloor = 0
     this.presentAsOf = new Map()
     this.absentAsOf = new Map()
     this.quietAsOf = new Map()
@@ -273,6 +278,9 @@ export class LiveSessionsTracker implements LiveSessionsSource {
 
   private receive(event: SessionLifecycleEventPayload): void {
     if (event.kind === "resync") {
+      // Recovery removes positive scoped evidence until the registry supplies current counts.
+      this.sweepFloor = Math.max(this.sweepFloor, event.seq)
+      this.publish({ sweep: [] })
       // A recovery marker starts buffering before the new snapshot read.
       this.syncing = true
       this.buffered = []
@@ -359,6 +367,7 @@ export class LiveSessionsTracker implements LiveSessionsSource {
       working: snapshot.working,
       total: snapshot.total,
       anonymous: snapshot.anonymous.length,
+      sweep: seq >= this.sweepFloor ? (snapshot.sweep ?? []) : [],
       complete: snapshot.sessions.length >= snapshot.total,
       absent: new Set(absentAsOf.keys()),
     })
@@ -372,6 +381,7 @@ export class LiveSessionsTracker implements LiveSessionsSource {
             working: event.aggregate.working,
             total: event.aggregate.total,
             anonymous: event.aggregate.anonymous,
+            sweep: event.seq >= this.sweepFloor ? (event.aggregate.sweep ?? []) : [],
           }
         : {}
     if (event.aggregate && event.seq > this.aggregateSeq) this.aggregateSeq = event.seq
@@ -432,6 +442,9 @@ export class LiveSessionsTracker implements LiveSessionsSource {
         this.publish({ ...counts, seq, keylessAgents: this.withoutKeyless(event.agent) })
         return
       }
+      case "sweep_changed":
+        this.publish({ ...counts, seq })
+        return
       case "resync":
         return
     }

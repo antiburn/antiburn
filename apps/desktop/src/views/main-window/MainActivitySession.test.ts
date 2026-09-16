@@ -657,6 +657,7 @@ it.each(["hidden", "inactive"])(
       working: 0,
       total: 0,
       anonymous: 0,
+      sweep: [],
     })
     const interests = new Set<object>()
     const setInterest = vi.spyOn(liveSessions, "setInterest").mockImplementation((owner) => {

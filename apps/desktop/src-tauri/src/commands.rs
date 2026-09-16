@@ -37,11 +37,11 @@ use crate::dto::{
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
     BurnCheckSnoozePayload, BurnCheckTargetListPayload, ChecksReportPayload,
     CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir,
-    HygieneSummaryPayload, InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary,
-    OrchestrationStatus, PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason,
-    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
-    SessionHygieneRequest, SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary,
-    SessionRelation, SessionRelations, SubagentMember,
+    HygieneSummaryPayload, LiveUsageSummary, OrchestrationStatus,
+    PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
+    SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
+    SessionRelations, SubagentMember,
 };
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
@@ -1613,32 +1613,6 @@ fn insights_report_request(now_epoch: i64) -> ReportRequest {
     }
 }
 
-/// The thirty-day insights report for this machine's native environment.
-///
-/// Concurrent calls share one reduction (see [`InsightsController`]);
-/// none of them cancels a running one. Cancellation is only the explicit
-/// [`cancel_insights_report`] signal.
-#[tauri::command]
-pub async fn get_insights_report(app: tauri::AppHandle) -> CommandResult<InsightsReportPayload> {
-    // Opening the Insights pane asks for a scan pass now instead of
-    // waiting out a tick. This is a further call site of the shipped
-    // on-demand trigger — the same kick the popover and the other
-    // commands fire — not a new trigger class and not queue reordering.
-    app.state::<ScanController>()
-        .request(ScanTrigger::InsightsPane);
-    let data_dir = app.state::<Store>().state_dir().to_path_buf();
-    let request = insights_report_request(epoch_now());
-    let reduced = app
-        .state::<InsightsController>()
-        .settings_report(data_dir, request)
-        .await?;
-    let report = reduced.report;
-    crate::analytics::record_unrecognized_records(&app, &report.unrecognized_records);
-    crate::analytics::record_quota_incidents(&app, &report.quota_pressure);
-    crate::analytics::record_provider_incidents(&app, &report.provider_incidents);
-    Ok(report.into())
-}
-
 /// The bounded report data used by the popover All checks summary.
 #[tauri::command]
 pub async fn get_checks_report(
@@ -1659,6 +1633,13 @@ pub async fn get_checks_report(
         .state::<InsightsController>()
         .checks_report(data_dir, request, consumer_id)
         .await?;
+    // The report carries three measurements that no other command reduces:
+    // unknown record vocabulary, quota incidents, and provider incidents.
+    // Each recorder compares the outcome against the last one it sent, so
+    // repeated reports of the same state record nothing.
+    crate::analytics::record_unrecognized_records(app, &reduced.report.unrecognized_records);
+    crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
+    crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
     let payload = ChecksReportPayload::from_report(
         &reduced.report,
         reduced.evidence_settled,
@@ -2103,24 +2084,6 @@ pub fn cancel_checks_report(
     Ok(())
 }
 
-/// Report calculation state plus the evidence backlog for the report's scope.
-#[tauri::command]
-pub async fn get_insights_status(app: tauri::AppHandle) -> CommandResult<InsightsStatusPayload> {
-    run_blocking(move || {
-        let calculating = app.state::<InsightsController>().is_calculating();
-        let backlog = app
-            .state::<Store>()
-            .evidence_backlog_counts(&environment_key(None))
-            .map_err(fail)?;
-        Ok(InsightsStatusPayload {
-            calculating,
-            pending: backlog.pending,
-            processing: backlog.processing,
-        })
-    })
-    .await
-}
-
 /// The aggregate hygiene numbers for the sessions in the activity window.
 ///
 /// Same window and disabled-agent filter as `list_recent_sessions`, so the
@@ -2329,16 +2292,6 @@ fn session_hygiene_payload(
             SessionHygienePayload::not_assessed("failed", NotAssessedReason::IncompleteEvidence)
         }
     }
-}
-
-/// Stop the running report reduction, when one runs.
-///
-/// The pane fires this when it closes; shutdown fires it too. The
-/// reduction is read-only, so a cancelled run leaves the durable
-/// evidence state untouched.
-#[tauri::command]
-pub fn cancel_insights_report(app: tauri::AppHandle) {
-    app.state::<InsightsController>().release_settings();
 }
 
 /* -------------------------------------------------------------------------

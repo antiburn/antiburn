@@ -220,6 +220,7 @@ fn lifecycle_transitions_relay_immediately_and_queue_no_rows() {
             working: index,
             total: index + 1,
             anonymous: 1,
+            sweep: Vec::new(),
         });
         let sequenced = Sequenced {
             seq: index as u64 + 1,
@@ -247,6 +248,7 @@ fn the_bridge_emits_the_stamped_aggregate_and_fabricates_none_on_lag() {
             working: 2,
             total: 5,
             anonymous: 0,
+            sweep: Vec::new(),
         }),
     };
     let envelope = LifecycleEnvelope {
@@ -269,7 +271,7 @@ fn the_bridge_emits_the_stamped_aggregate_and_fabricates_none_on_lag() {
     let envelope = LifecycleEnvelope {
         seq: resync.seq,
         event: &resync.event,
-        aggregate: resync.aggregate,
+        aggregate: resync.aggregate.clone(),
     };
     let json = serde_json::to_value(&envelope).unwrap();
     assert_eq!(json["kind"], "resync");

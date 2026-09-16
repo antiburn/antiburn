@@ -37,6 +37,10 @@ use tokio::time::Instant;
 
 use crate::store::{ActiveCursor, Incarnation, Presence, Revision, SessionKey, Store};
 
+mod models;
+pub use models::SweepCounts;
+pub(crate) use models::{ModelRequest, ModelResult};
+
 /// The broadcast ring holds this many events. A lagging projection worker requests
 /// snapshot recovery.
 pub const BUS_CAPACITY: usize = 1024;
@@ -249,6 +253,8 @@ pub enum SessionEvent {
     /// The projection bridge requests a snapshot after transport lag. The registry
     /// never publishes this marker.
     Resync,
+    /// Compact model evidence changes without session activity.
+    SweepChanged,
 }
 
 impl SessionEvent {
@@ -262,18 +268,20 @@ impl SessionEvent {
                 | Self::Idle { .. }
                 | Self::AnonymousCleared { .. }
                 | Self::Resync
+                | Self::SweepChanged
         )
     }
 }
 
 /// These exact counts describe the registry after an atomic batch. Its last lifecycle
 /// event carries the counts independently of snapshot row limits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Aggregate {
     pub working: usize,
     pub total: usize,
     pub anonymous: usize,
+    pub sweep: Vec<SweepCounts>,
 }
 
 /// This internal bus message carries the canonical event sequence. The last lifecycle
@@ -444,6 +452,7 @@ pub struct LiveSnapshot {
     pub seq: u64,
     pub working: usize,
     pub total: usize,
+    pub sweep: Vec<SweepCounts>,
     pub sessions: Vec<LiveSession>,
     pub anonymous: Vec<LiveAnonymous>,
 }
@@ -695,6 +704,7 @@ struct Registry {
     /// Only a covering generation or a deadline removes anonymous state.
     anonymous: BTreeMap<AgentKind, AnonymousEntry>,
     reconcile: ReconcileState,
+    models: models::Models,
 }
 
 impl Registry {
@@ -895,6 +905,7 @@ impl Registry {
     /// Apply a broad removal at `revision`. The presence walk checks older live
     /// entries.
     fn broad(&mut self, reason: RemovalReason, revision: Revision, out: &mut Vec<SessionEvent>) {
+        self.models.invalidate_all();
         self.broad_through = self.broad_through.max(revision);
         match self.reconcile.needs {
             Some((_, through)) if through >= revision => {}
@@ -1094,6 +1105,9 @@ impl Registry {
                 at,
             } => {
                 *budget = budget.saturating_sub(1);
+                if facets.analysis && self.live.contains_key(&session) {
+                    self.models.invalidate(&session);
+                }
                 out.push(SessionEvent::Updated {
                     session: SessionRef::from(&session),
                     facets,
@@ -1121,6 +1135,9 @@ impl Registry {
             }
             Observation::IndexChanged { reason } => {
                 *budget = budget.saturating_sub(1);
+                if reason == IndexChangeReason::Invalidated {
+                    self.models.invalidate_all();
+                }
                 out.push(SessionEvent::IndexChanged { reason });
                 Progress::Done
             }
@@ -1383,6 +1400,8 @@ impl Registry {
     }
 
     fn insert_live(&mut self, key: SessionKey, entry: LiveEntry) {
+        self.models.remove(&key);
+        self.models.invalidate(&key);
         self.deadlines
             .insert((entry.deadline(), DeadlineKey::Session(key.clone())));
         if let Some(previous) = self.live.insert(key, entry)
@@ -1397,6 +1416,7 @@ impl Registry {
 
     fn remove_live(&mut self, key: &SessionKey) -> Option<LiveEntry> {
         let entry = self.live.remove(key)?;
+        self.models.remove(key);
         self.deadlines
             .remove(&(entry.deadline(), DeadlineKey::Session(key.clone())));
         if !entry.quiet_published {
@@ -1405,12 +1425,13 @@ impl Registry {
         Some(entry)
     }
 
-    /// Exact counts require no live-map walk.
+    /// Scope counts include every canonical working identity.
     fn aggregate(&self) -> Aggregate {
         Aggregate {
             working: self.working,
             total: self.live.len(),
             anonymous: self.anonymous.len(),
+            sweep: self.sweep_counts(),
         }
     }
 
@@ -1616,6 +1637,9 @@ pub struct SessionEvents {
     spill_wake: Notify,
     bus: broadcast::Sender<Sequenced>,
     registry: Mutex<Registry>,
+    model_results: mpsc::Sender<models::ModelReply>,
+    pending_models: Mutex<Option<mpsc::Receiver<models::ModelReply>>>,
+    model_wake: Notify,
     #[cfg(test)]
     rounds: std::sync::atomic::AtomicU64,
 }
@@ -1624,6 +1648,7 @@ impl Default for SessionEvents {
     fn default() -> Self {
         let (bus, _) = broadcast::channel(BUS_CAPACITY);
         let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
+        let (model_results, model_receiver) = mpsc::channel(1);
         Self {
             inbox,
             pending_inbox: Mutex::new(Some(receiver)),
@@ -1631,6 +1656,9 @@ impl Default for SessionEvents {
             spill_wake: Notify::new(),
             bus,
             registry: Mutex::new(Registry::default()),
+            model_results,
+            pending_models: Mutex::new(Some(model_receiver)),
+            model_wake: Notify::new(),
             #[cfg(test)]
             rounds: std::sync::atomic::AtomicU64::new(0),
         }
@@ -1705,6 +1733,7 @@ impl SessionEvents {
             seq,
             working: aggregate.working,
             total: aggregate.total,
+            sweep: aggregate.sweep,
             sessions,
             anonymous,
         }
@@ -1891,6 +1920,12 @@ async fn run(
     source: Arc<dyn ReconcileSource>,
     now: &(dyn Fn() -> i64 + Send + Sync),
 ) {
+    let mut model_results = events
+        .pending_models
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+        .expect("one actor owns model results");
     let recovering = events
         .registry
         .lock()
@@ -1920,8 +1955,10 @@ async fn run(
             (registry.wants_page(), registry.recovery_ready())
         };
         let mut finished = None;
+        let mut model_reply = None;
         tokio::select! {
             biased;
+            reply = model_results.recv() => { model_reply = reply; }
             () = events.spill_wake.notified() => {}
             outcome = join_page(&mut actor.in_flight), if actor.in_flight.is_some() => {
                 actor.in_flight = None;
@@ -1945,6 +1982,9 @@ async fn run(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let now_epoch = now();
+        if let Some(reply) = model_reply.or_else(|| model_results.try_recv().ok()) {
+            models::apply_reply(events, reply);
+        }
         expire(events, now_epoch);
         if finished.is_none()
             && let Some(handle) = actor.in_flight.as_mut()
@@ -2044,14 +2084,20 @@ fn apply_facts(events: &SessionEvents, carry: &mut VecDeque<Observation>, now: i
 /// order.
 fn apply_spill(events: &SessionEvents, spill: Spill, now: i64) {
     for (session, (facets, at)) in spill.rows {
-        publish(
-            events,
-            vec![SessionEvent::Updated {
-                session: SessionRef::from(&session),
-                facets,
-                at,
-            }],
-        );
+        apply(events, |registry| {
+            let mut out = Vec::new();
+            registry.observe(
+                Observation::RowChanged {
+                    session,
+                    facets,
+                    at,
+                },
+                now,
+                &mut 1,
+                &mut out,
+            );
+            (out, ())
+        });
     }
     for (key, cell) in spill.removed {
         apply(events, |registry| {
@@ -2075,7 +2121,11 @@ fn apply_spill(events: &SessionEvents, spill: Spill, now: i64) {
         });
     }
     for reason in spill.index_changed {
-        publish(events, vec![SessionEvent::IndexChanged { reason }]);
+        apply(events, |registry| {
+            let mut out = Vec::new();
+            registry.observe(Observation::IndexChanged { reason }, now, &mut 1, &mut out);
+            (out, ())
+        });
     }
 }
 
@@ -2178,9 +2228,13 @@ fn apply<T>(
             .registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (out, value) = mutate(&mut registry);
-        let last_lifecycle = out.iter().rposition(SessionEvent::is_lifecycle);
+        let before = registry.sweep_counts();
+        let (mut out, value) = mutate(&mut registry);
         let aggregate = registry.aggregate();
+        if before != aggregate.sweep && !out.iter().any(SessionEvent::is_lifecycle) {
+            out.push(SessionEvent::SweepChanged);
+        }
+        let last_lifecycle = out.iter().rposition(SessionEvent::is_lifecycle);
         let sequenced = out
             .into_iter()
             .enumerate()
@@ -2189,12 +2243,13 @@ fn apply<T>(
                 Sequenced {
                     seq: registry.seq,
                     event,
-                    aggregate: (last_lifecycle == Some(index)).then_some(aggregate),
+                    aggregate: (last_lifecycle == Some(index)).then(|| aggregate.clone()),
                 }
             })
             .collect::<Vec<_>>();
         (sequenced, value)
     };
+    events.model_wake.notify_one();
     for event in sequenced {
         // No subscribers is valid when all readers are closed.
         let _ = events.bus.send(event);
@@ -2204,6 +2259,7 @@ fn apply<T>(
 
 /// Publish events without state changes. The registry lock still assigns their
 /// sequences.
+#[cfg(test)]
 fn publish(events: &SessionEvents, out: Vec<SessionEvent>) {
     apply(events, move |_| (out, ()));
 }

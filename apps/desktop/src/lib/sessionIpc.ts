@@ -229,10 +229,21 @@ export type AnonymousClearCause = "resolved" | "expired"
  * counts agents with unresolved activity. Snapshot row limits do not affect these
  * counts.
  */
+export interface SweepCountsPayload {
+  agent: string
+  working: number
+  anonymous: number
+  modelPendingWorking: number
+  modelFailedWorking: number
+  modelNoneWorking: number
+  models: { model: string; working: number }[]
+}
+
 export interface AggregatePayload {
   working: number
   total: number
   anonymous: number
+  sweep: SweepCountsPayload[]
 }
 
 /**
@@ -272,6 +283,7 @@ export type SessionLifecycleEventPayload = LifecycleAggregateCarrier &
         cause: AnonymousClearCause
       }
     | { seq: number; kind: "resync" }
+    | { seq: number; kind: "sweep_changed" }
   )
 
 /** This row projection matches Rust `SessionUpdatedPayload`. */
@@ -324,6 +336,7 @@ export interface LiveSnapshotPayload {
   total: number
   sessions: LiveSessionPayload[]
   anonymous: LiveAnonymousPayload[]
+  sweep: SweepCountsPayload[]
 }
 
 /**

@@ -176,20 +176,6 @@ describe("SettingsView", () => {
     mockCommands()
   })
 
-  it("opens the Insights pane from the sidebar and loads its report", async () => {
-    render(<SettingsView />)
-
-    fireEvent.click(screen.getByRole("tab", { name: "Insights" }))
-
-    expect(await screen.findByRole("heading", { name: "Insights" })).toBeInTheDocument()
-    // The mocked command layer answers `null` for the report, and the pane
-    // must say so rather than render an empty or clean report.
-    expect(
-      await screen.findByText("The insights report is only available inside the antiburn app."),
-    ).toBeInTheDocument()
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_insights_report"))
-  })
-
   it("persists a theme choice and applies it to the document immediately", async () => {
     render(<SettingsView />)
 
@@ -1348,18 +1334,17 @@ describe("SettingsView — window chrome", () => {
     expect(closeWindow).not.toHaveBeenCalled()
   })
 
-  it("orders the sidebar with everyday panes first and provenance last", async () => {
+  it("orders the sidebar with setup first and the explanatory panes last", async () => {
     render(<SettingsView />)
     await screen.findByRole("switch", { name: "Start at login" })
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "General",
-      "Privacy",
+      "Sources",
       "Notifications",
       "Usage",
-      "Insights",
-      "Sources",
       "Appearance",
+      "Privacy",
       "About",
     ])
   })

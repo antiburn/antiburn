@@ -16,10 +16,27 @@ fn drain_sequenced(bus: &mut broadcast::Receiver<Sequenced>) -> Vec<Sequenced> {
 }
 
 fn aggregate(working: usize, total: usize, anonymous: usize) -> Aggregate {
+    let mut sweep = Vec::new();
+    if working > 0 {
+        sweep.push(SweepCounts {
+            agent: "claude-code".into(),
+            working,
+            model_pending_working: working,
+            ..Default::default()
+        });
+    }
+    if anonymous > 0 {
+        sweep.push(SweepCounts {
+            agent: "codex".into(),
+            anonymous,
+            ..Default::default()
+        });
+    }
     Aggregate {
         working,
         total,
         anonymous,
+        sweep,
     }
 }
 
@@ -378,6 +395,7 @@ fn counts_and_presence_serialize_in_camel_case() {
         seq: 3,
         working: 1,
         total: 2,
+        sweep: Vec::new(),
         sessions: Vec::new(),
         anonymous: Vec::new(),
     };

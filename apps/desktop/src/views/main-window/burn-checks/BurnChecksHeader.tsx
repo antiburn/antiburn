@@ -4,7 +4,6 @@ import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks
 import { InfoPopover } from "../../../components/presentation/InfoPopover"
 
 import type { ChecksReportPayload } from "../../../lib/insightsIpc"
-import { openSettingsWindow } from "../../../lib/ipc"
 import { isMacOS } from "../../../lib/platform"
 import { checksPresentation, formatTokenBurnPercent } from "../../../lib/presentation/checks"
 
@@ -42,7 +41,7 @@ export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {
         <p className="ml-auto type-caption text-label-tertiary">30 days</p>
         {report && (
           <InfoPopover label="Assessment details" icon={<Info size={15} aria-hidden="true" />}>
-            {(close) => (
+            {() => (
               <>
                 <h3 className="type-headline text-label">Assessment details</h3>
                 <p className="mt-2 type-callout text-label-secondary">{assessment}</p>
@@ -57,18 +56,6 @@ export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {
                   <p className="mt-2 type-footnote text-label-tertiary">
                     Estimate includes only checks with available token-burn estimates.
                   </p>
-                </div>
-                <div className="mt-3 border-t border-separator pt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      close()
-                      void openSettingsWindow("insights")
-                    }}
-                    className="burn-check-action type-callout"
-                  >
-                    Coverage details
-                  </button>
                 </div>
               </>
             )}

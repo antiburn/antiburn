@@ -44,6 +44,12 @@ import {
   type ChecksReportPayload,
 } from "../../lib/insightsIpc"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
+import {
+  isLive,
+  liveModels,
+  liveProviders,
+  type ProviderModels,
+} from "../../lib/sessionLiveness"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import {
   isCurrentWindowVisible,
@@ -75,6 +81,12 @@ export interface PopoverSnapshot {
   /** Provider usage, or null while the first snapshot is in flight. */
   usage: ProviderUsageSummaryPayload | null
   liveUsage: LiveUsageSummaryPayload
+  /** Whether a session is live, from the shell's lifecycle bus. */
+  sessionLive: boolean
+  /** The providers a live session draws on, sorted. Their meters blink. */
+  liveProviders: readonly string[]
+  /** The models a live session runs, sorted. A model-scoped meter reads this. */
+  liveModels: ProviderModels
   sessionLimitAllocations: SessionLimitAllocationSummaryPayload
   /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
   usageRefreshing: boolean
@@ -225,6 +237,9 @@ export class PopoverSession {
     repositories: [],
     usage: null,
     liveUsage: EMPTY_LIVE_USAGE,
+    sessionLive: false,
+    liveProviders: [],
+    liveModels: {},
     sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
     checksReport: null,
@@ -309,7 +324,13 @@ export class PopoverSession {
     this.stopLiveSessionsListening = liveSessions.subscribe(() => {
       if (generation !== this.generation) return
       const entries = this.snapshot.entries
-      if (entries) this.update({ entries: this.withRegistryActivity(entries) })
+      const live = liveSessions.getSnapshot()
+      this.update({
+        ...(entries ? { entries: this.withRegistryActivity(entries) } : {}),
+        sessionLive: isLive(live),
+        liveProviders: liveProviders(live),
+        liveModels: liveModels(live),
+      })
     })
 
     // The preferences shortcut opens Settings. The window listener supports

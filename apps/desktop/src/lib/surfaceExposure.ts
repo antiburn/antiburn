@@ -2,7 +2,7 @@ import {
   noteInteraction,
   type LiveUsageProvider,
   type LiveUsageState,
-  type StateSurface,
+  type Surface,
   type SurfaceOrigin,
   type SurfaceState,
 } from "./ipc"
@@ -17,7 +17,7 @@ import {
 const INITIAL_LOAD_TIMEOUT_MS = 10_000
 
 export type SurfaceExposure = {
-  surface: StateSurface
+  surface: Surface
   origin: SurfaceOrigin
   /** Local identity for visible content within one surface. This value never leaves the renderer. */
   identity?: string | number
@@ -31,7 +31,7 @@ export type LiveUsageObservation = {
 
 type ActiveExposure = {
   generation: number
-  surface: StateSurface
+  surface: Surface
   origin: SurfaceOrigin
   identity: string | number | undefined
   states: Set<SurfaceState>
@@ -129,13 +129,11 @@ export class SurfaceExposureTracker {
       states: new Set(),
       liveUsageStates: new Set(),
     }
-    if (exposure.surface !== "insights") {
-      noteInteraction({
-        kind: "surfaceViewed",
-        surface: exposure.surface,
-        origin: exposure.origin,
-      })
-    }
+    noteInteraction({
+      kind: "surfaceViewed",
+      surface: exposure.surface,
+      origin: exposure.origin,
+    })
     if (exposure.state) {
       this.observe(exposure.state, generation)
     } else {
@@ -173,7 +171,7 @@ export class SurfaceExposureTracker {
     }
   }
 
-  conceal(surface?: StateSurface, generation = this.active?.generation): void {
+  conceal(surface?: Surface, generation = this.active?.generation): void {
     const active = this.active
     if (!active || generation !== active.generation) return
     if (surface && surface !== active.surface) return

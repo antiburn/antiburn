@@ -97,6 +97,7 @@ function fakeLiveSessions() {
     working: 0,
     total: 0,
     anonymous: 0,
+    sweep: [],
     complete: false,
     absent: new Set(),
   }

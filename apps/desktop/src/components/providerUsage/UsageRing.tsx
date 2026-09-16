@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react"
+
 import type { BrandMark } from "../../lib/brandMarks"
 
 /**
@@ -9,6 +11,18 @@ import type { BrandMark } from "../../lib/brandMarks"
  * than sitting in it.
  */
 const MARK_EXTENT = 16.8
+
+/**
+ * The share of the ring the sweep's arc covers while a session is live.
+ *
+ * One thirty-second of a 26px ring is two pixels, which the eye misses. An
+ * eighth is the smallest arc that reads at that size without covering the
+ * reading.
+ */
+const SWEEP_FRACTION = 1 / 8
+
+/** The colour of the ring's track. */
+const TRACK_COLOR = "var(--color-surface-tertiary)"
 
 /**
  * Centre a mark in the ring's 32-unit box at {@link MARK_EXTENT}.
@@ -39,6 +53,16 @@ function markTransform(mark: BrandMark): string {
  * - **Indeterminate.** A provider that reports a window but no figure for it.
  *   A dashed track and no arc — visibly a ring with nothing in it rather than
  *   a ring at zero, which would be a claim.
+ *
+ * `live` runs the session sweep on a determinate ring: a gleam an eighth
+ * long runs from twelve o'clock to the end of the reading's arc once per
+ * cycle, on the clock of the nearest `led-clock` ancestor, and fades there.
+ * The track does not move. A reading under an eighth has no room for the
+ * gleam, so the first eighth flashes in the brand tint instead, the way a
+ * bar with nothing lit flashes its first segment. Under reduced motion the
+ * arc holds the next eighth past the arc's end, the way a meter holds its
+ * next segment; a full ring holds its last eighth. The indeterminate ring
+ * has no share to sweep.
  */
 export function UsageRing({
   percent,
@@ -47,6 +71,7 @@ export function UsageRing({
   mark,
   size = 16,
   className = "",
+  live = false,
 }: {
   /** Consumed capacity, 0–100. `null` renders the indeterminate ring. */
   percent: number | null
@@ -64,12 +89,21 @@ export function UsageRing({
   mark?: BrandMark | undefined
   size?: number
   className?: string
+  /** Run the sweep around the ring while a session is live. */
+  live?: boolean
 }) {
   // Geometry in a fixed 32-unit box, scaled by `size`. Keeping the viewBox
   // constant means the stroke stays proportional at every call site.
   const radius = 13
   const circumference = 2 * Math.PI * radius
   const clamped = percent == null ? null : Math.min(100, Math.max(0, percent))
+  // Where the sweep's arc rests under reduced motion, as a share of the
+  // ring: at the arc's end, pulled back so a full ring marks its last eighth
+  // and not nothing.
+  const restStart = clamped == null ? 0 : Math.min(clamped / 100, 1 - SWEEP_FRACTION)
+  // How far the gleam's start can travel, as a share of the ring, so that its
+  // end stays inside the reading's arc. Zero holds the flash at twelve.
+  const sweepSpan = clamped == null ? 0 : Math.max(0, clamped / 100 - SWEEP_FRACTION)
 
   return (
     <svg
@@ -106,7 +140,7 @@ export function UsageRing({
             r={radius}
             fill="none"
             strokeWidth="2.5"
-            stroke="var(--color-surface-tertiary)"
+            stroke={TRACK_COLOR}
             data-testid="usage-ring-track"
           />
           <circle
@@ -124,6 +158,29 @@ export function UsageRing({
             transform="rotate(-90 16 16)"
             data-testid="usage-ring-arc"
           />
+          {live && (
+            // `hud.css` turns the arc with the sweep. The arc has no
+            // `transform` attribute: the stylesheet owns its rotation, and
+            // reads its range and the rest angle from the properties below.
+            <circle
+              cx="16"
+              cy="16"
+              r={radius}
+              fill="none"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              className="led-sweep-ring"
+              strokeDasharray={`${circumference * SWEEP_FRACTION} ${circumference}`}
+              style={
+                {
+                  "--led-ring-span": sweepSpan,
+                  "--led-ring-rest": `${-90 + restStart * 360}deg`,
+                } as CSSProperties
+              }
+              data-led-lit={sweepSpan > 0 || undefined}
+              data-testid="usage-ring-sweep"
+            />
+          )}
           {expectedFraction != null && Number.isFinite(expectedFraction) && (
             // The tick crosses the track and stays outside the provider mark in the 32-unit box.
             <line

@@ -164,6 +164,145 @@ fn publish_turn_row_with_uuid(store: &Store, session_id: &str, uuid: &str) -> Se
 }
 
 #[test]
+fn latest_session_model_reports_the_model_of_the_newest_turn() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "model-switch", 1_000, 60);
+    // A session that changes its model keeps both turns. Only the newer one
+    // says which model the session runs now.
+    let mut older = turn_row(0);
+    older.ts_ms = Some(1_000);
+    older.model = Some("claude-fable-5".into());
+    let mut newer = turn_row(1);
+    newer.ts_ms = Some(2_000);
+    newer.model = Some("claude-opus-4-6".into());
+    FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
+        .write_turn_rows(&[older, newer])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+
+    assert_eq!(
+        store.latest_session_model(&record.key).unwrap(),
+        Some("claude-opus-4-6".to_string())
+    );
+}
+
+#[test]
+fn latest_session_model_reports_nothing_before_a_session_publishes() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "never-published", 1_000, 60);
+    FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
+        .write_turn_rows(&[turn_row(0)])
+        .unwrap();
+
+    // The rows sit under the claim fence, and no publish moved
+    // `published_fence`. A meter must not read a pass in flight.
+    assert_eq!(store.latest_session_model(&record.key).unwrap(), None);
+}
+
+#[test]
+fn compact_model_pages_distinguish_missing_unpublished_and_reused_fences() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "model-page", 1_000, 60);
+    let missing = SessionKey::new("native", "claude-code", "missing");
+    let keys = [record.key.clone(), missing.clone()];
+    let (rows, before) = store.published_models_for_keys(&keys).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].published_fence, None);
+    assert_eq!(rows[0].model, None);
+    let incarnation = rows[0].incarnation;
+    let sink = FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence);
+    let mut row = turn_row(0);
+    row.ts_ms = Some(2_000);
+    row.model = Some("old".into());
+    sink.write_turn_rows(&[row.clone()]).unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    let (first, first_revision) = store.published_models_for_keys(&keys).unwrap();
+    assert!(first_revision > before);
+    assert_eq!(first[0].model.as_deref(), Some("old"));
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET status = 'processing' WHERE session_id = 'model-page'",
+            [],
+        )
+        .unwrap();
+    row.turn_index = 1;
+    row.model = Some("new".into());
+    sink.write_turn_rows(&[row.clone()]).unwrap();
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    let (second, second_revision) = store.published_models_for_keys(&keys).unwrap();
+    assert!(second_revision > first_revision);
+    assert_eq!(second[0].published_fence, first[0].published_fence);
+    assert_eq!(second[0].model.as_deref(), Some("new"));
+    assert_eq!(second[0].incarnation, incarnation);
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET status = 'processing' WHERE session_id = 'model-page'",
+            [],
+        )
+        .unwrap();
+    let mut tie = turn_row(2);
+    tie.ts_ms = row.ts_ms;
+    tie.model = Some("tie-winner".into());
+    let mut empty = turn_row(3);
+    empty.ts_ms = Some(3_000);
+    empty.model = Some(String::new());
+    sink.write_turn_rows(&[tie, empty]).unwrap();
+    assert_eq!(
+        store.published_models_for_keys(&keys).unwrap().0[0]
+            .model
+            .as_deref(),
+        Some("tie-winner")
+    );
+    store.delete_session(&record.key).unwrap();
+    assert!(store.published_models_for_keys(&keys).unwrap().0.is_empty());
+    store
+        .upsert_sessions(
+            &[session("model-page", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let (recreated, revision) = store.published_models_for_keys(&keys).unwrap();
+    assert!(revision > second_revision);
+    assert!(recreated[0].incarnation > incarnation);
+    assert_eq!(recreated[0].published_fence, None);
+    assert_eq!(recreated[0].model, None);
+    assert!(
+        store
+            .published_models_for_keys(&vec![missing.clone(); 256])
+            .is_ok()
+    );
+    assert!(
+        store
+            .published_models_for_keys(&vec![missing; 257])
+            .is_err()
+    );
+}
+
+#[test]
 fn sessions_owning_turn_uuids_finds_the_owner_and_excludes_self() {
     let store = store();
     let uuid = "11111111-1111-4111-8111-000000000001";

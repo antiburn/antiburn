@@ -5,8 +5,10 @@ use std::sync::{Arc, Condvar};
 use tokio::sync::broadcast::error::TryRecvError;
 
 mod aggregates;
+mod model_worker;
 mod reconcile;
 mod schedules;
+mod scoped_models;
 
 fn key(session_id: &str) -> SessionKey {
     SessionKey::new("native", "claude-code", session_id)
@@ -1957,6 +1959,7 @@ fn events_serialize_with_a_kind_tag_and_camel_case_fields() {
         seq: 3,
         working: 0,
         total: 0,
+        sweep: Vec::new(),
         sessions: Vec::new(),
         anonymous: vec![LiveAnonymous {
             agent: AgentKind::Codex,

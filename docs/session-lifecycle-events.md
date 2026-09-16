@@ -417,3 +417,37 @@ keyed removal, broad removal, and page replies. Reads capture coherent scripted
 store rows and revisions; mutations and delayed facts can arrive before replies.
 The property checks semantic live/activity convergence and incarnation provenance,
 not equality of bounded tombstone memory or order-dependent narration.
+
+## Scoped sweep evidence
+
+`Aggregate` and `LiveSnapshot` carry deterministic `sweep` counts by agent.
+Each agent has named working, anonymous, pending-model, failed-model, unmodeled,
+and model/working counts. The model categories sum to named working. These counts
+cover all canonical identities, not the bounded snapshot rows or list interests.
+Only Claude Code, Codex, and Antigravity route to displayed provider meters.
+Anonymous evidence permits provider sweeps, never model sweeps.
+
+The registry retains compact metadata per live identity. Checked tickets never
+reset after idle or re-admission. Broad invalidation advances an epoch and removes
+positive evidence immediately; each selection walks at most 256 metadata slots
+before serving keyed work. Model work stays registry-owned until acknowledged.
+Failed pages retry after 2–30 seconds without delaying other due pages.
+
+The existing projection worker runs at most one blocking model read alongside one
+rich-row read. It continues relaying lifecycle events during reads and acknowledgements.
+A capacity-one result mailbox remains independent of blocked admission carry.
+Store reads each page's incarnation, nullable published fence, newest nonempty
+model, and connection revision under one writer lock. Answers require matching
+incarnation, epoch, and ticket and a sufficient revision. A reused publication
+fence alone cannot authorize an answer. Missing rows never establish presence.
+
+`SweepChanged` emits as `sweep_changed` with batch-final counts. Metadata does not
+change session timestamps. The shared frontend tracker accepts sequenced counts,
+clears scoped positives on explicit resync, and rejects scoped evidence before
+that recovery watermark. Presentation selectors use counts without expiry timers.
+
+Regression coverage includes cold 129-session snapshots, 513-row paging, reused
+fences, stale tickets and revisions, idle/re-admission, replacement, quiet/resume,
+spill invalidation and overflow, broad cursor recovery, failed middle pages,
+blocked admission acknowledgements, concurrent blocked rich/model loaders,
+broadcast lag, model-loader panic, provider isolation, and stale frontend recovery.

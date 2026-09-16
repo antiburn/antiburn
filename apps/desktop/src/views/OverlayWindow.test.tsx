@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../lib/ipc"
+import { providerBarColor } from "../lib/usageBars"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
 import { OverlayWindow } from "./OverlayWindow"
 
@@ -105,7 +106,14 @@ function emitLifecycle(
   aggregate: { working: number; total: number; anonymous: number },
 ): void {
   lifecycle.seq += 1
-  emitNative("session:lifecycle", { seq: lifecycle.seq, aggregate, ...event })
+  emitNative("session:lifecycle", {
+    seq: lifecycle.seq,
+    aggregate: {
+      ...aggregate,
+      sweep: sweep(aggregate.working, aggregate.anonymous, String(event.agent)),
+    },
+    ...event,
+  })
 }
 
 const setPosition = vi.hoisted(() => vi.fn(async () => {}))
@@ -200,6 +208,16 @@ function withSecondBar(): LiveUsageSummaryPayload {
   return payload
 }
 
+function withScopedBar(): LiveUsageSummaryPayload {
+  const payload = withSecondBar()
+  payload.providers[0]!.windows[1] = {
+    ...payload.providers[0]!.windows[1]!,
+    id: "weekly-fable",
+    scopeModel: "Fable",
+  }
+  return payload
+}
+
 function frame(container: HTMLElement): HTMLElement {
   return container.firstElementChild as HTMLElement
 }
@@ -235,6 +253,53 @@ async function advance(ms: number) {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(ms)
   })
+}
+
+const SESSION_REF = { environmentKey: "native", agent: "claude-code", sessionId: "session-1" }
+
+function liveSession(
+  sessionId = "session-1",
+  agent = "claude-code",
+  model: string | null = null,
+) {
+  return {
+    session: { ...SESSION_REF, agent, sessionId },
+    agent,
+    lastActivityAt: Math.floor(Date.now() / 1000),
+    model,
+  }
+}
+
+function sweep(
+  working: number,
+  anonymous = 0,
+  agent = "claude-code",
+  model: string | null = null,
+) {
+  return working + anonymous === 0
+    ? []
+    : [
+        {
+          agent,
+          working,
+          anonymous,
+          modelPendingWorking: model ? 0 : working,
+          modelFailedWorking: 0,
+          modelNoneWorking: 0,
+          models: model ? [{ model, working }] : [],
+        },
+      ]
+}
+
+function liveSnapshot(row = liveSession()) {
+  return {
+    seq: 0,
+    working: 1,
+    total: 1,
+    anonymous: [],
+    sessions: [{ ...row, quiet: false }],
+    sweep: sweep(1, 0, row.agent, row.model),
+  }
 }
 
 describe("OverlayWindow", () => {
@@ -427,6 +492,7 @@ describe("OverlayWindow", () => {
     getLiveSessions.mockResolvedValue({
       seq: 1,
       working: 1,
+      sweep: sweep(1),
       total: 1,
       sessions: [
         {
@@ -441,7 +507,7 @@ describe("OverlayWindow", () => {
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
       // The snapshot already carries sequence 1; the delta must be newer.
       lifecycle.seq = 1
@@ -457,7 +523,7 @@ describe("OverlayWindow", () => {
           { working: 0, total: 1, anonymous: 0 },
         ),
       )
-      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -472,6 +538,7 @@ describe("OverlayWindow", () => {
     getLiveSessions.mockResolvedValue({
       seq: 1,
       working: 2,
+      sweep: sweep(2),
       total: 300,
       sessions: [
         {
@@ -486,7 +553,7 @@ describe("OverlayWindow", () => {
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
       lifecycle.seq = 1
       // A stamped delta about a session the rows never named still moves
@@ -502,19 +569,23 @@ describe("OverlayWindow", () => {
           { working: 1, total: 300, anonymous: 0 },
         ),
       )
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
       act(() =>
         emitLifecycle(
           {
             kind: "quiet",
-            session: { environmentKey: "native", agent: "claude-code", sessionId: "unlisted-2" },
+            session: {
+              environmentKey: "native",
+              agent: "claude-code",
+              sessionId: "unlisted-2",
+            },
             agent: "claude-code",
             at: Math.floor(Date.now() / 1000),
           },
           { working: 0, total: 300, anonymous: 0 },
         ),
       )
-      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -522,6 +593,9 @@ describe("OverlayWindow", () => {
   })
 
   it("clears anonymous agent activity only when the registry says so", async () => {
+    const empty = summary()
+    empty.providers = []
+    getLiveUsage.mockResolvedValue(empty)
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
     try {
@@ -542,12 +616,12 @@ describe("OverlayWindow", () => {
           { working: 0, total: 0, anonymous: 1 },
         ),
       )
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
       // No renderer timer ends anonymous activity: past the registry's
       // window the bar still blinks until the canonical clear arrives.
       await advance(30_000)
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
       act(() =>
         emitLifecycle(
@@ -560,7 +634,7 @@ describe("OverlayWindow", () => {
           { working: 0, total: 0, anonymous: 0 },
         ),
       )
-      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -583,7 +657,7 @@ describe("OverlayWindow", () => {
         { working: 1, total: 1, anonymous: 0 },
       ),
     )
-    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
 
     act(() => emitNative("overlay_work_changed", false))
     expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
@@ -592,6 +666,144 @@ describe("OverlayWindow", () => {
 
     unmount()
     expect(nativeEvents.get("overlay_work_changed")?.size ?? 0).toBe(0)
+  })
+
+  it("marks the first segment when usage is too low to light one", async () => {
+    const low = summary()
+    low.providers[0]!.windows[0]!.usedPercent = 1
+    getLiveUsage.mockResolvedValue(low)
+    getLiveSessions.mockResolvedValue(liveSnapshot())
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
+    expect(dots).toHaveLength(20)
+    // Nothing is lit, so the first segment flashes alone, in the brand tint.
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(dots[0]).toHaveClass("led-sweep-dot", "bg-led-off")
+    expect(dots[0]).not.toHaveAttribute("data-led-lit")
+    expect(container.querySelectorAll("[data-led-next]")).toHaveLength(1)
+    expect(dots[0]).toHaveAttribute("data-led-next", "true")
+  })
+
+  it("sweeps the one empty bar when there are no bars", async () => {
+    const empty = summary()
+    empty.providers = []
+    getLiveUsage.mockResolvedValue(empty)
+    getLiveSessions.mockResolvedValue(liveSnapshot())
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
+    expect(dots).toHaveLength(20)
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(dots[0]).toHaveClass("led-sweep-dot")
+    expect(dots[0]).toHaveAttribute("data-led-next", "true")
+    expect(container.querySelector("[data-led-lit]")).toBeNull()
+  })
+
+  it("sweeps every bar of the live provider, one row apart from the top", async () => {
+    getLiveUsage.mockResolvedValue(withSecondBar())
+    getLiveSessions.mockResolvedValue(liveSnapshot())
+    const { container } = render(<OverlayWindow />)
+
+    // 81% lights 16 of 20 on each bar; only the lit segments move.
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
+    const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(bars.map((bar) => bar.style.getPropertyValue("--led-row"))).toEqual(["0", "1"])
+    expect(bars[0]?.style.getPropertyValue("--led-segments")).toBe("20")
+  })
+
+  it("holds a model-scoped bar still while the session runs another model", async () => {
+    getLiveUsage.mockResolvedValue(withScopedBar())
+    getLiveSessions.mockResolvedValue(
+      liveSnapshot(liveSession("session-1", "claude-code", "claude-opus-4-6")),
+    )
+    const { container } = render(<OverlayWindow />)
+
+    // Only the first bar sweeps. The Fable bar shows a model that the
+    // session does not run, so it holds still.
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(16))
+    const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(bars).toHaveLength(1)
+    expect(bars[0]?.style.getPropertyValue("--led-row")).toBe("0")
+  })
+
+  it("sweeps a model-scoped bar while the session runs that model", async () => {
+    getLiveUsage.mockResolvedValue(withScopedBar())
+    getLiveSessions.mockResolvedValue(
+      liveSnapshot(liveSession("session-1", "claude-code", "claude-fable-5")),
+    )
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
+  })
+
+  it("runs one sweep clock for every bar, and only while a session is live", async () => {
+    getLiveUsage.mockResolvedValue(withSecondBar())
+    getLiveSessions.mockResolvedValue(liveSnapshot())
+    const { container } = render(<OverlayWindow />)
+
+    // One animation drives every bar, so the bars stay in phase however
+    // late a bar joined the sweep.
+    await waitFor(() => expect(container.querySelector(".led-clock")).not.toBeNull())
+    expect(container.querySelectorAll(".led-clock")).toHaveLength(1)
+    // The HUD floats over the reader's work, so its gleam runs softer.
+    expect(container.querySelector(".led-clock")).toHaveClass("led-clock-soft")
+    // The view writes no phase, because `installLivePhase` owns it. A delay
+    // from a render would move the sweep on every later render.
+    const clock = container.querySelector<HTMLElement>(".led-clock")
+    expect(clock?.style.getPropertyValue("--led-sweep-delay")).toBe("")
+    expect(clock?.style.animationDelay).toBe("")
+    expect(
+      container.querySelector(".led-clock")?.querySelectorAll(".led-sweep-dot"),
+    ).toHaveLength(32)
+  })
+
+  it("keeps the bars dark while the live session draws on another provider", async () => {
+    getLiveSessions.mockResolvedValue(liveSnapshot(liveSession("session-1", "cursor")))
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(container.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20),
+    )
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+  })
+
+  it("keeps a low-usage bar dark without a live session", async () => {
+    const low = summary()
+    low.providers[0]!.windows[0]!.usedPercent = 1
+    getLiveUsage.mockResolvedValue(low)
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+    expect(container.querySelector(".led-clock")).toBeNull()
+  })
+
+  it("marks the next segment to light, and gives the lit ones the gleam", async () => {
+    getLiveSessions.mockResolvedValue(liveSnapshot())
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+    const dots = container.querySelectorAll<HTMLElement>(".pointer-events-none .rounded-full")
+    // 81% of 20 segments rounds to 16 lit, so the mark sits on index 16.
+    expect(dots[15]).toHaveAttribute("data-led-lit", "true")
+    expect(dots[15]).not.toHaveAttribute("data-led-next")
+    expect(dots[15]?.style.backgroundColor).not.toBe("")
+    expect(dots[15]?.style.getPropertyValue("--led-index")).toBe("15")
+    expect(dots[15]).toHaveClass("led-sweep-dot")
+    // The stylesheet derives the gleam from the segment's own colour. jsdom
+    // normalises the background to rgb; the custom property keeps the source.
+    expect(dots[15]?.style.getPropertyValue("--led-color")).toBe(providerBarColor("anthropic"))
+    // The unlit segment does not move. It keeps the unlit colour and only
+    // holds the still mark under reduced motion.
+    expect(dots[16]).toHaveAttribute("data-led-next", "true")
+    expect(dots[16]).not.toHaveAttribute("data-led-lit")
+    expect(dots[16]).not.toHaveClass("led-sweep-dot")
+    expect(dots[16]).toHaveClass("bg-led-off")
+    expect(dots[16]?.style.backgroundColor).toBe("")
   })
 
   it("rests with bars only and a hidden close control", async () => {

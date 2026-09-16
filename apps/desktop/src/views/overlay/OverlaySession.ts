@@ -24,6 +24,12 @@ import {
 } from "../../lib/overlayWindow"
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
+import {
+  liveModels,
+  liveProviders,
+  sameProviderModels,
+  type ProviderModels,
+} from "../../lib/sessionLiveness"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
@@ -34,7 +40,12 @@ export type OverlaySnapshot = {
   bars: UsageBarItem[]
   hovered: boolean
   dragging: boolean
+  /** Whether any session is live, from the shell's lifecycle bus. */
   sessionLive: boolean
+  /** The providers a live session draws on, sorted. Their bars blink. */
+  liveProviders: readonly string[]
+  /** The models a live session runs, sorted. A model-scoped bar reads this. */
+  liveModels: ProviderModels
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
 }
@@ -44,6 +55,8 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   hovered: false,
   dragging: false,
   sessionLive: false,
+  liveProviders: [],
+  liveModels: {},
   noMeterSelected: false,
 }
 
@@ -52,6 +65,10 @@ type DragOrigin = {
   pointerY: number
   windowX: number
   windowY: number
+}
+
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index])
 }
 
 function sameBars(left: UsageBarItem[], right: UsageBarItem[]): boolean {
@@ -198,7 +215,13 @@ export class OverlaySession {
     this.active = true
     this.hudVisibilityKnown = false
     const generation = ++this.activityGeneration
-    this.update({ hovered: false, dragging: false, sessionLive: false })
+    this.update({
+      hovered: false,
+      dragging: false,
+      sessionLive: false,
+      liveProviders: [],
+      liveModels: {},
+    })
     this.connectPanel(generation)
     this.resumeHudExposure()
 
@@ -246,7 +269,12 @@ export class OverlaySession {
     // timestamps or scan events.
     const syncLiveness = () => {
       if (!this.isCurrent(generation)) return
-      this.update({ sessionLive: hasWorkingActivity(liveSessions.getSnapshot()) })
+      const live = liveSessions.getSnapshot()
+      this.update({
+        sessionLive: hasWorkingActivity(live),
+        liveProviders: liveProviders(live),
+        liveModels: liveModels(live),
+      })
     }
     this.stopLifecycleListening = liveSessions.subscribe(syncLiveness)
     syncLiveness()
@@ -322,7 +350,13 @@ export class OverlaySession {
     this.observer = null
     this.dragOrigin = null
     this.pendingMove = null
-    this.update({ hovered: false, dragging: false, sessionLive: false })
+    this.update({
+      hovered: false,
+      dragging: false,
+      sessionLive: false,
+      liveProviders: [],
+      liveModels: {},
+    })
   }
 
   private isCurrent(generation: number): boolean {
@@ -458,6 +492,8 @@ export class OverlaySession {
       this.snapshot.hovered === next.hovered &&
       this.snapshot.dragging === next.dragging &&
       this.snapshot.sessionLive === next.sessionLive &&
+      sameList(this.snapshot.liveProviders, next.liveProviders) &&
+      sameProviderModels(this.snapshot.liveModels, next.liveModels) &&
       this.snapshot.noMeterSelected === next.noMeterSelected
     ) {
       return false

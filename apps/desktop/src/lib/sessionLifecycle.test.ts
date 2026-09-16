@@ -47,7 +47,7 @@ function emit(event: Ipc.SessionLifecycleEventPayload): void {
 
 /** The counts the registry stamps on a batch's last lifecycle event. */
 function counts(working: number, total: number, anonymous = 0): Ipc.AggregatePayload {
-  return { working, total, anonymous }
+  return { working, total, anonymous, sweep: [] }
 }
 
 /** A snapshot whose counts match its rows: nothing omitted. */
@@ -60,6 +60,7 @@ function completeSnapshot(
     seq,
     working: sessions.filter((live) => !live.quiet).length,
     total: sessions.length,
+    sweep: [],
     sessions,
     anonymous,
   }
@@ -847,6 +848,7 @@ describe("LiveSessionsTracker counts and presence", () => {
       seq: 15,
       working: 6,
       total: 6,
+      sweep: [],
       sessions: [present(ref("row"))],
       anonymous: [],
     })

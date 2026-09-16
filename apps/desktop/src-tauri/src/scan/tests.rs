@@ -1657,7 +1657,7 @@ fn a_fresh_controller_reports_a_clean_initial_status() {
 #[tokio::test(start_paused = true)]
 async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     let controller = ScanController::default();
-    controller.request(ScanTrigger::InsightsPane);
+    controller.request(ScanTrigger::SettingsTransition);
     controller.request(ScanTrigger::ManualRescan);
 
     {
@@ -1666,7 +1666,7 @@ async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(
-            matches!(pending.as_ref(), Some(ScanTrigger::InsightsPane)),
+            matches!(pending.as_ref(), Some(ScanTrigger::SettingsTransition)),
             "the first trigger is kept, the second is dropped"
         );
     }
@@ -1732,7 +1732,6 @@ fn refreshes_repositories_is_false_only_for_the_tick_and_the_watcher_triggers() 
     let refreshing = [
         ScanTrigger::Launch,
         ScanTrigger::SettingsTransition,
-        ScanTrigger::InsightsPane,
         ScanTrigger::RepositoryToggle,
         ScanTrigger::ScanRootAdded,
         ScanTrigger::FolderAccessGranted,
