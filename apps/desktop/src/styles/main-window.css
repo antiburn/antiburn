@@ -111,23 +111,9 @@
   flex: 1;
 }
 
-/* Few meters make a short card. A short card at the top right sits beside the
-   controls the sections put there, so it drops to the bottom right corner and
-   takes a square of the window, as wide as it is tall. */
-.main-window-panel[data-compact] {
-  inset-block-start: auto;
-  block-size: var(--main-window-panel-width);
-}
-
 /* Keep every section clear of the floating meter card. */
 .main-window-workspace {
   padding-inline-end: calc(var(--main-window-panel-width) + 2 * var(--space-lg));
-}
-
-/* The square card holds one corner, not a column, so the sections take the
-   whole width back. The card covers the corner it rests in. */
-.main-window[data-compact-panel] .main-window-workspace {
-  padding-inline-end: 0;
 }
 
 .main-window-section[hidden] {

@@ -28,16 +28,8 @@ import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
 import { MainWindowLimitsSession } from "./main-window/MainWindowLimitsSession"
-import { ProviderLimitsPanel, panelMeterCount } from "./main-window/ProviderLimitsPanel"
+import { ProviderLimitsPanel } from "./main-window/ProviderLimitsPanel"
 import { OverviewView } from "./main-window/OverviewView"
-
-/**
- * The meter count at or below which the limits card moves to the bottom right.
- *
- * One account with one or two windows makes a card too short to hold the top
- * right corner, where the sections put their own controls.
- */
-const COMPACT_PANEL_METERS = 2
 
 export interface MainWindowSection extends SidebarNavItem {
   render: (context: { active: boolean }) => ReactNode
@@ -250,7 +242,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         />
       }
       panel={<ProviderLimitsPanel live={limits.liveUsage} loading={limits.loading} />}
-      compactPanel={panelMeterCount(limits.liveUsage) <= COMPACT_PANEL_METERS}
     >
       {availableSections.map((section) => (
         <div
