@@ -37,17 +37,16 @@
 
    The workspace holds a matching inset, so no section draws under the card.
 
-   The card grows with its content to the height the window allows. Past that
-   the meters scroll inside it, and the card keeps its own padding clear of
-   the scrolling content. */
+   The card keeps the full window height between its margins. The meters scroll
+   inside it when the accounts outgrow it, and the card keeps its own padding
+   clear of the scrolling content. */
 .main-window-panel {
   position: absolute;
   z-index: 10;
   display: flex;
-  inset-block-start: var(--space-lg);
+  inset-block: var(--space-lg);
   inset-inline-end: var(--space-lg);
   inline-size: var(--main-window-panel-width);
-  max-block-size: calc(100% - 2 * var(--space-lg));
   flex-direction: column;
   padding-block: var(--space-md);
   border-radius: var(--radius-popover);
@@ -58,7 +57,6 @@
 /* The card starts below the drag strip, level with the page beside it. */
 .main-window-macos .main-window-panel {
   inset-block-start: var(--main-window-titlebar-height);
-  max-block-size: calc(100% - var(--main-window-titlebar-height) - var(--space-lg));
 }
 
 .main-window-macos .main-window-sidebar {

@@ -683,8 +683,8 @@ Notes for what isn't expressible as a token:
   meters. Every section shows the same meters, so they sit over the workspace instead of
   under the section rows. The card uses the popover corner, the opaque `surface-window`
   fill, and `shadow-raised` over the `shadow-stats-card` outline. It insets 16px from the
-  window edges, starts at the titlebar height on macOS, and scrolls alone when the accounts
-  outgrow the window. The workspace holds a matching inset, so no section draws under it.
+  window edges, starts at the titlebar height on macOS, and keeps the full window height
+  between those margins. It scrolls alone when the accounts outgrow it. The workspace holds a matching inset, so no section draws under it.
   The meters pack one dot every 9px of measured width, to a floor of 16 dots.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,

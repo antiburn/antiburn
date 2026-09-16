@@ -11,9 +11,9 @@ import { ScrollPane } from "../../components/ui/ScrollPane"
  * what every section shows, so the workspace under it holds only the section
  * the reader chose.
  *
- * The panel grows with its content to the height the window allows, then
- * scrolls. A reader with many provider accounts reaches the last of them
- * without the card leaving the window.
+ * The panel keeps the full window height between its margins, then scrolls.
+ * A reader with many provider accounts reaches the last of them without the
+ * card leaving the window.
  */
 export function MainWindowLayout({
   sidebar,
