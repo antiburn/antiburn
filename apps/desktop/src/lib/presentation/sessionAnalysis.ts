@@ -627,6 +627,14 @@ export function formatTokensShort(n: number): string {
 }
 
 /**
+ * The boundary between a priced cost that reads as a real figure and one
+ * small enough to read as `<$0.01` or to roll up with its peers. Shared by
+ * {@link formatCost} and the unused-context rollup, so the two thresholds
+ * cannot drift apart.
+ */
+export const SMALL_COST_USD = 0.005
+
+/**
  * USD cost, always to two decimals (`$XX.XX`) so a trailing zero never drops
  * (`$20.70`, not `$20.7`). Every figure is an on-device estimate; surrounding
  * labels say so. A real `$0` — and any non-finite or negative input, which
@@ -636,7 +644,7 @@ export function formatTokensShort(n: number): string {
  */
 export function formatCost(usd: number): string {
   if (!Number.isFinite(usd) || usd <= 0) return "$0.00"
-  if (usd < 0.005) return "<$0.01"
+  if (usd < SMALL_COST_USD) return "<$0.01"
   return `$${usd.toFixed(2)}`
 }
 
@@ -657,6 +665,20 @@ export function formatCostTick(usd: number): string {
 /* -------------------------------------------------------------------------
  * Cost presentation
  * ---------------------------------------------------------------------- */
+
+/**
+ * Percent of `totalUsd` that `usd` accounts for, as a whole percent. A
+ * positive share under half a percent reads `"<1%"` rather than rounding away
+ * to `"0%"`. `"—"` stands in when the total itself is zero, where a percent
+ * is undefined.
+ */
+export function formatSharePct(usd: number, totalUsd: number): string {
+  if (!(totalUsd > 0)) return "—"
+  const pct = (usd / totalUsd) * 100
+  if (pct <= 0) return "0%"
+  if (pct < 0.5) return "<1%"
+  return `${Math.round(pct)}%`
+}
 
 export interface CostRow {
   label: string

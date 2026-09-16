@@ -13,6 +13,7 @@ import type {
   SessionMetrics,
 } from "../../lib/types/session"
 import { subagentsExpandedStore } from "./analysis/subagentsExpandedStore"
+import { unusedContextExpandedStore } from "./analysis/unusedContextExpandedStore"
 import type * as CostBurnupChartModule from "./analysis/CostBurnupChart"
 import {
   SessionDetailPresentation,
@@ -41,6 +42,7 @@ vi.mock("./analysis/CostBurnupChart", async (importOriginal) => {
 // from the same collapsed state so an earlier test's click cannot leak in.
 beforeEach(() => {
   subagentsExpandedStore.set(false)
+  unusedContextExpandedStore.set(false)
 })
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
@@ -264,7 +266,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.queryByText(/not assessed/i)).toBeNull()
   })
 
-  it("shows the Loaded but not used section only when the evidence carries unused resources", () => {
+  it("shows the unused-context section, collapsed, only when the evidence carries unused resources", () => {
     view({
       hygiene: {
         ...INITIAL_SESSION_HYGIENE,
@@ -278,12 +280,19 @@ describe("SessionDetailPresentation — chrome", () => {
     })
 
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
-    expect(screen.getByText("Loaded but not used")).toBeTruthy()
+    const header = screen.getByRole("button", {
+      name: /Unused skills, MCP servers, and built-in tools/,
+    })
+    expect(header).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByText("bash")).toBeNull()
+
+    fireEvent.click(header)
     expect(screen.getByText("bash")).toBeTruthy()
-    expect(screen.getByText("$0.42")).toBeTruthy()
+    // The header also shows this same total, since "bash" is the only priced row.
+    expect(screen.getAllByText("$0.42")).toHaveLength(2)
   })
 
-  it("omits the Loaded but not used section when the evidence carries no unused resources", () => {
+  it("omits the unused-context section when the evidence carries no unused resources", () => {
     view({
       hygiene: {
         ...INITIAL_SESSION_HYGIENE,
@@ -293,7 +302,9 @@ describe("SessionDetailPresentation — chrome", () => {
     })
 
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
-    expect(screen.queryByText("Loaded but not used")).toBeNull()
+    expect(
+      screen.queryByRole("button", { name: /Unused skills, MCP servers, and built-in tools/ }),
+    ).toBeNull()
   })
 
   it("adds the provider-cache-miss count from the session metrics to the Context stats", () => {

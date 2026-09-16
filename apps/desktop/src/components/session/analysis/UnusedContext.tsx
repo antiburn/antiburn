@@ -1,55 +1,135 @@
-import { formatCost } from "../../../lib/presentation/sessionAnalysis"
+import { ChevronRight } from "lucide-react"
+
+import { cn } from "../../../lib/cn"
+import { formatCost, formatSharePct } from "../../../lib/presentation/sessionAnalysis"
 import {
+  unusedContextDisplayRows,
   unusedContextTotalUsd,
+  type UnusedContextKind,
   type UnusedContextRow,
 } from "../../../lib/presentation/unusedContext"
+import { Tooltip } from "../../presentation/Tooltip"
+import {
+  toggleUnusedContextExpanded,
+  useUnusedContextExpanded,
+} from "./unusedContextExpandedStore"
 
 export interface UnusedContextProps {
   rows: UnusedContextRow[]
+  /** The session's total cost, for the share-of-total column and header. Null when unknown. */
+  sessionTotalUsd: number | null
+}
+
+/** Lower-case plural noun for a rollup row's kind, e.g. "6 built-in tools". */
+const ROLLUP_KIND_LABEL: Record<UnusedContextKind, string> = {
+  "Built-in tool": "built-in tools",
+  "MCP server": "MCP servers",
+  Skill: "skills",
 }
 
 /**
- * The Cost tab's informational "Loaded but not used" list. One row shows
- * an idle resource's name, kind, and replay cost, laid out like
- * `CostBreakdown`'s component rows. Carries no verdict.
+ * The Cost tab's informational list of loaded but unused resources.
+ * Collapsed by default behind a header that names the section and, once at
+ * least one row carries a price, shows the total replay cost and its share
+ * of the session. Open, each row shows an idle resource's name, kind, replay
+ * cost, and share; a kind with several small-cost rows collapses into one
+ * rollup row, its names available on hover. Carries no verdict.
  */
-export function UnusedContext({ rows }: UnusedContextProps) {
+export function UnusedContext({ rows, sessionTotalUsd }: UnusedContextProps) {
+  const expanded = useUnusedContextExpanded()
   if (rows.length === 0) return null
   const totalUsd = unusedContextTotalUsd(rows)
-  const pricedCount = rows.filter((row) => row.costUsd != null).length
+  const displayRows = unusedContextDisplayRows(rows)
+  const shareTotalUsd = sessionTotalUsd ?? 0
 
   return (
-    <div className="grid min-w-0 gap-y-1 w-full max-w-[640px] gap-x-6 justify-self-end justify-end grid-cols-[1fr_auto]">
-      <p className="col-span-full type-callout text-label-tertiary mb-1">
-        Each item sat in every request&apos;s context this session and was never called. The
-        figure is what this session paid to replay it from the cache.
-      </p>
-
-      {rows.map((row) => (
-        <div
-          key={`${row.kind}-${row.name}`}
-          className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
-        >
-          <span className="flex min-w-0 items-baseline gap-1.5">
-            <span className="truncate text-label">{row.name}</span>
-            <span className="truncate text-label-secondary">{row.kind}</span>
+    <div className="grid w-full min-w-0 gap-y-1 rounded-control bg-surface-card/50 px-3 py-2">
+      <button
+        type="button"
+        onClick={toggleUnusedContextExpanded}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
+      >
+        <span className="flex min-w-0 items-center gap-x-1.5">
+          <ChevronRight
+            size={14}
+            aria-hidden="true"
+            className={cn(
+              "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
+              expanded && "rotate-90",
+            )}
+          />
+          <span className="truncate text-label">
+            Unused skills, MCP servers, and built-in tools
           </span>
-          <span className="pr-1.5 text-right tabular-nums">
-            {row.costUsd != null ? (
-              <span className="text-label">{formatCost(row.costUsd)}</span>
-            ) : (
-              <span className="text-label-tertiary">Not priced</span>
+        </span>
+        {totalUsd != null && (
+          <span className="flex shrink-0 items-baseline gap-1 text-right tabular-nums">
+            <span className="text-label">{formatCost(totalUsd)}</span>
+            {sessionTotalUsd != null && sessionTotalUsd > 0 && (
+              <>
+                <span aria-hidden="true" className="text-label-tertiary">
+                  ·
+                </span>
+                <span className="text-label-tertiary">
+                  {formatSharePct(totalUsd, sessionTotalUsd)}
+                </span>
+              </>
             )}
           </span>
-        </div>
-      ))}
+        )}
+      </button>
 
-      {pricedCount >= 2 && totalUsd != null && (
-        <div className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 mt-1 border-t border-separator px-1 pt-1.5 type-callout font-semibold!">
-          <span className="text-label">Total</span>
-          <span className="pr-1.5 text-right tabular-nums text-label">
-            {formatCost(totalUsd)}
-          </span>
+      {expanded && (
+        <div className="grid min-w-0 gap-y-1 gap-x-6 grid-cols-[1fr_auto_auto]">
+          <p className="col-span-full type-callout text-label-tertiary mb-1">
+            These items sat in every request&apos;s context this session but were never called.
+            They had to be read from the cache every time. This is the cost associated with
+            that.
+          </p>
+
+          {displayRows.map((row) =>
+            row.type === "item" ? (
+              <div
+                key={`${row.kind}-${row.name}`}
+                className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
+              >
+                <span className="flex min-w-0 items-baseline gap-1.5">
+                  <span className="truncate text-label">{row.name}</span>
+                  <span className="truncate text-label-secondary">{row.kind}</span>
+                </span>
+                <span className="pr-1.5 text-right tabular-nums">
+                  {row.costUsd != null ? (
+                    <span className="text-label">{formatCost(row.costUsd)}</span>
+                  ) : (
+                    <span className="text-label-tertiary">Not priced</span>
+                  )}
+                </span>
+                <span className="text-right text-label-tertiary tabular-nums">
+                  {row.costUsd != null ? formatSharePct(row.costUsd, shareTotalUsd) : "—"}
+                </span>
+              </div>
+            ) : (
+              <Tooltip key={`rollup-${row.kind}`} label={row.names.join(", ")} delayMs={150}>
+                <div
+                  tabIndex={0}
+                  className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover type-callout"
+                >
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="truncate text-label">
+                      {row.count} {ROLLUP_KIND_LABEL[row.kind]}
+                    </span>
+                  </span>
+                  <span className="pr-1.5 text-right tabular-nums text-label">
+                    {formatCost(row.costUsd)}
+                  </span>
+                  <span className="text-right text-label-tertiary tabular-nums">
+                    {formatSharePct(row.costUsd, shareTotalUsd)}
+                  </span>
+                </div>
+              </Tooltip>
+            ),
+          )}
         </div>
       )}
     </div>

@@ -1091,12 +1091,18 @@ export function SessionDetailPresentation({
                   {costSection}
                   <section className="flex min-h-48 flex-1 flex-col gap-y-5">
                     <TabSectionHeading>Cost over time</TabSectionHeading>
-                    <div className="min-h-48 flex-1">
-                      <CostBurnupChart
-                        buckets={summary.buckets}
-                        activeSecs={summary.avgActiveSecs}
-                        highlight={costHighlight}
-                      />
+                    {/* The column has a minimum height, not a fixed one, so the
+                        chart's percentage height cannot resolve against the
+                        wrapper. The absolute inner box gives it a definite
+                        height and keeps the key tight under the time axis. */}
+                    <div className="relative min-h-48 flex-1">
+                      <div className="absolute inset-0">
+                        <CostBurnupChart
+                          buckets={summary.buckets}
+                          activeSecs={summary.avgActiveSecs}
+                          highlight={costHighlight}
+                        />
+                      </div>
                     </div>
                     <ChartKey
                       stats={costKeyStats}
@@ -1106,12 +1112,6 @@ export function SessionDetailPresentation({
                       swatchClass={COST_SERIES_SWATCH_CLASS}
                     />
                   </section>
-                  {unusedContextRows.length > 0 && (
-                    <section className="shrink-0">
-                      <TabSectionHeading>Loaded but not used</TabSectionHeading>
-                      <UnusedContext rows={unusedContextRows} />
-                    </section>
-                  )}
 
                   {hasAssessedHygieneChecks && (
                     <section className="shrink-0">
@@ -1120,6 +1120,18 @@ export function SessionDetailPresentation({
                         checks={hygieneChecks}
                         collapsePassing={false}
                         inlineGuidance
+                      />
+                    </section>
+                  )}
+
+                  {unusedContextRows.length > 0 && (
+                    <section className="shrink-0">
+                      <TabSectionHeading>
+                        Unused skills, MCP servers, and built-in tools
+                      </TabSectionHeading>
+                      <UnusedContext
+                        rows={unusedContextRows}
+                        sessionTotalUsd={cost?.totalCostUsd ?? null}
                       />
                     </section>
                   )}

@@ -13,6 +13,7 @@ import {
   formatCost,
   formatCostTick,
   formatDuration,
+  formatSharePct,
   formatTime,
   formatTokenBand,
   formatTokensShort,
@@ -546,6 +547,24 @@ describe("formatCost", () => {
     expect(formatCost(Number.NaN)).toBe("$0.00")
     expect(formatCost(Number.POSITIVE_INFINITY)).toBe("$0.00")
     expect(formatCost(-1)).toBe("$0.00")
+  })
+})
+
+describe("formatSharePct", () => {
+  it("reads a zero total as undefined, not a zero share", () => {
+    expect(formatSharePct(1, 0)).toBe("—")
+  })
+
+  it("reads an exact zero share as 0%", () => {
+    expect(formatSharePct(0, 10)).toBe("0%")
+  })
+
+  it("reads a positive share under half a percent as <1%, not a rounded-away 0%", () => {
+    expect(formatSharePct(0.1, 100)).toBe("<1%")
+  })
+
+  it("rounds an ordinary share to the nearest whole percent", () => {
+    expect(formatSharePct(12.4, 100)).toBe("12%")
   })
 })
 
