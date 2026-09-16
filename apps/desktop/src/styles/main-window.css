@@ -2,7 +2,7 @@
 .main-window {
   --main-window-titlebar-height: calc(var(--space-2xl) + var(--space-lg));
   /* The right rail. It holds the provider meters, which stay 180px wide. */
-  --main-window-rail-width: 180px;
+  --main-window-panel-width: 180px;
 
   position: relative;
   display: flex;
@@ -29,25 +29,31 @@
   flex-direction: column;
 }
 
-/* The provider meters stand in a rail on the right, opposite the navigation.
-   Every section shows the same meters, so they keep a place of their own and
-   leave the workspace between the two rails. The rail scrolls alone when the
-   accounts outgrow its height. */
-.main-window-rail {
-  display: flex;
-  min-block-size: 0;
-  inline-size: var(--main-window-rail-width);
-  flex: 0 0 var(--main-window-rail-width);
-  flex-direction: column;
+/* The provider meters float in a card at the top right, over the workspace.
+   Every section shows the same meters, so they keep a place of their own
+   instead of a place in one section. The card lifts off the canvas with the
+   raised shadow and the stats-card outline, and it scrolls alone when the
+   accounts outgrow the window.
+
+   The workspace holds a matching inset, so no section draws under the card. */
+.main-window-panel {
+  position: absolute;
+  z-index: 10;
+  inset-block-start: var(--space-lg);
+  inset-inline-end: var(--space-lg);
+  inline-size: var(--main-window-panel-width);
+  max-block-size: calc(100% - 2 * var(--space-lg));
   overflow-y: auto;
-  padding-block-start: var(--space-md);
-  border-inline-start: 1px solid var(--color-separator);
-  background-color: var(--color-surface-sidebar);
+  padding-block: var(--space-md);
+  border-radius: var(--radius-popover);
+  background-color: var(--color-surface-window);
+  box-shadow: var(--shadow-raised), var(--shadow-stats-card);
 }
 
-/* The first meter starts level with the page content beside it. */
-.main-window-macos .main-window-rail {
-  padding-block-start: var(--main-window-titlebar-height);
+/* The card starts below the drag strip, level with the page beside it. */
+.main-window-macos .main-window-panel {
+  inset-block-start: var(--main-window-titlebar-height);
+  max-block-size: calc(100% - var(--main-window-titlebar-height) - var(--space-lg));
 }
 
 .main-window-macos .main-window-sidebar {
@@ -94,6 +100,11 @@
   min-inline-size: 0;
   min-block-size: 0;
   flex: 1;
+}
+
+/* Keep every section clear of the floating meter card. */
+.main-window-workspace {
+  padding-inline-end: calc(var(--main-window-panel-width) + 2 * var(--space-lg));
 }
 
 .main-window-section[hidden] {

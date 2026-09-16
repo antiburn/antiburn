@@ -5,17 +5,17 @@ import { isMacOS } from "../../lib/platform"
 /**
  * Keep navigation and feature panes beneath the native window controls.
  *
- * The optional rail stands on the right, opposite the navigation. It holds
- * what every section shows, so the workspace between them holds only the
- * section the reader chose.
+ * The optional panel floats at the top right, over the workspace. It holds
+ * what every section shows, so the workspace under it holds only the section
+ * the reader chose.
  */
 export function MainWindowLayout({
   sidebar,
-  rail,
+  panel,
   children,
 }: {
   sidebar: ReactNode
-  rail?: ReactNode
+  panel?: ReactNode
   children: ReactNode
 }) {
   return (
@@ -28,7 +28,7 @@ export function MainWindowLayout({
       )}
       <div className="main-window-navigation">{sidebar}</div>
       <div className="main-window-workspace">{children}</div>
-      {rail && <div className="main-window-rail">{rail}</div>}
+      {panel && <div className="main-window-panel">{panel}</div>}
     </main>
   )
 }
