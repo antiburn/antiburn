@@ -26,6 +26,8 @@ use antiburn_local::analysis::{ProviderHint, lookup_turn_pricing};
 use antiburn_local::pricing::ModelTokens;
 use antiburn_local::pricing::calc::calculate_cache_write_cost;
 
+use crate::provider_usage::factor::model_matches_scope;
+use crate::provider_usage::live::normalize::slugify;
 use crate::provider_usage::{attribute, has_tokens};
 
 use super::provider_usage_history::ProviderUsagePeriod;
@@ -42,35 +44,75 @@ const MAX_CANDIDATE_PERIODS: usize = 64;
 /// samples, matching the factor's own weighted-median lookback.
 const RECENT_SAMPLE_WINDOW_SECS: i64 = 14 * 86_400;
 
-/// The two lanes the learner and the badge track. Anthropic's supplemental
-/// per-model windows, and any role a provider stated that this app declines
-/// to guess the meaning of, carry no factor.
+/// The two account-wide lanes the learner and the badge track, plus any
+/// number of `model:<slug>` lanes for a provider's supplemental per-model
+/// weekly windows, such as Anthropic's "Fable" limit. Any other role a
+/// provider stated that this app declines to guess the meaning of carries no
+/// factor.
 pub(crate) const LANE_FIVE_HOUR: &str = "fiveHour";
 pub(crate) const LANE_WEEKLY: &str = "weekly";
 
+/// Prefix for a lane keyed by a supplemental weekly window scoped to one
+/// model, rather than to the whole account.
+const MODEL_LANE_PREFIX: &str = "model:";
+
 /// A lane's nominal length, used to derive a window start the provider did
-/// not state directly.
+/// not state directly. A model-scoped lane is weekly, the only period length
+/// this app has seen a supplemental model window carry.
 pub(crate) fn lane_duration_seconds(lane: &str) -> i64 {
-    if lane == LANE_WEEKLY { 604_800 } else { 18_000 }
+    if lane == LANE_WEEKLY || lane.starts_with(MODEL_LANE_PREFIX) {
+        604_800
+    } else {
+        18_000
+    }
 }
 
-/// Map a period's stated role to the lane the learner tracks, or `None` for a
-/// role this app does not attribute a factor to.
-pub(crate) fn lane_for_window_role(window_role: &str) -> Option<&'static str> {
-    match window_role {
-        "primaryShort" => Some(LANE_FIVE_HOUR),
-        "primaryLong" => Some(LANE_WEEKLY),
+/// Map a period's role, kind, id, and scope to the lane the learner tracks,
+/// or `None` for a period this app does not attribute a factor to.
+///
+/// The two account-wide windows map to the two fixed lanes. A supplemental
+/// weekly window scoped to one model maps to its own `model:<slug>` lane,
+/// keyed by the slug the window id already carries so the lane survives a
+/// display-name repunctuation the provider might make later. A window id of
+/// another shape falls back to slugifying the scope label directly.
+pub(crate) fn lane_for_period(period: &ProviderUsagePeriod) -> Option<String> {
+    match period.window_role.as_str() {
+        "primaryShort" if period.scope_key == "account" => Some(LANE_FIVE_HOUR.to_string()),
+        "primaryLong" if period.scope_key == "account" => Some(LANE_WEEKLY.to_string()),
+        "supplemental"
+            if period.window_kind == "weekly"
+                && period.scope_key.starts_with(MODEL_LANE_PREFIX) =>
+        {
+            let slug = period
+                .window_id
+                .strip_prefix("weekly-")
+                .map(str::to_string)
+                .unwrap_or_else(|| slugify(&period.scope_label));
+            Some(format!("{MODEL_LANE_PREFIX}{slug}"))
+        }
         _ => None,
     }
 }
 
-/// The stated role that carries one lane's observations. The inverse of
-/// [`lane_for_window_role`].
-fn window_role_for_lane(lane: &str) -> &'static str {
-    if lane == LANE_WEEKLY {
-        "primaryLong"
-    } else {
-        "primaryShort"
+/// The model name to filter a lane's dollars by, for a model-scoped lane.
+///
+/// `None` for the two account-wide lanes, whose query prices every model.
+pub(crate) fn model_scope_for_period(period: &ProviderUsagePeriod) -> Option<&str> {
+    period
+        .scope_key
+        .starts_with(MODEL_LANE_PREFIX)
+        .then_some(period.scope_label.as_str())
+}
+
+/// The observation filter that carries one lane's readings: the stated
+/// window role for the two fixed lanes, or the stated role together with the
+/// exact supplemental window id for a model-scoped lane. The inverse of
+/// [`lane_for_period`].
+fn observation_filter_for_lane(lane: &str) -> (&'static str, Option<String>) {
+    match lane.strip_prefix(MODEL_LANE_PREFIX) {
+        Some(slug) => ("supplemental", Some(format!("weekly-{slug}"))),
+        None if lane == LANE_WEEKLY => ("primaryLong", None),
+        None => ("primaryShort", None),
     }
 }
 
@@ -297,12 +339,17 @@ impl Store {
     /// The range is `(from_epoch, to_epoch]`. Dollars are priced through
     /// [`antiburn_local::analysis::lookup_turn_pricing`]. `None` means the
     /// bounded group limit overflowed; the caller tries again on a later pass.
+    ///
+    /// `model_scope`, when given, keeps only turns whose model matches it —
+    /// the period's scope label for a model-scoped lane, `None` for an
+    /// account-wide one.
     pub(crate) fn attributed_turn_dollars_between(
         &self,
         provider: &str,
         account_key: &str,
         from_epoch: i64,
         to_epoch: i64,
+        model_scope: Option<&str>,
     ) -> Result<Option<Vec<AttributedSessionDollars>>> {
         if to_epoch <= from_epoch {
             return Ok(Some(Vec::new()));
@@ -315,15 +362,17 @@ impl Store {
             account_key,
             from_epoch,
             to_epoch,
+            model_scope,
             &known,
         )
     }
 
     /// Active provider periods a factor-learning pass should examine.
     ///
-    /// A period qualifies when it carries a primary lane and either: has no
-    /// learn cursor yet, has a reading newer than its cursor, or was
-    /// observed at or after `since_epoch`. The first two admit a period
+    /// A period qualifies when it carries an account-wide primary lane or a
+    /// supplemental model-scoped weekly lane, and either: has no learn
+    /// cursor yet, has a reading newer than its cursor, or was observed at
+    /// or after `since_epoch`. The first two admit a period
     /// whose readings are old — from bootstrap on upgrade or from a
     /// backfill — that a "recently observed" rule alone would never pick up;
     /// the third keeps a just-updated period in the recompute window even
@@ -339,8 +388,11 @@ impl Store {
                     p.resets_at_epoch, p.first_observed_epoch, p.last_observed_epoch
                FROM provider_usage_period p
                LEFT JOIN provider_limit_learn_cursor c ON c.period_id = p.id
-              WHERE p.scope_key = 'account'
-                AND p.window_role IN ('primaryShort', 'primaryLong')
+              WHERE (
+                        (p.scope_key = 'account' AND p.window_role IN ('primaryShort', 'primaryLong'))
+                     OR (p.window_role = 'supplemental' AND p.window_kind = 'weekly'
+                         AND p.scope_key LIKE 'model:%')
+                    )
                 AND (c.period_id IS NULL
                      OR p.last_observed_epoch > c.learned_through_epoch
                      OR p.last_observed_epoch >= ?1)
@@ -634,17 +686,31 @@ impl Store {
         lane: &str,
     ) -> Result<Option<(Option<String>, Option<String>)>> {
         let connection = self.lock();
-        connection
-            .query_row(
-                "SELECT plan, plan_tier FROM provider_usage_observation
-                  WHERE provider = ?1 AND account_key = ?2 AND window_role = ?3
-                    AND used_percent IS NOT NULL
-                  ORDER BY observed_at_epoch DESC LIMIT 1",
-                params![provider, account_key, window_role_for_lane(lane)],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(Into::into)
+        let (window_role, window_id) = observation_filter_for_lane(lane);
+        match window_id {
+            Some(window_id) => connection
+                .query_row(
+                    "SELECT plan, plan_tier FROM provider_usage_observation
+                      WHERE provider = ?1 AND account_key = ?2 AND window_role = ?3
+                        AND window_id = ?4 AND used_percent IS NOT NULL
+                      ORDER BY observed_at_epoch DESC LIMIT 1",
+                    params![provider, account_key, window_role, window_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(Into::into),
+            None => connection
+                .query_row(
+                    "SELECT plan, plan_tier FROM provider_usage_observation
+                      WHERE provider = ?1 AND account_key = ?2 AND window_role = ?3
+                        AND used_percent IS NOT NULL
+                      ORDER BY observed_at_epoch DESC LIMIT 1",
+                    params![provider, account_key, window_role],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(Into::into),
+        }
     }
 
     /// Replace one period's residual: meter percent against the factor's own
@@ -830,57 +896,83 @@ fn grouped_counts(
 /// The latest residual for each `(provider, account, lane)`, resolving each
 /// residual row's period to the lane it belongs to.
 ///
-/// `provider_limit_residual` is keyed by `period_id`, not by lane directly,
-/// so this joins through `provider_usage_period` to read the period's own
-/// provider, account, and window role.
+/// `provider_limit_residual` is keyed by `period_id`, not by lane directly.
+/// A model-scoped lane needs more than the window role to identify it — two
+/// different model windows can share `window_role = 'supplemental'` — so
+/// this reads every period field [`lane_for_period`] needs and resolves the
+/// lane, and keeps the newest reading, in Rust rather than in SQL.
 fn latest_residuals_by_lane(
     connection: &Connection,
 ) -> Result<HashMap<DiagnosticsGroupKey, LimitResidualDiagnostics>> {
     let mut statement = connection.prepare(
-        "SELECT pu.provider, pu.account_key, pu.window_role,
+        "SELECT pu.provider, pu.account_key, pu.window_id, pu.window_kind, pu.window_role,
+                pu.scope_key, pu.scope_label,
                 r.meter_percent, r.estimated_percent, r.computed_at_epoch
            FROM provider_limit_residual r
-           JOIN provider_usage_period pu ON pu.id = r.period_id
-          WHERE r.computed_at_epoch = (
-                    SELECT MAX(r2.computed_at_epoch)
-                      FROM provider_limit_residual r2
-                      JOIN provider_usage_period pu2 ON pu2.id = r2.period_id
-                     WHERE pu2.provider = pu.provider
-                       AND pu2.account_key = pu.account_key
-                       AND pu2.window_role = pu.window_role
-                )",
+           JOIN provider_usage_period pu ON pu.id = r.period_id",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
-            row.get::<_, f64>(3)?,
-            row.get::<_, f64>(4)?,
-            row.get::<_, i64>(5)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, f64>(7)?,
+            row.get::<_, f64>(8)?,
+            row.get::<_, i64>(9)?,
         ))
     })?;
-    let mut result = HashMap::new();
+    let mut result: HashMap<DiagnosticsGroupKey, LimitResidualDiagnostics> = HashMap::new();
     for row in rows {
         let (
             provider,
             account_key,
+            window_id,
+            window_kind,
             window_role,
+            scope_key,
+            scope_label,
             meter_percent,
             estimated_percent,
             computed_at_epoch,
         ) = row?;
-        let Some(lane) = lane_for_window_role(&window_role) else {
+        // Only the fields `lane_for_period` reads matter here; the rest of a
+        // real period row plays no part in a residual's lane identity.
+        let period = ProviderUsagePeriod {
+            id: 0,
+            provider: provider.clone(),
+            account_key: account_key.clone(),
+            window_id,
+            window_kind,
+            window_role,
+            scope_key,
+            scope_label,
+            duration_seconds: None,
+            starts_at_epoch: None,
+            resets_at_epoch: None,
+            first_observed_epoch: 0,
+            last_observed_epoch: 0,
+        };
+        let Some(lane) = lane_for_period(&period) else {
             continue;
         };
-        result.insert(
-            (provider, account_key, lane.to_string()),
-            LimitResidualDiagnostics {
-                meter_percent,
-                estimated_percent,
-                computed_at_epoch,
-            },
-        );
+        let key = (provider, account_key, lane);
+        let is_newer = result
+            .get(&key)
+            .is_none_or(|existing| computed_at_epoch > existing.computed_at_epoch);
+        if is_newer {
+            result.insert(
+                key,
+                LimitResidualDiagnostics {
+                    meter_percent,
+                    estimated_percent,
+                    computed_at_epoch,
+                },
+            );
+        }
     }
     Ok(result)
 }
@@ -1008,6 +1100,7 @@ fn attributed_turn_dollars_between_in(
     account_key: &str,
     from_epoch: i64,
     to_epoch: i64,
+    model_scope: Option<&str>,
     known_accounts: &HashMap<String, BTreeSet<String>>,
 ) -> Result<Option<Vec<AttributedSessionDollars>>> {
     let start_ms = from_epoch.saturating_mul(1_000).saturating_add(1);
@@ -1053,6 +1146,11 @@ fn attributed_turn_dollars_between_in(
         else {
             continue;
         };
+        if let Some(scope) = model_scope
+            && !model_matches_scope(model, scope)
+        {
+            continue;
+        }
         let tokens = ModelTokens {
             input_tokens: input_tokens.max(0) as u64,
             output_tokens: output_tokens.max(0) as u64,
