@@ -1,0 +1,71 @@
+/* ==========================================================================
+   Quota screen sub-palette.
+
+   The burnup chart's own colors: the provider's meter line, up to five top
+   sessions with their own hues, and two greys for everything else the chart
+   groups together. Kept local to the Quota screen, the same way the
+   session-analysis sub-palette stays in its own stylesheet.
+   ========================================================================== */
+
+@theme {
+  /* The provider's own meter reading. A calm blue, distinct from every
+     session hue, since it is a fact the provider stated, not an estimate. */
+  --color-quota-meter: var(--color-quota-meter-val);
+
+  /* The five session hues, in the order the key lists them. Chosen to stay
+     apart from each other and from the meter blue in both themes. */
+  --color-quota-session-1: var(--color-quota-session-1-val);
+  --color-quota-session-2: var(--color-quota-session-2-val);
+  --color-quota-session-3: var(--color-quota-session-3-val);
+  --color-quota-session-4: var(--color-quota-session-4-val);
+  --color-quota-session-5: var(--color-quota-session-5-val);
+
+  /* Every bound session outside the top five, stacked as one band. A mid
+     grey, quieter than a session hue but still visible against the surface. */
+  --color-quota-other: var(--color-quota-other-val);
+
+  /* Spend this app could not credit to any session. Lighter than `other`,
+     since it names an absence of local evidence, not a session's own use. */
+  --color-quota-unattributed: var(--color-quota-unattributed-val);
+}
+
+/* --- Light (default and explicit) --- */
+:root,
+:root[data-theme="light"] {
+  --color-quota-meter-val: hsl(221.2 83% 53.3%); /* blue, matches the context line */
+  --color-quota-session-1-val: hsl(258.3 89% 66.2%); /* violet */
+  --color-quota-session-2-val: hsl(173.4 80% 40%); /* teal */
+  --color-quota-session-3-val: hsl(330.3 81% 60.3%); /* pink */
+  --color-quota-session-4-val: hsl(45.5 96% 45%); /* amber */
+  --color-quota-session-5-val: hsl(189 86% 40%); /* cyan, darker for light-surface contrast */
+  --color-quota-other-val: hsl(240 5.5% 25% / 0.3);
+  --color-quota-unattributed-val: hsl(240 5.5% 25% / 0.12);
+}
+
+/* --- Dark ---
+   `@media` cannot share a selector list with a plain `:root` rule, so the
+   system-preference branch and the explicit [data-theme='dark'] branch are
+   written separately, mirroring session-analysis-colors.css. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-quota-meter-val: hsl(221 89% 59.8%);
+    --color-quota-session-1-val: hsl(258 89% 69.8%);
+    --color-quota-session-2-val: hsl(173.5 78% 46.4%);
+    --color-quota-session-3-val: hsl(330.6 82% 64.5%);
+    --color-quota-session-4-val: hsl(45.2 96% 60.1%);
+    --color-quota-session-5-val: hsl(188.7 87% 58.2%);
+    --color-quota-other-val: hsl(240 33% 94% / 0.28);
+    --color-quota-unattributed-val: hsl(240 33% 94% / 0.1);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-quota-meter-val: hsl(221 89% 59.8%);
+  --color-quota-session-1-val: hsl(258 89% 69.8%);
+  --color-quota-session-2-val: hsl(173.5 78% 46.4%);
+  --color-quota-session-3-val: hsl(330.6 82% 64.5%);
+  --color-quota-session-4-val: hsl(45.2 96% 60.1%);
+  --color-quota-session-5-val: hsl(188.7 87% 58.2%);
+  --color-quota-other-val: hsl(240 33% 94% / 0.28);
+  --color-quota-unattributed-val: hsl(240 33% 94% / 0.1);
+}

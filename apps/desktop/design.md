@@ -19,6 +19,7 @@ sources:
   - src/components/ui/text-roll.css
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
+  - src/views/main-window/quota/quota.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -303,6 +304,31 @@ colors:
   context-critical:
     light: "hsl(0 72% 50.5%)"
     dark: "hsl(0 90% 70.7%)"
+  # Quota sub-palette only (src/views/main-window/quota/quota.css)
+  quota-meter: # the provider's own meter reading; matches the context line's blue
+    light: "hsl(221.2 83% 53.3%)"
+    dark: "hsl(221 89% 59.8%)"
+  quota-session-1: # the top session hue; violet
+    light: "hsl(258.3 89% 66.2%)"
+    dark: "hsl(258 89% 69.8%)"
+  quota-session-2: # teal
+    light: "hsl(173.4 80% 40%)"
+    dark: "hsl(173.5 78% 46.4%)"
+  quota-session-3: # pink
+    light: "hsl(330.3 81% 60.3%)"
+    dark: "hsl(330.6 82% 64.5%)"
+  quota-session-4: # amber
+    light: "hsl(45.5 96% 45%)"
+    dark: "hsl(45.2 96% 60.1%)"
+  quota-session-5: # cyan
+    light: "hsl(189 86% 40%)"
+    dark: "hsl(188.7 87% 58.2%)"
+  quota-other: # every bound session outside the top five, stacked as one band
+    light: "hsl(240 5.5% 25% / 0.3)"
+    dark: "hsl(240 33% 94% / 0.28)"
+  quota-unattributed: # spend this app could not credit to any session
+    light: "hsl(240 5.5% 25% / 0.12)"
+    dark: "hsl(240 33% 94% / 0.1)"
 fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`
