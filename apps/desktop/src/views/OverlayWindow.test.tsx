@@ -196,6 +196,8 @@ function panel(container: HTMLElement): HTMLElement {
   return frame(container).firstElementChild as HTMLElement
 }
 
+// The close control is commented out for now. Its tests below are skipped
+// with it, so they come back with the button.
 function closeButton(): HTMLElement {
   return screen.getByRole("button", { name: "Close overlay" })
 }
@@ -457,12 +459,12 @@ describe("OverlayWindow", () => {
     expect(nativeEvents.get("overlay_work_changed")?.size ?? 0).toBe(0)
   })
 
-  it("rests with bars only and a hidden close control", async () => {
+  it("rests with bars only and no close control", async () => {
     render(<OverlayWindow />)
     await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
     expect(screen.queryByText("81%")).not.toBeInTheDocument()
-    expect(closeButton()).toHaveClass("opacity-0", "pointer-events-none")
+    expect(screen.queryByRole("button", { name: "Close overlay" })).toBeNull()
     expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
   })
 
@@ -767,16 +769,16 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(44, false, true))
   })
 
-  it("paints a half-alpha frame at rest and firms it up on hover", async () => {
-    // At rest the frame groups the bars into one object without hiding the
-    // desktop. The pointer firms the surface up.
+  it("paints the same translucent frame at rest and on hover", async () => {
+    // The frame groups the bars into one object without hiding the desktop.
+    // The pointer does not change it.
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     expect(panel(container).classList.contains("bg-hud-frame")).toBe(true)
     expect(panel(container).classList.contains("border-separator")).toBe(true)
     expect(panel(container).style.backgroundColor).toBe("")
     fireEvent.mouseEnter(frame(container))
-    expect(panel(container).style.backgroundColor).toBe("var(--color-bg-hud-hover)")
+    expect(panel(container).style.backgroundColor).toBe("")
     fireEvent.mouseLeave(frame(container))
     expect(panel(container).style.backgroundColor).toBe("")
   })
@@ -790,13 +792,12 @@ describe("OverlayWindow", () => {
     expect(offset).toBeCloseTo(60, 3)
   })
 
-  it("shows the close control at once and the detail window after the delay", async () => {
+  it("shows the detail window after the hover delay", async () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
       fireEvent.mouseEnter(frame(container))
-      expect(closeButton()).toHaveClass("opacity-100")
       await advance(399)
       expect(showHudDetail).not.toHaveBeenCalled()
       await advance(1)
@@ -864,7 +865,6 @@ describe("OverlayWindow", () => {
       await advance(400)
       fireEvent.mouseLeave(frame(container))
       expect(hideHudDetail).toHaveBeenCalledTimes(1)
-      expect(closeButton()).toHaveClass("opacity-0")
     } finally {
       vi.useRealTimers()
     }
@@ -905,9 +905,10 @@ describe("OverlayWindow", () => {
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(nativeEvents.get("overlay_hover")?.size).toBe(1))
     act(() => hover.emit(true))
-    await waitFor(() => expect(closeButton()).toHaveClass("opacity-100"))
     fireEvent.mouseLeave(panel(container), { relatedTarget: frame(container) })
-    expect(closeButton()).toHaveClass("opacity-100")
+    // Hover intent survives the leave, so the detail window still opens.
+    await waitFor(() => expect(showHudDetail).toHaveBeenCalledTimes(1))
+    expect(hideHudDetail).not.toHaveBeenCalled()
   })
 
   it("cancels the detail timer for a drag and restarts it on mouse up", async () => {
@@ -1043,7 +1044,7 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("closes the visible detail window with the HUD", async () => {
+  it.skip("closes the visible detail window with the HUD", async () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<OverlayWindow />)

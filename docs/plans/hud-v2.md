@@ -10,14 +10,14 @@ signals that item 8 needs and is planned separately.
 
 ## Status
 
-| Step                                                  | State                    |
-| ----------------------------------------------------- | ------------------------ |
-| 0. Plan reviewed, open questions decided              | done                     |
-| 0b. Token-map commits replayed onto `feat/hud-v2`     | done                     |
-| A. Frame + round dots + mode palette retune (1, 2, 7) | built, untested by Keith |
-| B. LED blink follows spend, in mode colour (3, 7)     | built, untested by Keith |
-| C. Agent boxes at LED scale, per-box detail (4, 5, 6) | not started              |
-| D. Edge dock: off-screen, wake on edge/activity/burn  | not started              |
+| Step                                                  | State                                                                                                   |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| 0. Plan reviewed, open questions decided              | done                                                                                                    |
+| 0b. Token-map commits replayed onto `feat/hud-v2`     | done                                                                                                    |
+| A. Frame + round dots + mode palette retune (1, 2, 7) | built; Keith round 2 fixes applied (40% frame, no hover swap, close ✕ off, launch restore, click guard) |
+| B. LED blink follows spend, in mode colour (3, 7)     | built, untested by Keith                                                                                |
+| C. Agent boxes at LED scale, per-box detail (4, 5, 6) | not started                                                                                             |
+| D. Edge dock: off-screen, wake on edge/activity/burn  | not started                                                                                             |
 
 ## What Keith asked for
 
@@ -53,18 +53,19 @@ signals that item 8 needs and is planned separately.
 ### The frame
 
 The HUD panel (`OverlayWindow.tsx`, the `rounded-xl border-transparent` div)
-gets a visible material: `bg-hud-frame` at 50% alpha with a 1 px `separator`
+gets a visible material: `bg-hud-frame` at 40% alpha with a 1 px `separator`
 hairline. New tokens in `hud.css` and `design.md`:
 
 | Token          | Light                  | Dark                   |
 | -------------- | ---------------------- | ---------------------- |
-| `bg-hud-frame` | `hsl(0 0% 100% / 0.5)` | `hsl(0 0% 100% / 0.5)` |
+| `bg-hud-frame` | `hsl(0 0% 100% / 0.4)` | `hsl(0 0% 100% / 0.4)` |
 
 White in both themes (Keith, 2026-09-16, after seeing a dark frame vanish on a
 dark desktop). The frame replaces the LED rings and the HUD's full-strength
 off grey: with a constant backing they are noise.
 
-The frame is always on, not hover-only. The close ✕ keeps its own opaque
+The frame is always on, not hover-only. The close ✕ is commented out for now
+(Keith, 2026-09-16); when it returns it keeps its own opaque
 `bg-hud` disc so it still reads on the translucent frame. The webview stays
 transparent outside the panel, so the drop area is unchanged.
 
@@ -301,7 +302,7 @@ sampled from real transcripts.
 3. ~~Wake dwell.~~ Decided: 5 s.
 4. ~~Spend anchors.~~ Agreed: keep $0.05 and $2.00/min as the starting
    point and sample a few of Keith's days before B ships.
-5. ~~Frame alpha.~~ Decided: 50%.
+5. ~~Frame alpha.~~ Decided: 40%.
 
 ## Decisions
 
@@ -313,4 +314,4 @@ sampled from real transcripts.
 3. **Wake dwell is 5 s** (Keith, 2026-09-16), extended while hovered.
 4. **Spend anchors start at $0.05 / $2.00 per minute** (Keith, 2026-09-16),
    to be checked against real transcripts before PR B ships.
-5. **Frame alpha is 50%** (Keith, 2026-09-16), up from the 30% first asked.
+5. **Frame alpha is 40%** (Keith, 2026-09-16), after 30% and then 50% on screen; the hover surface swap is gone.

@@ -53,7 +53,7 @@
    * as one object and the desktop still shows through. A dark frame vanished
    * on a dark desktop. Reduced transparency makes it solid.
    */
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.5);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.4);
 
   /*
    * The close control. Its glyph and its edge carry no alpha, because the
@@ -79,7 +79,7 @@
     --color-burn-muted-val: hsl(23 88.8% 54%);
     --color-bg-hud-val: hsl(0 0% 12.5%);
     --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
-    --color-bg-hud-frame-val: hsl(0 0% 100% / 0.5);
+    --color-bg-hud-frame-val: hsl(0 0% 100% / 0.4);
     --color-hud-control-ink-val: hsl(0 0% 78%);
     --color-hud-control-edge-val: hsl(0 0% 32%);
     --color-led-off-val: hsl(0 0% 50% / 0.45);
@@ -100,7 +100,7 @@
   --color-burn-muted-val: hsl(18.1 88% 51.4%);
   --color-bg-hud-val: hsl(0 0% 96.4%);
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.5);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.4);
   --color-hud-control-ink-val: hsl(0 0% 32%);
   --color-hud-control-edge-val: hsl(0 0% 80%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
@@ -120,7 +120,7 @@
   --color-burn-muted-val: hsl(23 88.8% 54%);
   --color-bg-hud-val: hsl(0 0% 12.5%);
   --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.5);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.4);
   --color-hud-control-ink-val: hsl(0 0% 78%);
   --color-hud-control-edge-val: hsl(0 0% 32%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);

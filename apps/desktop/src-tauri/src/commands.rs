@@ -232,7 +232,12 @@ pub async fn open_overlay_window(
     origin: crate::analytics::event::Origin,
 ) -> CommandResult<()> {
     let store = app.state::<Store>().inner().clone();
-    let entries = run_blocking(move || Ok(crate::hud::load_placements(&store))).await?;
+    let entries = run_blocking(move || {
+        // Every open means the reader wants the HUD back at the next launch.
+        crate::hud::save_enabled(&store, true);
+        Ok(crate::hud::load_placements(&store))
+    })
+    .await?;
     let needs_exposure = hud_needs_exposure(&app);
     if needs_exposure {
         crate::analytics::prepare_hud_exposure(origin);
@@ -296,6 +301,7 @@ pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
 #[tauri::command]
 pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
     crate::analytics::cancel_hud_exposure();
+    crate::hud::save_enabled(&app.state::<Store>(), false);
     antiburn_hud::hide(&app).map_err(fail)
 }
 

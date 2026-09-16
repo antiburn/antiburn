@@ -1,7 +1,5 @@
 import { useCallback, useState, useSyncExternalStore } from "react"
 
-import { X } from "lucide-react"
-
 import { LedBar } from "../components/ui/LedBar"
 import { TokenMap } from "../components/ui/TokenMap"
 import { OverlaySession } from "./overlay/OverlaySession"
@@ -16,7 +14,6 @@ export function OverlayWindow() {
     session.getSnapshot,
     session.getSnapshot,
   )
-  const showClose = state.hovered && !state.dragging
   const panelRef = useCallback(
     (node: HTMLDivElement | null) => session.registerPanel(node),
     [session],
@@ -30,24 +27,28 @@ export function OverlayWindow() {
     >
       <div
         ref={panelRef}
-        className="relative mx-2 select-none rounded-xl border border-separator bg-hud-frame px-3 pt-2 pb-2 transition-colors duration-[var(--duration-fast)] ease-out"
-        // At rest the HUD paints a half-alpha frame, so the bars read as one
-        // object and the desktop still shows through. On hover the surface
-        // firms up, which marks the object the reader can point at and drag.
-        style={state.hovered ? { backgroundColor: "var(--color-bg-hud-hover)" } : undefined}
+        className="relative mx-2 select-none rounded-xl border border-separator bg-hud-frame px-3 pt-2 pb-2"
+        // The HUD paints the same translucent frame at rest and on hover, so
+        // the bars read as one object and the desktop still shows through.
         onMouseDown={(event) => session.startDrag(event)}
       >
-        <button
-          type="button"
-          aria-label="Close overlay"
-          onClick={() => session.close()}
-          className={`hud-close absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-hud-control-edge p-0.5 text-hud-control-ink hover:text-label transition-opacity duration-[var(--duration-fast)] ease-out ${
-            showClose ? "opacity-100" : "pointer-events-none opacity-0"
-          }`}
-          style={{ backgroundColor: "var(--color-bg-hud)" }}
-        >
-          <X size={10} />
-        </button>
+        {/*
+          The close control is off for now (Keith, 2026-09-16). The menu bar
+          toggle still hides the HUD. Restore this block to bring it back:
+
+          const showClose = state.hovered && !state.dragging
+          <button
+            type="button"
+            aria-label="Close overlay"
+            onClick={() => session.close()}
+            className={`hud-close absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-hud-control-edge p-0.5 text-hud-control-ink hover:text-label transition-opacity duration-[var(--duration-fast)] ease-out ${
+              showClose ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+            style={{ backgroundColor: "var(--color-bg-hud)" }}
+          >
+            <X size={10} />
+          </button>
+        */}
 
         {state.tokenMap.dots.length > 0 && (
           <div className="pointer-events-none mb-2">

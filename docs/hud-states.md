@@ -3,8 +3,9 @@
 _Behavior reference for the floating HUD and its platform and resource costs._
 
 The HUD is a small always-on-top window that shows usage bars outside the menu.
-The panel paints a half-alpha frame at rest and a firmer surface on hover. Its
-native frame follows the visible bar panel and does not change on hover. A
+The panel paints one 40% white frame at rest and on hover. Its native frame
+follows the visible bar panel and does not change on hover. The close control
+is commented out for now; the menu bar toggle hides the HUD. A
 hover shows the detail in a second window, like a large tooltip.
 
 ## The states

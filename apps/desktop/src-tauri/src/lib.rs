@@ -290,6 +290,14 @@ pub fn run() {
         // sends it to one still connected, and the display coming back
         // takes it again. The watcher idles while the HUD is closed.
         hud::spawn_display_watcher(app.handle());
+        #[cfg(target_os = "macos")]
+        if app
+            .state::<store::Store>()
+            .settings()
+            .is_ok_and(|settings| settings.onboarding_completed)
+        {
+            hud::restore_at_launch(app.handle());
+        }
 
         // Registered before the update scheduler starts, so the first
         // automatic check can see whether there is anything to check with.

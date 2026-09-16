@@ -1668,7 +1668,8 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
             antiburn_nudge::NUDGE_LABEL,
         ]
         .into_iter()
-        .any(|label| window_is_focused(app, label));
+        .any(|label| window_is_focused(app, label))
+        || hud_owns_activation(app);
     if !state.should_restore_after_activation(
         main_visible,
         main_minimized,
@@ -1685,6 +1686,34 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
 fn window_is_visible(app: &AppHandle, label: &str) -> bool {
     app.get_webview_window(label)
         .is_some_and(|window| window.is_visible().unwrap_or(true))
+}
+
+/// A click on the HUD activates the app, but the HUD panel never takes
+/// focus. The cursor over the HUD is the sign that the HUD owns the
+/// activation, so the main window stays where it was.
+#[cfg(target_os = "macos")]
+fn hud_owns_activation(app: &AppHandle) -> bool {
+    [antiburn_hud::OVERLAY_LABEL, antiburn_hud::DETAIL_LABEL]
+        .into_iter()
+        .filter_map(|label| app.get_webview_window(label))
+        .filter(|window| window.is_visible().unwrap_or(false))
+        .any(|window| cursor_inside(&window))
+}
+
+#[cfg(target_os = "macos")]
+fn cursor_inside(window: &tauri::WebviewWindow) -> bool {
+    let (Ok(cursor), Ok(position), Ok(size)) = (
+        window.cursor_position(),
+        window.outer_position(),
+        window.outer_size(),
+    ) else {
+        return false;
+    };
+    let (x, y) = (position.x as f64, position.y as f64);
+    cursor.x >= x
+        && cursor.x < x + size.width as f64
+        && cursor.y >= y
+        && cursor.y < y + size.height as f64
 }
 
 #[cfg(target_os = "macos")]

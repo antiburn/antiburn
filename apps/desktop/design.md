@@ -181,16 +181,16 @@ colors:
   bg-hud-hover: # the HUD surface on hover; the desktop stays visible through it
     light: "hsl(0 0% 96.4% / 0.9)"
     dark: "hsl(0 0% 12.5% / 0.9)"
-  bg-hud-frame: # the HUD frame at rest, half-alpha white in both themes; reduced-transparency: hsl(0 0% 100%)
-    light: "hsl(0 0% 100% / 0.5)"
-    dark: "hsl(0 0% 100% / 0.5)"
+  bg-hud-frame: # the HUD frame at rest and on hover, 40% white in both themes; reduced-transparency: hsl(0 0% 100%)
+    light: "hsl(0 0% 100% / 0.4)"
+    dark: "hsl(0 0% 100% / 0.4)"
   hud-control-ink: # the close control's glyph; no alpha, so it stays solid on the hover surface
     light: "hsl(0 0% 32%)"
     dark: "hsl(0 0% 78%)"
   hud-control-edge: # the close control's edge; no alpha, for the same reason
     light: "hsl(0 0% 80%)"
     dark: "hsl(0 0% 32%)"
-  led-off: # unlit LED segment; one mid grey for both themes, because the desktop tints the half-alpha HUD frame
+  led-off: # unlit LED segment; one mid grey for both themes, because the desktop tints the translucent HUD frame
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
   led-notch: # the dark line of the linear-use notch; one value for both themes, for the same reason as led-off
@@ -1018,9 +1018,9 @@ Windows and Linux use native title bars without these attributes.
 
 ### Floating HUD frame
 
-The HUD paints a half-alpha white frame (`bg-hud-frame`) with a `separator`
-hairline at rest, and firms it up to `bg-hud-hover` under the pointer. The
-frame is white in both themes, because the desktop behind it can be any
+The HUD paints a 40% white frame (`bg-hud-frame`) with a `separator`
+hairline, the same at rest and under the pointer. The frame is white in both
+themes, because the desktop behind it can be any
 colour and a dark frame vanished on a dark desktop. LEDs and token-map dots
 sit on it without rings or shadows; the frame is what holds them apart from
 the desktop. The token map draws in HUD pixels on the LED grid, so a dot is
