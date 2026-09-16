@@ -204,6 +204,42 @@ fn turn_gap_does_not_open_a_window_for_a_turn_inside_an_observed_period() {
 }
 
 #[test]
+fn turn_gap_clips_an_inferred_window_to_an_observed_period_starting_inside_it() {
+    let turn = 1_000;
+    let observed_start = turn + 2 * 3_600;
+    let observed = [period(
+        1,
+        Some(observed_start),
+        Some(observed_start + FIVE_HOURS),
+        observed_start + FIVE_HOURS,
+    )];
+    let periods = resolve_periods(
+        LANE_FIVE_HOUR,
+        FIVE_HOURS,
+        &observed,
+        &[turn],
+        0,
+        observed_start + FIVE_HOURS,
+        observed_start + FIVE_HOURS,
+    );
+    assert_eq!(
+        periods.len(),
+        2,
+        "the observed period and the inferred window both survive"
+    );
+    let inferred = periods
+        .iter()
+        .find(|period| period.period_id.is_none())
+        .expect("the lone turn opens an inferred window");
+    assert_eq!(inferred.starts_at_epoch, turn);
+    assert_eq!(
+        inferred.resets_at_epoch, observed_start,
+        "the window is clipped to the observed period's start, not the full five hours"
+    );
+    assert_eq!(inferred.reset_source, BoundarySource::TurnGap);
+}
+
+#[test]
 fn turn_gap_caps_inferred_windows_at_four_hundred() {
     let turns: Vec<i64> = (0..500).map(|index| index * FIVE_HOURS).collect();
     let periods = resolve_periods(

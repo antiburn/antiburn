@@ -223,7 +223,17 @@ fn infer_five_hour_windows(observed: &[QuotaPeriod], turn_epochs: &[i64]) -> Vec
         }) {
             continue;
         }
-        let resets_at_epoch = turn_epoch + lane_duration_seconds(LANE_FIVE_HOUR);
+        let natural_reset = turn_epoch + lane_duration_seconds(LANE_FIVE_HOUR);
+        // An inferred window must not run over an observed period that
+        // starts inside it: otherwise a bucket in that overlap would credit
+        // to this inferred window instead of the observed one that actually
+        // covers it. Clip to the earliest such start, when one exists.
+        let resets_at_epoch = observed
+            .iter()
+            .map(|period| period.starts_at_epoch)
+            .filter(|&start| start > turn_epoch && start < natural_reset)
+            .min()
+            .unwrap_or(natural_reset);
         open_until = Some(resets_at_epoch);
         inferred.push(QuotaPeriod {
             period_id: None,
