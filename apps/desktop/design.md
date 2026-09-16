@@ -679,14 +679,15 @@ Notes for what isn't expressible as a token:
   their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
-  A 180px card floats at the top right, over the workspace, and holds the live provider
+  A 188px card floats at the top right, over the workspace, and holds the live provider
   meters. Every section shows the same meters, so they sit over the workspace instead of
   under the section rows. The card uses the popover corner, the opaque `surface-window`
   fill under the `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card`
   outline. The tint keeps the material the meters had in the sidebar. It insets 16px from the
-  window edges, starts at the titlebar height on macOS, and keeps the full window height
-  between those margins. It scrolls alone when the accounts outgrow it. The workspace holds a matching inset, so no section draws under it.
-  The meters pack one dot every 9px of measured width, to a floor of 16 dots.
+  window edges on all four sides, including on macOS, where the drag strip covers only the
+  sidebar. It keeps the full window height between those margins. It scrolls alone when the accounts outgrow it. The workspace holds a matching inset, so no section draws under it.
+  The meters hold 12px of padding on each side and pack one dot every 9px of measured
+  width, to a floor of 16 dots.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,
   and 12px icon gaps, which Settings keeps. A top-level item can nest child rows one level deep,
@@ -713,10 +714,10 @@ Notes for what isn't expressible as a token:
 
 ### Main window collection and detail architecture
 
-The 220px navigation sidebar, 340px collection pane, flexible detail pane, and 180px provider
+The 220px navigation sidebar, 340px collection pane, flexible detail pane, and 188px provider
 card remain visible at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
 the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
-the detail retains 260px; at the 1100px default width, it receives 360px.
+the detail retains 252px; at the 1100px default width, it receives 352px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;

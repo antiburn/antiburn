@@ -99,7 +99,7 @@ export function ProviderLimitsPanel({
     <section
       aria-label="Provider limits"
       aria-busy={loading || undefined}
-      className="relative px-2 pb-[var(--space-sm)]"
+      className="relative px-3 pb-[var(--space-sm)]"
     >
       {limited.length > 0 && stale && (
         <p className={`type-caption absolute top-0 right-2 ${liveFreshnessToneClass("stale")}`}>
