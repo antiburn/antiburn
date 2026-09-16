@@ -252,8 +252,11 @@ export interface SessionQuotaEntryPayload {
   displayName: string
   /** `null` when the session has no resolved account for this provider. */
   accountKey: string | null
-  lane: string
-  laneLabel: string
+  /** `null` only when `confidence` is `"unbound"`: an entry with no
+   * resolved account has no lane to name either. */
+  lane: string | null
+  /** `null` only when `confidence` is `"unbound"`. */
+  laneLabel: string | null
   /** `null` only when `confidence` is `"unbound"`. */
   period: SessionQuotaPeriodPayload | null
   usd: number

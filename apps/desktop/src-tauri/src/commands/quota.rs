@@ -419,6 +419,7 @@ fn session_quota_for_store(
         .session_bound_accounts(std::slice::from_ref(&key))
         .map_err(fail)?;
 
+    let accounts = store.quota_accounts(now).map_err(fail)?;
     let mut entries = Vec::new();
     for &provider in attributed.keys() {
         let known = store.provider_known_accounts(provider).map_err(fail)?;
@@ -440,8 +441,8 @@ fn session_quota_for_store(
                     provider: provider.to_string(),
                     display_name,
                     account_key: None,
-                    lane: crate::store::provider_limit::LANE_WEEKLY.to_string(),
-                    lane_label: "Weekly".to_string(),
+                    lane: None,
+                    lane_label: None,
                     period: None,
                     usd,
                     percent: None,
@@ -451,14 +452,13 @@ fn session_quota_for_store(
             continue;
         };
 
-        let accounts = store.quota_accounts(now).map_err(fail)?;
         let Some(account) = accounts
-            .into_iter()
+            .iter()
             .find(|account| account.provider == provider && account.account_key == account_key)
         else {
             continue;
         };
-        for lane in account.lanes {
+        for lane in &account.lanes {
             let lane_duration = crate::store::provider_limit::lane_duration_seconds(&lane.lane);
             let range_start = min_epoch - lane_duration;
             let range_end = max_epoch + 1;
@@ -533,8 +533,8 @@ fn session_quota_for_store(
                     provider: provider.to_string(),
                     display_name: display_name.clone(),
                     account_key: Some(account_key.clone()),
-                    lane: lane.lane.clone(),
-                    lane_label: lane.label.clone(),
+                    lane: Some(lane.lane.clone()),
+                    lane_label: Some(lane.label.clone()),
                     period: Some(SessionQuotaPeriodPayload {
                         period_id: period.period_id,
                         starts_at_epoch: period.starts_at_epoch,
@@ -927,7 +927,7 @@ mod tests {
         for entry in &payload.entries {
             assert_eq!(entry.confidence, "learned");
             assert_eq!(entry.account_key.as_deref(), Some(account_key.as_str()));
-            assert_eq!(entry.lane, LANE_FIVE_HOUR);
+            assert_eq!(entry.lane.as_deref(), Some(LANE_FIVE_HOUR));
             assert!(entry.usd > 0.0);
             assert!(entry.percent.is_some());
         }
@@ -957,6 +957,8 @@ mod tests {
         let entry = &payload.entries[0];
         assert_eq!(entry.confidence, "unbound");
         assert_eq!(entry.account_key, None);
+        assert_eq!(entry.lane, None);
+        assert_eq!(entry.lane_label, None);
         assert_eq!(entry.percent, None);
         assert!(entry.period.is_none());
         assert!(entry.usd > 0.0);

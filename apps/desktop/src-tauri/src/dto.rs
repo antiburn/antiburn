@@ -670,8 +670,11 @@ pub struct SessionQuotaEntryPayload {
     pub display_name: String,
     /// `None` when the session has no resolved account for this provider.
     pub account_key: Option<String>,
-    pub lane: String,
-    pub lane_label: String,
+    /// `None` only when `confidence` is `"unbound"`: an entry with no
+    /// resolved account has no lane to name either.
+    pub lane: Option<String>,
+    /// `None` only when `confidence` is `"unbound"`.
+    pub lane_label: Option<String>,
     /// `None` only when `confidence` is `"unbound"`.
     pub period: Option<SessionQuotaPeriodPayload>,
     pub usd: f64,
@@ -2549,8 +2552,8 @@ mod tests {
                     provider: "anthropic".to_string(),
                     display_name: "Claude".to_string(),
                     account_key: Some("a".repeat(64)),
-                    lane: "weekly".to_string(),
-                    lane_label: "Weekly".to_string(),
+                    lane: Some("weekly".to_string()),
+                    lane_label: Some("Weekly".to_string()),
                     period: Some(SessionQuotaPeriodPayload {
                         period_id: Some(7),
                         starts_at_epoch: 0,
@@ -2567,8 +2570,8 @@ mod tests {
                     provider: "openai".to_string(),
                     display_name: "Codex".to_string(),
                     account_key: None,
-                    lane: "weekly".to_string(),
-                    lane_label: "Weekly".to_string(),
+                    lane: None,
+                    lane_label: None,
                     period: None,
                     usd: 0.5,
                     percent: None,
@@ -2586,6 +2589,8 @@ mod tests {
         assert_eq!(json["entries"][0]["period"]["resetSource"], "derived");
         assert_eq!(json["entries"][0]["confidence"], "learned");
         assert_eq!(json["entries"][1]["accountKey"], serde_json::Value::Null);
+        assert_eq!(json["entries"][1]["lane"], serde_json::Value::Null);
+        assert_eq!(json["entries"][1]["laneLabel"], serde_json::Value::Null);
         assert_eq!(json["entries"][1]["period"], serde_json::Value::Null);
         assert_eq!(json["entries"][1]["confidence"], "unbound");
     }
