@@ -341,11 +341,7 @@ pub fn assess_detector_with_source_evidence(
         return FindingAssessment::NotApplicable;
     }
     if !eligible(detector, evidence)
-        && !crate::insights::detectors::built_in_source_assessable(
-            detector,
-            evidence,
-            source_evidence,
-        )
+        && !crate::insights::detectors::source_assessable(detector, evidence, source_evidence)
     {
         return FindingAssessment::Unavailable(FindingUnavailableReason::CapabilityMissing);
     }
@@ -394,6 +390,38 @@ pub fn assess_detector_with_source_evidence(
             FindingAssessment::Unavailable(FindingUnavailableReason::SignalMissing)
         }
     }
+}
+
+/// Returns true when complete scoped resource evidence has no finding.
+///
+/// This does not make the session report clean. M/B/K lack a complete
+/// historical resource inventory, but a later complete observed scope can
+/// verify one already-scoped remediation target.
+pub fn scoped_resource_no_finding(
+    detector: DetectorId,
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+    source_evidence: Option<&SessionTokenBurnEvidence>,
+) -> bool {
+    if !matches!(
+        detector,
+        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools | DetectorId::UnusedSkills
+    ) || !crate::insights::detectors::in_denominator(detector, evidence)
+        || (detector == DetectorId::UnusedBuiltInTools
+            && complete_assistant_turns(evidence) == Some(0))
+        || (!eligible(detector, evidence)
+            && !crate::insights::detectors::source_assessable(detector, evidence, source_evidence))
+    {
+        return false;
+    }
+    crate::insights::detectors::evaluate_with_source_evidence(
+        detector,
+        evidence,
+        catalogs,
+        source_evidence,
+    )
+    .observation
+        == crate::insights::detectors::Observation::NoFinding
 }
 
 fn complete_assistant_turns(evidence: &SessionEvidence) -> Option<u64> {

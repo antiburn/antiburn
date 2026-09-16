@@ -129,9 +129,14 @@ worktrees are excluded before evidence processing; missing or unresolved CWDs
 are unavailable, never clean.
 
 No current reader proves a full historical resource inventory. All M/B/K checks
-deny session-wide `Clean`, even when a nested observed-resource map is complete.
-A scoped finding requires complete coverage of that observed subset, calls, and
-eligible activity. An unrelated partial resource group does not block it.
+deny report `Clean`, even when a nested observed-resource map is complete. A
+scoped finding requires complete coverage of that observed subset, calls, and
+eligible activity. An unrelated partial resource group does not block it. For
+an activated M/B/K remediation only, one later complete applicable assessment
+with no same canonical resource finding is scoped remediation verification
+clean. This does not make the session or report clean. Unavailable, partial,
+wrong-source, wrong-agent, wrong-scope, truncated, and non-applicable evidence
+does not verify the target.
 
 Report-time token estimates (`insights/report.rs::token_cost` and
 `TokenBurnTurnEvidence`), old-model remediation savings, and provider-limit
@@ -310,9 +315,9 @@ accepted passive evidence. An explicit action can store
 | D     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | The finding identity is one historical session. A later session is not positive proof that the original session changed.                                                          |
 | T     | Supported   | Supported   | Unavailable | Supported   | Unavailable | A complete later assessment plus an explicit same-route, same-model lower control proves the transition. Pi proves only its agent-selected policy.                                |
 | S     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | A later worker or call has a different identity. No accepted source records a durable worker-setting transition.                                                                  |
-| M     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed server subsets never prove that one server stopped being exposed.                                                                                                        |
-| B     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Catalog-backed or observed tool subsets never prove that one definition stopped being exposed.                                                                                    |
-| K     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Selected or injected document subsets never prove that one skill stopped being injected.                                                                                          |
+| M     | Supported   | Supported   | Unavailable | Unavailable | Unavailable | One later complete applicable scoped assessment with no same canonical server finding verifies only that activated target. It is not report clean or full-inventory proof.          |
+| B     | Supported   | Supported   | Unavailable | Unavailable | Unavailable | One later complete applicable scoped assessment with no same canonical tool finding verifies only that activated target. It is not report clean or full-inventory proof.            |
+| K     | Supported   | Supported   | Supported   | Unavailable | Unavailable | One later complete applicable scoped assessment with no same canonical skill finding verifies only that activated target. It is not report clean or full-inventory proof.           |
 | O     | Supported   | Supported   | Supported   | Supported   | Unavailable | The strict verifier requires actual replacement use on the same publication-attributed physical target, scope, provider, and API. Antigravity has no physical target attribution. |
 | F     | Supported   | Supported   | Unavailable | Unavailable | Unavailable | A complete later assessment plus an explicit same-route, same-model standard-tier delegated request proves the transition.                                                        |
 | C     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | A later request pair is not the same session-route target and does not prove a durable cache-policy transition.                                                                   |
@@ -320,13 +325,14 @@ accepted passive evidence. An explicit action can store
 Truncated assessment sets, sessions that start at or before the boundary,
 missing controls, changed detector or catalog policy, stale projections, and
 unsupported source contracts return verification unavailable or continue
-watching. They never become fixed through generic absence. A fixed supported
-target recurs only on a later exact positive observation. Prior contributions
-end at the recurrence boundary and remain durable.
+watching. They never become fixed through generic absence, except the scoped
+M/B/K remediation rule above. A fixed supported target recurs only on a later
+exact positive observation. Prior contributions end at the recurrence boundary
+and remain durable.
 
-Named M/B/K resource targets are never passive verification candidates. Their
-stored resource selector must be empty for every supported watch, so a resource
-definition cannot use a model proof or create savings.
+Named M/B/K resource targets can use scoped remediation verification only. Their
+stored resource selector identifies the existing canonical resource; they cannot
+use model proof, establish report clean, or create savings.
 
 ## Automatic Editor Support
 
@@ -524,6 +530,9 @@ attributed to the same publication-time effective physical target, scope,
 provider, and API can change the result. Other checks store
 `verificationUnavailable`; generic absence cannot verify them. Positive-only
 sources cannot verify absence, and missing later evidence remains `watching`.
+An exact copied prompt remains outside verification until its opaque `ABR-`
+reference appears in a later captured user message. The marker publication sets
+the boundary and cannot prove the same attempt.
 
 Cursor can use its explicit synthesized source-header model, but does not borrow
 the previous message's model. This preserves existing basic support without

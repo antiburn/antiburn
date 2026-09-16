@@ -245,6 +245,33 @@ pub struct BurnCheckTargetList {
     pub truncated: bool,
 }
 
+/// The latest retained remediation attempt for one detector.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BurnCheckRemediationProgress {
+    pub attempts: Vec<BurnCheckRemediationAttempt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BurnCheckRemediationAttempt {
+    pub detector: DetectorId,
+    pub watch_id: String,
+    pub display: BurnCheckDisplayFacts,
+    pub origin: RemediationOrigin,
+    pub lifecycle: RemediationState,
+    pub outcome: BurnCheckRemediationOutcome,
+    pub verification: VerificationStatus,
+    pub savings: SavingsStatus,
+    pub effective_boundary_ms: Option<i64>,
+    pub verified_boundary_ms: Option<i64>,
+    pub recurred_boundary_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnCheckRemediationOutcome {
+    Failed,
+    Passed,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptFixResult {
     pub prompt: String,

@@ -78,6 +78,9 @@ function CheckDetailContent({
   state: BurnChecksSnapshot
 }) {
   const targets = state.targets[check.id]
+  const remediation = state.remediationProgress?.attempts.find(
+    (attempt) => attempt.detector === check.id,
+  )
   if (check.finding === 0) {
     const PassIcon = BURN_CHECK_MARKS.clean.Icon
     return (
@@ -91,6 +94,9 @@ function CheckDetailContent({
         <p className="type-callout text-label-secondary">
           {`No finding in ${check.clean} complete sessions.`}
         </p>
+        {remediation?.outcome === "passed" && (
+          <p className="mt-1 type-footnote text-burn-check-pass-fill">Verified after your fix.</p>
+        )}
       </div>
     )
   }
@@ -384,14 +390,25 @@ export function BurnChecksReport({
   const snoozed = useSnoozedBurnChecks()
   const snoozedIds = snoozedDetectorIds(snoozed)
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
-  const activeFailures = presentation.failures.filter((check) => !snoozedIds.has(check.id))
+  const awaitingIds = new Set(
+    state.remediationProgress?.attempts
+      .filter((attempt) => attempt.lifecycle === "watching")
+      .map((attempt) => attempt.detector),
+  )
+  const activeAwaiting = presentation.failures.filter(
+    (check) => !snoozedIds.has(check.id) && awaitingIds.has(check.id),
+  )
+  const activeFailures = presentation.failures.filter(
+    (check) => !snoozedIds.has(check.id) && !awaitingIds.has(check.id),
+  )
   const activeWins = presentation.wins.filter((check) => !snoozedIds.has(check.id))
   const snoozedChecks = [...presentation.failures, ...presentation.wins].filter((check) =>
     snoozedIds.has(check.id),
   )
-  const checks = [...activeFailures, ...activeWins, ...snoozedChecks]
+  const checks = [...activeFailures, ...activeAwaiting, ...activeWins, ...snoozedChecks]
   const reportKey = checks.map((check) => check.id).join(":")
-  const initialId = activeFailures[0]?.id ?? activeWins[0]?.id ?? snoozedChecks[0]?.id ?? null
+  const initialId =
+    activeFailures[0]?.id ?? activeAwaiting[0]?.id ?? activeWins[0]?.id ?? snoozedChecks[0]?.id ?? null
   const [ui, setUi] = useState<ReportUiState>(() => ({
     reportKey,
     selectedId: initialId,
@@ -414,12 +431,14 @@ export function BurnChecksReport({
     : initialId
   const visibleChecks = [
     ...activeFailures,
+    ...activeAwaiting,
     ...(passedOpen ? activeWins : []),
     ...(snoozedOpen ? snoozedChecks : []),
   ]
   const selectedVisibleId = visibleChecks.some((check) => check.id === selectedId)
     ? selectedId
     : (activeFailures[0]?.id ??
+      activeAwaiting[0]?.id ??
       (passedOpen ? activeWins[0]?.id : null) ??
       (snoozedOpen ? snoozedChecks[0]?.id : null) ??
       null)
@@ -493,6 +512,25 @@ export function BurnChecksReport({
                 <section className="burn-checks-group" aria-labelledby="burn-checks-failed">
                   <div className="burn-checks-group-body">
                     {activeFailures.map((check) => renderCheck(check))}
+                  </div>
+                </section>
+              )}
+              {activeAwaiting.length > 0 && (
+                <section className="burn-checks-group" aria-labelledby="burn-checks-awaiting">
+                  <h2 id="burn-checks-awaiting" className="flex items-center gap-2 px-1">
+                    <span className="h-2 w-2 rounded-full bg-system-orange" aria-hidden="true" />
+                    <span className="type-footnote font-medium! text-label-tertiary">
+                      Awaiting verification
+                    </span>
+                    <span className="burn-check-group-count type-footnote tabular-nums text-label-tertiary">
+                      {activeAwaiting.length}
+                    </span>
+                  </h2>
+                  <p className="px-1 pt-1 type-footnote text-label-tertiary">
+                    A later complete session confirms each change.
+                  </p>
+                  <div className="burn-checks-group-body mt-2">
+                    {activeAwaiting.map((check) => renderCheck(check))}
                   </div>
                 </section>
               )}

@@ -732,7 +732,13 @@ fn verification_availability_matches_all_documented_source_cells() {
         api: Some("api".into()),
         old_model: (detector == DetectorId::OldModelUsage).then(|| "old".into()),
         replacement: (detector == DetectorId::OldModelUsage).then(|| "new".into()),
-        resource: None,
+        resource: matches!(
+            detector,
+            DetectorId::UnusedMcpServers
+                | DetectorId::UnusedBuiltInTools
+                | DetectorId::UnusedSkills
+        )
+        .then(|| "resource".into()),
         physical_target_key: (detector == DetectorId::OldModelUsage).then(|| "physical".into()),
         config_setting: (detector == DetectorId::OldModelUsage).then(|| "model".into()),
         config_expected_value: None,
@@ -896,6 +902,7 @@ fn a_truncated_assessment_cannot_prove_a_fix() {
             assessment: FindingAssessment::Unavailable(
                 FindingUnavailableReason::IncompleteEvidence,
             ),
+            clean_for_verification: false,
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
@@ -914,6 +921,7 @@ fn an_observed_resource_subset_cannot_prove_an_absent_target_fixed() {
             identity: "target".into(),
             target_present: false,
             assessment: FindingAssessment::Unavailable(FindingUnavailableReason::SignalMissing),
+            clean_for_verification: false,
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
@@ -1244,6 +1252,7 @@ fn only_explicit_same_route_controls_prove_generic_transitions() {
     };
     let assessment = insights_report::CurrentDetectorAssessment {
         assessment: FindingAssessment::Clean,
+        clean_for_verification: true,
         observed_at_ms: 200,
         finding_observed_at_ms: Vec::new(),
         started_at_ms: 150,
@@ -1376,4 +1385,146 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
         controller.aggregate_wins(&store),
         Err(ControllerError::Internal)
     ));
+}
+
+#[test]
+fn remediation_progress_selects_the_latest_attempt_per_detector_and_projects_outcomes() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let display = BurnCheckDisplayFacts {
+        resource_kind: BurnCheckResourceKind::Model,
+        resource_identity: Some("old".into()),
+        current_value: Some("old".into()),
+        replacement_value: Some("new".into()),
+        scope_kind: BurnCheckScopeKind::Project,
+        quantity: None,
+        quantity_unit: None,
+        observation_count: 1,
+        first_observed_at_ms: 10,
+        last_observed_at_ms: 20,
+        estimate_method: None,
+        estimated_opportunity: None,
+        verification_limit: BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
+    };
+    let definition = |detector: DetectorId| {
+        serde_json::to_string(&WatchDefinition {
+            version: 1,
+            detector: detector.key().into(),
+            canonical_identity: "target".into(),
+            source_format: SourceFormat::ClaudeJsonl.into(),
+            workspace_key: None,
+            workspace_relative_cwd: None,
+            provider: None,
+            api: None,
+            old_model: None,
+            replacement: None,
+            resource: None,
+            physical_target_key: None,
+            config_setting: None,
+            config_expected_value: None,
+            config_proposed_value: None,
+            verification_method_revision: 1,
+            remediation_policy_revision: None,
+            savings_method_revision: 1,
+            pricing_revision: None,
+            old_pricing: None,
+            replacement_pricing: None,
+            catalog_revision: None,
+            target_model: None,
+            target_control: None,
+        })
+        .unwrap()
+    };
+    let insert = |id: &str,
+                  detector: DetectorId,
+                  state: &str,
+                  result: serde_json::Value,
+                  updated_at_epoch: i64,
+                  effective_boundary_ms: Option<i64>| {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms, verified_at_epoch)
+                 VALUES (?1, ?1, 'native', 'claude-code', 'project', 'scope', ?2, ?3, ?4,
+                         1, ?5, ?6, ?7)",
+                rusqlite::params![
+                    id,
+                    state,
+                    definition(detector),
+                    result.to_string(),
+                    updated_at_epoch,
+                    effective_boundary_ms,
+                    (state == "fixed").then_some(updated_at_epoch),
+                ],
+            )
+            .unwrap();
+        store
+            .upsert_remediation_display_snapshot(&RemediationDisplaySnapshot {
+                remediation_id: id.into(),
+                origin: "action".into(),
+                display_snapshot_json: serde_json::to_string(&StoredDisplaySnapshot {
+                    version: 1,
+                    finding_id: format!("finding-{id}"),
+                    display: display.clone(),
+                })
+                .unwrap(),
+                effective_boundary_ms: effective_boundary_ms.unwrap_or(100),
+                verified_boundary_ms: None,
+                recurred_boundary_ms: None,
+            })
+            .unwrap();
+    };
+    let fixed = serde_json::json!({
+        "version": 1,
+        "verification": {"status": "fixed", "methodRevision": 1, "evidenceRevision": "rev"},
+        "savings": {"status": "unavailable"},
+    });
+    insert(
+        "old-fixed",
+        DetectorId::OldModelUsage,
+        "fixed",
+        fixed.clone(),
+        10,
+        Some(100),
+    );
+    insert(
+        "old-prompt",
+        DetectorId::OldModelUsage,
+        "waitingForPromptUse",
+        serde_json::json!({"version": 1, "verification": {"status": "reserved"}, "savings": {"status": "pending"}}),
+        20,
+        None,
+    );
+    insert(
+        "reasoning-fixed",
+        DetectorId::ModelOverthinking,
+        "fixed",
+        fixed,
+        15,
+        Some(200),
+    );
+
+    let progress = RemediationController::new(directory.path().to_owned())
+        .burn_check_remediation_progress(&store)
+        .unwrap();
+    assert_eq!(progress.attempts.len(), 2);
+    let prompt = progress
+        .attempts
+        .iter()
+        .find(|attempt| attempt.detector == DetectorId::OldModelUsage)
+        .unwrap();
+    assert_eq!(prompt.watch_id, "old-prompt");
+    assert_eq!(prompt.lifecycle, RemediationState::WaitingForPromptUse);
+    assert_eq!(prompt.outcome, BurnCheckRemediationOutcome::Failed);
+    assert_eq!(prompt.effective_boundary_ms, None);
+    let fixed = progress
+        .attempts
+        .iter()
+        .find(|attempt| attempt.detector == DetectorId::ModelOverthinking)
+        .unwrap();
+    assert_eq!(fixed.outcome, BurnCheckRemediationOutcome::Passed);
+    assert_eq!(fixed.effective_boundary_ms, Some(200));
 }

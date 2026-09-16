@@ -46,15 +46,19 @@ export function targetTitle(target: BurnCheckTargetPayload): string {
 }
 
 export function watchStatus(target: BurnCheckTargetPayload): string | null {
-  const verification = target.watch?.verification
+  const watch = target.watch
+  if (watch?.lifecycle === "waitingForPromptUse") {
+    return "The prompt is ready. Verification starts after its reference appears in a later user message."
+  }
+  const verification = watch?.verification
   if (!verification) return null
   switch (verification.status) {
     case "reserved":
       return "The change is reserved. Verification has not started."
     case "watching":
-      return null
+      return "Awaiting verification from a later complete session."
     case "fixed":
-      return null
+      return "Verified after your fix."
     case "stillUnresolved":
       return "Fresh evidence still shows this finding."
     case "recurred":

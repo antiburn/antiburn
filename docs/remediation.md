@@ -174,6 +174,13 @@ Clipboard success is separate from prompt preparation. A failed native write can
 retry the same prepared text without a second backend operation. The UI reports
 prompt preparation and clipboard write failures separately.
 
+Each exact-target prompt also contains one opaque `Remediation reference:
+ABR-<id>` marker. The durable attempt stays in the Failed checks group until a
+later captured user message contains that exact marker. The winning publication
+that captures the marker starts verification at its publication time. The
+marker-bearing session cannot verify the change. A copied prompt that never
+appears in captured user content does not start verification.
+
 ## Auto Fix Safety
 
 Auto Fix uses two explicit steps.
@@ -310,9 +317,11 @@ The durable lifecycle is:
 
 ```text
 reserved -> writing -> recoveryNeeded -> watching -> fixed -> recurred
+waitingForPromptUse -> watching
 ```
 
-Prompt actions enter `watching`. Auto Fix uses the write states first. A
+Prompt actions enter `waitingForPromptUse`. They enter `watching` only after
+their exact marker is captured in user content. Auto Fix uses the write states first. A
 successful file readback means `watching`, not `fixed`.
 
 Only sessions that start after the effective boundary can prove a transition.
@@ -335,7 +344,7 @@ only available bounded finding facts. The current UI can show a numeric
 opportunity for D and for replicated B definitions. Other methods stay unknown
 when their inputs are absent.
 
-`Your savings` describes a verified later transition. Every verified transition
+`Verified savings` describes a verified later transition. Every verified transition
 can store one improvement count. O can also store cumulative API-equivalent USD
 for eligible replacement activity. A rate is not a cumulative saving.
 

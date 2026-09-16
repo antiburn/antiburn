@@ -188,6 +188,7 @@ fn supported_generic_verification_requires_a_clean_detector_assessment() {
             identity: "session".to_owned(),
             target_present: false,
             assessment: FindingAssessment::Clean,
+            clean_for_verification: true,
         }],
     );
     assert_eq!(fixed.outcome, VerificationOutcome::Fixed);
@@ -207,6 +208,7 @@ fn supported_generic_verification_requires_a_clean_detector_assessment() {
                 identity: "resource".to_owned(),
                 target_present: false,
                 assessment: FindingAssessment::Clean,
+                clean_for_verification: true,
             },
             TargetAssessment {
                 observed_at_ms: 101,
@@ -223,6 +225,7 @@ fn supported_generic_verification_requires_a_clean_detector_assessment() {
                         },
                     ),
                 ]),
+                clean_for_verification: false,
             },
         ],
     );
@@ -264,6 +267,14 @@ fn verification_matrix_matches_the_documented_positive_proof_cells() {
         (DetectorId::OldModelUsage, PiV3Jsonl),
         (DetectorId::OveruseOfFastMode, ClaudeJsonl),
         (DetectorId::OveruseOfFastMode, CodexRolloutJsonl),
+        (DetectorId::UnusedMcpServers, ClaudeJsonl),
+        (DetectorId::UnusedMcpServers, CodexRolloutJsonl),
+        (DetectorId::UnusedBuiltInTools, ClaudeJsonl),
+        (DetectorId::UnusedBuiltInTools, CodexRolloutJsonl),
+        (DetectorId::UnusedSkills, ClaudeJsonl),
+        (DetectorId::UnusedSkills, CodexRolloutJsonl),
+        (DetectorId::UnusedSkills, OpenCodeJsonl),
+        (DetectorId::UnusedSkills, OpenCodeSqliteV2),
     ];
     let formats = [
         ClaudeJsonl,
@@ -287,7 +298,7 @@ fn verification_matrix_matches_the_documented_positive_proof_cells() {
 }
 
 #[test]
-fn a_named_resource_still_injected_and_invoked_cannot_verify_from_clean_assessment() {
+fn a_named_resource_still_injected_and_invoked_cannot_verify_without_scoped_clean_evidence() {
     let result = verify_prompt_watch(
         DetectorId::UnusedMcpServers,
         SourceFormat::ClaudeJsonl,
@@ -299,11 +310,89 @@ fn a_named_resource_still_injected_and_invoked_cannot_verify_from_clean_assessme
             identity: "mcp:server-a".into(),
             target_present: false,
             assessment: FindingAssessment::Clean,
+            clean_for_verification: false,
         }],
     );
 
     assert_eq!(
         result.outcome,
-        VerificationOutcome::Unknown(VerificationUnknownReason::UnsupportedEvidence)
+        VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+    );
+}
+
+#[test]
+fn scoped_resource_clean_verifies_only_the_existing_canonical_target() {
+    let clean = verify_prompt_watch(
+        DetectorId::UnusedMcpServers,
+        SourceFormat::ClaudeJsonl,
+        "mcp:server-a",
+        VerificationStage::Watching,
+        100,
+        &[TargetAssessment {
+            observed_at_ms: 101,
+            identity: "mcp:server-a".into(),
+            target_present: false,
+            assessment: FindingAssessment::Unavailable(
+                super::super::FindingUnavailableReason::IncompleteEvidence,
+            ),
+            clean_for_verification: true,
+        }],
+    );
+    assert_eq!(clean.outcome, VerificationOutcome::Fixed);
+
+    let other_resource = verify_prompt_watch(
+        DetectorId::UnusedMcpServers,
+        SourceFormat::ClaudeJsonl,
+        "mcp:server-a",
+        VerificationStage::Watching,
+        100,
+        &[TargetAssessment {
+            observed_at_ms: 101,
+            identity: "mcp:server-b".into(),
+            target_present: false,
+            assessment: FindingAssessment::Unavailable(
+                super::super::FindingUnavailableReason::IncompleteEvidence,
+            ),
+            clean_for_verification: true,
+        }],
+    );
+    assert_eq!(
+        other_resource.outcome,
+        VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+    );
+}
+
+#[test]
+fn scoped_resource_finding_stays_unresolved_and_recurs_after_a_fix() {
+    let finding = TargetAssessment {
+        observed_at_ms: 101,
+        identity: "mcp:server-a".into(),
+        target_present: true,
+        assessment: FindingAssessment::Findings(Vec::new()),
+        clean_for_verification: false,
+    };
+    assert_eq!(
+        verify_prompt_watch(
+            DetectorId::UnusedMcpServers,
+            SourceFormat::ClaudeJsonl,
+            "mcp:server-a",
+            VerificationStage::Watching,
+            100,
+            std::slice::from_ref(&finding),
+        )
+        .outcome,
+        VerificationOutcome::StillUnresolved
+    );
+    assert_eq!(
+        verify_prompt_watch(
+            DetectorId::UnusedMcpServers,
+            SourceFormat::ClaudeJsonl,
+            "mcp:server-a",
+            VerificationStage::Fixed,
+            100,
+            &[finding],
+        )
+        .outcome,
+        VerificationOutcome::Recurred
     );
 }

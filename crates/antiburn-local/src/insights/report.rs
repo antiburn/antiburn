@@ -1250,10 +1250,6 @@ impl EfficiencyReportAccumulator {
         evidence: SessionEvidence,
         mut token_evidence: SessionTokenBurnEvidence,
     ) {
-        let has_built_in_sources = token_evidence
-            .built_in_tool_sources
-            .as_ref()
-            .is_some_and(|sources| !sources.is_empty());
         if let Some(sources) = &mut token_evidence.built_in_tool_sources {
             use crate::analysis::tool_catalog::{comparable_tool_name, situational_tools};
             let situational = situational_tools(&evidence.identity.agent);
@@ -1265,16 +1261,15 @@ impl EfficiencyReportAccumulator {
         }
         let built_in_not_applicable =
             complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns == 0);
-        let built_in_assessable = has_built_in_sources
-            && Fact::ToolDefinitions.state(&evidence) == FactState::Unsupported
-            && matches!(evidence.coverage, EvidenceCoverage::Complete)
-            && matches!(&evidence.tools, EvidenceValue::Complete(_))
-            && complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns > 0);
         let source_eligible = [
-            eligible(DetectorId::UnusedMcpServers, &evidence),
-            built_in_assessable || eligible(DetectorId::UnusedBuiltInTools, &evidence),
-            eligible(DetectorId::UnusedSkills, &evidence),
-        ];
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::UnusedSkills,
+        ]
+        .map(|detector| {
+            eligible(detector, &evidence)
+                || detectors::source_assessable(detector, &evidence, Some(&token_evidence))
+        });
         self.assessed_sessions += 1;
         if let EvidenceCoverage::Partial(reason) = evidence.coverage {
             *self.coverage_reasons.entry(reason).or_default() += 1;
@@ -1307,11 +1302,8 @@ impl EfficiencyReportAccumulator {
                 counts.not_applicable += 1;
                 continue;
             }
-            let detector_eligible = if detector == DetectorId::UnusedBuiltInTools {
-                built_in_assessable || eligible(detector, &evidence)
-            } else {
-                eligible(detector, &evidence)
-            };
+            let detector_eligible = eligible(detector, &evidence)
+                || detectors::source_assessable(detector, &evidence, Some(&token_evidence));
             if !detector_eligible {
                 counts.unavailable += 1;
                 *self.capability_gaps.entry(detector).or_default() += 1;
@@ -1724,6 +1716,61 @@ mod tests {
                 [DetectorId::UnusedBuiltInTools.index()],
             Some(1_000)
         );
+    }
+
+    #[test]
+    fn report_assesses_unused_sources_from_report_time_evidence() {
+        for detector in [
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::UnusedSkills,
+        ] {
+            let mut row = evidence_with_work("report-time-source");
+            let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                unreachable!()
+            };
+            match detector {
+                DetectorId::UnusedMcpServers => sources.mcp_coverage = EvidenceValue::Unsupported,
+                DetectorId::UnusedBuiltInTools => {
+                    sources.tool_definitions = EvidenceValue::Unsupported;
+                }
+                DetectorId::UnusedSkills => sources.skill_coverage = EvidenceValue::Unsupported,
+                _ => unreachable!(),
+            }
+            let source = TokenBurnSourceEvidence {
+                scope: "claude:bundled".to_owned(),
+                name: "unused".to_owned(),
+                replicated_tokens: 100,
+                invoked: false,
+                replicated_cost_usd: None,
+            };
+            let mut token_evidence = SessionTokenBurnEvidence::default();
+            match detector {
+                DetectorId::UnusedMcpServers => token_evidence.mcp_sources = Some(vec![source]),
+                DetectorId::UnusedBuiltInTools => {
+                    token_evidence.built_in_tool_sources = Some(vec![source]);
+                }
+                DetectorId::UnusedSkills => token_evidence.skill_sources = Some(vec![source]),
+                _ => unreachable!(),
+            }
+
+            let mut accumulator = EfficiencyReportAccumulator::new();
+            accumulator.observe_session_with_token_burn(row, token_evidence);
+            let report = accumulator.finish(context(CoverageCounts::default()));
+
+            assert_eq!(
+                report.detectors[detector.index()].eligible,
+                1,
+                "{detector:?}"
+            );
+            assert!(
+                matches!(
+                    report.detector_statuses[detector.index()],
+                    DetectorStatus::Findings(_)
+                ),
+                "{detector:?}"
+            );
+        }
     }
 
     #[test]

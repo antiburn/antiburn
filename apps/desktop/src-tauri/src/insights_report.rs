@@ -2142,6 +2142,12 @@ mod tests {
             PublishedEvidence::Ready,
             1,
             |evidence| {
+                let observed_at_ms = started_at_epoch.saturating_mul(1_000).saturating_add(1);
+                evidence.time_range = EvidenceValue::Complete(SessionTimeRange {
+                    first_ts_ms: observed_at_ms,
+                    last_ts_ms: observed_at_ms,
+                    timestamped_turns: 1,
+                });
                 let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
                     panic!("the Claude fixture must have complete eligibility");
                 };
@@ -2176,6 +2182,12 @@ mod tests {
             PublishedEvidence::Ready,
             1,
             |evidence| {
+                let observed_at_ms = started_at_epoch.saturating_mul(1_000).saturating_add(1);
+                evidence.time_range = EvidenceValue::Complete(SessionTimeRange {
+                    first_ts_ms: observed_at_ms,
+                    last_ts_ms: observed_at_ms,
+                    timestamped_turns: 1,
+                });
                 let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
                     panic!("the Claude fixture must have complete eligibility");
                 };
@@ -2441,7 +2453,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_skips_permanently_unverifiable_passive_findings() {
+    fn publication_enrolls_scoped_resource_findings_for_verification() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "historical", 120, &["server-a"]);
@@ -2449,7 +2461,7 @@ mod tests {
             .lock()
             .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -2674,7 +2686,7 @@ mod tests {
             crate::remediation::RemediationOrigin::Passive
         );
         let joined = store.remediation(&passive_id).unwrap().unwrap();
-        assert!(joined.action_joined_at_ms.is_some());
+        assert_eq!(joined.action_joined_at_ms, None);
         let count: i64 = store
             .lock()
             .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
@@ -2711,6 +2723,10 @@ mod tests {
 
         assert_eq!(prompt.matches("Exact target ").count(), action_ids.len());
         assert_eq!(
+            prompt.matches("Remediation reference: ABR-").count(),
+            action_ids.len()
+        );
+        assert_eq!(
             store
                 .lock()
                 .query_row("SELECT COUNT(*) FROM remediation", [], |row| row
@@ -2725,7 +2741,7 @@ mod tests {
     }
 
     #[test]
-    fn invoked_named_resource_in_a_later_clean_assessment_stays_verification_unavailable() {
+    fn invoked_named_resource_watch_rejects_a_clean_assessment_from_another_scope() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "baseline", 120, &["server-a"]);
@@ -2745,19 +2761,31 @@ mod tests {
             .unwrap();
         assert_eq!(
             action.watch.verification,
-            crate::remediation::VerificationStatus::VerificationUnavailable
+            crate::remediation::VerificationStatus::Watching {
+                reason: None,
+                method_revision: Some(antiburn_local::remediation::VERIFICATION_METHOD_REVISION),
+                evidence_revision: None,
+            }
+        );
+        assert_eq!(
+            action.watch.lifecycle,
+            crate::store::RemediationState::Watching
         );
 
         publish_invoked_mcp(&store, "later-clean", 121, "server-a");
         let dirty = store.next_dirty_remediation().unwrap().unwrap();
         assert!(
-            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &dirty, 122,)
+            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &dirty, 121,)
                 .unwrap()
         );
-        let retained = store.remediation(&dirty.remediation_id).unwrap().unwrap();
-        assert_eq!(retained.state, crate::store::RemediationState::Watching);
-        let result: serde_json::Value = serde_json::from_str(&retained.result_json).unwrap();
-        assert_eq!(result["verification"]["status"], "verificationUnavailable");
+        assert_eq!(
+            store
+                .remediation(&action.watch.watch_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            crate::store::RemediationState::Watching
+        );
         assert!(store.remediation_contributions(1_000).unwrap().is_empty());
     }
 
@@ -2886,41 +2914,6 @@ mod tests {
             .unwrap();
         controller
             .copy_prompt_fix_burn_check_target(&store, &initial.targets[0].action_id)
-            .unwrap();
-        let listed = controller
-            .list_burn_check_targets_with_home(
-                &store,
-                DetectorId::ModelOverthinking,
-                crate::remediation::BurnCheckTargetContext {
-                    environment_key: "native".into(),
-                    window: request().window,
-                },
-                &home,
-            )
-            .unwrap();
-        assert_eq!(
-            listed.targets[0].auto_fix,
-            crate::remediation::AutoFixAvailability::Unavailable(
-                crate::remediation::AutoFixUnavailableReason::ActiveWatch
-            )
-        );
-        assert_eq!(
-            controller.prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id),
-            Err(crate::remediation::ControllerError::AutoFixUnavailable(
-                crate::remediation::AutoFixUnavailableReason::ActiveWatch
-            ))
-        );
-
-        let watch_id = listed.targets[0].watch.as_ref().unwrap().watch_id.clone();
-        store
-            .lock()
-            .execute(
-                "UPDATE remediation SET result_json = ?2 WHERE remediation_id = ?1",
-                rusqlite::params![
-                    watch_id,
-                    r#"{"version":1,"verification":{"status":"verificationUnavailable"},"savings":{"status":"unavailable"}}"#
-                ],
-            )
             .unwrap();
         let listed = controller
             .list_burn_check_targets_with_home(
@@ -3103,6 +3096,31 @@ mod tests {
             .unwrap()
         );
         assert!(turn_probes > 0);
+    }
+
+    #[test]
+    fn scoped_resource_no_finding_is_verification_clean_not_report_clean() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_invoked_mcp(&store, "clean", 121, "server-a");
+
+        let assessments = remediation_assessments(
+            data_dir.path(),
+            "native",
+            "claude-code",
+            DetectorId::UnusedMcpServers,
+            -1,
+        )
+        .unwrap();
+
+        assert_eq!(assessments.assessments.len(), 1);
+        assert_eq!(
+            assessments.assessments[0].assessment,
+            FindingAssessment::Unavailable(
+                antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence
+            )
+        );
+        assert!(assessments.assessments[0].clean_for_verification);
     }
 
     #[test]

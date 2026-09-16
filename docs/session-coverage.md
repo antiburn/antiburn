@@ -260,8 +260,12 @@ agents cannot share a fallback target identity.
 
 The evidence worker alternates ready evidence and remediation work when both
 queues have work. Each publication and verification pass keeps its existing
-bound. Restart recovery uses the database rows; it does not rescan retained or
-deleted transcripts to reconstruct attempts or contributions.
+bound. A winning publication can inspect its normalized user-content rows for a
+bounded exact remediation marker. This activates only the matching copied-prompt
+attempt at the publication boundary. It does not retain markers in evidence,
+analytics, diagnostics, or derived finding facts. Restart recovery uses the
+database rows; it does not rescan retained or deleted transcripts to reconstruct
+attempts or contributions.
 
 ## Known Contract Gaps
 

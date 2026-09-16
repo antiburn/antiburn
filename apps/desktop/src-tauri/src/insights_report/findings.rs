@@ -3,6 +3,7 @@ use super::*;
 /// One fresh session assessment used by the generic remediation verifier.
 pub(crate) struct CurrentDetectorAssessment {
     pub assessment: FindingAssessment,
+    pub clean_for_verification: bool,
     pub observed_at_ms: i64,
     pub finding_observed_at_ms: Vec<Option<i64>>,
     pub started_at_ms: i64,
@@ -87,6 +88,14 @@ pub(crate) fn remediation_assessments(
             &cancel,
             &mut || {},
         )?;
+        let clean_for_verification = assessment == FindingAssessment::Clean
+            || scoped_resource_clean_for_verification(
+                &transaction,
+                &session,
+                detector,
+                &catalogs,
+                &cancel,
+            )?;
         let finding_observed_at_ms = match &assessment {
             FindingAssessment::Findings(findings) => findings
                 .iter()
@@ -96,6 +105,7 @@ pub(crate) fn remediation_assessments(
         };
         result.push(CurrentDetectorAssessment {
             assessment,
+            clean_for_verification,
             observed_at_ms,
             finding_observed_at_ms,
             started_at_ms: started_at_epoch.saturating_mul(1_000),
@@ -117,6 +127,48 @@ pub(crate) fn remediation_assessments(
         assessments: result,
         truncated,
     })
+}
+
+fn scoped_resource_clean_for_verification(
+    connection: &rusqlite::Connection,
+    session: &CurrentFindingSession,
+    detector: DetectorId,
+    catalogs: &ReportCatalogs,
+    cancel: &AtomicBool,
+) -> Result<bool> {
+    if !matches!(
+        detector,
+        DetectorId::UnusedBuiltInTools | DetectorId::UnusedMcpServers | DetectorId::UnusedSkills
+    ) {
+        return Ok(false);
+    }
+    let token_evidence = token_burn_evidence(
+        connection,
+        TokenBurnSessionKey {
+            environment_key: &session.environment_key,
+            agent: &session.agent,
+            session_id: &session.session_id,
+            published_fence: session.published_fence,
+            cwd: session
+                .workspace_candidate
+                .as_deref()
+                .and_then(Path::to_str),
+        },
+        session.initial_context.as_ref(),
+        &session.evidence,
+        &TokenBurnReportContext {
+            depth_cap: u128::from(catalogs.depth_cap_tokens),
+            catalogs,
+        },
+        cancel,
+        &mut || {},
+    )?;
+    Ok(antiburn_local::remediation::scoped_resource_no_finding(
+        detector,
+        &session.evidence,
+        catalogs,
+        Some(&token_evidence),
+    ))
 }
 
 /// A read-only aggregate for one exact old-model watch.

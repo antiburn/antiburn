@@ -428,7 +428,7 @@ pub(crate) fn finding_causes(
     causes
 }
 
-pub(crate) fn built_in_source_assessable(
+pub(crate) fn source_assessable(
     detector: DetectorId,
     evidence: &SessionEvidence,
     source_evidence: Option<&super::report::SessionTokenBurnEvidence>,

@@ -35,9 +35,9 @@ use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
-    BurnCheckSnoozePayload, BurnCheckTargetListPayload, ChecksReportPayload,
-    CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir,
-    HygieneSummaryPayload, LiveUsageSummary, OrchestrationStatus,
+    BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
+    ChecksReportPayload, CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome,
+    DeferredPermissionDir, HygieneSummaryPayload, LiveUsageSummary, OrchestrationStatus,
     PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
     RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
     SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
@@ -1733,6 +1733,22 @@ pub async fn list_burn_check_targets(
     })
     .await
     .map_err(|_| "unable to list burn check targets".to_owned())?
+}
+
+#[tauri::command]
+pub async fn get_burn_check_remediation_progress(
+    window: tauri::WebviewWindow,
+) -> CommandResult<BurnCheckRemediationProgressPayload> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<RemediationController>()
+            .burn_check_remediation_progress(&app.state::<Store>())
+            .map(Into::into)
+            .map_err(|_| "unable to read burn check remediation progress".to_owned())
+    })
+    .await
+    .map_err(|_| "unable to read burn check remediation progress".to_owned())?
 }
 
 fn unique_sample_sessions(

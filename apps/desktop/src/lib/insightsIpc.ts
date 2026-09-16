@@ -155,7 +155,13 @@ export type PromptFixAvailabilityPayload =
   { status: "available" } | { status: "unavailable"; reason: PromptFixUnavailableReason }
 
 export type BurnCheckWatchLifecycle =
-  "reserved" | "writing" | "recoveryNeeded" | "watching" | "fixed" | "recurred"
+  | "reserved"
+  | "writing"
+  | "recoveryNeeded"
+  | "waitingForPromptUse"
+  | "watching"
+  | "fixed"
+  | "recurred"
 
 export type BurnCheckVerificationReason =
   | "missingPostBoundaryEvidence"
@@ -247,6 +253,27 @@ export type OpenBurnCheckSampleOutcome =
 export interface BurnCheckTargetListPayload {
   targets: BurnCheckTargetPayload[]
   truncated: boolean
+}
+
+export type BurnCheckRemediationOutcome = "failed" | "passed"
+
+/** The latest retained remediation attempt for each detector. */
+export interface BurnCheckRemediationAttemptPayload {
+  detector: BurnCheckDetectorId
+  watchId: string
+  display: BurnCheckDisplayFactsPayload
+  origin: "passive" | "action"
+  lifecycle: BurnCheckWatchLifecycle
+  outcome: BurnCheckRemediationOutcome
+  verification: BurnCheckVerificationPayload
+  savings: BurnCheckSavingsPayload
+  effectiveBoundaryMs: number | null
+  verifiedBoundaryMs: number | null
+  recurredBoundaryMs: number | null
+}
+
+export interface BurnCheckRemediationProgressPayload {
+  attempts: BurnCheckRemediationAttemptPayload[]
 }
 
 export interface AutoFixReviewPayload {
@@ -436,6 +463,12 @@ export async function listBurnCheckTargets(
   return invoke<BurnCheckTargetListPayload>("list_burn_check_targets", {
     detector,
   })
+}
+
+/** Reads the bounded remediation progress retained for each detector. */
+export async function getBurnCheckRemediationProgress(): Promise<BurnCheckRemediationProgressPayload | null> {
+  if (!hasShell()) return null
+  return invoke<BurnCheckRemediationProgressPayload>("get_burn_check_remediation_progress")
 }
 
 /** Prepares one exact automatic change for semantic review. */

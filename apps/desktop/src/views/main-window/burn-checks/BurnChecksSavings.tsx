@@ -96,7 +96,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
         (win.savings.apiEquivalentCostAvoidedUsd == null),
     )
   return (
-    <section aria-labelledby="burn-checks-savings" className="mt-4">
+    <section aria-label="Your savings" className="mt-4">
       <div className="overflow-hidden rounded-control bg-surface-card/50">
         <button
           type="button"
@@ -109,14 +109,14 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
             <Sparkles size={16} aria-hidden="true" />
           </span>
           <div className="min-w-0 flex-1">
-            <h2 id="burn-checks-savings" className="type-headline text-label">
-              Your savings
-            </h2>
-            <p className="type-callout text-label-tertiary">
-              {improvementWins > 0
-                ? `${improvements.toLocaleString()} improvement${improvements === 1 ? "" : "s"} across ${groups.length} check${groups.length === 1 ? "" : "s"}`
-                : `${supported.length} verified ${supported.length === 1 ? "win" : "wins"} across ${groups.length} check${groups.length === 1 ? "" : "s"}`}
-            </p>
+              <h2 id="burn-checks-savings" className="type-headline text-label">
+                Verified savings
+              </h2>
+              <p className="type-callout text-label-tertiary">
+                {improvementWins > 0
+                  ? `${improvements.toLocaleString()} improvement${improvements === 1 ? "" : "s"} across ${groups.length} check${groups.length === 1 ? "" : "s"}`
+                  : `${supported.length} verified ${supported.length === 1 ? "win" : "wins"} across ${groups.length} check${groups.length === 1 ? "" : "s"}`}
+              </p>
           </div>
           <div className="text-right type-callout tabular-nums text-label-secondary">
             {paired ? (

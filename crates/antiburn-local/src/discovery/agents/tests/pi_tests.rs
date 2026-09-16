@@ -8,12 +8,18 @@ fn pi_sessions_dir(home: &Path) -> PathBuf {
 }
 
 #[test]
-fn test_agent_dir_accepts_pi_agent_dir_override() {
+fn agent_dir_accepts_pi_environment_overrides() {
     let home = Path::new("/synthetic/home");
-    let override_dir = Path::new("/synthetic/pi-agent");
+    let legacy = Path::new("/synthetic/pi-agent");
+    let current = Path::new("/synthetic/pi-coding-agent");
 
-    assert_eq!(agent_dir_in(home, Some(override_dir)), override_dir);
-    assert_eq!(agent_dir_in(home, None), home.join(".pi").join("agent"));
+    assert_eq!(agent_dir_in(home, Some(legacy), None), legacy);
+    assert_eq!(agent_dir_in(home, None, Some(current)), current);
+    assert_eq!(agent_dir_in(home, Some(legacy), Some(current)), current);
+    assert_eq!(
+        agent_dir_in(home, None, None),
+        home.join(".pi").join("agent")
+    );
 }
 
 #[tokio::test]
