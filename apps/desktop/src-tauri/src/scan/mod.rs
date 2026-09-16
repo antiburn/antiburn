@@ -156,8 +156,6 @@ pub enum ScanTrigger {
     /// A settings save that finished onboarding, widened the activity
     /// window, or resumed discovery.
     SettingsTransition,
-    /// The Insights pane was opened.
-    InsightsPane,
     /// A repository was included or ignored.
     RepositoryToggle,
     /// A scan root was added.
@@ -179,7 +177,6 @@ impl ScanTrigger {
             ScanTrigger::WatcherAgents { .. } => "watcher_agents",
             ScanTrigger::WatcherOverflow => "watcher_overflow",
             ScanTrigger::SettingsTransition => "settings_transition",
-            ScanTrigger::InsightsPane => "insights_pane",
             ScanTrigger::RepositoryToggle => "repository_toggle",
             ScanTrigger::ScanRootAdded => "scan_root_added",
             ScanTrigger::FolderAccessGranted => "folder_access_granted",
@@ -206,7 +203,6 @@ impl ScanTrigger {
             | ScanTrigger::WatcherOverflow => false,
             ScanTrigger::Launch
             | ScanTrigger::SettingsTransition
-            | ScanTrigger::InsightsPane
             | ScanTrigger::RepositoryToggle
             | ScanTrigger::ScanRootAdded
             | ScanTrigger::FolderAccessGranted

@@ -573,6 +573,16 @@ describe("BurnChecksView", () => {
     ).not.toBeInTheDocument()
   })
 
+  it("reports a settled assessment in the summary", async () => {
+    setup(target, false, aggregate, { ...report, evidenceSettled: true })
+
+    fireEvent.click(await screen.findByRole("button", { name: "Assessment details" }))
+    const summary = screen.getByRole("region", { name: "Assessment details" })
+    expect(
+      within(summary).getByText("Assessment complete for available evidence."),
+    ).toBeVisible()
+  })
+
   it("keeps processing count out of the collection header", async () => {
     setup(target, false, aggregate, { ...report, pendingEvidence: 2 })
 

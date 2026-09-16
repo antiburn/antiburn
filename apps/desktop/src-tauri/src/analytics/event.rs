@@ -52,7 +52,7 @@ pub enum EventName {
     /// Something failed, by category. No message, no path, no backtrace.
     #[cfg(feature = "analytics")]
     ErrorOccurred,
-    /// An Insights cohort contains unknown record vocabulary.
+    /// An assessed cohort contains unknown record vocabulary.
     UnrecognizedRecordsObserved,
     /// Claude's limit-reset diagnostic changed during this run.
     #[cfg(feature = "analytics")]
@@ -99,10 +99,10 @@ pub enum EventName {
     /// The Sessions sidebar filter changed to a different selection.
     #[cfg(feature = "analytics")]
     SessionFilterSelected,
-    /// An Insights cohort's quota-pressure section has assessed incidents,
+    /// An assessed cohort's quota-pressure section has assessed incidents,
     /// with a bucketed hit count per limit kind.
     QuotaIncidentsObserved,
-    /// An Insights cohort's provider-incidents section has assessed
+    /// An assessed cohort's provider-incidents section has assessed
     /// incidents, with a bucketed hit count per incident kind.
     ProviderIncidentsObserved,
     /// The evidence worker published a session whose transcript gained an
@@ -458,7 +458,6 @@ pub enum StateSurface {
     Hud,
     HudDetail,
     Settings,
-    Insights,
     BurnChecks,
 }
 
@@ -542,7 +541,6 @@ pub enum SettingsPane {
     Privacy,
     Notifications,
     Usage,
-    Insights,
     About,
 }
 
@@ -748,7 +746,6 @@ wire_values!(StateSurface, {
     StateSurface::Hud => "hud",
     StateSurface::HudDetail => "hud_detail",
     StateSurface::Settings => "settings",
-    StateSurface::Insights => "insights",
     StateSurface::BurnChecks => "burn_checks",
 });
 
@@ -826,7 +823,6 @@ wire_values!(SettingsPane, {
     SettingsPane::Privacy => "privacy",
     SettingsPane::Notifications => "notifications",
     SettingsPane::Usage => "usage",
-    SettingsPane::Insights => "insights",
     SettingsPane::About => "about",
 });
 
