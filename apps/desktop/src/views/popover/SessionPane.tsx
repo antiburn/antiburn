@@ -2,6 +2,7 @@ import { confirm } from "@tauri-apps/plugin-dialog"
 import { useCallback } from "react"
 
 import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
+import type { SessionQuotaOpenTarget } from "../../components/session/SessionQuotaSection"
 import type { TokensCostSplit } from "../../components/session/tokensCard"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import { writeClipboardText } from "../../lib/clipboard"
@@ -10,6 +11,7 @@ import {
   revealSource,
   withPopoverHold,
   type SessionAnalysisPayload,
+  type SessionQuotaPayload,
 } from "../../lib/ipc"
 import { performProjectFolderAction } from "../../lib/projectFolder"
 import { agentSupportsAnalysis } from "../../lib/presentation/agents"
@@ -56,6 +58,13 @@ export interface SessionPaneProps {
   onNext?: (() => void) | undefined
   /** Navigate to another session (a fork, a sub-agent, an orchestrator). */
   onOpenSession: (subject: SessionSubject) => void
+  /** The subject's quota contributions, when the host loads them. */
+  sessionQuota?: SessionQuotaPayload | null
+  /** Whether the last quota load failed. Never hides the rest of the detail. */
+  sessionQuotaError?: boolean
+  /** Open one quota window on the Quota screen. Omitted where there is no
+   *  Quota screen to open, such as the popover. */
+  onOpenQuota?: (target: SessionQuotaOpenTarget) => void
   /** The session's local records were deleted, so it can no longer be shown. */
   onDeleted: () => void
   /** Remove popover-only chrome when the pane sits in another window. */
@@ -194,6 +203,9 @@ export function SessionPane({
   onPrev,
   onNext,
   onOpenSession,
+  sessionQuota = null,
+  sessionQuotaError = false,
+  onOpenQuota,
   onDeleted,
   embedded = false,
   active = true,
@@ -340,6 +352,9 @@ export function SessionPane({
       subagentCount={payload?.orchestration?.subagentCount ?? 0}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
+      sessionQuota={sessionQuota}
+      sessionQuotaError={sessionQuotaError}
+      {...(onOpenQuota ? { onOpenQuota } : {})}
       {...(onBack ? { onBack } : {})}
       {...(onPrev ? { onPrev } : {})}
       {...(onNext ? { onNext } : {})}

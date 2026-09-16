@@ -204,6 +204,13 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           active={active}
           session={activitySession}
           hygieneBySession={hygieneBySession}
+          onOpenQuota={(target) => {
+            quotaSession.open(
+              { provider: target.provider, accountKey: target.accountKey, lane: target.lane },
+              { startEpoch: target.rangeStart, endEpoch: target.rangeEnd },
+            )
+            selectSection("quota")
+          }}
         />
       ),
     },
