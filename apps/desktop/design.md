@@ -679,8 +679,10 @@ Notes for what isn't expressible as a token:
   their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
-  A 188px card floats at the top right, over the workspace, and holds the live provider
-  meters. Every section shows the same meters, so they sit over the workspace instead of
+  A card floats at the top right, over the workspace, and holds the live provider meters.
+  The card takes width from the window: 156px at the 1000px minimum window width, then
+  `clamp(156px, calc(20vw - 44px), 316px)` up to 316px from 1800px. The sections beside it
+  need the width more at the small sizes and less at the large ones. Every section shows the same meters, so they sit over the workspace instead of
   under the section rows. The card uses the popover corner, the opaque `surface-window`
   fill under the `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card`
   outline. The tint keeps the material the meters had in the sidebar. It insets 16px from the
@@ -714,10 +716,10 @@ Notes for what isn't expressible as a token:
 
 ### Main window collection and detail architecture
 
-The 220px navigation sidebar, 340px collection pane, flexible detail pane, and 188px provider
+The 220px navigation sidebar, 340px collection pane, flexible detail pane, and fluid provider
 card remain visible at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
 the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
-the detail retains 252px; at the 1100px default width, it receives 352px.
+the detail retains 284px; at the 1100px default width, it receives 364px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;

@@ -1,9 +1,13 @@
 /* The retained window paints an opaque canvas over the native window surface. */
 .main-window {
   --main-window-titlebar-height: calc(var(--space-2xl) + var(--space-lg));
-  /* The card that holds the provider meters. Its width carries the 12px inner
-     padding on each side, so the meters keep their measured width. */
-  --main-window-panel-width: 188px;
+  /* The card that holds the provider meters. The card takes width from the
+     window, because the sections beside it need the width more at the small
+     sizes and less at the large ones. The card is 156px at the 1000px minimum
+     window width and 316px from 1800px up. The meters add dots as it grows.
+
+     The width carries the 12px inner padding on each side. */
+  --main-window-panel-width: clamp(156px, calc(20vw - 44px), 316px);
 
   position: relative;
   display: flex;
