@@ -604,29 +604,28 @@ impl Store {
             return Ok(Vec::new());
         }
 
+        let bound_sessions: HashSet<SessionKey> = bound_sessions.into_iter().collect();
+
         let mut epochs: BTreeSet<i64> = BTreeSet::new();
-        for chunk in bound_sessions.chunks(200) {
-            let mut clauses = Vec::with_capacity(chunk.len());
-            let mut values: Vec<rusqlite::types::Value> = vec![
-                rusqlite::types::Value::from(start_ms),
-                rusqlite::types::Value::from(end_ms),
-            ];
-            for key in chunk {
-                clauses.push("(t.environment_key = ? AND t.agent = ? AND t.session_id = ?)");
-                values.push(rusqlite::types::Value::from(key.environment_key.clone()));
-                values.push(rusqlite::types::Value::from(key.agent.clone()));
-                values.push(rusqlite::types::Value::from(key.session_id.clone()));
-            }
-            let sql = format!(
-                "SELECT DISTINCT (t.ts_ms / 60000) * 60 AS minute_epoch
-                   FROM turn t INDEXED BY turn_usage_timestamp
-                  WHERE t.ts_ms > ? AND t.ts_ms <= ? AND ({})",
-                clauses.join(" OR ")
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT t.environment_key, t.agent, t.session_id,
+                    (t.ts_ms / 60000) * 60 AS minute_epoch
+               FROM turn t INDEXED BY turn_usage_timestamp
+               JOIN session_evidence e
+                 ON e.environment_key = t.environment_key
+                AND e.agent = t.agent AND e.session_id = t.session_id
+                AND e.published_fence = t.claim_fence
+              WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2",
+        )?;
+        let mut rows = statement.query(params![start_ms, end_ms])?;
+        while let Some(row) = rows.next()? {
+            let key = SessionKey::new(
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
             );
-            let mut statement = connection.prepare(&sql)?;
-            let mut rows = statement.query(rusqlite::params_from_iter(values))?;
-            while let Some(row) = rows.next()? {
-                epochs.insert(row.get::<_, i64>(0)?);
+            if bound_sessions.contains(&key) {
+                epochs.insert(row.get::<_, i64>(3)?);
             }
         }
         Ok(epochs.into_iter().collect())
