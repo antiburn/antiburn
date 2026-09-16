@@ -469,6 +469,7 @@ pub enum Surface {
     HudDetail,
     Settings,
     BurnChecks,
+    Quota,
 }
 
 /// A surface that can present a measured data state.
@@ -483,6 +484,7 @@ pub enum StateSurface {
     HudDetail,
     Settings,
     BurnChecks,
+    Quota,
 }
 
 /// A closed Auto Fix review preparation result.
@@ -773,6 +775,7 @@ wire_values!(Surface, {
     Surface::HudDetail => "hud_detail",
     Surface::Settings => "settings",
     Surface::BurnChecks => "burn_checks",
+    Surface::Quota => "quota",
 });
 
 #[cfg(feature = "analytics")]
@@ -785,6 +788,7 @@ wire_values!(StateSurface, {
     StateSurface::HudDetail => "hud_detail",
     StateSurface::Settings => "settings",
     StateSurface::BurnChecks => "burn_checks",
+    StateSurface::Quota => "quota",
 });
 
 #[cfg(feature = "analytics")]
