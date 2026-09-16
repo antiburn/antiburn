@@ -107,7 +107,7 @@ function cumulativeAt(
   return total
 }
 
-export interface QuotaBurnupTooltipProps {
+interface QuotaBurnupTooltipProps {
   active?: boolean
   payload?: Array<{ payload?: QuotaSeriesRow }>
   topSessions: readonly QuotaTopSession[]
@@ -115,7 +115,7 @@ export interface QuotaBurnupTooltipProps {
 }
 
 /** The hover card: local time, the meter reading, each stacked layer, and the estimate total. */
-export function QuotaBurnupTooltip({
+function QuotaBurnupTooltip({
   active,
   payload,
   topSessions,

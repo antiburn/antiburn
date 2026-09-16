@@ -9,16 +9,23 @@ import type {
   QuotaContributionPayload,
   QuotaLanePayload,
   QuotaPeriodPayload,
+  QuotaSamplePayload,
   QuotaUnattributedPayload,
   QuotaUsagePayload,
 } from "../../../lib/providerUsageIpc"
 
 /** One 15-minute bucket, in seconds. Matches the backend's contribution grain. */
-export const QUOTA_BUCKET_SECS = 15 * 60
+const QUOTA_BUCKET_SECS = 15 * 60
 const DAY_SECS = 24 * 60 * 60
 const WEEK_SECS = 7 * DAY_SECS
 /** The request never spans more than this many days, whatever the preset computes. */
 const MAX_RANGE_DAYS = 35
+/**
+ * The longest gap between two authoritative meter samples that still draws a
+ * line between them. A wider gap leaves the meter line null instead of
+ * guessing across a long silence.
+ */
+export const QUOTA_METER_INTERPOLATION_GAP_SECS = 3 * 60 * 60
 
 export type QuotaRangePreset = "thisWeek" | "lastWeek" | "last30Days"
 
@@ -166,6 +173,33 @@ function gapRow(t: number, topSessions: readonly QuotaTopSession[]): QuotaSeries
   return row
 }
 
+interface MeterSample {
+  observedAtEpoch: number
+  usedPercent: number
+}
+
+/**
+ * The meter's reading at `t`, from the period's own authoritative samples.
+ * Interpolates linearly between the two samples bracketing `t` when they are
+ * at most `QUOTA_METER_INTERPOLATION_GAP_SECS` apart. Returns null before
+ * the first sample, after the last sample, and across a wider gap.
+ */
+function meterAt(t: number, samples: readonly MeterSample[]): number | null {
+  let prev: MeterSample | null = null
+  let next: MeterSample | null = null
+  for (const sample of samples) {
+    if (sample.observedAtEpoch <= t) prev = sample
+    if (sample.observedAtEpoch >= t && !next) next = sample
+  }
+  if (prev && prev.observedAtEpoch === t) return prev.usedPercent
+  if (next && next.observedAtEpoch === t) return next.usedPercent
+  if (!prev || !next) return null
+  const gap = next.observedAtEpoch - prev.observedAtEpoch
+  if (gap > QUOTA_METER_INTERPOLATION_GAP_SECS) return null
+  const fraction = (t - prev.observedAtEpoch) / gap
+  return prev.usedPercent + (next.usedPercent - prev.usedPercent) * fraction
+}
+
 /**
  * One period's rows: a zero row at its visible start, one row per bucket
  * that carries a contribution, a final-total row just before the reset, and
@@ -220,6 +254,15 @@ function periodRows(
   let bucketPointer = 0
   const unattributedPercent = period.unattributed.percent
   const span = Math.max(1, reset - start)
+  const authoritativeSamples: MeterSample[] = period.samples
+    .filter(
+      (sample): sample is QuotaSamplePayload & { usedPercent: number } =>
+        sample.authoritative &&
+        sample.usedPercent != null &&
+        sample.observedAtEpoch >= start &&
+        sample.observedAtEpoch < reset,
+    )
+    .sort((left, right) => left.observedAtEpoch - right.observedAtEpoch)
 
   const rows: QuotaSeriesRow[] = []
   for (const t of sortedPoints) {
@@ -240,13 +283,10 @@ function periodRows(
       }
       bucketPointer += 1
     }
-    const meterSample = period.samples.find(
-      (sample) => sample.authoritative && sample.observedAtEpoch === t,
-    )
     const row: QuotaSeriesRow = {
       t,
       index: 0,
-      meter: meterSample ? meterSample.usedPercent : null,
+      meter: meterAt(t, authoritativeSamples),
       other: hasFactor ? otherCumulative : null,
       unattributed:
         hasFactor && unattributedPercent != null

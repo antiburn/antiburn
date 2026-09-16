@@ -10,6 +10,7 @@ import {
   quotaBurnupSeries,
   quotaLatestPeriod,
   quotaLatestSampleEpoch,
+  QUOTA_METER_INTERPOLATION_GAP_SECS,
   quotaSessionKey,
   quotaTopSessionRows,
   quotaUnattributedTotal,
@@ -212,19 +213,37 @@ describe("quotaBurnupSeries", () => {
     expect(finalRow.unattributed).toBeGreaterThan(7.9)
   })
 
-  it("breaks the meter line where there is no reading", () => {
+  it("interpolates the meter between two readings ten minutes apart", () => {
     const start = 0
     const reset = 2 * BUCKET
     const p = period({
       startsAtEpoch: start,
       resetsAtEpoch: reset,
-      samples: [{ observedAtEpoch: BUCKET, usedPercent: 42, fresh: true, authoritative: true }],
+      samples: [
+        { observedAtEpoch: 600, usedPercent: 20, fresh: true, authoritative: true },
+        { observedAtEpoch: 1200, usedPercent: 40, fresh: true, authoritative: true },
+      ],
     })
     const series = quotaBurnupSeries(usage([p]), start, reset)
-    const withReading = series.rows.find((row) => row.t === BUCKET)!
-    expect(withReading.meter).toBe(42)
-    const withoutReading = series.rows.filter((row) => row.t !== BUCKET)
-    expect(withoutReading.every((row) => row.meter === null)).toBe(true)
+    const gridRow = series.rows.find((row) => row.t === BUCKET)!
+    expect(gridRow.meter).toBeCloseTo(30, 5)
+  })
+
+  it("leaves the meter null across a gap wider than three hours", () => {
+    const start = 0
+    const gap = 2 * QUOTA_METER_INTERPOLATION_GAP_SECS
+    const reset = BUCKET + gap + BUCKET
+    const p = period({
+      startsAtEpoch: start,
+      resetsAtEpoch: reset,
+      samples: [
+        { observedAtEpoch: BUCKET, usedPercent: 10, fresh: true, authoritative: true },
+        { observedAtEpoch: BUCKET + gap, usedPercent: 90, fresh: true, authoritative: true },
+      ],
+    })
+    const series = quotaBurnupSeries(usage([p]), start, reset)
+    const midRow = series.rows.find((row) => row.t === BUCKET + gap / 2)!
+    expect(midRow.meter).toBeNull()
   })
 
   it("ignores a non-authoritative sample for the meter line", () => {
