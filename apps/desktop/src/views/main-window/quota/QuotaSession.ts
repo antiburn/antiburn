@@ -217,6 +217,13 @@ export class QuotaSession {
       return
     }
     this.loadAccounts()
+    // A caller outside the Quota screen (a session detail row's `open`) may
+    // have set a selection and queued a usage load while this session was
+    // inactive, and `loadUsage` returned early without starting it. A
+    // custom range ignores the lane lookup, so it can run before accounts
+    // arrive; with no selection yet there is nothing to resolve, so this
+    // only fires once `open` (or an earlier active load) has set one.
+    if (this.usageDirty && this.snapshot.selection) this.loadUsage()
   }
 
   /** Resolve the account and lane to use after accounts load: keep the current
@@ -304,16 +311,21 @@ export class QuotaSession {
       const payload = await this.adapter.getAccounts()
       if (work !== this.workVersion || version !== this.accountsVersion) return
       const selection = this.resolveSelection(payload.accounts)
+      const unchanged = selection != null && selectionEquals(selection, previousSelection)
       this.update({
         accounts: payload.accounts,
         accountsError: false,
         selection,
-        loading: selection != null,
+        // An unchanged selection leaves `loading` to whatever usage load is
+        // already running for it (started here, or already in flight from
+        // elsewhere), so this never resurrects "loading" after that load
+        // already finished.
+        ...(unchanged ? {} : { loading: selection != null }),
       })
       // Load usage only when the selection actually changed. A reload that
       // confirms the same account and lane leaves any in-flight or already
       // coalesced usage refresh to run on its own trigger.
-      if (selection && !selectionEquals(selection, previousSelection)) this.loadUsage()
+      if (selection && !unchanged) this.loadUsage()
       else if (!selection) this.update({ loading: false })
     } catch {
       if (work === this.workVersion && version === this.accountsVersion) {

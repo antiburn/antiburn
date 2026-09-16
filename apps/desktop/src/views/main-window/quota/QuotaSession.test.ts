@@ -219,6 +219,41 @@ describe("QuotaSession", () => {
     stop()
   })
 
+  it("loads the custom range from an inactive open once the session becomes active", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribeInactive(() => undefined)
+    await vi.waitFor(() => expect(adapter.getVisible).toHaveBeenCalled())
+    expect(adapter.getAccounts).not.toHaveBeenCalled()
+
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-opened"))
+    session.open(
+      { provider: "anthropic", accountKey: "acct-1", lane: "fiveHour" },
+      { startEpoch: 1000, endEpoch: 2000 },
+    )
+    // Nothing loads while inactive: `open` only records the selection and
+    // range, and queues the usage load for later.
+    expect(adapter.getUsage).not.toHaveBeenCalled()
+    expect(session.getSnapshot().range).toEqual({
+      kind: "custom",
+      startEpoch: 1000,
+      endEpoch: 2000,
+    })
+
+    const stopActive = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-opened"))
+    const request = vi.mocked(adapter.getUsage).mock.calls.at(-1)![0]
+    expect(request).toMatchObject({
+      provider: "anthropic",
+      accountKey: "acct-1",
+      lane: "fiveHour",
+      rangeStartEpoch: 1000,
+      rangeEndEpoch: 2000,
+    })
+    stopActive()
+    stop()
+  })
+
   it("keeps the last good usage and flags usageError on a failed usage load", async () => {
     const { adapter, session } = setup()
     sessions.push(session)
