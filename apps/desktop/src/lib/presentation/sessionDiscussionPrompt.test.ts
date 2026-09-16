@@ -54,6 +54,7 @@ const payload: SessionAnalysisPayload = {
   orchestration: null,
   relations: null,
   sourcePath: "/tmp/synthetic/session.jsonl",
+  projectPath: null,
   startedAtEpoch: null,
   analysisPending: false,
   analysisStale: false,

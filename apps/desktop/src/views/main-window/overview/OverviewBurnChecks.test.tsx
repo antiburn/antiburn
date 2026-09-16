@@ -44,22 +44,19 @@ describe("OverviewBurnChecks", () => {
       />,
     )
     const panel = screen.getByRole("region", { name: "Burn checks" })
-    expect(within(panel).getByText("3 findings · 1 passed")).toBeVisible()
-    expect(within(panel).getByText("Less than 1% estimated burn")).toBeVisible()
-    // The gauge shows the burn share, floored to a trace, not the check count.
-    const burnArc = panel.querySelector('[data-segment-id="burn"]')
-    const restArc = panel.querySelector('[data-segment-id="rest"]')
-    expect(burnArc).not.toBeNull()
-    expect(Number(burnArc!.getAttribute("data-arc-angle"))).toBeLessThan(
-      Number(restArc!.getAttribute("data-arc-angle")) / 50,
-    )
+    // The header is the small label only: no dial, no result line, no estimate.
+    expect(within(panel).getByRole("heading", { name: "Checks" })).toBeVisible()
+    expect(within(panel).queryByText(/estimated burn/i)).toBeNull()
+    expect(within(panel).queryByText(/findings · /)).toBeNull()
+    expect(panel.querySelector("[data-segment-id]")).toBeNull()
     const rows = within(panel).getAllByRole("listitem")
     expect(rows).toHaveLength(2)
     expect(rows[0]).toHaveTextContent("Excess cache rehydration4 sessions")
     expect(rows[1]).toHaveTextContent("Unused MCP servers12 sessions")
-    fireEvent.click(within(panel).getByRole("button", { name: /^Open Burn checks/ }))
-    fireEvent.click(within(rows[0]!).getByRole("button"))
-    expect(onOpen).toHaveBeenCalledTimes(2)
+    // The link and every row open the full section.
+    fireEvent.click(within(panel).getByRole("button", { name: "All checks" }))
+    for (const row of rows) fireEvent.click(within(row).getByRole("button"))
+    expect(onOpen).toHaveBeenCalledTimes(3)
   })
 
   it("shows one positive line when every check passed", () => {
@@ -70,9 +67,10 @@ describe("OverviewBurnChecks", () => {
       />,
     )
     const panel = screen.getByRole("region", { name: "Burn checks" })
-    expect(within(panel).getByText("All 2 checks passed")).toBeVisible()
     expect(within(panel).getByText("Nothing to review right now.")).toBeVisible()
     expect(within(panel).queryByRole("list")).toBeNull()
+    // The header keeps the way into the full section when no row does.
+    expect(within(panel).getByRole("button", { name: "All checks" })).toBeVisible()
   })
 
   it("never shows an unsettled report as zero findings", () => {
@@ -86,7 +84,6 @@ describe("OverviewBurnChecks", () => {
       />,
     )
     const panel = screen.getByRole("region", { name: "Burn checks" })
-    expect(within(panel).getByText("Assessing sessions")).toBeVisible()
     expect(within(panel).getByText("Results appear when the scan finishes.")).toBeVisible()
     expect(within(panel).queryByText(/0 findings|passed/)).toBeNull()
   })
@@ -96,5 +93,6 @@ describe("OverviewBurnChecks", () => {
     const panel = screen.getByRole("region", { name: "Burn checks" })
     expect(panel).toHaveAttribute("aria-busy", "true")
     expect(within(panel).queryByText(/finding|passed|Assessing/)).toBeNull()
+    expect(within(panel).queryByRole("listitem")).toBeNull()
   })
 })

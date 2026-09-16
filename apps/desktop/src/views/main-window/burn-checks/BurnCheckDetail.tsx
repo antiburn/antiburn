@@ -2,7 +2,6 @@ import { Check, Clipboard, Wrench } from "lucide-react"
 import { useCallback, useRef, useState } from "react"
 
 import { cn } from "../../../lib/cn"
-import { Tooltip } from "../../../components/presentation/Tooltip"
 import { noteInteraction } from "../../../lib/ipc"
 import { writeClipboardText } from "../../../lib/clipboard"
 import {
@@ -10,10 +9,11 @@ import {
   copyPromptFixBurnCheck,
   type BurnCheckDetectorId,
   type BurnCheckTargetPayload,
+  type BurnCheckSamplePayload,
 } from "../../../lib/insightsIpc"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
 import { RemindLaterAction } from "./RemindLaterAction"
-import { SampleSessions, watchStatus } from "./BurnCheckTargetPresentation"
+import { FailedSessions, watchStatus } from "./BurnCheckTargetPresentation"
 import { BurnCheckTargetChooserDialog } from "./BurnCheckTargetChooserDialog"
 
 export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
@@ -28,37 +28,23 @@ export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   cacheChurn: "Some sessions kept paying to reload the same context.",
 }
 
-function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
-  const samples = Array.from(
-    new Map(
-      targets
-        .flatMap((target) => target.samples)
-        .map((sample) => [sample.navigationHandle, sample]),
-    ).values(),
-  ).slice(0, 3)
-  return <SampleSessions samples={samples} />
-}
-
 export function CheckPromptAction({
   detector,
   targets,
   refresh,
-  comingSoon = false,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
   refresh: () => void
-  comingSoon?: boolean
 }) {
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const [prompt, setPrompt] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const promptTargets = targets.filter((target) => target.promptFix.status === "available")
-  const currentKey =
-    targets.length === 0
-      ? `fallback:${detector}`
-      : promptTargets.map((target) => target.actionId).join(":")
+  const currentKey = promptTargets.length
+    ? promptTargets.map((target) => target.actionId).join(":")
+    : `fallback:${detector}`
   const key = useRef("")
   const copiedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleCopiedReset = (startedKey: string) => {
@@ -88,11 +74,11 @@ export function CheckPromptAction({
     try {
       if (nextPrompt === null) {
         const outcome =
-          targets.length === 0
-            ? await copyPromptFixBurnCheck(detector)
-            : await copyPromptFixBurnCheckTargets(
+          promptTargets.length > 0
+            ? await copyPromptFixBurnCheckTargets(
                 promptTargets.map((target) => target.actionId),
               )
+            : await copyPromptFixBurnCheck(detector)
         noteInteraction({
           kind: "burnCheckPromptPrepared",
           outcome:
@@ -131,21 +117,6 @@ export function CheckPromptAction({
           : "Could not copy the prompt. Try again.",
       )
     }
-  }
-  if (targets.length > 0 && promptTargets.length === 0) return null
-  if (comingSoon) {
-    return (
-      <Tooltip label="Coming soon" side="bottom">
-        <button
-          type="button"
-          aria-disabled="true"
-          className="burn-check-action type-callout gap-1"
-        >
-          <Clipboard size={12} aria-hidden="true" />
-          Copy fix prompt
-        </button>
-      </Tooltip>
-    )
   }
   return (
     <div ref={bindKey}>
@@ -216,25 +187,22 @@ export function CheckDetailActions({
   targets,
   refresh,
   reportRow = false,
-  snoozed = false,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
   refresh: () => void
   reportRow?: boolean
-  snoozed?: boolean
 }) {
   return (
     <div className="flex flex-wrap items-start gap-2">
-      {reportRow && !snoozed && <RemindLaterAction detector={detector} />}
+      {reportRow && <RemindLaterAction detector={detector} />}
+      <FixAction targets={targets} refresh={refresh} />
       <CheckPromptAction
-        comingSoon={reportRow}
         key={targets.map((target) => target.actionId).join(":")}
         detector={detector}
         targets={targets}
         refresh={refresh}
       />
-      <FixAction targets={targets} refresh={refresh} />
     </div>
   )
 }
@@ -242,12 +210,16 @@ export function CheckDetailActions({
 export function BurnCheckDetail({
   detector,
   targets,
+  samples,
+  failedSessionCount,
   refresh,
   contained = false,
   reportRow = false,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
+  samples: BurnCheckSamplePayload[]
+  failedSessionCount: number
   refresh: () => void
   contained?: boolean
   reportRow?: boolean
@@ -277,7 +249,12 @@ export function BurnCheckDetail({
           {statuses[0]}
         </p>
       )}
-      <Samples targets={targets} />
+      {reportRow && failedSessionCount > 0 && (
+        <p className="mt-1 type-callout tabular-nums text-label-secondary">
+          {`${failedSessionCount} ${failedSessionCount === 1 ? "session" : "sessions"} affected`}
+        </p>
+      )}
+      <FailedSessions samples={samples} total={failedSessionCount} />
     </article>
   )
 }

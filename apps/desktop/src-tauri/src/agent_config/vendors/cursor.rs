@@ -74,48 +74,6 @@ impl VendorConfig for Cursor {
     }
 
     #[cfg(not(windows))]
-    fn resolve_targets(
-        &self,
-        setting: ConfigSetting,
-        home: &Path,
-        workspace_cwd: Option<&Path>,
-        trusted_workspace_root: Option<&Path>,
-    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
-        let primary = self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)?;
-        let operation = OperationSelector::JsonKey("model");
-        let mut targets = vec![primary];
-        for (path, safety_root, scope) in [
-            (
-                home.join(".cursor/cli-config.json"),
-                home.to_owned(),
-                ConfigScope::Global,
-            ),
-            (
-                trusted_workspace_root
-                    .map(|root| root.join(".cursor/cli.json"))
-                    .unwrap_or_default(),
-                trusted_workspace_root.unwrap_or(home).to_owned(),
-                ConfigScope::Project,
-            ),
-        ] {
-            if path_entry_exists(&path)?
-                && !targets.iter().any(|target| target.path == path)
-                && self
-                    .read_value(&read_checked(&path, &safety_root)?.bytes, &operation)?
-                    .is_some()
-            {
-                targets.push(Target {
-                    path,
-                    safety_root,
-                    scope,
-                    operation: operation.clone(),
-                });
-            }
-        }
-        Ok(targets)
-    }
-
-    #[cfg(not(windows))]
     fn standalone_global(
         &self,
         setting: ConfigSetting,

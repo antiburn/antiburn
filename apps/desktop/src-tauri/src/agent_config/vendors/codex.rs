@@ -160,47 +160,6 @@ impl VendorConfig for Codex {
     }
 
     #[cfg(not(windows))]
-    fn resolve_targets(
-        &self,
-        setting: ConfigSetting,
-        home: &Path,
-        workspace_cwd: Option<&Path>,
-        trusted_workspace_root: Option<&Path>,
-    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
-        let primary = self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)?;
-        if setting == ConfigSetting::FastMode {
-            return Ok(vec![primary]);
-        }
-        let operation = selector(setting);
-        let mut targets = vec![primary];
-        let global = home.join(".codex/config.toml");
-        if path_entry_exists(&global)? && !targets.iter().any(|target| target.path == global) {
-            targets.push(Target {
-                path: global,
-                safety_root: home.to_owned(),
-                scope: ConfigScope::Global,
-                operation: operation.clone(),
-            });
-        }
-        if let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root)
-            && project_is_trusted(&home.join(".codex/config.toml"), home, root)?
-        {
-            for directory in project_hierarchy(cwd, root)? {
-                let path = directory.join(".codex/config.toml");
-                if path_entry_exists(&path)? && !targets.iter().any(|target| target.path == path) {
-                    targets.push(Target {
-                        path,
-                        safety_root: root.to_owned(),
-                        scope: ConfigScope::Project,
-                        operation: operation.clone(),
-                    });
-                }
-            }
-        }
-        Ok(targets)
-    }
-
-    #[cfg(not(windows))]
     fn standalone_global(
         &self,
         setting: ConfigSetting,

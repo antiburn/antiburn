@@ -47,9 +47,7 @@ use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
 use crate::popover;
 use crate::provider_usage;
-use crate::remediation::{
-    BurnCheckSampleSession, BurnCheckTargetContext, ControllerError, RemediationController,
-};
+use crate::remediation::{BurnCheckTargetContext, ControllerError, RemediationController};
 use crate::repositories;
 use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
@@ -1336,6 +1334,7 @@ fn session_analysis(
         relations: (!relations.is_empty()).then_some(relations),
         started_at_epoch: analysis.started_at_epoch,
         source_path: stored_source_path(stored.as_ref()),
+        project_path: stored_project_path(stored.as_ref()),
         analysis_pending,
         analysis_stale,
     })
@@ -1348,6 +1347,14 @@ fn stored_source_path(stored: Option<&SessionRecord>) -> Option<String> {
     stored
         .filter(|record| record.source_kind == "file")
         .map(|record| record.source_label.clone())
+}
+
+/// Keep the recorded path available when a worktree no longer exists.
+fn stored_project_path(stored: Option<&SessionRecord>) -> Option<String> {
+    stored
+        .and_then(|record| record.cwd.as_ref())
+        .filter(|path| Path::new(path).is_absolute())
+        .cloned()
 }
 
 /// One sub-agent's own analysis, opened from the roster.
@@ -1418,6 +1425,7 @@ fn subagent_analysis(
         relations: None,
         started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
+        project_path: None,
         analysis_pending,
         analysis_stale,
     })
@@ -1598,9 +1606,8 @@ fn insights_report_request(now_epoch: i64) -> ReportRequest {
     // reduction queries are pinned to single-scope semantics, and
     // detector statuses cannot be recombined from two finished reports
     // (clean and not-assessed do not merge). On macOS and Linux the
-    // native scope is total, so nothing is excluded there. Per-environment
-    // reports for Windows hosts with WSL sessions are a recorded
-    // follow-up in docs/plans/local-insights-followups.md.
+    // native scope is total, so nothing is excluded there. Windows hosts
+    // do not have separate reports for each WSL environment.
     ReportRequest {
         environment_key: environment_key(None),
         window: antiburn_local::insights::ReportWindow {
@@ -1745,41 +1752,39 @@ pub async fn list_burn_check_targets(
                 },
             )
             .map_err(|_| "unable to list burn check targets".to_owned())?;
-        let mut sample_identities = BTreeSet::new();
-        let samples = list
-            .targets
-            .iter()
-            .map(|target| {
-                let unique_samples =
-                    unique_sample_sessions(&target.sample_sessions, &mut sample_identities);
-                crate::main_window::sample_payloads(&app, &unique_samples)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut payload: BurnCheckTargetListPayload = list.into();
-        for (target, samples) in payload.targets.iter_mut().zip(samples) {
-            target.samples = samples;
-        }
-        Ok(payload)
+        burn_check_target_list_payload(
+            &app.state::<crate::main_window::MainWindowState>(),
+            &app.state::<Store>(),
+            list,
+            epoch_now(),
+        )
     })
     .await
     .map_err(|_| "unable to list burn check targets".to_owned())?
 }
 
-fn unique_sample_sessions(
-    samples: &[BurnCheckSampleSession],
-    seen: &mut BTreeSet<(String, String, String)>,
-) -> Vec<BurnCheckSampleSession> {
-    samples
+fn burn_check_target_list_payload(
+    state: &crate::main_window::MainWindowState,
+    store: &Store,
+    list: crate::remediation::BurnCheckTargetList,
+    now: i64,
+) -> CommandResult<BurnCheckTargetListPayload> {
+    let repositories = store.repositories().map_err(fail)?;
+    let enrich = |samples: &[crate::remediation::BurnCheckSampleSession]| {
+        crate::main_window::sample_payloads_from_store(state, store, &repositories, samples, now)
+    };
+    let check_samples = enrich(&list.sample_sessions)?;
+    let samples = list
+        .targets
         .iter()
-        .filter(|sample| {
-            seen.insert((
-                sample.environment_key.clone(),
-                sample.agent.clone(),
-                sample.session_id.clone(),
-            ))
-        })
-        .cloned()
-        .collect()
+        .map(|target| enrich(&target.sample_sessions))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut payload: BurnCheckTargetListPayload = list.into();
+    payload.samples = check_samples;
+    for (target, samples) in payload.targets.iter_mut().zip(samples) {
+        target.samples = samples;
+    }
+    Ok(payload)
 }
 
 fn prepare_auto_fix_outcome(
@@ -1980,7 +1985,7 @@ pub async fn copy_prompt_fix_burn_check_target(
     Ok(outcome)
 }
 
-/// Returns a bounded generic prompt only when a failed check has no exact target.
+/// Returns a bounded generic prompt when no exact prompt target is available.
 #[tauri::command]
 pub async fn copy_prompt_fix_burn_check(
     window: tauri::WebviewWindow,
@@ -2205,7 +2210,7 @@ fn hygiene_payload_from_prior_evidence(
     ))
 }
 
-fn session_hygiene_payload(
+pub(crate) fn session_hygiene_payload(
     row: Option<crate::store::EvidenceRow>,
     source_generation: Option<i64>,
 ) -> SessionHygienePayload {
@@ -2754,6 +2759,28 @@ pub fn reveal_source(app: tauri::AppHandle, path: String) -> CommandResult<()> {
     app.opener().reveal_item_in_dir(target).map_err(fail)
 }
 
+/// Open an existing directory in the system file manager.
+#[tauri::command]
+pub async fn open_project_folder(app: tauri::AppHandle, path: String) -> CommandResult<()> {
+    run_blocking(move || {
+        let target = project_directory(&path)?;
+        let target = target
+            .into_os_string()
+            .into_string()
+            .map_err(|_| "The project path is not valid Unicode".to_string())?;
+        app.opener().open_path(target, None::<&str>).map_err(fail)
+    })
+    .await
+}
+
+fn project_directory(path: &str) -> CommandResult<PathBuf> {
+    let target = revealable_path(path)?;
+    if !target.is_dir() {
+        return Err("The project path is not a directory".into());
+    }
+    Ok(target)
+}
+
 /// Validate and resolve a path before it is handed to the platform opener.
 ///
 /// Absolute, existing, and canonical — in that order. Relative paths are
@@ -2837,26 +2864,203 @@ mod tests {
     }
 
     #[test]
-    fn sample_sessions_are_unique_across_a_combined_target_list() {
-        let sample = |session_id: &str| BurnCheckSampleSession {
-            environment_key: "native".to_owned(),
-            agent: "codex".to_owned(),
-            session_id: session_id.to_owned(),
-            observed_at_ms: 1,
+    fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent() {
+        use crate::remediation::{
+            AutoFixAvailability, BurnCheckDisplayFacts, BurnCheckResourceKind,
+            BurnCheckSampleSession, BurnCheckScopeKind, BurnCheckTarget, BurnCheckTargetList,
+            BurnCheckVerificationLimit, PromptFixAvailability,
         };
-        let mut seen = BTreeSet::new();
+        use crate::store::{AnalysisRecord, EvidenceCompletion, PublishedEvidence};
+        use antiburn_local::analysis::SourceFormat;
+        use antiburn_local::insights::DetectorId;
+        use antiburn_local::model::AgentKind;
+        use antiburn_local::remediation::{DisplayFacts, FindingDisplay};
 
-        let first = unique_sample_sessions(&[sample("one"), sample("two")], &mut seen);
-        let second = unique_sample_sessions(&[sample("two"), sample("three")], &mut seen);
-
-        assert_eq!(first.len(), 2);
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-check-payload-test")).unwrap();
+        let state = crate::main_window::MainWindowState::load(&store);
+        let agents = [
+            "claude-code",
+            "claude-code",
+            "claude-code",
+            "codex",
+            "codex",
+            "codex",
+        ];
+        let mut samples = Vec::new();
+        for (index, agent) in agents.into_iter().enumerate() {
+            let mut record = session_record("file", "/synthetic/private-source.jsonl");
+            record.key = SessionKey::new("native", agent, format!("private-session-{index}"));
+            record.title = Some(format!("Review {index}"));
+            record.cwd = Some("/synthetic/demo".into());
+            record.updated_at_epoch = Some(990 - index as i64);
+            record.source_fingerprint = Some(format!("fingerprint-{index}"));
+            store
+                .upsert_sessions(
+                    std::slice::from_ref(&record),
+                    &crate::agents::evidence_cohort(),
+                )
+                .unwrap();
+            let claim = store
+                .claim_next_evidence(&[agent], 1000, 60)
+                .unwrap()
+                .unwrap();
+            assert_eq!(claim.key, record.key);
+            let tokens = ModelTokens {
+                input_tokens: 1000,
+                output_tokens: 100,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
+            };
+            let breakdown =
+                serde_json::to_string(&HashMap::from([("claude-sonnet-5", tokens)])).unwrap();
+            let mut evidence = synthetic_evidence();
+            evidence.identity.agent = agent.into();
+            evidence.identity.session_id = record.key.session_id.clone();
+            assert!(
+                store
+                    .publish_projections(
+                        &AnalysisRecord {
+                            key: record.key.clone(),
+                            model_breakdown_json: breakdown.clone(),
+                            pricing_breakdown_json: breakdown,
+                            inclusive_models_json: "[]".into(),
+                            initial_context_json: None,
+                            source_summaries_json: None,
+                            provider_hints_json: None,
+                            source_fingerprint: record.source_fingerprint.clone().unwrap(),
+                            pricing_generation: 0,
+                            analyzed_generation: claim.source_generation,
+                            parser_revision: PARSER_REVISION,
+                            analyzer_revision: ANALYZER_REVISION,
+                            metrics_schema_revision: 0,
+                        },
+                        None,
+                        &EvidenceCompletion {
+                            claim_fence: claim.claim_fence,
+                            status: PublishedEvidence::Ready,
+                            evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+                            evidence_json: serde_json::to_string(&evidence).unwrap(),
+                        },
+                        &[],
+                        &[],
+                    )
+                    .unwrap()
+            );
+            samples.push(BurnCheckSampleSession {
+                environment_key: record.key.environment_key,
+                agent: record.key.agent,
+                session_id: record.key.session_id,
+                observed_at_ms: 990_000 - index as i64,
+            });
+        }
+        let target = BurnCheckTarget {
+            finding_id: "finding".into(),
+            action_id: "action".into(),
+            finding: FindingDisplay {
+                detector: DetectorId::SessionsOverDepth,
+                agent: AgentKind::Claude,
+                source_format: SourceFormat::ClaudeJsonl,
+                observation: "Long session".into(),
+                facts: DisplayFacts {
+                    labels: Vec::new(),
+                    omitted: 0,
+                },
+            },
+            display: BurnCheckDisplayFacts {
+                resource_kind: BurnCheckResourceKind::Session,
+                resource_identity: None,
+                current_value: None,
+                replacement_value: None,
+                scope_kind: BurnCheckScopeKind::Session,
+                quantity: None,
+                quantity_unit: None,
+                observation_count: 3,
+                first_observed_at_ms: 1,
+                last_observed_at_ms: 990_000,
+                estimate_method: None,
+                estimated_opportunity: None,
+                verification_limit: BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix,
+            },
+            occurrences: 3,
+            affected_sessions: 3,
+            project_name: None,
+            project_location: None,
+            project_path: None,
+            auto_fix: AutoFixAvailability::Unavailable(
+                crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
+            ),
+            prompt_fix: PromptFixAvailability::Available,
+            watch: None,
+            coverage_limits: Vec::new(),
+            sample_sessions: samples[..3].to_vec(),
+            expires_at_epoch: 1600,
+        };
+        let mut overlapping_target = target.clone();
+        overlapping_target.sample_sessions = vec![samples[0].clone()];
+        let payload = burn_check_target_list_payload(
+            &state,
+            &store,
+            BurnCheckTargetList {
+                targets: vec![target, overlapping_target],
+                sample_sessions: samples,
+                truncated: false,
+            },
+            1000,
+        )
+        .unwrap();
+        assert_eq!(payload.samples.len(), 6);
         assert_eq!(
-            second
+            payload
+                .samples
                 .iter()
-                .map(|sample| sample.session_id.as_str())
+                .map(|sample| sample.agent.as_str())
                 .collect::<Vec<_>>(),
-            vec!["three"]
+            [
+                "claude-code",
+                "claude-code",
+                "claude-code",
+                "codex",
+                "codex",
+                "codex"
+            ]
         );
+        assert_eq!(payload.targets[0].samples.len(), 3);
+        assert!(
+            payload.targets[0]
+                .samples
+                .iter()
+                .all(|sample| sample.agent == "claude-code")
+        );
+        assert_eq!(payload.targets[1].samples.len(), 1);
+        assert_eq!(
+            payload.samples[0].navigation_handle,
+            payload.targets[1].samples[0].navigation_handle
+        );
+        for sample in &payload.samples {
+            assert!(sample.title.starts_with("Review "));
+            assert_eq!(sample.repo, "demo");
+            assert!(sample.is_active);
+            assert!(!sample.timestamp.is_empty());
+            assert!(sample.cost.is_some());
+            assert!(!sample.models.is_empty());
+            assert_eq!(sample.hygiene.evidence_state, "ready");
+            assert!(
+                state
+                    .resolve_sample_handle(&sample.navigation_handle, std::time::Instant::now())
+                    .is_ok()
+            );
+        }
+        let encoded = serde_json::to_string(&payload).unwrap();
+        for private in [
+            "sessionId",
+            "environmentKey",
+            "wslDistro",
+            "/synthetic/",
+            "private-session-",
+        ] {
+            assert!(!encoded.contains(private), "the payload exposes {private}");
+        }
     }
 
     #[test]
@@ -3071,6 +3275,24 @@ mod tests {
             fork_parent_session_id: None,
             source_fingerprint: None,
         }
+    }
+
+    #[test]
+    fn stored_project_path_preserves_missing_worktrees_and_ignores_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("missing worktree")
+            .to_string_lossy()
+            .into_owned();
+        let mut record = session_record("file", "/transcript/session.jsonl");
+        record.cwd = Some(path.clone());
+        assert_eq!(stored_project_path(Some(&record)), Some(path));
+        record.cwd = Some("relative/project".into());
+        assert_eq!(stored_project_path(Some(&record)), None);
+        record.cwd = None;
+        assert_eq!(stored_project_path(Some(&record)), None);
+        assert_eq!(stored_project_path(None), None);
     }
 
     #[test]
@@ -3743,6 +3965,42 @@ mod tests {
                 "the fixture must price the fast tier differently for this test to mean anything"
             );
             assert_eq!(weekly.percent, fast_cost.total_usd / 2.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod project_folder_tests {
+    use super::*;
+
+    #[test]
+    fn project_directory_accepts_directories_and_rejects_other_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(project_directory(dir.path().to_str().unwrap()).is_ok());
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "fixture").unwrap();
+        assert!(project_directory(file.to_str().unwrap()).is_err());
+        assert!(project_directory(dir.path().join("missing").to_str().unwrap()).is_err());
+        for path in ["", "relative/folder", "https://example.com", "file:///tmp"] {
+            assert!(project_directory(path).is_err());
+        }
+    }
+
+    #[test]
+    fn project_folder_analytics_rejects_path_fields_and_unknown_values() {
+        use crate::analytics::event::Interaction;
+        for value in [
+            serde_json::json!({"kind":"projectFolderAction","action":"open","outcome":"succeeded"}),
+            serde_json::json!({"kind":"projectFolderAction","action":"copy","outcome":"failed"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_ok());
+        }
+        for value in [
+            serde_json::json!({"kind":"projectFolderAction","action":"open","outcome":"succeeded","path":"/private/work"}),
+            serde_json::json!({"kind":"projectFolderAction","action":"delete","outcome":"succeeded"}),
+            serde_json::json!({"kind":"projectFolderAction","action":"copy","outcome":"unknown"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_err());
         }
     }
 }

@@ -117,6 +117,8 @@ export interface SessionAnalysisPayload {
   relations: SessionRelationsPayload | null
   /** The provider's own transcript, for the reveal action. */
   sourcePath: string | null
+  /** The stored absolute working directory. */
+  projectPath: string | null
   /** Unix seconds of this session's own first transcript event, or null when
    * unknown. The sub-agent roster uses it to show each member's start as
    * elapsed time from the session start. */

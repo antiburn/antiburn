@@ -1670,9 +1670,7 @@ impl Store {
     /// stale rows a build with the old revisions left behind are decided at
     /// read time, so a bumped build simply never resumes from them; this
     /// sweeps them out so they do not sit unused. Call this from the same
-    /// startup path that calls [`Self::reconcile_evidence_revisions`]. See
-    /// "R6. Invalidation" in the phase 3b design rules in
-    /// `docs/plans/continuous-session-ingest.md`.
+    /// startup path that calls [`Self::reconcile_evidence_revisions`].
     pub fn purge_stale_source_resume(&self, current: ResumeRevisions) -> Result<usize> {
         let connection = self.lock();
         Ok(delete_stale_source_resume(&connection, &current)?)
@@ -1960,9 +1958,7 @@ impl Store {
     /// next pass. A source with no entry is treated as
     /// [`SourcePublishMode::Full`] with no resume bookkeeping; a caller
     /// that never claims resume support for any source passes an empty
-    /// slice and gets a plain full publish. See "R4. Fence semantics" and
-    /// "R5. Snapshot storage" in the phase 3b design rules in
-    /// `docs/plans/continuous-session-ingest.md`.
+    /// slice and gets a plain full publish.
     pub fn publish_projections(
         &self,
         record: &AnalysisRecord,

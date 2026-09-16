@@ -122,6 +122,7 @@ struct CachedTarget {
 #[derive(Clone)]
 struct CachedConfig {
     context: ConfigContext,
+    additional_contexts: Vec<ConfigContext>,
     operation: ConfigOperation,
     physical_key: String,
 }
@@ -204,6 +205,7 @@ impl RemediationController {
             },
         )
         .map_err(|_| ControllerError::Internal)?;
+        let check_samples = sample_sessions(&page.findings);
         let mut grouped: BTreeMap<String, CachedTarget> = BTreeMap::new();
         for finding in page.findings {
             let display = finding
@@ -213,7 +215,22 @@ impl RemediationController {
             let (group_key, target) = self.resolve_target(store, finding, display.agent, home)?;
             grouped
                 .entry(group_key)
-                .and_modify(|entry| entry.findings.extend(target.findings.clone()))
+                .and_modify(|entry| {
+                    entry.findings.extend(target.findings.clone());
+                    match (&mut entry.config, target.config.as_ref()) {
+                        (Some(existing), Some(incoming))
+                            if existing.operation == incoming.operation
+                                && existing.physical_key == incoming.physical_key =>
+                        {
+                            existing.additional_contexts.push(incoming.context.clone());
+                            existing
+                                .additional_contexts
+                                .extend(incoming.additional_contexts.clone());
+                        }
+                        (None, None) => {}
+                        _ => entry.config = None,
+                    }
+                })
                 .or_insert(target);
         }
         let truncated = page.truncated || grouped.len() > MAX_TARGETS;
@@ -247,24 +264,14 @@ impl RemediationController {
                 ),
             };
             let id = random_id().map_err(|_| ControllerError::Internal)?;
+            let target_samples = sample_sessions(&target.findings);
             targets.push(BurnCheckTarget {
                 finding_id: stable_finding_id(&target),
                 action_id: id.clone(),
                 finding: display,
                 display: display_facts,
                 occurrences: target.findings.len(),
-                affected_sessions: target
-                    .findings
-                    .iter()
-                    .map(|finding| {
-                        (
-                            &finding.environment_key,
-                            &finding.agent,
-                            &finding.session_id,
-                        )
-                    })
-                    .collect::<BTreeSet<_>>()
-                    .len(),
+                affected_sessions: target_samples.len(),
                 project_name: (target.scope_kind == "project")
                     .then(|| {
                         target.findings[0]
@@ -279,6 +286,13 @@ impl RemediationController {
                             .and_then(display::project_location)
                     })
                     .flatten(),
+                project_path: (target.scope_kind == "project")
+                    .then(|| {
+                        target.findings[0]
+                            .workspace_candidate()
+                            .and_then(display::project_path)
+                    })
+                    .flatten(),
                 auto_fix,
                 prompt_fix: match remediation_prompt(&target.findings[0].finding) {
                     Ok(_) => PromptFixAvailability::Available,
@@ -286,7 +300,7 @@ impl RemediationController {
                 },
                 watch,
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
-                sample_sessions: sample_sessions(&target.findings),
+                sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
             cached.push(TimedTarget {
@@ -305,7 +319,11 @@ impl RemediationController {
             }
             state.targets.push_back(entry);
         }
-        Ok(BurnCheckTargetList { targets, truncated })
+        Ok(BurnCheckTargetList {
+            targets,
+            sample_sessions: check_samples,
+            truncated,
+        })
     }
 
     #[cfg(all(test, not(windows)))]
@@ -384,18 +402,6 @@ impl RemediationController {
             return Err(ControllerError::CheckPromptUnavailable);
         };
         if findings.finding_sessions == 0 {
-            return Err(ControllerError::CheckPromptUnavailable);
-        }
-        let current = insights_report::list_current_findings(
-            &self.data_dir,
-            CurrentFindingsRequest {
-                environment_key: context.environment_key.clone(),
-                window: context.window,
-                detector,
-            },
-        )
-        .map_err(|_| ControllerError::Internal)?;
-        if !current.findings.is_empty() {
             return Err(ControllerError::CheckPromptUnavailable);
         }
         let paths = representative_paths(
@@ -558,6 +564,18 @@ impl RemediationController {
                 != scope_from_name(&target.scope_kind).ok_or(ControllerError::TargetChanged)?
         {
             return Err(ControllerError::TargetChanged);
+        }
+        for context in &config.additional_contexts {
+            if !self.prepared_context_matches(
+                store,
+                target.agent,
+                &target.scope_kind,
+                config,
+                context,
+                prepared.creates_file(),
+            )? {
+                return Err(ControllerError::TargetChanged);
+            }
         }
         let prepared_operation_id = random_id().map_err(|_| ControllerError::Internal)?;
         let retained_bytes = prepared.retained_bytes();
@@ -796,6 +814,7 @@ impl RemediationController {
             .provider_account_secret()
             .map_err(|_| ControllerError::Internal)?;
         let mut identity = target_identity(&secret, &finding, project_root.as_deref());
+        let attributed_physical_key = identity.physical_target_key.clone();
         let mut config = None;
         let operation = reviewed_config_operation(agent, finding.finding.cause());
         if let Some(home) = home
@@ -851,72 +870,75 @@ impl RemediationController {
                     .and_then(|effective| {
                         compaction_operation(finding.finding.cause(), &effective.value)
                     })
-            }) && let Ok(effective) = self.editor.effective_for_value(
-                &context,
-                operation.setting,
-                operation
-                    .expected_value
-                    .scalar()
-                    .or_else(|| operation.expected_value.key()),
-            ) && operation.expected_value.display_value() == effective.value
-            {
-                let selector_qualifier = physical_selector_qualifier(
-                    &self.editor,
+            }) {
+                let effective = self.editor.effective_for_value(
                     &context,
-                    effective.physical_identity().1,
-                );
-                let key = physical_key(
-                    store,
-                    agent,
-                    effective.physical_identity(),
-                    selector_qualifier.as_deref(),
-                )
-                .map_err(|_| ControllerError::Internal)?;
-                if matches!(
                     operation.setting,
-                    ConfigSetting::FastMode | ConfigSetting::McpServer | ConfigSetting::Skill
-                ) {
-                    identity.scope_kind = scope_name(effective.scope).to_owned();
-                    identity.scope_key = if effective.scope == ConfigScope::Global {
-                        key.clone()
+                    operation
+                        .expected_value
+                        .scalar()
+                        .or_else(|| operation.expected_value.key()),
+                );
+                if let Ok(effective) = effective
+                    && operation.expected_value.display_value() == effective.value
+                {
+                    let selector_qualifier = physical_selector_qualifier(
+                        &self.editor,
+                        &context,
+                        effective.physical_identity().1,
+                    );
+                    let key = physical_key(
+                        store,
+                        agent,
+                        effective.physical_identity(),
+                        selector_qualifier.as_deref(),
+                    )
+                    .map_err(|_| ControllerError::Internal)?;
+                    if let Some(attributed_key) = attributed_physical_key.as_ref() {
+                        if attributed_key == &key
+                            && identity.scope_kind == scope_name(effective.scope)
+                        {
+                            config = Some(CachedConfig {
+                                context: context.clone(),
+                                additional_contexts: Vec::new(),
+                                operation: operation.clone(),
+                                physical_key: key,
+                            });
+                        }
                     } else {
-                        identity
-                            .workspace_key
-                            .clone()
-                            .unwrap_or_else(|| key.clone())
-                    };
-                    identity.physical_target_key = Some(key.clone());
-                    identity.group_key = hashed_parts_with_secret(
-                        &secret,
-                        TARGET_DOMAIN,
-                        &[
-                            &finding.environment_key,
-                            agent.slug(),
-                            &identity.scope_kind,
-                            &identity.scope_key,
+                        bind_current_config_identity(
+                            &mut identity,
+                            &secret,
+                            &finding,
+                            agent,
+                            effective.scope,
                             &key,
-                            &identity.canonical_identity,
-                        ],
-                    );
-                    identity.target_key = hashed_parts_with_secret(
+                        );
+                        config = Some(CachedConfig {
+                            context: context.clone(),
+                            additional_contexts: Vec::new(),
+                            operation: operation.clone(),
+                            physical_key: key,
+                        });
+                    }
+                } else if attributed_physical_key.is_none()
+                    && operation.setting == ConfigSetting::BuiltInTool
+                    && let Ok(prepared) = self.editor.prepare_operation(&context, &operation)
+                    && prepared.creates_file()
+                {
+                    let key = physical_key(store, agent, prepared.physical_identity(), None)
+                        .map_err(|_| ControllerError::Internal)?;
+                    bind_current_config_identity(
+                        &mut identity,
                         &secret,
-                        TARGET_DOMAIN,
-                        &[
-                            &finding.environment_key,
-                            agent.slug(),
-                            &key,
-                            &identity.canonical_identity,
-                        ],
+                        &finding,
+                        agent,
+                        ConfigScope::Global,
+                        &key,
                     );
                     config = Some(CachedConfig {
                         context,
-                        operation,
-                        physical_key: key,
-                    });
-                } else if identity.scope_kind == scope_name(effective.scope) {
-                    identity.physical_target_key = Some(key.clone());
-                    config = Some(CachedConfig {
-                        context,
+                        additional_contexts: Vec::new(),
                         operation,
                         physical_key: key,
                     });
@@ -994,7 +1016,24 @@ impl RemediationController {
             {
                 return Err(ControllerError::Conflict);
             }
+            for context in std::iter::once(&config.context).chain(&config.additional_contexts) {
+                if !self.prepared_context_matches(
+                    store,
+                    target.agent,
+                    &target.scope_kind,
+                    config,
+                    context,
+                    true,
+                )? {
+                    return Err(ControllerError::Conflict);
+                }
+            }
             return Ok(());
+        }
+        for context in std::iter::once(&config.context).chain(&config.additional_contexts) {
+            if !self.config_context_matches(store, target, config, context)? {
+                return Err(ControllerError::Conflict);
+            }
         }
         let effective = self
             .editor
@@ -1038,6 +1077,70 @@ impl RemediationController {
             return Err(ControllerError::Conflict);
         }
         Ok(())
+    }
+
+    fn config_context_matches(
+        &self,
+        store: &Store,
+        target: &CachedTarget,
+        config: &CachedConfig,
+        context: &ConfigContext,
+    ) -> Result<bool, ControllerError> {
+        let Ok(effective) = self.editor.effective_for_value(
+            &refreshed_config_context(context),
+            config.operation.setting,
+            config
+                .operation
+                .expected_value
+                .scalar()
+                .or_else(|| config.operation.expected_value.key()),
+        ) else {
+            return Ok(false);
+        };
+        let selector_qualifier =
+            physical_selector_qualifier(&self.editor, context, effective.physical_identity().1);
+        let key = physical_key(
+            store,
+            target.agent,
+            effective.physical_identity(),
+            selector_qualifier.as_deref(),
+        )
+        .map_err(|_| ControllerError::Internal)?;
+        Ok(
+            config.operation.expected_value.display_value() == effective.value
+                && scope_name(effective.scope) == target.scope_kind
+                && key == config.physical_key,
+        )
+    }
+
+    fn prepared_context_matches(
+        &self,
+        store: &Store,
+        agent: AgentKind,
+        scope_kind: &str,
+        config: &CachedConfig,
+        context: &ConfigContext,
+        creates_file: bool,
+    ) -> Result<bool, ControllerError> {
+        let Ok(prepared) = self
+            .editor
+            .prepare_operation(&refreshed_config_context(context), &config.operation)
+        else {
+            return Ok(false);
+        };
+        let selector_qualifier =
+            physical_selector_qualifier(&self.editor, context, prepared.physical_identity().1);
+        let key = physical_key(
+            store,
+            agent,
+            prepared.physical_identity(),
+            selector_qualifier.as_deref(),
+        )
+        .map_err(|_| ControllerError::Internal)?;
+        Ok(prepared.creates_file() == creates_file
+            && prepared.setting() == config.operation.setting
+            && scope_name(prepared.scope()) == scope_kind
+            && key == config.physical_key)
     }
 
     fn persist_display_snapshot(
@@ -1240,6 +1343,49 @@ fn verification_source_matches_agent(agent: &str, source_format: SourceFormat) -
             )
             | ("pi", SourceFormat::PiV3Jsonl)
     )
+}
+
+fn bind_current_config_identity(
+    identity: &mut TargetIdentity,
+    secret: &[u8; 32],
+    finding: &CurrentFinding,
+    agent: AgentKind,
+    scope: ConfigScope,
+    physical_key: &str,
+) {
+    identity.scope_kind = scope_name(scope).to_owned();
+    identity.scope_key = if scope == ConfigScope::Global {
+        physical_key.to_owned()
+    } else {
+        identity
+            .workspace_key
+            .clone()
+            .unwrap_or_else(|| physical_key.to_owned())
+    };
+    identity.canonical_identity = finding.finding.canonical_identity(&identity.scope_key);
+    identity.physical_target_key = Some(physical_key.to_owned());
+    identity.group_key = hashed_parts_with_secret(
+        secret,
+        TARGET_DOMAIN,
+        &[
+            &finding.environment_key,
+            agent.slug(),
+            &identity.scope_kind,
+            &identity.scope_key,
+            physical_key,
+            &identity.canonical_identity,
+        ],
+    );
+    identity.target_key = hashed_parts_with_secret(
+        secret,
+        TARGET_DOMAIN,
+        &[
+            &finding.environment_key,
+            agent.slug(),
+            physical_key,
+            &identity.canonical_identity,
+        ],
+    );
 }
 
 fn prune_prepared(state: &mut ControllerState, now: i64) {

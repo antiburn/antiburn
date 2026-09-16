@@ -75,7 +75,7 @@ export function BurnChecksView({
                           >
                             <Skeleton
                               data-skeleton-slot="icon"
-                              className="h-8 w-8 rounded-full justify-self-center"
+                              className="burn-check-category-icon-size justify-self-center rounded-full!"
                             />
                             <span className="flex min-w-0 flex-col gap-1.5">
                               <Skeleton data-skeleton-slot="title" className={`h-3 ${width}`} />

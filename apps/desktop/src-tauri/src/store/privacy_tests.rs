@@ -7,8 +7,7 @@
 //! `session_evidence`, `session_analysis`, `session_relation`, and any table
 //! a future migration adds. It also calls the real [`Store::delete_session`]
 //! and [`Store::clear_local_session_data`] methods, not a lower-level
-//! stand-in for them. See "Privacy with content stored" in
-//! `docs/plans/session-evidence-harness-parity.md`.
+//! stand-in for them.
 
 use std::path::Path;
 use std::sync::Arc;

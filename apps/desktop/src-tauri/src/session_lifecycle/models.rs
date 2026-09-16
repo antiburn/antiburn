@@ -212,6 +212,7 @@ impl Registry {
     }
 
     fn apply_models(&mut self, requests: Vec<ModelRequest>, result: ModelResult) {
+        let received_at = Instant::now();
         let (mut rows, revision) = match result {
             Ok((rows, revision)) => (
                 rows.into_iter()
@@ -256,7 +257,7 @@ impl Registry {
                 slot.backoff = RECONCILE_BACKOFF_MIN;
             } else {
                 slot.status = Status::Failed;
-                let due = Instant::now() + slot.backoff;
+                let due = received_at + slot.backoff;
                 slot.backoff = (slot.backoff * 2).min(RECONCILE_BACKOFF_MAX);
                 slot.due = Some(due);
                 self.models.queue.insert((due, slot.ticket, request.key));

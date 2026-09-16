@@ -215,7 +215,16 @@ fn publication_attribution_covers_supported_vendor_sources_and_settings() {
 fn automatic_editor_matrix_covers_all_agents_scopes_sources_and_platforms() {
     let scopes = ["global", "project", "session", "worker"];
     let platforms = ["macos", "linux", "windows"];
-    let settings = [ConfigSetting::Model, ConfigSetting::Reasoning];
+    let settings = [
+        ConfigSetting::Model,
+        ConfigSetting::Reasoning,
+        ConfigSetting::Compaction,
+        ConfigSetting::SubagentModel,
+        ConfigSetting::McpServer,
+        ConfigSetting::BuiltInTool,
+        ConfigSetting::Skill,
+        ConfigSetting::FastMode,
+    ];
     let mut supported = Vec::new();
     for &agent in AgentKind::ALL {
         for &source in &SOURCE_FORMATS {
@@ -240,7 +249,7 @@ fn automatic_editor_matrix_covers_all_agents_scopes_sources_and_platforms() {
             }
         }
     }
-    assert_eq!(supported.len(), 32);
+    assert_eq!(supported.len(), 112);
     assert!(
         supported
             .iter()
@@ -248,13 +257,33 @@ fn automatic_editor_matrix_covers_all_agents_scopes_sources_and_platforms() {
                 matches!(
                     (agent, setting, source),
                     (AgentKind::Claude, _, SourceFormat::ClaudeJsonl)
-                        | (AgentKind::Codex, _, SourceFormat::CodexRolloutJsonl)
+                        | (
+                            AgentKind::Codex,
+                            ConfigSetting::Model
+                                | ConfigSetting::Reasoning
+                                | ConfigSetting::Compaction
+                                | ConfigSetting::FastMode
+                                | ConfigSetting::SubagentModel
+                                | ConfigSetting::McpServer
+                                | ConfigSetting::Skill,
+                            SourceFormat::CodexRolloutJsonl
+                        )
                         | (
                             AgentKind::OpenCode,
-                            ConfigSetting::Model,
+                            ConfigSetting::Model
+                                | ConfigSetting::Compaction
+                                | ConfigSetting::SubagentModel
+                                | ConfigSetting::McpServer
+                                | ConfigSetting::Skill,
                             SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2
                         )
-                        | (AgentKind::Pi, _, SourceFormat::PiV3Jsonl)
+                        | (
+                            AgentKind::Pi,
+                            ConfigSetting::Model
+                                | ConfigSetting::Reasoning
+                                | ConfigSetting::Compaction,
+                            SourceFormat::PiV3Jsonl
+                        )
                 ) && matches!(*scope, "global" | "project")
                     && matches!(*platform, "macos" | "linux")
             })
@@ -269,6 +298,85 @@ fn current_platform_matches_the_compile_target() {
     assert_eq!(current_editor_platform(), "linux");
     #[cfg(target_os = "windows")]
     assert_eq!(current_editor_platform(), "windows");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn missing_global_creation_revalidates_each_project_context() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("home");
+    let first_project = temporary.path().join("first");
+    let second_project = temporary.path().join("second");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&first_project).unwrap();
+    std::fs::create_dir_all(&second_project).unwrap();
+    let first_context =
+        ConfigContext::native_workspace(AgentKind::Claude, &home, &first_project, &first_project);
+    let second_context =
+        ConfigContext::native_workspace(AgentKind::Claude, &home, &second_project, &second_project);
+    let operation = ConfigOperation {
+        setting: ConfigSetting::BuiltInTool,
+        expected_value: crate::agent_config::ConfigOperationValue::MapEntry {
+            key: "WebSearch".to_owned(),
+            value: "true".to_owned(),
+        },
+        proposed_value: crate::agent_config::ConfigOperationValue::MapEntry {
+            key: "WebSearch".to_owned(),
+            value: "false".to_owned(),
+        },
+    };
+    let controller = RemediationController::new(temporary.path().join("data"));
+    let store = Store::open(&temporary.path().join("store")).unwrap();
+    let prepared = controller
+        .editor
+        .prepare_operation(&first_context, &operation)
+        .unwrap();
+    let physical_key = physical_key(
+        &store,
+        AgentKind::Claude,
+        prepared.physical_identity(),
+        None,
+    )
+    .unwrap();
+    let config = CachedConfig {
+        context: first_context,
+        additional_contexts: vec![second_context.clone()],
+        operation,
+        physical_key,
+    };
+
+    assert!(
+        controller
+            .prepared_context_matches(
+                &store,
+                AgentKind::Claude,
+                "global",
+                &config,
+                &second_context,
+                true,
+            )
+            .unwrap()
+    );
+
+    let project_settings = second_project.join(".claude/settings.json");
+    std::fs::create_dir_all(project_settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        project_settings,
+        r#"{"permissions":{"allow":["WebSearch"]}}"#,
+    )
+    .unwrap();
+    assert!(
+        !controller
+            .prepared_context_matches(
+                &store,
+                AgentKind::Claude,
+                "global",
+                &config,
+                &second_context,
+                true,
+            )
+            .unwrap()
+    );
 }
 
 #[test]
@@ -403,7 +511,7 @@ fn fast_mode_auto_fix_requires_an_explicit_fast_mode_finding() {
         Some(ConfigOperation {
             setting: ConfigSetting::FastMode,
             expected_value: crate::agent_config::ConfigOperationValue::Boolean(true),
-            proposed_value: crate::agent_config::ConfigOperationValue::Delete,
+            proposed_value: crate::agent_config::ConfigOperationValue::Boolean(false),
         })
     );
     assert_eq!(
@@ -420,6 +528,14 @@ fn fast_mode_auto_fix_requires_an_explicit_fast_mode_finding() {
     assert_eq!(
         config_setting_from_name("fastMode"),
         Some(ConfigSetting::FastMode)
+    );
+    assert_eq!(
+        config_setting_from_name("mcpServer"),
+        Some(ConfigSetting::McpServer)
+    );
+    assert_eq!(
+        config_setting_from_name("builtInTool"),
+        Some(ConfigSetting::BuiltInTool)
     );
 }
 

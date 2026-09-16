@@ -321,7 +321,7 @@ export class PopoverSession {
     // The registry, not row data, decides which rows show as active. The
     // tracker subscribes to lifecycle deltas before it reads the versioned
     // snapshot, so this overlay never derives windows from timestamps.
-    this.stopLiveSessionsListening = liveSessions.subscribe(() => {
+    const syncLiveness = () => {
       if (generation !== this.generation) return
       const entries = this.snapshot.entries
       const live = liveSessions.getSnapshot()
@@ -331,7 +331,9 @@ export class PopoverSession {
         liveProviders: liveProviders(live),
         liveModels: liveModels(live),
       })
-    })
+    }
+    this.stopLiveSessionsListening = liveSessions.subscribe(syncLiveness)
+    syncLiveness()
 
     // The preferences shortcut opens Settings. The window listener supports
     // the nonactivating popover and platforms without an application menu.

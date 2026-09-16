@@ -17,6 +17,34 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-16
+
+### Added
+
+- Session inputs now carry an explicit `SourceFormat`, with bounded bundle
+  inputs and dedicated readers for supported Cline, Copilot CLI, and Kiro
+  sources. Discovery metadata also exposes each source's format and surface.
+- Claude and Codex readers expose bounded quota and provider-incident evidence.
+  Aggregate reports separate user allocation limits from capacity, server, and
+  connection failures, with affected sessions, models, and observation times.
+- Remediation APIs now estimate and aggregate savings across all Burn Check
+  detectors, provide safe fallback prompts for supported fixes, and expose
+  stable detector keys and verification support.
+
+### Changed
+
+- **Breaking:** `SessionInput` requires `source_format`, and
+  `SessionReader::capabilities` now receives the full `SessionInput` instead of
+  only `RawSource`. Readers reject a discovered format that does not match the
+  selected parser rather than inferring a parser from paths or content.
+- **Breaking:** evidence, report, turn, and remediation structures include new
+  source-format, provider-incident, pricing-revision, one-hour cache-write, and
+  per-detector attribution fields. `TargetAssessment::complete` is replaced by
+  its typed `assessment` field.
+- Advance parser revision to 38, analyzer revision to 24, evidence schema
+  revision to 19, coverage schema revision to 5, and resume snapshot revision
+  to 9 so persisted results refresh under the new contracts.
+
 ### Fixed
 
 - `Usage` gains `cache_creation_1h_tokens`, the subset of cache-creation
@@ -26,9 +54,13 @@ version and refuses the release if there is none.
   otherwise Claude Code's cache-creation total counts as one-hour writes,
   since it has run with one-hour caching configured throughout. The
   efficiency reducer and turn rows now price that subset at 2x the input
-  rate instead of the default cache-write rate. Advance parser revision to
-  35 so prior sessions reparse and reprice. `TokenBurnTurnEvidence`'s
+  rate instead of the default cache-write rate. `TokenBurnTurnEvidence`'s
   report-time token estimates price the same subset at the same rate.
+- Codex usage variants no longer double count matching records, and
+  `spawn_agent` calls count as sub-agent launches.
+- Pi usage samples use request-start timestamps while retaining response event
+  metadata, and cache-rehydration and repeated-context accounting now use the
+  correct request boundaries and denominators.
 
 ## [0.7.1] - 2026-09-10
 

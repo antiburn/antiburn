@@ -597,6 +597,7 @@ export type Interaction =
       kind: "onboardingStepViewed"
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
+  | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
@@ -996,6 +997,12 @@ export async function addScanRoot(path: string): Promise<string[]> {
 export async function removeScanRoot(path: string): Promise<string[]> {
   if (!hasShell()) return []
   return invoke<string[]>("remove_scan_root", { path })
+}
+
+/** Open the project directory through the native file manager. */
+export async function openProjectFolder(path: string): Promise<void> {
+  if (!hasShell()) throw new Error("The native file manager is unavailable")
+  await invoke("open_project_folder", { path })
 }
 
 /** Reveal a transcript in the platform's file manager. */

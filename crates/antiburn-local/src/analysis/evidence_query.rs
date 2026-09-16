@@ -2,8 +2,7 @@
 //!
 //! [`query_turn_facts`] reads the facts a later change uses to compute most
 //! of `SessionEvidence`, straight from the `turn` rows a pass already wrote
-//! — instead of by streaming an accumulator over the transcript again. See
-//! `docs/plans/session-evidence-harness-parity.md`.
+//! — instead of by streaming an accumulator over the transcript again.
 //!
 //! Every query here filters on the same four columns: `environment_key`,
 //! `agent`, `session_id`, and `claim_fence`.

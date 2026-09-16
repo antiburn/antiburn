@@ -13,6 +13,7 @@ import {
   type UpdateFacetsPayload,
 } from "../../lib/ipc"
 import { PopoverSession } from "./PopoverSession"
+import { liveSessions } from "../../lib/sessionLifecycle"
 
 const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
 const getProviderUsage = vi.hoisted(() => vi.fn())
@@ -790,6 +791,37 @@ describe("PopoverSession live sessions", () => {
     await vi.waitFor(() => expect(session.getSnapshot().sessionLive).toBe(true))
     expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
     unsubscribe()
+  })
+
+  it("immediately reads scoped counts when joining an existing tracker", async () => {
+    getLiveSessions.mockResolvedValue({
+      seq: 0,
+      working: 1,
+      total: 129,
+      sessions: [],
+      anonymous: [],
+      sweep: [
+        {
+          agent: "claude-code",
+          working: 1,
+          anonymous: 0,
+          modelPendingWorking: 0,
+          modelFailedWorking: 0,
+          modelNoneWorking: 0,
+          models: [{ model: "sonnet", working: 1 }],
+        },
+      ],
+    })
+    const keepAlive = liveSessions.subscribe(() => undefined)
+    await vi.waitFor(() => expect(liveSessions.getSnapshot().ready).toBe(true))
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    expect(session.getSnapshot().sessionLive).toBe(true)
+    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
+    expect(session.getSnapshot().liveModels).toEqual({ anthropic: ["sonnet"] })
+    expect(getLiveSessions).toHaveBeenCalledTimes(1)
+    unsubscribe()
+    keepAlive()
   })
 
   it("keeps the shared registry subscription when the popover is shown", async () => {

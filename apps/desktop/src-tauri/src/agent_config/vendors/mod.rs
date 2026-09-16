@@ -115,22 +115,6 @@ pub(super) trait VendorConfig: Sync {
     }
 
     #[cfg(not(windows))]
-    fn resolve_targets(
-        &self,
-        setting: ConfigSetting,
-        home: &Path,
-        workspace_cwd: Option<&Path>,
-        trusted_workspace_root: Option<&Path>,
-    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
-        Ok(vec![self.resolve_target(
-            setting,
-            home,
-            workspace_cwd,
-            trusted_workspace_root,
-        )?])
-    }
-
-    #[cfg(not(windows))]
     fn standalone_global(
         &self,
         _setting: ConfigSetting,

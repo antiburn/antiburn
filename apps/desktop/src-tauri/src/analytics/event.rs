@@ -99,6 +99,9 @@ pub enum EventName {
     /// The Sessions sidebar filter changed to a different selection.
     #[cfg(feature = "analytics")]
     SessionFilterSelected,
+    /// An explicit project folder action completed.
+    #[cfg(feature = "analytics")]
+    ProjectFolderAction,
     /// An assessed cohort's quota-pressure section has assessed incidents,
     /// with a bucketed hit count per limit kind.
     QuotaIncidentsObserved,
@@ -146,6 +149,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::BurnCheckPromptCopied,
     EventName::BurnCheckOutcomeObserved,
     EventName::SessionFilterSelected,
+    EventName::ProjectFolderAction,
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
     EventName::ProviderIncidentsIngested,
@@ -179,6 +183,7 @@ impl EventName {
             EventName::BurnCheckPromptPrepared => "antiburn.burn_check_prompt_prepared",
             EventName::BurnCheckPromptCopied => "antiburn.burn_check_prompt_copied",
             EventName::BurnCheckOutcomeObserved => "antiburn.burn_check_outcome_observed",
+            EventName::ProjectFolderAction => "antiburn.project_folder_action",
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
@@ -383,6 +388,11 @@ pub struct Context {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Interaction {
+    /// A project folder action completed without transmitting its path.
+    ProjectFolderAction {
+        action: ProjectFolderAction,
+        outcome: ProjectFolderOutcome,
+    },
     /// A fixed onboarding step became visible.
     OnboardingStepViewed { step: OnboardingStep },
     /// A session was opened from the activity list. `agent` deserializes into
@@ -431,6 +441,20 @@ pub enum Interaction {
         filter: SessionFilterKind,
         agent: Option<AgentKind>,
     },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectFolderAction {
+    Open,
+    Copy,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectFolderOutcome {
+    Succeeded,
+    Failed,
 }
 
 /// A product surface whose visibility is measured.
@@ -697,6 +721,20 @@ impl Interaction {
                 Facts {
                     detail: Some(outcome.as_str()),
                     origin: Some(origin.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::ProjectFolderAction { action, outcome } => (
+                EventName::ProjectFolderAction,
+                Facts {
+                    label: Some(match action {
+                        ProjectFolderAction::Open => "open",
+                        ProjectFolderAction::Copy => "copy",
+                    }),
+                    detail: Some(match outcome {
+                        ProjectFolderOutcome::Succeeded => "succeeded",
+                        ProjectFolderOutcome::Failed => "failed",
+                    }),
                     ..Facts::default()
                 },
             ),
@@ -1418,6 +1456,7 @@ mod tests {
                 | EventName::BurnCheckPromptPrepared
                 | EventName::BurnCheckPromptCopied
                 | EventName::BurnCheckOutcomeObserved
+                | EventName::ProjectFolderAction
                 | EventName::SessionFilterSelected
                 | EventName::QuotaIncidentsObserved
                 | EventName::ProviderIncidentsObserved
@@ -1426,7 +1465,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            28,
+            29,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

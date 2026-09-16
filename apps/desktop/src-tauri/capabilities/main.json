@@ -51,6 +51,7 @@
     "allow-report-main-window-render-status",
     "allow-request-main-window-recovery",
     "allow-reveal-source",
+    "allow-open-project-folder",
     "allow-set-settings"
   ]
 }
