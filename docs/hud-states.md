@@ -200,7 +200,20 @@ live macOS validation after changes to the native window mechanism.
   registry says `quiet` (30 seconds without a write); anonymous agent
   activity works until the registry says `anonymous_cleared`, when a scan
   pass covers it or the same window passes. The renderer keeps no timer
-  for it. See `docs/session-lifecycle-events.md`.
+  for lifecycle expiry. Quiet sessions remain active for list pills until
+  180 seconds without a write, but do not blink. A new write can resume them;
+  `resumed` is Activity metadata, not a fourth state. Deadline wakes include
+  one second of slack; transport can add delay.
+- The projection bridge relays lifecycle transitions while enriched row loads
+  run separately. A resync replaces the snapshot and counts; row projection
+  never decides HUD liveness. Silent startup seeds can have sequence zero.
+  Unknown list identities are distinct from known presence or absence at zero.
+  A truncated zero-sequence seed queries omitted interests and accepts their
+  same-sequence answers once; duplicate or stale answers cannot replace newer
+  evidence. Exact HUD counts remain independent of these list queries.
+  V49 persists incarnations internally; V48 remains attribution data.
+  See `docs/session-lifecycle-events.md` for evidence guards, permissions,
+  named presence, convergence, and resource limits.
 - The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
 - Hiding the HUD parks the native polls and the retained renderer's timers.

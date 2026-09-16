@@ -1,33 +1,21 @@
-//! One projection worker, and one Tauri bridge, for every session event.
+//! One projection worker owns all session event emission to webviews.
 //!
-//! The worker subscribes to the canonical lifecycle bus and owns all
-//! session event emission to the webviews:
+//! `session:lifecycle` relays registry transitions and recovery markers.
+//! `session:updated` carries enriched rows. `session:index-changed` carries membership
+//! changes and invalidations. Producers report compact observations to the registry
+//! instead of emitting these scopes.
 //!
-//! - `session:lifecycle` relays lifecycle transitions, canonical anonymous
-//!   clears, and resync metadata.
-//! - `session:updated` carries one enriched row per coalesced `Updated`.
-//! - `session:index-changed` carries membership and invalidation changes.
+//! Row loads run on the blocking pool while the loop continues receiving bus events.
+//! Pending rows share a fixed flush deadline. Overflow requests one index refresh
+//! instead of retaining more patches.
 //!
-//! Producers never emit these events; they report observations to the
-//! registry. Row loads run on the blocking pool, off the lifecycle actor
-//! and off this loop's relay path: the loop keeps receiving from the bus
-//! while one load runs. Pending rows coalesce by session and flush on a
-//! fixed deadline, so a continued event stream cannot starve the flush,
-//! and a bounded cap degrades to one index refresh instead of an
-//! unbounded patch queue.
+//! Newer changes suppress older loaded rows and preserve their facets for the next
+//! batch. Keyed removals suppress their rows. Broad removals, invalidations, and lag
+//! invalidate the batch.
 //!
-//! A row change that arrives while its row loads wins over the load: the
-//! loaded row is not emitted, and its facets merge into the next batch. A
-//! keyed removal drops the loading row. A broad removal, an index
-//! invalidation, or transport lag invalidates the whole batch in flight,
-//! because the refetch those tell readers to make supersedes every patch.
-//!
-//! On lag the bridge relays one `Resync` at the registry's current
-//! sequence and schedules an index refresh. Further lag in the same
-//! recovery cycle is coalesced; when it names a sequence above the one the
-//! reader was told to resync at, a follow-up `Resync` is emitted when the
-//! cycle closes, so coalescing cannot hide a newer gap. The bridge never
-//! invents a sequence: every `seq` it emits is the registry's.
+//! Transport lag requests recovery at the registry's current sequence. Recovery retains
+//! a follow-up request when later lag exceeds that sequence. The bridge never allocates
+//! canonical sequences.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -45,19 +33,18 @@ use crate::session_lifecycle::{
 };
 use crate::store::{SessionKey, Store};
 
-/// How long the worker waits after the first pending row before it loads
-/// and emits. The deadline is fixed when the batch opens: later events
-/// coalesce into it, they do not move it. A deadline that passes while a
-/// load runs starts the next batch as soon as that load ends.
+/// The first pending row starts this fixed delay. Later events do not move the
+/// deadline. Only one load runs at a time.
 const FLUSH_DELAY: Duration = Duration::from_millis(250);
 
-/// How many rows one batch holds, pending or in flight. Pending rows past
-/// this bound degrade to one index refresh, which tells readers to refetch
-/// the list instead of patching rows one by one. One batch loads at a
-/// time, so this also bounds the rows in flight.
+/// Pending and loading batches each hold at most this many keys. Overflow requests one
+/// index refresh.
 const PENDING_ROW_CAP: usize = 512;
 
-/// The `session:updated` payload: the enriched row plus what changed.
+/// This quota bounds bus receipt before a completed load emits rows.
+const RECEIVE_BATCH: usize = 1024;
+
+/// The bridge sends this enriched row and its changed facets on `session:updated`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionUpdatedPayload {
@@ -67,7 +54,7 @@ pub struct SessionUpdatedPayload {
     pub entry: ActivityEntry,
 }
 
-/// The `session:index-changed` payload: why list membership changed.
+/// The bridge sends this membership change or invalidation on `session:index-changed`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexChangedPayload {
@@ -79,18 +66,17 @@ pub struct IndexChangedPayload {
     pub removal: Option<RemovalReason>,
 }
 
-/// What kind of index change a payload names.
+/// This cause identifies the kind of index change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexChangeCause {
-    /// A scan pass changed list membership.
+    /// A scan pass changes list membership.
     ScanPass,
-    /// A broad invalidation: readers refetch list data.
+    /// A broad invalidation requires a list refresh.
     Invalidated,
-    /// One session left the store.
+    /// A session leaves the store.
     Removed,
-    /// Events or rows were lost. Readers refetch the list and re-read the
-    /// live snapshot.
+    /// Recovery requires a list refresh. Transport lag also requests a live snapshot.
     Resync,
 }
 
@@ -103,7 +89,6 @@ impl From<IndexChangeReason> for IndexChangeCause {
     }
 }
 
-/// One pending row: merged facets and the latest epoch and sequence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingRow {
     facets: UpdateFacets,
@@ -111,7 +96,6 @@ struct PendingRow {
     seq: u64,
 }
 
-/// What the loop emits at once, before any row load.
 #[derive(Clone, Debug, PartialEq)]
 enum Immediate {
     /// Relay this event on `session:lifecycle`.
@@ -120,7 +104,7 @@ enum Immediate {
     IndexChanged(IndexChangedPayload),
 }
 
-/// Everything the bridge hands to Tauri.
+/// The bridge sends these outputs through Tauri.
 #[derive(Debug)]
 pub(crate) enum Emission {
     /// Relay this event on `session:lifecycle`.
@@ -140,22 +124,21 @@ impl From<Immediate> for Emission {
     }
 }
 
-/// The coalesced work between flushes.
 #[derive(Default)]
 struct Pending {
     rows: HashMap<SessionKey, PendingRow>,
-    /// Set when rows were lost to the cap, transport lag, or a registry
-    /// resync. The next flush emits one index refresh instead of patches.
+    /// The next flush replaces patches with one index refresh after overflow or
+    /// recovery.
     index_refresh: bool,
-    /// The highest sequence this worker has seen.
+
     last_seq: u64,
-    /// Set when the next batch carries rows a failed load gave back. That
-    /// batch gets no second retry: a further failure becomes one refetch.
+    /// A failed load returns rows for one retry. Another failure requests a list
+    /// refresh.
     retry: bool,
 }
 
 impl Pending {
-    /// Merge one row change in, bounded by [`PENDING_ROW_CAP`].
+    /// Merge a row change without exceeding [`PENDING_ROW_CAP`].
     fn note_row(&mut self, key: SessionKey, facets: UpdateFacets, at: i64, seq: u64) {
         if self.index_refresh {
             // A refetch supersedes every patch in this batch.
@@ -179,8 +162,7 @@ impl Pending {
         self.index_refresh || !self.rows.is_empty()
     }
 
-    /// Drain the batch. Rows come out in full identity order, so one input
-    /// always flushes the same way.
+    /// Drain rows in full identity order for deterministic output.
     fn take(&mut self) -> FlushPlan {
         let index_refresh = std::mem::take(&mut self.index_refresh);
         let retried = std::mem::take(&mut self.retry);
@@ -200,40 +182,32 @@ impl Pending {
     }
 }
 
-/// One flush's inputs: the rows to project, or one index refresh.
 struct FlushPlan {
     rows: Vec<(SessionKey, PendingRow)>,
     index_refresh: bool,
     seq: u64,
-    /// True when a failed load already gave these rows back once.
+    /// The batch permits only one retry.
     retried: bool,
 }
 
-/// The batch one blocking load carries, and what the bus said about it
-/// while it ran.
+/// The loading batch tracks changes that arrive during its blocking read.
 #[derive(Debug, PartialEq, Eq)]
 struct Batch {
     rows: BTreeMap<SessionKey, PendingRow>,
     seq: u64,
-    /// Set by a broad removal, an index invalidation, or lag: the refetch
-    /// they cause supersedes every row here, so the load's result is
-    /// discarded.
+    /// A broad invalidation suppresses every row in the loading batch.
     invalidated: bool,
-    /// True when a failed load already gave these rows back once.
+    /// The batch permits only one retry.
     retried: bool,
 }
 
-/// One lag recovery cycle: the sequence the reader was told to resync at,
-/// and a newer gap seen since, which needs its own resync when the cycle
-/// closes.
+/// Recovery retains a newer gap for a follow-up request after the current cycle closes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Recovery {
     watermark: u64,
     follow_up: Option<u64>,
 }
 
-/// The loop's state between bus events: the coalesced batch, the batch one
-/// load carries, and the open lag recovery cycle.
 #[derive(Default)]
 struct Projector {
     pending: Pending,
@@ -242,20 +216,18 @@ struct Projector {
 }
 
 impl Projector {
-    /// Fold one bus event in. Returns what to emit immediately.
+    /// Combine a bus event with pending work and return immediate outputs.
     fn absorb(&mut self, sequenced: Sequenced) -> Vec<Immediate> {
         self.pending.last_seq = self.pending.last_seq.max(sequenced.seq);
         match &sequenced.event {
-            // Anonymous clears relay at once: the registry is the only
-            // authority on anonymous state, and no reader keeps a timer.
+            // The registry alone decides when anonymous activity ends.
             SessionEvent::Started { .. }
             | SessionEvent::Activity { .. }
             | SessionEvent::Quiet { .. }
             | SessionEvent::AnonymousCleared { .. } => vec![Immediate::Lifecycle(sequenced)],
             SessionEvent::Resync => {
-                // The registry lost observations: rows may be stale too.
-                // The event is canonical, so it relays as is and sets the
-                // recovery watermark the reader will resync at.
+                // This defensive path accepts synthetic recovery markers. The registry
+                // never publishes `Resync`.
                 self.lose(sequenced.seq);
                 self.recovery = Some(match self.recovery {
                     Some(open) => Recovery {
@@ -270,11 +242,10 @@ impl Projector {
                 vec![Immediate::Lifecycle(sequenced)]
             }
             SessionEvent::Idle { session, at, .. } => {
-                // The row's active state flips at idle, so the row also
-                // projects again.
+                // Idle also requires a new projection of the row’s activity flag.
                 let key = session_key(session);
                 self.retire(&key);
-                self.pending.note_row(
+                self.note_row(
                     key,
                     UpdateFacets {
                         metadata: true,
@@ -292,7 +263,7 @@ impl Projector {
             } => {
                 let key = session_key(session);
                 self.retire(&key);
-                self.pending.note_row(key, *facets, *at, sequenced.seq);
+                self.note_row(key, *facets, *at, sequenced.seq);
                 Vec::new()
             }
             SessionEvent::Removed { session, reason } => {
@@ -304,7 +275,7 @@ impl Projector {
                             batch.rows.remove(&key);
                         }
                     }
-                    None => self.invalidate_in_flight(),
+                    None => self.invalidate_rows(),
                 }
                 vec![Immediate::IndexChanged(IndexChangedPayload {
                     seq: sequenced.seq,
@@ -315,7 +286,7 @@ impl Projector {
             }
             SessionEvent::IndexChanged { reason } => {
                 if *reason == IndexChangeReason::Invalidated {
-                    self.invalidate_in_flight();
+                    self.invalidate_rows();
                 }
                 vec![Immediate::IndexChanged(IndexChangedPayload {
                     seq: sequenced.seq,
@@ -327,10 +298,8 @@ impl Projector {
         }
     }
 
-    /// Record transport lag at the registry's current sequence. The first
-    /// lag of a cycle relays a resync at that sequence and schedules an
-    /// index refresh. Later lag in the same cycle is coalesced; when it is
-    /// above the watermark, a follow-up is retained for the cycle's end.
+    /// Record lag at the registry sequence. The first gap requests recovery. Later gaps
+    /// above its watermark retain a follow-up request.
     fn absorb_lag(&mut self, watermark: u64) -> Vec<Immediate> {
         self.lose(watermark);
         match self.recovery.as_mut() {
@@ -342,8 +311,8 @@ impl Projector {
                 vec![Immediate::Lifecycle(Sequenced {
                     seq: watermark,
                     event: SessionEvent::Resync,
-                    // The bridge fabricates no counts: the snapshot the
-                    // reader re-reads carries them.
+                    // The snapshot supplies exact counts. The bridge does not invent
+                    // them.
                     aggregate: None,
                 })]
             }
@@ -357,11 +326,23 @@ impl Projector {
         }
     }
 
-    /// Events or rows were lost up to `seq`: the list refetches, and the
-    /// load in flight, if any, has nothing to add after that refetch.
+    /// Request an index refresh and suppress older loaded rows.
     fn lose(&mut self, seq: u64) {
         self.pending.last_seq = self.pending.last_seq.max(seq);
         self.pending.index_refresh = true;
+        self.invalidate_rows();
+    }
+
+    fn note_row(&mut self, key: SessionKey, facets: UpdateFacets, at: i64, seq: u64) {
+        self.pending.note_row(key, facets, at, seq);
+        if self.pending.index_refresh {
+            self.invalidate_in_flight();
+        }
+    }
+
+    fn invalidate_rows(&mut self) {
+        self.pending.rows.clear();
+        self.pending.retry = false;
         self.invalidate_in_flight();
     }
 
@@ -371,9 +352,8 @@ impl Projector {
         }
     }
 
-    /// Move a key's row from the batch in flight back to the pending
-    /// batch: a newer change arrived during its load, so only the later
-    /// projection is emitted, with the facets of both.
+    /// Retire the loading row after a newer change. Keep its facets in the pending
+    /// batch.
     fn retire(&mut self, key: &SessionKey) {
         if let Some(batch) = self.in_flight.as_mut()
             && let Some(row) = batch.rows.remove(key)
@@ -391,9 +371,8 @@ impl Projector {
         self.in_flight.is_some()
     }
 
-    /// Close the pending batch. Returns what to emit at once and, when the
-    /// batch has rows, the keys to load. An index refresh closes the lag
-    /// recovery cycle; a newer gap retained during it opens the next one.
+    /// Open the pending batch. An index refresh closes the recovery cycle. A retained
+    /// newer gap starts another cycle.
     fn open_batch(&mut self) -> (Vec<Immediate>, Option<Vec<SessionKey>>) {
         debug_assert!(self.in_flight.is_none(), "one batch loads at a time");
         let plan = self.pending.take();
@@ -437,11 +416,8 @@ impl Projector {
         (out, Some(keys))
     }
 
-    /// Apply one finished load to the batch in flight. A loaded row is
-    /// emitted unless the batch was invalidated or the row was retired or
-    /// removed during the load. A missing row means one index refetch. A
-    /// failed load gives its rows back to the pending batch once; a second
-    /// failure becomes one index refetch.
+    /// Emit only rows that remain valid after a load. Missing rows request an index
+    /// refresh. Failed loads permit one bounded retry.
     fn complete(&mut self, outcome: LoadResult) -> Vec<Emission> {
         let Some(batch) = self.in_flight.take() else {
             return Vec::new();
@@ -466,8 +442,7 @@ impl Projector {
                     })));
                 }
                 if missing {
-                    // A pending row vanished before the load: the list
-                    // refetches.
+                    // The missing row requires a list refresh.
                     out.push(Emission::IndexChanged(IndexChangedPayload {
                         seq: batch.seq,
                         cause: IndexChangeCause::Invalidated,
@@ -510,21 +485,18 @@ fn session_key(session: &SessionRef) -> SessionKey {
     )
 }
 
-/// What one blocking row load returns.
 type LoadResult = anyhow::Result<HashMap<SessionKey, ActivityEntry>>;
 
-/// Where the worker loads enriched rows from. Production is the store; a
-/// test injects a scripted loader.
+/// This boundary loads enriched rows outside the actor. Tests inject a controlled
+/// loader.
 pub(crate) trait RowLoader: Send + Sync {
-    /// Load the enriched row of every key it finds. A key with no row is
-    /// absent from the result; a failed read is an error.
+    /// Load each available row. Missing keys remain absent from the result.
     fn load(&self, keys: &[SessionKey], now: i64) -> LoadResult;
 }
 
 impl RowLoader for Store {
-    /// Load enriched rows for `keys` in one batch: the repository list once,
-    /// the records in bounded chunks, then one projection per record. A
-    /// record whose projection fails is left out, so the batch refetches.
+    /// Load repositories once and records in bounded chunks. Failed row projections
+    /// remain absent and cause a list refresh.
     fn load(&self, keys: &[SessionKey], now: i64) -> LoadResult {
         let repositories = self.repositories()?;
         let records = self.session_records_for_session_keys(keys)?;
@@ -544,8 +516,8 @@ impl RowLoader for Store {
     }
 }
 
-/// Where the worker sends what it projects. Production is the Tauri app
-/// handle; a test injects a recorder.
+/// This boundary owns session event emission. Production uses Tauri; tests use a
+/// recorder.
 pub(crate) trait ProjectionEmitter: Send + Sync {
     fn emit(&self, emission: Emission);
 }
@@ -574,9 +546,8 @@ impl ProjectionEmitter for AppHandle {
     }
 }
 
-/// Start the projection worker. The returned handle is aborted with the
-/// rest of the schedulers on exit; a load still running then finishes on
-/// the pool and its result is discarded.
+/// Start the projection worker. Shutdown aborts its task and discards any remaining
+/// load result.
 pub fn spawn(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let bus = app.state::<SessionEvents>().subscribe();
     let loader: Arc<dyn RowLoader> = Arc::new((*app.state::<Store>()).clone());
@@ -589,13 +560,9 @@ pub fn spawn(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     })
 }
 
-/// The loop [`spawn`] runs forever. Split out so a test can drive it with a
-/// paused clock, a gated loader, and a recording emitter.
-///
-/// The bus is received at every wake, including while a load runs. Each
-/// wake then applies a finished load and, when the fixed deadline has
-/// passed and no load runs, opens the next batch. `watermark` is the
-/// registry's current sequence, read only on lag.
+/// Keep receiving bus events during blocking loads. Process queued changes before
+/// emitting completed rows. Fixed deadlines start batches without waiting for producer
+/// silence.
 pub(crate) async fn run(
     mut bus: broadcast::Receiver<Sequenced>,
     loader: Arc<dyn RowLoader>,
@@ -624,8 +591,7 @@ pub(crate) async fn run(
                     emit_all(emitter.as_ref(), projector.absorb_lag(watermark()));
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    // Shutdown: a load in flight finishes on the pool and
-                    // its result is discarded with the pending batch.
+                    // Shutdown discards the loading result and pending batch.
                     return;
                 }
             },
@@ -639,12 +605,27 @@ pub(crate) async fn run(
             load = None;
         }
         if let Some(outcome) = finished {
+            // Receive queued changes before a completed load can emit an obsolete row.
+            for _ in 0..RECEIVE_BATCH {
+                match bus.try_recv() {
+                    Ok(sequenced) => emit_all(emitter.as_ref(), projector.absorb(sequenced)),
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                        emit_all(emitter.as_ref(), projector.absorb_lag(watermark()));
+                    }
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Closed) => return,
+                }
+            }
+            if !bus.is_empty() {
+                // A larger backlog requires recovery instead of a possibly obsolete
+                // patch.
+                emit_all(emitter.as_ref(), projector.absorb_lag(watermark()));
+            }
             for emission in projector.complete(outcome) {
                 emitter.emit(emission);
             }
         }
-        // A deadline that passed during a load starts the next batch now:
-        // it is not moved, and a continued event stream cannot delay it.
+        // A due deadline starts the next batch immediately after the current load ends.
         if !projector.loading() && flush_at.is_some_and(|deadline| Instant::now() >= deadline) {
             flush_at = None;
             let (immediates, keys) = projector.open_batch();
@@ -655,11 +636,14 @@ pub(crate) async fn run(
                 load = Some(tokio::task::spawn_blocking(move || loader.load(&keys, at)));
             }
         }
-        // The deadline opens once per batch and later events do not move
-        // it, so continued load cannot starve the flush.
+        // Later events cannot move the first-row deadline.
         if flush_at.is_none() && projector.has_work() {
             flush_at = Some(Instant::now() + FLUSH_DELAY);
         }
+        if !projector.has_work() {
+            flush_at = None;
+        }
+        tokio::task::yield_now().await;
     }
 }
 
@@ -669,8 +653,7 @@ fn emit_all(emitter: &dyn ProjectionEmitter, immediates: Vec<Immediate>) {
     }
 }
 
-/// Wait for the load in flight. A load whose task panicked or was
-/// cancelled reads as a failed load.
+/// Wait for the pending load. A panic or cancellation returns a load error.
 async fn join_load(load: &mut Option<JoinHandle<LoadResult>>) -> LoadResult {
     match load.as_mut() {
         Some(handle) => match handle.await {

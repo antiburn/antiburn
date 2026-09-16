@@ -332,11 +332,8 @@ pub fn run() {
         if let Some(schedulers) = app.try_state::<Schedulers>() {
             analytics::install_schedulers(app.handle(), &schedulers);
             schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
-            // The lifecycle actor seeds synchronously inside `spawn`, and
-            // the scan scheduler starts after it: every producer reports
-            // into a registry that already holds the stored live rows. The
-            // projection worker is the one bridge that emits session
-            // events to the webviews.
+            // Seed the registry before starting the projection bridge and scan
+            // scheduler.
             schedulers.push(session_lifecycle::spawn(app.handle()));
             schedulers.push(session_projection::spawn(app.handle()));
             schedulers.push(scan::spawn_scheduler(app.handle()));

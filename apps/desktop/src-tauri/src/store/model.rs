@@ -7,14 +7,9 @@
 use antiburn_local::analysis::StoredResume;
 use serde::{Deserialize, Serialize};
 
-/// Identity of one local session: the execution environment it ran in, the
-/// agent that produced it, and that agent's own id for it.
-///
-/// All three are needed. An agent's session ids are unique only within that
-/// agent, and only within one environment — a WSL install of an agent may
-/// deliberately reuse the ids of its native counterpart.
-/// `Ord` gives the lifecycle registry's deadline index and its snapshot a
-/// deterministic full-identity order.
+/// A session identity includes the execution environment, agent, and session ID. IDs
+/// can repeat across agents or environments. `Ord` supplies deterministic full-identity
+/// ordering.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionKey {
     pub environment_key: String,
@@ -22,27 +17,21 @@ pub struct SessionKey {
     pub session_id: String,
 }
 
-/// The order of committed writes on the app database's one writing
-/// connection.
-///
-/// The value is the connection's `total_changes()` read under the store
-/// mutex. A committed row-changing transaction ends above every value read
-/// before it began. A value read in the same critical section as a row read
-/// describes exactly that row set. The value is process-local: it starts
-/// again when the app opens the database.
+/// The single writer connection supplies this process-local revision through
+/// `total_changes()` under the Store mutex. Row evidence and its revision share one
+/// critical section. Committed row changes advance the revision. Reopening the database
+/// starts a new revision scope.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Revision(pub u64);
 
-/// The persisted creation identity of one session row.
-///
-/// A row gets its value on insert from a counter that only increases. The
-/// value does not change on update. A re-created key gets a higher value than
-/// every earlier row of that key. Rows that predate the column hold `0`.
+/// Each inserted session receives an incarnation from an increasing persisted counter.
+/// Updates preserve it. Re-created keys receive higher values. Pre-migration rows
+/// retain zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Incarnation(pub u64);
 
-/// Evidence that one session row exists: its key, incarnation, and activity
-/// epoch, read together with a [`Revision`].
+/// This row evidence includes its incarnation and activity epoch. The writer reads it
+/// together with a [`Revision`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Presence {
     pub key: SessionKey,
@@ -50,8 +39,7 @@ pub struct Presence {
     pub epoch: i64,
 }
 
-/// The last row of one active-window page, in the page order's four columns.
-/// The next page starts strictly after it.
+/// The next active-window page starts strictly after this full cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveCursor {
     pub epoch: i64,
@@ -61,7 +49,7 @@ pub struct ActiveCursor {
 }
 
 impl ActiveCursor {
-    /// The cursor that continues after `last`.
+    /// Create a cursor after the last row.
     pub fn after(last: &Presence) -> Self {
         Self {
             epoch: last.epoch,
@@ -1192,6 +1180,25 @@ mod tests {
         // Distribution names are case-insensitive in practice, and both sides
         // fold them the same way.
         assert_eq!(environment_key(Some("UBUNTU")), wsl.key());
+    }
+
+    #[test]
+    fn environment_casing_preserves_non_ascii_letters() {
+        for (distro, expected) in [
+            ("UBUNTU", "wsl:ubuntu"),
+            ("ÜBUNTU", "wsl:Übuntu"),
+            ("İSTANBUL", "wsl:İstanbul"),
+            ("ΣLINUX", "wsl:Σlinux"),
+            ("ẞOS", "wsl:ẞos"),
+            ("  ÉCOLE  ", "wsl:École"),
+        ] {
+            assert_eq!(environment_key(Some(distro)), expected);
+            let environment = DiscoveryEnvironment::Wsl {
+                distribution: distro.trim().to_string(),
+                user: "avery".into(),
+            };
+            assert_eq!(environment.key(), expected);
+        }
     }
 
     #[test]

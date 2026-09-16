@@ -9,6 +9,7 @@ import {
   type SessionUpdatedPayload,
 } from "../../lib/ipc"
 import { sessionKey } from "../../lib/sessionSubject"
+import { liveSessions } from "../../lib/sessionLifecycle"
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -635,3 +636,74 @@ describe("MainActivitySession event ordering", () => {
     first.resolve(payload("Old"))
   })
 })
+
+it.each(["hidden", "inactive"])(
+  "suspends Sessions lifecycle overlays while %s and reconciles on resume",
+  async (mode) => {
+    let changed: (() => void) | null = null
+    const subscribe = vi.spyOn(liveSessions, "subscribe").mockImplementation((listener) => {
+      changed = listener
+      return () => {
+        changed = null
+      }
+    })
+    const snapshot = vi.spyOn(liveSessions, "getSnapshot").mockReturnValue({
+      seq: 1,
+      ready: true,
+      complete: true,
+      sessions: new Map(),
+      absent: new Set(),
+      keylessAgents: new Set(),
+      working: 0,
+      total: 0,
+      anonymous: 0,
+    })
+    const interests = new Set<object>()
+    const setInterest = vi.spyOn(liveSessions, "setInterest").mockImplementation((owner) => {
+      interests.add(owner)
+    })
+    const clearInterest = vi
+      .spyOn(liveSessions, "clearInterest")
+      .mockImplementation((owner) => {
+        interests.delete(owner)
+      })
+    try {
+      const { session, stop } = start()
+      const listener = vi.fn()
+      session.subscribeInactive(listener)
+      await ready(session)
+      expect(interests.has(session)).toBe(true)
+      if (mode === "hidden") mocks.events.get("visibility")!(false)
+      else stop()
+      expect(session.getSnapshot().active).toBe(false)
+      const before = session.getSnapshot()
+      listener.mockClear()
+      snapshot.mockReturnValue({
+        ...liveSessions.getSnapshot(),
+        seq: 2,
+        working: 1,
+        total: 1,
+        sessions: new Map([
+          ['["native","claude","one"]', { agent: "claude", lastActivityAt: 100, quiet: false }],
+        ]),
+      })
+      const publish = changed as (() => void) | null
+      publish?.()
+      expect(session.getSnapshot()).toBe(before)
+      expect(listener).not.toHaveBeenCalled()
+      expect(interests.has(session)).toBe(false)
+      if (mode === "hidden") mocks.events.get("visibility")!(true)
+      else session.subscribe(() => undefined)
+      expect(interests.has(session)).toBe(true)
+      expect(
+        session.getSnapshot().entries?.find((row) => row.sessionId === "one")?.isActive,
+      ).toBe(true)
+      session.dispose()
+    } finally {
+      subscribe.mockRestore()
+      snapshot.mockRestore()
+      setInterest.mockRestore()
+      clearInterest.mockRestore()
+    }
+  },
+)

@@ -1,45 +1,26 @@
-//! Session lifecycle: one actor decides which sessions are live, and one
-//! broadcast bus tells every reader.
+//! One actor owns the live session registry and publishes transitions on a broadcast
+//! bus.
 //!
-//! Producers report typed facts as an [`Observation`]: a watcher burst
-//! touched a session, a pass indexed some sessions, a worker changed a row,
-//! or the store removed one. The actor is the only sender on the bus. It
-//! turns observations into [`SessionEvent`]s, keeps the registry of live
-//! sessions, publishes `Quiet` when a session crosses [`QUIET_WINDOW_SECS`]
-//! without a write, and `Idle` when it crosses
-//! [`ACTIVE_SESSION_WINDOW_SECS`].
+//! Producers report compact typed facts through [`Observation`]. The scan task uses
+//! [`report_async`] and waits for inbox capacity. Other producers use [`report`] with
+//! [`SyncObservation`]. A full inbox sends sync facts to the bounded spill. Sync
+//! reporting can briefly wait for the spill mutex, but never for inbox capacity. Sync
+//! facts cannot establish presence.
 //!
-//! Two reporter classes exist. The scan task reports through
-//! [`report_async`], which waits for inbox capacity and never loses a fact.
-//! Every other producer reports a [`SyncObservation`] through [`report`],
-//! which never waits: a full inbox folds the fact into a bounded spill. The
-//! sync shape has no establishing variant, so no fact that says "this
-//! session exists" can ever be folded or reordered.
+//! Each existence fact carries the writer's [`Revision`] and the row's [`Incarnation`].
+//! The registry defers uncertain admissions until an injected [`ReconcileSource`]
+//! supplies presence evidence. Reads run on the blocking pool, outside the actor's
+//! registry lock. Activity never crosses incarnations.
 //!
-//! Every existence fact carries the store [`Revision`] it was read at and
-//! the row's [`Incarnation`]. The registry admits a key only when no
-//! remembered or forgotten deletion can be newer than the fact; otherwise it
-//! defers the key and asks the store for a presence page through an
-//! injected [`ReconcileSource`] on the blocking pool. The actor itself never
-//! touches the store.
+//! Anonymous touches carry an [`AnonymousGen`] from the scan scheduler. Only a covering
+//! generation or the registry's quiet deadline clears anonymous activity. `Started`
+//! does not clear it.
 //!
-//! Anonymous activity is a watched write under an agent root that maps to
-//! no indexed session. Each such touch carries an [`AnonymousGen`] from the
-//! scan scheduler's ledger. The registry keeps the highest generation per
-//! agent and clears it only when a successful pass covers that generation
-//! ([`Observation::AnonymousCovered`]) or when the registry's own
-//! [`QUIET_WINDOW_SECS`] deadline passes. `Started` never clears it.
-//!
-//! Every published event carries a registry sequence number. A snapshot
-//! carries the sequence at the time of the clone, so a subscriber can take
-//! a snapshot, then apply only the deltas with a higher sequence.
-//!
-//! The registry keeps exact counts: how many sessions work, how many are
-//! live, and how many agents have anonymous activity. Every atomic batch
-//! stamps them on its last lifecycle event as an [`Aggregate`], and every
-//! snapshot carries them, so a reader never counts a bounded row list. A
-//! reader that needs the state of named identities beyond the snapshot's
-//! rows asks for a [`LivePresence`] at one sequence.
+//! The registry publishes `Quiet` after [`QUIET_WINDOW_SECS`] without activity. It
+//! publishes `Idle` after [`ACTIVE_SESSION_WINDOW_SECS`]. Snapshots include the
+//! canonical sequence and exact counts. The last lifecycle event of each atomic batch
+//! carries its [`Aggregate`]. Readers use [`LivePresence`] for identities that a
+//! bounded snapshot omits.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::Bound;
@@ -56,67 +37,64 @@ use tokio::time::Instant;
 
 use crate::store::{ActiveCursor, Incarnation, Presence, Revision, SessionKey, Store};
 
-/// How many events a subscriber can fall behind before it is told it lagged.
-/// This is not a no-lag claim: the projection worker relays a resync when
-/// it lags.
+/// The broadcast ring holds this many events. A lagging projection worker requests
+/// snapshot recovery.
 pub const BUS_CAPACITY: usize = 1024;
 
-/// How many observations wait for the actor. The async reporter waits for
-/// room past this; the sync reporter folds into the spill.
+/// The inbox holds this many observations. Async reporters wait for capacity. Sync
+/// reporters use the spill.
 const INBOX_CAPACITY: usize = 256;
 
-/// How many observations one service round receives from the inbox.
+/// Each service round receives at most this many observations.
 const DRAIN_BATCH: usize = 64;
 
-/// How many session-level facts one service round applies. The rest stay in
-/// the carry for the next round.
+/// Each service round applies at most this many session facts. The carry retains the
+/// remainder.
 const DRAIN_WEIGHT: usize = 256;
 
-/// How many sessions one `Indexed` observation carries at most.
+/// Each `Indexed` observation holds at most this many sessions.
 pub(crate) const INDEXED_CHUNK: usize = 256;
 
-/// How many due deadlines one service round expires.
+/// Each service round expires at most this many due deadlines.
 const EXPIRE_BATCH: usize = 256;
 
-/// How many keyed cells each spill map holds. Past this, a keyed removal
-/// becomes a broad removal and a row change becomes one list refetch.
+/// Each spill map holds at most this many keyed cells. Overflow converts removals to
+/// broad removals and row changes to list refreshes.
 const SPILL_KEY_CAP: usize = 1024;
 
-/// How many deletions the registry remembers. Eviction raises
-/// `forgotten_through`, so an evicted deletion stays a guard.
+/// The registry remembers at most this many deletions. Eviction raises
+/// `forgotten_through` to retain the admission guard.
 const DELETION_MEMORY_CAP: usize = 1024;
 
-/// How many keys wait for a presence page. Past this, the actor holds the
-/// inbox instead of dropping a fact.
+/// At most this many keys wait for presence evidence. A full pending set blocks inbox
+/// consumption without dropping facts.
 const ADMISSION_PENDING_CAP: usize = 1024;
 
-/// How many keys or rows one presence or seed page carries.
+/// Each presence or seed page holds at most this many keys or rows.
 const RECONCILE_PAGE: usize = 256;
 
-/// The first wait after a failed page. Each further failure doubles it.
+/// The first failed page starts this retry delay. Each further failure doubles the
+/// delay.
 const RECONCILE_BACKOFF_MIN: Duration = Duration::from_secs(2);
 
-/// The longest wait after a failed page.
+/// Failed pages cannot increase the retry delay beyond this duration.
 const RECONCILE_BACKOFF_MAX: Duration = Duration::from_secs(30);
 
-/// How many recently idled sessions the registry remembers, so a later
-/// write narrates a resume. This memory has no correctness role.
+/// The registry remembers at most this many recently idle keys for resume events.
+/// Admission safety does not depend on this memory.
 const RECENT_IDLE_CAP: usize = 256;
 
-/// Slack added past a session's computed deadline, so the actor never wakes a
-/// moment early and finds the session still (barely) active.
+/// This delay prevents a wake just before the computed deadline.
 const EXPIRY_SLACK_SECS: i64 = 1;
 
-/// How long a session goes without a write before the bus calls it quiet.
-/// The meters animate from `Activity` to `Quiet`. The session stays active,
-/// for the session list, until [`ACTIVE_SESSION_WINDOW_SECS`].
+/// This duration without activity makes a session quiet. It remains live until
+/// [`ACTIVE_SESSION_WINDOW_SECS`].
 pub const QUIET_WINDOW_SECS: i64 = 30;
 
-/// How many sessions a snapshot returns when the caller names no limit.
+/// A snapshot returns at most this many rows when the caller supplies no limit.
 pub const DEFAULT_SNAPSHOT_LIMIT: usize = 128;
 
-/// The identity of one session, as the webview receives it and names it
-/// in a presence request.
+/// This identity connects a webview session to a named presence request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRef {
@@ -145,8 +123,8 @@ impl From<&SessionRef> for SessionKey {
     }
 }
 
-/// Which parts of a session row changed. Producers set facets; the
-/// projection layer decides what to reload.
+/// These facets name the changed parts of a session row. The projection worker decides
+/// what to load.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateFacets {
@@ -170,118 +148,111 @@ impl UpdateFacets {
     }
 }
 
-/// Why a session left the store.
+/// This reason identifies why a session leaves the store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemovalReason {
-    /// The reader or a worker deleted the row.
+    /// The reader or a worker deletes the row.
     Deleted,
-    /// Retention purged the row.
+    /// Retention removes the row.
     Purged,
-    /// The scan gate rejected the source and removed the row.
+    /// The scan gate rejects the source and removes the row.
     Rejected,
-    /// The registry learned from the store that the row is gone, or that a
-    /// newer incarnation of the key replaced it.
+    /// Store evidence shows an absent row or a newer incarnation.
     Reconciled,
 }
 
-/// Why the session list as a whole changed.
+/// This reason identifies a change to the session list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexChangeReason {
-    /// A scan pass changed list membership.
+    /// A scan pass changes list membership.
     ScanPass,
-    /// A broad invalidation: readers refetch list data.
+    /// Readers must reload the list after a broad invalidation.
     Invalidated,
 }
 
-/// Why anonymous activity for an agent cleared.
+/// This cause identifies why anonymous activity ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnonymousClearCause {
-    /// A successful pass covered every generation the registry held.
+    /// A successful pass covers every generation the registry holds.
     Resolved,
-    /// The registry's quiet deadline passed without a covering pass.
+    /// The registry reaches the quiet deadline without a covering pass.
     Expired,
 }
 
-/// The causal order of one anonymous touch. The scan scheduler issues one
-/// per anonymous report from a checked monotonic counter. A cover names the
-/// highest generation a pass accounts for; time never decides a cover.
+/// The scheduler assigns each anonymous touch a checked increasing generation. Covers
+/// compare generations, not timestamps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AnonymousGen(pub u64);
 
-/// One agent's anonymous generations a successful pass accounts for: every
-/// generation at or below `through`.
+/// A successful pass covers this agent through the named generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnonymousCover {
     pub agent: AgentKind,
     pub through: AnonymousGen,
 }
 
-/// One transition on the bus. Every subscriber sees every event.
+/// This event describes a session transition or a projection request. Broadcast lag
+/// requires snapshot recovery.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionEvent {
-    /// The store indexed this session for the first time.
+    /// The store indexes this session for the first time.
     Started {
         session: SessionRef,
         agent: AgentKind,
         at: i64,
     },
-    /// A write to this session's source was observed.
-    /// `session` is `None` when the path is under an agent root but the
-    /// store has not indexed the session yet. `resumed` is true when the
-    /// write follows `Quiet` or `Idle`.
+    /// A watcher observes a write to the session source. `session` is `None` for an
+    /// unresolved agent path. `resumed` identifies activity after `Quiet` or `Idle`.
     Activity {
         session: Option<SessionRef>,
         agent: AgentKind,
         at: i64,
         resumed: bool,
     },
-    /// The session crossed [`QUIET_WINDOW_SECS`] without a write. It is
-    /// still active. A later write publishes `Activity` again.
+    /// The session reaches [`QUIET_WINDOW_SECS`] without activity. It remains live
+    /// until the idle deadline.
     Quiet {
         session: SessionRef,
         agent: AgentKind,
         at: i64,
     },
-    /// The session crossed [`ACTIVE_SESSION_WINDOW_SECS`] without a write.
+    /// The session reaches [`ACTIVE_SESSION_WINDOW_SECS`] without activity.
     Idle {
         session: SessionRef,
         agent: AgentKind,
         at: i64,
     },
-    /// The agent's anonymous activity cleared: a pass covered it, or the
-    /// registry's quiet deadline passed. Only the registry clears it.
+    /// A covering pass or the quiet deadline ends anonymous activity. Only the registry
+    /// clears this state.
     AnonymousCleared {
         agent: AgentKind,
         at: i64,
         cause: AnonymousClearCause,
     },
-    /// A session row changed. This is a projection trigger, not a row
-    /// payload: the projection layer loads the enriched row.
+    /// A row change requests projection work. The event carries no enriched row.
     Updated {
         session: SessionRef,
         facets: UpdateFacets,
         at: i64,
     },
-    /// A session left the store. `session` is `None` for a broad purge.
+    /// A session leaves the store. `session` is `None` for a broad removal.
     Removed {
         session: Option<SessionRef>,
         reason: RemovalReason,
     },
-    /// List membership changed in a way no single row names.
+    /// List membership changes beyond one named row.
     IndexChanged { reason: IndexChangeReason },
-    /// Events were lost on the way to a reader. Only the projection bridge
-    /// publishes this, on transport lag; the registry never does. Readers
-    /// re-read the snapshot.
+    /// The projection bridge requests a snapshot after transport lag. The registry
+    /// never publishes this marker.
     Resync,
 }
 
 impl SessionEvent {
-    /// True for the events the bridge relays on `session:lifecycle`. The
-    /// other events reach readers as row projections or index changes.
+    /// Return whether the bridge relays this event on `session:lifecycle`.
     pub fn is_lifecycle(&self) -> bool {
         matches!(
             self,
@@ -295,10 +266,8 @@ impl SessionEvent {
     }
 }
 
-/// The registry's exact counts after one atomic batch: sessions that work,
-/// sessions that are live (working or quiet), and agents with anonymous
-/// activity. The last lifecycle event of the batch carries them, so a
-/// reader never derives liveness from a bounded row list.
+/// These exact counts describe the registry after an atomic batch. Its last lifecycle
+/// event carries the counts independently of snapshot row limits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Aggregate {
@@ -307,9 +276,8 @@ pub struct Aggregate {
     pub anonymous: usize,
 }
 
-/// One bus message: the event, the registry sequence it was published at,
-/// and the batch's counts when this is the batch's last lifecycle event.
-/// This is the internal shape; the webview receives [`LifecycleEnvelope`].
+/// This internal bus message carries the canonical event sequence. The last lifecycle
+/// event of a batch also carries exact counts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sequenced {
     pub seq: u64,
@@ -317,9 +285,8 @@ pub struct Sequenced {
     pub aggregate: Option<Aggregate>,
 }
 
-/// The `session:lifecycle` payload, emitted by the projection worker.
-/// Tauri is transport: this shape can change independently of the internal
-/// bus type.
+/// The projection bridge sends this payload on `session:lifecycle`. The wire shape can
+/// change independently of the internal bus.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LifecycleEnvelope<'a> {
@@ -330,8 +297,8 @@ pub struct LifecycleEnvelope<'a> {
     pub aggregate: Option<Aggregate>,
 }
 
-/// One session a scan pass indexed: the row's incarnation, its activity
-/// epoch, and the identity-level `is_new` flag.
+/// A scan pass reports this session with its incarnation and activity epoch. `is_new`
+/// refers to the full identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexedSession {
     pub key: SessionKey,
@@ -341,8 +308,8 @@ pub struct IndexedSession {
     pub is_new: bool,
 }
 
-/// The session a watcher burst resolved: the row's incarnation and the
-/// revision the lookup read it at.
+/// A watcher lookup supplies this session identity and incarnation at the writer
+/// revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TouchedSession {
     pub key: SessionKey,
@@ -350,76 +317,75 @@ pub struct TouchedSession {
     pub seen: Revision,
 }
 
-/// Which rows a removal names.
+/// This scope identifies the rows a removal affects.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemovalScope {
-    /// One row, with the incarnation the delete returned.
+    /// The delete returns this row identity and incarnation.
     One(SessionKey, Incarnation),
-    /// Rows the reporter cannot name. The registry checks every live entry
-    /// that predates the revision against the store.
+    /// The reporter cannot name the removed rows. The registry checks live entries that
+    /// predate the removal revision.
     Broad,
 }
 
-/// What a producer saw. Only the actor turns these into events.
+/// Producers report these compact facts. Only the actor converts them to canonical
+/// events.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Observation {
-    /// A watcher burst touched a path that maps to this indexed session.
+    /// A watcher burst touches a path for this indexed session.
     Touched {
         session: TouchedSession,
         agent: AgentKind,
         at: i64,
     },
-    /// A watcher burst touched a path under an agent root that maps to no
-    /// indexed session. `generation` orders the touch against covers.
+    /// A watcher burst touches an unresolved agent path. `generation` orders the touch
+    /// against covers.
     Anonymous {
         agent: AgentKind,
         at: i64,
         generation: AnonymousGen,
     },
-    /// A scan pass upserted these sessions. Each row existed at `revision`
-    /// with its incarnation and activity epoch.
+    /// A scan pass writes these rows at `revision`. Each row carries its incarnation
+    /// and activity epoch.
     Indexed {
         sessions: Vec<IndexedSession>,
         revision: Revision,
     },
-    /// A successful scheduler pass accounted for these anonymous
-    /// generations. It follows every `Indexed` report of that pass on the
-    /// same ordered path.
+    /// A successful scheduler pass covers these anonymous generations. The cover
+    /// follows every `Indexed` report from that pass.
     AnonymousCovered { covers: Vec<AnonymousCover> },
-    /// A worker changed parts of one session's row.
+    /// A worker changes parts of one session row.
     RowChanged {
         session: SessionKey,
         facets: UpdateFacets,
         at: i64,
     },
-    /// Rows left the store by the transaction that ended at `revision`.
+    /// The transaction removes rows at `revision`.
     Removed {
         scope: RemovalScope,
         reason: RemovalReason,
         revision: Revision,
     },
-    /// List membership changed in a way no single row names.
+    /// List membership changes beyond one named row.
     IndexChanged { reason: IndexChangeReason },
 }
 
-/// The subset a producer that must not wait may report. It has no
-/// establishing variant, so the spill never holds evidence that a key
-/// exists, and no fold can promote a key.
+/// Sync producers report this subset without waiting for inbox capacity. It cannot
+/// establish presence. The bounded spill can therefore combine its facts safely.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncObservation {
-    /// A worker changed parts of one session's row.
+    /// A worker changes parts of one session row.
     RowChanged {
         session: SessionKey,
         facets: UpdateFacets,
         at: i64,
     },
-    /// Rows left the store by the transaction that ended at `revision`.
+    /// The transaction removes rows at `revision`.
     Removed {
         scope: RemovalScope,
         reason: RemovalReason,
         revision: Revision,
     },
-    /// List membership changed in a way no single row names.
+    /// List membership changes beyond one named row.
     IndexChanged { reason: IndexChangeReason },
 }
 
@@ -449,9 +415,8 @@ impl From<SyncObservation> for Observation {
     }
 }
 
-/// One live session, as the snapshot command returns it. `quiet` mirrors
-/// the registry's own state, so a reader never derives lifecycle windows
-/// from timestamps.
+/// The snapshot returns this live session state. Readers use `quiet` instead of
+/// computing lifecycle windows from timestamps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveSession {
@@ -461,8 +426,8 @@ pub struct LiveSession {
     pub quiet: bool,
 }
 
-/// One agent with anonymous activity inside the registry's quiet window,
-/// as the snapshot command returns it.
+/// The snapshot returns this agent while its anonymous activity remains inside the
+/// quiet window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveAnonymous {
@@ -470,13 +435,9 @@ pub struct LiveAnonymous {
     pub last_activity_at: i64,
 }
 
-/// A bounded, versioned view of the live registry. `seq` is the sequence of
-/// the last event whose effect the snapshot includes: a subscriber applies
-/// only deltas with a higher sequence. `working` and `total` are exact and
-/// independent of the row limit: `sessions` holds at most the limit's most
-/// recent rows, so a reader compares `sessions.len()` with `total` to know
-/// whether the rows are complete. `anonymous` is complete: it is bounded by
-/// the number of agent kinds, and a resync replaces it.
+/// This snapshot contains the registry state at `seq`. Readers apply only later deltas.
+/// `working` and `total` remain exact regardless of the row limit. `sessions.len() <
+/// total` identifies omitted live rows. `anonymous` contains every anonymous agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveSnapshot {
@@ -487,10 +448,8 @@ pub struct LiveSnapshot {
     pub anonymous: Vec<LiveAnonymous>,
 }
 
-/// The registry's answer for named identities at one sequence: each
-/// requested identity is live (`present`, with its registry state) or not
-/// (`absent`). Both lists are read under one registry lock, so they agree
-/// with `seq` and with each other.
+/// The registry answers every requested identity at one sequence. One lock protects the
+/// present and absent lists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LivePresence {
@@ -499,15 +458,14 @@ pub struct LivePresence {
     pub absent: Vec<SessionRef>,
 }
 
-/// The store reads the actor asks for. Every call is one blocking store
-/// read; the actor runs it on the blocking pool and never holds a lock
-/// while it waits.
+/// This boundary supplies Store evidence through blocking reads. The actor holds no
+/// registry lock while it waits.
 pub trait ReconcileSource: Send + Sync {
-    /// Which of `keys` exist, with incarnation and epoch, and the revision
-    /// the rows were read at. At most [`RECONCILE_PAGE`] keys.
+    /// Read presence evidence for at most [`RECONCILE_PAGE`] keys at one writer
+    /// revision.
     fn presence(&self, keys: &[SessionKey]) -> anyhow::Result<(Vec<Presence>, Revision)>;
 
-    /// One page of rows active since `since`, newest first, after `after`.
+    /// Read the next page of active rows in descending cursor order.
     fn active(
         &self,
         since: i64,
@@ -534,17 +492,16 @@ impl ReconcileSource for Store {
 #[derive(Clone, Copy, Debug)]
 struct LiveEntry {
     agent: AgentKind,
-    /// The incarnation of the row this entry describes.
+
     incarnation: Incarnation,
-    /// The highest revision at which the row was seen to exist.
+    /// The writer confirms the row exists at this revision.
     exists_at: Revision,
     last_activity_at: i64,
-    /// `Quiet` was published for `last_activity_at`. A newer write clears it.
+    /// A newer write clears this quiet state.
     quiet_published: bool,
 }
 
 impl LiveEntry {
-    /// The next moment this entry has something to publish.
     fn deadline(&self) -> i64 {
         if self.quiet_published {
             self.last_activity_at + ACTIVE_SESSION_WINDOW_SECS
@@ -554,9 +511,8 @@ impl LiveEntry {
     }
 }
 
-/// One agent's anonymous activity: the highest generation received and the
-/// latest activity time. The generation decides covers; the time decides
-/// the deadline.
+/// The generation decides which covers apply. The activity time decides the anonymous
+/// deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AnonymousEntry {
     generation: AnonymousGen,
@@ -564,28 +520,25 @@ struct AnonymousEntry {
 }
 
 impl AnonymousEntry {
-    /// The moment the entry expires without a cover.
     fn deadline(&self) -> i64 {
         self.at + QUIET_WINDOW_SECS
     }
 }
 
-/// What one deadline in the index belongs to.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum DeadlineKey {
     Session(SessionKey),
     Anonymous(AgentKind),
 }
 
-/// One remembered deletion: the highest deleted incarnation of the key and
-/// the highest revision at which the key was seen absent.
+/// Deletion memory keeps the highest deleted incarnation and absence revision for each
+/// key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Deletion {
     incarnation: Incarnation,
     absent_at: Revision,
 }
 
-/// One key that waits for a presence page before it can become live.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingAdmission {
     agent: AgentKind,
@@ -595,8 +548,7 @@ struct PendingAdmission {
     is_new: bool,
 }
 
-/// One fact that says "this incarnation of the key exists at `revision`
-/// with activity `at`".
+/// This fact confirms one incarnation exists at `revision` with activity at `at`.
 #[derive(Clone, Copy, Debug)]
 struct Existence {
     agent: AgentKind,
@@ -606,59 +558,56 @@ struct Existence {
     is_new: bool,
 }
 
-/// What one existence fact did to the registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Touch {
-    /// The session was not live before. `resumed` is true when it idled
-    /// recently.
-    Added { resumed: bool },
-    /// The session was live, and `at` moved its last activity later.
-    /// `resumed` is true when the session was quiet.
-    Advanced { resumed: bool },
-    /// The session was live with an epoch at least as late as `at`.
+    /// `resumed` identifies a recently idle key.
+    Added {
+        resumed: bool,
+    },
+    /// `resumed` identifies a previously quiet session.
+    Advanced {
+        resumed: bool,
+    },
+
     Unchanged,
-    /// The fact is older than the window, names a dead incarnation, or is
-    /// older than the last write of the same incarnation. It changes nothing.
+    /// The fact falls outside the activity window or names a dead incarnation.
     Stale,
-    /// A deletion the registry no longer remembers exactly may be newer than
-    /// the fact. The key waits for a presence page.
+    /// A deletion guard makes this evidence uncertain. A presence page decides
+    /// admission.
     Deferred,
-    /// The key would wait, but the pending set is full. The caller keeps the
-    /// fact and retries after a page frees room.
+    /// A full pending set blocks admission. The caller keeps the fact until capacity
+    /// changes.
     Blocked,
 }
 
-/// How far one observation got in a service round.
 #[derive(Debug)]
 enum Progress {
-    /// Applied in full.
     Done,
-    /// The round's fact budget ran out. The remainder goes back on the carry.
+    /// The carry retains the remainder when the fact budget reaches zero.
     Exhausted(Observation),
-    /// The pending set is full. The remainder goes back on the carry and the
-    /// actor stops applying facts until a page frees room.
+    /// The carry retains the remainder while the pending set is full.
     Blocked(Observation),
 }
 
-/// Which page class the next free turn goes to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum PageClass {
     #[default]
     Admission,
     Walk,
+    Recovery,
 }
 
 impl PageClass {
-    fn other(self) -> Self {
+    fn successor(self) -> Self {
         match self {
             Self::Admission => Self::Walk,
-            Self::Walk => Self::Admission,
+            Self::Walk => Self::Recovery,
+            Self::Recovery => Self::Admission,
         }
     }
 }
 
-/// One presence walk over the live map: every entry that predates
-/// `through` is checked against the store, in key order after `cursor`.
+/// The presence walk checks entries older than `through` in key order after `cursor`.
 #[derive(Clone, Debug)]
 struct Run {
     cursor: Option<SessionKey>,
@@ -666,21 +615,39 @@ struct Run {
     reason: RemovalReason,
 }
 
-/// The walk requirements and the page turn.
 #[derive(Debug, Default)]
 struct ReconcileState {
-    /// A broad removal that no walk has covered yet.
     needs: Option<(RemovalReason, Revision)>,
     run: Option<Run>,
     turn: PageClass,
+    recovery: Option<SeedRecovery>,
 }
 
-/// One presence page the actor asked the store for.
+#[derive(Debug)]
+struct SeedRecovery {
+    since: i64,
+    cursor: Option<ActiveCursor>,
+    page: Option<RecoveryPage>,
+}
+
+#[derive(Debug)]
+struct RecoveryPage {
+    rows: VecDeque<Presence>,
+    revision: Revision,
+    cursor: Option<ActiveCursor>,
+    exhausted: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PageRequest {
-    /// Pending keys that wait for admission.
-    Admission { keys: Vec<SessionKey> },
-    /// Live keys a broad removal put in doubt.
+    Active {
+        since: i64,
+        after: Option<ActiveCursor>,
+    },
+    Admission {
+        keys: Vec<SessionKey>,
+    },
+
     Walk {
         keys: Vec<SessionKey>,
         reason: RemovalReason,
@@ -691,58 +658,48 @@ impl PageRequest {
     fn keys(&self) -> &[SessionKey] {
         match self {
             Self::Admission { keys } | Self::Walk { keys, .. } => keys,
+            Self::Active { .. } => &[],
         }
     }
 }
 
-/// One finished page: what was asked and what the store said.
 struct PageOutcome {
     request: PageRequest,
     result: anyhow::Result<(Vec<Presence>, Revision)>,
 }
 
-/// The lifecycle state one lock guards: the live map, its deadline index,
-/// the deletion memory and its guards, the pending admissions, the
-/// recent-idle memory, keyless activity, the walk state, and the event
-/// sequence.
+/// One lock protects the canonical lifecycle state and its event sequence.
 #[derive(Default)]
 struct Registry {
     seq: u64,
-    /// Key order is the presence walk's cursor order.
+    /// The presence walk uses the live map key order.
     live: BTreeMap<SessionKey, LiveEntry>,
-    /// How many live entries have no `Quiet` published. Every insert,
-    /// removal, quiet, and resume moves it, so a batch never counts the map.
+    /// Each lifecycle change maintains this count without walking the live map.
     working: usize,
-    /// One entry per live session and per anonymous agent, keyed by its
-    /// current deadline. Touches move entries, so the set never accumulates
-    /// stale rows.
+    /// The index holds one current deadline per live session or anonymous agent.
+    /// Touches replace deadlines instead of retaining stale entries.
     deadlines: BTreeSet<(i64, DeadlineKey)>,
-    /// Remembered deletions, bounded by [`DELETION_MEMORY_CAP`].
+    /// The deletion memory cannot exceed [`DELETION_MEMORY_CAP`].
     deleted: BTreeMap<SessionKey, Deletion>,
-    /// Eviction index over `deleted`: the lowest `absent_at` leaves first.
+    /// The lowest `absent_at` leaves the deletion memory first.
     deleted_by_revision: BTreeSet<(Revision, SessionKey)>,
-    /// The highest `absent_at` ever evicted from `deleted`.
+    /// Eviction preserves the highest removed absence revision as an admission guard.
     forgotten_through: Revision,
-    /// The highest revision of any broad removal applied.
+    /// Broad removals preserve their highest revision as an admission guard.
     broad_through: Revision,
-    /// Keys that wait for a presence page, bounded by
-    /// [`ADMISSION_PENDING_CAP`]. The set never overflows: a fact that finds
-    /// it full blocks the carry instead.
+    /// A full pending set blocks the carry instead of dropping facts.
     pending: BTreeMap<SessionKey, PendingAdmission>,
-    /// Recently idled sessions and when each idled, bounded by
-    /// [`RECENT_IDLE_CAP`]. Narration only: a later write of the same
-    /// incarnation resumes instead of starting.
+    /// Recently idle keys affect resume events only. They do not decide admission
+    /// safety.
     recently_idle: HashMap<SessionKey, i64>,
-    /// Anonymous activity per agent. Bounded by the number of agent kinds.
-    /// Only a covering generation or the deadline removes an entry.
+    /// Only a covering generation or a deadline removes anonymous state.
     anonymous: BTreeMap<AgentKind, AnonymousEntry>,
     reconcile: ReconcileState,
 }
 
 impl Registry {
-    /// Apply one existence fact. Steps follow the admission rules: the
-    /// window, the live entry's incarnation, the deletion memory, the
-    /// guards, then admission with any pending evidence for the key.
+    /// Apply the window, incarnation, deletion, and revision guards before admitting a
+    /// key.
     fn establish(
         &mut self,
         key: &SessionKey,
@@ -755,7 +712,7 @@ impl Registry {
         }
         if let Some(entry) = self.live.get(key).copied() {
             match fact.incarnation.cmp(&entry.incarnation) {
-                // An older incarnation's activity is never imported.
+                // The registry rejects activity from an older incarnation.
                 std::cmp::Ordering::Less => return Touch::Stale,
                 std::cmp::Ordering::Equal => {
                     let entry = self.live.get_mut(key).expect("the entry was read above");
@@ -776,7 +733,8 @@ impl Registry {
                     return Touch::Advanced { resumed };
                 }
                 std::cmp::Ordering::Greater => {
-                    // A higher incarnation exists, so the live one is dead.
+                    // A higher incarnation proves the live incarnation no longer
+                    // exists.
                     self.remove_live(key);
                     self.recently_idle.remove(key);
                     out.push(SessionEvent::Idle {
@@ -806,7 +764,7 @@ impl Registry {
         if let Some(pending) = self.pending.get(key).copied() {
             match pending.incarnation.cmp(&fact.incarnation) {
                 std::cmp::Ordering::Greater => {
-                    // Newer pending evidence proves this incarnation dead.
+                    // Newer pending evidence proves this incarnation no longer exists.
                     self.remember(key, fact.incarnation, pending.revision);
                     return Touch::Stale;
                 }
@@ -846,8 +804,7 @@ impl Registry {
                     pending.is_new |= fact.is_new;
                 }
                 std::cmp::Ordering::Less => *pending = PendingAdmission::from(fact),
-                // The fact names an incarnation the pending evidence
-                // already proves dead.
+                // The pending evidence proves this incarnation no longer exists.
                 std::cmp::Ordering::Greater => {}
             }
             return Touch::Deferred;
@@ -860,8 +817,8 @@ impl Registry {
         Touch::Deferred
     }
 
-    /// Narrate what an existence fact did. `Started` needs a new identity
-    /// that did not resume; everything else that moved is `Activity`.
+    /// A new identity produces `Started` only when it does not resume. Other activity
+    /// changes produce `Activity`.
     fn narrate(
         &mut self,
         key: &SessionKey,
@@ -872,8 +829,8 @@ impl Registry {
         out: &mut Vec<SessionEvent>,
     ) {
         match touch {
-            // `Started` never clears anonymous state: only the pass's own
-            // cover says which generations it accounted for.
+            // Only the pass cover identifies which anonymous generations it accounts
+            // for.
             Touch::Added { resumed: false } if is_new => {
                 out.push(SessionEvent::Started {
                     session: SessionRef::from(key),
@@ -910,9 +867,8 @@ impl Registry {
             }
             self.remove_live(key);
             self.recently_idle.remove(key);
-            // The lifecycle scope narrates the decay: without this, a
-            // reader tracking working state waits for a `Quiet` or `Idle`
-            // the registry can no longer publish.
+            // The lifecycle reader needs `Idle` before removal eliminates the entry and
+            // its deadline.
             out.push(SessionEvent::Idle {
                 session: SessionRef::from(key),
                 agent: entry.agent,
@@ -936,8 +892,8 @@ impl Registry {
         });
     }
 
-    /// Apply a broad removal: rows the reporter cannot name were deleted at
-    /// or before `revision`. Every live entry that predates it is walked.
+    /// Apply a broad removal at `revision`. The presence walk checks older live
+    /// entries.
     fn broad(&mut self, reason: RemovalReason, revision: Revision, out: &mut Vec<SessionEvent>) {
         self.broad_through = self.broad_through.max(revision);
         match self.reconcile.needs {
@@ -950,9 +906,8 @@ impl Registry {
         });
     }
 
-    /// Remember that `incarnation` of `key` is dead and the key was absent
-    /// at `absent_at`. Both values only grow. Past the cap, the entry with
-    /// the lowest `absent_at` leaves and raises `forgotten_through`.
+    /// Remember the highest deleted incarnation and absence revision. Eviction raises
+    /// `forgotten_through` to retain the guard.
     fn remember(&mut self, key: &SessionKey, incarnation: Incarnation, absent_at: Revision) {
         match self.deleted.get_mut(key) {
             Some(deletion) => {
@@ -983,11 +938,9 @@ impl Registry {
         }
     }
 
-    /// Apply one anonymous touch. The entry keeps the highest generation
-    /// and the latest time. A later time publishes `Activity`; a newer
-    /// generation alone (a same-second write, or a clock that moved back)
-    /// only protects the entry from an older cover. A touch already past
-    /// the quiet window would expire at once, so it changes nothing.
+    /// Apply an anonymous touch. A newer timestamp publishes `Activity`. A newer
+    /// generation alone protects the entry from older covers. Out-of-window touches
+    /// change nothing.
     fn anonymous(
         &mut self,
         agent: AgentKind,
@@ -1029,8 +982,7 @@ impl Registry {
         });
     }
 
-    /// Apply one pass's covers. An entry clears only when its generation is
-    /// at or below the cover; a newer generation survives.
+    /// Apply covers only to generations at or below their limits.
     fn cover(&mut self, covers: &[AnonymousCover], now: i64, out: &mut Vec<SessionEvent>) {
         for cover in covers {
             let Some(entry) = self.anonymous.get(&cover.agent).copied() else {
@@ -1054,8 +1006,8 @@ impl Registry {
             .remove(&(entry.deadline(), DeadlineKey::Anonymous(agent)));
     }
 
-    /// Apply one observation. `budget` counts session-level facts; an
-    /// `Indexed` chunk stops at zero and returns its remainder.
+    /// Apply observations within the session fact budget. Return any unapplied
+    /// `Indexed` remainder.
     fn observe(
         &mut self,
         observation: Observation,
@@ -1175,9 +1127,8 @@ impl Registry {
         }
     }
 
-    /// Apply one presence page against the registry's current state for
-    /// every requested key. A key may have moved while the page was in
-    /// flight; each rule below reads what the key is now.
+    /// Apply the page against current registry state. Newer facts can arrive while the
+    /// read runs.
     fn apply_page(
         &mut self,
         request: &PageRequest,
@@ -1188,13 +1139,28 @@ impl Registry {
     ) {
         let reason = match request {
             PageRequest::Admission { .. } => RemovalReason::Reconciled,
+            PageRequest::Active { .. } => {
+                let page = RecoveryPage {
+                    cursor: rows.last().map(ActiveCursor::after),
+                    exhausted: rows.len() < RECONCILE_PAGE,
+                    rows: rows.into(),
+                    revision,
+                };
+                if let Some(recovery) = self.reconcile.recovery.as_mut() {
+                    recovery.page = Some(page);
+                }
+                self.apply_recovery(now, out);
+                return;
+            }
             PageRequest::Walk { reason, .. } => *reason,
         };
         let mut present: HashMap<SessionKey, Presence> =
             rows.into_iter().map(|row| (row.key.clone(), row)).collect();
         for key in request.keys() {
             match present.remove(key) {
-                Some(row) => self.apply_present_row(key, &row, revision, now, out),
+                Some(row) => {
+                    self.apply_present_row(key, &row, revision, now, out);
+                }
                 None => self.apply_absent_row(key, reason, revision, now, out),
             }
         }
@@ -1205,7 +1171,7 @@ impl Registry {
         }
     }
 
-    /// One page row: the key exists at `revision` with this incarnation.
+    /// The page confirms this incarnation exists at `revision`.
     fn apply_present_row(
         &mut self,
         key: &SessionKey,
@@ -1213,21 +1179,21 @@ impl Registry {
         revision: Revision,
         now: i64,
         out: &mut Vec<SessionEvent>,
-    ) {
+    ) -> Touch {
         let (agent, at, is_new) = match self.pending.get(key).copied() {
             Some(pending) => match pending.incarnation.cmp(&row.incarnation) {
                 std::cmp::Ordering::Equal => {
-                    // The transient watcher time joins the page epoch.
+                    // Only the same incarnation retains the transient watcher time.
                     self.pending.remove(key);
                     (pending.agent, pending.at.max(row.epoch), pending.is_new)
                 }
                 std::cmp::Ordering::Less => {
-                    // A newer incarnation exists: the pending one is dead
-                    // and its transient time is discarded, nothing else.
+                    // The new incarnation must not inherit the old incarnation’s
+                    // activity time.
                     self.pending.remove(key);
                     self.remember(key, pending.incarnation, revision);
                     let Some(agent) = self.agent_for(key) else {
-                        return;
+                        return Touch::Stale;
                     };
                     (agent, row.epoch, false)
                 }
@@ -1235,12 +1201,12 @@ impl Registry {
                     // The page is stale relative to newer pending evidence.
                     // The next page revalidates the pending entry.
                     self.remember(key, row.incarnation, pending.revision);
-                    return;
+                    return Touch::Stale;
                 }
             },
             None => {
                 let Some(agent) = self.agent_for(key) else {
-                    return;
+                    return Touch::Stale;
                 };
                 (agent, row.epoch, false)
             }
@@ -1254,9 +1220,10 @@ impl Registry {
         };
         let touch = self.establish(key, fact, now, out);
         self.narrate(key, agent, at, is_new, touch, out);
+        touch
     }
 
-    /// One requested key the page did not return: absent at `revision`.
+    /// The page confirms the requested key is absent at `revision`.
     fn apply_absent_row(
         &mut self,
         key: &SessionKey,
@@ -1266,8 +1233,7 @@ impl Registry {
         out: &mut Vec<SessionEvent>,
     ) {
         if let Some(pending) = self.pending.get(key).copied() {
-            // Pending evidence newer than the page keeps the entry: the
-            // page cannot say which incarnation it failed to find.
+            // A stale absence cannot identify which newer incarnation no longer exists.
             if pending.revision <= revision {
                 self.remember(key, pending.incarnation, revision);
                 self.pending.remove(key);
@@ -1281,7 +1247,6 @@ impl Registry {
         }
     }
 
-    /// The agent of a key the registry knows, or the one its slug names.
     fn agent_for(&self, key: &SessionKey) -> Option<AgentKind> {
         self.live
             .get(key)
@@ -1290,19 +1255,66 @@ impl Registry {
             .or_else(|| AgentKind::from_slug(&key.agent))
     }
 
-    /// Prune pending entries the window would reject, then choose the next
-    /// page. Admission pages and walk pages alternate while both have work.
+    /// Keep the unaccepted suffix until admission capacity becomes available.
+    fn apply_recovery(&mut self, now: i64, out: &mut Vec<SessionEvent>) {
+        let Some(mut recovery) = self.reconcile.recovery.take() else {
+            return;
+        };
+        if let Some(page) = recovery.page.as_mut() {
+            while let Some(row) = page.rows.front() {
+                if self.apply_present_row(&row.key, row, page.revision, now, out) == Touch::Blocked
+                {
+                    break;
+                }
+                page.rows.pop_front();
+            }
+            if page.rows.is_empty() {
+                if page.exhausted {
+                    return;
+                }
+                recovery.cursor = page.cursor.take();
+                recovery.page = None;
+            }
+        }
+        self.reconcile.recovery = Some(recovery);
+    }
+
+    fn recovery_ready(&self) -> bool {
+        self.pending.len() < ADMISSION_PENDING_CAP
+            && self
+                .reconcile
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.page.is_some())
+    }
+
+    /// Prune expired pending entries before selecting a page. Admission and walk pages
+    /// share turns with startup recovery when each class has work.
     fn next_page_request(&mut self, now: i64) -> Option<PageRequest> {
         self.pending
             .retain(|_, pending| now - pending.at < ACTIVE_SESSION_WINDOW_SECS);
+        // Apply the retained suffix before issuing another read when capacity is available.
+        if self.recovery_ready() {
+            return None;
+        }
         let preferred = self.reconcile.turn;
-        for class in [preferred, preferred.other()] {
+        for class in [
+            preferred,
+            preferred.successor(),
+            preferred.successor().successor(),
+        ] {
             let request = match class {
                 PageClass::Admission => self.next_admission_page(),
                 PageClass::Walk => self.next_walk_page(),
+                PageClass::Recovery => self.reconcile.recovery.as_ref().and_then(|recovery| {
+                    recovery.page.is_none().then(|| PageRequest::Active {
+                        since: recovery.since,
+                        after: recovery.cursor.clone(),
+                    })
+                }),
             };
             if request.is_some() {
-                self.reconcile.turn = class.other();
+                self.reconcile.turn = class.successor();
                 return request;
             }
         }
@@ -1318,9 +1330,8 @@ impl Registry {
         })
     }
 
-    /// The next walk page, starting a run from `needs` when none is open.
-    /// A run whose remaining entries are all at or above its revision is
-    /// complete; a newer requirement starts another run.
+    /// Start a walk when necessary. A newer removal requirement starts another walk
+    /// after this run completes.
     fn next_walk_page(&mut self) -> Option<PageRequest> {
         loop {
             if self.reconcile.run.is_none() {
@@ -1360,9 +1371,15 @@ impl Registry {
         }
     }
 
-    /// True when a page could do useful work now.
     fn wants_page(&self) -> bool {
-        !self.pending.is_empty() || self.reconcile.run.is_some() || self.reconcile.needs.is_some()
+        !self.pending.is_empty()
+            || self.reconcile.run.is_some()
+            || self.reconcile.needs.is_some()
+            || self
+                .reconcile
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.page.is_none())
     }
 
     fn insert_live(&mut self, key: SessionKey, entry: LiveEntry) {
@@ -1388,7 +1405,7 @@ impl Registry {
         Some(entry)
     }
 
-    /// The exact counts now. Constant time: the map is never walked.
+    /// Exact counts require no live-map walk.
     fn aggregate(&self) -> Aggregate {
         Aggregate {
             working: self.working,
@@ -1397,7 +1414,6 @@ impl Registry {
         }
     }
 
-    /// Remember an idled session, evicting the oldest past the cap.
     fn remember_idle(&mut self, key: SessionKey, idled_at: i64) {
         if self.recently_idle.len() >= RECENT_IDLE_CAP {
             let oldest = self
@@ -1412,9 +1428,8 @@ impl Registry {
         self.recently_idle.insert(key, idled_at);
     }
 
-    /// Publish `Quiet`, `Idle`, and `AnonymousCleared` for at most
-    /// [`EXPIRE_BATCH`] entries whose deadline passed, in deadline order. A
-    /// session that crosses both windows in one wake gets `Idle` only.
+    /// Expire at most [`EXPIRE_BATCH`] deadlines in order. A session that crosses both
+    /// windows in one wake gets only `Idle`.
     fn expire(&mut self, now: i64, out: &mut Vec<SessionEvent>) {
         let mut expired = 0;
         while expired < EXPIRE_BATCH
@@ -1427,12 +1442,12 @@ impl Registry {
                 DeadlineKey::Session(key) => key,
                 DeadlineKey::Anonymous(agent) => {
                     let Some(entry) = self.anonymous.get(&agent).copied() else {
-                        // The index and the map move together; a miss is a bug.
+                        // The index and the map must contain the same entry.
                         self.deadlines.remove(&(deadline, deadline_key));
                         continue;
                     };
                     if now - entry.at < QUIET_WINDOW_SECS {
-                        // Wake slack can fire before the deadline second.
+                        // The supplied clock can precede the indexed deadline.
                         self.deadlines.remove(&(deadline, deadline_key));
                         self.deadlines
                             .insert((entry.deadline(), DeadlineKey::Anonymous(agent)));
@@ -1449,7 +1464,7 @@ impl Registry {
                 }
             };
             let Some(entry) = self.live.get(&key).copied() else {
-                // The index and the map move together; a miss is a bug.
+                // The index and the map must contain the same entry.
                 self.deadlines
                     .remove(&(deadline, DeadlineKey::Session(key)));
                 continue;
@@ -1478,8 +1493,8 @@ impl Registry {
                 });
                 expired += 1;
             } else {
-                // Wake slack can fire before the deadline second. Move the
-                // entry to its computed deadline and wait again.
+                // The supplied clock can precede the deadline. Retain the entry until
+                // its computed deadline.
                 self.deadlines
                     .remove(&(deadline, DeadlineKey::Session(key.clone())));
                 self.deadlines
@@ -1502,8 +1517,8 @@ impl From<Existence> for PendingAdmission {
     }
 }
 
-/// One folded keyed removal: the highest incarnation and revision reported
-/// for the key, with the reason of the highest revision.
+/// Spill folding retains the highest incarnation and revision. The highest revision
+/// supplies the removal reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RemovedCell {
     incarnation: Incarnation,
@@ -1511,9 +1526,8 @@ struct RemovedCell {
     revision: Revision,
 }
 
-/// Where a sync report goes when the inbox is full. Every fold is a per-key
-/// maximum or union; past a cap, a fact degrades to a broader canonical
-/// fact. Nothing is dropped, and nothing here establishes a key.
+/// The spill combines sync facts by maximum values or unions. Overflow converts facts
+/// to broader removals or invalidations. No spill fact establishes presence.
 #[derive(Debug, Default)]
 struct Spill {
     removed: BTreeMap<SessionKey, RemovedCell>,
@@ -1536,7 +1550,7 @@ impl Spill {
                 } else if self.rows.len() < SPILL_KEY_CAP {
                     self.rows.insert(session, (facets, at));
                 } else {
-                    // Past the cap, the row patch degrades to one list refetch.
+                    // Overflow converts the row patch to a list refresh.
                     self.index_changed.insert(IndexChangeReason::Invalidated);
                 }
             }
@@ -1561,8 +1575,8 @@ impl Spill {
                         },
                     );
                 } else {
-                    // Past the cap, the keyed removal degrades to a broad
-                    // one: the presence walk removes the row.
+                    // Overflow converts the keyed removal to a broad removal. The
+                    // presence walk checks the row.
                     self.fold_broad(reason, revision);
                 }
             }
@@ -1592,14 +1606,11 @@ impl Spill {
     }
 }
 
-/// The bus and the actor's state, held in Tauri managed state.
-///
-/// `subscribe` gives a reader every event from now on. `report_async` and
-/// `report` hand the actor an observation. `snapshot` is the versioned view
-/// a late subscriber reads instead of a replay.
+/// Tauri manages the bus and actor state together. Subscribers recover through
+/// versioned snapshots rather than event replay.
 pub struct SessionEvents {
     inbox: mpsc::Sender<Observation>,
-    /// The receiving end, taken once by the actor.
+    /// Only one actor can take this receiver.
     pending_inbox: Mutex<Option<mpsc::Receiver<Observation>>>,
     spill: Mutex<Spill>,
     spill_wake: Notify,
@@ -1627,22 +1638,21 @@ impl Default for SessionEvents {
 }
 
 impl SessionEvents {
-    /// A receiver that sees every event published after this call.
+    /// Subscribe to future events. Broadcast lag requires snapshot recovery.
     pub fn subscribe(&self) -> broadcast::Receiver<Sequenced> {
         self.bus.subscribe()
     }
 
-    /// Hand the actor one observation, waiting for inbox room. Only the
-    /// scan task calls this: its wait is bounded by actor progress, never by
-    /// a lock, and it holds no store guard while it waits.
+    /// Send one observation, waiting for inbox capacity. The scan caller must hold no
+    /// Store guard while it waits.
     pub async fn report_async(&self, observation: Observation) {
         if self.inbox.send(observation).await.is_err() {
             ::tracing::debug!(event = "session_lifecycle_inbox_closed");
         }
     }
 
-    /// Hand the actor one observation without waiting. A full inbox folds
-    /// the fact into the spill; a closed inbox drops it with a log.
+    /// Send one sync observation without waiting for inbox capacity. Spill access can
+    /// briefly wait for its mutex. A closed inbox drops the report with a log.
     pub fn report(&self, observation: SyncObservation) {
         match self.inbox.try_reserve() {
             Ok(permit) => permit.send(Observation::from(observation)),
@@ -1659,9 +1669,8 @@ impl SessionEvents {
         }
     }
 
-    /// The most recent live sessions, versioned and bounded to `limit`, the
-    /// exact counts, and every agent with anonymous activity. The clone
-    /// happens under the lock; sorting happens outside it.
+    /// Return bounded recent rows with exact counts and complete anonymous state. Clone
+    /// under the registry lock. Sort after releasing the lock.
     pub fn snapshot(&self, limit: usize) -> LiveSnapshot {
         let (seq, aggregate, mut sessions, anonymous) = {
             let registry = self
@@ -1683,8 +1692,7 @@ impl SessionEvents {
                 .collect::<Vec<_>>();
             (registry.seq, registry.aggregate(), sessions, anonymous)
         };
-        // Most recent first, then the full identity, so equal epochs still
-        // order the same way on every call.
+        // Full identity order keeps equal activity epochs deterministic.
         sessions.sort_by(|a, b| {
             b.last_activity_at
                 .cmp(&a.last_activity_at)
@@ -1702,10 +1710,8 @@ impl SessionEvents {
         }
     }
 
-    /// The registry's state for the named identities, all read under one
-    /// lock at one sequence. An identity the registry does not hold is
-    /// `absent`; a duplicate in `sessions` is answered once. The caller
-    /// bounds the request.
+    /// Read named presence under one registry lock. The caller bounds the request.
+    /// Duplicate identities receive one answer.
     pub fn presence(&self, sessions: &[SessionRef]) -> LivePresence {
         let registry = self
             .registry
@@ -1731,7 +1737,7 @@ impl SessionEvents {
         }
     }
 
-    /// The sequence of the last published event.
+    /// Read the last canonical event sequence.
     pub fn current_seq(&self) -> u64 {
         self.registry
             .lock()
@@ -1739,9 +1745,8 @@ impl SessionEvents {
             .seq
     }
 
-    /// Fill the live map from one seed page, before the actor runs. Every
-    /// row exists at the page's revision. A row outside the window is
-    /// skipped, and so is an agent slug the shell does not know.
+    /// Seed one page before the actor runs. Rows retain the page revision. Unknown
+    /// agents and out-of-window rows do not enter the registry.
     fn seed(&self, rows: Vec<Presence>, revision: Revision, now: i64) {
         let mut registry = self
             .registry
@@ -1761,16 +1766,15 @@ impl SessionEvents {
                     incarnation: row.incarnation,
                     exists_at: revision,
                     last_activity_at: row.epoch,
-                    // A row already past the quiet window has no `Quiet` to
-                    // publish: the snapshot carries its epoch.
+                    // The snapshot supplies quiet state without publishing a seed
+                    // event.
                     quiet_published: now - row.epoch >= QUIET_WINDOW_SECS,
                 },
             );
         }
     }
 
-    /// The inbox receiver, on the first call only. The caller becomes the
-    /// actor.
+    /// Claim the inbox once for the actor.
     fn claim_actor(&self) -> Option<mpsc::Receiver<Observation>> {
         self.pending_inbox
             .lock()
@@ -1791,7 +1795,6 @@ impl SessionEvents {
     }
 }
 
-/// One live entry as a snapshot or presence row.
 fn live_session(key: &SessionKey, entry: &LiveEntry) -> LiveSession {
     LiveSession {
         session: SessionRef::from(key),
@@ -1801,32 +1804,27 @@ fn live_session(key: &SessionKey, entry: &LiveEntry) -> LiveSession {
     }
 }
 
-/// Report an observation from a context that must not wait. A test app
-/// without managed state reports nothing.
+/// Report a sync fact without waiting for inbox capacity. Test apps without managed
+/// state report nothing.
 pub fn report(app: &AppHandle, observation: SyncObservation) {
     if let Some(events) = app.try_state::<SessionEvents>() {
         events.report(observation);
     }
 }
 
-/// Report an observation from the scan task, waiting for inbox room. A
-/// test app without managed state reports nothing.
+/// Report a scan fact, waiting for inbox capacity. Test apps without managed state
+/// report nothing.
 pub async fn report_async(app: &AppHandle, observation: Observation) {
     if let Some(events) = app.try_state::<SessionEvents>() {
         events.report_async(observation).await;
     }
 }
 
-/// Seed the live map from the store, then start the actor. Seeding happens
-/// synchronously in this call, so every producer started after it sees a
-/// populated registry. The returned handle is aborted with the rest of the
-/// schedulers on exit.
+/// Seed the registry synchronously before starting the actor. Shutdown aborts the
+/// returned task with the other schedulers.
 pub fn spawn(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let events = app.state::<SessionEvents>();
-    // `now` tracks tokio's own clock rather than the wall clock directly,
-    // so a test can drive it deterministically under
-    // `tokio::time::pause()`: every `tokio::time::sleep` below advances
-    // this clock exactly as far as it advances the real one.
+    // Tokio elapsed time lets paused-clock tests control lifecycle deadlines.
     let base_epoch = crate::scan::unix_now();
     let base_instant = Instant::now();
     let source: Arc<dyn ReconcileSource> = Arc::new((*app.state::<Store>()).clone());
@@ -1846,14 +1844,22 @@ pub fn spawn(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     })
 }
 
-/// Walk the store's active window one page at a time and seed each page
-/// silently. A page that fails ends the walk with the rows read so far; the
-/// launch pass re-reports them.
+/// Seed silently before startup. Retain a failed cursor for guarded recovery after startup.
 fn seed(events: &SessionEvents, source: &dyn ReconcileSource, now: i64) {
     let since = now - ACTIVE_SESSION_WINDOW_SECS;
     let mut cursor: Option<ActiveCursor> = None;
     loop {
         let Ok((page, revision)) = source.active(since, cursor.as_ref(), RECONCILE_PAGE) else {
+            events
+                .registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .reconcile
+                .recovery = Some(SeedRecovery {
+                since,
+                cursor,
+                page: None,
+            });
             return;
         };
         let last_page = page.len() < RECONCILE_PAGE;
@@ -1865,48 +1871,54 @@ fn seed(events: &SessionEvents, source: &dyn ReconcileSource, now: i64) {
     }
 }
 
-/// The actor's own state between service rounds.
 struct Actor {
-    /// Observations received but not yet applied. The head may be a fact
-    /// that is blocked on a full pending set.
+    /// The carry retains a blocked head fact while admission waits for capacity.
     carry: VecDeque<Observation>,
-    /// The receive buffer one wake fills before it joins the carry.
+
     batch: Vec<Observation>,
     carry_blocked: bool,
     in_flight: Option<JoinHandle<PageOutcome>>,
     backoff: Duration,
-    /// Set after a failed page: no page is issued before this instant.
+    /// Failed pages cannot retry before this instant.
     next_allowed: Option<Instant>,
 }
 
-/// The loop [`spawn`] runs forever. Split out so a test can drive it with a
-/// captured clock and a scripted source, without a Tauri app.
-///
-/// Each wake runs one service round in a fixed order: expiry, one finished
-/// page, the spill, then a bounded batch of facts. Every source has a
-/// quota, so no source waits more than one round for another. No arm holds
-/// a lock across an await.
+/// Each round services expiry, one completed page, the spill, and a bounded batch of
+/// facts. Per-source quotas prevent starvation. No await holds a registry lock.
 async fn run(
     events: &SessionEvents,
     mut inbox: mpsc::Receiver<Observation>,
     source: Arc<dyn ReconcileSource>,
     now: &(dyn Fn() -> i64 + Send + Sync),
 ) {
+    let recovering = events
+        .registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .reconcile
+        .recovery
+        .is_some();
     let mut actor = Actor {
         carry: VecDeque::new(),
         batch: Vec::with_capacity(DRAIN_BATCH),
         carry_blocked: false,
         in_flight: None,
-        backoff: RECONCILE_BACKOFF_MIN,
-        next_allowed: None,
+        backoff: if recovering {
+            RECONCILE_BACKOFF_MIN * 2
+        } else {
+            RECONCILE_BACKOFF_MIN
+        },
+        next_allowed: recovering.then(|| Instant::now() + RECONCILE_BACKOFF_MIN),
     };
     loop {
         let deadline = soonest_deadline(&events.registry);
-        let wants_page = events
-            .registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .wants_page();
+        let (wants_page, recovery_ready) = {
+            let registry = events
+                .registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (registry.wants_page(), registry.recovery_ready())
+        };
         let mut finished = None;
         tokio::select! {
             biased;
@@ -1915,6 +1927,7 @@ async fn run(
                 actor.in_flight = None;
                 finished = Some(outcome);
             }
+            () = std::future::ready(()), if recovery_ready => {}
             () = std::future::ready(()), if !actor.carry.is_empty() && !actor.carry_blocked => {}
             () = sleep_until_deadline(deadline, now) => {}
             () = sleep_until_instant(actor.next_allowed),
@@ -1942,6 +1955,12 @@ async fn run(
         }
         if let Some(outcome) = finished {
             apply_page(events, &mut actor, outcome, now_epoch);
+        } else if recovery_ready {
+            apply(events, |registry| {
+                let mut out = Vec::new();
+                registry.apply_recovery(now_epoch, &mut out);
+                (out, ())
+            });
         }
         if let Some(spill) = events.take_spill() {
             apply_spill(events, spill, now_epoch);
@@ -1956,6 +1975,14 @@ async fn run(
                 .is_none_or(|allowed| Instant::now() >= allowed)
         {
             actor.in_flight = issue_page(events, &source, now_epoch);
+            // Page selection can prune pending entries and free capacity without issuing a page.
+            actor.carry_blocked &= events
+                .registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pending
+                .len()
+                == ADMISSION_PENDING_CAP;
         }
         tokio::task::yield_now().await;
     }
@@ -1972,8 +1999,7 @@ fn receive_ready(inbox: &mut mpsc::Receiver<Observation>, carry: &mut VecDeque<O
     }
 }
 
-/// Wait for the page in flight. A page whose task panicked or was
-/// cancelled reads as a failed page.
+/// Wait for the pending page. A panic or cancellation returns a read error.
 async fn join_page(in_flight: &mut Option<JoinHandle<PageOutcome>>) -> PageOutcome {
     match in_flight.as_mut() {
         Some(handle) => match handle.await {
@@ -1987,8 +2013,8 @@ async fn join_page(in_flight: &mut Option<JoinHandle<PageOutcome>>) -> PageOutco
     }
 }
 
-/// Apply at most [`DRAIN_WEIGHT`] session-level facts from the carry, in
-/// order. Returns true when the head is blocked on a full pending set.
+/// Apply at most [`DRAIN_WEIGHT`] facts in order. Return true when a full pending set
+/// blocks the head.
 fn apply_facts(events: &SessionEvents, carry: &mut VecDeque<Observation>, now: i64) -> bool {
     let mut budget = DRAIN_WEIGHT;
     while budget > 0
@@ -2014,8 +2040,8 @@ fn apply_facts(events: &SessionEvents, carry: &mut VecDeque<Observation>, now: i
     false
 }
 
-/// Apply a taken spill: rows, keyed removals, the broad removal, then the
-/// index flags. Each cell is one atomic apply.
+/// Apply each spill cell atomically in row, keyed-removal, broad-removal, then index
+/// order.
 fn apply_spill(events: &SessionEvents, spill: Spill, now: i64) {
     for (session, (facets, at)) in spill.rows {
         publish(
@@ -2053,8 +2079,8 @@ fn apply_spill(events: &SessionEvents, spill: Spill, now: i64) {
     }
 }
 
-/// Choose and start the next page on the blocking pool, if any work wants
-/// one. The registry lock is released before the task starts.
+/// Choose the next page under the registry lock. Release the lock before starting its
+/// blocking read.
 fn issue_page(
     events: &SessionEvents,
     source: &Arc<dyn ReconcileSource>,
@@ -2067,13 +2093,18 @@ fn issue_page(
         .next_page_request(now)?;
     let source = Arc::clone(source);
     Some(tokio::task::spawn_blocking(move || {
-        let result = source.presence(request.keys());
+        let result = match &request {
+            PageRequest::Active { since, after } => {
+                source.active(*since, after.as_ref(), RECONCILE_PAGE)
+            }
+            _ => source.presence(request.keys()),
+        };
         PageOutcome { request, result }
     }))
 }
 
-/// Apply one finished page, or back off after a failed one. A failure
-/// keeps the cursor and every requirement.
+/// Apply a completed page or delay its retry. A read failure preserves the cursor and
+/// requirements.
 fn apply_page(events: &SessionEvents, actor: &mut Actor, outcome: PageOutcome, now: i64) {
     match outcome.result {
         Ok((rows, revision)) => {
@@ -2097,8 +2128,7 @@ fn apply_page(events: &SessionEvents, actor: &mut Actor, outcome: PageOutcome, n
     }
 }
 
-/// The earliest moment a live session can go quiet or idle, or `None` with
-/// no live session.
+/// Read the earliest session or anonymous deadline.
 fn soonest_deadline(registry: &Mutex<Registry>) -> Option<i64> {
     registry
         .lock()
@@ -2108,8 +2138,8 @@ fn soonest_deadline(registry: &Mutex<Registry>) -> Option<i64> {
         .map(|(deadline, _)| *deadline)
 }
 
-/// Sleep until `deadline` plus slack, or forever when nothing is live. A
-/// `tokio::select!` arm with nothing pending must never fire.
+/// Wait until the deadline plus slack. No deadline means this select arm remains
+/// pending.
 async fn sleep_until_deadline(deadline: Option<i64>, now: &(dyn Fn() -> i64 + Send + Sync)) {
     match deadline {
         Some(deadline) => {
@@ -2128,7 +2158,7 @@ async fn sleep_until_instant(instant: Option<Instant>) {
     }
 }
 
-/// Publish `Quiet` and `Idle` for at most [`EXPIRE_BATCH`] due sessions.
+/// Expire at most [`EXPIRE_BATCH`] session or anonymous deadlines.
 fn expire(events: &SessionEvents, now: i64) {
     apply(events, |registry| {
         let mut out = Vec::new();
@@ -2137,11 +2167,8 @@ fn expire(events: &SessionEvents, now: i64) {
     });
 }
 
-/// Mutate the registry, assign a sequence to every produced event under the
-/// same lock, and publish after the lock is released. The batch's exact
-/// counts ride on its last lifecycle event, never on an event the bridge
-/// turns into a row or index change, so every reader of the lifecycle scope
-/// sees the counts the batch ended with.
+/// Update state and assign canonical sequences under one lock. Attach exact counts to
+/// the last lifecycle event. Publish after releasing the lock.
 fn apply<T>(
     events: &SessionEvents,
     mutate: impl FnOnce(&mut Registry) -> (Vec<SessionEvent>, T),
@@ -2169,18 +2196,17 @@ fn apply<T>(
         (sequenced, value)
     };
     for event in sequenced {
-        // A bus with no subscriber returns an error, and that is not a
-        // fault: the HUD may be closed.
+        // No subscribers is valid when all readers are closed.
         let _ = events.bus.send(event);
     }
     value
 }
 
-/// Publish events that mutate nothing. Sequencing still goes through the
-/// registry lock.
+/// Publish events without state changes. The registry lock still assigns their
+/// sequences.
 fn publish(events: &SessionEvents, out: Vec<SessionEvent>) {
     apply(events, move |_| (out, ()));
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

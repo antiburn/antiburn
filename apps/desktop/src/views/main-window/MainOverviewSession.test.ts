@@ -117,9 +117,7 @@ function fakeLiveSessions() {
     source,
     interests,
     listenerCount: () => listeners.size,
-    publish(
-      change: Partial<LiveSessionsSnapshot> & { live?: Record<string, TrackedSession> },
-    ) {
+    publish(change: Partial<LiveSessionsSnapshot> & { live?: Record<string, TrackedSession> }) {
       const { live, ...rest } = change
       snapshot = {
         ...snapshot,
@@ -382,9 +380,7 @@ describe("MainOverviewSession", () => {
       absent: new Set([JSON.stringify(["native", "claude", "b"])]),
     })
     expect(
-      session
-        .getSnapshot()
-        .recentSessions?.map((item) => [item.sessionId, item.isActive]),
+      session.getSnapshot().recentSessions?.map((item) => [item.sessionId, item.isActive]),
     ).toEqual([
       ["d", true],
       ["c", false],
@@ -423,3 +419,38 @@ describe("MainOverviewSession", () => {
     }
   })
 })
+
+it.each(["hidden", "inactive"])(
+  "suspends Overview lifecycle overlays while %s and reconciles on resume",
+  async (mode) => {
+    const { session, live, setVisible } = setup()
+    sessions.push(session)
+    const listener = vi.fn()
+    const stopInactive = session.subscribeInactive(listener)
+    const stopActive = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().recentSessions).not.toBeNull())
+    expect(live.interests.has(session)).toBe(true)
+    if (mode === "hidden") setVisible(false)
+    else stopActive()
+    expect(session.getSnapshot().active).toBe(false)
+    const before = session.getSnapshot()
+    listener.mockClear()
+    live.publish({
+      ready: true,
+      complete: true,
+      live: {
+        '["native","claude","d"]': { agent: "claude", lastActivityAt: 100, quiet: false },
+      },
+    })
+    expect(session.getSnapshot()).toBe(before)
+    expect(listener).not.toHaveBeenCalled()
+    expect(live.interests.has(session)).toBe(false)
+    if (mode === "hidden") setVisible(true)
+    else session.subscribe(() => undefined)
+    expect(live.interests.has(session)).toBe(true)
+    expect(
+      session.getSnapshot().recentSessions?.find((row) => row.sessionId === "d")?.isActive,
+    ).toBe(true)
+    stopInactive()
+  },
+)

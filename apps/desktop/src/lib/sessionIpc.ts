@@ -1,9 +1,6 @@
 /**
- * Typed IPC edge for sessions: the row and analysis payloads, the session
- * commands, and the session lifecycle bus (`session:lifecycle`,
- * `session:updated`, `session:index-changed`, the versioned live snapshot,
- * and named presence). `ipc.ts` re-exports everything here, so callers keep
- * one import path.
+ * This module defines session IPC payloads, commands, and lifecycle subscriptions.
+ * `ipc.ts` re-exports them to preserve the shared import path.
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
@@ -203,17 +200,14 @@ export async function deleteSessionData(
 
 const noShellUnlisten: UnlistenFn = () => undefined
 
-/**
- * Identity of one session on the lifecycle bus. Mirrors Rust `SessionRef`
- * in `src-tauri/src/session_lifecycle.rs`.
- */
+/** This identity matches Rust `SessionRef` on the lifecycle bus. */
 export interface SessionRefPayload {
   environmentKey: string
   agent: string
   sessionId: string
 }
 
-/** Which parts of a session row changed. Mirrors Rust `UpdateFacets`. */
+/** These facets match Rust `UpdateFacets` and name changed row data. */
 export interface UpdateFacetsPayload {
   metadata: boolean
   title: boolean
@@ -223,15 +217,17 @@ export interface UpdateFacetsPayload {
   limits: boolean
 }
 
-/** Why anonymous agent activity cleared. Mirrors Rust `AnonymousClearCause`. */
+/**
+ * This cause matches Rust `AnonymousClearCause` and identifies why anonymous activity
+ * ends.
+ */
 export type AnonymousClearCause = "resolved" | "expired"
 
 /**
- * The registry's exact counts after one atomic batch. Mirrors Rust
- * `Aggregate`. `working` sessions have a write inside the quiet window,
- * `total` sessions are live (working or quiet), and `anonymous` agents have
- * unindexed activity. The counts are exact regardless of the snapshot's row
- * limit, so a reader never counts a bounded row list.
+ * These exact counts match Rust `Aggregate` after an atomic batch. Working sessions
+ * remain inside the quiet window. Total includes working and quiet sessions. Anonymous
+ * counts agents with unresolved activity. Snapshot row limits do not affect these
+ * counts.
  */
 export interface AggregatePayload {
   working: number
@@ -240,26 +236,19 @@ export interface AggregatePayload {
 }
 
 /**
- * The batch counts a lifecycle envelope may carry. The registry stamps them
- * on the last lifecycle event of each atomic batch; every other event omits
- * them. A reader keeps the counts of the highest-sequence stamp it has seen.
+ * The last lifecycle event of an atomic batch carries exact counts. Readers retain the
+ * counts with the highest sequence.
  */
 export interface LifecycleAggregateCarrier {
   aggregate?: AggregatePayload
 }
 
 /**
- * One `session:lifecycle` envelope. Mirrors Rust `LifecycleEnvelope`: the
- * flattened event plus the registry sequence a reader orders deltas by,
- * plus the batch counts on the batch's last lifecycle event.
- * A reader applies only events with a sequence above its snapshot's, and
- * re-reads the snapshot on `resync`. `activity` with a null `session` is
- * anonymous agent-level activity: a watched write the store has not
- * indexed yet. Only `anonymous_cleared` ends it: the registry clears the
- * agent when a pass covers the touch or its own quiet window passes, and no
- * reader keeps a timer. Sequences are global across every session event
- * scope, so gaps between lifecycle events are normal; only `resync` means
- * loss. `resync` comes from the bridge and never carries counts.
+ * This envelope matches Rust `LifecycleEnvelope`. Readers apply deltas above their base
+ * sequence. Sequence gaps are normal across the three session scopes. Only the bridge
+ * requests recovery through `resync`. Recovery markers carry no counts. A null activity
+ * session identifies anonymous activity. Only registry covers and deadlines clear that
+ * state.
  */
 export type SessionLifecycleEventPayload = LifecycleAggregateCarrier &
   (
@@ -270,7 +259,7 @@ export type SessionLifecycleEventPayload = LifecycleAggregateCarrier &
         session: SessionRefPayload | null
         agent: string
         at: number
-        /** True when the write follows quiet or idle. */
+        /** The write resumes activity after quiet or idle. */
         resumed: boolean
       }
     | { seq: number; kind: "quiet"; session: SessionRefPayload; agent: string; at: number }
@@ -285,7 +274,7 @@ export type SessionLifecycleEventPayload = LifecycleAggregateCarrier &
     | { seq: number; kind: "resync" }
   )
 
-/** One `session:updated` payload. Mirrors Rust `SessionUpdatedPayload`. */
+/** This row projection matches Rust `SessionUpdatedPayload`. */
 export interface SessionUpdatedPayload {
   seq: number
   session: SessionRefPayload
@@ -293,13 +282,13 @@ export interface SessionUpdatedPayload {
   entry: ActivityEntryPayload
 }
 
-/** Why a session left the store. Mirrors Rust `RemovalReason`. */
+/** This removal reason matches Rust `RemovalReason`. */
 export type SessionRemovalReason = "deleted" | "purged" | "rejected" | "reconciled"
 
-/** Why list membership changed. Mirrors Rust `IndexChangeCause`. */
+/** This index change cause matches Rust `IndexChangeCause`. */
 export type SessionIndexChangeCause = "scan_pass" | "invalidated" | "removed" | "resync"
 
-/** One `session:index-changed` payload. Mirrors Rust `IndexChangedPayload`. */
+/** This index notification matches Rust `IndexChangedPayload`. */
 export interface SessionIndexChangedPayload {
   seq: number
   cause: SessionIndexChangeCause
@@ -307,35 +296,27 @@ export interface SessionIndexChangedPayload {
   removal?: SessionRemovalReason
 }
 
-/** One live session in the registry snapshot. Mirrors Rust `LiveSession`. */
+/** This snapshot row matches Rust `LiveSession`. */
 export interface LiveSessionPayload {
   session: SessionRefPayload
   agent: string
-  /** Unix seconds of the session's last observed write. */
+  /** The timestamp records session activity in Unix seconds. */
   lastActivityAt: number
-  /** True when the registry has published `quiet` for that write. */
+  /** The registry sets this flag when the session becomes quiet. */
   quiet: boolean
 }
 
-/**
- * One agent with anonymous activity inside the registry's quiet window.
- * Mirrors Rust `LiveAnonymous`.
- */
+/** This anonymous agent state matches Rust `LiveAnonymous`. */
 export interface LiveAnonymousPayload {
   agent: string
-  /** Unix seconds of the agent's last anonymous write. */
+  /** The timestamp records anonymous activity in Unix seconds. */
   lastActivityAt: number
 }
 
 /**
- * The versioned live-session snapshot. Mirrors Rust `LiveSnapshot`. `seq`
- * is the sequence of the last event whose effect the snapshot includes: a
- * subscriber applies only lifecycle deltas with a higher sequence.
- * `working` and `total` are exact; `sessions` holds at most the requested
- * limit of the most recent live rows, so `sessions.length < total` means
- * the rows are truncated and an omitted identity is unknown, not absent.
- * `anonymous` is complete, so a snapshot replaces the tracker's anonymous
- * state as well as its sessions.
+ * This snapshot matches Rust `LiveSnapshot` at `seq`. Working and total counts remain
+ * exact. A truncated row list leaves omitted identities unknown, not absent. The
+ * complete anonymous list replaces prior anonymous state.
  */
 export interface LiveSnapshotPayload {
   seq: number
@@ -346,9 +327,8 @@ export interface LiveSnapshotPayload {
 }
 
 /**
- * The registry's answer for named identities at one sequence. Mirrors Rust
- * `LivePresence`. Every requested identity is in exactly one list; both are
- * read under one registry lock, so they agree with `seq`.
+ * This named presence result matches Rust `LivePresence`. One registry lock protects
+ * both lists at the same sequence. Each requested identity appears in exactly one list.
  */
 export interface LivePresencePayload {
   seq: number
@@ -357,17 +337,14 @@ export interface LivePresencePayload {
 }
 
 /**
- * How many identities one `get_live_sessions_for` call may name. Mirrors
- * `MAX_ACTIVITY_ROWS` in `src-tauri/src/commands.rs`, the list's own row
- * bound. A larger interest set is read in bounded chunks, one at a time.
+ * Each presence request names at most this many identities. The limit matches Rust
+ * `MAX_ACTIVITY_ROWS`. Larger interest unions require sequential bounded requests.
  */
 export const LIVE_PRESENCE_REQUEST_LIMIT = 500
 
 /**
- * The most recent live sessions from the lifecycle registry, bounded to
- * `limit`, with the registry sequence. A reader subscribes to
- * `session:lifecycle` first, takes this snapshot, then applies only
- * deltas with a higher sequence.
+ * Read bounded recent rows with the canonical registry sequence. Subscribe to lifecycle
+ * events before requesting this snapshot.
  */
 export async function getLiveSessions(limit?: number): Promise<LiveSnapshotPayload | null> {
   if (!isTauri()) return null
@@ -375,10 +352,8 @@ export async function getLiveSessions(limit?: number): Promise<LiveSnapshotPaylo
 }
 
 /**
- * The registry's state for the named identities at one sequence. A list
- * whose rows fall outside the bounded snapshot asks for them here. At most
- * {@link LIVE_PRESENCE_REQUEST_LIMIT} identities per call; the shell rejects
- * more.
+ * Read named presence for identities the bounded snapshot omits. The shell rejects
+ * requests above {@link LIVE_PRESENCE_REQUEST_LIMIT}.
  */
 export async function getLiveSessionsFor(
   sessions: SessionRefPayload[],
@@ -388,9 +363,8 @@ export async function getLiveSessionsFor(
 }
 
 /**
- * Event the projection bridge emits for every transition on the session
- * lifecycle bus. Mirrors `SESSION_LIFECYCLE_EVENT` in
- * `src-tauri/src/commands.rs`. Only the bridge emits it.
+ * Only the projection bridge emits this lifecycle scope. Its name matches Rust
+ * `SESSION_LIFECYCLE_EVENT`.
  */
 export const SESSION_LIFECYCLE_EVENT = "session:lifecycle"
 
@@ -405,9 +379,8 @@ export async function onSessionLifecycleEvent(
 }
 
 /**
- * Event the projection bridge emits with one enriched row per coalesced
- * registry update. Mirrors `SESSION_UPDATED_EVENT` in
- * `src-tauri/src/commands.rs`. Replaces the removed `sessions:entry-changed`.
+ * Only the projection bridge emits enriched rows on this scope. Its name matches Rust
+ * `SESSION_UPDATED_EVENT`.
  */
 export const SESSION_UPDATED_EVENT = "session:updated"
 
@@ -416,16 +389,12 @@ export async function onSessionUpdated(
   handler: (update: SessionUpdatedPayload) => void,
 ): Promise<UnlistenFn> {
   if (!isTauri()) return noShellUnlisten
-  return listen<SessionUpdatedPayload>(SESSION_UPDATED_EVENT, (event) =>
-    handler(event.payload),
-  )
+  return listen<SessionUpdatedPayload>(SESSION_UPDATED_EVENT, (event) => handler(event.payload))
 }
 
 /**
- * Event the projection bridge emits when list membership changes: a
- * removal, a scan pass, a broad invalidation, or a resync. Mirrors
- * `SESSION_INDEX_CHANGED_EVENT` in `src-tauri/src/commands.rs`. Replaces
- * the removed `sessions:invalidated`.
+ * Only the projection bridge emits index changes on this scope. Its name matches Rust
+ * `SESSION_INDEX_CHANGED_EVENT`.
  */
 export const SESSION_INDEX_CHANGED_EVENT = "session:index-changed"
 

@@ -281,7 +281,7 @@ fn the_bridge_emits_the_stamped_aggregate_and_fabricates_none_on_lag() {
 }
 
 #[test]
-fn a_registry_resync_relays_and_requests_an_index_refresh() {
+fn a_synthetic_resync_relays_and_requests_an_index_refresh() {
     let mut projector = Projector::default();
     let resync = Sequenced {
         seq: 9,
@@ -610,7 +610,7 @@ fn a_broad_removal_an_invalidation_or_lag_invalidates_the_batch_in_flight() {
         ),
         ("lag", Box::new(|projector| projector.absorb_lag(5))),
         (
-            "registry resync",
+            "synthetic resync",
             Box::new(|projector| {
                 projector.absorb(Sequenced {
                     seq: 5,
@@ -870,14 +870,13 @@ fn repeated_lag_in_one_cycle_coalesces_and_a_newer_gap_gets_a_follow_up() {
 }
 
 #[test]
-fn a_registry_resync_inside_a_cycle_raises_the_watermark_and_drops_a_covered_follow_up() {
+fn a_synthetic_resync_inside_a_cycle_raises_the_watermark_and_drops_a_covered_follow_up() {
     let mut projector = Projector::default();
     let _ = projector.absorb_lag(10);
     let _ = projector.absorb_lag(20);
     assert_eq!(projector.recovery.unwrap().follow_up, Some(20));
 
-    // A canonical resync at 25 relays as is; the reader resyncs at 25 or
-    // above, so the retained gap at 20 is covered.
+    // The synthetic marker at 25 covers the retained gap at 20.
     let resync = Sequenced {
         seq: 25,
         event: SessionEvent::Resync,
@@ -1513,4 +1512,213 @@ fn the_bridge_is_the_only_tauri_emitter_of_session_scopes() {
         !rest.contains("Emitter::emit(") && !rest.contains(".emit(crate::commands::"),
         "no Tauri emit outside the emitter impl"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_removal_wins_when_the_load_and_bus_are_ready_together() {
+    let harness = start(GatedLoader::with_rows(&["a", "b"]), 16);
+    harness.loader.hold();
+    harness.send(updated(1, "a", facets(true, false), 100));
+    harness.send(updated(2, "b", facets(true, false), 100));
+    settle().await;
+    tokio::time::advance(FLUSH_DELAY).await;
+    wait_until(|| harness.loader.requests().len() == 1).await;
+    harness.send(started(3, "other", 100));
+    harness.send(removed(4, Some("a"), RemovalReason::Deleted));
+    harness.send(updated(5, "b", facets(false, true), 101));
+    harness.loader.release();
+    harness.loader.spin_until_completed(1);
+    settle().await;
+    let emissions = harness.recorder.take();
+    assert!(updated_ids(&emissions).is_empty());
+    assert_eq!(
+        index_causes(&emissions),
+        vec![(4, IndexChangeCause::Removed)]
+    );
+    tokio::time::advance(FLUSH_DELAY).await;
+    wait_until(|| harness.loader.requests().len() == 2).await;
+    harness.loader.spin_until_completed(2);
+    settle().await;
+    let emissions = harness.recorder.take();
+    assert_eq!(updated_ids(&emissions), vec!["b"]);
+    let Emission::Updated(row) = &emissions[0] else {
+        panic!("expected row")
+    };
+    assert_eq!(row.seq, 5);
+    assert_eq!(row.facets, facets(true, true));
+}
+
+#[test]
+fn overflow_suppresses_a_successful_inflight_load_and_bounds_both_batches() {
+    let mut projector = Projector::default();
+    for seq in 1..=PENDING_ROW_CAP {
+        projector.absorb(updated(
+            seq as u64,
+            &format!("a{seq}"),
+            facets(true, false),
+            100,
+        ));
+    }
+    assert_eq!(open(&mut projector).len(), PENDING_ROW_CAP);
+    for seq in 1..=PENDING_ROW_CAP {
+        projector.absorb(updated(
+            (seq + PENDING_ROW_CAP) as u64,
+            &format!("b{seq}"),
+            facets(true, false),
+            100,
+        ));
+    }
+    assert_eq!(projector.pending.rows.len(), PENDING_ROW_CAP);
+    assert_eq!(
+        projector.in_flight.as_ref().unwrap().rows.len(),
+        PENDING_ROW_CAP
+    );
+    projector.absorb(updated(2000, "overflow", facets(true, false), 100));
+    assert!(projector.in_flight.as_ref().unwrap().invalidated);
+    assert!(projector.pending.rows.is_empty());
+    assert!(projector.complete(loaded(&["a1"])).is_empty());
+    let (events, keys) = projector.open_batch();
+    assert!(keys.is_none());
+    assert_eq!(events.len(), 1);
+}
+
+#[test]
+fn broad_invalidation_also_discards_older_pending_patches() {
+    for event in [
+        removed(3, None, RemovalReason::Purged),
+        index_changed(3, IndexChangeReason::Invalidated),
+    ] {
+        let mut projector = Projector::default();
+        projector.absorb(updated(1, "a", facets(true, false), 100));
+        open(&mut projector);
+        projector.absorb(updated(2, "b", facets(true, false), 100));
+        assert_eq!(projector.absorb(event).len(), 1);
+        assert!(!projector.has_work());
+        assert!(projector.complete(loaded(&["a"])).is_empty());
+        projector.absorb(updated(4, "b", facets(false, true), 101));
+        assert_eq!(open(&mut projector), vec![key("b")]);
+        let emissions = projector.complete(loaded(&["b"]));
+        let Emission::Updated(row) = &emissions[0] else {
+            panic!("expected row")
+        };
+        assert_eq!(row.seq, 4);
+        assert_eq!(row.facets, facets(false, true));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn abort_discards_a_completed_but_unobserved_load() {
+    let harness = start(GatedLoader::with_rows(&["a"]), 16);
+    harness.loader.hold();
+    harness.send(updated(1, "a", facets(true, false), 100));
+    settle().await;
+    tokio::time::advance(FLUSH_DELAY).await;
+    wait_until(|| harness.loader.requests().len() == 1).await;
+    harness.loader.release();
+    harness.loader.spin_until_completed(1);
+    harness.task.abort();
+    assert!(harness.task.await.unwrap_err().is_cancelled());
+    assert_eq!(harness.recorder.count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn lag_during_a_gated_load_suppresses_it_and_recovers_the_newer_gap() {
+    let harness = start(GatedLoader::with_rows(&["a"]), 2);
+    harness.loader.hold();
+    harness.send(updated(1, "a", facets(true, false), 100));
+    settle().await;
+    tokio::time::advance(FLUSH_DELAY).await;
+    wait_until(|| harness.loader.requests().len() == 1).await;
+    for seq in 2..=5 {
+        harness.send(anonymous_cleared(seq, 100));
+    }
+    settle().await;
+    assert_eq!(resync_seqs(&harness.recorder.take()), vec![5]);
+    for seq in 6..=9 {
+        harness.send(anonymous_cleared(seq, 100));
+    }
+    settle().await;
+    assert!(resync_seqs(&harness.recorder.take()).is_empty());
+    tokio::time::advance(FLUSH_DELAY).await;
+    harness.loader.release();
+    harness.loader.spin_until_completed(1);
+    settle().await;
+    let emissions = harness.recorder.take();
+    assert!(updated_ids(&emissions).is_empty());
+    assert_eq!(
+        index_causes(&emissions),
+        vec![(9, IndexChangeCause::Resync)]
+    );
+    assert_eq!(resync_seqs(&emissions), vec![9]);
+    tokio::time::advance(FLUSH_DELAY).await;
+    settle().await;
+    assert_eq!(
+        index_causes(&harness.recorder.take()),
+        vec![(9, IndexChangeCause::Resync)]
+    );
+    assert_eq!(harness.loader.requests().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_load_retries_successfully_without_losing_merged_facets() {
+    let harness = start(GatedLoader::with_rows(&["a"]), 16);
+    harness.loader.fail_next(1);
+    harness.send(updated(1, "a", facets(true, false), 100));
+    settle().await;
+    tokio::time::advance(FLUSH_DELAY).await;
+    wait_until(|| harness.loader.requests().len() == 1).await;
+    harness.loader.spin_until_completed(1);
+    settle().await;
+    assert_eq!(harness.recorder.count(), 0);
+    harness.send(updated(2, "a", facets(false, true), 101));
+    settle().await;
+    tokio::time::advance(FLUSH_DELAY).await;
+    wait_until(|| harness.loader.requests().len() == 2).await;
+    harness.loader.spin_until_completed(2);
+    settle().await;
+    let emissions = harness.recorder.take();
+    assert_eq!(emissions.len(), 1);
+    let Emission::Updated(row) = &emissions[0] else {
+        panic!("expected retry row")
+    };
+    assert_eq!(row.seq, 2);
+    assert_eq!(row.facets, facets(true, true));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_panicked_loader_is_an_error_and_keeps_one_bounded_retry() {
+    let mut projector = Projector::default();
+    projector.absorb(updated(1, "a", facets(true, false), 100));
+    open(&mut projector);
+    let mut task = Some(tokio::task::spawn_blocking(|| -> LoadResult {
+        panic!("scripted panic")
+    }));
+    let outcome = join_load(&mut task).await;
+    assert!(outcome.is_err());
+    assert!(projector.complete(outcome).is_empty());
+    assert_eq!(open(&mut projector), vec![key("a")]);
+    assert!(projector.in_flight.as_ref().unwrap().retried);
+    let emissions = projector.complete(loaded(&["a"]));
+    assert_eq!(updated_ids(&emissions), vec!["a"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn removing_the_last_pending_row_gives_the_next_row_its_own_deadline() {
+    let harness = start(GatedLoader::with_rows(&["a", "b"]), 16);
+    harness.send(updated(1, "a", facets(true, false), 100));
+    settle().await;
+    tokio::time::advance(Duration::from_millis(200)).await;
+    harness.send(removed(2, Some("a"), RemovalReason::Deleted));
+    settle().await;
+    harness.send(updated(3, "b", facets(true, false), 101));
+    settle().await;
+    tokio::time::advance(Duration::from_millis(249)).await;
+    settle().await;
+    assert!(harness.loader.requests().is_empty());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_until(|| harness.loader.requests().len() == 1).await;
+    assert_eq!(harness.loader.requests(), vec![vec![key("b")]]);
+    harness.loader.spin_until_completed(1);
+    settle().await;
+    assert_eq!(updated_ids(&harness.recorder.take()), vec!["b"]);
 }

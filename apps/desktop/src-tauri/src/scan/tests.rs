@@ -2374,3 +2374,5 @@ fn only_scheduler_owned_passes_cover_and_only_after_their_indexed_reports() {
     assert_eq!(production.matches("ledger.issue(").count(), 1);
     assert_eq!(production.matches("Observation::Anonymous {").count(), 1);
 }
+
+mod producers;

@@ -40,7 +40,9 @@ export interface MainOverviewAdapter {
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
   onLiveUsageChanged(handler: (usage: LiveUsageSummaryPayload) => void): Promise<() => void>
   onChecksReportChanged(handler: () => void): Promise<() => void>
-  onSessionIndexChanged(handler: (change: SessionIndexChangedPayload) => void): Promise<() => void>
+  onSessionIndexChanged(
+    handler: (change: SessionIndexChangedPayload) => void,
+  ): Promise<() => void>
   onSessionUpdated(handler: (update: SessionUpdatedPayload) => void): Promise<() => void>
   /** The window's live registry tracker. Active pills come from it alone. */
   liveSessions: LiveSessionsSource
@@ -219,7 +221,7 @@ export class MainOverviewSession {
       // The registry, not row data, decides which recent rows show as active.
       this.stops.push(
         this.adapter.liveSessions.subscribe(() => {
-          if (generation !== this.generation) return
+          if (generation !== this.generation || !this.snapshot.active) return
           const rows = this.snapshot.recentSessions
           if (rows) this.update({ recentSessions: this.withRegistryActivity(rows) })
         }),
@@ -239,8 +241,14 @@ export class MainOverviewSession {
     this.workVersion += 1
     this.update({ active, loading: active && !this.snapshot.usage, refreshing: false })
     if (!active) {
+      this.adapter.liveSessions.clearInterest(this)
       this.releaseConsumer()
       return
+    }
+    const rows = this.snapshot.recentSessions
+    if (rows) {
+      this.update({ recentSessions: this.withRegistryActivity(rows) })
+      this.adapter.liveSessions.setInterest(this, listInterests(rows))
     }
     this.consumerId = `main-home-${++nextConsumer}`
     this.refresh()

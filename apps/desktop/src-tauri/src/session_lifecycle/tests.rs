@@ -136,6 +136,7 @@ struct Scripted {
     requests: Mutex<Vec<Vec<SessionKey>>>,
     active_pages: Mutex<VecDeque<PageResult>>,
     active_requests: Mutex<Vec<(i64, Option<ActiveCursor>, usize)>>,
+    active_gated: std::sync::atomic::AtomicBool,
     /// `None`: pages return at once. `Some(n)`: the next `n` computed pages
     /// return, then pages wait for `allow` or `release`.
     gate: (Mutex<Option<usize>>, Condvar),
@@ -144,6 +145,35 @@ struct Scripted {
 }
 
 impl Scripted {
+    fn wait_for_gate(&self) {
+        {
+            // A held page waits for a permit. The wait is bounded so a
+            // failing test cannot hang the runtime's shutdown on this thread.
+            let mut gate = self.gate.0.lock().unwrap();
+            let opened = std::time::Instant::now();
+            loop {
+                match *gate {
+                    None => break,
+                    Some(0) => {
+                        if opened.elapsed() > Duration::from_secs(15) {
+                            break;
+                        }
+                        gate = self
+                            .gate
+                            .1
+                            .wait_timeout(gate, Duration::from_millis(50))
+                            .unwrap()
+                            .0;
+                    }
+                    Some(permits) => {
+                        *gate = Some(permits - 1);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     fn set_rows(&self, rows: Vec<(SessionKey, u64, i64)>, revision: u64) {
         *self.rows.lock().unwrap() = rows
             .into_iter()
@@ -218,32 +248,7 @@ impl ReconcileSource for Scripted {
                 Ok((present, *self.revision.lock().unwrap()))
             }
         };
-        {
-            // A held page waits for a permit. The wait is bounded so a
-            // failing test cannot hang the runtime's shutdown on this thread.
-            let mut gate = self.gate.0.lock().unwrap();
-            let opened = std::time::Instant::now();
-            loop {
-                match *gate {
-                    None => break,
-                    Some(0) => {
-                        if opened.elapsed() > Duration::from_secs(15) {
-                            break;
-                        }
-                        gate = self
-                            .gate
-                            .1
-                            .wait_timeout(gate, Duration::from_millis(50))
-                            .unwrap()
-                            .0;
-                    }
-                    Some(permits) => {
-                        *gate = Some(permits - 1);
-                        break;
-                    }
-                }
-            }
-        }
+        self.wait_for_gate();
         self.completed.fetch_add(1, Ordering::Relaxed);
         answer
     }
@@ -258,11 +263,17 @@ impl ReconcileSource for Scripted {
             .lock()
             .unwrap()
             .push((since, after.cloned(), limit));
-        self.active_pages
+        let answer = self
+            .active_pages
             .lock()
             .unwrap()
             .pop_front()
-            .unwrap_or_else(|| Ok((Vec::new(), Revision(0))))
+            .unwrap_or_else(|| Ok((Vec::new(), Revision(0))));
+        if self.active_gated.load(Ordering::Relaxed) {
+            self.wait_for_gate();
+            self.completed.fetch_add(1, Ordering::Relaxed);
+        }
+        answer
     }
 }
 
@@ -1837,10 +1848,26 @@ fn sync_report_callers_are_the_pinned_list() {
     ];
     for (name, source) in async_callers {
         let production = source.split("#[cfg(test)]").next().unwrap_or(source);
-        assert!(
-            production.contains("session_lifecycle::report_async("),
-            "{name} reports through the waiting path"
-        );
+        if name == "scan/mod.rs" {
+            assert!(production.contains("session_lifecycle::report_async("));
+        } else {
+            for reporter in [
+                "report_discovery",
+                "report_row_changes",
+                "report_rejected",
+                "report_membership_changed",
+            ] {
+                assert!(
+                    production.contains(&format!("super::{reporter}(")),
+                    "{name} uses {reporter}"
+                );
+                let body = function_body(include_str!("../scan/mod.rs"), reporter);
+                assert!(
+                    body.contains("session_lifecycle::report_async("),
+                    "{reporter} waits for capacity"
+                );
+            }
+        }
         assert!(
             !production.contains("session_lifecycle::report("),
             "{name} must not use the non-waiting reporter"
@@ -2046,9 +2073,13 @@ fn retention_reports_a_broad_purge_with_a_revision() {
 fn a_rejected_row_reports_the_deleted_incarnation() {
     let scan = include_str!("../scan/mod.rs");
     let rejected = function_body(scan, "report_rejected");
-    assert!(rejected.contains("RemovalScope::One(key.clone(), incarnation)"));
-    assert!(rejected.contains("RemovalReason::Rejected"));
-    assert!(rejected.contains("revision,"));
+    assert!(
+        rejected.contains("membership_reports(described, &[(key.clone(), incarnation, revision)])")
+    );
+    let membership = function_body(scan, "membership_reports");
+    assert!(membership.contains("RemovalScope::One(key.clone(), *incarnation)"));
+    assert!(membership.contains("RemovalReason::Rejected"));
+    assert!(membership.contains("revision: *revision"));
     for (name, source) in [
         ("scan/mod.rs", scan),
         ("scan/scoped.rs", include_str!("../scan/scoped.rs")),
@@ -2059,8 +2090,21 @@ fn a_rejected_row_reports_the_deleted_incarnation() {
             "{name} reports only a delete that found a row, with its evidence"
         );
         assert!(
-            production.contains("report_rejected(app, key, incarnation, revision).await"),
+            production
+                .contains("report_rejected(app, &described, key, incarnation, revision).await"),
             "{name} routes the rejection through the shared reporter"
         );
     }
+}
+
+/// Seed through the production boundary and start the actor with a controlled clock.
+pub(crate) fn start_seeded(
+    events: Arc<SessionEvents>,
+    source: Arc<dyn ReconcileSource>,
+    epoch: i64,
+) -> tokio::task::JoinHandle<()> {
+    seed(&events, source.as_ref(), epoch);
+    let inbox = events.claim_actor().unwrap();
+    let clock = instant_clock(epoch, Arc::new(std::sync::atomic::AtomicI64::new(0)));
+    tokio::spawn(async move { run(&events, inbox, source, &clock).await })
 }

@@ -1,35 +1,13 @@
 /**
- * The webview's view of the session lifecycle registry.
- *
- * One tracker per window follows `session:lifecycle` and the versioned
- * live snapshot, in that order: the listener attaches first, events buffer
- * while the snapshot is in flight, and the snapshot then becomes the base
- * that only higher-sequence deltas may move. An in-flight snapshot that
- * resolves older than what events already built is discarded rather than
- * applied. `resync` re-reads the snapshot.
- *
- * Sequences are global across every session event scope, so gaps between
- * lifecycle events are normal. Only `resync` means events were lost.
- *
- * The snapshot's rows are bounded; its counts are not. `working`, `total`,
- * and `anonymous` come from the snapshot and then from the counts the
- * registry stamps on the last lifecycle event of each atomic batch, so a
- * surface that asks "is anything working" never counts a truncated list.
- *
- * A list that shows rows the bounded snapshot omitted registers those
- * identities as an interest. The tracker asks the registry for them by
- * name (`get_live_sessions_for`) at one sequence, with one read in flight
- * and the union chunked to the command's limit. Every identity then has
- * evidence: present at a sequence, or absent at a sequence. A delta or a
- * presence row moves a key only when it is newer than that key's evidence,
- * and nothing below the base snapshot's sequence moves anything. A complete
- * snapshot needs no presence overlay: a key it lacks is absent.
- *
- * Anonymous activity — `activity` with a null session — is a watched write
- * the store has not indexed yet. The registry owns its lifetime: it stays
- * until `anonymous_cleared` says a pass covered it or the registry's own
- * quiet window passed. The snapshot carries it too, so a resync replaces
- * it. This tracker keeps no timer for it and `started` does not clear it.
+ * One tracker per window follows the canonical lifecycle registry. It attaches the
+ * listener before reading a snapshot. It buffers events during the read and applies
+ * only later deltas. A resync requests a new snapshot. Global sequences cover all
+ * session scopes, so lifecycle gaps alone do not indicate loss. Exact registry counts
+ * decide HUD liveness independently of bounded rows. Lists register interests for
+ * omitted identities. One presence request runs at a time, in bounded chunks. Unknown
+ * evidence differs from valid sequence zero. Present and absent evidence reject
+ * duplicate or older answers. Complete snapshots prove omitted identities absent. The
+ * registry alone expires anonymous activity; the tracker has no anonymous timer.
  */
 
 import {
@@ -45,50 +23,48 @@ import {
 import { environmentKey } from "./presentation/localIdentity"
 
 /**
- * How long the tracker waits before it retries a snapshot read that
- * failed. A failed read after a resync would otherwise leave the state
- * built on a base that lost events, with nothing scheduled to repair it.
- * A failed presence read takes the same path: the re-read snapshot asks
- * for every interest again.
+ * Failed listener attachments, snapshot reads, and presence reads use this retry interval. A new truncated snapshot
+ * requests unanswered interests again.
  */
 export const SNAPSHOT_RETRY_MS = 5_000
 
-/** One live session, as the tracker mirrors the registry. */
+/** This state mirrors one live registry session. */
 export interface TrackedSession {
   agent: string
-  /** Unix seconds of the last observed write. */
+  /** The timestamp records the last observed write in Unix seconds. */
   lastActivityAt: number
-  /** True after the registry published `quiet` for that write. */
+  /** The registry sets this flag when the session becomes quiet. */
   quiet: boolean
 }
 
-/** The tracker's immutable snapshot for `useSyncExternalStore`-style reads. */
+/** Consumers read this immutable snapshot through external-store subscriptions. */
 export interface LiveSessionsSnapshot {
-  /** The registry sequence this state includes. */
+  /** This sequence identifies the latest included lifecycle event or base snapshot. */
   seq: number
   /**
-   * True once a registry snapshot was actually read. Without a shell, or
-   * before the first read settles, surfaces keep their own fallback state
-   * instead of treating an empty tracker as "nothing is live".
+   * A successful registry snapshot makes this state ready. Until then, surfaces keep
+   * their fallback state.
    */
   ready: boolean
   /**
-   * Live sessions by {@link sessionRefKey}. Presence means active. Absence
-   * means inactive only when `complete` holds or the key is in `absent`;
-   * see {@link registryActivity}.
+   * The map uses {@link sessionRefKey} identities. Missing keys are unknown unless the
+   * snapshot is complete or the absent set names them.
    */
   sessions: ReadonlyMap<string, TrackedSession>
-  /** Agents with anonymous (not yet indexed) activity the registry still holds. */
+  /**
+   * The registry retains these agents until a cover or deadline clears their anonymous
+   * activity.
+   */
   keylessAgents: ReadonlySet<string>
-  /** Exact count of sessions with a write inside the quiet window. */
+  /** This exact count includes sessions inside the quiet window. */
   working: number
-  /** Exact count of live sessions, working or quiet. */
+  /** This exact count includes working and quiet sessions. */
   total: number
-  /** Exact count of agents with anonymous activity. */
+  /** This exact count includes agents with anonymous activity. */
   anonymous: number
-  /** True when `sessions` names every live session. */
+  /** A complete base snapshot names every live session. */
   complete: boolean
-  /** Registered interests the registry said are not live. */
+  /** The registry confirms these registered interests are absent. */
   absent: ReadonlySet<string>
 }
 
@@ -105,15 +81,14 @@ const EMPTY_SNAPSHOT: LiveSessionsSnapshot = {
 }
 
 /**
- * The identity key for one lifecycle session reference. Matches
- * `localSessionKey` in `presentation/localIdentity.ts`, which serializes
- * `[environmentKey, agent, sessionId]`.
+ * This key matches `localSessionKey` in `presentation/localIdentity.ts`. Both serialize
+ * the environment, agent, and session ID.
  */
 export function sessionRefKey(ref: SessionRefPayload): string {
   return JSON.stringify([ref.environmentKey, ref.agent, ref.sessionId])
 }
 
-/** The lifecycle identity of one listed session. */
+/** Create a lifecycle identity for a listed session. */
 export function sessionInterest(
   agent: string,
   sessionId: string,
@@ -123,18 +98,16 @@ export function sessionInterest(
 }
 
 /**
- * True when any session is working or any agent has anonymous activity.
- * Decided by the registry's exact counts, never by the bounded rows.
+ * Use exact registry counts to determine whether any session or anonymous agent is
+ * working.
  */
 export function hasWorkingActivity(snapshot: LiveSessionsSnapshot): boolean {
   return snapshot.working > 0 || snapshot.anonymous > 0
 }
 
 /**
- * What the registry says about one identity: `true` when it is live,
- * `false` when the registry said it is not, and `null` when the tracker has
- * no evidence yet (no base read, or a truncated base and no presence answer).
- * A surface keeps its own state for `null`.
+ * Return true for live keys, false for confirmed absence, and null without evidence.
+ * Surfaces keep their fallback state for null.
  */
 export function registryActivity(snapshot: LiveSessionsSnapshot, key: string): boolean | null {
   if (!snapshot.ready) return null
@@ -143,7 +116,7 @@ export function registryActivity(snapshot: LiveSessionsSnapshot, key: string): b
   return null
 }
 
-/** What a listed row must carry for the registry to name it. */
+/** These fields connect a listed row to registry evidence. */
 export interface ListedSession {
   agent: string
   sessionId?: string | undefined
@@ -151,21 +124,19 @@ export interface ListedSession {
   isActive: boolean
 }
 
-/** The lifecycle identities of the listed rows that have a session id. */
+/** Collect lifecycle identities for rows with session IDs. */
 export function listInterests(entries: readonly ListedSession[]): SessionRefPayload[] {
   const refs: SessionRefPayload[] = []
   for (const entry of entries) {
-    if (entry.sessionId) refs.push(sessionInterest(entry.agent, entry.sessionId, entry.wslDistro))
+    if (entry.sessionId)
+      refs.push(sessionInterest(entry.agent, entry.sessionId, entry.wslDistro))
   }
   return refs
 }
 
 /**
- * Re-derive each row's active pill from the registry. Presence is what
- * "active" means, not the row's own timestamp-derived flag. A row the
- * registry has not answered yet keeps its flag, so a fresh window never
- * flashes every pill off and an identity the bounded snapshot omitted is
- * not treated as idle.
+ * Registry evidence decides active pills. Unknown identities keep their existing flags
+ * until a presence answer arrives.
  */
 export function withRegistryActivity<T extends ListedSession>(
   live: LiveSessionsSnapshot,
@@ -182,7 +153,7 @@ export function withRegistryActivity<T extends ListedSession>(
   })
 }
 
-/** The part of the tracker a list consumer depends on. */
+/** List consumers depend on this external-store interface. */
 export interface LiveSessionsSource {
   subscribe(listener: () => void): () => void
   getSnapshot(): LiveSessionsSnapshot
@@ -190,28 +161,32 @@ export interface LiveSessionsSource {
   clearInterest(owner: object): void
 }
 
-/** Tracks the live registry for one window. See the module doc. */
+/** This tracker shares the live registry state within one window. */
 export class LiveSessionsTracker implements LiveSessionsSource {
   private listeners = new Set<() => void>()
   private generation = 0
   private snapshot: LiveSessionsSnapshot = EMPTY_SNAPSHOT
   private stopListening: (() => void) | null = null
-  /** Events held back while a snapshot read is in flight. */
+  /** The buffer retains events during snapshot reads. */
   private buffered: SessionLifecycleEventPayload[] = []
   private syncing = false
   private retryTimer: ReturnType<typeof setTimeout> | null = null
-  /** The sequence of the accepted base snapshot. Nothing below it applies. */
+  /** The accepted base sequence rejects older deltas and presence evidence. */
   private baseSeq = 0
-  /** The sequence of the counts on screen. */
+  /** This sequence orders aggregate counts independently of presence answers. */
   private aggregateSeq = 0
-  /** Per key: the sequence of the evidence that says it is live. */
+  /** This map records the sequence of present evidence for each key. */
   private presentAsOf = new Map<string, number>()
-  /** Per registered key: the sequence of the evidence that says it is not. */
+  /** This map records absence sequences only for registered interests. */
   private absentAsOf = new Map<string, number>()
-  /** Each consumer's named identities. */
+  /** Unresolved quiet transitions retain no timestamp and only belong to current interests. */
+  private quietAsOf = new Map<string, number>()
+  /** Each owner registers the identities its list shows. */
   private interests = new Map<object, Map<string, SessionRefPayload>>()
+  /** Each current interest rejects answers from before its registration watermark. */
+  private interestSince = new Map<string, number>()
   private presenceInFlight = false
-  /** An interest or base change happened while a presence read ran. */
+  /** Changes during a presence read require another request after it completes. */
   private presenceDirty = false
 
   getSnapshot = (): LiveSessionsSnapshot => this.snapshot
@@ -226,9 +201,8 @@ export class LiveSessionsTracker implements LiveSessionsSource {
   }
 
   /**
-   * Name the identities `owner` shows. Replaces the owner's earlier set. An
-   * unchanged set asks nothing; a changed one asks the registry when the
-   * base is truncated.
+   * Replace the identities this owner shows. A changed set requests unanswered
+   * interests when the base is truncated.
    */
   setInterest = (owner: object, refs: readonly SessionRefPayload[]): void => {
     const next = new Map<string, SessionRefPayload>()
@@ -239,7 +213,7 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     this.interestsChanged()
   }
 
-  /** Forget the identities `owner` named. */
+  /** Remove this owner’s registered interests. */
   clearInterest = (owner: object): void => {
     if (!this.interests.delete(owner)) return
     this.interestsChanged()
@@ -248,8 +222,11 @@ export class LiveSessionsTracker implements LiveSessionsSource {
   private start(): void {
     const generation = ++this.generation
     this.resetState()
-    // The listener attaches before the snapshot read, so nothing published
-    // between the two is lost; it lands in the buffer instead.
+    this.attachListener(generation)
+  }
+
+  private attachListener(generation: number): void {
+    // The listener buffers events before the snapshot read starts.
     this.syncing = true
     this.buffered = []
     void onSessionLifecycleEvent((event) => {
@@ -266,8 +243,7 @@ export class LiveSessionsTracker implements LiveSessionsSource {
       })
       .catch(() => {
         if (generation !== this.generation) return
-        // No listener means no deltas; the snapshot alone is the state.
-        void this.readSnapshot(generation)
+        this.scheduleRetry(generation)
       })
   }
 
@@ -282,21 +258,22 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     this.resetState()
   }
 
-  /** Drop every piece of registry evidence. Interests belong to their owners. */
+  /** Clear registry evidence without changing owner interests. */
   private resetState(): void {
     this.snapshot = EMPTY_SNAPSHOT
     this.baseSeq = 0
     this.aggregateSeq = 0
     this.presentAsOf = new Map()
     this.absentAsOf = new Map()
+    this.quietAsOf = new Map()
+    this.interestSince = new Map([...this.interestUnion().keys()].map((key) => [key, 0]))
     this.presenceInFlight = false
     this.presenceDirty = false
   }
 
   private receive(event: SessionLifecycleEventPayload): void {
     if (event.kind === "resync") {
-      // Events were lost. The snapshot is the recovery path; buffering
-      // starts now so nothing published during the read is dropped.
+      // A recovery marker starts buffering before the new snapshot read.
       this.syncing = true
       this.buffered = []
       void this.readSnapshot(this.generation)
@@ -315,8 +292,7 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     try {
       snapshot = await getLiveSessions()
     } catch {
-      // A shell answered nothing it should have. The event-built state
-      // stands, and the retry below repairs the lost base.
+      // A failed read preserves event-derived state until the retry succeeds.
       failed = true
     }
     if (generation !== this.generation) return
@@ -329,20 +305,16 @@ export class LiveSessionsTracker implements LiveSessionsSource {
       this.applySnapshot(snapshot)
       accepted = true
     } else if (snapshot) {
-      // An in-flight snapshot older than what the deltas already built.
-      // The event-derived state stands; the read still proves a registry.
+      // Newer event-derived state takes precedence over a stale snapshot.
       this.publish({ ready: true })
     }
     for (const event of buffered) this.apply(event)
-    // Every accepted truncated base asks for every interest again: the
-    // rows it omitted are unknown until the registry names them.
+    // An accepted truncated snapshot leaves omitted interests unknown until the
+    // registry answers them.
     if (accepted && !this.snapshot.complete) this.requestPresence()
   }
 
-  /**
-   * Make `snapshot` the base. Evidence newer than the base survives it: a
-   * presence answer that raced ahead of the snapshot read is not undone.
-   */
+  /** Accept the base without discarding newer presence evidence. */
   private applySnapshot(snapshot: LiveSnapshotPayload): void {
     const seq = snapshot.seq
     const sessions = new Map<string, TrackedSession>()
@@ -372,6 +344,9 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     }
     const keylessAgents = new Set<string>()
     for (const live of snapshot.anonymous) keylessAgents.add(live.agent)
+    for (const [key, asOf] of this.quietAsOf) {
+      if (asOf <= seq) this.quietAsOf.delete(key)
+    }
     this.baseSeq = seq
     this.aggregateSeq = seq
     this.presentAsOf = presentAsOf
@@ -409,23 +384,29 @@ export class LiveSessionsTracker implements LiveSessionsSource {
           return
         }
         const key = sessionRefKey(event.session)
-        if (event.seq <= this.evidence(key)) {
+        if (this.hasEvidenceAtOrAfter(key, event.seq)) {
           this.publish({ ...counts, seq })
           return
         }
         const sessions = new Map(this.snapshot.sessions)
         sessions.set(key, { agent: event.agent, lastActivityAt: event.at, quiet: false })
         this.presentAsOf.set(key, event.seq)
-        // A start does not clear anonymous state: only the registry's
-        // `anonymous_cleared` says which touches a pass accounted for.
+        this.quietAsOf.delete(key)
+        // Only `anonymous_cleared` confirms which anonymous activity the registry ends.
         this.publish({ ...counts, seq, sessions, absent: this.forgetAbsent(key) })
         return
       }
       case "quiet": {
         const key = sessionRefKey(event.session)
         const current = this.snapshot.sessions.get(key)
-        if (!current || event.seq <= this.evidence(key)) {
+        if (this.hasEvidenceAtOrAfter(key, event.seq)) {
           this.publish({ ...counts, seq })
+          return
+        }
+        if (!current) {
+          if (this.interestSince.has(key)) this.quietAsOf.set(key, event.seq)
+          this.publish({ ...counts, seq })
+          this.requestPresence()
           return
         }
         const sessions = new Map(this.snapshot.sessions)
@@ -436,13 +417,14 @@ export class LiveSessionsTracker implements LiveSessionsSource {
       }
       case "idle": {
         const key = sessionRefKey(event.session)
-        if (event.seq <= this.evidence(key)) {
+        if (this.hasEvidenceAtOrAfter(key, event.seq)) {
           this.publish({ ...counts, seq })
           return
         }
         const sessions = new Map(this.snapshot.sessions)
         sessions.delete(key)
         this.presentAsOf.delete(key)
+        this.quietAsOf.delete(key)
         this.publish({ ...counts, seq, sessions, absent: this.recordAbsent(key, event.seq) })
         return
       }
@@ -455,12 +437,20 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     }
   }
 
-  /** The newest sequence that said anything about `key`. */
-  private evidence(key: string): number {
-    return Math.max(this.presentAsOf.get(key) ?? 0, this.absentAsOf.get(key) ?? 0)
+  /** Missing evidence is unknown, but sequence zero is valid evidence. */
+  private hasEvidenceAtOrAfter(key: string, seq: number): boolean {
+    const quiet = this.quietAsOf.get(key)
+    return (quiet !== undefined && quiet >= seq) || this.hasRowEvidenceAtOrAfter(key, seq)
   }
 
-  /** Every identity some owner shows, by key. */
+  /** A quiet transition alone cannot supply the last activity timestamp. */
+  private hasRowEvidenceAtOrAfter(key: string, seq: number): boolean {
+    const present = this.presentAsOf.get(key)
+    const absent = this.absentAsOf.get(key)
+    return (present !== undefined && present >= seq) || (absent !== undefined && absent >= seq)
+  }
+
+  /** Combine all owner interests by full identity. */
   private interestUnion(): Map<string, SessionRefPayload> {
     const union = new Map<string, SessionRefPayload>()
     for (const refs of this.interests.values()) {
@@ -470,8 +460,17 @@ export class LiveSessionsTracker implements LiveSessionsSource {
   }
 
   private interestsChanged(): void {
-    // Absence evidence lives only for registered interests.
+    // Only registered interests retain absence evidence.
     const union = this.interestUnion()
+    for (const key of this.interestSince.keys()) {
+      if (!union.has(key)) {
+        this.interestSince.delete(key)
+        this.quietAsOf.delete(key)
+      }
+    }
+    for (const key of union.keys()) {
+      if (!this.interestSince.has(key)) this.interestSince.set(key, this.snapshot.seq)
+    }
     let pruned = false
     for (const key of this.absentAsOf.keys()) {
       if (union.has(key)) continue
@@ -483,9 +482,8 @@ export class LiveSessionsTracker implements LiveSessionsSource {
   }
 
   /**
-   * Ask the registry about every interest the base did not answer, unless
-   * the base names every live session or a read is in flight. A read in
-   * flight marks the request dirty and runs again when it ends.
+   * Request unanswered interests from a truncated base. A change during a read marks
+   * the request dirty for another pass.
    */
   private requestPresence(): void {
     if (!this.snapshot.ready || this.snapshot.complete || this.syncing) return
@@ -495,13 +493,13 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     }
     const refs: SessionRefPayload[] = []
     for (const [key, ref] of this.interestUnion()) {
-      if (this.evidence(key) < this.baseSeq) refs.push(ref)
+      if (!this.hasRowEvidenceAtOrAfter(key, this.baseSeq)) refs.push(ref)
     }
     if (refs.length === 0) return
     void this.readPresence(this.generation, refs)
   }
 
-  /** One presence read: the union in bounded chunks, one request at a time. */
+  /** Read the interest union in bounded chunks, one request at a time. */
   private async readPresence(generation: number, refs: SessionRefPayload[]): Promise<void> {
     this.presenceInFlight = true
     this.presenceDirty = false
@@ -519,8 +517,7 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     }
     this.presenceInFlight = false
     if (failed) {
-      // The bounded retry re-reads the base, and a truncated base asks for
-      // every interest again.
+      // A failed presence read retries through a new base snapshot.
       this.scheduleRetry(generation)
       return
     }
@@ -528,9 +525,8 @@ export class LiveSessionsTracker implements LiveSessionsSource {
   }
 
   /**
-   * Merge one presence answer. Nothing below the base applies; a key moves
-   * only when the answer is newer than the key's own evidence; a key no
-   * owner shows any more is ignored.
+   * Merge an answer only for current interests at or above the base sequence.
+   * Accept unknown keys or answers newer than their known evidence.
    */
   private applyPresence(presence: LivePresencePayload): void {
     if (presence.seq < this.baseSeq) return
@@ -539,21 +535,34 @@ export class LiveSessionsTracker implements LiveSessionsSource {
     let changed = false
     for (const live of presence.present) {
       const key = sessionRefKey(live.session)
-      if (!union.has(key) || presence.seq <= this.evidence(key)) continue
+      if (
+        !union.has(key) ||
+        presence.seq < (this.interestSince.get(key) ?? this.baseSeq) ||
+        this.hasRowEvidenceAtOrAfter(key, presence.seq)
+      )
+        continue
+      const quiet = this.quietAsOf.get(key)
       sessions.set(key, {
         agent: live.agent,
         lastActivityAt: live.lastActivityAt,
-        quiet: live.quiet,
+        quiet: quiet !== undefined && quiet > presence.seq ? true : live.quiet,
       })
-      this.presentAsOf.set(key, presence.seq)
+      this.presentAsOf.set(key, Math.max(presence.seq, quiet ?? presence.seq))
+      this.quietAsOf.delete(key)
       this.absentAsOf.delete(key)
       changed = true
     }
     for (const ref of presence.absent) {
       const key = sessionRefKey(ref)
-      if (!union.has(key) || presence.seq <= this.evidence(key)) continue
+      if (
+        !union.has(key) ||
+        presence.seq < (this.interestSince.get(key) ?? this.baseSeq) ||
+        this.hasEvidenceAtOrAfter(key, presence.seq)
+      )
+        continue
       sessions.delete(key)
       this.presentAsOf.delete(key)
+      this.quietAsOf.delete(key)
       this.absentAsOf.set(key, presence.seq)
       changed = true
     }
@@ -586,7 +595,8 @@ export class LiveSessionsTracker implements LiveSessionsSource {
       if (generation !== this.generation) return
       this.syncing = true
       this.buffered = []
-      void this.readSnapshot(generation)
+      if (this.stopListening) void this.readSnapshot(generation)
+      else this.attachListener(generation)
     }, SNAPSHOT_RETRY_MS)
   }
 
@@ -616,5 +626,5 @@ function sameKeys(a: ReadonlyMap<string, unknown>, b: ReadonlyMap<string, unknow
   return true
 }
 
-/** The one tracker this window shares across its surfaces. */
+/** All surfaces in this window share this tracker. */
 export const liveSessions = new LiveSessionsTracker()

@@ -983,14 +983,8 @@ impl Store {
      * Sessions
      * ----------------------------------------------------------------- */
 
-    /// Insert or refresh a batch of sessions in one transaction.
-    ///
-    /// `first_seen_at` survives a rescan; everything else is replaced with what
-    /// the scan just observed, so a renamed session picks up its new title
-    /// without producing a second row.
-    ///
-    /// Returns each record's key with the incarnation its row holds after
-    /// the write, in `records` order, and the revision after the commit.
+    /// Write the session batch in one transaction. Return each row’s incarnation and
+    /// the committed writer revision under the same lock.
     pub fn upsert_sessions(
         &self,
         records: &[SessionRecord],
@@ -1078,14 +1072,8 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// One page of the sessions whose activity falls at or after
-    /// `since_epoch`, newest first, at most `limit` rows.
-    ///
-    /// The page order is a strict total order over the four columns of
-    /// [`ActiveCursor`]. `after` names the previous page's last row and the
-    /// page starts strictly after it. A page shorter than `limit` is the last
-    /// one. Each page is one index range scan; the caller holds one page at a
-    /// time. The revision is read with the rows, under the same lock.
+    /// Read at most `limit` active rows in full cursor order. Read their revision under
+    /// the same writer lock. Cursor ties can require scanning earlier rows.
     pub fn sessions_active_since_page(
         &self,
         since_epoch: i64,
@@ -1119,11 +1107,8 @@ impl Store {
         Ok((rows, revision_of(&connection)))
     }
 
-    /// The presence of each requested identity: its incarnation and activity
-    /// epoch when the row exists, nothing when it does not. At most
-    /// [`PRESENCE_LOOKUP_CAP`] keys; one primary-key search per key. The
-    /// revision is read with the rows, under the same lock, so an identity
-    /// missing from the result is absent at that revision.
+    /// Read presence for at most [`PRESENCE_LOOKUP_CAP`] keys. One writer lock protects
+    /// the rows and their revision. Missing keys are absent at that revision.
     pub fn session_presence_for_keys(
         &self,
         keys: &[SessionKey],
@@ -3323,14 +3308,13 @@ fn insert_fork_parent_in(connection: &Connection, key: &SessionKey, parent: &str
     Ok(connection.changes() > 0)
 }
 
-/// The write order position of `connection`, read while its caller holds
-/// the store mutex.
+/// Read the writer revision while the caller holds the Store mutex.
 fn revision_of(connection: &Connection) -> Revision {
     Revision(connection.total_changes())
 }
 
-/// Take the next incarnation from the counter. Runs inside the writing
-/// transaction, so a rollback returns the value to the counter.
+/// Allocate an incarnation inside the write transaction. Rollback also restores the
+/// counter.
 fn allocate_incarnation_in(connection: &Connection) -> Result<Incarnation> {
     let value = connection.query_row(
         "UPDATE session_incarnation_seq SET value = value + 1 WHERE id = 1 RETURNING value",
@@ -3375,9 +3359,7 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
     let activity_cursor_changed = previous_state
         .as_ref()
         .is_some_and(|(_, cursor, _)| cursor != &record.activity_cursor);
-    // The `DO UPDATE` branch below never names `incarnation`, so the value
-    // bound here reaches the row only on an insert. An existing row keeps
-    // its own value; the counter moves only for a new row.
+    // Conflict updates preserve the incarnation. Only new rows advance the counter.
     let incarnation = match previous_state {
         Some((_, _, incarnation)) => incarnation,
         None => allocate_incarnation_in(connection)?,

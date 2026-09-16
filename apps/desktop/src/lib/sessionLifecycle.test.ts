@@ -146,7 +146,14 @@ describe("LiveSessionsTracker", () => {
 
     // Both events land while the snapshot is in flight. The first is
     // already included in the snapshot's sequence; the second is newer.
-    emit({ seq: 5, kind: "activity", session: ref("a"), agent: "claude-code", at: 100, resumed: false })
+    emit({
+      seq: 5,
+      kind: "activity",
+      session: ref("a"),
+      agent: "claude-code",
+      at: 100,
+      resumed: false,
+    })
     emit({ seq: 6, kind: "quiet", session: ref("a"), agent: "claude-code", at: 130 })
     resolveSnapshot(completeSnapshot(5, [liveSession("a", 100)]))
 
@@ -159,7 +166,14 @@ describe("LiveSessionsTracker", () => {
 
   it("discards an in-flight snapshot older than what events already built", async () => {
     const { tracker, stop } = await startTracker()
-    emit({ seq: 10, kind: "activity", session: ref("a"), agent: "claude-code", at: 100, resumed: false })
+    emit({
+      seq: 10,
+      kind: "activity",
+      session: ref("a"),
+      agent: "claude-code",
+      at: 100,
+      resumed: false,
+    })
     expect(tracker.getSnapshot().seq).toBe(10)
 
     // A resync forces a re-read, and the re-read resolves stale.
@@ -170,7 +184,14 @@ describe("LiveSessionsTracker", () => {
       }),
     )
     emit({ seq: 11, kind: "resync" })
-    emit({ seq: 12, kind: "activity", session: ref("b"), agent: "claude-code", at: 200, resumed: false })
+    emit({
+      seq: 12,
+      kind: "activity",
+      session: ref("b"),
+      agent: "claude-code",
+      at: 200,
+      resumed: false,
+    })
     resolveSnapshot(completeSnapshot(8))
 
     await vi.waitFor(() =>
@@ -255,7 +276,14 @@ describe("LiveSessionsTracker", () => {
     ipcMocks.getLiveSessions.mockResolvedValue(completeSnapshot(9))
     const { tracker, stop } = await startTracker()
 
-    emit({ seq: 9, kind: "activity", session: ref("late"), agent: "claude-code", at: 100, resumed: false })
+    emit({
+      seq: 9,
+      kind: "activity",
+      session: ref("late"),
+      agent: "claude-code",
+      at: 100,
+      resumed: false,
+    })
 
     expect(tracker.getSnapshot().sessions.size).toBe(0)
     expect(tracker.getSnapshot().seq).toBe(9)
@@ -339,9 +367,7 @@ describe("LiveSessionsTracker", () => {
     // accounted for; the registry's cover does.
     expect(tracker.getSnapshot().keylessAgents.has("codex")).toBe(true)
     expect(
-      tracker
-        .getSnapshot()
-        .sessions.has(JSON.stringify(["native", "codex", "resolved"])),
+      tracker.getSnapshot().sessions.has(JSON.stringify(["native", "codex", "resolved"])),
     ).toBe(true)
 
     emit({
@@ -391,7 +417,14 @@ describe("LiveSessionsTracker", () => {
     expect(tracker.getSnapshot().ready).toBe(false)
 
     // Deltas keep applying onto the event-built state while the retry waits.
-    emit({ seq: 3, kind: "activity", session: ref("interim"), agent: "claude-code", at: 90, resumed: false })
+    emit({
+      seq: 3,
+      kind: "activity",
+      session: ref("interim"),
+      agent: "claude-code",
+      at: 90,
+      resumed: false,
+    })
     expect(tracker.getSnapshot().sessions.has(sessionRefKey(ref("interim")))).toBe(true)
 
     await vi.advanceTimersByTimeAsync(SNAPSHOT_RETRY_MS)
@@ -411,7 +444,14 @@ describe("LiveSessionsTracker", () => {
     await vi.waitFor(() => expect(ipcMocks.getLiveSessions).toHaveBeenCalled())
     await Promise.resolve()
 
-    emit({ seq: 1, kind: "activity", session: ref("solo"), agent: "claude-code", at: 100, resumed: false })
+    emit({
+      seq: 1,
+      kind: "activity",
+      session: ref("solo"),
+      agent: "claude-code",
+      at: 100,
+      resumed: false,
+    })
 
     // Events still build state, but `ready` stays false: nothing proved a
     // registry exists, so pill overlays keep the backend row flag.
@@ -445,6 +485,151 @@ function present(session: Ipc.SessionRefPayload, quiet = false): Ipc.LiveSession
 }
 
 describe("LiveSessionsTracker counts and presence", () => {
+  it("uses a complete sequence-zero seed without a presence read or same-sequence delta", async () => {
+    ipcMocks.getLiveSessions.mockResolvedValue(completeSnapshot(0, [present(ref("seeded"))]))
+    const { tracker, stop } = await startTracker()
+    tracker.setInterest({}, [ref("seeded"), ref("missing")])
+    const accepted = tracker.getSnapshot()
+    expect(accepted).toMatchObject({ seq: 0, complete: true, working: 1, total: 1 })
+    expect(registryActivity(accepted, sessionRefKey(ref("seeded")))).toBe(true)
+    expect(registryActivity(accepted, sessionRefKey(ref("missing")))).toBe(false)
+    expect(ipcMocks.getLiveSessionsFor).not.toHaveBeenCalled()
+
+    emit({
+      seq: 0,
+      kind: "activity",
+      session: ref("missing"),
+      agent: "claude-code",
+      at: 200,
+      resumed: false,
+      aggregate: counts(2, 2),
+    })
+    expect(tracker.getSnapshot()).toBe(accepted)
+    stop()
+  })
+
+  it.each(["before", "after"])(
+    "queries omitted interests registered %s a truncated sequence-zero seed",
+    async (registration) => {
+      const seeded = manyRefs(130)
+      ipcMocks.getLiveSessions.mockResolvedValue({
+        seq: 0,
+        working: 2,
+        total: 130,
+        sessions: seeded.slice(0, 128).map((session) => present(session, true)),
+        anonymous: [],
+      })
+      const answer = deferred<Ipc.LivePresencePayload>()
+      ipcMocks.getLiveSessionsFor.mockReturnValueOnce(answer.promise)
+      const tracker = new LiveSessionsTracker()
+      const owner = {}
+      const interests = [ref("s-0"), ref("s-129"), ref("missing")]
+      if (registration === "before") tracker.setInterest(owner, interests)
+      const stop = tracker.subscribe(() => undefined)
+      await vi.waitFor(() => expect(tracker.getSnapshot().ready).toBe(true))
+      if (registration === "after") tracker.setInterest(owner, interests)
+
+      expect(tracker.getSnapshot()).toMatchObject({
+        seq: 0,
+        complete: false,
+        working: 2,
+        total: 130,
+        anonymous: 0,
+      })
+      expect(tracker.getSnapshot().sessions.size).toBe(128)
+      expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("s-129")))).toBeNull()
+      expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("missing")))).toBeNull()
+      expect(requestedKeys()).toEqual([
+        [sessionRefKey(ref("s-129")), sessionRefKey(ref("missing"))],
+      ])
+
+      const evidence = {
+        seq: 0,
+        present: [present(ref("s-129"))],
+        absent: [ref("missing")],
+      }
+      answer.resolve(evidence)
+      await vi.waitFor(() =>
+        expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("s-129")))).toBe(true),
+      )
+      expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("missing")))).toBe(false)
+      expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("s-128")))).toBeNull()
+      const accepted = tracker.getSnapshot()
+      expect(accepted.sessions.size).toBe(129)
+      expect(accepted).toMatchObject({ seq: 0, complete: false, working: 2, total: 130 })
+
+      // Duplicate answers cannot change known evidence or publish another snapshot.
+      tracker["applyPresence"](evidence)
+      tracker["applyPresence"]({
+        seq: 0,
+        present: [present(ref("s-129"), true), present(ref("missing"))],
+        absent: [ref("s-129")],
+      })
+      expect(tracker.getSnapshot()).toBe(accepted)
+
+      tracker.setInterest({}, [...interests, ref("s-128")])
+      expect(requestedKeys()).toEqual([
+        [sessionRefKey(ref("s-129")), sessionRefKey(ref("missing"))],
+        [sessionRefKey(ref("s-128"))],
+      ])
+      stop()
+    },
+  )
+
+  it.each([
+    { kind: "idle", answerSeq: 0 },
+    { kind: "idle", answerSeq: 1 },
+    { kind: "activity", answerSeq: 0 },
+    { kind: "activity", answerSeq: 1 },
+  ] as const)(
+    "rejects presence at $answerSeq after a newer $kind delta from a sequence-zero base",
+    async ({ kind, answerSeq }) => {
+      ipcMocks.getLiveSessions.mockResolvedValue({
+        seq: 0,
+        working: 130,
+        total: 130,
+        sessions: manyRefs(128).map((session) => present(session)),
+        anonymous: [],
+      })
+      const answer = deferred<Ipc.LivePresencePayload>()
+      ipcMocks.getLiveSessionsFor.mockReturnValueOnce(answer.promise)
+      const { tracker, stop } = await startTracker()
+      const target = ref(kind === "idle" ? "s-129" : "missing")
+      const key = sessionRefKey(target)
+      tracker.setInterest({}, [target, ref("s-128")])
+      expect(requestedKeys()).toEqual([[key, sessionRefKey(ref("s-128"))]])
+      const aggregate = kind === "idle" ? counts(129, 129) : counts(131, 131)
+      emit({
+        seq: 1,
+        kind,
+        session: target,
+        agent: "claude-code",
+        at: 200,
+        resumed: false,
+        aggregate,
+      })
+      const afterDelta = tracker.getSnapshot()
+      expect(registryActivity(afterDelta, key)).toBe(kind === "activity")
+
+      const stale = {
+        seq: answerSeq,
+        present: [present(ref("s-128")), ...(kind === "idle" ? [present(target)] : [])],
+        absent: kind === "activity" ? [target] : [],
+      }
+      answer.resolve(stale)
+      await vi.waitFor(() =>
+        expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("s-128")))).toBe(true),
+      )
+      expect(registryActivity(tracker.getSnapshot(), key)).toBe(kind === "activity")
+      expect(tracker.getSnapshot().sessions.get(key)).toEqual(afterDelta.sessions.get(key))
+      expect(tracker.getSnapshot()).toMatchObject({ seq: 1, ...aggregate, complete: false })
+      const accepted = tracker.getSnapshot()
+      tracker["applyPresence"](stale)
+      expect(tracker.getSnapshot()).toBe(accepted)
+      stop()
+    },
+  )
+
   it("reads exact counts from the snapshot and stamped deltas, not the bounded rows", async () => {
     // 130 live identities, all quiet in the 128 rows; the counts alone say
     // two work and two more are live beyond the rows.
@@ -527,17 +712,25 @@ describe("LiveSessionsTracker counts and presence", () => {
       absent: manyRefs(500, "list").slice(1),
     })
     await vi.waitFor(() => expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(2))
-    expect(requestedKeys()[1]).toEqual(manyRefs(100, "list").map((_, i) => sessionRefKey(ref(`list-${500 + i}`))))
+    expect(requestedKeys()[1]).toEqual(
+      manyRefs(100, "list").map((_, i) => sessionRefKey(ref(`list-${500 + i}`))),
+    )
     expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("list-0")))).toBe(true)
     expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("list-1")))).toBe(false)
     expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("list-500")))).toBeNull()
 
-    second.resolve({ seq: 12, present: manyRefs(100, "list").map((_, i) => present(ref(`list-${500 + i}`))), absent: [] })
+    second.resolve({
+      seq: 12,
+      present: manyRefs(100, "list").map((_, i) => present(ref(`list-${500 + i}`))),
+      absent: [],
+    })
     // The remembered change runs one more read, for the still-unknown key only.
     await vi.waitFor(() => expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(3))
     expect(requestedKeys()[2]).toEqual([sessionRefKey(ref("late"))])
     await vi.waitFor(() =>
-      expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("list-599")))).toBe(true),
+      expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("list-599")))).toBe(
+        true,
+      ),
     )
     expect(tracker.getSnapshot().absent.size).toBe(499)
     expect(tracker.getSnapshot().sessions.size).toBe(128 + 1 + 100)
@@ -560,7 +753,14 @@ describe("LiveSessionsTracker counts and presence", () => {
     expect(requestedKeys()[0]).toEqual([sessionRefKey(ref("k")), sessionRefKey(ref("j"))])
 
     // While the read is in flight the bus says `k` went idle at 12.
-    emit({ seq: 12, kind: "idle", session: ref("k"), agent: "claude-code", at: 300, aggregate: counts(2, 2) })
+    emit({
+      seq: 12,
+      kind: "idle",
+      session: ref("k"),
+      agent: "claude-code",
+      at: 300,
+      aggregate: counts(2, 2),
+    })
     expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("k")))).toBe(false)
 
     // The answer, read at 11, still saw `k` live: older than the idle, so it
@@ -576,12 +776,34 @@ describe("LiveSessionsTracker counts and presence", () => {
     emit({ seq: 11, kind: "quiet", session: ref("j"), agent: "claude-code", at: 130 })
     expect(tracker.getSnapshot().sessions.get(sessionRefKey(ref("j")))?.quiet).toBe(false)
     // A newer one is.
-    emit({ seq: 13, kind: "quiet", session: ref("j"), agent: "claude-code", at: 131, aggregate: counts(1, 2) })
+    emit({
+      seq: 13,
+      kind: "quiet",
+      session: ref("j"),
+      agent: "claude-code",
+      at: 131,
+      aggregate: counts(1, 2),
+    })
     expect(tracker.getSnapshot().sessions.get(sessionRefKey(ref("j")))?.quiet).toBe(true)
     // A delta at the sequence of the absence evidence for `k` is not newer.
-    emit({ seq: 12, kind: "activity", session: ref("k"), agent: "claude-code", at: 301, resumed: true })
+    emit({
+      seq: 12,
+      kind: "activity",
+      session: ref("k"),
+      agent: "claude-code",
+      at: 301,
+      resumed: true,
+    })
     expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("k")))).toBe(false)
-    emit({ seq: 14, kind: "activity", session: ref("k"), agent: "claude-code", at: 302, resumed: true, aggregate: counts(2, 3) })
+    emit({
+      seq: 14,
+      kind: "activity",
+      session: ref("k"),
+      agent: "claude-code",
+      at: 302,
+      resumed: true,
+      aggregate: counts(2, 3),
+    })
     expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("k")))).toBe(true)
     expect(tracker.getSnapshot().absent.has(sessionRefKey(ref("k")))).toBe(false)
     stop()
@@ -616,8 +838,18 @@ describe("LiveSessionsTracker counts and presence", () => {
     // presence evidence for `k` survives it, and the omitted interests
     // that lack newer evidence are asked for again.
     tracker.setInterest({}, [ref("other")])
-    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({ seq: 17, present: [], absent: [ref("other")] })
-    reread.resolve({ seq: 15, working: 6, total: 6, sessions: [present(ref("row"))], anonymous: [] })
+    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({
+      seq: 17,
+      present: [],
+      absent: [ref("other")],
+    })
+    reread.resolve({
+      seq: 15,
+      working: 6,
+      total: 6,
+      sessions: [present(ref("row"))],
+      anonymous: [],
+    })
     await vi.waitFor(() => expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(2))
     expect(requestedKeys()[1]).toEqual([sessionRefKey(ref("other"))])
     expect(registryActivity(tracker.getSnapshot(), sessionRefKey(ref("k")))).toBe(true)
@@ -627,7 +859,11 @@ describe("LiveSessionsTracker counts and presence", () => {
     )
 
     // An answer below the base is discarded whole.
-    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({ seq: 9, present: [present(ref("ghost"))], absent: [ref("k")] })
+    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({
+      seq: 9,
+      present: [present(ref("ghost"))],
+      absent: [ref("k")],
+    })
     tracker.setInterest({}, [ref("ghost")])
     await vi.waitFor(() => expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(3))
     await Promise.resolve()
@@ -654,7 +890,11 @@ describe("LiveSessionsTracker counts and presence", () => {
       sessions: [present(ref("row"))],
       anonymous: [],
     })
-    ipcMocks.getLiveSessionsFor.mockResolvedValue({ seq: 21, present: [present(ref("k"))], absent: [] })
+    ipcMocks.getLiveSessionsFor.mockResolvedValue({
+      seq: 21,
+      present: [present(ref("k"))],
+      absent: [],
+    })
     emit({ seq: 19, kind: "resync" })
     await vi.waitFor(() => expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(1))
     expect(requestedKeys()[0]).toEqual([sessionRefKey(ref("k"))])
@@ -717,7 +957,11 @@ describe("LiveSessionsTracker counts and presence", () => {
       sessions: [present(ref("row"))],
       anonymous: [],
     })
-    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({ seq: 11, present: [], absent: [ref("a"), ref("b")] })
+    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({
+      seq: 11,
+      present: [],
+      absent: [ref("a"), ref("b")],
+    })
     const { tracker, stop } = await startTracker()
     const listA = {}
     const listB = {}
@@ -783,7 +1027,11 @@ describe("LiveSessionsTracker counts and presence", () => {
 
     // Interests belong to their owners and survive a stop; the next start
     // asks for them once its base is truncated.
-    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({ seq: 21, present: [], absent: [ref("k")] })
+    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({
+      seq: 21,
+      present: [],
+      absent: [ref("k")],
+    })
     ipcMocks.getLiveSessions.mockResolvedValue({
       seq: 20,
       working: 300,
@@ -800,5 +1048,263 @@ describe("LiveSessionsTracker counts and presence", () => {
     expect(tracker.getSnapshot().absent.size).toBe(0)
     stopAgain()
   })
+})
 
+describe("reviewed tracker recovery schedules", () => {
+  it.each([0, 10])("fences a retired interest's presence answer at base %i", async (base) => {
+    for (const idleBeforeClear of [false, true]) {
+      ipcMocks.getLiveSessions.mockResolvedValue({
+        seq: base,
+        working: 130,
+        total: 130,
+        sessions: manyRefs(128).map((session) => present(session)),
+        anonymous: [],
+      })
+      const old = deferred<Ipc.LivePresencePayload>()
+      const current = deferred<Ipc.LivePresencePayload>()
+      ipcMocks.getLiveSessionsFor
+        .mockReturnValueOnce(old.promise)
+        .mockReturnValueOnce(current.promise)
+      const { tracker, stop } = await startTracker()
+      const owner = {}
+      const key = sessionRefKey(ref("omitted"))
+      const idle = () =>
+        emit({
+          seq: base + 1,
+          kind: "idle",
+          session: ref("omitted"),
+          agent: "claude-code",
+          at: 101,
+          aggregate: counts(129, 129),
+        })
+      tracker.setInterest(owner, [ref("omitted")])
+      if (idleBeforeClear) idle()
+      tracker.clearInterest(owner)
+      if (!idleBeforeClear) idle()
+      tracker.setInterest(owner, [ref("omitted")])
+      const before = ipcMocks.getLiveSessionsFor.mock.calls.length
+      old.resolve({ seq: base, present: [present(ref("omitted"))], absent: [] })
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(registryActivity(tracker.getSnapshot(), key)).not.toBe(true)
+      expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(before + 1)
+      expect(tracker.getSnapshot().working).toBe(129)
+      current.resolve({ seq: base + 1, present: [], absent: [ref("omitted")] })
+      await vi.waitFor(() => expect(registryActivity(tracker.getSnapshot(), key)).toBe(false))
+      stop()
+    }
+  })
+
+  it("retries listener attachment before snapshot and recovers quiet and idle", async () => {
+    vi.useFakeTimers()
+    ipcMocks.onSessionLifecycleEvent.mockRejectedValueOnce(new Error("listen failed"))
+    ipcMocks.getLiveSessions.mockResolvedValue(completeSnapshot(0, [liveSession("a", 100)]))
+    const tracker = new LiveSessionsTracker()
+    const stop = tracker.subscribe(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(tracker.getSnapshot().ready).toBe(false)
+    expect(ipcMocks.getLiveSessions).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_RETRY_MS - 1)
+    expect(ipcMocks.onSessionLifecycleEvent).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(ipcMocks.onSessionLifecycleEvent).toHaveBeenCalledTimes(2)
+    expect(ipcMocks.getLiveSessions).toHaveBeenCalledTimes(1)
+    expect(tracker.getSnapshot().ready).toBe(true)
+    emit({
+      seq: 1,
+      kind: "quiet",
+      session: ref("a"),
+      agent: "claude-code",
+      at: 130,
+      aggregate: counts(0, 1),
+    })
+    expect(tracker.getSnapshot().sessions.get(sessionRefKey(ref("a")))?.quiet).toBe(true)
+    expect(tracker.getSnapshot().working).toBe(0)
+    emit({
+      seq: 2,
+      kind: "idle",
+      session: ref("a"),
+      agent: "claude-code",
+      at: 280,
+      aggregate: counts(0, 0),
+    })
+    expect(tracker.getSnapshot().sessions.size).toBe(0)
+    expect(tracker.getSnapshot().total).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    stop()
+  })
+
+  it("cancels listener retries when the last consumer stops", async () => {
+    vi.useFakeTimers()
+    ipcMocks.onSessionLifecycleEvent.mockRejectedValueOnce(new Error("listen failed"))
+    const tracker = new LiveSessionsTracker()
+    const listener = vi.fn()
+    const stop = tracker.subscribe(listener)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(1)
+    stop()
+    listener.mockClear()
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_RETRY_MS * 2)
+    expect(ipcMocks.onSessionLifecycleEvent).toHaveBeenCalledTimes(1)
+    expect(ipcMocks.getLiveSessions).not.toHaveBeenCalled()
+    expect(listener).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe("omitted quiet ordering", () => {
+  it.each(["absent", "newer", "idle", "resync"])(
+    "orders a quiet transition against %s evidence",
+    async (answerKind) => {
+      ipcMocks.getLiveSessions.mockResolvedValue({
+        seq: 0,
+        working: 130,
+        total: 130,
+        sessions: manyRefs(128).map((session) => present(session)),
+        anonymous: [],
+      })
+      const answer = deferred<Ipc.LivePresencePayload>()
+      ipcMocks.getLiveSessionsFor.mockReturnValueOnce(answer.promise)
+      const { tracker, stop } = await startTracker()
+      const target = ref("omitted"),
+        key = sessionRefKey(target),
+        first = {},
+        second = {}
+      tracker.setInterest(first, [target])
+      tracker.setInterest(second, [target])
+      emit({ seq: 1, kind: "quiet", session: target, agent: "claude-code", at: 131 })
+      tracker.clearInterest(first)
+      if (answerKind === "idle")
+        emit({ seq: 2, kind: "idle", session: target, agent: "claude-code", at: 280 })
+      if (answerKind === "resync") {
+        ipcMocks.getLiveSessions.mockResolvedValueOnce(completeSnapshot(2, [present(target)]))
+        emit({ seq: 2, kind: "resync" })
+        await vi.waitFor(() => expect(tracker.getSnapshot().complete).toBe(true))
+      }
+      if (answerKind === "absent") {
+        ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({
+          seq: 1,
+          present: [present(target, true)],
+          absent: [],
+        })
+        answer.resolve({ seq: 0, present: [], absent: [target] })
+        await vi.waitFor(() =>
+          expect(tracker.getSnapshot().sessions.get(key)?.quiet).toBe(true),
+        )
+        expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(2)
+      } else {
+        answer.resolve({
+          seq: answerKind === "newer" ? 2 : 0,
+          present: [present(target)],
+          absent: [],
+        })
+        await Promise.resolve()
+        await Promise.resolve()
+        if (answerKind === "idle")
+          expect(registryActivity(tracker.getSnapshot(), key)).toBe(false)
+        else expect(tracker.getSnapshot().sessions.get(key)?.quiet).toBe(false)
+        expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(1)
+      }
+      stop()
+    },
+  )
+
+  it.each([0, 10])("keeps quiet evidence and timestamp provenance at base %i", async (base) => {
+    ipcMocks.getLiveSessions.mockResolvedValue({
+      seq: base,
+      working: 130,
+      total: 130,
+      sessions: manyRefs(128).map((session) => present(session)),
+      anonymous: [],
+    })
+    const answer = deferred<Ipc.LivePresencePayload>()
+    ipcMocks.getLiveSessionsFor.mockReturnValueOnce(answer.promise)
+    const { tracker, stop } = await startTracker()
+    const target = ref("omitted")
+    const key = sessionRefKey(target)
+    tracker.setInterest({}, [target])
+    emit({
+      seq: base + 2,
+      kind: "quiet",
+      session: target,
+      agent: "claude-code",
+      at: 131,
+      aggregate: counts(129, 130),
+    })
+    emit({
+      seq: base + 1,
+      kind: "activity",
+      session: target,
+      agent: "claude-code",
+      at: 99,
+      resumed: false,
+    })
+    answer.resolve({ seq: base, present: [present(target)], absent: [] })
+    await vi.waitFor(() =>
+      expect(tracker.getSnapshot().sessions.get(key)).toEqual({
+        agent: "claude-code",
+        lastActivityAt: 100,
+        quiet: true,
+      }),
+    )
+    expect(tracker.getSnapshot()).toMatchObject({ seq: base + 2, working: 129, total: 130 })
+    expect(ipcMocks.getLiveSessionsFor).toHaveBeenCalledTimes(1)
+    emit({
+      seq: base + 3,
+      kind: "activity",
+      session: target,
+      agent: "claude-code",
+      at: 150,
+      resumed: true,
+    })
+    expect(tracker.getSnapshot().sessions.get(key)).toEqual({
+      agent: "claude-code",
+      lastActivityAt: 150,
+      quiet: false,
+    })
+    stop()
+  })
+
+  it.each(["clear", "stop"])("discards unresolved quiet evidence on %s", async (action) => {
+    ipcMocks.getLiveSessions.mockResolvedValue({
+      seq: 0,
+      working: 130,
+      total: 130,
+      sessions: manyRefs(128).map((session) => present(session)),
+      anonymous: [],
+    })
+    const answer = deferred<Ipc.LivePresencePayload>()
+    ipcMocks.getLiveSessionsFor.mockReturnValueOnce(answer.promise)
+    const { tracker, stop } = await startTracker()
+    const owner = {},
+      target = ref("omitted"),
+      key = sessionRefKey(target)
+    tracker.setInterest(owner, [target])
+    emit({ seq: 1, kind: "quiet", session: target, agent: "claude-code", at: 131 })
+    if (action === "clear") tracker.clearInterest(owner)
+    else stop()
+    const before = tracker.getSnapshot()
+    answer.resolve({ seq: 0, present: [present(target)], absent: [] })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(tracker.getSnapshot()).toBe(before)
+    expect(tracker.getSnapshot().sessions.has(key)).toBe(false)
+    ipcMocks.getLiveSessions.mockResolvedValue({
+      seq: 2,
+      working: 130,
+      total: 130,
+      sessions: manyRefs(128).map((session) => present(session)),
+      anonymous: [],
+    })
+    ipcMocks.getLiveSessionsFor.mockResolvedValueOnce({
+      seq: 2,
+      present: [present(target)],
+      absent: [],
+    })
+    const stopAgain = action === "stop" ? tracker.subscribe(() => undefined) : stop
+    if (action === "clear") tracker.setInterest(owner, [target])
+    await vi.waitFor(() => expect(tracker.getSnapshot().sessions.get(key)?.quiet).toBe(false))
+    stopAgain()
+  })
 })

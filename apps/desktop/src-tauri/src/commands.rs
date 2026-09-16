@@ -349,9 +349,8 @@ pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
     antiburn_hud::apply_detail_size(&app, height);
 }
 
-/// The most recent live sessions, bounded to `limit`, with the registry
-/// sequence and its exact counts. A reader takes this snapshot, subscribes
-/// to lifecycle events, and applies only deltas with a higher sequence.
+/// Read bounded live rows with exact registry counts. Readers must subscribe before
+/// requesting this snapshot.
 #[tauri::command]
 pub fn get_live_sessions(
     app: tauri::AppHandle,
@@ -361,10 +360,8 @@ pub fn get_live_sessions(
         .snapshot(limit.unwrap_or(crate::session_lifecycle::DEFAULT_SNAPSHOT_LIMIT))
 }
 
-/// The registry's state for the named identities at one sequence: each is
-/// live (`present`) or not (`absent`). A list whose rows fall outside the
-/// bounded snapshot asks for them here. At most [`MAX_ACTIVITY_ROWS`]
-/// identities per call, the list's own row bound.
+/// Read every named identity at one registry sequence. Requests cannot exceed
+/// [`MAX_ACTIVITY_ROWS`].
 #[tauri::command]
 pub fn get_live_sessions_for(
     app: tauri::AppHandle,
@@ -376,8 +373,7 @@ pub fn get_live_sessions_for(
         .presence(sessions))
 }
 
-/// Reject a presence request above [`MAX_ACTIVITY_ROWS`] identities before
-/// the registry lock is taken.
+/// Reject oversized presence requests before acquiring the registry lock.
 fn bounded_presence_request(
     sessions: &[crate::session_lifecycle::SessionRef],
 ) -> CommandResult<&[crate::session_lifecycle::SessionRef]> {
@@ -501,8 +497,8 @@ pub async fn set_settings(
             crate::analytics::handle_settings_transition(&database_app, &result.0, &result.1);
             result
         };
-        // The store guard is released: the revision read here is at or
-        // after the retention commit, so every purged row is absent at it.
+        // This revision covers the completed retention commit. No report holds the
+        // Store guard.
         let revision = store.revision();
         crate::retention::note_removed(&database_app, removed, revision);
         Ok((previous, saved))
@@ -2367,14 +2363,11 @@ pub async fn set_repository_enabled(
         repositories::set_enabled(&store, &key, enabled)
             .await
             .map_err(fail)?;
-        // Read after the purge, with no store guard held: every purged row
-        // is absent at this revision.
+        // Read a revision that covers the completed purge before reporting the removal.
         store.revision()
     };
-    // Disabling purges the repository's rows: a broad removal the registry
-    // reconciles against the store. The open popover re-reads its list on
-    // the invalidation rather than waiting for a scan. Re-enabling asks for
-    // a pass so the rows come back without the reader doing anything.
+    // A broad removal makes the registry check purged rows. The index invalidation
+    // refreshes lists. Re-enabling requests discovery.
     if !enabled {
         crate::session_lifecycle::report(
             &app,
@@ -2398,20 +2391,13 @@ pub async fn set_repository_enabled(
     list_repositories(app).await
 }
 
-/// Event the shell emits for every transition on the session lifecycle bus.
-/// The payload is one [`crate::session_lifecycle::LifecycleEnvelope`]: the
-/// event plus the registry sequence a reader orders deltas by.
+/// Only the projection bridge emits this lifecycle scope with canonical sequences.
 pub const SESSION_LIFECYCLE_EVENT: &str = "session:lifecycle";
 
-/// Event the shell emits with one enriched row projection per coalesced
-/// registry update. The payload is one
-/// [`crate::session_projection::SessionUpdatedPayload`]. Only the
-/// projection worker emits it.
+/// Only the projection bridge emits enriched rows on this scope.
 pub const SESSION_UPDATED_EVENT: &str = "session:updated";
 
-/// Event the shell emits when list membership changes: a removal, a scan
-/// pass, a broad invalidation, or a resync. The payload is one
-/// [`crate::session_projection::IndexChangedPayload`].
+/// Only the projection bridge emits membership changes and invalidations on this scope.
 pub const SESSION_INDEX_CHANGED_EVENT: &str = "session:index-changed";
 pub const CHECKS_REPORT_CHANGED_EVENT: &str = "checks:report-changed";
 pub const BURN_CHECK_SNOOZES_CHANGED_EVENT: &str = "checks:snoozes-changed";
@@ -2565,8 +2551,7 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
             .map_err(fail)
     })
     .await?;
-    // Every row is gone at `revision`: a broad removal the registry
-    // reconciles, then one list refetch, before the refill pass is asked for.
+    // Report the broad removal and list invalidation before requesting index refill.
     crate::session_lifecycle::report(
         &app,
         crate::session_lifecycle::SyncObservation::Removed {

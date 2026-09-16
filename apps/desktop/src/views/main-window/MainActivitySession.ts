@@ -255,7 +255,7 @@ export class MainActivitySession {
       // The registry, not row data, decides which rows show as active.
       this.stops.push(
         liveSessions.subscribe(() => {
-          if (generation !== this.generation) return
+          if (generation !== this.generation || !this.snapshot.active) return
           const entries = this.snapshot.entries
           if (entries) this.update({ entries: this.withRegistryActivity(entries) })
         }),
@@ -381,9 +381,15 @@ export class MainActivitySession {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     if (!active) {
+      liveSessions.clearInterest(this)
       this.analysisRun += 1
       this.analysisTask = null
       return
+    }
+    const rows = this.snapshot.entries
+    if (rows) {
+      this.update({ entries: this.withRegistryActivity(rows) })
+      liveSessions.setInterest(this, listInterests(rows))
     }
     this.timer = setInterval(() => this.update({ now: Date.now() }), 30_000)
     this.refreshList()

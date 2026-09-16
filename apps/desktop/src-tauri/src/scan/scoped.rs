@@ -616,7 +616,7 @@ async fn refresh_sessions_locked(
     )?;
     if let Some((incarnations, revision)) = persisted {
         super::wake_session_workers(app);
-        super::report_indexed(
+        super::report_discovery(
             app,
             now,
             &described.records,
@@ -627,33 +627,17 @@ async fn refresh_sessions_locked(
         )
         .await;
     }
-    super::report_row_changes(
-        app,
-        &described.records,
-        &described.changed,
-        &previous_map,
-        now,
-    )
-    .await;
     for key in &described.rejected {
         let removed = checked(app, "The session index", store.delete_session(key))?;
         if let Some((incarnation, revision)) = removed {
             super::wake_session_workers(app);
-            super::report_rejected(app, key, incarnation, revision).await;
+            super::report_rejected(app, &described, key, incarnation, revision).await;
         }
     }
     // A targeted refresh can still change list membership: a reused source
     // label can carry a new session identity, and a rejection evicts a
     // row. The full pass reports the same fact from `scan/mod.rs::pass`.
-    if described.list_changed {
-        crate::session_lifecycle::report_async(
-            app,
-            crate::session_lifecycle::Observation::IndexChanged {
-                reason: crate::session_lifecycle::IndexChangeReason::ScanPass,
-            },
-        )
-        .await;
-    }
+    super::report_membership_changed(app, &described).await;
 
     Ok(ScopedSummary {
         sessions: described.records.len(),

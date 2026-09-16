@@ -948,6 +948,13 @@ struct History {
     store: BTreeMap<SessionKey, (u64, i64)>,
     revision: u64,
     touches: BTreeMap<(SessionKey, u64), i64>,
+    timeline: Vec<StoreStep>,
+}
+
+struct StoreStep {
+    fact: Observation,
+    rows: BTreeMap<SessionKey, (u64, i64)>,
+    revision: u64,
 }
 
 fn generate(rng: &mut Rng) -> History {
@@ -956,6 +963,7 @@ fn generate(rng: &mut Rng) -> History {
     let mut revision = 10;
     let mut store: BTreeMap<SessionKey, (u64, i64)> = BTreeMap::new();
     let mut facts = Vec::new();
+    let mut timeline = Vec::new();
     let mut touches: BTreeMap<(SessionKey, u64), i64> = BTreeMap::new();
     let steps = 4 + rng.below(8);
     for _ in 0..steps {
@@ -1037,8 +1045,16 @@ fn generate(rng: &mut Rng) -> History {
                 }
             }
         }
+        if facts.len() > timeline.len() {
+            timeline.push(StoreStep {
+                fact: facts.last().unwrap().clone(),
+                rows: store.clone(),
+                revision,
+            });
+        }
     }
     History {
+        timeline,
         facts,
         store,
         revision,
@@ -1053,6 +1069,8 @@ fn generate(rng: &mut Rng) -> History {
 #[test]
 fn the_evidence_is_independent_of_receipt_order() {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut interleaved_pages = 0;
+    let mut delayed_old_pages = 0;
     for _ in 0..300 {
         let history = generate(&mut rng);
         if history.facts.is_empty() {
@@ -1066,8 +1084,22 @@ fn the_evidence_is_independent_of_receipt_order() {
             let mut order = history.facts.clone();
             rng.shuffle(&mut order);
             let mut sim = Sim::with_guards(forgotten, 0);
-            for fact in order.clone() {
+            let mut in_flight = None;
+            for (fact_index, fact) in order.clone().into_iter().enumerate() {
                 sim.apply(fact);
+                if rng.below(2) == 0
+                    && let Some((request, rows, revision)) = in_flight.take()
+                {
+                    sim.page(request, rows, revision);
+                    if fact_index + 1 < order.len() {
+                        interleaved_pages += 1;
+                    }
+                }
+                if in_flight.is_none()
+                    && let Some(request) = sim.registry.next_page_request(BASE)
+                {
+                    in_flight = Some(capture_page(request, &history.store, history.revision));
+                }
                 // A live entry never sits below a remembered deletion of
                 // its key, and never carries another incarnation's time.
                 for (live_key, entry) in &sim.registry.live {
@@ -1085,7 +1117,17 @@ fn the_evidence_is_independent_of_receipt_order() {
                     );
                 }
             }
-            sim.reconcile_with(&history.store, history.revision + 1);
+            if let Some((request, rows, revision)) = in_flight {
+                sim.page(request, rows, revision);
+            }
+            sim.reconcile_with(&history.store, history.revision);
+            let (temporal, delayed) = interleave_store_history(&history, &mut rng);
+            delayed_old_pages += delayed;
+            assert_eq!(
+                semantic_live(&temporal),
+                semantic_live(&sim),
+                "store changes and delayed replies converge"
+            );
             assert!(sim.registry.pending.is_empty(), "{order:?}");
             for target in [key("a"), key("b")] {
                 match history.store.get(&target) {
@@ -1127,6 +1169,97 @@ fn the_evidence_is_independent_of_receipt_order() {
             "every order converges to the same live view"
         );
     }
+    assert!(
+        interleaved_pages > 100,
+        "pages must reply before all facts arrive"
+    );
+    assert!(
+        delayed_old_pages > 100,
+        "store mutations must occur during page reads"
+    );
+}
+
+fn semantic_live(sim: &Sim) -> Vec<(SessionKey, Incarnation, i64)> {
+    sim.registry
+        .live
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.incarnation, entry.last_activity_at))
+        .collect()
+}
+
+fn capture_page(
+    request: PageRequest,
+    store: &BTreeMap<SessionKey, (u64, i64)>,
+    revision: u64,
+) -> (PageRequest, Vec<Presence>, u64) {
+    let rows = request
+        .keys()
+        .iter()
+        .filter_map(|key| {
+            store.get(key).map(|(inc, epoch)| Presence {
+                key: key.clone(),
+                incarnation: Incarnation(*inc),
+                epoch: *epoch,
+            })
+        })
+        .collect();
+    (request, rows, revision)
+}
+
+/// Store changes create facts. Reads capture coherent rows before later changes and delayed deliveries.
+fn interleave_store_history(history: &History, rng: &mut Rng) -> (Sim, usize) {
+    let mut sim = Sim::new();
+    let mut store = BTreeMap::new();
+    let mut revision = 10;
+    let mut produced = 0;
+    let mut queued = Vec::new();
+    let mut in_flight = None;
+    let mut delayed = 0;
+    let mut rounds = 0;
+    while produced < history.timeline.len() || !queued.is_empty() || in_flight.is_some() {
+        rounds += 1;
+        assert!(rounds < 10_000, "the scripted scheduler must make progress");
+        match rng.below(3) {
+            0 if produced < history.timeline.len() => {
+                let step = &history.timeline[produced];
+                store = step.rows.clone();
+                revision = step.revision;
+                queued.push(step.fact.clone());
+                produced += 1;
+            }
+            1 if !queued.is_empty() => {
+                let index = rng.below(queued.len() as u64) as usize;
+                sim.apply(queued.swap_remove(index));
+            }
+            _ => {
+                if let Some((request, rows, read_revision)) = in_flight.take() {
+                    delayed += usize::from(read_revision < revision);
+                    sim.page(request, rows, read_revision);
+                }
+            }
+        }
+        if in_flight.is_none()
+            && let Some(request) = sim.registry.next_page_request(BASE)
+        {
+            in_flight = Some(capture_page(request, &store, revision));
+        }
+        for (key, entry) in &sim.registry.live {
+            if let Some(deletion) = sim.registry.deleted.get(key) {
+                assert!(entry.incarnation > deletion.incarnation);
+            }
+            assert!(
+                history
+                    .facts
+                    .iter()
+                    .filter_map(|fact| activity_time_for(fact, key, entry.incarnation))
+                    .any(|at| at == entry.last_activity_at),
+                "pages cannot import another incarnation's activity"
+            );
+        }
+    }
+    sim.reconcile_with(&history.store, history.revision);
+    assert!(sim.registry.pending.is_empty());
+    (sim, delayed)
 }
 
 /// The activity time a fact carries for `(key, incarnation)`, if any.

@@ -963,12 +963,13 @@ async fn pass(
         })
         .collect::<Vec<_>>();
     let previous_records = store.session_records_for_activity_keys(&activity_keys)?;
+    let described = describe_with_states(logs, &home, &ignored, &previous_records).await;
     let Described {
         records,
         rejected,
         changed,
         list_changed,
-    } = describe_with_states(logs, &home, &ignored, &previous_records).await;
+    } = &described;
     let evidence_agents: Vec<&str> = match scope {
         PassScope::Full => agents::evidence_cohort(),
         PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
@@ -991,7 +992,7 @@ async fn pass(
     let persisted = checked(
         app,
         "The session index",
-        persist_changed_records(&records, &changed, &returned, |records| {
+        persist_changed_records(records, changed, &returned, |records| {
             store.upsert_sessions(records, &evidence_agents)
         }),
     )?;
@@ -999,11 +1000,11 @@ async fn pass(
         wake_session_workers(app);
         // The lifecycle actor learns of a session it was not yet watching, or
         // of one whose deadline just moved later, from this report.
-        report_indexed(
+        report_discovery(
             app,
             now,
-            &records,
-            &changed,
+            records,
+            changed,
             &previous_records,
             &incarnations,
             revision,
@@ -1011,22 +1012,20 @@ async fn pass(
         .await;
     }
 
-    report_row_changes(app, &records, &changed, &previous_records, now).await;
-
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
     // left to mislead indefinitely.
-    for key in &rejected {
+    for key in rejected {
         let removed = checked(app, "The session index", store.delete_session(key))?;
         if let Some((incarnation, revision)) = removed {
             wake_session_workers(app);
-            report_rejected(app, key, incarnation, revision).await;
+            report_rejected(app, &described, key, incarnation, revision).await;
         }
     }
 
     // `records` already holds only the scoped agents' sessions when `scope`
     // is [`PassScope::Agents`], since discovery itself was scoped.
-    for (agent, seen, cursor) in per_agent_totals(&records) {
+    for (agent, seen, cursor) in per_agent_totals(records) {
         checked(
             app,
             "The scan bookkeeping",
@@ -1040,7 +1039,7 @@ async fn pass(
     if controller.cancelled() {
         return Ok(PassSummary {
             sessions: records.len(),
-            list_changed,
+            list_changed: *list_changed,
             re_described: changed.len(),
         });
     }
@@ -1051,53 +1050,75 @@ async fn pass(
     // `refreshes_repositories` additionally covers triggers that name an
     // action which can change the repository set on its own — a toggle, a
     // new scan root — even on a pass that redescribed nothing.
-    if trigger.refreshes_repositories() || list_changed {
+    if trigger.refreshes_repositories() || *list_changed {
         repositories::refresh(app).await?;
     }
-    if list_changed {
-        session_lifecycle::report_async(
-            app,
-            session_lifecycle::Observation::IndexChanged {
-                reason: session_lifecycle::IndexChangeReason::ScanPass,
-            },
-        )
-        .await;
-    }
+    report_membership_changed(app, &described).await;
 
     Ok(PassSummary {
         sessions: records.len(),
-        list_changed,
+        list_changed: *list_changed,
         re_described: changed.len(),
     })
 }
 
-/// Tell the lifecycle bus that the gate removed one row. The removal names
-/// the deleted incarnation and the revision of the delete.
-pub(super) async fn report_rejected(
+/// Report the deleted row’s incarnation and writer revision to the lifecycle bus.
+async fn report_rejected(
     app: &AppHandle,
+    described: &Described,
     key: &SessionKey,
     incarnation: crate::store::Incarnation,
     revision: crate::store::Revision,
 ) {
-    session_lifecycle::report_async(
-        app,
-        session_lifecycle::Observation::Removed {
-            scope: session_lifecycle::RemovalScope::One(key.clone(), incarnation),
-            reason: session_lifecycle::RemovalReason::Rejected,
-            revision,
-        },
-    )
-    .await;
+    for observation in
+        membership_reports(described, &[(key.clone(), incarnation, revision)]).removals
+    {
+        session_lifecycle::report_async(app, observation).await;
+    }
 }
 
-/// Tell the lifecycle bus which sessions and agents a burst touched.
-///
-/// A known session (T1) reports with its key. The new-session (T3) and
-/// database-agent (T5) lanes only know the agent, so they report an
-/// anonymous touch with the next generation from `ledger`. Title-only
-/// writes (T4) and quiet paths are not activity and report nothing. A
-/// session key the lookup does not find reports nothing: its row is gone,
-/// and an anonymous substitute would show work that is not there.
+/// Report membership after the pass reports all successful deletions.
+async fn report_membership_changed(app: &AppHandle, described: &Described) {
+    if let Some(observation) = membership_reports(described, &[]).index_changed {
+        session_lifecycle::report_async(app, observation).await;
+    }
+}
+
+struct MembershipReports {
+    removals: Vec<session_lifecycle::Observation>,
+    index_changed: Option<session_lifecycle::Observation>,
+}
+
+/// Derive membership facts from the description and successful store deletions.
+fn membership_reports(
+    described: &Described,
+    removed: &[(
+        SessionKey,
+        crate::store::Incarnation,
+        crate::store::Revision,
+    )],
+) -> MembershipReports {
+    MembershipReports {
+        removals: removed
+            .iter()
+            .map(
+                |(key, incarnation, revision)| session_lifecycle::Observation::Removed {
+                    scope: session_lifecycle::RemovalScope::One(key.clone(), *incarnation),
+                    reason: session_lifecycle::RemovalReason::Rejected,
+                    revision: *revision,
+                },
+            )
+            .collect(),
+        index_changed: described.list_changed.then_some(
+            session_lifecycle::Observation::IndexChanged {
+                reason: session_lifecycle::IndexChangeReason::ScanPass,
+            },
+        ),
+    }
+}
+
+/// Report keyed touches before anonymous agent activity. Title-only writes and quiet
+/// paths report no activity. Missing keys never produce anonymous substitutes.
 async fn report_touched(
     app: &AppHandle,
     store: &Store,
@@ -1109,11 +1130,8 @@ async fn report_touched(
     }
     let at = unix_now();
     let activity_keys = work.sessions.iter().cloned().collect::<Vec<_>>();
-    // Identity only: the touch report needs a `SessionKey`, its incarnation,
-    // and the revision it was read at, not row data. The store call returns
-    // before any await below. A failed lookup reports no keyed touch: the
-    // scoped refresh that follows this burst writes through the
-    // storage-health check, so a failing store still gets its banner.
+    // Read only identity evidence before awaiting any report. A failed lookup reports
+    // no keyed touch. Later checked writes can report storage-health failures.
     let identities = match store.session_keys_for_activity_keys(&activity_keys) {
         Ok(identities) => Some(identities),
         Err(error) => {
@@ -1126,9 +1144,8 @@ async fn report_touched(
     }
 }
 
-/// The compact facts one burst reports, in order: keyed touches for the
-/// sessions the lookup found, then one anonymous touch per agent-level lane
-/// with a fresh generation.
+/// Build keyed touches from writer evidence. Then assign fresh generations to anonymous
+/// agent touches.
 fn touch_observations(
     ledger: &mut AnonymousLedger,
     work: &scoped::ScopedWork,
@@ -1168,9 +1185,8 @@ fn touch_observations(
     out
 }
 
-/// Tell the lifecycle bus which anonymous generations a successful pass
-/// accounted for. Sent on the same ordered path as the pass's `Indexed`
-/// reports, after all of them. Nothing is sent for an empty capture.
+/// Report successful pass covers after all its `Indexed` facts on the same ordered
+/// path.
 async fn report_covered(app: &AppHandle, covers: Vec<AnonymousCover>) {
     if covers.is_empty() {
         return;
@@ -1182,10 +1198,9 @@ async fn report_covered(app: &AppHandle, covers: Vec<AnonymousCover>) {
     .await;
 }
 
-/// Tell the lifecycle bus which sessions a pass just wrote. `incarnations`
-/// and `revision` are what the upsert returned. The report is split into
-/// chunks of [`session_lifecycle::INDEXED_CHUNK`] sessions.
-pub(super) async fn report_indexed(
+/// Report discovery facts using the upsert’s incarnations and revision. Each `Indexed`
+/// chunk contains at most [`session_lifecycle::INDEXED_CHUNK`] sessions.
+pub(super) async fn report_discovery(
     app: &AppHandle,
     now: i64,
     records: &[SessionRecord],
@@ -1194,27 +1209,52 @@ pub(super) async fn report_indexed(
     incarnations: &[(SessionKey, crate::store::Incarnation)],
     revision: crate::store::Revision,
 ) {
-    let sessions =
-        indexed_sessions_for_report(now, records, changed, previous_records, incarnations);
-    for chunk in sessions.chunks(session_lifecycle::INDEXED_CHUNK) {
-        session_lifecycle::report_async(
-            app,
-            session_lifecycle::Observation::Indexed {
-                sessions: chunk.to_vec(),
-                revision,
-            },
-        )
-        .await;
+    for observation in discovery_report(
+        now,
+        records,
+        incarnations,
+        changed,
+        previous_records,
+        revision,
+    ) {
+        session_lifecycle::report_async(app, observation).await;
     }
 }
 
-/// Which sessions a pass just wrote, as compact lifecycle facts.
-///
-/// Only a changed record inside the active window is reported: a reused row
-/// says nothing new, and an old row is history. `is_new` uses session
-/// identity, so a new session that reuses a source label another identity
-/// held before still reads as new. A record the upsert returned no
-/// incarnation for was not written and is not reported.
+/// Derive bounded discovery facts without loading rich rows or accessing the registry.
+fn discovery_report(
+    now: i64,
+    records: &[SessionRecord],
+    incarnations: &[(SessionKey, crate::store::Incarnation)],
+    changed: &[SessionKey],
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+    revision: crate::store::Revision,
+) -> impl Iterator<Item = session_lifecycle::Observation> {
+    let mut sessions =
+        indexed_sessions_for_report(now, records, changed, previous_records, incarnations)
+            .into_iter();
+    let indexed = std::iter::from_fn(move || {
+        let sessions: Vec<_> = sessions
+            .by_ref()
+            .take(session_lifecycle::INDEXED_CHUNK)
+            .collect();
+        (!sessions.is_empty())
+            .then_some(session_lifecycle::Observation::Indexed { sessions, revision })
+    });
+    let rows = row_change_facets(records, changed, previous_records)
+        .into_iter()
+        .map(
+            move |(session, facets)| session_lifecycle::Observation::RowChanged {
+                session,
+                facets,
+                at: now,
+            },
+        );
+    indexed.chain(rows)
+}
+
+/// Report only changed records inside the active window with returned incarnations.
+/// Full identity determines `is_new`, not a reused source label.
 fn indexed_sessions_for_report(
     now: i64,
     records: &[SessionRecord],
