@@ -53,12 +53,12 @@ signals that item 8 needs and is planned separately.
 ### The frame
 
 The HUD panel (`OverlayWindow.tsx`, the `rounded-xl border-transparent` div)
-gets a visible material: `bg-hud-frame` at 40% alpha with a 1 px `separator`
+gets a visible material: `bg-hud-frame` at 60% alpha with a 1 px `separator`
 hairline. New tokens in `hud.css` and `design.md`:
 
 | Token          | Light                  | Dark                   |
 | -------------- | ---------------------- | ---------------------- |
-| `bg-hud-frame` | `hsl(0 0% 100% / 0.4)` | `hsl(0 0% 100% / 0.4)` |
+| `bg-hud-frame` | `hsl(0 0% 100% / 0.6)` | `hsl(0 0% 100% / 0.6)` |
 
 White in both themes (Keith, 2026-09-16, after seeing a dark frame vanish on a
 dark desktop). The frame replaces the LED rings and the HUD's full-strength
@@ -302,7 +302,7 @@ sampled from real transcripts.
 3. ~~Wake dwell.~~ Decided: 5 s.
 4. ~~Spend anchors.~~ Agreed: keep $0.05 and $2.00/min as the starting
    point and sample a few of Keith's days before B ships.
-5. ~~Frame alpha.~~ Decided: 40%.
+5. ~~Frame alpha.~~ Decided: 60%.
 
 ## Decisions
 
@@ -314,4 +314,4 @@ sampled from real transcripts.
 3. **Wake dwell is 5 s** (Keith, 2026-09-16), extended while hovered.
 4. **Spend anchors start at $0.05 / $2.00 per minute** (Keith, 2026-09-16),
    to be checked against real transcripts before PR B ships.
-5. **Frame alpha is 40%** (Keith, 2026-09-16), after 30% and then 50% on screen; the hover surface swap is gone.
+5. **Frame alpha is 60%** (Keith, 2026-09-16), after 30%, 50% and 40% on screen; the hover surface swap is gone and the stroke is a vertical gradient.

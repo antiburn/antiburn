@@ -9,6 +9,8 @@
   --color-bg-hud: var(--color-bg-hud-val);
   --color-bg-hud-hover: var(--color-bg-hud-hover-val);
   --color-bg-hud-frame: var(--color-bg-hud-frame-val);
+  --color-hud-stroke-top: var(--color-hud-stroke-top-val);
+  --color-hud-stroke-bottom: var(--color-hud-stroke-bottom-val);
   --color-hud-control-ink: var(--color-hud-control-ink-val);
   --color-hud-control-edge: var(--color-hud-control-edge-val);
   --color-led-off: var(--color-led-off-val);
@@ -49,11 +51,19 @@
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
 
   /*
-   * The HUD frame at rest. Half-alpha white in both themes, so the bars read
-   * as one object and the desktop still shows through. A dark frame vanished
-   * on a dark desktop. Reduced transparency makes it solid.
+   * The HUD frame. 60% white in both themes, so the bars read as one object
+   * and the desktop still shows through. A dark frame vanished on a dark
+   * desktop. Reduced transparency makes it solid.
    */
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.4);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.6);
+
+  /*
+   * The frame stroke, a one-pixel vertical gradient: a light top edge and a
+   * dark bottom edge, so the frame reads as a lit object on any desktop. One
+   * value for both themes, because the desktop tints the frame, not the theme.
+   */
+  --color-hud-stroke-top-val: hsl(0 0% 100% / 0.9);
+  --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
 
   /*
    * The close control. Its glyph and its edge carry no alpha, because the
@@ -79,7 +89,9 @@
     --color-burn-muted-val: hsl(23 88.8% 54%);
     --color-bg-hud-val: hsl(0 0% 12.5%);
     --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
-    --color-bg-hud-frame-val: hsl(0 0% 100% / 0.4);
+    --color-bg-hud-frame-val: hsl(0 0% 100% / 0.6);
+    --color-hud-stroke-top-val: hsl(0 0% 100% / 0.9);
+    --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
     --color-hud-control-ink-val: hsl(0 0% 78%);
     --color-hud-control-edge-val: hsl(0 0% 32%);
     --color-led-off-val: hsl(0 0% 50% / 0.45);
@@ -100,7 +112,9 @@
   --color-burn-muted-val: hsl(18.1 88% 51.4%);
   --color-bg-hud-val: hsl(0 0% 96.4%);
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.4);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.6);
+  --color-hud-stroke-top-val: hsl(0 0% 100% / 0.9);
+  --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
   --color-hud-control-ink-val: hsl(0 0% 32%);
   --color-hud-control-edge-val: hsl(0 0% 80%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
@@ -120,7 +134,9 @@
   --color-burn-muted-val: hsl(23 88.8% 54%);
   --color-bg-hud-val: hsl(0 0% 12.5%);
   --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.4);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.6);
+  --color-hud-stroke-top-val: hsl(0 0% 100% / 0.9);
+  --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
   --color-hud-control-ink-val: hsl(0 0% 78%);
   --color-hud-control-edge-val: hsl(0 0% 32%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
@@ -177,6 +193,29 @@ body[data-transparent-window] #root {
     var(--color-led-notch) 0 1px,
     var(--color-led-notch-highlight) 1px 2px
   );
+}
+
+/*
+ * The HUD frame stroke. A border cannot carry a gradient and keep its radius,
+ * so a masked pseudo-element paints a one-pixel ring instead. The mask keeps
+ * the padding ring and cuts the content box out of it.
+ */
+.hud-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(
+    to bottom,
+    var(--color-hud-stroke-top),
+    var(--color-hud-stroke-bottom)
+  );
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
 }
 
 /*

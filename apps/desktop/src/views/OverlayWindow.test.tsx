@@ -775,7 +775,7 @@ describe("OverlayWindow", () => {
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     expect(panel(container).classList.contains("bg-hud-frame")).toBe(true)
-    expect(panel(container).classList.contains("border-separator")).toBe(true)
+    expect(panel(container).classList.contains("hud-frame")).toBe(true)
     expect(panel(container).style.backgroundColor).toBe("")
     fireEvent.mouseEnter(frame(container))
     expect(panel(container).style.backgroundColor).toBe("")
