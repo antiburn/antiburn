@@ -273,7 +273,9 @@ function CheckMetadata({
         >
           {check.finding} failed
         </span>
-        <span className="text-label-tertiary"> · </span>
+        <span className="mx-0.5 inline-block text-label-tertiary" aria-hidden="true">
+          ·
+        </span>
         <span
           className={check.finding > 0 ? "text-label-secondary" : "text-burn-check-pass-fill"}
         >

@@ -299,6 +299,7 @@ describe("BurnChecksView", () => {
       [first, codex],
     )
     await screen.findByRole("button", { name: /Review with Codex/ })
+    expect(screen.getByText("7 sessions affected")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Failed sessions/ })).toBeNull()
     expect(screen.getByText("Claude Code")).toBeVisible()
     expect(screen.getByText("Codex")).toBeVisible()
@@ -508,7 +509,7 @@ describe("BurnChecksView", () => {
     await waitFor(() => expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"]))
     expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
     expect(screen.getByRole("region", { name: "Burn check details" })).toHaveTextContent(
-      "1 failed · 2 passed",
+      "1 failed·2 passed",
     )
     expect(
       screen.queryByRole("heading", { name: "Burn checks", level: 2 }),
@@ -621,6 +622,7 @@ describe("BurnChecksView", () => {
 
   it("renders assessed checks and concise failed details", async () => {
     setup(target, false, aggregate, report)
+    expect(await screen.findByText("1 session affected")).toBeVisible()
     const row = await screen.findByRole("button", { name: /Old model usage.*8% burn/ })
     expect(row).toBeVisible()
     expect(within(row).getByText("8% burn")).toBeVisible()
