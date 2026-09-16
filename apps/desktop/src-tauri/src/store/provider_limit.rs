@@ -16,7 +16,7 @@
 //! [`session_provider_account`]: super::schema
 //! [`provider_account_seen`]: super::schema
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -28,9 +28,10 @@ use antiburn_local::pricing::calc::calculate_cache_write_cost;
 
 use crate::provider_usage::factor::model_matches_scope;
 use crate::provider_usage::live::normalize::slugify;
+use crate::provider_usage::providers::display_name;
 use crate::provider_usage::{attribute, has_tokens};
 
-use super::provider_usage_history::ProviderUsagePeriod;
+use super::provider_usage_history::{ProviderUsageObservation, ProviderUsagePeriod};
 use super::{SessionKey, Store};
 
 /// Session/model/speed groups one attribution query may return before it
@@ -54,7 +55,11 @@ pub(crate) const LANE_WEEKLY: &str = "weekly";
 
 /// Prefix for a lane keyed by a supplemental weekly window scoped to one
 /// model, rather than to the whole account.
-const MODEL_LANE_PREFIX: &str = "model:";
+pub(crate) const MODEL_LANE_PREFIX: &str = "model:";
+
+/// Turn timestamps land in a 15-minute bucket for the per-session-per-bucket
+/// contribution query, keyed the same way the quota screen buckets a chart.
+pub(crate) const CONTRIBUTION_BUCKET_SECS: i64 = 900;
 
 /// A lane's nominal length, used to derive a window start the provider did
 /// not state directly. A model-scoped lane is weekly, the only period length
@@ -108,12 +113,76 @@ pub(crate) fn model_scope_for_period(period: &ProviderUsagePeriod) -> Option<&st
 /// window role for the two fixed lanes, or the stated role together with the
 /// exact supplemental window id for a model-scoped lane. The inverse of
 /// [`lane_for_period`].
-fn observation_filter_for_lane(lane: &str) -> (&'static str, Option<String>) {
+pub(crate) fn observation_filter_for_lane(lane: &str) -> (&'static str, Option<String>) {
     match lane.strip_prefix(MODEL_LANE_PREFIX) {
         Some(slug) => ("supplemental", Some(format!("weekly-{slug}"))),
         None if lane == LANE_WEEKLY => ("primaryLong", None),
         None => ("primaryShort", None),
     }
+}
+
+/// The reader-facing name for a lane: "Weekly" and "5-hour" for the two
+/// fixed lanes, else the model-scoped period's own scope label (Anthropic's
+/// supplemental window is currently labelled "Fable").
+pub(crate) fn lane_label(lane: &str, period: &ProviderUsagePeriod) -> String {
+    match lane {
+        LANE_WEEKLY => "Weekly".to_string(),
+        LANE_FIVE_HOUR => "5-hour".to_string(),
+        _ => period.scope_label.clone(),
+    }
+}
+
+/// A lane's most recent period whose reset is after `now`, with any boundary
+/// the provider did not state derived the same way
+/// [`crate::provider_usage::quota::resolve_periods`] derives it: reported,
+/// else the other boundary offset by `lane_duration`.
+///
+/// `None` when every period for the lane has already reset, or carries
+/// neither boundary. Lets a reader define "this week" as the account's
+/// actual current window rather than a calendar week.
+fn current_period_for_lane(
+    periods: &[&ProviderUsagePeriod],
+    lane_duration: i64,
+    now_epoch: i64,
+) -> Option<(i64, i64)> {
+    periods
+        .iter()
+        .filter_map(|period| {
+            let resets_at_epoch = period
+                .resets_at_epoch
+                .or_else(|| period.starts_at_epoch.map(|start| start + lane_duration))?;
+            if resets_at_epoch <= now_epoch {
+                return None;
+            }
+            let starts_at_epoch = period
+                .starts_at_epoch
+                .unwrap_or(resets_at_epoch - lane_duration);
+            Some((period.last_observed_epoch, starts_at_epoch, resets_at_epoch))
+        })
+        .max_by_key(|(last_observed_epoch, ..)| *last_observed_epoch)
+        .map(|(_, starts_at_epoch, resets_at_epoch)| (starts_at_epoch, resets_at_epoch))
+}
+
+/// One lane a quota account carries: its reader-facing label, whether it has
+/// a learned factor yet, and its current window, when one is open.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QuotaAccountLane {
+    pub lane: String,
+    pub label: String,
+    pub has_factor: bool,
+    /// `(starts_at_epoch, resets_at_epoch)` of the lane's open window, when
+    /// one exists.
+    pub current_period: Option<(i64, i64)>,
+}
+
+/// One `(provider, account)` this app has observed at least one quota period
+/// for, with every lane it carries.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QuotaAccount {
+    pub provider: String,
+    pub display_name: String,
+    pub account_key: String,
+    pub lanes: Vec<QuotaAccountLane>,
 }
 
 /// Priced, provider- and account-attributed turn dollars for one session,
@@ -142,6 +211,32 @@ impl AttributedSessionDollars {
             turn_count: 0,
         }
     }
+}
+
+/// Which account, if any, [`price_turn_row`] resolved a priced group to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Resolved {
+    /// The session resolved to exactly this account.
+    Bound(String),
+    /// The session has no resolved account for the provider.
+    Unbound,
+}
+
+/// Priced, attributed turn dollars for one session inside one 15-minute
+/// bucket, for the quota screen's per-session contribution chart.
+///
+/// A row resolved to a different account than the one asked for never
+/// becomes one of these: [`Store::attributed_turn_dollars_by_bucket`] drops
+/// it. A row with no resolved account keeps its bucket's dollars under
+/// [`Resolved::Unbound`], so the caller can report an "unattributed" total
+/// rather than silently dropping spend nobody could be credited with.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BucketedSessionDollars {
+    pub key: SessionKey,
+    pub bucket_start_epoch: i64,
+    pub usd: f64,
+    pub turn_count: i64,
+    pub account: Resolved,
 }
 
 /// One measurement of the factor: a meter delta, or a first window reading,
@@ -222,6 +317,61 @@ const ATTRIBUTED_TURN_SQL: &str = "SELECT t.environment_key, t.agent, t.session_
       WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2
       GROUP BY t.environment_key, t.agent, t.session_id, t.model, t.speed
       LIMIT ?3";
+
+/// [`ATTRIBUTED_TURN_SQL`], grouped further by 15-minute bucket, for the
+/// quota screen's per-session-per-bucket contribution chart. Same joins,
+/// fences, limit, and params; the caller binds an extra bucket column.
+const ATTRIBUTED_TURN_BUCKET_SQL: &str = "SELECT t.environment_key, t.agent, t.session_id,
+            a.provider_hints_json,
+            COALESCE((
+                SELECT json_group_array(json_object(
+                    'provider', spa.provider,
+                    'accountKey', spa.account_key
+                ))
+                  FROM session_provider_account spa
+                 WHERE spa.environment_key = s.environment_key
+                   AND spa.agent = s.agent AND spa.session_id = s.session_id
+                   AND spa.provider = ?4
+            ), '[]'),
+            t.model, t.speed,
+            SUM(t.input_tokens), SUM(t.cache_read_tokens), SUM(t.cache_write_tokens),
+            SUM(t.output_tokens), COUNT(*), SUM(t.cache_write_1h_tokens),
+            t.ts_ms / 900000 AS bucket
+       FROM turn t INDEXED BY turn_usage_timestamp
+       JOIN session_evidence e
+         ON e.environment_key = t.environment_key
+        AND e.agent = t.agent AND e.session_id = t.session_id
+        AND e.published_fence = t.claim_fence
+       JOIN session s
+         ON s.environment_key = t.environment_key
+        AND s.agent = t.agent AND s.session_id = t.session_id
+       LEFT JOIN session_analysis a
+         ON a.environment_key = s.environment_key
+        AND a.agent = s.agent AND a.session_id = s.session_id
+      WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2
+      GROUP BY t.environment_key, t.agent, t.session_id, t.model, t.speed, bucket
+      LIMIT ?3";
+
+/// Every session with turn activity in a range, and its bound accounts for
+/// one provider, for [`Store::attributed_turn_epochs`]. Account binding is
+/// per session, not per model, so this carries no model or token columns.
+const SESSION_ACCOUNTS_IN_RANGE_SQL: &str =
+    "SELECT DISTINCT t.environment_key, t.agent, t.session_id,
+            COALESCE((
+                SELECT json_group_array(json_object(
+                    'accountKey', spa.account_key
+                ))
+                  FROM session_provider_account spa
+                 WHERE spa.environment_key = t.environment_key
+                   AND spa.agent = t.agent AND spa.session_id = t.session_id
+                   AND spa.provider = ?3
+            ), '[]')
+       FROM turn t INDEXED BY turn_usage_timestamp
+       JOIN session_evidence e
+         ON e.environment_key = t.environment_key
+        AND e.agent = t.agent AND e.session_id = t.session_id
+        AND e.published_fence = t.claim_fence
+      WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -365,6 +515,284 @@ impl Store {
             model_scope,
             &known,
         )
+    }
+
+    /// Priced, attributed turn dollars for one account, grouped by session
+    /// and 15-minute bucket, for the quota screen's contribution chart.
+    ///
+    /// The range is `(from_epoch, to_epoch]`, same as
+    /// [`Store::attributed_turn_dollars_between`]. A row resolved to a
+    /// different account is dropped; a row resolved to no account at all is
+    /// kept under [`Resolved::Unbound`] rather than dropped, so the caller
+    /// can report unattributed spend instead of losing it silently. `None`
+    /// means the bounded group limit overflowed.
+    pub(crate) fn attributed_turn_dollars_by_bucket(
+        &self,
+        provider: &str,
+        account_key: &str,
+        model_scope: Option<&str>,
+        from_epoch: i64,
+        to_epoch: i64,
+    ) -> Result<Option<Vec<BucketedSessionDollars>>> {
+        if to_epoch <= from_epoch {
+            return Ok(Some(Vec::new()));
+        }
+        let known = self.provider_known_accounts(provider)?;
+        let connection = self.lock();
+        attributed_turn_dollars_by_bucket_in(
+            &connection,
+            provider,
+            account_key,
+            from_epoch,
+            to_epoch,
+            model_scope,
+            &known,
+        )
+    }
+
+    /// Ascending, minute-rounded epochs of every turn in `(from_epoch,
+    /// to_epoch]` whose session resolves to `account_key`, under the same
+    /// two-step rule as every other query in this module.
+    ///
+    /// Feeds the five-hour lane's turn-gap resolver
+    /// ([`crate::provider_usage::quota::resolve_periods`]): account binding
+    /// is a per-session fact, so this reads every turn from a matching
+    /// session regardless of model or provider attribution.
+    pub(crate) fn attributed_turn_epochs(
+        &self,
+        provider: &str,
+        account_key: &str,
+        from_epoch: i64,
+        to_epoch: i64,
+    ) -> Result<Vec<i64>> {
+        if to_epoch <= from_epoch {
+            return Ok(Vec::new());
+        }
+        let known = self.provider_known_accounts(provider)?;
+        let start_ms = from_epoch.saturating_mul(1_000).saturating_add(1);
+        let end_ms = to_epoch.saturating_mul(1_000);
+        let connection = self.lock();
+
+        let mut sessions_statement = connection.prepare(SESSION_ACCOUNTS_IN_RANGE_SQL)?;
+        let mut rows = sessions_statement.query(params![start_ms, end_ms, provider])?;
+        let mut bound_sessions = Vec::new();
+        while let Some(row) = rows.next()? {
+            let key = SessionKey::new(
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            );
+            let accounts_json: String = row.get(3)?;
+            let resolved = resolve_account(&accounts_json, known.get(&key.agent));
+            if resolved.as_deref() == Some(account_key) {
+                bound_sessions.push(key);
+            }
+        }
+        drop(rows);
+        drop(sessions_statement);
+        if bound_sessions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut epochs: BTreeSet<i64> = BTreeSet::new();
+        for chunk in bound_sessions.chunks(200) {
+            let mut clauses = Vec::with_capacity(chunk.len());
+            let mut values: Vec<rusqlite::types::Value> = vec![
+                rusqlite::types::Value::from(start_ms),
+                rusqlite::types::Value::from(end_ms),
+            ];
+            for key in chunk {
+                clauses.push("(t.environment_key = ? AND t.agent = ? AND t.session_id = ?)");
+                values.push(rusqlite::types::Value::from(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::from(key.agent.clone()));
+                values.push(rusqlite::types::Value::from(key.session_id.clone()));
+            }
+            let sql = format!(
+                "SELECT DISTINCT (t.ts_ms / 60000) * 60 AS minute_epoch
+                   FROM turn t INDEXED BY turn_usage_timestamp
+                  WHERE t.ts_ms > ? AND t.ts_ms <= ? AND ({})",
+                clauses.join(" OR ")
+            );
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+            while let Some(row) = rows.next()? {
+                epochs.insert(row.get::<_, i64>(0)?);
+            }
+        }
+        Ok(epochs.into_iter().collect())
+    }
+
+    /// The epoch span, in seconds, of one session's own published turns:
+    /// `(earliest, latest)`. `None` when the session has no timestamped,
+    /// published turn.
+    ///
+    /// Bounds the range [`Store::quota_periods_for_lane`] and
+    /// [`Store::attributed_turn_epochs`] need to cover a session's activity
+    /// for `get_session_quota`.
+    pub(crate) fn session_turn_epoch_bounds(&self, key: &SessionKey) -> Result<Option<(i64, i64)>> {
+        let connection = self.lock();
+        connection
+            .query_row(
+                "SELECT MIN(t.ts_ms), MAX(t.ts_ms)
+                   FROM turn t
+                   JOIN session_evidence e
+                     ON e.environment_key = t.environment_key
+                    AND e.agent = t.agent AND e.session_id = t.session_id
+                    AND e.published_fence = t.claim_fence
+                  WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.session_id = ?3
+                    AND t.ts_ms IS NOT NULL",
+                params![key.environment_key, key.agent, key.session_id],
+                |row| {
+                    let min_ms: Option<i64> = row.get(0)?;
+                    let max_ms: Option<i64> = row.get(1)?;
+                    Ok(min_ms.zip(max_ms))
+                },
+            )
+            .map(|bounds| bounds.map(|(min_ms, max_ms)| (min_ms / 1_000, max_ms / 1_000)))
+            .map_err(Into::into)
+    }
+
+    /// Every stored factor point for one account and lane, oldest first.
+    ///
+    /// The quota screen loads a lane's whole point series once per call and
+    /// binary-searches it per bucket, rather than querying
+    /// [`Store::factor_point_at`] once per bucket.
+    pub(crate) fn factor_points_for_lane(
+        &self,
+        provider: &str,
+        account_key: &str,
+        lane: &str,
+    ) -> Result<Vec<FactorPoint>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(&format!(
+            "{FACTOR_POINT_SELECT} WHERE provider = ?1 AND account_key = ?2 AND lane = ?3
+              ORDER BY effective_at_epoch"
+        ))?;
+        let points = statement
+            .query_map(params![provider, account_key, lane], row_to_point)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(points)
+    }
+
+    /// Observed periods for one lane overlapping `[range_start, range_end)`,
+    /// plus the most recent period before the range, which anchors weekly
+    /// cadence extrapolation in
+    /// [`crate::provider_usage::quota::resolve_periods`].
+    ///
+    /// A period's boundary is derived the same way the resolver derives it
+    /// (`COALESCE` against the lane's nominal duration) so a period missing
+    /// one stated boundary is not missed here only to be picked up, or
+    /// double counted, by the resolver's own fallback.
+    pub(crate) fn quota_periods_for_lane(
+        &self,
+        provider: &str,
+        account_key: &str,
+        lane: &str,
+        range_start: i64,
+        range_end: i64,
+    ) -> Result<Vec<ProviderUsagePeriod>> {
+        let (window_role, window_id) = observation_filter_for_lane(lane);
+        let lane_duration = lane_duration_seconds(lane);
+        let connection = self.lock();
+        let mut statement = connection.prepare(QUOTA_PERIODS_FOR_LANE_SQL)?;
+        let periods = statement
+            .query_map(
+                params![
+                    provider,
+                    account_key,
+                    window_role,
+                    window_id,
+                    range_start,
+                    range_end,
+                    lane_duration
+                ],
+                row_to_period,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(periods)
+    }
+
+    /// One period's readings, oldest first. A thin name for
+    /// [`Store::provider_usage_period_history`] at the quota screen's call
+    /// sites, which want only the readings, never the period row again.
+    pub(crate) fn quota_period_samples(
+        &self,
+        period_id: i64,
+    ) -> Result<Vec<ProviderUsageObservation>> {
+        Ok(self
+            .provider_usage_period_history(period_id)?
+            .map(|history| history.observations)
+            .unwrap_or_default())
+    }
+
+    /// Every `(provider, account)` this app has observed a quota period for,
+    /// with the lanes each one carries.
+    pub(crate) fn quota_accounts(&self, now_epoch: i64) -> Result<Vec<QuotaAccount>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT id, provider, account_key, window_id, window_kind, window_role,
+                    scope_key, scope_label, duration_seconds, starts_at_epoch,
+                    resets_at_epoch, first_observed_epoch, last_observed_epoch
+               FROM provider_usage_period",
+        )?;
+        let periods = statement
+            .query_map([], row_to_period)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+
+        let mut by_account: std::collections::BTreeMap<
+            (String, String),
+            std::collections::BTreeMap<String, Vec<&ProviderUsagePeriod>>,
+        > = Default::default();
+        for period in &periods {
+            let Some(lane) = lane_for_period(period) else {
+                continue;
+            };
+            by_account
+                .entry((period.provider.clone(), period.account_key.clone()))
+                .or_default()
+                .entry(lane)
+                .or_default()
+                .push(period);
+        }
+
+        let mut accounts = Vec::with_capacity(by_account.len());
+        for ((provider, account_key), lanes_by_name) in by_account {
+            let mut lanes = Vec::with_capacity(lanes_by_name.len());
+            for (lane, lane_periods) in lanes_by_name {
+                let label = lane_periods
+                    .first()
+                    .map(|period| lane_label(&lane, period))
+                    .unwrap_or_else(|| lane.clone());
+                let has_factor = connection.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM provider_limit_factor_point
+                          WHERE provider = ?1 AND account_key = ?2 AND lane = ?3
+                     )",
+                    params![provider, account_key, lane],
+                    |row| row.get::<_, i64>(0),
+                )? != 0;
+                let current_period =
+                    current_period_for_lane(&lane_periods, lane_duration_seconds(&lane), now_epoch);
+                lanes.push(QuotaAccountLane {
+                    lane,
+                    label,
+                    has_factor,
+                    current_period,
+                });
+            }
+            lanes.sort_by(|left, right| left.lane.cmp(&right.lane));
+            accounts.push(QuotaAccount {
+                display_name: display_name(&provider).to_string(),
+                provider,
+                account_key,
+                lanes,
+            });
+        }
+        accounts.sort_by(|left, right| {
+            (&left.provider, &left.account_key).cmp(&(&right.provider, &right.account_key))
+        });
+        Ok(accounts)
     }
 
     /// Active provider periods a factor-learning pass should examine.
@@ -1038,6 +1466,36 @@ const FACTOR_POINT_SELECT: &str = "SELECT id, provider, account_key, lane, effec
             usd_per_percent, method, sample_count, plan, plan_tier
        FROM provider_limit_factor_point";
 
+/// Periods for [`Store::quota_periods_for_lane`]: every period matching the
+/// lane's observation filter whose derived `[start, reset)` overlaps the
+/// range (`?5, ?6`), unioned with the single most recent matching period
+/// that resets at or before the range starts — the cadence anchor. `?4` is
+/// the lane's window id, `NULL` for the two fixed lanes, in which case the
+/// query falls back to `scope_key = 'account'` to stay within one lane's
+/// rows. `?7` is the lane's nominal duration, used only to derive whichever
+/// boundary a period did not state.
+const QUOTA_PERIODS_FOR_LANE_SQL: &str = "SELECT id, provider, account_key, window_id, window_kind,
+            window_role, scope_key, scope_label, duration_seconds, starts_at_epoch,
+            resets_at_epoch, first_observed_epoch, last_observed_epoch
+       FROM provider_usage_period
+      WHERE provider = ?1 AND account_key = ?2 AND window_role = ?3
+        AND (?4 IS NULL OR window_id = ?4) AND (?4 IS NOT NULL OR scope_key = 'account')
+        AND COALESCE(resets_at_epoch, starts_at_epoch + ?7) > ?5
+        AND COALESCE(starts_at_epoch, resets_at_epoch - ?7) < ?6
+      UNION
+      SELECT * FROM (
+          SELECT id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+            FROM provider_usage_period
+           WHERE provider = ?1 AND account_key = ?2 AND window_role = ?3
+             AND (?4 IS NULL OR window_id = ?4) AND (?4 IS NOT NULL OR scope_key = 'account')
+             AND COALESCE(resets_at_epoch, starts_at_epoch + ?7) <= ?5
+           ORDER BY COALESCE(resets_at_epoch, starts_at_epoch + ?7) DESC
+           LIMIT 1
+      )
+      ORDER BY id";
+
 fn row_to_sample(row: &rusqlite::Row<'_>) -> rusqlite::Result<FactorSample> {
     Ok(FactorSample {
         provider: row.get(0)?,
@@ -1094,6 +1552,104 @@ fn row_to_period(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderUsagePerio
     })
 }
 
+/// One priced `(session, model, speed)` group: the account the session
+/// resolved to, if any, and the dollars its tokens price to.
+///
+/// Shared by [`attributed_turn_dollars_between_in`] and
+/// [`attributed_turn_dollars_by_bucket_in`], so learning and the quota
+/// screen's contribution chart cannot disagree about how a group is priced
+/// or which account it belongs to.
+struct PricedTurnGroup {
+    resolved_account: Option<String>,
+    input_usd: f64,
+    output_usd: f64,
+    cache_read_usd: f64,
+    cache_write_usd: f64,
+    turn_count: i64,
+}
+
+/// One `(session, model, speed[, bucket])` row from [`ATTRIBUTED_TURN_SQL`]
+/// or [`ATTRIBUTED_TURN_BUCKET_SQL`], decoded but not yet priced.
+///
+/// Bundles [`price_turn_row`]'s per-row fields into one value so the
+/// function itself stays under a handful of parameters.
+struct TurnGroupRow<'a> {
+    agent: &'a str,
+    accounts_json: &'a str,
+    known: Option<&'a BTreeSet<String>>,
+    hints_json: Option<&'a str>,
+    model: Option<&'a str>,
+    speed: Option<&'a str>,
+    input_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    output_tokens: i64,
+    cache_write_1h_tokens: i64,
+    turn_count: i64,
+}
+
+/// Resolve one group's account and price its tokens, or `None` when it
+/// carries no model, no billable tokens, or a model outside `model_scope`.
+///
+/// `None` here means "this row prices to nothing": the caller drops it
+/// regardless of which account it resolved to. Every caller must still apply
+/// its own keep-or-drop policy over `resolved_account` — this function
+/// never filters by account itself, since the two callers disagree on which
+/// accounts to keep.
+fn price_turn_row(
+    provider: &str,
+    model_scope: Option<&str>,
+    row: &TurnGroupRow<'_>,
+) -> Option<PricedTurnGroup> {
+    let resolved_account = resolve_account(row.accounts_json, row.known);
+    let model = row.model.map(str::trim).filter(|model| !model.is_empty())?;
+    if let Some(scope) = model_scope
+        && !model_matches_scope(model, scope)
+    {
+        return None;
+    }
+    let tokens = ModelTokens {
+        input_tokens: row.input_tokens.max(0) as u64,
+        output_tokens: row.output_tokens.max(0) as u64,
+        cache_read_tokens: row.cache_read_tokens.max(0) as u64,
+        cache_creation_tokens: row.cache_write_tokens.max(0) as u64,
+        cache_creation_1h_tokens: row.cache_write_1h_tokens.max(0) as u64,
+    };
+    if !has_tokens(&tokens) {
+        return None;
+    }
+    let hints: Vec<ProviderHint> = row
+        .hints_json
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default();
+    let attributed = attribute(
+        row.agent,
+        std::collections::BTreeMap::from([(model.to_string(), tokens)]),
+        &hints,
+    );
+    let model_tokens = attributed
+        .get(provider)
+        .and_then(|entry| entry.models.get(model))?;
+    let (input_usd, output_usd, cache_read_usd, cache_write_usd) =
+        match lookup_turn_pricing(model, row.speed) {
+            Some(rates) => (
+                model_tokens.input_tokens as f64 * rates.input_cost_per_token,
+                model_tokens.output_tokens as f64 * rates.output_cost_per_token,
+                model_tokens.cache_read_tokens as f64 * rates.cache_read_cost_per_token,
+                calculate_cache_write_cost(model_tokens, &rates),
+            ),
+            None => (0.0, 0.0, 0.0, 0.0),
+        };
+    Some(PricedTurnGroup {
+        resolved_account,
+        input_usd,
+        output_usd,
+        cache_read_usd,
+        cache_write_usd,
+        turn_count: row.turn_count,
+    })
+}
+
 fn attributed_turn_dollars_between_in(
     connection: &Connection,
     provider: &str,
@@ -1135,61 +1691,152 @@ fn attributed_turn_dollars_between_in(
         let turn_count: i64 = row.get(11)?;
         let cache_write_1h_tokens: i64 = row.get(12)?;
 
-        let resolved = resolve_account(&accounts_json, known_accounts.get(&key.agent));
-        if resolved.as_deref() != Some(account_key) {
-            continue;
-        }
-        let Some(model) = model
-            .as_deref()
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-        else {
-            continue;
-        };
-        if let Some(scope) = model_scope
-            && !model_matches_scope(model, scope)
-        {
-            continue;
-        }
-        let tokens = ModelTokens {
-            input_tokens: input_tokens.max(0) as u64,
-            output_tokens: output_tokens.max(0) as u64,
-            cache_read_tokens: cache_read_tokens.max(0) as u64,
-            cache_creation_tokens: cache_write_tokens.max(0) as u64,
-            cache_creation_1h_tokens: cache_write_1h_tokens.max(0) as u64,
-        };
-        if !has_tokens(&tokens) {
-            continue;
-        }
-        let hints: Vec<ProviderHint> = hints_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str(json).ok())
-            .unwrap_or_default();
-        let attributed = attribute(
-            &key.agent,
-            std::collections::BTreeMap::from([(model.to_string(), tokens)]),
-            &hints,
-        );
-        let Some(model_tokens) = attributed
-            .get(provider)
-            .and_then(|entry| entry.models.get(model))
-        else {
+        let Some(priced) = price_turn_row(
+            provider,
+            model_scope,
+            &TurnGroupRow {
+                agent: &key.agent,
+                accounts_json: &accounts_json,
+                known: known_accounts.get(&key.agent),
+                hints_json: hints_json.as_deref(),
+                model: model.as_deref(),
+                speed: speed.as_deref(),
+                input_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                output_tokens,
+                cache_write_1h_tokens,
+                turn_count,
+            },
+        ) else {
             continue;
         };
-        let rates = lookup_turn_pricing(model, speed.as_deref());
+        if priced.resolved_account.as_deref() != Some(account_key) {
+            continue;
+        }
         let totals = by_session
             .entry(key.clone())
             .or_insert_with(|| AttributedSessionDollars::empty(key.clone()));
-        totals.turn_count += turn_count;
-        if let Some(rates) = rates {
-            totals.input_usd += model_tokens.input_tokens as f64 * rates.input_cost_per_token;
-            totals.output_usd += model_tokens.output_tokens as f64 * rates.output_cost_per_token;
-            totals.cache_read_usd +=
-                model_tokens.cache_read_tokens as f64 * rates.cache_read_cost_per_token;
-            totals.cache_write_usd += calculate_cache_write_cost(model_tokens, &rates);
-        }
+        totals.turn_count += priced.turn_count;
+        totals.input_usd += priced.input_usd;
+        totals.output_usd += priced.output_usd;
+        totals.cache_read_usd += priced.cache_read_usd;
+        totals.cache_write_usd += priced.cache_write_usd;
     }
     Ok(Some(by_session.into_values().collect()))
+}
+
+/// Backs [`Store::attributed_turn_dollars_by_bucket`]: same grouping and
+/// pricing as [`attributed_turn_dollars_between_in`], additionally split by
+/// 15-minute bucket, and keeping unbound sessions instead of dropping them.
+fn attributed_turn_dollars_by_bucket_in(
+    connection: &Connection,
+    provider: &str,
+    account_key: &str,
+    from_epoch: i64,
+    to_epoch: i64,
+    model_scope: Option<&str>,
+    known_accounts: &HashMap<String, BTreeSet<String>>,
+) -> Result<Option<Vec<BucketedSessionDollars>>> {
+    let start_ms = from_epoch.saturating_mul(1_000).saturating_add(1);
+    let end_ms = to_epoch.saturating_mul(1_000);
+    let mut statement = connection.prepare(ATTRIBUTED_TURN_BUCKET_SQL)?;
+    let mut rows = statement.query(params![
+        start_ms,
+        end_ms,
+        (MAX_ATTRIBUTION_GROUPS + 1) as i64,
+        provider,
+    ])?;
+    let mut by_bucket: HashMap<(SessionKey, i64), (f64, i64, Resolved)> = HashMap::new();
+    let mut bound_sessions: HashSet<SessionKey> = HashSet::new();
+    let mut unbound_sessions: HashSet<SessionKey> = HashSet::new();
+    let mut other_account_sessions: HashSet<SessionKey> = HashSet::new();
+    let mut group_count = 0usize;
+    while let Some(row) = rows.next()? {
+        group_count += 1;
+        if group_count > MAX_ATTRIBUTION_GROUPS {
+            return Ok(None);
+        }
+        let key = SessionKey::new(
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        );
+        let hints_json: Option<String> = row.get(3)?;
+        let accounts_json: String = row.get(4)?;
+        let model: Option<String> = row.get(5)?;
+        let speed: Option<String> = row.get(6)?;
+        let input_tokens: i64 = row.get(7)?;
+        let cache_read_tokens: i64 = row.get(8)?;
+        let cache_write_tokens: i64 = row.get(9)?;
+        let output_tokens: i64 = row.get(10)?;
+        let turn_count: i64 = row.get(11)?;
+        let cache_write_1h_tokens: i64 = row.get(12)?;
+        let bucket_index: i64 = row.get(13)?;
+
+        let Some(priced) = price_turn_row(
+            provider,
+            model_scope,
+            &TurnGroupRow {
+                agent: &key.agent,
+                accounts_json: &accounts_json,
+                known: known_accounts.get(&key.agent),
+                hints_json: hints_json.as_deref(),
+                model: model.as_deref(),
+                speed: speed.as_deref(),
+                input_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                output_tokens,
+                cache_write_1h_tokens,
+                turn_count,
+            },
+        ) else {
+            continue;
+        };
+        let resolved = match &priced.resolved_account {
+            Some(resolved) if resolved == account_key => {
+                bound_sessions.insert(key.clone());
+                Resolved::Bound(resolved.clone())
+            }
+            Some(_) => {
+                other_account_sessions.insert(key.clone());
+                continue;
+            }
+            None => {
+                unbound_sessions.insert(key.clone());
+                Resolved::Unbound
+            }
+        };
+        let total_usd =
+            priced.input_usd + priced.output_usd + priced.cache_read_usd + priced.cache_write_usd;
+        let bucket_start_epoch = bucket_index * CONTRIBUTION_BUCKET_SECS;
+        let entry = by_bucket
+            .entry((key, bucket_start_epoch))
+            .or_insert((0.0, 0, resolved));
+        entry.0 += total_usd;
+        entry.1 += priced.turn_count;
+    }
+    ::tracing::info!(
+        event = "quota_contribution_bind_rate",
+        bound = bound_sessions.len(),
+        unbound = unbound_sessions.len(),
+        other_account = other_account_sessions.len(),
+    );
+    Ok(Some(
+        by_bucket
+            .into_iter()
+            .map(
+                |((key, bucket_start_epoch), (usd, turn_count, account))| BucketedSessionDollars {
+                    key,
+                    bucket_start_epoch,
+                    usd,
+                    turn_count,
+                    account,
+                },
+            )
+            .collect(),
+    ))
 }
 
 #[cfg(test)]
