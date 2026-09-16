@@ -138,7 +138,7 @@ const target: BurnCheckTargetPayload = {
       cost: null,
       models: [],
       modelRuns: [],
-      hygiene: { evidenceState: "pending", badges: [] },
+      hygiene: { evidenceState: "pending", unusedResources: null, badges: [] },
     },
   ],
   expiresAtEpoch: 100,

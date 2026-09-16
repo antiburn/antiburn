@@ -228,6 +228,13 @@
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 10,
+          "cost": {
+            "cacheReadUsd": 0.0,
+            "cacheWriteUsd": 0.0,
+            "inputUsd": 0.0001,
+            "outputUsd": 0.0001,
+            "totalUsd": 0.0002
+          },
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCacheRoutingMiss": false,
@@ -1219,6 +1226,13 @@
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 0,
+          "cost": {
+            "cacheReadUsd": 0.0,
+            "cacheWriteUsd": 0.0,
+            "inputUsd": 0.000015,
+            "outputUsd": 0.000015,
+            "totalUsd": 0.00003
+          },
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCacheRoutingMiss": false,
@@ -2209,6 +2223,13 @@
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 0,
+          "cost": {
+            "cacheReadUsd": 0.0,
+            "cacheWriteUsd": 0.0,
+            "inputUsd": 0.000015,
+            "outputUsd": 0.000015,
+            "totalUsd": 0.00003
+          },
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCacheRoutingMiss": false,
@@ -3199,6 +3220,13 @@
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 0,
+          "cost": {
+            "cacheReadUsd": 0.0,
+            "cacheWriteUsd": 0.0,
+            "inputUsd": 0.000015,
+            "outputUsd": 0.000015,
+            "totalUsd": 0.00003
+          },
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCacheRoutingMiss": false,
@@ -4167,6 +4195,13 @@
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 0,
+          "cost": {
+            "cacheReadUsd": 0.0,
+            "cacheWriteUsd": 0.0,
+            "inputUsd": 0.000015,
+            "outputUsd": 0.000015,
+            "totalUsd": 0.00003
+          },
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCacheRoutingMiss": false,

@@ -90,6 +90,7 @@ function view(over: Partial<SessionDetailPresentationProps> = {}) {
         notAssessedReason: null,
       })),
       evidenceState: "ready" as const,
+      unusedResources: null,
     },
     error: false,
     onBack: () => {},
