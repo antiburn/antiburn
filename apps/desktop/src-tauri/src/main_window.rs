@@ -824,6 +824,10 @@ pub fn open(app: &AppHandle, trigger: OpenTrigger) -> tauri::Result<()> {
 /// Open the main window and route its renderer to one exact session.
 #[tauri::command]
 pub fn open_main_window_session(app: AppHandle, target: SessionTarget) -> Result<(), String> {
+    ::tracing::info!(
+        event = "main_window_open_source",
+        source = "popover_session"
+    );
     route_session_target(&app, target)
 }
 
@@ -968,6 +972,10 @@ pub fn open_main_window_section(
     }
     let state = app.state::<MainWindowState>();
     let request = state.request_section_target(section);
+    ::tracing::info!(
+        event = "main_window_open_source",
+        source = "popover_section"
+    );
     if let Err(error) = open(&app, OpenTrigger::Interaction) {
         state.clear_section_target(request.revision);
         return Err(error.to_string());

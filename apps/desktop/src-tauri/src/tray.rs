@@ -697,6 +697,7 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         MENU_MAIN => {
+            ::tracing::info!(event = "main_window_open_source", source = "tray_menu");
             if let Err(error) =
                 crate::open_launch_surface(app, crate::main_window::OpenTrigger::Interaction)
             {

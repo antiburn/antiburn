@@ -289,6 +289,7 @@ pub fn finish(app: &AppHandle) {
                 }
                 match action {
                     FinishHandoffAction::OpenMain => {
+                        ::tracing::info!(event = "main_window_open_source", source = "onboarding");
                         if let Err(error) = crate::main_window::open(
                             &check_app,
                             crate::main_window::OpenTrigger::Interaction,

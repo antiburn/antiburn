@@ -188,6 +188,10 @@ pub fn run() {
                 if repeated.setup_ready.load(Ordering::Acquire) {
                     repeated.pending.store(false, Ordering::Release);
                     main_window::on_main(app, |app| {
+                        ::tracing::info!(
+                            event = "main_window_open_source",
+                            source = "second_instance"
+                        );
                         if let Err(error) =
                             open_launch_surface(app, main_window::OpenTrigger::Interaction)
                         {
@@ -409,7 +413,15 @@ pub fn run() {
         }
         // Clicking the Dock icon restores the surface the current install owns.
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => {
+        RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            ::tracing::info!(
+                event = "main_window_open_source",
+                source = "dock_reopen",
+                has_visible_windows
+            );
             if let Err(error) = open_launch_surface(app, main_window::OpenTrigger::Interaction) {
                 ::tracing::warn!(
                     event = "launch_surface_open_failed",
