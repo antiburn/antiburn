@@ -110,6 +110,11 @@ static DOCK: Mutex<DockState> = Mutex::new(DockState {
     generation: 0,
 });
 
+/// Lock the dock state.
+///
+/// Never call into the window while the guard is held. A window getter waits
+/// for the main thread, and the main thread takes this lock in sync commands,
+/// so a getter under the lock deadlocks the app.
 fn state() -> std::sync::MutexGuard<'static, DockState> {
     DOCK.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -248,24 +253,17 @@ pub(crate) fn redock_after_placement(app: &AppHandle, window: &WebviewWindow) {
 /// The caller holds the resize guard, so this writes the position directly.
 #[cfg(target_os = "macos")]
 pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
-    let target = {
+    let (edge, frame, scale) = {
         let dock = state();
-        if !dock.docked {
-            return;
-        }
-        let Some(frame) = dock.frame else {
+        let Some(frame) = dock.frame.filter(|_| dock.docked) else {
             return;
         };
-        let Some(window_rect) = window_rect(window) else {
-            return;
-        };
-        docked_position(
-            dock.edge,
-            &frame,
-            &window_rect,
-            tab_depth(dock.edge, dock.scale),
-        )
+        (dock.edge, frame, dock.scale)
     };
+    let Some(window_rect) = window_rect(window) else {
+        return;
+    };
+    let target = docked_position(edge, &frame, &window_rect, tab_depth(edge, scale));
     let _ = window.set_position(PhysicalPosition::new(target.0, target.1));
 }
 
@@ -275,30 +273,33 @@ pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
 /// whole HUD on screen even after a drop that went past the edge.
 #[cfg(target_os = "macos")]
 fn dock_at(app: &AppHandle, window: &WebviewWindow, edge: DockEdge) {
+    if state().docked {
+        return;
+    }
+    let Some(current) = window_rect(window) else {
+        return;
+    };
+    let Some(monitor) = monitor_of(window) else {
+        return;
+    };
+    let frame = monitor_rect(&monitor);
+    let scale = monitor.scale_factor();
     let (start, target, generation) = {
         let mut dock = state();
         if dock.docked {
             return;
         }
-        let Some(window_rect) = window_rect(window) else {
-            return;
-        };
-        let Some(monitor) = monitor_of(window) else {
-            return;
-        };
-        let frame = monitor_rect(&monitor);
-        let scale = monitor.scale_factor();
         let home = dock
             .home
-            .unwrap_or_else(|| flush_position(edge, &frame, &window_rect));
+            .unwrap_or_else(|| flush_position(edge, &frame, &current));
         dock.edge = edge;
         dock.home = Some(home);
         dock.frame = Some(frame);
         dock.scale = scale;
         dock.docked = true;
         dock.generation += 1;
-        let target = docked_position(edge, &frame, &window_rect, tab_depth(edge, scale));
-        ((window_rect.x, window_rect.y), target, dock.generation)
+        let target = docked_position(edge, &frame, &current, tab_depth(edge, scale));
+        ((current.x, current.y), target, dock.generation)
     };
     super::hide_detail(app);
     tracing::info!(event = "hud_dock", edge = ?edge, x = target.0, y = target.1);
@@ -315,6 +316,12 @@ fn dock_at(app: &AppHandle, window: &WebviewWindow, edge: DockEdge) {
 /// `hold` is the least time the HUD stays.
 #[cfg(target_os = "macos")]
 fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration) {
+    if !state().docked {
+        return;
+    }
+    let Some(window_rect) = window_rect(window) else {
+        return;
+    };
     let (start, home, generation) = {
         let mut dock = state();
         if !dock.docked {
@@ -322,9 +329,6 @@ fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration) {
         }
         let Some(home) = dock.home else {
             dock.docked = false;
-            return;
-        };
-        let Some(window_rect) = window_rect(window) else {
             return;
         };
         dock.docked = false;
@@ -392,17 +396,15 @@ fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
                     return;
                 }
             }
-            let on_strip = {
+            let (edge, docked_frame, scale) = {
                 let dock = state();
-                match (dock.frame, window.cursor_position().ok()) {
-                    (Some(frame), Some(cursor)) => on_tab_strip(
-                        dock.edge,
-                        &frame,
-                        tab_depth(dock.edge, dock.scale),
-                        (cursor.x, cursor.y),
-                    ),
-                    _ => false,
+                (dock.edge, dock.frame, dock.scale)
+            };
+            let on_strip = match (docked_frame, window.cursor_position().ok()) {
+                (Some(strip), Some(cursor)) => {
+                    on_tab_strip(edge, &strip, tab_depth(edge, scale), (cursor.x, cursor.y))
                 }
+                _ => false,
             };
             if !on_strip {
                 on_tab_since = None;
