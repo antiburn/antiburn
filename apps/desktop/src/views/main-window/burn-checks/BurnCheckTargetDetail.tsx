@@ -56,33 +56,6 @@ export function BurnCheckTargetDetail({
             </span>
             <span className="min-w-0 wrap-anywhere">{targetTitle(target)}</span>
           </h3>
-          <div className="burn-check-resource-metadata min-w-0">
-            <div className="flex flex-wrap items-center type-callout text-label-tertiary">
-              <span>
-                {reportRow && target.display.scopeKind === "project"
-                  ? "Project"
-                  : scopeLabel(target.display.scopeKind)}
-                {reportRow && target.projectName && (
-                  <span className="text-label"> · {target.projectName}</span>
-                )}
-              </span>
-              {reportRow && target.projectLocation && (
-                <InfoPopover
-                  label="Folder location"
-                  icon={<Folder size={14} aria-hidden="true" />}
-                >
-                  {() => (
-                    <>
-                      <h4 className="type-headline text-label">Folder location</h4>
-                      <p className="mt-2 wrap-anywhere font-mono type-footnote text-label-secondary">
-                        {target.projectLocation}
-                      </p>
-                    </>
-                  )}
-                </InfoPopover>
-              )}
-            </div>
-          </div>
         </div>
         {reportRow && (
           <div className="flex flex-wrap items-start justify-end gap-2">
@@ -90,6 +63,30 @@ export function BurnCheckTargetDetail({
             <BurnCheckTargetActions target={target} refresh={refresh} compact embedded />
           </div>
         )}
+      </div>
+      <div className="burn-check-resource-metadata min-w-0">
+        <div className="flex items-center type-callout text-label-tertiary">
+          <span className="min-w-0 truncate">
+            {reportRow && target.display.scopeKind === "project"
+              ? "Project"
+              : scopeLabel(target.display.scopeKind)}
+            {reportRow && target.projectName && (
+              <span className="text-label"> · {target.projectName}</span>
+            )}
+          </span>
+          {reportRow && target.projectLocation && (
+            <InfoPopover label="Folder location" icon={<Folder size={14} aria-hidden="true" />}>
+              {() => (
+                <>
+                  <h4 className="type-headline text-label">Folder location</h4>
+                  <p className="mt-2 wrap-anywhere font-mono type-footnote text-label-secondary">
+                    {target.projectLocation}
+                  </p>
+                </>
+              )}
+            </InfoPopover>
+          )}
+        </div>
       </div>
       <div className={reportRow ? "burn-check-resource-body" : undefined}>
         {reportRow ? (
