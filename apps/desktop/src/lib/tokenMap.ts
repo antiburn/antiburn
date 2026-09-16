@@ -90,6 +90,8 @@ export type TokenMapLayout = {
   dots: TokenMapDot[]
   /** True when even the coarsest dot value could not fit every session. */
   overflow: boolean
+  /** The top mode of the session with the newest turn, or null when none is live. */
+  liveMode: WorkMode | null
 }
 
 export type TokenMapOptions = {
@@ -211,6 +213,7 @@ export function deriveTokenMap(
     blobs: [],
     dots: [],
     overflow: false,
+    liveMode: null,
   }
   if (sessions.length === 0) return empty
 
@@ -303,5 +306,6 @@ function build(
       })
     })
   })
-  return { cells, dotValue: chosen.dotValue, blobs, dots, overflow }
+  const liveMode = liveIndex >= 0 ? topMode(sessions[liveIndex]) : null
+  return { cells, dotValue: chosen.dotValue, blobs, dots, overflow, liveMode }
 }

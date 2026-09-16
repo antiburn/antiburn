@@ -9,6 +9,7 @@ describe("TokenMap", () => {
     const layout = deriveTokenMap({
       nowEpoch: 1_000,
       windowSecs: 300,
+      spend: null,
       sessions: [
         {
           agent: "claude-code",
@@ -63,6 +64,7 @@ describe("TokenMap", () => {
     const layout = deriveTokenMap({
       nowEpoch: 1_000,
       windowSecs: 300,
+      spend: null,
       sessions: [
         {
           agent: "claude-code",

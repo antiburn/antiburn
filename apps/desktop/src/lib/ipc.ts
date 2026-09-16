@@ -1108,11 +1108,21 @@ export interface HudTokenMapSession {
   subagents: HudTokenMapSubagent[]
 }
 
+/** Dollars per minute over the window, summed across every session. */
+export interface HudSpendRate {
+  usdPerMinute: number
+  windowSecs: number
+  /** Priced tokens over all tokens in the window, 0-1. Below 1 the rate is a floor. */
+  pricedShare: number
+}
+
 export interface HudTokenMapPayload {
   nowEpoch: number
   windowSecs: number
   /** Busiest first. */
   sessions: HudTokenMapSession[]
+  /** Null when no turn in the window carried tokens. */
+  spend: HudSpendRate | null
 }
 
 /** Tokens per minute by mode for every session that wrote in the window. */
@@ -1168,6 +1178,8 @@ export interface HudDetailState {
   noMeterSelected: boolean
   /** Null when the map is off or no session wrote in the window. */
   map: HudDetailMap | null
+  /** The spend rate in words, or null when the window carried no tokens. */
+  spend: string | null
 }
 
 /** Request the hover detail window with the newest usage payload. */

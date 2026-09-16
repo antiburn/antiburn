@@ -52,7 +52,7 @@ impl WorkMode {
 }
 
 /// The tokens one assistant turn paid for one mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModeSample {
     /// Unix epoch milliseconds of the turn, when the transcript has one.
@@ -62,6 +62,15 @@ pub struct ModeSample {
     /// reads are excluded, the same rule as `SessionMetrics::tokens_in`.
     pub tokens: u64,
     pub source: EventSource,
+    /// The model that produced the turn, when the transcript records it.
+    pub model: Option<String>,
+    /// The response speed of the turn, when the transcript records it.
+    pub speed: Option<String>,
+    /// The turn's full usage, with cache reads and the four token kinds.
+    ///
+    /// Only the first sample of a turn carries it. Later samples of the same
+    /// turn carry a zero usage, so a consumer prices each turn once.
+    pub usage: Usage,
 }
 
 /// True when a tool name spawns a sub-agent.
@@ -126,6 +135,13 @@ pub fn mode_samples(events: &[NormalizedEvent]) -> Vec<ModeSample> {
                 mode,
                 tokens: share + extra,
                 source: event.source,
+                model: event.model.clone(),
+                speed: event.speed.clone(),
+                usage: if index == 0 {
+                    event.usage
+                } else {
+                    Usage::default()
+                },
             });
         }
     }
@@ -141,6 +157,7 @@ mod tests {
         let mut event = NormalizedEvent::new(Role::Assistant);
         event.ts_ms = Some(1_000);
         event.has_thinking = thinking;
+        event.model = Some("claude-opus-4-6".into());
         event.tools = tools.iter().map(|name| ToolCall::new(*name)).collect();
         event.usage = Usage {
             input_tokens: tokens / 2,
@@ -217,6 +234,29 @@ mod tests {
         user.role = Role::User;
         let empty = turn(&["Read"], false, 0);
         assert!(mode_samples(&[user, empty]).is_empty());
+    }
+
+    #[test]
+    fn a_sample_carries_the_model_speed_and_unsplit_usage() {
+        let mut event = turn(&["Read"], false, 400);
+        event.speed = Some("fast".into());
+        let samples = mode_samples(std::slice::from_ref(&event));
+        assert_eq!(samples[0].model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(samples[0].speed.as_deref(), Some("fast"));
+        assert_eq!(samples[0].usage, event.usage);
+        assert_eq!(samples[0].usage.cache_read_tokens, 90_000);
+    }
+
+    #[test]
+    fn only_the_first_sample_of_a_turn_carries_usage() {
+        let event = turn(&["Grep", "Bash", "Edit"], true, 100);
+        let samples = mode_samples(std::slice::from_ref(&event));
+        assert_eq!(samples.len(), 3);
+        assert_eq!(samples[0].usage, event.usage);
+        assert_eq!(samples[1].usage, Usage::default());
+        assert_eq!(samples[2].usage, Usage::default());
+        let split: u64 = samples.iter().map(|s| s.tokens).sum();
+        assert_eq!(split, 100);
     }
 
     #[test]

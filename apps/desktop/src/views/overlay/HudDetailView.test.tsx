@@ -45,6 +45,7 @@ function detailState(overrides: Partial<HudDetailState> = {}): HudDetailState {
       },
     ],
     map: null,
+    spend: null,
     ...overrides,
   }
 }
@@ -175,6 +176,17 @@ describe("HudDetailView", () => {
     expect(screen.getByLabelText("mostly talking")).toBeInTheDocument()
     expect(screen.getByText("● = 500 tokens/min")).toBeInTheDocument()
     expect(screen.getByText("delegating")).toBeInTheDocument()
+  })
+
+  it("states the spend rate in words when the payload carries one", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ spend: "Spending about $0.420/min." })))
+    expect(screen.getByTestId("hud-detail-spend")).toHaveTextContent(
+      "Spending about $0.420/min.",
+    )
+    act(() => push.emit!(detailState({ reason: "refresh" })))
+    expect(screen.queryByTestId("hud-detail-spend")).toBeNull()
   })
 
   it("draws no map section when the payload carries none", async () => {

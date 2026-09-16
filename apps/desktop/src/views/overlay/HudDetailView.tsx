@@ -17,6 +17,8 @@ const HUD_SEGMENTS = 20
 type DetailSnapshot = {
   bars: HudDetailState["bars"]
   map: HudDetailState["map"]
+  /** The spend rate in words, or null when the window carried no tokens. */
+  spend: string | null
   now: number
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
@@ -33,6 +35,7 @@ const INITIAL_SNAPSHOT: DetailSnapshot = {
   concealed: false,
   noMeterSelected: false,
   map: null,
+  spend: null,
 }
 
 function resetDate(resetsAt: string | null): Date | null {
@@ -129,6 +132,7 @@ class HudDetailSession {
         concealed: false,
         noMeterSelected: state.noMeterSelected,
         map: state.map ?? null,
+        spend: state.spend ?? null,
       }
       for (const listener of this.listeners) listener()
     })
@@ -238,6 +242,14 @@ export function HudDetailView() {
           antiburn
         </p>
         {state.map && <MapLegend map={state.map} />}
+        {state.spend && (
+          <p
+            className="led-caption type-footnote text-label-secondary mb-1.5"
+            data-testid="hud-detail-spend"
+          >
+            {state.spend}
+          </p>
+        )}
         {state.bars.length === 0 ? (
           <p className="type-caption text-label-tertiary">
             {state.noMeterSelected ? "No meter selected." : "No usage limits detected yet."}

@@ -1,5 +1,5 @@
 //! The HUD token map: tokens per minute by mode for every session that wrote
-//! in the last few minutes.
+//! in the last few minutes, and the dollars per minute they add up to.
 //!
 //! The HUD polls this on its liveness tick, so a poll must stay cheap. Each
 //! session's mode samples are cached under the same fingerprint the popover
@@ -11,10 +11,12 @@ use std::sync::Mutex;
 
 use antiburn_local::analysis::{
     EventSource, ModeSample, RawSource, SessionInput, WorkMode, mode_samples, normalize_source,
+    price_breakdown, turn_pricing_key,
 };
 use antiburn_local::discovery::Explorers;
 use antiburn_local::discovery::SessionSource;
 use antiburn_local::model::AgentKind;
+use antiburn_local::pricing::ModelTokens;
 use serde::Serialize;
 use tauri::Manager;
 
@@ -94,6 +96,18 @@ pub struct HudTokenMapSession {
     pub subagents: Vec<HudTokenMapSubagent>,
 }
 
+/// Dollars per minute over the window, summed across every session and
+/// sub-agent. The HUD's blink rate follows it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HudSpendRate {
+    pub usd_per_minute: f64,
+    pub window_secs: u32,
+    /// Priced tokens over all tokens in the window, 0.0 to 1.0. Below 1.0
+    /// the rate is a floor, because some model has no catalog price.
+    pub priced_share: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HudTokenMapPayload {
@@ -101,6 +115,85 @@ pub struct HudTokenMapPayload {
     pub window_secs: u32,
     /// Busiest first.
     pub sessions: Vec<HudTokenMapSession>,
+    /// `None` when no turn in the window carried tokens.
+    pub spend: Option<HudSpendRate>,
+}
+
+/// Per-model token totals over the window, keyed by catalog pricing tier.
+#[derive(Default)]
+struct SpendTally {
+    breakdown: HashMap<String, ModelTokens>,
+    /// Tokens whose turn recorded no model.
+    unattributed: u64,
+}
+
+fn usage_total(usage: &antiburn_local::analysis::Usage) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.output_tokens)
+        .saturating_add(usage.cache_read_tokens)
+        .saturating_add(usage.cache_creation_tokens)
+}
+
+impl SpendTally {
+    /// Add the usage of every sample inside the window. Only the first
+    /// sample of a turn carries usage, so a turn counts once.
+    fn add(&mut self, samples: &[ModeSample], since_ms: i64) {
+        for sample in samples {
+            let Some(ts) = sample.ts_ms else { continue };
+            if ts < since_ms || usage_total(&sample.usage) == 0 {
+                continue;
+            }
+            let Some(model) = sample.model.as_deref() else {
+                self.unattributed = self.unattributed.saturating_add(usage_total(&sample.usage));
+                continue;
+            };
+            let key = turn_pricing_key(model, sample.speed.as_deref());
+            let entry = self.breakdown.entry(key).or_default();
+            entry.input_tokens = entry.input_tokens.saturating_add(sample.usage.input_tokens);
+            entry.output_tokens = entry
+                .output_tokens
+                .saturating_add(sample.usage.output_tokens);
+            entry.cache_read_tokens = entry
+                .cache_read_tokens
+                .saturating_add(sample.usage.cache_read_tokens);
+            entry.cache_creation_tokens = entry
+                .cache_creation_tokens
+                .saturating_add(sample.usage.cache_creation_tokens);
+            entry.cache_creation_1h_tokens = entry
+                .cache_creation_1h_tokens
+                .saturating_add(sample.usage.cache_creation_1h_tokens);
+        }
+    }
+
+    /// Price each model on its own, so one unpriced model lowers the share
+    /// instead of voiding the whole rate.
+    fn rate(&self, window_secs: u32) -> Option<HudSpendRate> {
+        let mut usd = 0.0;
+        let mut priced_tokens = 0u64;
+        let mut all_tokens = self.unattributed;
+        for (key, tokens) in &self.breakdown {
+            let count = tokens
+                .input_tokens
+                .saturating_add(tokens.output_tokens)
+                .saturating_add(tokens.cache_read_tokens)
+                .saturating_add(tokens.cache_creation_tokens);
+            all_tokens = all_tokens.saturating_add(count);
+            let single = HashMap::from([(key.clone(), tokens.clone())]);
+            if let Some(cost) = price_breakdown(&single) {
+                usd += cost.total_usd;
+                priced_tokens = priced_tokens.saturating_add(count);
+            }
+        }
+        if all_tokens == 0 {
+            return None;
+        }
+        Some(HudSpendRate {
+            usd_per_minute: usd * 60.0 / f64::from(window_secs),
+            window_secs,
+            priced_share: priced_tokens as f64 / all_tokens as f64,
+        })
+    }
 }
 
 struct CachedSamples {
@@ -313,6 +406,7 @@ pub async fn get_hud_token_map(
     retain_cached(&keys);
 
     let mut sessions = Vec::with_capacity(records.len());
+    let mut spend = SpendTally::default();
     for (record, key) in records.iter().zip(&keys) {
         let Some(kind) = kind_from_slug(&record.key.agent) else {
             continue;
@@ -340,6 +434,10 @@ pub async fn get_hud_token_map(
             store_cached(key.clone(), entry);
         }
         if let Some(Some(row)) = with_cached(key, |cached| {
+            spend.add(&cached.parent, since_ms);
+            for (_, samples) in &cached.subagents {
+                spend.add(samples, since_ms);
+            }
             session_row(record, cached, since_ms, window_secs)
         }) {
             sessions.push(row);
@@ -351,6 +449,7 @@ pub async fn get_hud_token_map(
         now_epoch: now,
         window_secs,
         sessions,
+        spend: spend.rate(window_secs),
     })
 }
 
@@ -358,13 +457,33 @@ pub async fn get_hud_token_map(
 mod tests {
     use super::*;
 
+    use antiburn_local::analysis::Usage;
+
     fn sample(ts_ms: i64, mode: WorkMode, tokens: u64) -> ModeSample {
         ModeSample {
             ts_ms: Some(ts_ms),
             mode,
             tokens,
             source: EventSource::Parent,
+            model: None,
+            speed: None,
+            usage: Usage::default(),
         }
+    }
+
+    /// A priced turn: the test catalog prices `claude-opus-4-6` at $5 per
+    /// million input and $25 per million output.
+    fn priced(ts_ms: i64, model: &str, input: u64, output: u64, cache_read: u64) -> ModeSample {
+        let mut sample = sample(ts_ms, WorkMode::Looking, input + output);
+        sample.model = Some(model.into());
+        sample.usage = Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: cache_read,
+            cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
+        };
+        sample
     }
 
     fn record() -> SessionRecord {
@@ -419,6 +538,57 @@ mod tests {
             subagents: Vec::new(),
         };
         assert!(session_row(&record(), &cached, 100_000, 300).is_none());
+    }
+
+    #[test]
+    fn spend_prices_turns_inside_the_window_over_the_fixed_window() {
+        let mut tally = SpendTally::default();
+        tally.add(
+            &[
+                // Outside the window: never priced.
+                priced(50_000, "claude-opus-4-6", 1_000_000, 0, 0),
+                // $5 input + $25 output + $0.50 cache read = $30.50.
+                priced(150_000, "claude-opus-4-6", 1_000_000, 1_000_000, 1_000_000),
+            ],
+            100_000,
+        );
+        let rate = tally.rate(300).expect("rate");
+        assert!((rate.usd_per_minute - 30.5 / 5.0).abs() < 1e-9);
+        assert_eq!(rate.window_secs, 300);
+        assert_eq!(rate.priced_share, 1.0);
+    }
+
+    #[test]
+    fn an_unpriced_model_lowers_the_share_and_adds_no_dollars() {
+        let mut tally = SpendTally::default();
+        tally.add(
+            &[
+                priced(150_000, "claude-opus-4-6", 1_000_000, 0, 0),
+                priced(160_000, "mystery-model", 3_000_000, 0, 0),
+            ],
+            100_000,
+        );
+        let rate = tally.rate(60).expect("rate");
+        assert!((rate.usd_per_minute - 5.0).abs() < 1e-9);
+        assert!((rate.priced_share - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_turn_with_no_model_counts_as_unpriced() {
+        let mut tally = SpendTally::default();
+        let mut untagged = priced(150_000, "claude-opus-4-6", 1_000_000, 0, 0);
+        untagged.model = None;
+        tally.add(&[untagged], 100_000);
+        let rate = tally.rate(60).expect("rate");
+        assert_eq!(rate.usd_per_minute, 0.0);
+        assert_eq!(rate.priced_share, 0.0);
+    }
+
+    #[test]
+    fn no_usage_in_the_window_yields_no_spend() {
+        let mut tally = SpendTally::default();
+        tally.add(&[sample(150_000, WorkMode::Talking, 10)], 100_000);
+        assert!(tally.rate(300).is_none());
     }
 
     #[test]

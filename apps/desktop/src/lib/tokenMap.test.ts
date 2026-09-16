@@ -41,7 +41,8 @@ function session(
 }
 
 function payload(sessions: HudTokenMapSession[], nowEpoch = 1_000): HudTokenMapPayload {
-  return { nowEpoch, windowSecs: 300, sessions }
+  // The spend rate is the LED's concern, not the layout's.
+  return { nowEpoch, windowSecs: 300, sessions, spend: null }
 }
 
 describe("deriveTokenMap", () => {
@@ -142,6 +143,17 @@ describe("deriveTokenMap", () => {
 
     const none = deriveTokenMap(payload([stale], 1_000))
     expect(none.dots).toEqual([])
+  })
+
+  it("names the top mode of the newest live session and none when quiet", () => {
+    const layout = deriveTokenMap(
+      payload([
+        session("old", { looking: 5_000 }, { lastTurnEpoch: 900 }),
+        session("new", { changing: 2_000, talking: 500 }, { lastTurnEpoch: 990 }),
+      ]),
+    )
+    expect(layout.liveMode).toBe("changing")
+    expect(deriveTokenMap(null).liveMode).toBeNull()
   })
 
   it("honours a minimum dot value", () => {

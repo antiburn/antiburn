@@ -17,6 +17,7 @@ import {
   SCAN_EVENTS,
   showHudDetail,
   type HudDetailState,
+  type HudSpendRate,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
 import {
@@ -30,6 +31,7 @@ import {
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
+import { blinkPeriod, describeSpend } from "../../lib/ledPeriod"
 import { deriveTokenMap, frameColor, type TokenMapLayout } from "../../lib/tokenMap"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
@@ -50,6 +52,10 @@ export type OverlaySnapshot = {
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
   tokenMap: TokenMapLayout
+  /** Milliseconds per blink of the live LED. */
+  blinkPeriodMs: number
+  /** The spend rate in words, or null when the window carried no tokens. */
+  spend: string | null
 }
 
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
@@ -59,6 +65,8 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   sessionLive: false,
   noMeterSelected: false,
   tokenMap: EMPTY_TOKEN_MAP,
+  blinkPeriodMs: blinkPeriod(null, null).periodMs,
+  spend: null,
 }
 
 type DragOrigin = {
@@ -126,6 +134,7 @@ export class OverlaySession {
   private hudNativeVisible = false
   private detailRevision = 0
   private latestUsage: LiveUsageSummaryPayload | null = null
+  private latestSpend: HudSpendRate | null = null
   private usageFailed = false
 
   getSnapshot = (): OverlaySnapshot => this.snapshot
@@ -232,6 +241,7 @@ export class OverlaySession {
       const changed = this.commitLayout({
         bars: deriveUsageBars(response),
         noMeterSelected: noMeterSelected(response),
+        blinkPeriodMs: blinkPeriod(this.latestSpend, response).periodMs,
       })
       if (changed) void this.syncWindow(true, generation)
       if (changed && this.detailShown) {
@@ -268,10 +278,14 @@ export class OverlaySession {
 
     const refreshTokenMap = () => {
       if (!isHudTokenMapEnabled()) {
-        if (this.snapshot.tokenMap.dots.length > 0) {
-          this.commitLayout({ tokenMap: EMPTY_TOKEN_MAP })
-          void this.syncWindow(true, generation)
-        }
+        this.latestSpend = null
+        const hadDots = this.snapshot.tokenMap.dots.length > 0
+        this.commitLayout({
+          tokenMap: EMPTY_TOKEN_MAP,
+          blinkPeriodMs: blinkPeriod(null, this.latestUsage).periodMs,
+          spend: null,
+        })
+        if (hadDots) void this.syncWindow(true, generation)
         return
       }
       void getHudTokenMap(TOKEN_MAP_WINDOW_SECS)
@@ -279,8 +293,13 @@ export class OverlaySession {
           if (!this.isCurrent(generation)) return
           const tokenMap = deriveTokenMap(payload, { minDotValue: this.dotValueFloor })
           this.holdDotValue(tokenMap.dotValue, payload?.windowSecs ?? TOKEN_MAP_WINDOW_SECS)
+          this.latestSpend = payload?.spend ?? null
           const hadDots = this.snapshot.tokenMap.dots.length > 0
-          this.commitLayout({ tokenMap })
+          this.commitLayout({
+            tokenMap,
+            blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
+            spend: describeSpend(this.latestSpend),
+          })
           if (hadDots !== tokenMap.dots.length > 0) void this.syncWindow(true, generation)
           if (this.detailShown) {
             void showHudDetail(this.detailState("refresh")).catch(() => {})
@@ -528,6 +547,7 @@ export class OverlaySession {
         expectedFraction: bar.expectedFraction,
       })),
       map: this.detailMap(),
+      spend: this.snapshot.spend,
     }
   }
 
@@ -624,7 +644,9 @@ export class OverlaySession {
       this.snapshot.dragging === next.dragging &&
       this.snapshot.sessionLive === next.sessionLive &&
       this.snapshot.noMeterSelected === next.noMeterSelected &&
-      this.snapshot.tokenMap === next.tokenMap
+      this.snapshot.tokenMap === next.tokenMap &&
+      this.snapshot.blinkPeriodMs === next.blinkPeriodMs &&
+      this.snapshot.spend === next.spend
     ) {
       return false
     }

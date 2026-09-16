@@ -7,6 +7,11 @@ import type { CSSProperties } from "react"
  * the popover: a tick at how far through the window's period the clock has
  * travelled. It separates 60% used at 30% elapsed from 60% used at 90%
  * elapsed. With no fraction there is no notch.
+ *
+ * The blinking segment can take its own period and colour. The period
+ * follows the spend rate; the colour is the mode of the newest live turn.
+ * Without them the segment blinks at the stylesheet's period in the bar's
+ * own colour.
  */
 export function LedBar({
   split,
@@ -14,6 +19,8 @@ export function LedBar({
   className = "",
   style,
   blinkLast = false,
+  blinkPeriodMs = null,
+  blinkColor = null,
   expectedFraction = null,
 }: {
   split: Array<{ fraction: number; color: string }>
@@ -21,6 +28,10 @@ export function LedBar({
   className?: string
   style?: CSSProperties | undefined
   blinkLast?: boolean
+  /** Milliseconds per blink cycle, or null for the stylesheet's period. */
+  blinkPeriodMs?: number | null
+  /** A CSS colour for the lit half of the blink, or null for the bar's colour. */
+  blinkColor?: string | null
   /** Elapsed share of the window's period, 0-1, or null when unknown. */
   expectedFraction?: number | null
 }) {
@@ -53,8 +64,11 @@ export function LedBar({
               hit
                 ? index === blinkIndex
                   ? ({
-                      backgroundColor: hit.color,
-                      "--led-on": hit.color,
+                      backgroundColor: blinkColor ?? hit.color,
+                      "--led-on": blinkColor ?? hit.color,
+                      ...(blinkPeriodMs != null
+                        ? { "--led-period": `${blinkPeriodMs}ms` }
+                        : {}),
                     } as CSSProperties)
                   : { backgroundColor: hit.color }
                 : undefined

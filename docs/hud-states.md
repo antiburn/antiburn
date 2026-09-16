@@ -219,6 +219,21 @@ live macOS validation after changes to the native window mechanism.
 - Each LED bar has 20 segments.
 - Only the first bar blinks during a live session, and only on the HUD. The
   detail window does not blink.
+- The blink period follows the spend rate: dollars per minute over the token
+  map's 5 minute window, summed across every session and sub-agent. $0.05/min
+  and below ticks at 3 s; $2.00/min and above strobes at 300 ms; between them
+  the map is geometric, quantised to eight rungs so the animation restarts a
+  few times a session, not every poll. The 300 ms cap keeps a 6 px dot under
+  the flash-safety band. Fast means concerning.
+- The ladder when no dollars are known: a window with no priced model uses
+  the fastest allowance consumption rate in the usage payload (5 to 100
+  percentage points per hour on the same rungs); with neither, the LED ticks
+  at the fixed 3 s. An unpriced window never sits at the slow end on its own,
+  because slow claims the machine is quiet.
+- The blinking segment takes the mode colour of the session with the newest
+  turn on the token map. The static segments keep the bar colour.
+- Under reduced motion the LED does not blink. The detail window states the
+  spend rate in words instead.
 - A transcript write stays live for 90 seconds.
 - The renderer reads liveness once when shown. Session and scan events push
   later changes, and one timer clears the live state at its expiry.

@@ -190,8 +190,12 @@ body[data-transparent-window] #root {
     0 0 0 0.5px rgb(0 0 0 / 0.04);
 }
 
+/*
+ * The live LED. `--led-period` follows the spend rate, 300ms to 3s, set by
+ * `LedBar` on the blinking segment. The fallback is the quiet-session period.
+ */
 .led-blink {
-  animation: led-blink 3s steps(1, end) infinite;
+  animation: led-blink var(--led-period, 3s) steps(1, end) infinite;
 }
 
 @keyframes led-blink {

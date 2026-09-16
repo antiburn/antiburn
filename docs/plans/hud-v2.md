@@ -15,7 +15,7 @@ signals that item 8 needs and is planned separately.
 | 0. Plan reviewed, open questions decided              | done                     |
 | 0b. Token-map commits replayed onto `feat/hud-v2`     | done                     |
 | A. Frame + round dots + mode palette retune (1, 2, 7) | built, untested by Keith |
-| B. LED blink follows spend, in mode colour (3, 7)     | not started              |
+| B. LED blink follows spend, in mode colour (3, 7)     | built, untested by Keith |
 | C. Agent boxes at LED scale, per-box detail (4, 5, 6) | not started              |
 | D. Edge dock: off-screen, wake on edge/activity/burn  | not started              |
 
@@ -136,10 +136,14 @@ timer, no new command.
 ### Check first
 
 The spend-rate plan flags that `get_hud_token_map` reads sessions from the
-store, which only the scan writes, and the scan pauses with the popover. Ten
-minutes with the popover closed and a fresh session started, before building.
-If a new session never appears, seed from `discover_recent_sessions` as the
-liveness path does.
+store, which only the scan writes, and the scan pauses with the popover.
+
+**Checked 2026-09-16, by reading `scan/mod.rs` on main.** The concern is out
+of date. The scan now runs an OS filesystem watcher over every agent's roots
+plus an unconditional 5 minute reconciliation tick, popover or not; only the
+`discovery_paused` setting stops it. The liveness path
+(`latest_session_activity`) reads the same store, so the LED and the map see
+the same sessions. No seeding needed.
 
 ### Size
 

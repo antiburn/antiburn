@@ -67,6 +67,12 @@ export function OverlayWindow() {
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
                 blinkLast={state.sessionLive && index === 0}
+                blinkPeriodMs={state.blinkPeriodMs}
+                blinkColor={
+                  state.tokenMap.liveMode
+                    ? `var(--color-mode-${state.tokenMap.liveMode})`
+                    : null
+                }
                 expectedFraction={bar.expectedFraction}
               />
             ))}

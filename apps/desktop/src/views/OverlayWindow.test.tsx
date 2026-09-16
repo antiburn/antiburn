@@ -624,6 +624,7 @@ describe("OverlayWindow", () => {
     getHudTokenMap.mockResolvedValue({
       nowEpoch: 1_000,
       windowSecs: 300,
+      spend: null,
       sessions: [
         {
           agent: "claude-code",
@@ -653,12 +654,57 @@ describe("OverlayWindow", () => {
     expect(svg.compareDocumentPosition(bars!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it("blinks the live LED at the spend rate in the live session's mode colour", async () => {
+    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: { usdPerMinute: 5, windowSecs: 300, pricedShare: 1 },
+      sessions: [
+        {
+          agent: "claude-code",
+          sessionId: "s1",
+          title: null,
+          lastTurnEpoch: 990,
+          tokensPerMin: 1_000,
+          modes: {
+            looking: 0,
+            running: 0,
+            changing: 5_000,
+            delegating: 0,
+            thinking: 0,
+            talking: 0,
+            other: 0,
+          },
+          subagents: [],
+        },
+      ],
+    })
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => {
+      const led = container.querySelector<HTMLElement>(".led-blink")
+      expect(led).not.toBeNull()
+      expect(led!.style.getPropertyValue("--led-period")).toBe("300ms")
+      expect(led!.style.getPropertyValue("--led-on")).toBe("var(--color-mode-changing)")
+    })
+    expect(showHudDetail).not.toHaveBeenCalled()
+  })
+
+  it("blinks at the quiet period with no spend and no forecast", async () => {
+    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    const led = container.querySelector<HTMLElement>(".led-blink")!
+    expect(led.style.getPropertyValue("--led-period")).toBe("3000ms")
+  })
+
   it("spells the map out in the detail payload", async () => {
     vi.useFakeTimers()
     try {
       getHudTokenMap.mockResolvedValue({
         nowEpoch: 1_000,
         windowSecs: 300,
+        spend: null,
         sessions: [
           {
             agent: "claude-code",

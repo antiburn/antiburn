@@ -377,6 +377,7 @@ motion:
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
+  hud-led-blink: "steps(1) loop; --led-period 300ms to 3s on eight geometric rungs, set per segment from the spend rate; 300ms is the flash-safety cap for a 6px dot"
 components:
   button-secondary:
     className: ui-push-button
@@ -1024,3 +1025,8 @@ colour and a dark frame vanished on a dark desktop. LEDs and token-map dots
 sit on it without rings or shadows; the frame is what holds them apart from
 the desktop. The token map draws in HUD pixels on the LED grid, so a dot is
 the size of an LED and a sub-agent dot is smaller.
+
+The live LED blinks at the spend rate (`hud-led-blink` under `motion`), and
+its lit half takes `mode-<mode>` of the session with the newest turn, so one
+animated dot says both how fast the machine spends and what it is doing.
+Reduced motion stops the loop; the detail window states the rate in words.
