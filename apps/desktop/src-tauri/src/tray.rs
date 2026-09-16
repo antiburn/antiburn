@@ -120,8 +120,10 @@ const BURN_CHECKS_LABEL: &str = "Simulate Burn Checks";
 #[cfg(debug_assertions)]
 const CODEX_ONLY_LABEL: &str = "Simulate Codex Only";
 /// The canonical provider id the Codex-only simulation keeps.
+///
+/// Codex readings carry the provider that serves them, not the tool name.
 #[cfg(debug_assertions)]
-const CODEX_PROVIDER: &str = "codex";
+const CODEX_PROVIDER: &str = crate::provider_usage::providers::OPENAI;
 
 /// Debug-only state that replaces a report with stable sample findings.
 #[cfg(debug_assertions)]
