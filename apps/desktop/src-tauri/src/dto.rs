@@ -191,6 +191,8 @@ pub struct SessionAnalysis {
     /// The transcript's own path, for the reveal action. Absent for sessions
     /// held in a vendor database rather than a file.
     pub source_path: Option<String>,
+    /// The stored absolute working directory, including the specific worktree.
+    pub project_path: Option<String>,
     /// True when no published row set exists yet for this session, so every
     /// other field above is [`SessionAnalysis::unavailable`]'s placeholder
     /// rather than a real read. The worker fills the gap on its own; the
@@ -887,6 +889,8 @@ pub struct BurnCheckTargetPayload {
     pub affected_session_count: u64,
     pub project_name: Option<String>,
     pub project_location: Option<String>,
+    /// Full local directory for explicit folder actions, excluded from analytics.
+    pub project_path: Option<String>,
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
@@ -1777,6 +1781,7 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             affected_session_count: u64::try_from(value.affected_sessions).unwrap_or(u64::MAX),
             project_name: value.project_name,
             project_location: value.project_location,
+            project_path: value.project_path,
             auto_fix: match value.auto_fix {
                 crate::remediation::AutoFixAvailability::Available => {
                     AutoFixAvailabilityPayload::Available

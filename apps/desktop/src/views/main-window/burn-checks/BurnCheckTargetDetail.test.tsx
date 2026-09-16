@@ -1,9 +1,15 @@
-import { fireEvent, render, screen } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { act, fireEvent, render, screen } from "@testing-library/react"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BurnCheckTargetPayload } from "../../../lib/insightsIpc"
 import { BurnCheckTargetDetail, targetCostLine } from "./BurnCheckTargetDetail"
 import { scopeLabel } from "./BurnCheckTargetPresentation"
+import { performProjectFolderAction } from "../../../lib/projectFolder"
+
+vi.mock("../../../lib/projectFolder", () => ({
+  performProjectFolderAction: vi.fn().mockResolvedValue(undefined),
+}))
+beforeEach(() => vi.mocked(performProjectFolderAction).mockClear())
 
 function target(overrides: Partial<BurnCheckTargetPayload> = {}): BurnCheckTargetPayload {
   return {
@@ -110,7 +116,7 @@ describe("BurnCheckTargetDetail", () => {
     expect(screen.getByText(/~\$8\.20 in cache reads/)).toBeInTheDocument()
   })
 
-  it("reveals the folder on demand and distinguishes samples from affected sessions", () => {
+  it("offers full-path folder actions and distinguishes samples from affected sessions", async () => {
     render(
       <BurnCheckTargetDetail
         reportRow
@@ -118,6 +124,7 @@ describe("BurnCheckTargetDetail", () => {
         target={target({
           projectName: "example-project",
           projectLocation: "…/worktrees/example-project",
+          projectPath: "/tmp/worktrees/example-project",
           affectedSessionCount: 7,
           display: { ...target().display, scopeKind: "project" },
           samples: [
@@ -134,16 +141,40 @@ describe("BurnCheckTargetDetail", () => {
     )
     expect(screen.getByText("· example-project")).toBeInTheDocument()
     expect(screen.queryByText("…/worktrees/example-project")).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Folder location" }))
-    expect(screen.getByText("…/worktrees/example-project")).toBeInTheDocument()
+    act(() => screen.getByRole("button", { name: "Project folder" }).focus())
+    expect(document.querySelector(".project-folder-path")).toHaveTextContent(
+      "/tmp/worktrees/example-project",
+    )
+    expect(screen.getByRole("dialog").parentElement).toBe(document.body)
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy path" })))
+    expect(performProjectFolderAction).toHaveBeenCalledWith(
+      "/tmp/worktrees/example-project",
+      "copy",
+    )
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Open in/ })))
+    expect(performProjectFolderAction).toHaveBeenCalledWith(
+      "/tmp/worktrees/example-project",
+      "open",
+    )
     fireEvent.keyDown(document, { key: "Escape" })
-    expect(screen.queryByText("…/worktrees/example-project")).not.toBeInTheDocument()
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     const disclosure = screen.getByRole("button", { name: "Sample session 1" })
     expect(disclosure).toHaveAccessibleDescription("1 sample session out of 7 affected.")
     expect(disclosure).toHaveAttribute("aria-expanded", "true")
     expect(
       screen.getByRole("button", { name: "Open sample session Example session" }),
     ).toBeVisible()
+  })
+
+  it("does not use a shortened display location as an actionable path", () => {
+    render(
+      <BurnCheckTargetDetail
+        reportRow
+        refresh={() => undefined}
+        target={target({ projectLocation: "…/worktrees/example-project" })}
+      />,
+    )
+    expect(screen.queryByRole("button", { name: "Project folder" })).toBeNull()
   })
 })
 

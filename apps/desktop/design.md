@@ -1006,3 +1006,28 @@ Inside the HUD, unlit segments raise `led-off` to full opacity. The token keeps
 its 45% alpha everywhere else, because the popover and the detail card paint
 their own surfaces to hold it. The HUD has none. These ring and opacity values
 are local to `src/styles/hud.css` and are not palette or shadow tokens.
+
+### Project folder actions
+
+Session and Burn Check project rows have a bare 14px folder icon in a 20px target. The folder
+panel opens after 300ms of pointer hover or immediately on keyboard focus.
+A 200ms leave delay lets the pointer cross the 8px gap into the panel. It stays
+open while the pointer or focus is inside. Escape, outside press, window blur,
+viewport resize, and surrounding scroll dismiss it. Hover never moves focus.
+
+The shared `.ui-menu` surface uses an opaque `surface-window`, `shadow-popover`,
+and `rounded-popover`, with no entry animation. The body portal uses layer 100
+and favors the detail pane when its 390px maximum width fits. It clamps to the
+window with 8px clearance and flips above the trigger when needed. Content size
+changes update its placement, including inline errors. The panel
+scrolls internally when its contents exceed the available window height.
+
+The header holds the Project folder label and bare open-folder and copy icons.
+Both use 14px glyphs, 20px targets, 8px separation, and color-only hover feedback.
+These compact desktop targets follow the approved bare-icon design. Keep button
+semantics and keyboard focus indicators without visible button chrome or press
+scaling. Action tooltips name the host file manager and Copy path. Copy success
+replaces its icon with a check for two seconds and announces the result. Errors
+stay inline. The selectable monospace path prefers directory-boundary wraps and
+gives the final directory primary ink. No path, folder name, or error text enters
+analytics. Unknown project paths hide the control; deleted paths remain copyable.
