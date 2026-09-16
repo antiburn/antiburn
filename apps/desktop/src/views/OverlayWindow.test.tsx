@@ -622,38 +622,91 @@ describe("OverlayWindow", () => {
     expect(resizeOverlayWindow).toHaveBeenCalledTimes(resizeCount)
   })
 
-  it("draws the token map above the bars when a session is live", async () => {
+  function mapSession(sessionId: string, tokensPerMin: number) {
+    return {
+      agent: "claude-code",
+      sessionId,
+      title: null,
+      lastTurnEpoch: 990,
+      tokensPerMin,
+      modes: {
+        looking: tokensPerMin * 5,
+        running: 0,
+        changing: 0,
+        delegating: 0,
+        thinking: 0,
+        talking: 0,
+        other: 0,
+      },
+      subagents: [],
+    }
+  }
+
+  it("draws the token map above the bars when two sessions are live", async () => {
     getHudTokenMap.mockResolvedValue({
       nowEpoch: 1_000,
       windowSecs: 300,
       spend: null,
-      sessions: [
-        {
-          agent: "claude-code",
-          sessionId: "s1",
-          title: null,
-          lastTurnEpoch: 990,
-          tokensPerMin: 1_000,
-          modes: {
-            looking: 5_000,
-            running: 0,
-            changing: 0,
-            delegating: 0,
-            thinking: 0,
-            talking: 0,
-            other: 0,
-          },
-          subagents: [],
-        },
-      ],
+      sessions: [mapSession("s1", 1_000), mapSession("s2", 250)],
     })
     const { container } = render(<OverlayWindow />)
     await waitFor(() =>
-      expect(container.querySelectorAll("svg[data-dot-value] circle")).toHaveLength(4),
+      expect(container.querySelectorAll("svg[data-dot-value] circle")).toHaveLength(5),
     )
     const svg = container.querySelector("svg[data-dot-value]")!
     const bars = container.querySelector(".space-y-\\[3px\\]")
     expect(svg.compareDocumentPosition(bars!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("leaves the map off for one session and lets the live LED carry it", async () => {
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: null,
+      sessions: [mapSession("s1", 1_000)],
+    })
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getHudTokenMap).toHaveBeenCalled())
+    await act(async () => {})
+    expect(container.querySelector("svg[data-dot-value]")).toBeNull()
+  })
+
+  it("retargets the open detail card to the agent box under the pointer", async () => {
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: null,
+      sessions: [mapSession("s1", 1_000), mapSession("s2", 250)],
+    })
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector("svg[data-dot-value]")).not.toBeNull()
+      fireEvent.mouseEnter(frame(container))
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+      expect(showHudDetail.mock.calls[0][0]).toMatchObject({ reason: "show", target: "usage" })
+
+      const box = container.querySelector('g[data-blob="claude-code:s2"]')!
+      fireEvent.mouseEnter(box)
+      expect(showHudDetail).toHaveBeenCalledTimes(2)
+      expect(showHudDetail.mock.calls[1][0]).toMatchObject({
+        reason: "show",
+        target: "claude-code:s2",
+      })
+      expect(showHudDetail.mock.calls[1][0].map.sessions[1]).toMatchObject({
+        key: "claude-code:s2",
+        agent: "claude-code",
+        tokensPerMin: 250,
+      })
+
+      fireEvent.mouseLeave(box)
+      expect(showHudDetail).toHaveBeenCalledTimes(3)
+      expect(showHudDetail.mock.calls[2][0]).toMatchObject({ target: "usage" })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("blinks the live LED at the spend rate in the live session's mode colour", async () => {

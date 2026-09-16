@@ -6,6 +6,7 @@ import {
   deriveTokenMap,
   formatRate,
   frameColor,
+  mapVisible,
   sessionRate,
 } from "./tokenMap"
 
@@ -173,6 +174,28 @@ describe("deriveTokenMap", () => {
     expect(layout.overflow).toBe(true)
     expect(layout.blobs.length).toBeLessThan(sessions.length)
     expect(layout.blobs.length).toBeGreaterThan(0)
+  })
+
+  it("carries each session's mode split and sub-agents on its blob", () => {
+    const sub = { subagentId: "sub-1", tokensPerMin: 100, modes: { ...zero, running: 500 } }
+    const layout = deriveTokenMap(
+      payload([session("a", { looking: 5_000 }, { subagents: [sub] })]),
+    )
+    expect(layout.blobs[0].modes.looking).toBe(5_000)
+    expect(layout.blobs[0].subagents).toEqual([sub])
+  })
+
+  it("shows the map at two sessions, hides at one, and waits a poll after hiding", () => {
+    // First sight of two sessions: on at once.
+    expect(mapVisible(false, false, 2)).toBe(true)
+    // One session: off at once, however it was.
+    expect(mapVisible(true, true, 1)).toBe(false)
+    expect(mapVisible(false, true, 0)).toBe(false)
+    // The poll after a hide holds it off, the next one lets it back.
+    expect(mapVisible(true, false, 2)).toBe(false)
+    expect(mapVisible(false, false, 2)).toBe(true)
+    // A shown map stays shown.
+    expect(mapVisible(true, true, 3)).toBe(true)
   })
 
   it("formats rates for labels", () => {

@@ -8,7 +8,8 @@
   --color-burn-muted: var(--color-burn-muted-val);
   --color-bg-hud: var(--color-bg-hud-val);
   --color-bg-hud-hover: var(--color-bg-hud-hover-val);
-  --color-bg-hud-frame: var(--color-bg-hud-frame-val);
+  /* Named `hud-frame`, so the utility is `bg-hud-frame`, not `bg-bg-hud-frame`. */
+  --color-hud-frame: var(--color-bg-hud-frame-val);
   --color-hud-stroke-top: var(--color-hud-stroke-top-val);
   --color-hud-stroke-bottom: var(--color-hud-stroke-bottom-val);
   --color-hud-control-ink: var(--color-hud-control-ink-val);

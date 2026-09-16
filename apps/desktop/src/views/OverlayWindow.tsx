@@ -27,7 +27,7 @@ export function OverlayWindow() {
     >
       <div
         ref={panelRef}
-        className="hud-frame relative mx-2 select-none rounded-xl bg-hud-frame px-3 pt-2 pb-2"
+        className="hud-frame relative mx-2 select-none rounded-xl bg-hud-frame p-2.5"
         // The HUD paints the same translucent frame at rest and on hover, so
         // the bars read as one object and the desktop still shows through.
         // `hud-frame` draws the gradient stroke around it.
@@ -51,9 +51,9 @@ export function OverlayWindow() {
           </button>
         */}
 
-        {state.tokenMap.dots.length > 0 && (
-          <div className="pointer-events-none mb-2">
-            <TokenMap layout={state.tokenMap} />
+        {state.showMap && (
+          <div className="mb-2">
+            <TokenMap layout={state.tokenMap} onHoverBlob={session.setHoverBlob} />
           </div>
         )}
 

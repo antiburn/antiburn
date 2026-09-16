@@ -1,4 +1,9 @@
-import type { HudModeTokens, HudTokenMapPayload, HudTokenMapSession } from "./ipc"
+import type {
+  HudModeTokens,
+  HudTokenMapPayload,
+  HudTokenMapSession,
+  HudTokenMapSubagent,
+} from "./ipc"
 
 export type WorkMode = keyof HudModeTokens
 
@@ -79,6 +84,9 @@ export type TokenMapBlob = {
   dots: number
   /** The mode that paid for most of the session's tokens in the window. */
   topMode: WorkMode
+  /** The parent transcript's tokens per mode, for the per-box card. */
+  modes: HudModeTokens
+  subagents: HudTokenMapSubagent[]
 }
 
 export type TokenMapLayout = {
@@ -102,6 +110,24 @@ export type TokenMapOptions = {
 
 /** One cell per LED, so the map shares the VU meter's grid. */
 const DEFAULT_CELLS = 20
+
+/** Sessions on the map before it shows. One session leaves the live LED alone. */
+export const MIN_MAP_SESSIONS = 2
+
+/**
+ * Whether the map shows after a poll that found `count` live sessions.
+ *
+ * The map hides at once when it drops below two sessions. A map that hid on
+ * the last poll stays hidden for this one, so a session flickering around
+ * zero does not flash the map on and off. `previousShown` and `shown` are
+ * the states before and after the last poll.
+ */
+export function mapVisible(previousShown: boolean, shown: boolean, count: number): boolean {
+  if (count < MIN_MAP_SESSIONS) return false
+  if (shown) return true
+  const justHid = previousShown && !shown
+  return !justHid
+}
 const GAP = 1
 
 type DotSpec = { mode: WorkMode; small: boolean }
@@ -293,6 +319,8 @@ function build(
       tokensPerMin: sessionRate(session),
       dots: specs.length,
       topMode: topMode(session),
+      modes: session.modes,
+      subagents: session.subagents,
     })
     specs.forEach((spec, position) => {
       dots.push({

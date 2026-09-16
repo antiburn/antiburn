@@ -1148,7 +1148,11 @@ export interface HudDetailSession {
   key: string
   /** The session title, or the agent name when the title is unknown. */
   label: string
+  agent: string
   tokensPerMin: number
+  /** The parent transcript's tokens per mode in the window. */
+  modes: HudModeTokens
+  subagents: HudTokenMapSubagent[]
   /** The mode that paid for most of the session's tokens: a `HudModeTokens` key. */
   topMode: keyof HudModeTokens
   /** The blob's frame colour on the map, as a CSS colour value. */
@@ -1180,6 +1184,11 @@ export interface HudDetailState {
   map: HudDetailMap | null
   /** The spend rate in words, or null when the window carried no tokens. */
   spend: string | null
+  /**
+   * What the pointer is over: "usage" for the meter, or a `map.sessions` key
+   * for one agent box. The card shows the matching content.
+   */
+  target: string
 }
 
 /** Request the hover detail window with the newest usage payload. */

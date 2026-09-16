@@ -46,6 +46,7 @@ function detailState(overrides: Partial<HudDetailState> = {}): HudDetailState {
     ],
     map: null,
     spend: null,
+    target: "usage",
     ...overrides,
   }
 }
@@ -57,16 +58,52 @@ function detailMap(): NonNullable<HudDetailState["map"]> {
       {
         key: "claude:hud",
         label: "HUD token map",
+        agent: "claude-code",
         tokensPerMin: 9_200,
         topMode: "looking",
         frameColor: "var(--color-label-tertiary)",
+        modes: {
+          looking: 30_000,
+          running: 0,
+          changing: 16_000,
+          delegating: 0,
+          thinking: 0,
+          talking: 0,
+          other: 0,
+        },
+        subagents: [
+          {
+            subagentId: "abcdef1234",
+            tokensPerMin: 800,
+            modes: {
+              looking: 0,
+              running: 4_000,
+              changing: 0,
+              delegating: 0,
+              thinking: 0,
+              talking: 0,
+              other: 0,
+            },
+          },
+        ],
       },
       {
         key: "codex:quiet",
         label: "codex",
+        agent: "codex",
         tokensPerMin: 60,
         topMode: "talking",
         frameColor: "var(--color-system-red)",
+        modes: {
+          looking: 0,
+          running: 0,
+          changing: 0,
+          delegating: 0,
+          thinking: 0,
+          talking: 300,
+          other: 0,
+        },
+        subagents: [],
       },
     ],
   }
@@ -176,6 +213,33 @@ describe("HudDetailView", () => {
     expect(screen.getByLabelText("mostly talking")).toBeInTheDocument()
     expect(screen.getByText("● = 500 tokens/min")).toBeInTheDocument()
     expect(screen.getByText("delegating")).toBeInTheDocument()
+  })
+
+  it("shows one agent's card when the target is its box", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ map: detailMap(), target: "claude:hud" })))
+    const card = screen.getByTestId("hud-detail-session")
+    expect(card).toHaveTextContent("HUD token map")
+    expect(card).toHaveTextContent("9.2k/min")
+    expect(card).toHaveTextContent("claude-code · mostly looking")
+    expect(card).toHaveTextContent("sub-agent abcdef12")
+    expect(card).toHaveTextContent("800/min")
+    expect(card).toHaveTextContent("● = 500 tokens/min")
+    // The mode row lights the whole bar, looking first, then changing.
+    const lit = card.querySelectorAll(".rounded-full")
+    expect(lit.length).toBe(20)
+    // The usage meter and the other session stay off this card.
+    expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
+    expect(screen.queryByText("codex")).not.toBeInTheDocument()
+  })
+
+  it("falls back to the usage card when the target left the map", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ map: detailMap(), target: "gone:key" })))
+    expect(screen.queryByTestId("hud-detail-session")).not.toBeInTheDocument()
+    expect(screen.getByText("5-hour limit")).toBeInTheDocument()
   })
 
   it("states the spend rate in words when the payload carries one", async () => {

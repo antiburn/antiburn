@@ -32,7 +32,7 @@ import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 import { blinkPeriod, describeSpend } from "../../lib/ledPeriod"
-import { deriveTokenMap, frameColor, type TokenMapLayout } from "../../lib/tokenMap"
+import { deriveTokenMap, frameColor, mapVisible, type TokenMapLayout } from "../../lib/tokenMap"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
@@ -52,6 +52,8 @@ export type OverlaySnapshot = {
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
   tokenMap: TokenMapLayout
+  /** True while two or more sessions are live, so the map draws above the bars. */
+  showMap: boolean
   /** Milliseconds per blink of the live LED. */
   blinkPeriodMs: number
   /** The spend rate in words, or null when the window carried no tokens. */
@@ -65,6 +67,7 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   sessionLive: false,
   noMeterSelected: false,
   tokenMap: EMPTY_TOKEN_MAP,
+  showMap: false,
   blinkPeriodMs: blinkPeriod(null, null).periodMs,
   spend: null,
 }
@@ -106,6 +109,10 @@ export class OverlaySession {
   private observer: ResizeObserver | null = null
   private showTimer: number | null = null
   private detailShown = false
+  /** The agent box under the pointer, by blob key, or null over the meter. */
+  private hoverBlob: string | null = null
+  /** Whether the map showed before the last poll, for its show hysteresis. */
+  private previousShowMap = false
   private usagePoll: number | null = null
   private tokenMapPoll: number | null = null
   /** The dot value the map last used, held for a window so a burst does not flicker the scale. */
@@ -167,6 +174,15 @@ export class OverlaySession {
     if (this.snapshot.hovered) this.update({ hovered: false })
     this.clearShowTimer()
     this.hideDetail()
+  }
+
+  /** Note the agent box under the pointer. An open detail follows at once. */
+  setHoverBlob = (key: string | null): void => {
+    if (this.hoverBlob === key) return
+    this.hoverBlob = key
+    if (!this.detailShown) return
+    this.detailRevision += 1
+    void showHudDetail(this.detailState("show")).catch(() => {})
   }
 
   startDrag = (event: ReactMouseEvent): void => {
@@ -279,13 +295,15 @@ export class OverlaySession {
     const refreshTokenMap = () => {
       if (!isHudTokenMapEnabled()) {
         this.latestSpend = null
-        const hadDots = this.snapshot.tokenMap.dots.length > 0
+        this.previousShowMap = false
+        const hadMap = this.snapshot.showMap
         this.commitLayout({
           tokenMap: EMPTY_TOKEN_MAP,
+          showMap: false,
           blinkPeriodMs: blinkPeriod(null, this.latestUsage).periodMs,
           spend: null,
         })
-        if (hadDots) void this.syncWindow(true, generation)
+        if (hadMap) void this.syncWindow(true, generation)
         return
       }
       void getHudTokenMap(TOKEN_MAP_WINDOW_SECS)
@@ -294,13 +312,16 @@ export class OverlaySession {
           const tokenMap = deriveTokenMap(payload, { minDotValue: this.dotValueFloor })
           this.holdDotValue(tokenMap.dotValue, payload?.windowSecs ?? TOKEN_MAP_WINDOW_SECS)
           this.latestSpend = payload?.spend ?? null
-          const hadDots = this.snapshot.tokenMap.dots.length > 0
+          const hadMap = this.snapshot.showMap
+          const showMap = mapVisible(this.previousShowMap, hadMap, tokenMap.blobs.length)
+          this.previousShowMap = hadMap
           this.commitLayout({
             tokenMap,
+            showMap,
             blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
             spend: describeSpend(this.latestSpend),
           })
-          if (hadDots !== tokenMap.dots.length > 0) void this.syncWindow(true, generation)
+          if (hadMap !== showMap) void this.syncWindow(true, generation)
           if (this.detailShown) {
             void showHudDetail(this.detailState("refresh")).catch(() => {})
           }
@@ -548,7 +569,17 @@ export class OverlaySession {
       })),
       map: this.detailMap(),
       spend: this.snapshot.spend,
+      target: this.detailTarget(),
     }
+  }
+
+  /** The hovered box when it is still on the map, else the usage meter. */
+  private detailTarget(): string {
+    const key = this.hoverBlob
+    if (key != null && this.snapshot.tokenMap.blobs.some((blob) => blob.key === key)) {
+      return key
+    }
+    return "usage"
   }
 
   private detailMap(): HudDetailState["map"] {
@@ -559,9 +590,12 @@ export class OverlaySession {
       sessions: tokenMap.blobs.map((blob, index) => ({
         key: blob.key,
         label: blob.title ?? blob.agent,
+        agent: blob.agent,
         tokensPerMin: blob.tokensPerMin,
         topMode: blob.topMode,
         frameColor: frameColor(index),
+        modes: blob.modes,
+        subagents: blob.subagents,
       })),
     }
   }
@@ -645,6 +679,7 @@ export class OverlaySession {
       this.snapshot.sessionLive === next.sessionLive &&
       this.snapshot.noMeterSelected === next.noMeterSelected &&
       this.snapshot.tokenMap === next.tokenMap &&
+      this.snapshot.showMap === next.showMap &&
       this.snapshot.blinkPeriodMs === next.blinkPeriodMs &&
       this.snapshot.spend === next.spend
     ) {

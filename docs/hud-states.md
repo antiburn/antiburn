@@ -64,7 +64,7 @@ dots are sub-agents of that session. The newest turn on the map pulses.
 | Map state         | What you see                                              |
 | ----------------- | --------------------------------------------------------- |
 | **Idle**          | No square. The bars sit alone, as before.                 |
-| **One session**   | One framed blob, top left, busiest mode first.            |
+| **One session**   | No square. The live LED carries the mode and the rate.    |
 | **Many sessions** | Blobs packed busiest first, left to right, then down.     |
 | **Sub-agents**    | Small dots after the parent's dots inside the same frame. |
 | **Quiet session** | One dim dot, so a session that rounds to zero stays seen. |
@@ -74,8 +74,16 @@ fits the square. It steps up at once and steps down only after a full window
 has passed below the coarser value, so a burst does not flicker the scale. The
 detail window states the current dot value.
 
-The detail window lists each session with its rate, its top mode, and its frame
-colour, followed by a mode legend. Settings → Usage → "Show what live sessions
+The map shows at two or more live sessions. It hides at once when it drops to
+one, and a map that just hid waits one poll before it comes back, so a session
+flickering around zero does not flash it. With one session, the usage card in
+the detail window still lists that session.
+
+The detail window follows the pointer. Over the meter it lists each session
+with its rate, its top mode, and its frame colour, followed by a mode legend.
+Over one agent box it shows that session alone: title, agent, rate, the mode
+split as an LED row, each sub-agent on a line, and the dot value. Moving
+between boxes swaps the card at once while it is open. Settings → Usage → "Show what live sessions
 are doing" turns the map off. Reduced motion stops the pulse.
 
 ### Transition details

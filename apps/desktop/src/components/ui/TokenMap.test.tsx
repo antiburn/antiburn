@@ -1,5 +1,5 @@
-import { render } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { fireEvent, render } from "@testing-library/react"
+import { describe, expect, it, vi } from "vitest"
 
 import { deriveTokenMap } from "../../lib/tokenMap"
 import { TokenMap } from "./TokenMap"
@@ -60,6 +60,40 @@ describe("TokenMap", () => {
     expect(container.querySelector("svg")?.getAttribute("data-dot-value")).toBe("250")
   })
 
+  it("reports the blob under the pointer and null when it leaves", () => {
+    const layout = deriveTokenMap({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: null,
+      sessions: [
+        {
+          agent: "claude-code",
+          sessionId: "s1",
+          title: null,
+          lastTurnEpoch: 1_000,
+          tokensPerMin: 1_000,
+          modes: {
+            looking: 1,
+            running: 0,
+            changing: 0,
+            delegating: 0,
+            thinking: 0,
+            talking: 0,
+            other: 0,
+          },
+          subagents: [],
+        },
+      ],
+    })
+    const onHoverBlob = vi.fn()
+    const { container } = render(<TokenMap layout={layout} onHoverBlob={onHoverBlob} />)
+    const blob = container.querySelector("g[data-blob]")!
+    fireEvent.mouseEnter(blob)
+    expect(onHoverBlob).toHaveBeenLastCalledWith("claude-code:s1")
+    fireEvent.mouseLeave(blob)
+    expect(onHoverBlob).toHaveBeenLastCalledWith(null)
+  })
+
   it("crops the square to the rows in use", () => {
     const layout = deriveTokenMap({
       nowEpoch: 1_000,
@@ -86,7 +120,7 @@ describe("TokenMap", () => {
       ],
     })
     const { container } = render(<TokenMap layout={layout} />)
-    // Four dots pack two by two: 134px wide, two LED rows tall.
-    expect(container.querySelector("svg")?.getAttribute("viewBox")).toBe("0 0 134 15")
+    // Four dots pack two by two: 140px wide, two LED rows tall.
+    expect(container.querySelector("svg")?.getAttribute("viewBox")).toBe("0 0 140 15")
   })
 })
