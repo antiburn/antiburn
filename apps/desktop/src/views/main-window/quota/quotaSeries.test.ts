@@ -37,6 +37,7 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     contributions: [],
     sessions: [],
     unattributed: { usd: 0, percent: 0, sessionCount: 0 },
+    unattributedBuckets: [],
     estimatedPercent: null,
     ...over,
   }
@@ -198,19 +199,23 @@ describe("quotaBurnupSeries", () => {
     expect(row.other).toBe(3)
   })
 
-  it("ramps the unattributed column across the period from its total", () => {
+  it("accumulates the unattributed column from its per-bucket buckets", () => {
     const start = 0
     const reset = 4 * BUCKET
     const p = period({
       startsAtEpoch: start,
       resetsAtEpoch: reset,
       unattributed: { usd: 4, percent: 8, sessionCount: 1 },
+      unattributedBuckets: [
+        { bucketStartEpoch: 0, usd: 1, percent: 2 },
+        { bucketStartEpoch: 2 * BUCKET, usd: 3, percent: 6 },
+      ],
     })
     const series = quotaBurnupSeries(usage([p]), start, reset)
-    const midRow = series.rows.find((row) => row.t === 2 * BUCKET)!
-    expect(midRow.unattributed).toBeCloseTo(4, 5)
+    const beforeSecondBucket = series.rows.find((row) => row.t === BUCKET)!
+    expect(beforeSecondBucket.unattributed).toBe(2)
     const finalRow = series.rows.find((row) => row.t === reset - 1)!
-    expect(finalRow.unattributed).toBeGreaterThan(7.9)
+    expect(finalRow.unattributed).toBe(8)
   })
 
   it("interpolates the meter between two readings ten minutes apart", () => {

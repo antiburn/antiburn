@@ -141,11 +141,6 @@ export interface QuotaSeries {
   topSessions: QuotaTopSession[]
 }
 
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  return Math.min(1, Math.max(0, value))
-}
-
 /** The next absolute 15-minute mark at or after `t`, on the same grain the backend buckets use. */
 function ceilToBucket(t: number): number {
   return Math.ceil(t / QUOTA_BUCKET_SECS) * QUOTA_BUCKET_SECS
@@ -202,9 +197,10 @@ function meterAt(t: number, samples: readonly MeterSample[]): number | null {
 
 /**
  * One period's rows: a zero row at its visible start, one row per bucket
- * that carries a contribution, a final-total row just before the reset, and
- * an authoritative meter reading wherever one was observed. Contributions
- * accumulate from the period's own start, never the range's.
+ * that carries a contribution or unattributed spend, a final-total row just
+ * before the reset, and an authoritative meter reading wherever one was
+ * observed. Contributions and unattributed spend both accumulate from the
+ * period's own start, never the range's.
  */
 function periodRows(
   period: QuotaPeriodPayload,
@@ -230,12 +226,21 @@ function periodRows(
   }
   const bucketTimes = [...byBucket.keys()].sort((left, right) => left - right)
 
+  const unattributedBuckets = period.unattributedBuckets
+    .filter((bucket) => bucket.bucketStartEpoch >= start && bucket.bucketStartEpoch < reset)
+    .sort((left, right) => left.bucketStartEpoch - right.bucketStartEpoch)
+
   const points = new Set<number>()
   if (start >= rangeStart) points.add(start)
   for (let t = ceilToBucket(visibleStart); t <= visibleEnd; t += QUOTA_BUCKET_SECS)
     points.add(t)
   for (const bucketTime of bucketTimes) {
     if (bucketTime >= visibleStart && bucketTime <= visibleEnd) points.add(bucketTime)
+  }
+  for (const bucket of unattributedBuckets) {
+    if (bucket.bucketStartEpoch >= visibleStart && bucket.bucketStartEpoch <= visibleEnd) {
+      points.add(bucket.bucketStartEpoch)
+    }
   }
   const finalRowTime = reset - 1
   if (finalRowTime >= visibleStart && finalRowTime <= rangeEnd && finalRowTime >= start) {
@@ -251,9 +256,9 @@ function periodRows(
   const sortedPoints = [...points].sort((left, right) => left - right)
   const topCumulative = new Map(topSessions.map((session) => [session.key, 0]))
   let otherCumulative = 0
+  let unattributedCumulative = 0
   let bucketPointer = 0
-  const unattributedPercent = period.unattributed.percent
-  const span = Math.max(1, reset - start)
+  let unattributedPointer = 0
   const authoritativeSamples: MeterSample[] = period.samples
     .filter(
       (sample): sample is QuotaSamplePayload & { usedPercent: number } =>
@@ -283,17 +288,19 @@ function periodRows(
       }
       bucketPointer += 1
     }
+    while (
+      unattributedPointer < unattributedBuckets.length &&
+      unattributedBuckets[unattributedPointer]!.bucketStartEpoch <= t
+    ) {
+      unattributedCumulative += unattributedBuckets[unattributedPointer]!.percent ?? 0
+      unattributedPointer += 1
+    }
     const row: QuotaSeriesRow = {
       t,
       index: 0,
       meter: meterAt(t, authoritativeSamples),
       other: hasFactor ? otherCumulative : null,
-      unattributed:
-        hasFactor && unattributedPercent != null
-          ? unattributedPercent * clamp01((t - start) / span)
-          : hasFactor
-            ? 0
-            : null,
+      unattributed: hasFactor ? unattributedCumulative : null,
     }
     for (const session of topSessions) {
       row[session.key] = hasFactor ? (topCumulative.get(session.key) ?? 0) : null

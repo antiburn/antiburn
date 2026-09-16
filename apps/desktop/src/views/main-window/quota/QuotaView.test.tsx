@@ -51,6 +51,7 @@ function usage(over: Partial<QuotaUsagePayload> = {}): QuotaUsagePayload {
           },
         ],
         unattributed: { usd: 1, percent: 10, sessionCount: 1 },
+        unattributedBuckets: [{ bucketStartEpoch: NOW - WEEK, usd: 1, percent: 10 }],
         estimatedPercent: 30,
       },
     ],

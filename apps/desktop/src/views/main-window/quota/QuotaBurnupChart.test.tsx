@@ -67,6 +67,7 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
       },
     ],
     unattributed: { usd: 0.2, percent: 2, sessionCount: 1 },
+    unattributedBuckets: [{ bucketStartEpoch: 0, usd: 0.2, percent: 2 }],
     estimatedPercent: 10,
     ...over,
   }
