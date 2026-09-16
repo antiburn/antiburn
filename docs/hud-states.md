@@ -129,11 +129,12 @@ There is no setting and no dock control; the drop is the gesture.
 - **Wake.** The HUD webview asks the shell to wake a docked HUD for two
   reasons: a transcript write more than an hour after the previous one it saw
   through events, and a spend rate at the ceiling for two polls in a row. A
-  woken HUD stays at least 5s, and longer while hovered. The burn wake re-arms
+  woken HUD stays at least 3.5s, and longer while hovered. The burn wake re-arms
   only after the rate drops below the ceiling. Both start cold: a fresh dock
   never wakes on its first sample. Each wake is logged with its reason.
 - **Displays.** The dock edge is the edge of the display the HUD was dropped
-  on. A display change moves the HUD to its remembered placement and docks it
+  on. An edge another display touches is not a dock edge: a drop past it
+  moves the HUD back inside the display instead, so it never sits on a seam. A display change moves the HUD to its remembered placement and docks it
   again at the same edge of that display. A height change while docked keeps
   only the tab on screen. Hiding the HUD keeps it docked, so the next open
   parks it again.

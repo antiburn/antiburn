@@ -1,6 +1,8 @@
 import { useCallback, useState, useSyncExternalStore } from "react"
 
 import { LedBar } from "../components/ui/LedBar"
+import { Confetti } from "../components/ui/Confetti"
+import { blockedBars, resetsIn } from "../lib/usageBars"
 import { TokenMap } from "../components/ui/TokenMap"
 import { OverlaySession } from "./overlay/OverlaySession"
 
@@ -18,6 +20,7 @@ export function OverlayWindow() {
     (node: HTMLDivElement | null) => session.registerPanel(node),
     [session],
   )
+  const blocked = blockedBars(state.bars)[0] ?? null
 
   return (
     <div
@@ -79,6 +82,24 @@ export function OverlayWindow() {
               />
             ))}
           </div>
+        )}
+
+        {state.celebration ? (
+          <div className="relative mt-1.5" data-testid="hud-celebration">
+            <Confetti />
+            <p className="led-caption type-footnote text-label text-center">
+              {state.celebration}
+            </p>
+          </div>
+        ) : (
+          blocked && (
+            <p
+              className="led-caption type-footnote text-label-secondary mt-1.5 truncate"
+              data-testid="hud-countdown"
+            >
+              {blocked.label} · {resetsIn(blocked.resetsAt, state.now)}
+            </p>
+          )
         )}
       </div>
     </div>

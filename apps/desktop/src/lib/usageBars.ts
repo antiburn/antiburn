@@ -11,6 +11,8 @@ import {
 export type UsageBarItem = {
   key: string
   label: string
+  /** The tool the limit belongs to, as shown to the reader. */
+  providerName: string
   percent: number
   resetsAt: Date | null
   color: string
@@ -115,6 +117,7 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
   return withBars.flatMap((group) =>
     group.windows.map((window) => ({
       key: `${group.provider.provider}-${window.id}`,
+      providerName: group.provider.displayName,
       label: multiProvider
         ? `${group.provider.displayName} · ${liveWindowLabel(window)}`
         : liveWindowLabel(window),
@@ -126,6 +129,25 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
         : liveWindowElapsed(window, generatedAt),
     })),
   )
+}
+
+/** The bars at their limit: the tool refuses work until the reset. */
+export function blockedBars(bars: readonly UsageBarItem[]): UsageBarItem[] {
+  return bars.filter((bar) => bar.percent >= 100)
+}
+
+/** The bars that were at their limit in `previous` and are below it in `next`. */
+export function limitsReset(
+  previous: readonly UsageBarItem[],
+  next: readonly UsageBarItem[],
+): UsageBarItem[] {
+  const blocked = new Set(blockedBars(previous).map((bar) => bar.key))
+  return next.filter((bar) => blocked.has(bar.key) && bar.percent < 100)
+}
+
+/** True when a blocked bar's reset time has passed, so a fresh read is due. */
+export function resetDue(bars: readonly UsageBarItem[], now: number): boolean {
+  return blockedBars(bars).some((bar) => bar.resetsAt != null && bar.resetsAt.getTime() <= now)
 }
 
 const CLOCK_HORIZON_MS = 12 * 3_600_000

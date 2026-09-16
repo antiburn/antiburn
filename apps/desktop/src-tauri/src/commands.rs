@@ -258,9 +258,10 @@ pub async fn open_overlay_window(
 
 /// Free a docked HUD: a drag started on it.
 #[tauri::command]
-pub fn tear_off_overlay(app: tauri::AppHandle) {
-    antiburn_hud::tear_off();
+pub fn tear_off_overlay(app: tauri::AppHandle) -> bool {
+    let was_docked = antiburn_hud::tear_off();
     crate::hud::save_dock(&app.state::<Store>(), antiburn_hud::dock_settings());
+    was_docked
 }
 
 /// Bring a docked HUD back for a while. `reason` is logged for tuning.

@@ -11,6 +11,7 @@ const getLiveUsage = vi.hoisted(() => vi.fn())
 const getLatestSessionActivity = vi.hoisted(() => vi.fn())
 const isOverlayWorkActive = vi.hoisted(() => vi.fn())
 const getHudTokenMap = vi.hoisted(() => vi.fn())
+const refreshLiveUsage = vi.hoisted(() => vi.fn())
 const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const resizeOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
@@ -33,6 +34,7 @@ vi.mock("../lib/ipc", async () => {
     getLatestSessionActivity,
     isOverlayWorkActive,
     getHudTokenMap,
+    refreshLiveUsage,
     showHudDetail,
     hideHudDetail,
     resizeOverlayWindow,
@@ -178,6 +180,15 @@ function summary(): LiveUsageSummaryPayload {
   }
 }
 
+/** A summary whose one limit is used up, resetting in `resetInMs`. */
+function blocked(resetInMs: number): LiveUsageSummaryPayload {
+  const payload = summary()
+  const window = payload.providers[0]!.windows[0]!
+  window.usedPercent = 100
+  window.resetsAt = new Date(Date.now() + resetInMs).toISOString()
+  return payload
+}
+
 function withSecondBar(): LiveUsageSummaryPayload {
   const payload = summary()
   payload.providers[0]!.windows.push({
@@ -240,6 +251,8 @@ describe("OverlayWindow", () => {
     isOverlayWorkActive.mockResolvedValue(true)
     getHudTokenMap.mockReset()
     getHudTokenMap.mockResolvedValue(null)
+    refreshLiveUsage.mockReset()
+    refreshLiveUsage.mockResolvedValue(null)
     showHudDetail.mockClear()
     hideHudDetail.mockClear()
     resizeOverlayWindow.mockClear()
@@ -1151,6 +1164,50 @@ describe("OverlayWindow", () => {
       expect(invoke).toHaveBeenCalledWith("hide_overlay_window")
       await advance(400)
       expect(showHudDetail).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("counts down to the reset while a limit blocks the tool", async () => {
+    vi.useFakeTimers()
+    try {
+      getLiveUsage.mockResolvedValue(blocked(90 * 60_000))
+      render(<OverlayWindow />)
+      await advance(0)
+      expect(screen.getByTestId("hud-countdown").textContent).toBe(
+        "5-hour limit · resets in 1h 30m",
+      )
+      await advance(65_000)
+      expect(screen.getByTestId("hud-countdown").textContent).toBe(
+        "5-hour limit · resets in 1h 29m",
+      )
+      expect(refreshLiveUsage).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("asks for a fresh read once the reset time passes, then celebrates", async () => {
+    vi.useFakeTimers()
+    try {
+      getLiveUsage.mockResolvedValue(blocked(7_000))
+      refreshLiveUsage.mockResolvedValue(summary())
+      render(<OverlayWindow />)
+      await advance(0)
+      expect(screen.getByTestId("hud-countdown")).toBeTruthy()
+
+      await advance(10_000)
+      expect(refreshLiveUsage).toHaveBeenCalledTimes(1)
+      expect(screen.queryByTestId("hud-countdown")).toBeNull()
+      expect(screen.getByTestId("hud-celebration").textContent).toBe("anthropic usage reset")
+      expect(invoke).toHaveBeenCalledWith("wake_overlay", { reason: "reset" })
+
+      await advance(6_000)
+      expect(screen.queryByTestId("hud-celebration")).toBeNull()
+      // The next ticks do not ask again for a reset that was read.
+      await advance(10_000)
+      expect(refreshLiveUsage).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }

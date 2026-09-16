@@ -10,12 +10,13 @@ const OVERLAY_VISIBILITY_EVENT = "overlay_visibility_changed"
 const OVERLAY_WORK_EVENT = "overlay_work_changed"
 
 /** Free a docked HUD. A drag on it starts here. */
-export function tearOffOverlayWindow(): Promise<void> {
-  return invoke("tear_off_overlay")
+/** Returns true when the HUD was docked, so the caller can mark the tear. */
+export async function tearOffOverlayWindow(): Promise<boolean> {
+  return (await invoke<boolean>("tear_off_overlay")) === true
 }
 
 /** Bring a docked HUD in for a while. The shell logs `reason`. */
-export function wakeOverlayWindow(reason: "activity" | "burn"): Promise<void> {
+export function wakeOverlayWindow(reason: "activity" | "burn" | "reset"): Promise<void> {
   return invoke("wake_overlay", { reason })
 }
 

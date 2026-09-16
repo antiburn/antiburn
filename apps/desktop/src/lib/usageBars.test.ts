@@ -6,7 +6,16 @@ import type {
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "./ipc"
-import { deriveUsageBars, providerBarColor, resetsIn, resetsLabel } from "./usageBars"
+import {
+  blockedBars,
+  deriveUsageBars,
+  limitsReset,
+  providerBarColor,
+  resetDue,
+  resetsIn,
+  resetsLabel,
+  type UsageBarItem,
+} from "./usageBars"
 
 /** Read a `#rrggbb` colour as hue, saturation, and lightness, for comparison. */
 function hslOf(hex: string): { hue: number; saturation: number; lightness: number } {
@@ -204,5 +213,36 @@ describe("reset labels", () => {
     expect(resetsIn(new Date(NOW + (3 * 60 + 38) * 60_000), NOW)).toBe("resets in 3h 38m")
     expect(resetsIn(new Date(NOW + (5 * 24 + 2) * 3_600_000), NOW)).toBe("resets in 5d 2h")
     expect(resetsIn(null, NOW)).toBe("reset unknown")
+  })
+})
+
+describe("blocked limits", () => {
+  const bar = (label: string, percent: number, resetsAt: Date | null): UsageBarItem => ({
+    key: label,
+    label,
+    providerName: "Anthropic",
+    percent,
+    resetsAt,
+    color: "#ff6a2c",
+    expectedFraction: null,
+  })
+
+  it("lists the bars at their limit", () => {
+    expect(
+      blockedBars([bar("5h", 100, null), bar("7d", 40, null)]).map((b) => b.label),
+    ).toEqual(["5h"])
+  })
+
+  it("reports a limit that was blocked and is free now", () => {
+    const freed = limitsReset([bar("5h", 100, null)], [bar("5h", 3, null)])
+    expect(freed.map((b) => b.label)).toEqual(["5h"])
+    expect(limitsReset([bar("5h", 100, null)], [bar("5h", 100, null)])).toEqual([])
+  })
+
+  it("is due for a fresh read once a blocked reset time passes", () => {
+    const at = new Date("2026-09-16T10:00:00Z")
+    expect(resetDue([bar("5h", 100, at)], at.getTime() - 1)).toBe(false)
+    expect(resetDue([bar("5h", 100, at)], at.getTime() + 1)).toBe(true)
+    expect(resetDue([bar("5h", 50, at)], at.getTime() + 1)).toBe(false)
   })
 })

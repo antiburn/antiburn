@@ -90,8 +90,8 @@
     --color-burn-muted-val: hsl(23 88.8% 54%);
     --color-bg-hud-val: hsl(0 0% 12.5%);
     --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
-    --color-bg-hud-frame-val: hsl(0 0% 100% / 0.6);
-    --color-hud-stroke-top-val: hsl(0 0% 100% / 0.9);
+    --color-bg-hud-frame-val: hsl(0 0% 0% / 0.6);
+    --color-hud-stroke-top-val: hsl(0 0% 100% / 0.3);
     --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
     --color-hud-control-ink-val: hsl(0 0% 78%);
     --color-hud-control-edge-val: hsl(0 0% 32%);
@@ -135,8 +135,8 @@
   --color-burn-muted-val: hsl(23 88.8% 54%);
   --color-bg-hud-val: hsl(0 0% 12.5%);
   --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.6);
-  --color-hud-stroke-top-val: hsl(0 0% 100% / 0.9);
+  --color-bg-hud-frame-val: hsl(0 0% 0% / 0.6);
+  --color-hud-stroke-top-val: hsl(0 0% 100% / 0.3);
   --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
   --color-hud-control-ink-val: hsl(0 0% 78%);
   --color-hud-control-edge-val: hsl(0 0% 32%);
@@ -305,5 +305,25 @@ body[data-transparent-window] #root {
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.08),
       inset 0 -1px 0 rgb(0 0 0 / 0.35);
+  }
+}
+
+/*
+ * One confetti piece: it rises, drifts sideways by `--confetti-drift`, spins,
+ * and fades. It plays once; the component leaves the DOM with the message.
+ */
+.hud-confetti {
+  animation: hud-confetti 1.4s ease-out forwards;
+  opacity: 0;
+}
+
+@keyframes hud-confetti {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(var(--confetti-drift, 1) * 14px), -34px) rotate(540deg);
   }
 }

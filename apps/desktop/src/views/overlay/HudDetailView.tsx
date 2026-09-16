@@ -204,7 +204,7 @@ function MapLegend({ map }: { map: NonNullable<HudDetailState["map"]> }) {
         {WORK_MODES.map((mode) => (
           <li
             key={mode}
-            className="flex items-center gap-1 led-caption type-footnote text-label-secondary"
+            className="flex items-center gap-1 led-caption type-footnote text-label"
           >
             <span
               aria-hidden="true"
@@ -215,7 +215,7 @@ function MapLegend({ map }: { map: NonNullable<HudDetailState["map"]> }) {
           </li>
         ))}
       </ul>
-      <p className="led-caption type-footnote text-label-secondary mt-1">
+      <p className="led-caption type-footnote text-label mt-1">
         ● = {formatRate(map.dotValue)} tokens/min
       </p>
     </div>
@@ -270,7 +270,7 @@ function SessionCard({
           {formatRate(session.tokensPerMin)}/min
         </span>
       </div>
-      <p className="led-caption type-footnote text-label-secondary mt-0.5">
+      <p className="led-caption type-footnote text-label mt-0.5">
         {session.agent} · mostly {session.topMode}
       </p>
       <LedBar segments={HUD_SEGMENTS} className="mt-1" split={modeSplit(session.modes)} />
@@ -298,7 +298,7 @@ function SessionCard({
           })}
         </ul>
       )}
-      <p className="led-caption type-footnote text-label-secondary mt-1.5">
+      <p className="led-caption type-footnote text-label mt-1.5">
         ● = {formatRate(dotValue)} tokens/min
       </p>
     </div>
@@ -334,7 +334,7 @@ export function HudDetailView() {
         className="hud-detail-card hud-detail-in bevel select-none rounded-xl border border-separator px-3 pt-2 pb-3"
         style={{ backgroundColor: "var(--color-bg-hud)" }}
       >
-        <p className="font-bitcount text-[11px] text-label-tertiary lowercase mb-1.5">
+        <p className="font-bitcount text-[11px] text-label-secondary lowercase mb-1.5">
           antiburn
         </p>
         {hoveredSession ? (
@@ -348,14 +348,14 @@ export function HudDetailView() {
             {state.map && <MapLegend map={state.map} />}
             {state.spend && (
               <p
-                className="led-caption type-footnote text-label-secondary mb-1.5"
+                className="led-caption type-footnote text-label mb-1.5"
                 data-testid="hud-detail-spend"
               >
                 {state.spend}
               </p>
             )}
             {state.bars.length === 0 ? (
-              <p className="type-caption text-label-tertiary">
+              <p className="type-caption text-label-secondary">
                 {state.noMeterSelected ? "No meter selected." : "No usage limits detected yet."}
               </p>
             ) : (
@@ -363,9 +363,7 @@ export function HudDetailView() {
                 {state.bars.map((bar) => (
                   <div key={bar.key}>
                     <div className="flex items-baseline justify-between gap-2 type-caption">
-                      <span className="led-caption text-label-secondary truncate">
-                        {bar.label}
-                      </span>
+                      <span className="led-caption text-label truncate">{bar.label}</span>
                       <span className="stats-number text-[13px] text-label shrink-0">
                         {Math.round(bar.percent)}%
                       </span>
@@ -376,7 +374,7 @@ export function HudDetailView() {
                       split={[{ fraction: bar.percent / 100, color: bar.color }]}
                       expectedFraction={bar.expectedFraction}
                     />
-                    <p className="led-caption type-footnote text-label-secondary mt-0.5">
+                    <p className="led-caption type-footnote text-label mt-0.5">
                       {resetsIn(resetDate(bar.resetsAt), state.now)}
                     </p>
                   </div>

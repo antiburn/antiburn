@@ -328,3 +328,21 @@ sampled from real transcripts.
    card highlights that row and says its top mode.
 5. **Brand tint deeper.** The lit LED coral drops from 58.6% to 54%
    lightness; the unlit tint follows.
+
+## Tweaks after the second on-screen test (Keith, 2026-09-16)
+
+1. **Wake hold is 3.5s**, not 5s.
+2. **Countdown while blocked.** When a limit is at 100%, a line under the bars
+   reads "{limit} · resets in {time}", ticking every 5s.
+3. **Reset celebration.** When a blocked limit drops below 100%, confetti plays
+   over "{provider} usage reset" for 6s and a docked HUD peeks in.
+4. **Shared display edges bounce.** A drop past an edge another display touches
+   moves the HUD back inside the display instead of docking.
+5. **Detail contrast.** Usage-card and legend text moved up one label level.
+6. **Sounds.** A Web Audio synth (`hudSounds.ts`): a falling pop on a real
+   tear-off, a rising bwoop when a nudge shows.
+7. **Reset seen without the menubar.** Once a blocked bar's reset time passes,
+   the HUD asks the shell for a fresh read instead of waiting on the cached
+   summary.
+8. **Dark frame is black.** `hud-frame` dark is 60% black, with a softer top
+   stroke.

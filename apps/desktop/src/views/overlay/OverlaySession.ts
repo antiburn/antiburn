@@ -11,6 +11,7 @@ import {
   hideHudDetail,
   isOverlayWorkActive,
   onLiveUsageChanged,
+  refreshLiveUsage,
   onSessionEntryChanged,
   onSessionsInvalidated,
   resizeOverlayWindow,
@@ -36,7 +37,15 @@ import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/li
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 import { blinkPeriod, describeSpend } from "../../lib/ledPeriod"
 import { deriveTokenMap, frameColor, mapVisible, type TokenMapLayout } from "../../lib/tokenMap"
-import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
+import { playPop } from "../../lib/hudSounds"
+import {
+  blockedBars,
+  deriveUsageBars,
+  limitsReset,
+  noMeterSelected,
+  resetDue,
+  type UsageBarItem,
+} from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
 const LIVE_WINDOW_SECS = 90
@@ -44,6 +53,8 @@ const SHOW_DELAY_MS = 400
 const MAX_TIMEOUT_MS = 2_147_483_647
 const TOKEN_MAP_WINDOW_SECS = 300
 const TOKEN_MAP_POLL_MS = 5_000
+/** How long the reset message and its confetti stay. */
+const CELEBRATION_MS = 6_000
 
 const EMPTY_TOKEN_MAP = deriveTokenMap(null)
 
@@ -61,6 +72,10 @@ export type OverlaySnapshot = {
   blinkPeriodMs: number
   /** The spend rate in words, or null when the window carried no tokens. */
   spend: string | null
+  /** The clock the countdown to a reset reads from. */
+  now: number
+  /** The reset message under the bars, or null. */
+  celebration: string | null
 }
 
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
@@ -73,6 +88,8 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   showMap: false,
   blinkPeriodMs: blinkPeriod(null, null).periodMs,
   spend: null,
+  now: 0,
+  celebration: null,
 }
 
 type DragOrigin = {
@@ -149,6 +166,9 @@ export class OverlaySession {
   private hudNativeVisible = false
   private detailRevision = 0
   private latestUsage: LiveUsageSummaryPayload | null = null
+  private celebrationTimer = 0
+  /** The reset time a fresh read was already asked for, so it is asked once. */
+  private resetAskedFor = 0
   private latestSpend: HudSpendRate | null = null
   private usageFailed = false
 
@@ -263,8 +283,12 @@ export class OverlaySession {
       if (!this.isCurrent(generation)) return
       this.latestUsage = response
       this.usageFailed = false
+      const bars = deriveUsageBars(response)
+      const freed = limitsReset(this.snapshot.bars, bars)
+      if (freed.length > 0) this.celebrate(freed[0]!)
+      this.update({ now: Date.now() })
       const changed = this.commitLayout({
-        bars: deriveUsageBars(response),
+        bars,
         noMeterSelected: noMeterSelected(response),
         blinkPeriodMs: blinkPeriod(this.latestSpend, response).periodMs,
       })
@@ -302,6 +326,7 @@ export class OverlaySession {
     this.refreshLatestActivity(generation)
 
     const refreshTokenMap = () => {
+      this.tickCountdown(applyUsage)
       if (!isHudTokenMapEnabled()) {
         this.latestSpend = null
         this.previousShowMap = false
@@ -418,6 +443,9 @@ export class OverlaySession {
     this.stopDetailShownListening = null
     this.lastEventActivity = null
     this.burnWake = new BurnWakeTracker()
+    window.clearTimeout(this.celebrationTimer)
+    this.celebrationTimer = 0
+    this.resetAskedFor = 0
     this.removeDragListeners()
     this.observer?.disconnect()
     this.observer = null
@@ -689,6 +717,37 @@ export class OverlaySession {
     })
   }
 
+  /**
+   * Keep the countdown current while a limit blocks a tool. Once the reset
+   * time passes, ask the shell for a fresh read: the cached summary can lag
+   * the reset by minutes, and the HUD should notice on its own.
+   */
+  private tickCountdown(apply: (response: LiveUsageSummaryPayload | null) => void): void {
+    const blocked = blockedBars(this.snapshot.bars)
+    if (blocked.length === 0) return
+    const now = Date.now()
+    this.update({ now })
+    const due = blocked.find((bar) => bar.resetsAt != null && bar.resetsAt.getTime() <= now)
+    if (!due || !resetDue(this.snapshot.bars, now)) return
+    const at = due.resetsAt!.getTime()
+    if (this.resetAskedFor === at) return
+    this.resetAskedFor = at
+    void refreshLiveUsage()
+      .then(apply)
+      .catch(() => {})
+  }
+
+  /** Show the reset message with confetti, and peek a docked HUD in. */
+  private celebrate(bar: UsageBarItem): void {
+    window.clearTimeout(this.celebrationTimer)
+    this.update({ celebration: `${bar.providerName.toLowerCase()} usage reset` })
+    void wakeOverlayWindow("reset").catch(() => {})
+    this.celebrationTimer = window.setTimeout(() => {
+      this.celebrationTimer = 0
+      this.update({ celebration: null })
+    }, CELEBRATION_MS)
+  }
+
   private update(change: Partial<OverlaySnapshot>): boolean {
     const next = { ...this.snapshot, ...change }
     if (
@@ -700,7 +759,9 @@ export class OverlaySession {
       this.snapshot.tokenMap === next.tokenMap &&
       this.snapshot.showMap === next.showMap &&
       this.snapshot.blinkPeriodMs === next.blinkPeriodMs &&
-      this.snapshot.spend === next.spend
+      this.snapshot.spend === next.spend &&
+      this.snapshot.now === next.now &&
+      this.snapshot.celebration === next.celebration
     ) {
       return false
     }
@@ -740,8 +801,12 @@ export class OverlaySession {
     this.dragOrigin = null
     this.addDragListeners()
     // A drag on a docked HUD tears it off. The drop decides whether it docks
-    // again, in `recordHudPosition`.
-    void tearOffOverlayWindow().catch(() => {})
+    // again, in `recordHudPosition`. A real tear pops.
+    void tearOffOverlayWindow()
+      .then((torn) => {
+        if (torn) playPop()
+      })
+      .catch(() => {})
     await this.syncWindow(false, generation)
     if (!this.isCurrent(generation) || !this.snapshot.dragging) return
 

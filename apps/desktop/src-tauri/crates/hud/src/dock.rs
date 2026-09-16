@@ -52,7 +52,7 @@ const LINGER: Duration = Duration::from_secs(3);
 
 /// How long a woken HUD stays, at least.
 #[cfg(target_os = "macos")]
-const WAKE_HOLD: Duration = Duration::from_secs(5);
+const WAKE_HOLD: Duration = Duration::from_millis(3_500);
 
 /// The display edge the HUD docks against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -152,13 +152,31 @@ pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
     };
     if let Some(window_rect) = window_rect(&window)
         && let Some(monitor) = monitor_of(&window)
-        && let Some(edge) = edge_dropped_on(
-            &monitor_rect(&monitor),
-            &window_rect,
-            SIDE_INSET * monitor.scale_factor(),
-        )
     {
-        dock_at(app, &window, edge);
+        let frame = monitor_rect(&monitor);
+        if let Some(edge) =
+            edge_dropped_on(&frame, &window_rect, SIDE_INSET * monitor.scale_factor())
+        {
+            let others: Vec<Rect> = window
+                .available_monitors()
+                .map(|all| {
+                    all.iter()
+                        .map(monitor_rect)
+                        .filter(|rect| !same_rect(rect, &frame))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if edge_is_shared(edge, &frame, &others) {
+                // The edge meets another display, so a dock there would hide
+                // the HUD on the neighbour. Bring the drop back on screen.
+                let (x, y) = clamp_inside(&frame, &window_rect);
+                tracing::info!(event = "hud_edge_bounce", edge = ?edge);
+                let _guard = super::resize_apply_guard();
+                let _ = window.set_position(PhysicalPosition::new(x, y));
+            } else {
+                dock_at(app, &window, edge);
+            }
+        }
     }
     dock_settings()
 }
@@ -170,14 +188,16 @@ pub fn settle_after_drag(_app: &tauri::AppHandle) -> DockSettings {
 }
 
 /// Free the HUD: a drag started on a docked or peeked HUD.
-pub fn tear_off() {
+pub fn tear_off() -> bool {
     let mut dock = state();
-    if dock.docked || dock.home.is_some() {
+    let was_docked = dock.docked || dock.home.is_some();
+    if was_docked {
         tracing::info!(event = "hud_tear_off", edge = ?dock.edge);
     }
     dock.docked = false;
     dock.home = None;
     dock.generation += 1;
+    was_docked
 }
 
 /// Bring a docked HUD in for a while. `reason` is for the log only.
@@ -519,6 +539,42 @@ fn on_tab_strip(edge: DockEdge, frame: &Rect, tab: f64, cursor: (f64, f64)) -> b
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn same_rect(left: &Rect, right: &Rect) -> bool {
+    left.x == right.x
+        && left.y == right.y
+        && left.width == right.width
+        && left.height == right.height
+}
+
+/// True when another display sits against `edge` of `frame`. Pure.
+///
+/// The displays share the edge when one's far side meets the other's near
+/// side and their spans overlap along that edge.
+#[cfg(any(target_os = "macos", test))]
+fn edge_is_shared(edge: DockEdge, frame: &Rect, others: &[Rect]) -> bool {
+    let spans_x = |other: &Rect| other.x < frame.x + frame.width && other.x + other.width > frame.x;
+    let spans_y =
+        |other: &Rect| other.y < frame.y + frame.height && other.y + other.height > frame.y;
+    others.iter().any(|other| match edge {
+        DockEdge::Left => (other.x + other.width - frame.x).abs() < 1.0 && spans_y(other),
+        DockEdge::Right => (other.x - (frame.x + frame.width)).abs() < 1.0 && spans_y(other),
+        DockEdge::Top => (other.y + other.height - frame.y).abs() < 1.0 && spans_x(other),
+        DockEdge::Bottom => (other.y - (frame.y + frame.height)).abs() < 1.0 && spans_x(other),
+    })
+}
+
+/// The nearest position that keeps the whole window inside `frame`. Pure.
+#[cfg(any(target_os = "macos", test))]
+fn clamp_inside(frame: &Rect, window: &Rect) -> (f64, f64) {
+    let max_x = (frame.x + frame.width - window.width).max(frame.x);
+    let max_y = (frame.y + frame.height - window.height).max(frame.y);
+    (
+        window.x.clamp(frame.x, max_x),
+        window.y.clamp(frame.y, max_y),
+    )
+}
+
 /// The edge a dropped window's frame went past, deepest first. Pure.
 ///
 /// A window that stops short of the edge stays free, so a HUD can sit near an
@@ -654,6 +710,39 @@ mod tests {
             edge_dropped_on(&FRAME, &corner, SIDE_INSET),
             Some(DockEdge::Left)
         );
+    }
+
+    #[test]
+    fn a_shared_display_edge_bounces_instead_of_docking() {
+        let right_neighbour = Rect {
+            x: 1100.0,
+            y: 200.0,
+            width: 800.0,
+            height: 500.0,
+        };
+        let far_away = Rect {
+            x: 1100.0,
+            y: 700.0,
+            width: 800.0,
+            height: 500.0,
+        };
+        assert!(edge_is_shared(DockEdge::Right, &FRAME, &[right_neighbour]));
+        assert!(!edge_is_shared(DockEdge::Right, &FRAME, &[far_away]));
+        assert!(!edge_is_shared(DockEdge::Left, &FRAME, &[right_neighbour]));
+        let above = Rect {
+            x: 300.0,
+            y: -550.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        assert!(edge_is_shared(DockEdge::Top, &FRAME, &[above]));
+        assert!(!edge_is_shared(DockEdge::Bottom, &FRAME, &[above]));
+        let past_right = Rect {
+            x: 1050.0,
+            ..WINDOW
+        };
+        assert_eq!(clamp_inside(&FRAME, &past_right), (924.0, 80.0));
+        assert_eq!(clamp_inside(&FRAME, &WINDOW), (500.0, 80.0));
     }
 
     #[test]
