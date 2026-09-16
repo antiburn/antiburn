@@ -174,20 +174,18 @@ interface MeterSample {
 }
 
 /**
- * The meter's reading at `t`, from the period's own authoritative samples.
- * Interpolates linearly between the two samples bracketing `t` when they are
- * at most `QUOTA_METER_INTERPOLATION_GAP_SECS` apart. Returns null before
- * the first sample, after the last sample, and across a wider gap.
+ * The meter's reading at `t`, from the two authoritative samples bracketing
+ * it. Interpolates linearly when they are at most
+ * `QUOTA_METER_INTERPOLATION_GAP_SECS` apart. Returns null with no bracketing
+ * sample on one side, or across a wider gap. The caller advances `prev` and
+ * `next` alongside its own ascending walk, so this stays O(1) per row.
  */
-function meterAt(t: number, samples: readonly MeterSample[]): number | null {
-  let prev: MeterSample | null = null
-  let next: MeterSample | null = null
-  for (const sample of samples) {
-    if (sample.observedAtEpoch <= t) prev = sample
-    if (sample.observedAtEpoch >= t && !next) next = sample
-  }
+function interpolateMeter(
+  prev: MeterSample | null,
+  next: MeterSample | null,
+  t: number,
+): number | null {
   if (prev && prev.observedAtEpoch === t) return prev.usedPercent
-  if (next && next.observedAtEpoch === t) return next.usedPercent
   if (!prev || !next) return null
   const gap = next.observedAtEpoch - prev.observedAtEpoch
   if (gap > QUOTA_METER_INTERPOLATION_GAP_SECS) return null
@@ -259,6 +257,7 @@ function periodRows(
   let unattributedCumulative = 0
   let bucketPointer = 0
   let unattributedPointer = 0
+  let samplePointer = -1
   const authoritativeSamples: MeterSample[] = period.samples
     .filter(
       (sample): sample is QuotaSamplePayload & { usedPercent: number } =>
@@ -295,10 +294,21 @@ function periodRows(
       unattributedCumulative += unattributedBuckets[unattributedPointer]!.percent ?? 0
       unattributedPointer += 1
     }
+    while (
+      samplePointer + 1 < authoritativeSamples.length &&
+      authoritativeSamples[samplePointer + 1]!.observedAtEpoch <= t
+    ) {
+      samplePointer += 1
+    }
+    const prevSample = samplePointer >= 0 ? authoritativeSamples[samplePointer]! : null
+    const nextSample =
+      samplePointer + 1 < authoritativeSamples.length
+        ? authoritativeSamples[samplePointer + 1]!
+        : null
     const row: QuotaSeriesRow = {
       t,
       index: 0,
-      meter: meterAt(t, authoritativeSamples),
+      meter: interpolateMeter(prevSample, nextSample, t),
       other: hasFactor ? otherCumulative : null,
       unattributed: hasFactor ? unattributedCumulative : null,
     }

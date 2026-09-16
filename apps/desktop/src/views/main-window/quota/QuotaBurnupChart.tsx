@@ -1,3 +1,4 @@
+import { useMemo } from "react"
 import {
   Area,
   AreaChart,
@@ -200,7 +201,12 @@ export function QuotaBurnupChart({
   onPin,
 }: QuotaBurnupChartProps) {
   const hasFactor = usage.factor != null
-  const { rows, topSessions } = quotaBurnupSeries(usage, rangeStartEpoch, rangeEndEpoch)
+  // Building the series walks every sample and bucket in range, so this
+  // must not redo that work on every highlight or pin change.
+  const { rows, topSessions } = useMemo(
+    () => quotaBurnupSeries(usage, rangeStartEpoch, rangeEndEpoch),
+    [usage, rangeStartEpoch, rangeEndEpoch],
+  )
   const { onResize, resizing, animate } = useChartResize(rows)
   const animationDurationMs = slowAnimationDurationMs()
 
