@@ -109,7 +109,7 @@ are doing" turns the map off. Reduced motion stops the pulse.
 ### Docked
 
 Drag the HUD against any edge of its display and it docks there: the window
-slides so that only an 8 logical px tab stays on screen. The renderer, the
+slides so that only a 6 logical px tab stays on screen. The renderer, the
 usage poll and the token-map poll all continue, so the return is instant.
 There is no setting and no dock control; the drop is the gesture.
 
@@ -129,7 +129,7 @@ There is no setting and no dock control; the drop is the gesture.
 - **Wake.** The HUD webview asks the shell to wake a docked HUD for two
   reasons: a transcript write more than an hour after the previous one it saw
   through events, and a spend rate at the ceiling for two polls in a row. A
-  woken HUD stays at least 3.5s, and longer while hovered. The burn wake re-arms
+  woken HUD stays at least 2.8s, and longer while hovered. The burn wake re-arms
   only after the rate drops below the ceiling. Both start cold: a fresh dock
   never wakes on its first sample. Each wake is logged with its reason.
 - **Displays.** The dock edge is the edge of the display the HUD was dropped

@@ -17,7 +17,7 @@ use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, WebviewWindow};
 
 /// How much of the docked HUD frame stays on screen, in logical pixels.
 #[cfg(any(target_os = "macos", test))]
-const TAB: f64 = 8.0;
+const TAB: f64 = 6.0;
 
 /// The transparent gap between the window's side edges and the HUD frame.
 ///
@@ -52,7 +52,7 @@ const LINGER: Duration = Duration::from_secs(3);
 
 /// How long a woken HUD stays, at least.
 #[cfg(target_os = "macos")]
-const WAKE_HOLD: Duration = Duration::from_millis(3_500);
+const WAKE_HOLD: Duration = Duration::from_millis(2_800);
 
 /// The display edge the HUD docks against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -632,29 +632,29 @@ mod tests {
 
     #[test]
     fn side_tabs_add_the_transparent_gap() {
-        assert_eq!(tab_depth(DockEdge::Left, 2.0), 32.0);
-        assert_eq!(tab_depth(DockEdge::Right, 1.0), 16.0);
-        assert_eq!(tab_depth(DockEdge::Top, 2.0), 16.0);
-        assert_eq!(tab_depth(DockEdge::Bottom, 1.0), 8.0);
+        assert_eq!(tab_depth(DockEdge::Left, 2.0), 28.0);
+        assert_eq!(tab_depth(DockEdge::Right, 1.0), 14.0);
+        assert_eq!(tab_depth(DockEdge::Top, 2.0), 12.0);
+        assert_eq!(tab_depth(DockEdge::Bottom, 1.0), 6.0);
     }
 
     #[test]
     fn docked_positions_leave_only_the_tab_on_screen() {
         assert_eq!(
             docked_position(DockEdge::Left, &FRAME, &WINDOW, TAB),
-            (-68.0, 80.0)
+            (-70.0, 80.0)
         );
         assert_eq!(
             docked_position(DockEdge::Right, &FRAME, &WINDOW, TAB),
-            (1092.0, 80.0)
+            (1094.0, 80.0)
         );
         assert_eq!(
             docked_position(DockEdge::Top, &FRAME, &WINDOW, TAB),
-            (500.0, -2.0)
+            (500.0, -4.0)
         );
         assert_eq!(
             docked_position(DockEdge::Bottom, &FRAME, &WINDOW, TAB),
-            (500.0, 642.0)
+            (500.0, 644.0)
         );
     }
 

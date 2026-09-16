@@ -52,11 +52,11 @@
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
 
   /*
-   * The HUD frame. 60% white in both themes, so the bars read as one object
-   * and the desktop still shows through. A dark frame vanished on a dark
-   * desktop. Reduced transparency makes it solid.
+   * The HUD frame. 70% white in light and 70% black in dark, so the bars
+   * read as one object and the desktop still shows through. Reduced
+   * transparency makes it solid.
    */
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.6);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.7);
 
   /*
    * The frame stroke, a one-pixel vertical gradient: a light top edge and a
@@ -90,7 +90,7 @@
     --color-burn-muted-val: hsl(23 88.8% 54%);
     --color-bg-hud-val: hsl(0 0% 12.5%);
     --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
-    --color-bg-hud-frame-val: hsl(0 0% 0% / 0.6);
+    --color-bg-hud-frame-val: hsl(0 0% 0% / 0.7);
     --color-hud-stroke-top-val: hsl(0 0% 100% / 0.3);
     --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
     --color-hud-control-ink-val: hsl(0 0% 78%);
@@ -113,7 +113,7 @@
   --color-burn-muted-val: hsl(18.1 88% 51.4%);
   --color-bg-hud-val: hsl(0 0% 96.4%);
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
-  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.6);
+  --color-bg-hud-frame-val: hsl(0 0% 100% / 0.7);
   --color-hud-stroke-top-val: hsl(0 0% 100% / 0.9);
   --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
   --color-hud-control-ink-val: hsl(0 0% 32%);
@@ -135,7 +135,7 @@
   --color-burn-muted-val: hsl(23 88.8% 54%);
   --color-bg-hud-val: hsl(0 0% 12.5%);
   --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
-  --color-bg-hud-frame-val: hsl(0 0% 0% / 0.6);
+  --color-bg-hud-frame-val: hsl(0 0% 0% / 0.7);
   --color-hud-stroke-top-val: hsl(0 0% 100% / 0.3);
   --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
   --color-hud-control-ink-val: hsl(0 0% 78%);
