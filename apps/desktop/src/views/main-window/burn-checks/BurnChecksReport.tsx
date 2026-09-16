@@ -1,6 +1,6 @@
 import "../../../styles/burn-checks-report.css"
 
-import { BellRing, ChevronRight, Clock } from "lucide-react"
+import { ChevronRight, Clock } from "lucide-react"
 import { useCallback, useRef, useState, type KeyboardEvent } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
@@ -16,7 +16,6 @@ import { checksPresentation, formatTokenBurnPercent } from "../../../lib/present
 import {
   formatSnoozeUntil,
   snoozedDetectorIds,
-  unsnoozeBurnCheck,
   useSnoozedBurnChecks,
 } from "../../../lib/snoozedBurnChecks"
 import { checkRowPresentation } from "../../checks/checkUi"
@@ -26,6 +25,7 @@ import { BurnCheckTargetDetail } from "./BurnCheckTargetDetail"
 import { BurnChecksHeader } from "./BurnChecksHeader"
 import { BurnChecksSavings } from "./BurnChecksSavings"
 import { BurnCheckDetailBody } from "./BurnCheckDetailBody"
+import { RemindLaterAction } from "./RemindLaterAction"
 
 type ReportUiState = {
   reportKey: string
@@ -161,6 +161,9 @@ function CheckDetail({
     named && targetList
       ? `${targetList.targets.length} ${resourceName}${targetList.targets.length === 1 ? "" : "s"}${targetList.truncated ? " shown" : ""}`
       : null
+  const showFindingActions =
+    check.finding > 0 && targetList && (!named || targetList.targets.length === 0)
+  const showSnoozedAction = snoozed && check.finding === 0
   const trackVisibility = useCallback(
     (node: HTMLDivElement | null) =>
       session.setTargetsVisible(check.id, node !== null, deliberate),
@@ -179,46 +182,57 @@ function CheckDetail({
         data-tauri-drag-region={isMacOS() ? "deep" : undefined}
       >
         <div className="burn-check-detail-heading-content">
-          <div className="min-w-0 flex-1 basis-56">
-            <h2 className="type-title-2 text-label text-balance">{presentation.label}</h2>
-            <p className="mt-1 type-footnote tabular-nums text-label-secondary">
-              {check.finding} {check.finding === 1 ? "session" : "sessions"} affected
-              {resourceCount && <span className="text-label-tertiary"> · {resourceCount}</span>}
-            </p>
-            <CheckMetadata check={check} presentation={presentation} inline />
-            {check.finding > 0 && (
-              <p className="mt-3 type-body text-pretty text-label-secondary">
-                {check.id === "unusedMcpServers"
-                  ? "These servers loaded tools that weren’t used. Disable each server where you don’t need it."
-                  : check.id === "unusedSkills"
-                    ? "These skills added context that wasn’t used. Load each skill only where the work needs it."
-                    : CHECK_SENTENCES[check.id]}
+          <div className="w-full min-w-0">
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <h2 className="min-w-0 flex-1 type-title-2 text-label text-balance">
+                {presentation.label}
+              </h2>
+              {showFindingActions && (
+                <div className="max-w-full shrink-0">
+                  <CheckDetailActions
+                    detector={check.id}
+                    targets={targetList.targets}
+                    refresh={session.refresh}
+                    reportRow
+                  />
+                </div>
+              )}
+              {showSnoozedAction && (
+                <div className="max-w-full shrink-0">
+                  <RemindLaterAction detector={check.id} />
+                </div>
+              )}
+            </div>
+            {resourceCount && (
+              <p className="mt-1 type-footnote tabular-nums text-label-tertiary">
+                {resourceCount}
               </p>
             )}
-          </div>
-          {check.finding > 0 && targetList && (!named || targetList.targets.length === 0) && (
-            <CheckDetailActions
-              detector={check.id}
-              targets={targetList.targets}
-              refresh={session.refresh}
-              reportRow
-              snoozed={snoozed}
+            <CheckMetadata
+              check={check}
+              presentation={presentation}
+              inline
+              {...(showFindingActions || showSnoozedAction ? { className: "-mt-2" } : {})}
             />
-          )}
-          {snoozed && (
-            <button
-              type="button"
-              onClick={() => void unsnoozeBurnCheck(check.id)}
-              className="burn-check-action type-callout gap-1"
-            >
-              <BellRing size={12} aria-hidden="true" />
-              Unsnooze
-            </button>
+          </div>
+          {check.finding > 0 && (
+            <p className="w-full type-body text-pretty text-label-secondary">
+              {check.id === "unusedMcpServers"
+                ? "These servers loaded tools that weren’t used. Disable each server where you don’t need it."
+                : check.id === "unusedSkills"
+                  ? "These skills added context that wasn’t used. Load each skill only where the work needs it."
+                  : CHECK_SENTENCES[check.id]}
+            </p>
           )}
         </div>
       </header>
       <BurnCheckDetailBody visible={visible}>
-        <div className="burn-checks-detail-content">
+        <div
+          className={cn(
+            "burn-checks-detail-content",
+            check.finding > 0 && "pt-[var(--space-lg)]",
+          )}
+        >
           <CheckDetailContent check={check} session={session} state={state} />
         </div>
       </BurnCheckDetailBody>
@@ -230,13 +244,20 @@ function CheckMetadata({
   check,
   presentation,
   inline = false,
+  className,
 }: {
   check: ChecksCategoryPayload
   presentation: ReturnType<typeof checkRowPresentation>
   inline?: boolean
+  className?: string
 }) {
   return (
-    <span className={cn(inline ? "flex flex-wrap items-center gap-x-3 gap-y-1" : "block")}>
+    <span
+      className={cn(
+        inline ? "flex flex-wrap items-center gap-x-3 gap-y-1" : "block",
+        className,
+      )}
+    >
       <span className="mt-0.5 block font-mono type-footnote tabular-nums">
         <span
           className={cn(

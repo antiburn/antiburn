@@ -196,62 +196,6 @@ impl VendorConfig for OpenCode {
     }
 
     #[cfg(not(windows))]
-    fn resolve_targets(
-        &self,
-        setting: ConfigSetting,
-        home: &Path,
-        workspace_cwd: Option<&Path>,
-        trusted_workspace_root: Option<&Path>,
-    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
-        let primary = self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)?;
-        let mut targets = vec![primary];
-        let global_root = global_config_root(home)?;
-        collect_directory_targets(
-            &global_root,
-            &global_root,
-            ConfigScope::Global,
-            true,
-            &mut targets,
-        )?;
-        if !project_config_disabled()
-            && let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root)
-        {
-            for directory in project_hierarchy(cwd, root)? {
-                collect_directory_targets(
-                    &directory,
-                    root,
-                    ConfigScope::Project,
-                    false,
-                    &mut targets,
-                )?;
-            }
-            for directory in project_hierarchy(cwd, root)?.into_iter().rev() {
-                let directory = directory.join(".opencode");
-                if path_entry_exists(&directory)? {
-                    collect_directory_targets(
-                        &directory,
-                        root,
-                        ConfigScope::Project,
-                        false,
-                        &mut targets,
-                    )?;
-                }
-            }
-        }
-        let home_directory = home.join(".opencode");
-        if path_entry_exists(&home_directory)? {
-            collect_directory_targets(
-                &home_directory,
-                home,
-                ConfigScope::Global,
-                false,
-                &mut targets,
-            )?;
-        }
-        Ok(targets)
-    }
-
-    #[cfg(not(windows))]
     fn standalone_global(
         &self,
         setting: ConfigSetting,
@@ -438,10 +382,15 @@ impl OpenCode {
             |directory: &Path, root: &Path, scope| -> Result<(), ConfigUnavailableReason> {
                 for file in ["opencode.json", "opencode.jsonc"] {
                     let path = directory.join(file);
-                    if path_entry_exists(&path)?
-                        && opencode_built_in_tool_value(&read_checked(&path, root)?.bytes, name)?
-                            .is_some()
-                    {
+                    if path_entry_exists(&path)? {
+                        let bytes = read_checked(&path, root)?.bytes;
+                        let value = opencode_built_in_tool_value(&bytes, name)?;
+                        if scope == ConfigScope::Project && !opencode_has_tool_rule(&bytes, name)? {
+                            continue;
+                        }
+                        if value.is_none() {
+                            continue;
+                        }
                         winner = Some((path, root.to_owned(), scope));
                     }
                 }
@@ -570,6 +519,23 @@ fn opencode_built_in_tool_value(
             && rule.get("effect").and_then(serde_json::Value::as_str) == Some("deny")
     });
     Ok(Some(format!("{name}={enabled}")))
+}
+
+fn opencode_has_tool_rule(bytes: &[u8], name: &str) -> Result<bool, ConfigUnavailableReason> {
+    let action = opencode_v2_action(name)?;
+    let document = parse(bytes)?;
+    let Some(rules) = document.get("permissions") else {
+        return Ok(false);
+    };
+    let rules = rules
+        .as_array()
+        .ok_or(ConfigUnavailableReason::MalformedConfig)?;
+    if rules.iter().any(|rule| !is_v2_permission_rule(rule)) {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    Ok(rules
+        .iter()
+        .any(|rule| rule.get("action").and_then(serde_json::Value::as_str) == Some(action)))
 }
 
 fn opencode_skill_value(
@@ -770,7 +736,11 @@ fn merge_directory_config(
         if !path_entry_exists(&path)? {
             continue;
         }
-        if let Some(operation) = operation_for(&read_checked(&path, safety_root)?.bytes, setting)? {
+        let bytes = read_checked(&path, safety_root)?.bytes;
+        if setting == ConfigSetting::Compaction && explicitly_enables_compaction(&bytes)? {
+            *winner = None;
+        }
+        if let Some(operation) = operation_for(&bytes, setting)? {
             *winner = Some(Target {
                 path,
                 safety_root: safety_root.to_owned(),
@@ -782,34 +752,13 @@ fn merge_directory_config(
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn collect_directory_targets(
-    root: &Path,
-    safety_root: &Path,
-    scope: ConfigScope,
-    include_legacy: bool,
-    targets: &mut Vec<Target>,
-) -> Result<(), ConfigUnavailableReason> {
-    let names: &[&str] = if include_legacy {
-        &["config.json", "opencode.json", "opencode.jsonc"]
-    } else {
-        &["opencode.json", "opencode.jsonc"]
-    };
-    for name in names {
-        let path = root.join(name);
-        if path_entry_exists(&path)?
-            && model(&read_checked(&path, safety_root)?.bytes)?.is_some()
-            && !targets.iter().any(|target| target.path == path)
-        {
-            targets.push(Target {
-                path,
-                safety_root: safety_root.to_owned(),
-                scope,
-                operation: OperationSelector::JsonKey("model"),
-            });
-        }
-    }
-    Ok(())
+fn explicitly_enables_compaction(bytes: &[u8]) -> Result<bool, ConfigUnavailableReason> {
+    let document = parse(bytes)?;
+    Ok(document
+        .get("compaction")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|compaction| compaction.get("auto"))
+        == Some(&serde_json::Value::Bool(true)))
 }
 
 fn operation(setting: ConfigSetting) -> OperationSelector {

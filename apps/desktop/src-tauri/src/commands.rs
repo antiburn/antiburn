@@ -1969,7 +1969,7 @@ pub async fn copy_prompt_fix_burn_check_target(
     Ok(outcome)
 }
 
-/// Returns a bounded generic prompt only when a failed check has no exact target.
+/// Returns a bounded generic prompt when no exact prompt target is available.
 #[tauri::command]
 pub async fn copy_prompt_fix_burn_check(
     window: tauri::WebviewWindow,

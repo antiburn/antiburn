@@ -24,7 +24,6 @@ const commands = vi.hoisted(() => ({
   copyBatch: vi.fn(),
   writeClipboardText: vi.fn(),
   openSample: vi.fn(),
-  openSettings: vi.fn(),
   noteInteraction: vi.fn(),
 }))
 
@@ -47,7 +46,6 @@ vi.mock("../../lib/insightsIpc", async (importOriginal) => ({
 
 vi.mock("../../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof IpcModule>()),
-  openSettingsWindow: commands.openSettings,
   noteInteraction: commands.noteInteraction,
 }))
 
@@ -257,7 +255,6 @@ beforeEach(() => {
     prompt: "Batch backend prompt",
   })
   commands.openSample.mockResolvedValue({ outcome: "opened" })
-  commands.openSettings.mockResolvedValue(undefined)
   commands.writeClipboardText.mockResolvedValue(undefined)
 })
 
@@ -443,27 +440,36 @@ describe("BurnChecksView", () => {
     )
   })
 
-  it("keeps the explanation and disabled finding actions together in the category header", async () => {
+  it("shows finding actions beside the title and keeps the explanation full width", async () => {
     setup(target, false, aggregate, report)
     const action = await screen.findByRole("button", { name: "Copy fix prompt" })
-    expect(action).toHaveAttribute("aria-disabled", "true")
-    expect(action.closest("header")).toContainElement(
-      screen.getByRole("heading", { name: "Old model usage", level: 2 }),
+    const description = screen.getByText(
+      "Some sessions used an older model when a newer one was available.",
     )
+    const snooze = screen.getByRole("button", { name: "Snooze" })
+    const fix = screen.getByRole("button", { name: "Fix" })
+    const heading = screen.getByRole("heading", { name: "Old model usage", level: 2 })
+    const titleRow = heading.parentElement
+    const failedCount = within(action.closest("header")!).getByText("1 failed")
+    expect(action).toBeEnabled()
+    expect(description).toHaveClass("w-full")
+    expect(titleRow).toContainElement(action)
+    expect(titleRow).not.toContainElement(description)
+    expect(failedCount.parentElement?.parentElement).toHaveClass("-mt-2")
+    expect(
+      action.closest(".burn-check-detail")?.querySelector(".burn-checks-detail-content"),
+    ).toHaveClass("pt-[var(--space-lg)]")
     expect(action.closest("header")).toHaveTextContent(
       "Some sessions used an older model when a newer one was available.",
     )
     expect(
       screen.getAllByText("Some sessions used an older model when a newer one was available."),
     ).toHaveLength(1)
-    expect(action.parentElement).toContainElement(
-      screen.getByRole("button", { name: "Snooze" }),
-    )
+    expect(snooze.compareDocumentPosition(fix) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(fix.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
     fireEvent.click(action)
-    expect(commands.copyBatch).not.toHaveBeenCalled()
-    expect(commands.writeClipboardText).not.toHaveBeenCalled()
-    act(() => action.focus())
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Coming soon")
+    await waitFor(() => expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"]))
+    expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
     expect(screen.getByRole("region", { name: "Burn check details" })).toHaveTextContent(
       "1 failed · 2 passed",
     )
@@ -555,17 +561,16 @@ describe("BurnChecksView", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "false")
   })
 
-  it("opens Insights coverage details from the assessment summary", async () => {
-    setup(target, false, aggregate, { ...report, evidenceSettled: true })
+  it("uses generic updating text and omits coverage navigation from assessment details", async () => {
+    setup(target, false, aggregate, { ...report, pendingEvidence: 2 })
 
     fireEvent.click(await screen.findByRole("button", { name: "Assessment details" }))
     const summary = screen.getByRole("region", { name: "Assessment details" })
+    expect(within(summary).getByText("Assessment is updating.")).toBeVisible()
+    expect(within(summary).queryByText("2 sessions processing.")).not.toBeInTheDocument()
     expect(
-      within(summary).getByText("Assessment complete for available evidence."),
-    ).toBeVisible()
-    fireEvent.click(within(summary).getByRole("button", { name: "Coverage details" }))
-
-    expect(commands.openSettings).toHaveBeenCalledExactlyOnceWith("insights")
+      within(summary).queryByRole("button", { name: "Coverage details" }),
+    ).not.toBeInTheDocument()
   })
 
   it("keeps processing count out of the collection header", async () => {
@@ -673,9 +678,8 @@ describe("BurnChecksView", () => {
     )
 
     const resources = await screen.findByText(/2 affected resources shown$/)
-    expect(resources.parentElement).toHaveTextContent(
-      "23 sessions affected · 2 affected resources shown",
-    )
+    expect(resources).toHaveTextContent("2 affected resources shown")
+    expect(screen.queryByText("23 sessions affected")).not.toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Burn check details" })).toHaveTextContent(
       "23 failed",
     )
@@ -1015,7 +1019,7 @@ describe("BurnChecksView", () => {
     const fix = await screen.findByRole("button", { name: "Fix" })
     const prompt = screen.getByRole("button", { name: "Copy fix prompt" })
     expect(fix.parentElement).not.toHaveClass("mt-3")
-    expect(fix.parentElement?.parentElement).toBe(prompt.parentElement)
+    expect(fix.parentElement?.parentElement).toBe(prompt.parentElement?.parentElement)
     fireEvent.click(fix)
     let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
     expect(within(dialog).getByRole("button", { name: "Review 0 changes" })).toBeDisabled()
@@ -1646,7 +1650,7 @@ describe("BurnChecksView", () => {
     expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
   })
 
-  it("does not use a fallback prompt when exact targets are unavailable", async () => {
+  it("uses a fallback prompt when exact targets are unavailable", async () => {
     setup(
       {
         ...target,
@@ -1658,8 +1662,10 @@ describe("BurnChecksView", () => {
     )
 
     await screen.findByText("Some sessions used an older model when a newer one was available.")
-    expect(screen.queryByRole("button", { name: "Copy fix prompt" })).not.toBeInTheDocument()
-    expect(commands.copyFallback).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
+
+    await waitFor(() => expect(commands.copyFallback).toHaveBeenCalledWith("oldModelUsage"))
+    expect(commands.writeClipboardText).toHaveBeenCalledWith("Inspect representative evidence.")
     expect(commands.copyBatch).not.toHaveBeenCalled()
   })
 
@@ -1783,20 +1789,23 @@ describe("BurnChecksView", () => {
     expect(screen.queryByText(/write safety check/)).not.toBeInTheDocument()
   })
 
-  it("shows one direct reason when neither action is available", async () => {
-    setup({
-      ...target,
-      autoFix: { status: "unavailable", reason: "safetyCheckFailed" },
-      promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
-    })
+  it("uses the check-level prompt fallback when target actions are unavailable", async () => {
+    setup(
+      {
+        ...target,
+        autoFix: { status: "unavailable", reason: "safetyCheckFailed" },
+        promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
+      },
+      false,
+      aggregate,
+      report,
+    )
 
-    expect(
-      await screen.findByText("The current setting did not pass the write safety check."),
-    ).toBeVisible()
+    expect(await screen.findByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+    expect(screen.queryByText(/write safety check/)).not.toBeInTheDocument()
     expect(screen.queryByText(/^Automatic fix:/)).not.toBeInTheDocument()
     expect(screen.queryByText(/^Prompt fix:/)).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Copy fix prompt" })).not.toBeInTheDocument()
   })
 
   it.each([
@@ -1826,7 +1835,7 @@ describe("BurnChecksView", () => {
     },
   )
 
-  it("shows one check-level finding before its actions", async () => {
+  it("shows check-level actions in the title row", async () => {
     setup(target, false, aggregate, report)
     const finding = await screen.findByText(
       "Some sessions used an older model when a newer one was available.",
@@ -1834,12 +1843,14 @@ describe("BurnChecksView", () => {
     const fix = screen.getByRole("button", { name: "Fix" })
     const prompt = screen.getByRole("button", { name: "Copy fix prompt" })
 
-    expect(finding.compareDocumentPosition(fix) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
-    expect(finding.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+    const heading = screen.getByRole("heading", { name: "Old model usage", level: 2 })
+    expect(heading.parentElement).toContainElement(fix)
+    expect(heading.parentElement).toContainElement(prompt)
+    expect(fix.compareDocumentPosition(finding) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(prompt.compareDocumentPosition(finding) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
       0,
     )
-    expect(fix.parentElement?.parentElement).toBe(prompt.parentElement)
-    expect(fix.parentElement?.parentElement).toHaveClass("items-start")
+    expect(fix.parentElement?.parentElement).toBe(prompt.parentElement?.parentElement)
     expect(screen.queryByRole("heading", { name: "claude-opus-4-6" })).not.toBeInTheDocument()
     expect(screen.queryByText(target.finding.observation)).not.toBeInTheDocument()
   })
