@@ -34,6 +34,7 @@ export function MainWindowLayout({
     <main
       className={`main-window${isMacOS() ? " main-window-macos" : ""}`}
       aria-label="antiburn main window"
+      data-compact-panel={compactPanel || undefined}
     >
       {isMacOS() && (
         <div className="main-window-titlebar" data-tauri-drag-region aria-hidden="true" />
