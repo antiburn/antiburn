@@ -132,6 +132,16 @@ pub(crate) fn lane_label(lane: &str, period: &ProviderUsagePeriod) -> String {
     }
 }
 
+/// Sort key for a quota account's lanes: `weekly` first, then `fiveHour`,
+/// then every `model:` lane alphabetically by its own name.
+fn lane_sort_key(lane: &str) -> (u8, &str) {
+    match lane {
+        LANE_WEEKLY => (0, lane),
+        LANE_FIVE_HOUR => (1, lane),
+        _ => (2, lane),
+    }
+}
+
 /// A lane's most recent period whose reset is after `now`, with any boundary
 /// the provider did not state derived the same way
 /// [`crate::provider_usage::quota::resolve_periods`] derives it: reported,
@@ -781,7 +791,7 @@ impl Store {
                     current_period,
                 });
             }
-            lanes.sort_by(|left, right| left.lane.cmp(&right.lane));
+            lanes.sort_by(|left, right| lane_sort_key(&left.lane).cmp(&lane_sort_key(&right.lane)));
             accounts.push(QuotaAccount {
                 display_name: display_name(&provider).to_string(),
                 provider,

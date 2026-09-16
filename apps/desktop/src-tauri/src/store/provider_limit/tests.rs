@@ -1277,6 +1277,22 @@ fn quota_accounts_reports_label_has_factor_and_the_current_open_period() {
             params![account_key],
         )
         .unwrap();
+    // A five-hour period, inserted after the update above so it keeps its
+    // default primaryShort role, and a model-scoped lane, so the account
+    // carries all three lane kinds for the ordering assertion below.
+    insert_period(&store, &account_key, 0, 18_000, 18_000);
+    store
+        .lock()
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, 'weekly-zeta', 'weekly', 'supplemental',
+                       'model:zeta', 'Zeta', 604800, 0, 604800, 100, 100)",
+            params![PROVIDER, account_key],
+        )
+        .unwrap();
     store
         .upsert_factor_point(&FactorPoint {
             id: 0,
@@ -1297,6 +1313,16 @@ fn quota_accounts_reports_label_has_factor_and_the_current_open_period() {
         .iter()
         .find(|account| account.account_key == account_key)
         .expect("the account is reported");
+    let lane_names: Vec<&str> = account
+        .lanes
+        .iter()
+        .map(|lane| lane.lane.as_str())
+        .collect();
+    assert_eq!(
+        lane_names,
+        vec![LANE_WEEKLY, LANE_FIVE_HOUR, "model:zeta"],
+        "lanes are ordered weekly, then fiveHour, then model lanes alphabetically"
+    );
     let lane = account
         .lanes
         .iter()
