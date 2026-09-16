@@ -1,8 +1,7 @@
 //! Learn the dollars-per-percent limit factor from meter readings and priced
 //! turns.
 //!
-//! See `docs/plans/limit-factor-estimation.md` for the full design. This
-//! module writes `store::provider_limit`'s samples and points. The
+//! This module writes `store::provider_limit`'s samples and points. The
 //! `get_session_limit_allocations` command reads the points back.
 
 use std::collections::BTreeMap;

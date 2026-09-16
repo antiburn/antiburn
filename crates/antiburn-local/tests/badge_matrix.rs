@@ -3,8 +3,7 @@
 //! One table maps `(harness, fixture, BadgeId)` to the badge status the real
 //! pipeline must report: `SessionInput` through the vendor adapter, the
 //! composite evidence sink, and `session_badges(&evidence,
-//! &ReportCatalogs::default())`. This is the first instalment of the Phase 5
-//! acceptance artifact in `docs/plans/session-evidence-harness-parity.md`.
+//! &ReportCatalogs::default())`.
 //!
 //! Every fixture is synthetic. Existing characterization fixtures cover most
 //! cells; the rest are new files under each suite's own fixture directory,

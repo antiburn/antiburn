@@ -1,6 +1,5 @@
 //! Parity check between the live pipeline's `SessionMetrics` and the same
-//! metrics rebuilt from turn rows alone. See seam R3b in
-//! `docs/plans/session-evidence-harness-parity.md`.
+//! metrics rebuilt from turn rows alone.
 //!
 //! For every vendor characterization fixture `turn_facts_parity.rs` sweeps,
 //! this streams the fixture once through a `CompositeSink` (accumulator +
