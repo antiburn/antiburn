@@ -111,6 +111,13 @@
   flex: 1;
 }
 
+/* Few meters make a short card. A short card at the top right sits beside the
+   controls the sections put there, so it drops to the bottom right corner and
+   takes only the height its meters need. */
+.main-window-panel[data-compact] {
+  inset-block-start: auto;
+}
+
 /* Keep every section clear of the floating meter card. */
 .main-window-workspace {
   padding-inline-end: calc(var(--main-window-panel-width) + 2 * var(--space-lg));

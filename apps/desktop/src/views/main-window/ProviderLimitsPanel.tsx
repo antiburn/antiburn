@@ -34,6 +34,28 @@ export function meterSegmentsForWidth(width: number): number {
   return Math.max(PANEL_METER_MIN_SEGMENTS, Math.floor(width / PANEL_METER_PITCH))
 }
 
+/** The accounts the panel draws meters for, in the order it draws them. */
+function meteredAccounts(live: LiveUsageSummaryPayload | null) {
+  return live
+    ? orderedLiveAccounts(liveDisplayableProviders(live)).filter(
+        ({ reading }) => liveWindows(reading).length > 0,
+      )
+    : []
+}
+
+/**
+ * The number of dot meters the panel draws for `live`.
+ *
+ * The layout reads this to place the card. A card with few meters is short,
+ * and a short card belongs in a different corner.
+ */
+export function panelMeterCount(live: LiveUsageSummaryPayload | null): number {
+  return meteredAccounts(live).reduce(
+    (total, { reading }) => total + liveWindows(reading).length,
+    0,
+  )
+}
+
 /**
  * One provider's meters. The group measures its own width and draws as many
  * dots as fit at the popover's pitch, so a wider card gets a longer meter
@@ -77,11 +99,7 @@ export function ProviderLimitsPanel({
   live: LiveUsageSummaryPayload | null
   loading?: boolean
 }) {
-  const limited = live
-    ? orderedLiveAccounts(liveDisplayableProviders(live)).filter(
-        ({ reading }) => liveWindows(reading).length > 0,
-      )
-    : []
+  const limited = meteredAccounts(live)
   const unavailable = live ? liveUnavailableProviders(live) : []
   const providerCounts = new Map<string, number>()
   for (const { reading } of limited) {

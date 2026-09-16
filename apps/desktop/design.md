@@ -687,7 +687,9 @@ Notes for what isn't expressible as a token:
   fill under the `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card`
   outline. The tint keeps the material the meters had in the sidebar. It insets 16px from the
   window edges on all four sides, including on macOS, where the drag strip covers only the
-  sidebar. It keeps the full window height between those margins. It scrolls alone when the accounts outgrow it. The workspace holds a matching inset, so no section draws under it.
+  sidebar. It keeps the full window height between those margins. With two meters or fewer
+  the card takes the height of its content and rests in the bottom right corner instead: a
+  short card at the top right sits beside the controls the sections put there. It scrolls alone when the accounts outgrow it. The workspace holds a matching inset, so no section draws under it.
   The meters hold 12px of padding on each side and pack one dot every 9px of measured
   width, to a floor of 16 dots.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
