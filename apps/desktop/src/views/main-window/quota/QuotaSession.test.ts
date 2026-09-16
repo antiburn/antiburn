@@ -18,7 +18,10 @@ function account(over: Partial<QuotaAccountPayload> = {}): QuotaAccountPayload {
   }
 }
 
-function usage(generatedAt: string, periods: QuotaUsagePayload["periods"] = []): QuotaUsagePayload {
+function usage(
+  generatedAt: string,
+  periods: QuotaUsagePayload["periods"] = [],
+): QuotaUsagePayload {
   return {
     provider: "anthropic",
     accountKey: "acct-1",
@@ -121,7 +124,9 @@ describe("QuotaSession", () => {
   it("keeps a shared lane when the account changes if the new account has it", async () => {
     const secondAccount = account({ provider: "openai", accountKey: "acct-2" })
     const { session } = setup({
-      getAccounts: vi.fn().mockResolvedValue({ accounts: [account(), secondAccount], generatedAt: "g" }),
+      getAccounts: vi
+        .fn()
+        .mockResolvedValue({ accounts: [account(), secondAccount], generatedAt: "g" }),
     })
     sessions.push(session)
     const stop = session.subscribe(() => undefined)

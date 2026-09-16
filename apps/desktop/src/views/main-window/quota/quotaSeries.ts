@@ -61,13 +61,19 @@ export function rangeForPreset(
     (weeklyLane ? weeklyLane.currentPeriod : null)
   if (preset === "thisWeek") {
     if (currentWeekly) {
-      return capRange({ startEpoch: currentWeekly.startsAtEpoch, endEpoch: currentWeekly.resetsAtEpoch })
+      return capRange({
+        startEpoch: currentWeekly.startsAtEpoch,
+        endEpoch: currentWeekly.resetsAtEpoch,
+      })
     }
     return capRange({ startEpoch: now - WEEK_SECS, endEpoch: now })
   }
   // lastWeek: the week before thisWeek's own start.
   const thisWeek = rangeForPreset("thisWeek", lane, now, weeklyLane)
-  return capRange({ startEpoch: thisWeek.startEpoch - WEEK_SECS, endEpoch: thisWeek.startEpoch })
+  return capRange({
+    startEpoch: thisWeek.startEpoch - WEEK_SECS,
+    endEpoch: thisWeek.startEpoch,
+  })
 }
 
 /** Stable identity for one session inside the burnup series and the top-sessions list. */
@@ -138,7 +144,11 @@ function ceilToBucket(t: number): number {
   return Math.ceil(t / QUOTA_BUCKET_SECS) * QUOTA_BUCKET_SECS
 }
 
-function zeroRow(t: number, hasFactor: boolean, topSessions: readonly QuotaTopSession[]): QuotaSeriesRow {
+function zeroRow(
+  t: number,
+  hasFactor: boolean,
+  topSessions: readonly QuotaTopSession[],
+): QuotaSeriesRow {
   const row: QuotaSeriesRow = {
     t,
     index: 0,
@@ -178,7 +188,8 @@ function periodRows(
 
   const byBucket = new Map<number, QuotaContributionPayload[]>()
   for (const contribution of period.contributions) {
-    if (contribution.bucketStartEpoch < start || contribution.bucketStartEpoch >= reset) continue
+    if (contribution.bucketStartEpoch < start || contribution.bucketStartEpoch >= reset)
+      continue
     const list = byBucket.get(contribution.bucketStartEpoch) ?? []
     list.push(contribution)
     byBucket.set(contribution.bucketStartEpoch, list)
@@ -187,7 +198,8 @@ function periodRows(
 
   const points = new Set<number>()
   if (start >= rangeStart) points.add(start)
-  for (let t = ceilToBucket(visibleStart); t <= visibleEnd; t += QUOTA_BUCKET_SECS) points.add(t)
+  for (let t = ceilToBucket(visibleStart); t <= visibleEnd; t += QUOTA_BUCKET_SECS)
+    points.add(t)
   for (const bucketTime of bucketTimes) {
     if (bucketTime >= visibleStart && bucketTime <= visibleEnd) points.add(bucketTime)
   }
@@ -214,7 +226,11 @@ function periodRows(
     while (bucketPointer < bucketTimes.length && bucketTimes[bucketPointer]! <= t) {
       const bucketTime = bucketTimes[bucketPointer]!
       for (const contribution of byBucket.get(bucketTime) ?? []) {
-        const key = quotaSessionKey(contribution.agent, contribution.sessionId, contribution.wslDistro)
+        const key = quotaSessionKey(
+          contribution.agent,
+          contribution.sessionId,
+          contribution.wslDistro,
+        )
         const percent = contribution.percent ?? 0
         if (topKeys.has(key)) {
           topCumulative.set(key, (topCumulative.get(key) ?? 0) + percent)
@@ -258,7 +274,9 @@ export function quotaBurnupSeries(
   rangeEnd: number,
 ): QuotaSeries {
   const hasFactor = usage.factor != null
-  const periods = [...usage.periods].sort((left, right) => left.startsAtEpoch - right.startsAtEpoch)
+  const periods = [...usage.periods].sort(
+    (left, right) => left.startsAtEpoch - right.startsAtEpoch,
+  )
   const topSessions = topSessionsAcross(periods)
   const topKeys = new Set(topSessions.map((session) => session.key))
 
@@ -310,7 +328,9 @@ export interface QuotaTopSessionRow {
 }
 
 /** The top ten sessions by dollars, merged by session key across every period in range. */
-export function quotaTopSessionRows(periods: readonly QuotaPeriodPayload[]): QuotaTopSessionRow[] {
+export function quotaTopSessionRows(
+  periods: readonly QuotaPeriodPayload[],
+): QuotaTopSessionRow[] {
   const totals = new Map<string, QuotaTopSessionRow>()
   for (const period of periods) {
     for (const session of period.sessions) {
@@ -318,9 +338,10 @@ export function quotaTopSessionRows(periods: readonly QuotaPeriodPayload[]): Quo
       const existing = totals.get(key)
       if (existing) {
         existing.usd += session.usd
-        existing.percent = existing.percent == null || session.percent == null
-          ? null
-          : existing.percent + session.percent
+        existing.percent =
+          existing.percent == null || session.percent == null
+            ? null
+            : existing.percent + session.percent
         existing.periodCount += 1
         if (session.title) existing.title = session.title
       } else {
@@ -362,7 +383,8 @@ function addUnattributed(
 ): QuotaUnattributedTotal {
   return {
     usd: total.usd + next.usd,
-    percent: total.percent == null || next.percent == null ? null : total.percent + next.percent,
+    percent:
+      total.percent == null || next.percent == null ? null : total.percent + next.percent,
     sessionCount: total.sessionCount + next.sessionCount,
   }
 }

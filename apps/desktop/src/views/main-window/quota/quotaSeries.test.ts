@@ -67,7 +67,9 @@ describe("rangeForPreset", () => {
   const now = 10 * WEEK
 
   it("thisWeek uses the weekly lane's current period when present", () => {
-    const weekly = lane({ currentPeriod: { startsAtEpoch: now - 1000, resetsAtEpoch: now + 5000 } })
+    const weekly = lane({
+      currentPeriod: { startsAtEpoch: now - 1000, resetsAtEpoch: now + 5000 },
+    })
     const range = rangeForPreset("thisWeek", weekly, now)
     expect(range).toEqual({ startEpoch: now - 1000, endEpoch: now + 5000 })
   })
@@ -79,7 +81,9 @@ describe("rangeForPreset", () => {
 
   it("thisWeek for the five-hour lane borrows the account's weekly current period", () => {
     const fiveHour = lane({ lane: "fiveHour", label: "5-hour", currentPeriod: null })
-    const weekly = lane({ currentPeriod: { startsAtEpoch: now - 2000, resetsAtEpoch: now + 3000 } })
+    const weekly = lane({
+      currentPeriod: { startsAtEpoch: now - 2000, resetsAtEpoch: now + 3000 },
+    })
     const range = rangeForPreset("thisWeek", fiveHour, now, weekly)
     expect(range).toEqual({ startEpoch: now - 2000, endEpoch: now + 3000 })
   })
@@ -91,7 +95,9 @@ describe("rangeForPreset", () => {
   })
 
   it("lastWeek is the week before thisWeek's start", () => {
-    const weekly = lane({ currentPeriod: { startsAtEpoch: now - 1000, resetsAtEpoch: now + 5000 } })
+    const weekly = lane({
+      currentPeriod: { startsAtEpoch: now - 1000, resetsAtEpoch: now + 5000 },
+    })
     const range = rangeForPreset("lastWeek", weekly, now)
     expect(range).toEqual({ startEpoch: now - 1000 - WEEK, endEpoch: now - 1000 })
   })
@@ -102,7 +108,9 @@ describe("rangeForPreset", () => {
   })
 
   it("never spans more than 35 days", () => {
-    const weekly = lane({ currentPeriod: { startsAtEpoch: now - 40 * DAY, resetsAtEpoch: now } })
+    const weekly = lane({
+      currentPeriod: { startsAtEpoch: now - 40 * DAY, resetsAtEpoch: now },
+    })
     const range = rangeForPreset("thisWeek", weekly, now)
     expect(range.endEpoch - range.startEpoch).toBe(35 * DAY)
     expect(range.endEpoch).toBe(now)
@@ -126,7 +134,14 @@ describe("quotaBurnupSeries", () => {
       startsAtEpoch: start,
       resetsAtEpoch: reset,
       contributions: [
-        { agent: "claude", sessionId: "s1", wslDistro: null, bucketStartEpoch: 0, usd: 1, percent: 10 },
+        {
+          agent: "claude",
+          sessionId: "s1",
+          wslDistro: null,
+          bucketStartEpoch: 0,
+          usd: 1,
+          percent: 10,
+        },
         {
           agent: "claude",
           sessionId: "s1",
@@ -137,7 +152,14 @@ describe("quotaBurnupSeries", () => {
         },
       ],
       sessions: [
-        { agent: "claude", sessionId: "s1", wslDistro: null, title: "Fix bug", usd: 2, percent: 15 },
+        {
+          agent: "claude",
+          sessionId: "s1",
+          wslDistro: null,
+          title: "Fix bug",
+          usd: 2,
+          percent: 15,
+        },
       ],
     })
     const series = quotaBurnupSeries(usage([p]), start, reset)
@@ -211,7 +233,9 @@ describe("quotaBurnupSeries", () => {
     const p = period({
       startsAtEpoch: start,
       resetsAtEpoch: reset,
-      samples: [{ observedAtEpoch: BUCKET, usedPercent: 42, fresh: true, authoritative: false }],
+      samples: [
+        { observedAtEpoch: BUCKET, usedPercent: 42, fresh: true, authoritative: false },
+      ],
     })
     const series = quotaBurnupSeries(usage([p]), start, reset)
     expect(series.rows.every((row) => row.meter === null)).toBe(true)
@@ -224,10 +248,24 @@ describe("quotaBurnupSeries", () => {
       startsAtEpoch: start,
       resetsAtEpoch: reset,
       contributions: [
-        { agent: "claude", sessionId: "s1", wslDistro: null, bucketStartEpoch: 0, usd: 1, percent: null },
+        {
+          agent: "claude",
+          sessionId: "s1",
+          wslDistro: null,
+          bucketStartEpoch: 0,
+          usd: 1,
+          percent: null,
+        },
       ],
       sessions: [
-        { agent: "claude", sessionId: "s1", wslDistro: null, title: null, usd: 1, percent: null },
+        {
+          agent: "claude",
+          sessionId: "s1",
+          wslDistro: null,
+          title: null,
+          usd: 1,
+          percent: null,
+        },
       ],
       unattributed: { usd: 0, percent: null, sessionCount: 0 },
     })
@@ -305,12 +343,18 @@ describe("quotaUnattributedTotal", () => {
 
 describe("quotaLatestPeriod and quotaLatestSampleEpoch", () => {
   it("picks the period with the latest start and the latest sample overall", () => {
-    const earlier = period({ startsAtEpoch: 0, resetsAtEpoch: WEEK, samples: [
-      { observedAtEpoch: 10, usedPercent: 1, fresh: true, authoritative: true },
-    ] })
-    const later = period({ startsAtEpoch: WEEK, resetsAtEpoch: 2 * WEEK, samples: [
-      { observedAtEpoch: WEEK + 20, usedPercent: 2, fresh: true, authoritative: true },
-    ] })
+    const earlier = period({
+      startsAtEpoch: 0,
+      resetsAtEpoch: WEEK,
+      samples: [{ observedAtEpoch: 10, usedPercent: 1, fresh: true, authoritative: true }],
+    })
+    const later = period({
+      startsAtEpoch: WEEK,
+      resetsAtEpoch: 2 * WEEK,
+      samples: [
+        { observedAtEpoch: WEEK + 20, usedPercent: 2, fresh: true, authoritative: true },
+      ],
+    })
     expect(quotaLatestPeriod([earlier, later])).toBe(later)
     expect(quotaLatestSampleEpoch([earlier, later])).toBe(WEEK + 20)
   })

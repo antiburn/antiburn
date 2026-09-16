@@ -64,8 +64,9 @@ function findAccount(
   accountKey: string,
 ): QuotaAccountPayload | null {
   return (
-    accounts.find((account) => account.provider === provider && account.accountKey === accountKey) ??
-    null
+    accounts.find(
+      (account) => account.provider === provider && account.accountKey === accountKey,
+    ) ?? null
   )
 }
 
@@ -222,19 +223,23 @@ export class QuotaSession {
       const account = findAccount(accounts, current.provider, current.accountKey)
       if (account) {
         const lane = findLane(account, current.lane) ?? defaultLane(account)
-        if (lane) return { provider: account.provider, accountKey: account.accountKey, lane: lane.lane }
+        if (lane)
+          return { provider: account.provider, accountKey: account.accountKey, lane: lane.lane }
       }
     }
     const first = accounts[0]
     if (!first) return null
     const lane = defaultLane(first)
-    return lane ? { provider: first.provider, accountKey: first.accountKey, lane: lane.lane } : null
+    return lane
+      ? { provider: first.provider, accountKey: first.accountKey, lane: lane.lane }
+      : null
   }
 
   selectAccount = (provider: string, accountKey: string): void => {
     const account = findAccount(this.snapshot.accounts ?? [], provider, accountKey)
     if (!account) return
-    const lane = findLane(account, this.snapshot.selection?.lane ?? null) ?? defaultLane(account)
+    const lane =
+      findLane(account, this.snapshot.selection?.lane ?? null) ?? defaultLane(account)
     if (!lane) return
     this.update({ selection: { provider, accountKey, lane: lane.lane } })
     this.loadUsage()
@@ -313,7 +318,12 @@ export class QuotaSession {
       this.usageDirty = false
       const selection = this.snapshot.selection
       if (!selection) continue
-      await this.runLoadUsage(this.workVersion, ++this.usageVersion, selection, this.snapshot.range)
+      await this.runLoadUsage(
+        this.workVersion,
+        ++this.usageVersion,
+        selection,
+        this.snapshot.range,
+      )
     }
   }
 
@@ -325,7 +335,11 @@ export class QuotaSession {
   ): Promise<void> {
     if (!this.snapshot.usage) this.update({ loading: true })
     const now = this.adapter.now()
-    const account = findAccount(this.snapshot.accounts ?? [], selection.provider, selection.accountKey)
+    const account = findAccount(
+      this.snapshot.accounts ?? [],
+      selection.provider,
+      selection.accountKey,
+    )
     const lane = findLane(account, selection.lane)
     const { startEpoch, endEpoch } = rangeForPreset(range, lane, now, weeklyLaneOf(account))
     try {
@@ -367,7 +381,8 @@ export class QuotaSession {
   private quotaState(): "ready" | "empty" | "error" | null {
     if (this.snapshot.accountsError || this.snapshot.usageError) return "error"
     if (this.snapshot.accounts != null && this.snapshot.accounts.length === 0) return "empty"
-    if (this.snapshot.usage != null) return this.snapshot.usage.periods.length > 0 ? "ready" : "empty"
+    if (this.snapshot.usage != null)
+      return this.snapshot.usage.periods.length > 0 ? "ready" : "empty"
     return null
   }
 
