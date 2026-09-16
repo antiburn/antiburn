@@ -20,6 +20,34 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-16
+
+### Added
+
+- Overview is now the default main-window view, bringing local spend totals,
+  a 30-day spend chart, provider limits, Burn Checks, and recent sessions
+  together.
+- Sessions now has Notable, Material, per-agent, Failing, Passing, and All
+  filters with counts. The selected filter persists between launches.
+- Burn Checks can review and apply supported configuration fixes, verify the
+  result, and copy focused prompts for fixes that need to be made elsewhere.
+- Burn Checks can be snoozed for one week, one month, or forever. Snoozed
+  checks show when they return and can be restored with Unsnooze.
+- Copilot CLI, Cline CLI, and Kiro CLI sessions now have dedicated readers
+  with strict handling for incomplete or unsupported source data.
+- Session project folders can be opened or copied directly from session
+  details.
+
+### Changed
+
+- The main window now uses Overview, Checks, and Sessions as its primary
+  workspaces; the separate Insights pane has been removed from Settings.
+- Usage dials show whether each provider limit is ahead of, behind, or on pace,
+  with details available on hover or keyboard focus. The menu-bar tooltip shows
+  the remaining allowance represented by the tray indicator.
+- Burn Checks now show priced cache-read waste for unused tools, MCP servers,
+  and skills when the evidence supports an estimate.
+
 ### Fixed
 
 - Claude Code cache writes now price at the one-hour rate (2x input) instead
@@ -28,6 +56,13 @@ CI changes, and documentation that no user acts on stay out — see
   five-minute/one-hour split uses it instead. Previously analyzed sessions
   are reprocessed. Insights savings estimates, old-model remediation savings,
   and provider-limit factor learning now use the same one-hour rate.
+- Provider usage keeps the last valid reading visible when a refresh fails and
+  gives clearer sign-in detection details.
+- Codex quota and provider-capacity errors are retained as distinct evidence,
+  while Claude provider errors receive equivalent treatment.
+- Codex usage records no longer double count matching usage, and sub-agent
+  launches are counted correctly.
+
 
 ## [0.5.2] - 2026-09-10
 
