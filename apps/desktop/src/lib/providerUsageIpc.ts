@@ -193,6 +193,14 @@ export interface QuotaUnattributedPayload {
   sessionCount: number
 }
 
+/** Unattributed spend inside one 15-minute bucket of a quota period.
+ * Mirrors Rust `QuotaBucketTotalPayload`. */
+export interface QuotaBucketTotalPayload {
+  bucketStartEpoch: number
+  usd: number
+  percent: number | null
+}
+
 /** One quota window, its meter readings, and the sessions estimated to have
  * contributed to it. Mirrors Rust `QuotaPeriodPayload`. */
 export interface QuotaPeriodPayload {
@@ -210,6 +218,10 @@ export interface QuotaPeriodPayload {
   /** Descending by `usd`. */
   sessions: QuotaSessionTotalPayload[]
   unattributed: QuotaUnattributedPayload
+  /** Ascending by bucket. Holds one entry for each bucket with an unbound
+   * row, so a chart can plot unattributed spend over time instead of a
+   * single period total. */
+  unattributedBuckets: QuotaBucketTotalPayload[]
   /** The sum of every bound session's estimated percent. */
   estimatedPercent: number | null
 }

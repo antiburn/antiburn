@@ -601,6 +601,15 @@ pub struct QuotaUnattributedPayload {
     pub session_count: u32,
 }
 
+/// Unattributed spend inside one 15-minute bucket of a quota period.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaBucketTotalPayload {
+    pub bucket_start_epoch: i64,
+    pub usd: f64,
+    pub percent: Option<f64>,
+}
+
 /// One quota window, its meter readings, and the sessions estimated to have
 /// contributed to it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -620,6 +629,10 @@ pub struct QuotaPeriodPayload {
     /// Descending by `usd`.
     pub sessions: Vec<QuotaSessionTotalPayload>,
     pub unattributed: QuotaUnattributedPayload,
+    /// Ascending by bucket. Holds one entry for each bucket with an
+    /// unbound row, so a chart can plot unattributed spend over time
+    /// instead of a single period total.
+    pub unattributed_buckets: Vec<QuotaBucketTotalPayload>,
     /// The sum of every bound session's estimated percent.
     pub estimated_percent: Option<f64>,
 }
@@ -2521,6 +2534,11 @@ mod tests {
                     percent: Some(1.0),
                     session_count: 1,
                 },
+                unattributed_buckets: vec![QuotaBucketTotalPayload {
+                    bucket_start_epoch: 0,
+                    usd: 0.5,
+                    percent: Some(1.0),
+                }],
                 estimated_percent: Some(2.0),
             }],
             generated_at: "2026-09-16T00:00:00Z".to_string(),
@@ -2541,6 +2559,9 @@ mod tests {
         assert_eq!(period["contributions"][0]["bucketStartEpoch"], 0);
         assert_eq!(period["sessions"][0]["sessionId"], "s1");
         assert_eq!(period["unattributed"]["sessionCount"], 1);
+        assert_eq!(period["unattributedBuckets"][0]["bucketStartEpoch"], 0);
+        assert_eq!(period["unattributedBuckets"][0]["usd"], 0.5);
+        assert_eq!(period["unattributedBuckets"][0]["percent"], 1.0);
         assert_eq!(period["estimatedPercent"], 2.0);
     }
 

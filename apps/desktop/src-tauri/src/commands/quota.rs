@@ -7,10 +7,11 @@
 
 use super::*;
 use crate::dto::{
-    QuotaAccountPayload, QuotaAccountsPayload, QuotaContributionPayload, QuotaCurrentPeriodPayload,
-    QuotaFactorPayload, QuotaLanePayload, QuotaPeriodPayload, QuotaSamplePayload,
-    QuotaSessionTotalPayload, QuotaUnattributedPayload, QuotaUsagePayload, QuotaUsageRequest,
-    SessionQuotaEntryPayload, SessionQuotaPayload, SessionQuotaPeriodPayload, SessionQuotaRequest,
+    QuotaAccountPayload, QuotaAccountsPayload, QuotaBucketTotalPayload, QuotaContributionPayload,
+    QuotaCurrentPeriodPayload, QuotaFactorPayload, QuotaLanePayload, QuotaPeriodPayload,
+    QuotaSamplePayload, QuotaSessionTotalPayload, QuotaUnattributedPayload, QuotaUsagePayload,
+    QuotaUsageRequest, SessionQuotaEntryPayload, SessionQuotaPayload, SessionQuotaPeriodPayload,
+    SessionQuotaRequest,
 };
 
 /// A quota query's range may not exceed this many days: enough for a month
@@ -263,6 +264,7 @@ fn quota_usage_for_store(
         let mut per_session_bound: HashMap<SessionKey, (f64, f64)> = HashMap::new();
         let mut unattributed_usd = 0.0;
         let mut unattributed_sessions: HashSet<SessionKey> = HashSet::new();
+        let mut unattributed_by_bucket: BTreeMap<i64, f64> = BTreeMap::new();
         for row in rows {
             let bucket_end =
                 row.bucket_start_epoch + crate::store::provider_limit::CONTRIBUTION_BUCKET_SECS;
@@ -291,9 +293,27 @@ fn quota_usage_for_store(
                 crate::store::provider_limit::Resolved::Unbound => {
                     unattributed_usd += row.usd;
                     unattributed_sessions.insert(row.key.clone());
+                    *unattributed_by_bucket
+                        .entry(row.bucket_start_epoch)
+                        .or_insert(0.0) += row.usd;
                 }
             }
         }
+        let unattributed_buckets: Vec<QuotaBucketTotalPayload> = unattributed_by_bucket
+            .into_iter()
+            .map(|(bucket_start_epoch, usd)| {
+                let bucket_end =
+                    bucket_start_epoch + crate::store::provider_limit::CONTRIBUTION_BUCKET_SECS;
+                let percent =
+                    crate::provider_usage::quota::factor_point_at_or_earliest(&points, bucket_end)
+                        .map(|point| usd / point.usd_per_percent);
+                QuotaBucketTotalPayload {
+                    bucket_start_epoch,
+                    usd,
+                    percent,
+                }
+            })
+            .collect();
         let mut sessions: Vec<QuotaSessionTotalPayload> = per_session_bound
             .into_iter()
             .map(|(key, (usd, percent))| {
@@ -336,6 +356,7 @@ fn quota_usage_for_store(
                 percent: unattributed_percent,
                 session_count: unattributed_sessions.len() as u32,
             },
+            unattributed_buckets,
             estimated_percent,
         });
     }
@@ -878,6 +899,16 @@ mod tests {
             std::collections::BTreeSet::from([0, 4_500]),
             "only bound contributions carry a bucket; the unbound row does not"
         );
+
+        assert_eq!(
+            period.unattributed_buckets.len(),
+            1,
+            "the unbound session's turn falls in one bucket"
+        );
+        let unbound_bucket = &period.unattributed_buckets[0];
+        assert_eq!(unbound_bucket.bucket_start_epoch, 9_900);
+        assert!((unbound_bucket.usd - unbound_usd).abs() < 1e-9);
+        assert_eq!(unbound_bucket.percent, Some(unbound_usd / 0.5));
     }
 
     #[test]
