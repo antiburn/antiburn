@@ -220,10 +220,10 @@ body[data-transparent-window] #root {
 }
 
 /*
- * The HUD corner control (dock, and the close ✕ when it returns). It
- * straddles the panel edge, and on hover the panel
- * behind it is almost its own colour. The shadow is what separates the two.
- * The value is the design system's `raised` shadow.
+ * The HUD corner control (the close ✕, when it returns). It straddles the
+ * panel edge, and on hover the panel behind it is almost its own colour.
+ * The shadow is what separates the two. The value is the design system's
+ * `raised` shadow.
  */
 .hud-control {
   box-shadow:

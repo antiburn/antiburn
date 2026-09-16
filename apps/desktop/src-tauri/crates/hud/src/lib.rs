@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 
 mod dock;
 pub use dock::{
-    DockEdge, DockSettings, configure_dock, dock_overlay, dock_settings, is_docked, wake_overlay,
+    DockEdge, DockSettings, dock_settings, restore_dock, settle_after_drag, tear_off, wake_overlay,
 };
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]
@@ -317,7 +317,7 @@ pub fn apply_placement(app: &AppHandle, entries: &[Placement]) -> tauri::Result<
         return Ok(());
     };
     place(&window, entries)?;
-    dock::redock_after_placement(&window);
+    dock::redock_after_placement(app, &window);
     Ok(())
 }
 

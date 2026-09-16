@@ -251,37 +251,16 @@ pub async fn open_overlay_window(
         }
         return Err(fail(error));
     }
-    // The dock settings apply on every open, so a reopened HUD docks again.
-    antiburn_hud::configure_dock(&app, dock);
+    // A HUD the reader left docked comes back docked.
+    antiburn_hud::restore_dock(&app, dock);
     Ok(())
 }
 
-/// Return the edge-dock settings.
+/// Free a docked HUD: a drag started on it.
 #[tauri::command]
-pub fn get_hud_dock(app: tauri::AppHandle) -> antiburn_hud::DockSettings {
-    crate::hud::load_dock(&app.state::<Store>())
-}
-
-/// Store the edge-dock settings and apply them to the HUD.
-#[tauri::command]
-pub async fn set_hud_dock(
-    app: tauri::AppHandle,
-    settings: antiburn_hud::DockSettings,
-) -> CommandResult<()> {
-    let store = app.state::<Store>().inner().clone();
-    run_blocking(move || {
-        crate::hud::save_dock(&store, settings);
-        Ok(())
-    })
-    .await?;
-    antiburn_hud::configure_dock(&app, settings);
-    Ok(())
-}
-
-/// Slide the HUD off its dock edge now.
-#[tauri::command]
-pub fn dock_overlay(app: tauri::AppHandle) {
-    antiburn_hud::dock_overlay(&app);
+pub fn tear_off_overlay(app: tauri::AppHandle) {
+    antiburn_hud::tear_off();
+    crate::hud::save_dock(&app.state::<Store>(), antiburn_hud::dock_settings());
 }
 
 /// Bring a docked HUD back for a while. `reason` is logged for tuning.
@@ -325,12 +304,15 @@ pub fn take_hud_analytics_origin(app: tauri::AppHandle) -> Option<crate::analyti
 pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
     let placement =
         crate::main_window::on_main_value(&app, antiburn_hud::current_placement).await?;
-    let Some(placement) = placement else {
-        return Ok(());
-    };
+    // A drop against a display edge docks the HUD there. The placement
+    // saved first is the drop, which the dock's home clamps on screen.
+    let dock = crate::main_window::on_main_value(&app, antiburn_hud::settle_after_drag).await?;
     let store = app.state::<Store>().inner().clone();
     run_blocking(move || {
-        crate::hud::save_placement(&store, placement);
+        if let Some(placement) = placement {
+            crate::hud::save_placement(&store, placement);
+        }
+        crate::hud::save_dock(&store, dock);
         Ok(())
     })
     .await

@@ -23,7 +23,7 @@ const PLACEMENTS_KEY: &str = "internal:hudPlacements";
 /// reads it at launch, so the HUD returns before any webview mounts.
 const ENABLED_KEY: &str = "internal:hudEnabled";
 
-/// The internal scalar holding the edge-dock settings as JSON.
+/// The internal scalar that says whether the HUD was docked, and where.
 const DOCK_KEY: &str = "internal:hudDock";
 
 /// The shape of the stored value. A different number means a value this build
@@ -60,7 +60,7 @@ pub fn save_enabled(store: &Store, enabled: bool) {
     store.set_internal_value(ENABLED_KEY, if enabled { "true" } else { "false" });
 }
 
-/// The edge-dock settings. Anything unreadable means "dock off".
+/// The stored dock state. Anything unreadable means "not docked".
 pub fn load_dock(store: &Store) -> DockSettings {
     store
         .internal_value(DOCK_KEY)
@@ -90,7 +90,7 @@ pub fn restore_at_launch(app: &AppHandle) {
         ::tracing::warn!(event = "hud_launch_restore_failed", error = %error);
         return;
     }
-    antiburn_hud::configure_dock(app, load_dock(&store));
+    antiburn_hud::restore_dock(app, load_dock(&store));
 }
 
 /// Remember one position and make its display the preferred one.

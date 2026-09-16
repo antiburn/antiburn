@@ -17,7 +17,7 @@ signals that item 8 needs and is planned separately.
 | A. Frame + round dots + mode palette retune (1, 2, 7) | built; Keith round 2 fixes applied (40% frame, no hover swap, close ✕ off, launch restore, click guard)          |
 | B. LED blink follows spend, in mode colour (3, 7)     | built, untested by Keith                                                                                         |
 | C. Agent boxes at LED scale, per-box detail (4, 5, 6) | built, untested by Keith (LED scale shipped in A; this adds per-box detail and the single-session rule)          |
-| D. Edge dock: off-screen, wake on edge/activity/burn  | built, untested by Keith (dock settings live in the shell store; the HUD auto-docks 3s after the pointer leaves) |
+| D. Edge dock: off-screen, wake on edge/activity/burn  | built, untested by Keith (gesture model: drop against an edge docks with an 8pt tab; drag tears off; no setting) |
 
 ## What Keith asked for
 

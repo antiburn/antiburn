@@ -1,9 +1,11 @@
-//! Edge dock: the HUD slides off one edge of its display and comes back.
+//! Edge dock: the HUD parks at one edge of its display with a tab showing.
 //!
-//! Docked, the window sits fully outside the display and keeps its renderer
-//! alive. It returns when the cursor rests on that edge, when the shell asks
-//! it to wake, or when the reader turns the dock off. Once back, it docks
-//! again after a quiet spell with no pointer on it.
+//! A drag that drops the HUD against a display edge docks it there. Docked,
+//! the window sits outside the display except for a tab, and its renderer
+//! keeps running. The pointer resting on the tab peeks the HUD in; it parks
+//! again after a quiet spell. A drag on a docked or peeked HUD tears it off,
+//! and it stays free until the next drop at an edge. The shell can also wake
+//! a docked HUD for a while.
 
 use std::sync::Mutex;
 #[cfg(any(target_os = "macos", test))]
@@ -11,15 +13,15 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
-use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, WebviewWindow};
 
-/// Event that carries the dock settings to every webview.
-#[cfg(target_os = "macos")]
-const DOCK_CHANGED_EVENT: &str = "overlay_dock_changed";
+/// How much of the docked HUD stays on screen, in logical pixels.
+#[cfg(any(target_os = "macos", test))]
+const TAB: f64 = 8.0;
 
-/// Event that says the cursor rested on the dock edge.
-#[cfg(target_os = "macos")]
-const EDGE_HIT_EVENT: &str = "overlay_edge_hit";
+/// How near a display edge a dropped HUD docks, in logical pixels.
+#[cfg(any(target_os = "macos", test))]
+const SNAP: f64 = 16.0;
 
 /// How long one slide takes.
 #[cfg(target_os = "macos")]
@@ -31,17 +33,13 @@ const SLIDE_STEPS: u32 = 12;
 
 /// How often the docked HUD reads the cursor.
 #[cfg(target_os = "macos")]
-const EDGE_POLL: Duration = Duration::from_millis(100);
+const TAB_POLL: Duration = Duration::from_millis(100);
 
-/// How long the cursor must rest on the edge before the HUD comes back.
+/// How long the cursor must rest on the tab before the HUD peeks in.
 #[cfg(target_os = "macos")]
-const EDGE_HOLD: Duration = Duration::from_millis(150);
+const TAB_HOLD: Duration = Duration::from_millis(150);
 
-/// How close to the edge counts as on it, in logical pixels.
-#[cfg(any(target_os = "macos", test))]
-const EDGE_TOLERANCE: f64 = 2.0;
-
-/// How often the shown HUD checks whether it should dock again.
+/// How often a peeked HUD checks whether it should park again.
 #[cfg(target_os = "macos")]
 const AUTO_DOCK_POLL: Duration = Duration::from_millis(200);
 
@@ -64,11 +62,12 @@ pub enum DockEdge {
     Bottom,
 }
 
-/// The dock settings the reader chose.
+/// Whether the HUD is docked, and at which edge. The shell stores this so a
+/// docked HUD comes back docked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DockSettings {
-    pub enabled: bool,
+    pub docked: bool,
     pub edge: DockEdge,
 }
 
@@ -83,14 +82,14 @@ struct Rect {
 }
 
 struct DockState {
-    settings: DockSettings,
+    edge: DockEdge,
     docked: bool,
-    /// Where the HUD sat before it docked, in physical desktop pixels.
+    /// Where the HUD sits when peeked in, in physical desktop pixels.
     home: Option<(f64, f64)>,
     /// The display the HUD docked against.
     #[cfg(target_os = "macos")]
     frame: Option<Rect>,
-    /// The display's scale, so the edge tolerance is in logical pixels.
+    /// The display's scale, so the tab is in logical pixels.
     #[cfg(target_os = "macos")]
     scale: f64,
     /// A new value cancels every task from an earlier transition.
@@ -98,10 +97,7 @@ struct DockState {
 }
 
 static DOCK: Mutex<DockState> = Mutex::new(DockState {
-    settings: DockSettings {
-        enabled: false,
-        edge: DockEdge::Right,
-    },
+    edge: DockEdge::Right,
     docked: false,
     home: None,
     #[cfg(target_os = "macos")]
@@ -116,125 +112,83 @@ fn state() -> std::sync::MutexGuard<'static, DockState> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The dock settings the shell last applied.
-pub fn dock_settings() -> DockSettings {
-    state().settings
-}
-
-/// Return whether the HUD is off screen at its dock edge.
-pub fn is_docked() -> bool {
-    state().docked
-}
-
-/// Apply the reader's dock settings.
+/// Whether the HUD is docked now, and at which edge.
 ///
-/// Turning the dock on arms the quiet timer: the shown HUD docks after the
-/// wake hold with no pointer on it. Turning it off brings a docked HUD home.
-/// A new edge moves a docked HUD to that edge at once.
+/// A peeked HUD still counts as docked: it parks again on its own.
+pub fn dock_settings() -> DockSettings {
+    let dock = state();
+    DockSettings {
+        docked: dock.docked || dock.home.is_some(),
+        edge: dock.edge,
+    }
+}
+
+/// Dock again at launch or reopen, when the reader left the HUD docked.
 #[cfg(target_os = "macos")]
-pub fn configure_dock(app: &AppHandle, settings: DockSettings) {
-    let (was, generation) = {
-        let mut dock = state();
-        let was = dock.settings;
-        dock.settings = settings;
-        dock.generation += 1;
-        (was, dock.generation)
-    };
-    let _ = app.emit(DOCK_CHANGED_EVENT, settings);
+pub fn restore_dock(app: &AppHandle, settings: DockSettings) {
+    if !settings.docked {
+        return;
+    }
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
         return;
     };
-    if !settings.enabled {
-        undock(app, &window, None);
-        return;
-    }
-    if state().docked {
-        if was.edge != settings.edge {
-            snap_to_edge(&window);
-        }
-        spawn_edge_watcher(app.clone(), window, generation);
-        return;
-    }
-    spawn_auto_dock(app.clone(), window, generation, WAKE_HOLD);
+    dock_at(app, &window, settings.edge);
 }
 
-/// Keep dock settings inert where the HUD is unavailable.
+/// Keep the dock inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
-pub fn configure_dock(_app: &tauri::AppHandle, settings: DockSettings) {
-    state().settings = settings;
-}
+pub fn restore_dock(_app: &tauri::AppHandle, _settings: DockSettings) {}
 
-/// Slide the HUD off its dock edge now.
+/// Dock the HUD when a drag dropped it against a display edge.
+///
+/// Returns the dock state after the drop, for the shell to store.
 #[cfg(target_os = "macos")]
-pub fn dock_overlay(app: &AppHandle) {
+pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
-        return;
+        return dock_settings();
     };
-    let (start, target, edge, generation) = {
-        let mut dock = state();
-        if !dock.settings.enabled || dock.docked {
-            return;
-        }
-        let Some(window_rect) = window_rect(&window) else {
-            return;
-        };
-        let Some(monitor) = monitor_of(&window) else {
-            return;
-        };
-        let frame = monitor_rect(&monitor);
-        // A slide back that is still in flight keeps the true home.
-        let home = dock.home.unwrap_or((window_rect.x, window_rect.y));
-        dock.home = Some(home);
-        dock.frame = Some(frame);
-        dock.scale = monitor.scale_factor();
-        dock.docked = true;
-        dock.generation += 1;
-        let edge = dock.settings.edge;
-        let target = docked_position(edge, &frame, &window_rect);
-        (
-            (window_rect.x, window_rect.y),
-            target,
-            edge,
-            dock.generation,
+    if let Some(window_rect) = window_rect(&window)
+        && let Some(monitor) = monitor_of(&window)
+        && let Some(edge) = edge_dropped_on(
+            &monitor_rect(&monitor),
+            &window_rect,
+            SNAP * monitor.scale_factor(),
         )
-    };
-    super::hide_detail(app);
-    tracing::info!(event = "hud_dock", edge = ?edge);
-    let watcher = (app.clone(), window.clone());
-    slide(window, start, target, generation, move || {
-        spawn_edge_watcher(watcher.0, watcher.1, generation);
-    });
+    {
+        dock_at(app, &window, edge);
+    }
+    dock_settings()
 }
 
-/// Keep docking inert where the HUD is unavailable.
+/// Keep the drop inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
-pub fn dock_overlay(_app: &tauri::AppHandle) {}
+pub fn settle_after_drag(_app: &tauri::AppHandle) -> DockSettings {
+    dock_settings()
+}
 
-/// Bring a docked HUD back for a while. `reason` is for the log only.
+/// Free the HUD: a drag started on a docked or peeked HUD.
+pub fn tear_off() {
+    let mut dock = state();
+    if dock.docked || dock.home.is_some() {
+        tracing::info!(event = "hud_tear_off", edge = ?dock.edge);
+    }
+    dock.docked = false;
+    dock.home = None;
+    dock.generation += 1;
+}
+
+/// Bring a docked HUD in for a while. `reason` is for the log only.
 #[cfg(target_os = "macos")]
 pub fn wake_overlay(app: &AppHandle, reason: &str) {
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
         return;
     };
-    let (enabled, docked) = {
-        let dock = state();
-        (dock.settings.enabled, dock.docked)
-    };
-    if !enabled {
+    let docked = state().docked;
+    if !docked {
         return;
     }
-    tracing::info!(event = "hud_wake", reason, docked);
-    if docked {
-        undock(app, &window, Some(WAKE_HOLD));
-        return;
-    }
-    // Already shown: a wake extends the stay from now.
-    let generation = {
-        let mut dock = state();
-        dock.generation += 1;
-        dock.generation
-    };
-    spawn_auto_dock(app.clone(), window, generation, WAKE_HOLD);
+    tracing::info!(event = "hud_wake", reason);
+    undock(app, &window, WAKE_HOLD);
 }
 
 /// Keep waking inert where the HUD is unavailable.
@@ -254,26 +208,19 @@ pub(crate) fn reset() {
 /// The placement is the new home, and the dock edge is the same edge of the
 /// display the placement chose.
 #[cfg(target_os = "macos")]
-pub(crate) fn redock_after_placement(window: &WebviewWindow) {
-    if !state().docked {
-        return;
-    }
-    let Some(window_rect) = window_rect(window) else {
-        return;
+pub(crate) fn redock_after_placement(app: &AppHandle, window: &WebviewWindow) {
+    let edge = {
+        let dock = state();
+        if !dock.docked && dock.home.is_none() {
+            return;
+        }
+        dock.edge
     };
-    let Some(monitor) = monitor_of(window) else {
-        return;
-    };
-    {
-        let mut dock = state();
-        dock.home = Some((window_rect.x, window_rect.y));
-        dock.frame = Some(monitor_rect(&monitor));
-        dock.scale = monitor.scale_factor();
-    }
-    snap_to_edge(window);
+    tear_off();
+    dock_at(app, window, edge);
 }
 
-/// Keep a docked window off screen after its height changed.
+/// Keep a docked window at its tab after its height changed.
 ///
 /// The caller holds the resize guard, so this writes the position directly.
 #[cfg(target_os = "macos")]
@@ -289,17 +236,55 @@ pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
         let Some(window_rect) = window_rect(window) else {
             return;
         };
-        docked_position(dock.settings.edge, &frame, &window_rect)
+        docked_position(dock.edge, &frame, &window_rect, TAB * dock.scale)
     };
     let _ = window.set_position(PhysicalPosition::new(target.0, target.1));
 }
 
-/// Slide a docked HUD home, then dock it again after a quiet spell.
+/// Park the HUD at `edge` of the display it is on.
 ///
-/// `hold` is the least time the HUD stays. `None` means the reader turned
-/// the dock off, so it stays for good.
+/// Home becomes the position flush inside that edge, so a peek brings the
+/// whole HUD on screen even after a drop that went past the edge.
 #[cfg(target_os = "macos")]
-fn undock(app: &AppHandle, window: &WebviewWindow, hold: Option<Duration>) {
+fn dock_at(app: &AppHandle, window: &WebviewWindow, edge: DockEdge) {
+    let (start, target, generation) = {
+        let mut dock = state();
+        if dock.docked {
+            return;
+        }
+        let Some(window_rect) = window_rect(window) else {
+            return;
+        };
+        let Some(monitor) = monitor_of(window) else {
+            return;
+        };
+        let frame = monitor_rect(&monitor);
+        let scale = monitor.scale_factor();
+        let home = dock
+            .home
+            .unwrap_or_else(|| flush_position(edge, &frame, &window_rect));
+        dock.edge = edge;
+        dock.home = Some(home);
+        dock.frame = Some(frame);
+        dock.scale = scale;
+        dock.docked = true;
+        dock.generation += 1;
+        let target = docked_position(edge, &frame, &window_rect, TAB * scale);
+        ((window_rect.x, window_rect.y), target, dock.generation)
+    };
+    super::hide_detail(app);
+    tracing::info!(event = "hud_dock", edge = ?edge);
+    let watcher = (app.clone(), window.clone());
+    slide(window.clone(), start, target, generation, move || {
+        spawn_tab_watcher(watcher.0, watcher.1, generation);
+    });
+}
+
+/// Slide a docked HUD in, then park it again after a quiet spell.
+///
+/// `hold` is the least time the HUD stays.
+#[cfg(target_os = "macos")]
+fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration) {
     let (start, home, generation) = {
         let mut dock = state();
         if !dock.docked {
@@ -316,25 +301,10 @@ fn undock(app: &AppHandle, window: &WebviewWindow, hold: Option<Duration>) {
         dock.generation += 1;
         ((window_rect.x, window_rect.y), home, dock.generation)
     };
-    let after = hold.map(|hold| (app.clone(), window.clone(), hold));
+    let after = (app.clone(), window.clone());
     slide(window.clone(), start, home, generation, move || {
-        {
-            let mut dock = state();
-            if dock.generation == generation {
-                dock.home = None;
-            }
-        }
-        if let Some((app, window, hold)) = after {
-            spawn_auto_dock(app, window, generation, hold);
-        }
+        spawn_auto_dock(after.0, after.1, generation, hold);
     });
-}
-
-/// Put a docked window at its edge without animation.
-#[cfg(target_os = "macos")]
-fn snap_to_edge(window: &WebviewWindow) {
-    let _guard = super::resize_apply_guard();
-    keep_docked_after_resize(window);
 }
 
 /// Move the window from `from` to `to` over the slide duration.
@@ -379,44 +349,35 @@ fn slide(
     });
 }
 
-/// Watch for the cursor resting on the dock edge while docked.
+/// Watch for the cursor resting on the tab while docked.
 #[cfg(target_os = "macos")]
-fn spawn_edge_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
+fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
     tauri::async_runtime::spawn(async move {
-        let mut on_edge_since: Option<Instant> = None;
+        let mut on_tab_since: Option<Instant> = None;
         loop {
-            tokio::time::sleep(EDGE_POLL).await;
-            let (edge, frame, scale) = {
+            tokio::time::sleep(TAB_POLL).await;
+            {
                 let dock = state();
                 if dock.generation != generation || !dock.docked {
                     return;
                 }
-                let Some(frame) = dock.frame else {
-                    return;
-                };
-                (dock.settings.edge, frame, dock.scale)
-            };
-            let Ok(cursor) = window.cursor_position() else {
-                on_edge_since = None;
-                continue;
-            };
-            if !edge_hit(edge, &frame, (cursor.x, cursor.y), EDGE_TOLERANCE * scale) {
-                on_edge_since = None;
+            }
+            if !super::cursor_inside(&window).unwrap_or(false) {
+                on_tab_since = None;
                 continue;
             }
-            let since = *on_edge_since.get_or_insert_with(Instant::now);
-            if since.elapsed() < EDGE_HOLD {
+            let since = *on_tab_since.get_or_insert_with(Instant::now);
+            if since.elapsed() < TAB_HOLD {
                 continue;
             }
-            let _ = app.emit(EDGE_HIT_EVENT, ());
-            tracing::info!(event = "hud_edge_hit", edge = ?edge);
-            undock(&app, &window, Some(Duration::ZERO));
+            tracing::info!(event = "hud_peek");
+            undock(&app, &window, Duration::ZERO);
             return;
         }
     });
 }
 
-/// Dock the shown HUD once the hold passed and the pointer left it.
+/// Park the peeked HUD once the hold passed and the pointer left it.
 #[cfg(target_os = "macos")]
 fn spawn_auto_dock(app: AppHandle, window: WebviewWindow, generation: u64, hold: Duration) {
     tauri::async_runtime::spawn(async move {
@@ -424,12 +385,13 @@ fn spawn_auto_dock(app: AppHandle, window: WebviewWindow, generation: u64, hold:
         let mut last_inside = start;
         loop {
             tokio::time::sleep(AUTO_DOCK_POLL).await;
-            {
+            let edge = {
                 let dock = state();
-                if dock.generation != generation || !dock.settings.enabled || dock.docked {
+                if dock.generation != generation || dock.docked || dock.home.is_none() {
                     return;
                 }
-            }
+                dock.edge
+            };
             if app.get_webview_window(super::OVERLAY_LABEL).is_none() {
                 return;
             }
@@ -439,7 +401,7 @@ fn spawn_auto_dock(app: AppHandle, window: WebviewWindow, generation: u64, hold:
                 continue;
             }
             if should_dock(now, start, hold, last_inside) {
-                dock_overlay(&app);
+                dock_at(&app, &window, edge);
                 return;
             }
         }
@@ -479,35 +441,50 @@ fn monitor_rect(monitor: &Monitor) -> Rect {
     }
 }
 
-/// Where the window sits fully outside `frame` at `edge`. Pure.
+/// Where the window sits outside `frame` at `edge` with `tab` showing. Pure.
 #[cfg(any(target_os = "macos", test))]
-fn docked_position(edge: DockEdge, frame: &Rect, window: &Rect) -> (f64, f64) {
+fn docked_position(edge: DockEdge, frame: &Rect, window: &Rect, tab: f64) -> (f64, f64) {
     match edge {
-        DockEdge::Left => (frame.x - window.width, window.y),
-        DockEdge::Right => (frame.x + frame.width, window.y),
-        DockEdge::Top => (window.x, frame.y - window.height),
-        DockEdge::Bottom => (window.x, frame.y + frame.height),
+        DockEdge::Left => (frame.x - window.width + tab, window.y),
+        DockEdge::Right => (frame.x + frame.width - tab, window.y),
+        DockEdge::Top => (window.x, frame.y - window.height + tab),
+        DockEdge::Bottom => (window.x, frame.y + frame.height - tab),
     }
 }
 
-/// Whether `cursor` rests within `tolerance` of `edge`, inside the frame's
-/// other extent. Pure.
+/// Where the window sits fully inside `frame`, flush against `edge`. Pure.
 #[cfg(any(target_os = "macos", test))]
-fn edge_hit(edge: DockEdge, frame: &Rect, cursor: (f64, f64), tolerance: f64) -> bool {
-    let (x, y) = cursor;
-    let right = frame.x + frame.width;
-    let bottom = frame.y + frame.height;
-    let along_x = x >= frame.x && x < right;
-    let along_y = y >= frame.y && y < bottom;
+fn flush_position(edge: DockEdge, frame: &Rect, window: &Rect) -> (f64, f64) {
     match edge {
-        DockEdge::Left => along_y && x >= frame.x && x <= frame.x + tolerance,
-        DockEdge::Right => along_y && x >= right - 1.0 - tolerance && x <= right,
-        DockEdge::Top => along_x && y >= frame.y && y <= frame.y + tolerance,
-        DockEdge::Bottom => along_x && y >= bottom - 1.0 - tolerance && y <= bottom,
+        DockEdge::Left => (frame.x, window.y),
+        DockEdge::Right => (frame.x + frame.width - window.width, window.y),
+        DockEdge::Top => (window.x, frame.y),
+        DockEdge::Bottom => (window.x, frame.y + frame.height - window.height),
     }
 }
 
-/// Whether the shown HUD should dock: the hold passed, and the pointer has
+/// The edge a dropped window touches, within `snap`, nearest first. Pure.
+#[cfg(any(target_os = "macos", test))]
+fn edge_dropped_on(frame: &Rect, window: &Rect, snap: f64) -> Option<DockEdge> {
+    let gaps = [
+        (DockEdge::Left, window.x - frame.x),
+        (
+            DockEdge::Right,
+            frame.x + frame.width - (window.x + window.width),
+        ),
+        (DockEdge::Top, window.y - frame.y),
+        (
+            DockEdge::Bottom,
+            frame.y + frame.height - (window.y + window.height),
+        ),
+    ];
+    gaps.into_iter()
+        .filter(|(_, gap)| *gap <= snap)
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(edge, _)| edge)
+}
+
+/// Whether the peeked HUD should park: the hold passed, and the pointer has
 /// been off it for the linger. Pure.
 #[cfg(any(target_os = "macos", test))]
 fn should_dock(now: Instant, start: Instant, hold: Duration, last_inside: Instant) -> bool {
@@ -532,81 +509,74 @@ mod tests {
     };
 
     #[test]
-    fn docked_positions_leave_the_display_entirely() {
+    fn docked_positions_leave_only_the_tab_on_screen() {
         assert_eq!(
-            docked_position(DockEdge::Left, &FRAME, &WINDOW),
-            (-76.0, 80.0)
+            docked_position(DockEdge::Left, &FRAME, &WINDOW, TAB),
+            (-68.0, 80.0)
         );
         assert_eq!(
-            docked_position(DockEdge::Right, &FRAME, &WINDOW),
-            (1100.0, 80.0)
+            docked_position(DockEdge::Right, &FRAME, &WINDOW, TAB),
+            (1092.0, 80.0)
         );
         assert_eq!(
-            docked_position(DockEdge::Top, &FRAME, &WINDOW),
-            (500.0, -10.0)
+            docked_position(DockEdge::Top, &FRAME, &WINDOW, TAB),
+            (500.0, -2.0)
         );
         assert_eq!(
-            docked_position(DockEdge::Bottom, &FRAME, &WINDOW),
-            (500.0, 650.0)
+            docked_position(DockEdge::Bottom, &FRAME, &WINDOW, TAB),
+            (500.0, 642.0)
         );
     }
 
     #[test]
-    fn edge_hit_needs_the_cursor_on_the_chosen_edge() {
-        assert!(edge_hit(
-            DockEdge::Right,
-            &FRAME,
-            (1099.0, 300.0),
-            EDGE_TOLERANCE
-        ));
-        assert!(edge_hit(
-            DockEdge::Right,
-            &FRAME,
-            (1097.0, 300.0),
-            EDGE_TOLERANCE
-        ));
-        assert!(!edge_hit(
-            DockEdge::Right,
-            &FRAME,
-            (1096.0, 300.0),
-            EDGE_TOLERANCE
-        ));
-        assert!(!edge_hit(
-            DockEdge::Right,
-            &FRAME,
-            (1099.0, 700.0),
-            EDGE_TOLERANCE
-        ));
-        assert!(edge_hit(
-            DockEdge::Left,
-            &FRAME,
-            (101.0, 300.0),
-            EDGE_TOLERANCE
-        ));
-        assert!(!edge_hit(
-            DockEdge::Left,
-            &FRAME,
-            (1099.0, 300.0),
-            EDGE_TOLERANCE
-        ));
-        assert!(edge_hit(
-            DockEdge::Top,
-            &FRAME,
-            (600.0, 51.0),
-            EDGE_TOLERANCE
-        ));
-        assert!(edge_hit(
-            DockEdge::Bottom,
-            &FRAME,
-            (600.0, 648.0),
-            EDGE_TOLERANCE
-        ));
-        assert!(!edge_hit(
-            DockEdge::Bottom,
-            &FRAME,
-            (600.0, 51.0),
-            EDGE_TOLERANCE
-        ));
+    fn flush_positions_sit_inside_the_edge() {
+        assert_eq!(
+            flush_position(DockEdge::Left, &FRAME, &WINDOW),
+            (100.0, 80.0)
+        );
+        assert_eq!(
+            flush_position(DockEdge::Right, &FRAME, &WINDOW),
+            (924.0, 80.0)
+        );
+        assert_eq!(
+            flush_position(DockEdge::Top, &FRAME, &WINDOW),
+            (500.0, 50.0)
+        );
+        assert_eq!(
+            flush_position(DockEdge::Bottom, &FRAME, &WINDOW),
+            (500.0, 590.0)
+        );
+    }
+
+    #[test]
+    fn a_drop_near_an_edge_docks_there() {
+        let mid = WINDOW;
+        assert_eq!(edge_dropped_on(&FRAME, &mid, SNAP), None);
+        let near_right = Rect { x: 920.0, ..WINDOW };
+        assert_eq!(
+            edge_dropped_on(&FRAME, &near_right, SNAP),
+            Some(DockEdge::Right)
+        );
+        let past_right = Rect {
+            x: 1050.0,
+            ..WINDOW
+        };
+        assert_eq!(
+            edge_dropped_on(&FRAME, &past_right, SNAP),
+            Some(DockEdge::Right)
+        );
+        let near_top = Rect { y: 60.0, ..WINDOW };
+        assert_eq!(
+            edge_dropped_on(&FRAME, &near_top, SNAP),
+            Some(DockEdge::Top)
+        );
+        // A corner picks the nearer edge.
+        let corner = Rect {
+            x: 104.0,
+            y: 58.0,
+            ..WINDOW
+        };
+        assert_eq!(edge_dropped_on(&FRAME, &corner, SNAP), Some(DockEdge::Left));
     }
 
     #[test]
@@ -642,16 +612,19 @@ mod tests {
     }
 
     #[test]
-    fn edges_serialize_in_lowercase() {
-        assert_eq!(serde_json::to_string(&DockEdge::Top).unwrap(), "\"top\"");
+    fn dock_settings_round_trip_in_camel_case() {
         let settings: DockSettings =
-            serde_json::from_str("{\"enabled\":true,\"edge\":\"left\"}").unwrap();
+            serde_json::from_str("{\"docked\":true,\"edge\":\"left\"}").unwrap();
         assert_eq!(
             settings,
             DockSettings {
-                enabled: true,
+                docked: true,
                 edge: DockEdge::Left
             }
+        );
+        assert_eq!(
+            serde_json::to_string(&settings).unwrap(),
+            "{\"docked\":true,\"edge\":\"left\"}"
         );
     }
 }

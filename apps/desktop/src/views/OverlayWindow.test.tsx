@@ -202,10 +202,6 @@ function closeButton(): HTMLElement {
   return screen.getByRole("button", { name: "Close overlay" })
 }
 
-function dockButton(): HTMLElement | null {
-  return screen.queryByRole("button", { name: "Dock overlay off screen" })
-}
-
 function panelRect(element: HTMLElement): DOMRect {
   const barCount = Math.max(
     1,
@@ -713,31 +709,15 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("shows a dock control on hover once the shell says the dock is on", async () => {
-    invoke.mockImplementation(async (command: unknown) =>
-      command === "get_hud_dock" ? { enabled: true, edge: "top" } : undefined,
-    )
+  it("tears a docked HUD off when a drag starts", async () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      const button = dockButton()
-      expect(button).not.toBeNull()
-      expect(button).toHaveClass("opacity-0")
-
-      fireEvent.mouseEnter(frame(container))
-      expect(button).toHaveClass("opacity-100")
-
-      fireEvent.click(button!)
-      expect(invoke).toHaveBeenCalledWith("dock_overlay")
-
-      emitNative("overlay_dock_changed", { enabled: false, edge: "top" })
-      await advance(0)
-      expect(dockButton()).toBeNull()
+      fireEvent.mouseDown(panel(container), { clientX: 10, clientY: 10 })
+      expect(invoke).toHaveBeenCalledWith("tear_off_overlay")
     } finally {
       vi.useRealTimers()
-      invoke.mockReset()
-      invoke.mockResolvedValue(undefined)
     }
   })
 

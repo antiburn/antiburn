@@ -24,8 +24,8 @@ stateDiagram-v2
     DetailShown --> Dragging: mouse down
     Dragging --> Collapsed: mouse up
 
-    Collapsed --> Docked: dock control, or<br/>quiet with the dock on
-    Docked --> Collapsed: pointer rests on the edge,<br/>wake, or dock turned off
+    Collapsed --> Docked: dropped against a screen edge
+    Docked --> Collapsed: pointer rests on the tab,<br/>wake, or dragged away
 
     note right of Collapsed
         Bars only, plus the token map
@@ -108,31 +108,35 @@ are doing" turns the map off. Reduced motion stops the pulse.
 
 ### Docked
 
-With "Dock off-screen" on (Settings → Usage → Floating HUD), the HUD slides
-fully off one edge of its display and keeps running there. The renderer, the
+Drag the HUD against any edge of its display and it docks there: the window
+slides so that only an 8 logical px tab stays on screen. The renderer, the
 usage poll and the token-map poll all continue, so the return is instant.
+There is no setting and no dock control; the drop is the gesture.
 
-- **Docking.** The dock control at the HUD's top right (visible on hover, an
-  arrow pointing at the chosen edge) docks at once. Otherwise the shown HUD
-  docks by itself once the pointer has been off it for 3s and any wake hold
-  has passed. The slide takes 200ms. The detail window hides first.
-- **Edge hit.** While docked, the crate polls the global cursor every 100ms.
-  The cursor within 2 logical px of the chosen edge, inside that display, for
-  150ms brings the HUD back to the position it left. It docks again 3s after
-  the pointer leaves it, or after 3s if the pointer never reaches it.
-- **Wake.** The HUD webview asks the shell to wake the HUD for two reasons:
-  a transcript write more than an hour after the previous one it saw through
-  events, and a spend rate at the ceiling for two polls in a row. A woken HUD
-  stays at least 5s, and longer while hovered. The burn wake re-arms only
-  after the rate drops below the ceiling. Both start cold: a fresh dock never
-  wakes on its first sample. Each wake is logged with its reason.
-- **Turning the dock off** brings a docked HUD home and cancels the quiet
-  timer. Turning it on, or opening the HUD with it on, starts the 5s quiet
-  timer, so a fresh HUD shows itself before it docks.
-- **Displays.** The dock edge is the edge of the display the HUD was on. A
-  display change moves the HUD to its remembered placement and docks it again
-  at the same edge of that display. A height change while docked keeps the
-  window off screen. Hiding the HUD forgets the dock position.
+- **Docking.** A drag that ends within 16 logical px of an edge, or past it,
+  docks at that edge. A corner picks the nearer edge. The crate remembers a
+  home position flush inside that edge, so a peek shows the whole HUD even
+  after a drop past the edge. The slide takes 200ms. The detail window hides
+  first.
+- **The tab.** While docked, the crate polls the global cursor every 100ms.
+  The cursor resting on the tab for 150ms peeks the HUD in to its home
+  position. It parks again 3s after the pointer leaves it, or after 3s if the
+  pointer never reaches it.
+- **Tearing off.** A drag on a docked or peeked HUD undocks it. The HUD webview
+  calls `tear_off_overlay` as the drag starts, so the auto-dock timer stops
+  and the drop lands wherever the pointer leaves it. A drop near an edge docks
+  again.
+- **Wake.** The HUD webview asks the shell to wake a docked HUD for two
+  reasons: a transcript write more than an hour after the previous one it saw
+  through events, and a spend rate at the ceiling for two polls in a row. A
+  woken HUD stays at least 5s, and longer while hovered. The burn wake re-arms
+  only after the rate drops below the ceiling. Both start cold: a fresh dock
+  never wakes on its first sample. Each wake is logged with its reason.
+- **Displays.** The dock edge is the edge of the display the HUD was dropped
+  on. A display change moves the HUD to its remembered placement and docks it
+  again at the same edge of that display. A height change while docked keeps
+  only the tab on screen. Hiding the HUD keeps it docked, so the next open
+  parks it again.
 
 ### When there are no bars
 
@@ -300,10 +304,10 @@ when it receives focus, and updates its cached preference. Closing the HUD with
 its ✕ turns the Settings control off. The cached value only restores the HUD at
 startup.
 
-The dock settings (`internal:hudDock`) live in the shell store, not in
-localStorage, so every webview reads the same value. Settings → Usage and the
-HUD both read them with `get_hud_dock` and follow `overlay_dock_changed`.
-The shell applies them to the HUD on every open and at launch.
+The dock state (`internal:hudDock`: docked, and the edge) lives in the shell
+store. `record_hud_position` writes it after every drag, and `tear_off_overlay`
+clears the docked flag. The shell applies it to the HUD on every open and at
+launch, so a docked HUD comes back docked.
 
 ## Platform boundary
 

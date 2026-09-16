@@ -4,7 +4,6 @@ import { Card } from "../../components/ui/Card"
 import { Pane } from "../../components/ui/Pane"
 import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
-import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { createExternalStore } from "../../lib/externalStore"
@@ -17,15 +16,9 @@ import {
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
 import {
-  DEFAULT_HUD_DOCK,
-  getHudDock,
-  HUD_DOCK_EDGES,
   HudVisibilitySession,
   isHudTokenMapEnabled,
-  onHudDockChanged,
-  setHudDock,
   setHudTokenMapEnabled,
-  type HudDockSettings,
 } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import {
@@ -97,19 +90,6 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
   const hidden = settings?.liveUsageHiddenProviders ?? []
   const meters = roster(live)
 
-  // The shell holds the dock settings, so this pane and the HUD agree.
-  const [dockStore] = useState(() =>
-    createExternalStore<HudDockSettings>({
-      initial: DEFAULT_HUD_DOCK,
-      load: () => getHudDock().catch(() => DEFAULT_HUD_DOCK),
-      subscribe: (set) => onHudDockChanged(set),
-    }),
-  )
-  const dock = useSyncExternalStore(dockStore.subscribe, dockStore.getSnapshot)
-  function handleDockChange(next: Partial<HudDockSettings>) {
-    void setHudDock({ ...dock, ...next }).catch(() => undefined)
-  }
-
   const [tokenMapShown, setTokenMapShown] = useState(isHudTokenMapEnabled)
   function handleTokenMapChange(next: boolean) {
     setHudTokenMapEnabled(next)
@@ -170,25 +150,9 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               checked={tokenMapShown}
               onChange={handleTokenMapChange}
             />
-            <ToggleRow
-              label="Dock off-screen"
-              description="Slides the HUD off one edge of the screen a few seconds after you leave it. Rest the pointer on that edge to bring it back. It also comes back on its own when a session starts writing after an hour of quiet, or when spend runs hot."
-              checked={dock.enabled}
-              onChange={(next) => handleDockChange({ enabled: next })}
-            />
             <Row
-              label="Wake edge"
-              description="The screen edge the HUD hides behind."
-              dimmed={!dock.enabled}
-              trailing={
-                <SegmentedControl
-                  options={HUD_DOCK_EDGES}
-                  value={dock.edge}
-                  onChange={(next) => handleDockChange({ edge: next })}
-                  ariaLabel="Wake edge"
-                  disabled={!dock.enabled}
-                />
-              }
+              label="Docking"
+              description="Drag the HUD against any edge of the screen to dock it there. A small tab stays visible; rest the pointer on it to peek the HUD in. Drag it away to undock. A docked HUD also peeks in when a session starts writing after an hour of quiet, or when spend runs hot."
             />
           </Card>
         </SectionGroup>

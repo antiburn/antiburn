@@ -8,59 +8,15 @@ import type { SurfaceOrigin } from "./ipc"
 const OVERLAY_WINDOW_LABEL = "antiburn-overlay"
 const OVERLAY_VISIBILITY_EVENT = "overlay_visibility_changed"
 const OVERLAY_WORK_EVENT = "overlay_work_changed"
-const OVERLAY_DOCK_EVENT = "overlay_dock_changed"
 
-/** The display edge the HUD docks against. Mirrors `DockEdge` in the shell. */
-export type HudDockEdge = "left" | "right" | "top" | "bottom"
-
-/** The edge-dock settings. Mirrors `DockSettings` in the shell. */
-export interface HudDockSettings {
-  enabled: boolean
-  edge: HudDockEdge
+/** Free a docked HUD. A drag on it starts here. */
+export function tearOffOverlayWindow(): Promise<void> {
+  return invoke("tear_off_overlay")
 }
 
-export const HUD_DOCK_EDGES: ReadonlyArray<{ value: HudDockEdge; label: string }> = [
-  { value: "left", label: "Left" },
-  { value: "right", label: "Right" },
-  { value: "top", label: "Top" },
-  { value: "bottom", label: "Bottom" },
-]
-
-export const DEFAULT_HUD_DOCK: HudDockSettings = { enabled: false, edge: "right" }
-
-/** Read a dock payload the shell sent. Anything malformed means "dock off". */
-export function parseHudDock(payload: unknown): HudDockSettings {
-  if (typeof payload !== "object" || payload === null) return DEFAULT_HUD_DOCK
-  const { enabled, edge } = payload as Partial<HudDockSettings>
-  const known = HUD_DOCK_EDGES.some((option) => option.value === edge)
-  return { enabled: enabled === true, edge: known && edge ? edge : DEFAULT_HUD_DOCK.edge }
-}
-
-/** The edge-dock settings the shell holds. They live there, not in this webview. */
-export async function getHudDock(): Promise<HudDockSettings> {
-  return parseHudDock(await invoke<unknown>("get_hud_dock"))
-}
-
-/** Store the edge-dock settings and apply them to the HUD. */
-export function setHudDock(settings: HudDockSettings): Promise<void> {
-  return invoke("set_hud_dock", { settings })
-}
-
-/** Slide the HUD off its dock edge now. */
-export function dockOverlayWindow(): Promise<void> {
-  return invoke("dock_overlay")
-}
-
-/** Bring a docked HUD back for a while. The shell logs `reason`. */
+/** Bring a docked HUD in for a while. The shell logs `reason`. */
 export function wakeOverlayWindow(reason: "activity" | "burn"): Promise<void> {
   return invoke("wake_overlay", { reason })
-}
-
-/** Subscribe to dock settings changes from any window. */
-export async function onHudDockChanged(
-  handler: (settings: HudDockSettings) => void,
-): Promise<() => void> {
-  return listen<unknown>(OVERLAY_DOCK_EVENT, (event) => handler(parseHudDock(event.payload)))
 }
 
 export function openOverlayWindow(origin: SurfaceOrigin): Promise<void> {
