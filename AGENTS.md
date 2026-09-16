@@ -2,6 +2,18 @@
 
 These instructions apply to the entire repository.
 
+## Local working artifacts
+
+Plans, handoffs, and review reports are local working artifacts. Never commit
+them to this public repository. Store plans and handoffs under
+`.agent-artifacts/plans/` and review reports under `.agent-artifacts/reviews/`.
+Keep review captures alongside their reports. These directories are ignored.
+Do not create these artifacts elsewhere in the repository or force-add them.
+
+Keep maintained product and contributor documentation in the repository,
+including design-system rules, coverage documents, runbooks, and reusable
+agent skills.
+
 ## React
 
 Do not add `useEffect`. Derive values during render, handle work in the event
