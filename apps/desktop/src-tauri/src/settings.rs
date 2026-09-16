@@ -140,8 +140,6 @@ fn pane_event_reaches_renderer(action: OpenAction) -> bool {
 
 /// Build a deferred replacement after Tauri removes the old window label.
 pub fn rebuild_after_destroy(app: &AppHandle) {
-    let insights = app.try_state::<crate::insights_ipc::InsightsController>();
-    cancel_insights(insights.as_deref());
     let generation =
         window_lifecycle::begin_deferred_build::<SettingsWindowState>(app, Instant::now());
     let Some(generation) = generation else {
@@ -149,12 +147,6 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
     };
     if let Err(error) = build(app, generation) {
         ::tracing::error!(event = "window_rebuild_failed", window = LABEL, error = %error);
-    }
-}
-
-fn cancel_insights(insights: Option<&crate::insights_ipc::InsightsController>) {
-    if let Some(insights) = insights {
-        insights.release_settings();
     }
 }
 
@@ -286,14 +278,5 @@ mod tests {
         // inherit the last banner's destination.
         pending.set(None);
         assert_eq!(pending.take(), None);
-    }
-
-    #[test]
-    fn destroying_settings_requests_native_insights_cancellation() {
-        let insights = crate::insights_ipc::InsightsController::default();
-
-        cancel_insights(Some(&insights));
-
-        assert_eq!(insights.cancel_requests(), 1);
     }
 }

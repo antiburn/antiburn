@@ -84,12 +84,12 @@ describe("SettingsWindowSession", () => {
     await vi.waitFor(() => expect(takeSettingsPane).toHaveBeenCalledOnce())
 
     expect(noteInteraction).not.toHaveBeenCalled()
-    resolvePending("insights")
+    resolvePending("privacy")
 
     await vi.waitFor(() =>
       expect(noteInteraction).toHaveBeenCalledWith({
         kind: "settingsPaneViewed",
-        pane: "insights",
+        pane: "privacy",
       }),
     )
     expect(noteInteraction).not.toHaveBeenCalledWith({
@@ -106,10 +106,10 @@ describe("SettingsWindowSession", () => {
       shown.current = handler
       return () => {}
     })
-    takeSettingsPane.mockResolvedValue("insights")
+    takeSettingsPane.mockResolvedValue("privacy")
     const session = new SettingsWindowSession()
     const unsubscribe = session.subscribe(() => {})
-    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("insights"))
+    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("privacy"))
 
     expect(session.getSnapshot().visible).toBe(false)
     expect(noteInteraction).not.toHaveBeenCalled()
@@ -118,7 +118,7 @@ describe("SettingsWindowSession", () => {
     expect(session.getSnapshot().visible).toBe(true)
     expect(noteInteraction).toHaveBeenCalledWith({
       kind: "settingsPaneViewed",
-      pane: "insights",
+      pane: "privacy",
     })
     unsubscribe()
   })

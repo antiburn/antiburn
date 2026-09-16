@@ -1,7 +1,6 @@
 import {
   Bell,
   Info,
-  Lightbulb,
   Palette,
   ShieldCheck,
   SlidersHorizontal,
@@ -19,7 +18,6 @@ import { isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
 import { AboutPane } from "./settings/AboutPane"
 import { AppearancePane } from "./settings/AppearancePane"
 import { GeneralPane } from "./settings/GeneralPane"
-import { InsightsPane } from "./settings/InsightsPane"
 import { NotificationsPane } from "./settings/NotificationsPane"
 import { PrivacyPane } from "./settings/PrivacyPane"
 import { SettingsWindowSession } from "./settings/SettingsWindowSession"
@@ -45,24 +43,25 @@ import { useAppSettings } from "./settings/useAppSettings"
  *
  */
 
-// Everyday panes first, provenance last: Privacy and Notifications sit ahead
-// of Sources and Appearance so the order survives a future where more panes
-// exist, and About closes the list. Software update lives inside About, with
-// the build it updates, rather than as a pane of its own.
+// Setup comes first, then the panes that change what the app does, then the
+// two panes that explain it. Sources follows General because it controls where
+// antiburn looks for sessions. Privacy and About close the list. Each of the
+// two answers a question about the app instead of changing its behavior.
+// Software update lives inside About, with the build it updates, rather than
+// as a pane of its own.
 const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
-  { id: "privacy", label: "Privacy", icon: ShieldCheck },
+  { id: "sources", label: "Sources", icon: FolderGit2 },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "usage", label: "Usage", icon: Gauge },
-  { id: "insights", label: "Insights", icon: Lightbulb },
-  { id: "sources", label: "Sources", icon: FolderGit2 },
   { id: "appearance", label: "Appearance", icon: Palette },
+  { id: "privacy", label: "Privacy", icon: ShieldCheck },
   { id: "about", label: "About", icon: Info },
 ]
 
 export function SettingsView() {
   const [session] = useState(() => new SettingsWindowSession())
-  const { info, pane, visible } = useSyncExternalStore(
+  const { info, pane } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
@@ -152,7 +151,6 @@ export function SettingsView() {
             {pane === "privacy" && <PrivacyPane {...controller} info={info} />}
             {pane === "notifications" && <NotificationsPane {...controller} />}
             {pane === "usage" && <UsagePane {...controller} />}
-            {pane === "insights" && <InsightsPane analyticsVisible={visible} />}
             {pane === "about" && (
               <AboutPane {...controller} info={info} onOpenPane={session.setPane} />
             )}

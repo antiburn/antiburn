@@ -13,12 +13,11 @@
 use crate::provider_usage::live::{Detection, LoginCarrier, SourceErrorDetail};
 use antiburn_local::analysis::{
     ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, ModelRun,
-    ProviderIncidentKind, QuotaLimitKind, RepeatedContextAccounting, SessionCost, SessionEvidence,
-    SourceFormat,
+    RepeatedContextAccounting, SessionCost, SessionEvidence, SourceFormat,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
-    ProviderIncidentsSection, QuotaPressureSection, ReportCatalogs, SessionBadge, model_family,
+    BadgeId, BadgeStatus, DetectorId, EfficiencyReport, NotAssessedReason, ReportCatalogs,
+    SessionBadge, model_family,
 };
 use antiburn_local::pricing::canonical_model_key;
 use serde::{Deserialize, Serialize};
@@ -482,170 +481,6 @@ pub struct SessionLimitAllocation {
 pub struct SessionLimitAllocationSummary {
     pub allocations: Vec<SessionLimitAllocation>,
     pub generated_at: String,
-}
-
-/* -------------------------------------------------------------------------
- * Local insights report
- *
- * Mirrors of `antiburn_local::insights` report types. The payloads carry
- * counts, statuses, and structured reasons only — no transcript content,
- * no session identifiers, no evidence text. The category and reason names
- * are identifiers; the pane owns every reader-facing word.
- * ---------------------------------------------------------------------- */
-
-/// Coverage of the report window: every discovered session, partitioned
-/// by why it is or is not in the assessed cohort (FR-12).
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsCoveragePayload {
-    /// Every session the window covers — the coverage denominator. It is
-    /// always at least as large as the assessed cohort.
-    pub discovered: u64,
-    pub unknown_start: u64,
-    pub pending: u64,
-    pub processing: u64,
-    pub failed: u64,
-    pub unsupported: u64,
-    pub stale: u64,
-    pub ready: u64,
-    pub actively_growing: u64,
-    pub awaiting_provider_support: u64,
-}
-
-/// The exclusive status of one report category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum InsightsCategoryStatus {
-    Findings,
-    Clean,
-    NotAssessed,
-}
-
-/// One of the nine report categories, with its status and denominators.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsCategoryPayload {
-    /// Stable category identifier, e.g. `sessionsOverDepth`.
-    pub id: &'static str,
-    /// Sessions whose capabilities let this category assess them.
-    pub eligible: u64,
-    /// Sessions this category actually assessed.
-    pub assessed: u64,
-    pub status: InsightsCategoryStatus,
-    /// Sessions with at least one finding. `None` unless the status is
-    /// `findings`.
-    pub finding_sessions: Option<u64>,
-    /// Structured reason identifier. `None` unless the status is
-    /// `notAssessed`.
-    pub not_assessed_reason: Option<&'static str>,
-}
-
-/// Deduplicated hits for one quota limit kind.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsQuotaLimitPayload {
-    /// Stable limit-kind identifier, e.g. `rollingWindow`.
-    pub kind: &'static str,
-    pub hits: u64,
-}
-
-/// Bounded quota-pressure findings from transcript-attributable incidents.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsQuotaFindingsPayload {
-    pub total_hits: u64,
-    pub hard_hits: u64,
-    pub warnings: u64,
-    pub affected_session_count: u64,
-    pub hits_by_limit_kind: Vec<InsightsQuotaLimitPayload>,
-    /// Bounded set of transcript-attributed model names.
-    pub affected_models: Vec<String>,
-    pub affected_models_truncated: bool,
-    pub first_observed_ts_ms: i64,
-    pub last_observed_ts_ms: i64,
-}
-
-/// The quota-pressure section, outside the nine-category contract.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsQuotaPressurePayload {
-    /// False exactly when the transcripts carry no quota evidence.
-    pub assessed: bool,
-    pub findings: Option<InsightsQuotaFindingsPayload>,
-}
-
-/// Deduplicated hits for one provider-incident kind.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsProviderIncidentKindPayload {
-    /// Stable incident-kind identifier, e.g. `capacity`.
-    pub kind: &'static str,
-    pub hits: u64,
-}
-
-/// Bounded provider-incident findings from transcript-attributable incidents.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsProviderIncidentFindingsPayload {
-    pub total_hits: u64,
-    pub affected_session_count: u64,
-    pub hits_by_kind: Vec<InsightsProviderIncidentKindPayload>,
-    /// Bounded set of transcript-attributed model names.
-    pub affected_models: Vec<String>,
-    pub affected_models_truncated: bool,
-    pub first_observed_ts_ms: i64,
-    pub last_observed_ts_ms: i64,
-}
-
-/// The provider-incidents section, outside the nine-category contract.
-///
-/// A sibling of [`InsightsQuotaPressurePayload`]: this section carries
-/// provider-side failures the user's own usage did not cause, so it is
-/// never folded into quota pressure.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsProviderIncidentsPayload {
-    /// False exactly when the transcripts carry no provider incident evidence.
-    pub assessed: bool,
-    pub findings: Option<InsightsProviderIncidentFindingsPayload>,
-}
-
-/// Bounded unknown record vocabulary from the local evidence cohort.
-///
-/// Type discriminators are schema vocabulary, not transcript content.
-/// The engine limits each value to 256 bytes and each report to 16 values.
-/// The counts are not exclusive. The engine bounds the diagnostic markers for both limit counts.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsUnrecognizedRecordsPayload {
-    pub types: Vec<String>,
-    pub types_truncated: bool,
-    pub sessions_with_types: u64,
-    pub inert_sessions: u64,
-    pub evidence_bearing_sessions: u64,
-    pub capped_sessions: u64,
-    pub truncated_sessions: u64,
-}
-
-/// The thirty-day insights report, as the pane renders it.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsReportPayload {
-    /// The one environment scope this report covers (`native`, or
-    /// `wsl:<distro>`). A report never combines scopes.
-    pub environment_key: String,
-    pub window_start_epoch: i64,
-    pub window_end_epoch: i64,
-    pub computed_at_epoch: i64,
-    pub coverage: InsightsCoveragePayload,
-    /// Size of the assessed cohort. Presented separately from the
-    /// coverage denominator, never in its place.
-    pub assessed_sessions: u64,
-    pub categories: Vec<InsightsCategoryPayload>,
-    pub quota_pressure: InsightsQuotaPressurePayload,
-    pub provider_incidents: InsightsProviderIncidentsPayload,
-    pub unrecognized_records: InsightsUnrecognizedRecordsPayload,
-    pub catalog_revision: i64,
 }
 
 /// One detector rendered by All checks.
@@ -1256,18 +1091,6 @@ pub enum CopyPromptFixBurnCheckOutcome {
     Unavailable,
 }
 
-/// Report calculation state plus the evidence backlog counts.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsStatusPayload {
-    /// True while a report reduction runs.
-    pub calculating: bool,
-    /// Evidence rows that wait for processing in this report's scope.
-    pub pending: u64,
-    /// Evidence rows a worker is processing now, in this report's scope.
-    pub processing: u64,
-}
-
 /// One session identity requested for a hygiene badge reduction.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1625,20 +1448,6 @@ impl SessionHygienePayload {
             None,
             evidence_state,
         )
-    }
-}
-
-fn detector_id_str(id: DetectorId) -> &'static str {
-    match id {
-        DetectorId::SessionsOverDepth => "sessionsOverDepth",
-        DetectorId::ModelOverthinking => "modelOverthinking",
-        DetectorId::OverpoweredSubagents => "overpoweredSubagents",
-        DetectorId::UnusedMcpServers => "unusedMcpServers",
-        DetectorId::UnusedBuiltInTools => "unusedBuiltInTools",
-        DetectorId::UnusedSkills => "unusedSkills",
-        DetectorId::OldModelUsage => "oldModelUsage",
-        DetectorId::OveruseOfFastMode => "overuseOfFastMode",
-        DetectorId::CacheChurn => "cacheChurn",
     }
 }
 
@@ -2130,143 +1939,6 @@ fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
     }
 }
 
-fn quota_limit_kind_str(kind: QuotaLimitKind) -> &'static str {
-    match kind {
-        QuotaLimitKind::RollingWindow => "rollingWindow",
-        QuotaLimitKind::Weekly => "weekly",
-        QuotaLimitKind::ModelSpecific => "modelSpecific",
-        QuotaLimitKind::WeightedUsage => "weightedUsage",
-        QuotaLimitKind::RateLimit => "rateLimit",
-        QuotaLimitKind::UsageLimit => "usageLimit",
-    }
-}
-
-fn provider_incident_kind_str(kind: ProviderIncidentKind) -> &'static str {
-    match kind {
-        ProviderIncidentKind::Capacity => "capacity",
-        ProviderIncidentKind::ServerError => "server_error",
-        ProviderIncidentKind::Connection => "connection",
-    }
-}
-
-impl From<EfficiencyReport> for InsightsReportPayload {
-    fn from(report: EfficiencyReport) -> Self {
-        let coverage = &report.context.coverage;
-        let categories = DetectorId::ALL
-            .iter()
-            .map(|&id| {
-                let counts = report.detectors[id.index()];
-                let (status, finding_sessions, not_assessed_reason) =
-                    match &report.detector_statuses[id.index()] {
-                        DetectorStatus::Findings(findings) => (
-                            InsightsCategoryStatus::Findings,
-                            Some(findings.finding_sessions),
-                            None,
-                        ),
-                        DetectorStatus::Clean => (InsightsCategoryStatus::Clean, None, None),
-                        DetectorStatus::NotAssessed(reason) => (
-                            InsightsCategoryStatus::NotAssessed,
-                            None,
-                            Some(not_assessed_reason_str(*reason)),
-                        ),
-                    };
-                InsightsCategoryPayload {
-                    id: detector_id_str(id),
-                    eligible: counts.eligible,
-                    assessed: counts.assessed,
-                    status,
-                    finding_sessions,
-                    not_assessed_reason,
-                }
-            })
-            .collect();
-        let quota_pressure = match &report.quota_pressure {
-            QuotaPressureSection::NotAssessed => InsightsQuotaPressurePayload {
-                assessed: false,
-                findings: None,
-            },
-            QuotaPressureSection::Findings(findings) => InsightsQuotaPressurePayload {
-                assessed: true,
-                findings: Some(InsightsQuotaFindingsPayload {
-                    total_hits: findings.total_hits,
-                    hard_hits: findings.hard_hits,
-                    warnings: findings.warnings,
-                    affected_session_count: findings.affected_session_count,
-                    hits_by_limit_kind: findings
-                        .hits_by_limit_kind
-                        .iter()
-                        .map(|(&kind, &hits)| InsightsQuotaLimitPayload {
-                            kind: quota_limit_kind_str(kind),
-                            hits,
-                        })
-                        .collect(),
-                    affected_models: findings.affected_models.iter().cloned().collect(),
-                    affected_models_truncated: findings.affected_models_truncated,
-                    first_observed_ts_ms: findings.first_observed_ts_ms,
-                    last_observed_ts_ms: findings.last_observed_ts_ms,
-                }),
-            },
-        };
-        let provider_incidents = match &report.provider_incidents {
-            ProviderIncidentsSection::NotAssessed => InsightsProviderIncidentsPayload {
-                assessed: false,
-                findings: None,
-            },
-            ProviderIncidentsSection::Findings(findings) => InsightsProviderIncidentsPayload {
-                assessed: true,
-                findings: Some(InsightsProviderIncidentFindingsPayload {
-                    total_hits: findings.total_hits,
-                    affected_session_count: findings.affected_session_count,
-                    hits_by_kind: findings
-                        .hits_by_kind
-                        .iter()
-                        .map(|(&kind, &hits)| InsightsProviderIncidentKindPayload {
-                            kind: provider_incident_kind_str(kind),
-                            hits,
-                        })
-                        .collect(),
-                    affected_models: findings.affected_models.iter().cloned().collect(),
-                    affected_models_truncated: findings.affected_models_truncated,
-                    first_observed_ts_ms: findings.first_observed_ts_ms,
-                    last_observed_ts_ms: findings.last_observed_ts_ms,
-                }),
-            },
-        };
-        Self {
-            environment_key: report.context.environment_key,
-            window_start_epoch: report.context.window.start_epoch,
-            window_end_epoch: report.context.window.end_epoch,
-            computed_at_epoch: report.context.computed_at_epoch,
-            coverage: InsightsCoveragePayload {
-                discovered: coverage.discovered,
-                unknown_start: coverage.unknown_start,
-                pending: coverage.pending,
-                processing: coverage.processing,
-                failed: coverage.failed,
-                unsupported: coverage.unsupported,
-                stale: coverage.stale,
-                ready: coverage.ready,
-                actively_growing: coverage.actively_growing,
-                awaiting_provider_support: coverage.awaiting_provider_support,
-            },
-            assessed_sessions: report.assessed_sessions,
-            categories,
-            quota_pressure,
-            provider_incidents,
-            unrecognized_records: InsightsUnrecognizedRecordsPayload {
-                types: report.unrecognized_records.types.into_iter().collect(),
-                types_truncated: report.unrecognized_records.types_truncated,
-                sessions_with_types: report.unrecognized_records.sessions_with_types,
-                inert_sessions: report.unrecognized_records.inert_sessions,
-                evidence_bearing_sessions: report.unrecognized_records.evidence_bearing_sessions,
-                capped_sessions: report.unrecognized_records.capped_sessions,
-                truncated_sessions: report.unrecognized_records.truncated_sessions,
-            },
-            catalog_revision: report.catalog_revision,
-        }
-    }
-}
-
 impl ChecksReportPayload {
     pub fn from_report(
         report: &EfficiencyReport,
@@ -2648,16 +2320,15 @@ mod tests {
     }
 
     mod insights {
-        use std::collections::{BTreeMap, BTreeSet};
-
         use antiburn_local::analysis::{
             ContextEvidence, EvidenceSource, ModelControlObservation, ModelTokens,
             RelationConfidence, RelationProvenance, RepeatedContext, SessionEvidenceAccumulator,
             SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
         };
         use antiburn_local::insights::{
-            CoverageCounts, DetectorCounts, DetectorFindings, EfficiencyReportAccumulator,
-            QuotaPressureFindings, ReportContext, ReportWindow, SessionExample, session_badges,
+            CoverageCounts, DetectorCounts, DetectorFindings, DetectorStatus,
+            EfficiencyReportAccumulator, ReportContext, ReportWindow, SessionExample,
+            session_badges,
         };
 
         use super::*;
@@ -2675,152 +2346,6 @@ mod tests {
                 evidence_schema_revision: 1,
                 coverage: CoverageCounts::default(),
             })
-        }
-
-        /// The wire shape is the privacy contract: the payload names
-        /// exactly these keys, and none of them can carry transcript
-        /// content or evidence text. Session identities are bounded navigation targets.
-        #[test]
-        fn the_report_payload_serializes_camel_case_counts_and_nothing_else() {
-            let mut report = report();
-            report.detector_statuses[0] = DetectorStatus::Findings(DetectorFindings {
-                finding_sessions: 2,
-                examples: Vec::new(),
-            });
-            report.quota_pressure = QuotaPressureSection::Findings(QuotaPressureFindings {
-                hits_by_limit_kind: BTreeMap::from([(QuotaLimitKind::Weekly, 3)]),
-                total_hits: 3,
-                hard_hits: 1,
-                warnings: 2,
-                affected_session_count: 1,
-                affected_session_examples: Vec::new(),
-                affected_models: BTreeSet::from(["claude-3-5-haiku-20241022".to_owned()]),
-                affected_models_truncated: false,
-                first_observed_ts_ms: 1_000,
-                last_observed_ts_ms: 2_000,
-                observed_times_ms: vec![1_000, 2_000],
-            });
-            report.provider_incidents = ProviderIncidentsSection::Findings(
-                antiburn_local::insights::ProviderIncidentFindings {
-                    hits_by_kind: BTreeMap::from([
-                        (ProviderIncidentKind::Capacity, 1),
-                        (ProviderIncidentKind::ServerError, 2),
-                        (ProviderIncidentKind::Connection, 3),
-                    ]),
-                    total_hits: 6,
-                    affected_session_count: 2,
-                    affected_session_examples: Vec::new(),
-                    affected_models: BTreeSet::from(["claude-3-5-haiku-20241022".to_owned()]),
-                    affected_models_truncated: false,
-                    first_observed_ts_ms: 1_000,
-                    last_observed_ts_ms: 2_000,
-                    observed_times_ms: vec![1_000, 2_000],
-                },
-            );
-
-            let value = serde_json::to_value(InsightsReportPayload::from(report)).unwrap();
-
-            // `serde_json` maps iterate alphabetically, so the expected
-            // lists are sorted.
-            let top_keys: Vec<&str> = value
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect();
-            assert_eq!(
-                top_keys,
-                [
-                    "assessedSessions",
-                    "catalogRevision",
-                    "categories",
-                    "computedAtEpoch",
-                    "coverage",
-                    "environmentKey",
-                    "providerIncidents",
-                    "quotaPressure",
-                    "unrecognizedRecords",
-                    "windowEndEpoch",
-                    "windowStartEpoch",
-                ]
-            );
-            assert_eq!(value["environmentKey"], "native");
-            assert_eq!(value["coverage"]["unknownStart"], 0);
-
-            let categories = value["categories"].as_array().unwrap();
-            assert_eq!(categories.len(), 9);
-            for category in categories {
-                let keys: Vec<&str> = category
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .map(String::as_str)
-                    .collect();
-                assert_eq!(
-                    keys,
-                    [
-                        "assessed",
-                        "eligible",
-                        "findingSessions",
-                        "id",
-                        "notAssessedReason",
-                        "status",
-                    ]
-                );
-            }
-            assert_eq!(categories[0]["id"], "sessionsOverDepth");
-            assert_eq!(categories[0]["status"], "findings");
-            assert_eq!(categories[0]["findingSessions"], 2);
-            assert_eq!(categories[8]["id"], "cacheChurn");
-            assert_eq!(categories[8]["status"], "notAssessed");
-            assert_eq!(categories[8]["notAssessedReason"], "noSessionsInWindow");
-
-            let quota = value["quotaPressure"].as_object().unwrap();
-            let quota_keys: Vec<&str> = quota.keys().map(String::as_str).collect();
-            assert_eq!(quota_keys, ["assessed", "findings"]);
-            let findings = quota["findings"].as_object().unwrap();
-            let finding_keys: Vec<&str> = findings.keys().map(String::as_str).collect();
-            assert_eq!(
-                finding_keys,
-                [
-                    "affectedModels",
-                    "affectedModelsTruncated",
-                    "affectedSessionCount",
-                    "firstObservedTsMs",
-                    "hardHits",
-                    "hitsByLimitKind",
-                    "lastObservedTsMs",
-                    "totalHits",
-                    "warnings",
-                ]
-            );
-            assert_eq!(findings["hitsByLimitKind"][0]["kind"], "weekly");
-
-            let provider = value["providerIncidents"].as_object().unwrap();
-            let provider_keys: Vec<&str> = provider.keys().map(String::as_str).collect();
-            assert_eq!(provider_keys, ["assessed", "findings"]);
-            let provider_findings = provider["findings"].as_object().unwrap();
-            let provider_hits_by_kind = provider_findings["hitsByKind"].as_array().unwrap();
-            let provider_kinds: Vec<&str> = provider_hits_by_kind
-                .iter()
-                .map(|entry| entry["kind"].as_str().unwrap())
-                .collect();
-            assert_eq!(provider_kinds, ["capacity", "server_error", "connection"]);
-
-            let unrecognized = value["unrecognizedRecords"].as_object().unwrap();
-            let unrecognized_keys: Vec<&str> = unrecognized.keys().map(String::as_str).collect();
-            assert_eq!(
-                unrecognized_keys,
-                [
-                    "cappedSessions",
-                    "evidenceBearingSessions",
-                    "inertSessions",
-                    "sessionsWithTypes",
-                    "truncatedSessions",
-                    "types",
-                    "typesTruncated",
-                ]
-            );
         }
 
         #[test]
@@ -2911,69 +2436,6 @@ mod tests {
             assert_eq!(value["evidenceSettled"], false);
             assert_eq!(value["pendingEvidence"], 4);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
-        }
-
-        #[test]
-        fn unrecognized_types_survive_dto_conversion() {
-            let mut report = report();
-            report.unrecognized_records.types =
-                BTreeSet::from(["zeta".to_owned(), "alpha".to_owned()]);
-            report.unrecognized_records.types_truncated = true;
-            report.unrecognized_records.sessions_with_types = 4;
-            report.unrecognized_records.inert_sessions = 3;
-            report.unrecognized_records.evidence_bearing_sessions = 2;
-            report.unrecognized_records.capped_sessions = 1;
-            report.unrecognized_records.truncated_sessions = 1;
-
-            let value = serde_json::to_value(InsightsReportPayload::from(report)).unwrap();
-            assert_eq!(
-                value["unrecognizedRecords"],
-                serde_json::json!({
-                    "types": ["alpha", "zeta"],
-                    "typesTruncated": true,
-                    "sessionsWithTypes": 4,
-                    "inertSessions": 3,
-                    "evidenceBearingSessions": 2,
-                    "cappedSessions": 1,
-                    "truncatedSessions": 1,
-                })
-            );
-        }
-
-        /// A quota section with no evidence serializes as not assessed,
-        /// never as an empty findings shape a view could read as clean.
-        #[test]
-        fn an_unassessed_quota_section_serializes_with_null_findings() {
-            let value = serde_json::to_value(InsightsReportPayload::from(report())).unwrap();
-            assert_eq!(value["quotaPressure"]["assessed"], false);
-            assert!(value["quotaPressure"]["findings"].is_null());
-        }
-
-        /// A provider-incidents section with no evidence serializes as not
-        /// assessed, never as an empty findings shape a view could read as
-        /// clean. Mirrors `an_unassessed_quota_section_serializes_with_null_findings`.
-        #[test]
-        fn an_unassessed_provider_incidents_section_serializes_with_null_findings() {
-            let value = serde_json::to_value(InsightsReportPayload::from(report())).unwrap();
-            assert_eq!(value["providerIncidents"]["assessed"], false);
-            assert!(value["providerIncidents"]["findings"].is_null());
-        }
-
-        #[test]
-        fn the_status_payload_serializes_camel_case() {
-            let value = serde_json::to_value(InsightsStatusPayload {
-                calculating: true,
-                pending: 4,
-                processing: 1,
-            })
-            .unwrap();
-            let keys: Vec<&str> = value
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect();
-            assert_eq!(keys, ["calculating", "pending", "processing"]);
         }
 
         #[test]

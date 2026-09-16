@@ -792,7 +792,7 @@ export type Interaction =
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
       kind: "surfaceStateObserved"
-      surface: StateSurface
+      surface: Surface
       state: SurfaceState
       origin: SurfaceOrigin
     }
@@ -835,7 +835,6 @@ export type Surface =
   | "settings"
   | "burn_checks"
 
-export type StateSurface = Surface | "insights"
 export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
