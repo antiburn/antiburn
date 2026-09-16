@@ -152,7 +152,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     },
     {
       id: "burnChecks",
-      label: "Burn checks",
+      label: "Checks",
       icon: Flame,
       render: ({ active }) => <BurnChecksView active={active} session={burnChecksSession} />,
     },

@@ -35,9 +35,9 @@ use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
-    BurnCheckTargetListPayload, ChecksReportPayload, CopyPromptFixBurnCheckOutcome,
-    CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir, HygieneSummaryPayload,
-    InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus,
+    BurnCheckSnoozePayload, BurnCheckTargetListPayload, ChecksReportPayload,
+    CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir,
+    HygieneSummaryPayload, LiveUsageSummary, OrchestrationStatus,
     PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
     RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
     SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
@@ -1141,7 +1141,7 @@ pub(crate) fn session_limit_allocations(
 /// `max_age` takes back over (see `usage_alerts::BACKGROUND_MAX_AGE`).
 const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(50);
 
-/// Return the last provider limit snapshot without reading a provider.
+/// Return cached limits and update inactive provider detection on a blocking thread.
 ///
 /// This remains separate from [`get_provider_usage`]. That payload carries no
 /// percentage, allowance, or reset anywhere, and a test proves it by
@@ -1156,9 +1156,25 @@ pub async fn get_live_usage(
     app: tauri::AppHandle,
     _utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
-    run_blocking(move || Ok(cached_live_usage(&app))).await
+    run_blocking(move || {
+        // With live usage off no collection pass runs, so this is the one
+        // place detection advances for the roster. Metadata-only here: the
+        // reader has not opted in.
+        let active = app
+            .try_state::<Store>()
+            .and_then(|store| store.settings().ok())
+            .is_some_and(|settings| settings.live_usage_active());
+        if !active && let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() {
+            let detection = provider_usage::live::detect_all(&live.sources, false);
+            live.store_detection(detection);
+        }
+        Ok(cached_live_usage(&app))
+    })
+    .await
 }
 
+/// Keep this reader cache-only because synchronous popover IPC calls it.
+/// Never read provider metadata or start subprocesses here.
 pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
     let settings = app
         .try_state::<Store>()
@@ -1176,7 +1192,9 @@ pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
             .unwrap_or_default();
         return LiveUsageSummary {
             meters: live
-                .map(|live| provider_usage::live::roster(&live.sources, &hidden))
+                .map(|live| {
+                    provider_usage::live::roster(&live.sources, &hidden, &live.detection_snapshot())
+                })
                 .unwrap_or_default(),
             ..LiveUsageSummary::default()
         };
@@ -1584,32 +1602,6 @@ fn insights_report_request(now_epoch: i64) -> ReportRequest {
     }
 }
 
-/// The thirty-day insights report for this machine's native environment.
-///
-/// Concurrent calls share one reduction (see [`InsightsController`]);
-/// none of them cancels a running one. Cancellation is only the explicit
-/// [`cancel_insights_report`] signal.
-#[tauri::command]
-pub async fn get_insights_report(app: tauri::AppHandle) -> CommandResult<InsightsReportPayload> {
-    // Opening the Insights pane asks for a scan pass now instead of
-    // waiting out a tick. This is a further call site of the shipped
-    // on-demand trigger — the same kick the popover and the other
-    // commands fire — not a new trigger class and not queue reordering.
-    app.state::<ScanController>()
-        .request(ScanTrigger::InsightsPane);
-    let data_dir = app.state::<Store>().state_dir().to_path_buf();
-    let request = insights_report_request(epoch_now());
-    let reduced = app
-        .state::<InsightsController>()
-        .settings_report(data_dir, request)
-        .await?;
-    let report = reduced.report;
-    crate::analytics::record_unrecognized_records(&app, &report.unrecognized_records);
-    crate::analytics::record_quota_incidents(&app, &report.quota_pressure);
-    crate::analytics::record_provider_incidents(&app, &report.provider_incidents);
-    Ok(report.into())
-}
-
 /// The bounded report data used by the popover All checks summary.
 #[tauri::command]
 pub async fn get_checks_report(
@@ -1623,20 +1615,92 @@ pub async fn get_checks_report(
         return Err(fail("the Checks consumer ID is invalid"));
     }
     let app = window.app_handle();
+    crate::insights_worker::wake(app);
     let data_dir = app.state::<Store>().state_dir().to_path_buf();
     let request = insights_report_request(epoch_now());
     let reduced = app
         .state::<InsightsController>()
         .checks_report(data_dir, request, consumer_id)
         .await?;
-    let mut payload = ChecksReportPayload::from_report(
+    // The report carries three measurements that no other command reduces:
+    // unknown record vocabulary, quota incidents, and provider incidents.
+    // Each recorder compares the outcome against the last one it sent, so
+    // repeated reports of the same state record nothing.
+    crate::analytics::record_unrecognized_records(app, &reduced.report.unrecognized_records);
+    crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
+    crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
+    let payload = ChecksReportPayload::from_report(
         &reduced.report,
         reduced.evidence_settled,
         reduced.pending_evidence,
     );
     #[cfg(debug_assertions)]
-    crate::tray::simulate_burn_checks(app, &mut payload);
+    let payload = {
+        let mut payload = payload;
+        crate::tray::simulate_burn_checks(app, &mut payload);
+        payload
+    };
     Ok(payload)
+}
+
+fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
+    let now_ms = epoch_now() * 1_000;
+    let stored = store.burn_check_snoozes().map_err(fail)?;
+    let snoozes: Vec<BurnCheckSnoozePayload> = serde_json::from_str(&stored).unwrap_or_default();
+    Ok(snoozes
+        .into_iter()
+        .filter(|snooze| snooze.until.is_none_or(|until| until > now_ms))
+        .collect())
+}
+
+/// List active reader-owned burn-check snoozes.
+#[tauri::command]
+pub async fn list_burn_check_snoozes(
+    app: tauri::AppHandle,
+) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
+    let store = app.state::<Store>().inner().clone();
+    run_blocking(move || current_burn_check_snoozes(&store)).await
+}
+
+/// Save or replace one check-level snooze.
+#[tauri::command]
+pub async fn set_burn_check_snooze(
+    app: tauri::AppHandle,
+    snooze: BurnCheckSnoozePayload,
+) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
+    let store = app.state::<Store>().inner().clone();
+    let saved = run_blocking(move || {
+        let mut snoozes = current_burn_check_snoozes(&store)?;
+        snoozes.retain(|current| current.detector != snooze.detector);
+        snoozes.push(snooze);
+        store
+            .save_burn_check_snoozes(&serde_json::to_string(&snoozes).map_err(fail)?)
+            .map_err(fail)?;
+        Ok(snoozes)
+    })
+    .await?;
+    let _ = app.emit(BURN_CHECK_SNOOZES_CHANGED_EVENT, &saved);
+    Ok(saved)
+}
+
+/// Remove one check-level snooze.
+#[tauri::command]
+pub async fn clear_burn_check_snooze(
+    app: tauri::AppHandle,
+    detector: BurnCheckDetectorId,
+) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
+    let store = app.state::<Store>().inner().clone();
+    let saved = run_blocking(move || {
+        let mut snoozes = current_burn_check_snoozes(&store)?;
+        snoozes.retain(|snooze| snooze.detector != detector);
+        store
+            .save_burn_check_snoozes(&serde_json::to_string(&snoozes).map_err(fail)?)
+            .map_err(fail)?;
+        Ok(snoozes)
+    })
+    .await?;
+    let _ = app.emit(BURN_CHECK_SNOOZES_CHANGED_EVENT, &saved);
+    Ok(saved)
 }
 
 /// Restricts burn-check remediation to the current Checks surface.
@@ -1853,6 +1917,9 @@ fn prompt_fix_outcome(
                 RemediationUnavailableReason::EssentialIdentityUnavailable => {
                     PromptFixUnavailableReason::EssentialIdentityUnavailable
                 }
+                RemediationUnavailableReason::ProtectedBuiltInTool => {
+                    PromptFixUnavailableReason::ProtectedBuiltInTool
+                }
                 RemediationUnavailableReason::DeferredAgent => {
                     PromptFixUnavailableReason::DeferredAgent
                 }
@@ -2004,24 +2071,6 @@ pub fn cancel_checks_report(
         .state::<InsightsController>()
         .release_checks(&consumer_id);
     Ok(())
-}
-
-/// Report calculation state plus the evidence backlog for the report's scope.
-#[tauri::command]
-pub async fn get_insights_status(app: tauri::AppHandle) -> CommandResult<InsightsStatusPayload> {
-    run_blocking(move || {
-        let calculating = app.state::<InsightsController>().is_calculating();
-        let backlog = app
-            .state::<Store>()
-            .evidence_backlog_counts(&environment_key(None))
-            .map_err(fail)?;
-        Ok(InsightsStatusPayload {
-            calculating,
-            pending: backlog.pending,
-            processing: backlog.processing,
-        })
-    })
-    .await
 }
 
 /// The aggregate hygiene numbers for the sessions in the activity window.
@@ -2234,16 +2283,6 @@ fn session_hygiene_payload(
     }
 }
 
-/// Stop the running report reduction, when one runs.
-///
-/// The pane fires this when it closes; shutdown fires it too. The
-/// reduction is read-only, so a cancelled run leaves the durable
-/// evidence state untouched.
-#[tauri::command]
-pub fn cancel_insights_report(app: tauri::AppHandle) {
-    app.state::<InsightsController>().release_settings();
-}
-
 /* -------------------------------------------------------------------------
  * Sources
  * ---------------------------------------------------------------------- */
@@ -2291,6 +2330,7 @@ pub const SESSION_ENTRY_CHANGED_EVENT: &str = "sessions:entry-changed";
 /// The payload is one [`crate::session_lifecycle::SessionEvent`].
 pub const SESSION_LIFECYCLE_EVENT: &str = "session:lifecycle";
 pub const CHECKS_REPORT_CHANGED_EVENT: &str = "checks:report-changed";
+pub const BURN_CHECK_SNOOZES_CHANGED_EVENT: &str = "checks:snoozes-changed";
 
 /// Re-derive the repository list from what is on disk right now.
 #[tauri::command]
@@ -2814,6 +2854,15 @@ mod tests {
             .unwrap(),
             CopyPromptFixBurnCheckTargetOutcome::Unavailable {
                 reason: PromptFixUnavailableReason::PromptSizeLimit
+            }
+        ));
+        assert!(matches!(
+            prompt_fix_outcome(Err(ControllerError::PromptUnavailable(
+                antiburn_local::remediation::RemediationUnavailableReason::ProtectedBuiltInTool
+            )))
+            .unwrap(),
+            CopyPromptFixBurnCheckTargetOutcome::Unavailable {
+                reason: PromptFixUnavailableReason::ProtectedBuiltInTool
             }
         ));
         assert!(prompt_fix_outcome(Err(ControllerError::PersistenceFailed)).is_err());

@@ -4,6 +4,7 @@ import { SessionRow, type SessionListEntry } from "../../../components/session/S
 import { SkeletonCard } from "../../../components/ui/Skeleton"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { INITIAL_SESSION_HYGIENE } from "../../../lib/presentation/sessionHygiene"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
 import {
   sessionHygieneFor,
   sessionHygieneIdentities,
@@ -27,6 +28,7 @@ export function OverviewRecentSessions({
   onOpenAll: () => void
 }) {
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(entries ?? []))
+  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
   return (
     <section
       aria-label="Recent sessions"
@@ -61,6 +63,7 @@ export function OverviewRecentSessions({
                       : INITIAL_SESSION_HYGIENE
                   }
                   renderAgentIcon={renderAgentIcon}
+                  snoozedDetectors={snoozedDetectors}
                   showCost
                   compact
                   {...(entry.sessionId ? { onSelect: () => onSelect(entry) } : {})}

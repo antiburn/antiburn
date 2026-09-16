@@ -52,7 +52,7 @@ pub enum EventName {
     /// Something failed, by category. No message, no path, no backtrace.
     #[cfg(feature = "analytics")]
     ErrorOccurred,
-    /// An Insights cohort contains unknown record vocabulary.
+    /// An assessed cohort contains unknown record vocabulary.
     UnrecognizedRecordsObserved,
     /// Claude's limit-reset diagnostic changed during this run.
     #[cfg(feature = "analytics")]
@@ -99,12 +99,16 @@ pub enum EventName {
     /// The Sessions sidebar filter changed to a different selection.
     #[cfg(feature = "analytics")]
     SessionFilterSelected,
-    /// An Insights cohort's quota-pressure section has assessed incidents,
+    /// An assessed cohort's quota-pressure section has assessed incidents,
     /// with a bucketed hit count per limit kind.
     QuotaIncidentsObserved,
-    /// An Insights cohort's provider-incidents section has assessed
+    /// An assessed cohort's provider-incidents section has assessed
     /// incidents, with a bucketed hit count per incident kind.
     ProviderIncidentsObserved,
+    /// The evidence worker published a session whose transcript gained an
+    /// incident within the last two hours that its previous published
+    /// evidence did not carry.
+    ProviderIncidentsIngested,
 }
 
 /// Every event this application may send.
@@ -144,6 +148,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::SessionFilterSelected,
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
+    EventName::ProviderIncidentsIngested,
 ];
 
 #[cfg(feature = "analytics")]
@@ -177,6 +182,7 @@ impl EventName {
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
+            EventName::ProviderIncidentsIngested => "antiburn.provider_incidents_ingested",
         }
     }
 }
@@ -452,7 +458,6 @@ pub enum StateSurface {
     Hud,
     HudDetail,
     Settings,
-    Insights,
     BurnChecks,
 }
 
@@ -536,7 +541,6 @@ pub enum SettingsPane {
     Privacy,
     Notifications,
     Usage,
-    Insights,
     About,
 }
 
@@ -742,7 +746,6 @@ wire_values!(StateSurface, {
     StateSurface::Hud => "hud",
     StateSurface::HudDetail => "hud_detail",
     StateSurface::Settings => "settings",
-    StateSurface::Insights => "insights",
     StateSurface::BurnChecks => "burn_checks",
 });
 
@@ -820,7 +823,6 @@ wire_values!(SettingsPane, {
     SettingsPane::Privacy => "privacy",
     SettingsPane::Notifications => "notifications",
     SettingsPane::Usage => "usage",
-    SettingsPane::Insights => "insights",
     SettingsPane::About => "about",
 });
 
@@ -1418,12 +1420,13 @@ mod tests {
                 | EventName::BurnCheckOutcomeObserved
                 | EventName::SessionFilterSelected
                 | EventName::QuotaIncidentsObserved
-                | EventName::ProviderIncidentsObserved => true,
+                | EventName::ProviderIncidentsObserved
+                | EventName::ProviderIncidentsIngested => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            27,
+            28,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -1577,6 +1580,65 @@ mod tests {
         assert_eq!(name, EventName::SessionFilterSelected);
         assert_eq!(facts.label, Some("notable"));
         assert_eq!(facts.detail, None);
+    }
+
+    #[test]
+    fn burn_check_interactions_only_resolve_closed_safe_facts() {
+        fn assert_safe(facts: Facts, detail: Option<&'static str>, origin: Option<&'static str>) {
+            assert_eq!(facts.detail, detail);
+            assert_eq!(facts.origin, origin);
+            assert_eq!(facts.bucket, None);
+            assert_eq!(facts.label, None);
+            assert_eq!(facts.usage_band, None);
+            assert_eq!(facts.response_shape, None);
+            assert_eq!(facts.eligibility, None);
+            assert_eq!(facts.ineligible_reason, None);
+            assert_eq!(facts.experiment, None);
+            assert_eq!(facts.reset_arm, None);
+            assert_eq!(facts.reset_availability, None);
+            assert_eq!(facts.resets_per_week, None);
+            assert_eq!(facts.next_reset_available, None);
+            assert_eq!(facts.plan, None);
+            assert_eq!(facts.factor_band, None);
+            assert_eq!(facts.residual_band, None);
+            assert_eq!(facts.resource_usage, None);
+            assert_eq!(facts.unrecognized_types, None);
+        }
+
+        for outcome in [
+            AutoFixReviewOutcome::Ready,
+            AutoFixReviewOutcome::Stale,
+            AutoFixReviewOutcome::Expired,
+            AutoFixReviewOutcome::Conflict,
+            AutoFixReviewOutcome::Unavailable,
+            AutoFixReviewOutcome::Failed,
+        ] {
+            let (_, facts) = Interaction::BurnCheckAutoFixReviewed { outcome }.resolve();
+            assert_safe(facts, Some(outcome.as_str()), None);
+        }
+        let (_, facts) = Interaction::BurnCheckAutoFixConfirmed.resolve();
+        assert_safe(facts, None, None);
+        for outcome in [
+            AutoFixOutcome::AppliedAwaitingVerification,
+            AutoFixOutcome::RecoveryNeeded,
+            AutoFixOutcome::Stale,
+            AutoFixOutcome::Expired,
+            AutoFixOutcome::Conflict,
+            AutoFixOutcome::Unavailable,
+            AutoFixOutcome::Failed,
+        ] {
+            let (_, facts) = Interaction::BurnCheckAutoFixCompleted { outcome }.resolve();
+            assert_safe(facts, Some(outcome.as_str()), None);
+        }
+        for (outcome, origin) in [
+            (BurnCheckOutcome::Verified, BurnCheckOrigin::Passive),
+            (BurnCheckOutcome::Verified, BurnCheckOrigin::Action),
+            (BurnCheckOutcome::Recurred, BurnCheckOrigin::Passive),
+            (BurnCheckOutcome::Recurred, BurnCheckOrigin::Action),
+        ] {
+            let (_, facts) = Interaction::BurnCheckOutcomeObserved { outcome, origin }.resolve();
+            assert_safe(facts, Some(outcome.as_str()), Some(origin.as_str()));
+        }
     }
 
     /// An agent filter with no recognized harness reports the filter kind

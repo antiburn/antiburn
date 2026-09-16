@@ -48,11 +48,10 @@ impl SessionReader for OpenCodeSessionReader {
         "opencode"
     }
 
-    fn capabilities(&self, source: &RawSource) -> crate::analysis::SourceCapabilities {
+    fn capabilities(&self, input: &SessionInput) -> crate::analysis::SourceCapabilities {
         let mut capabilities = crate::analysis::SourceCapabilities::opencode();
-        if matches!(source, RawSource::Sqlite(_)) {
-            capabilities.source_format = crate::analysis::SourceFormat::OpenCodeSqliteV2;
-        }
+        capabilities.source_format =
+            input.source_format_or(crate::analysis::SourceFormat::OpenCodeJsonl);
         capabilities
     }
 
@@ -67,6 +66,7 @@ impl SessionReader for OpenCodeSessionReader {
         input: &SessionInput,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
+        validate_input(input)?;
         let mut summary = match &input.source {
             RawSource::File(path) => {
                 self.visit_reader(BufReader::new(File::open(path)?), &|| false, sink)?
@@ -78,6 +78,12 @@ impl SessionReader for OpenCodeSessionReader {
             }
             RawSource::Sqlite(path) => {
                 self.visit_database(path, &input.session_id, &|| false, sink)?
+            }
+            RawSource::ClineBundle { .. } => {
+                anyhow::bail!("Cline bundle is not an OpenCode source")
+            }
+            RawSource::KiroCliV2Bundle { .. } => {
+                anyhow::bail!("Kiro bundle is not an OpenCode source")
             }
         };
         if input.fork_parent_session_id.is_some() {
@@ -99,8 +105,10 @@ impl SessionReader for OpenCodeSessionReader {
         let RawSource::Sqlite(path) = &input.source else {
             anyhow::bail!("a claimed OpenCode database source must be SQLite");
         };
+        validate_input(input)?;
         let conn = open_database(path)?;
         conn.execute_batch("BEGIN")?;
+        validate_database_schema(&conn)?;
         let actual = db_session_fingerprint_connection(&conn, &input.session_id)
             .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
         if actual.as_deref() != Some(claimed_fingerprint) {
@@ -115,6 +123,16 @@ impl SessionReader for OpenCodeSessionReader {
                 .push(PartialReason::AttributionIncomplete);
         }
         conn.execute_batch("COMMIT")?;
+        // Reopen after the transaction. A writer can commit after the initial
+        // fingerprint but before this read completes, including through WAL.
+        let verification = open_database(path)?;
+        let observed = db_session_fingerprint_connection(&verification, &input.session_id)
+            .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
+        if observed.as_deref() != Some(claimed_fingerprint) {
+            return Ok(VisitOutcome::SourceChanged(
+                SourceChangedReason::FingerprintMismatch,
+            ));
+        }
         sink.finish(summary);
         Ok(VisitOutcome::AcceptedFull)
     }
@@ -166,6 +184,7 @@ impl OpenCodeSessionReader {
     ) -> anyhow::Result<SessionSummary> {
         let conn = open_database(path)?;
         conn.execute_batch("BEGIN")?;
+        validate_database_schema(&conn)?;
         let summary = visit_database_connection(&conn, session_id, cancel, sink)?;
         conn.execute_batch("COMMIT")?;
         Ok(summary)
@@ -178,6 +197,34 @@ fn open_database(path: &Path) -> anyhow::Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .with_context(|| format!("opening OpenCode database {}", path.display()))
+}
+
+fn validate_input(input: &SessionInput) -> anyhow::Result<()> {
+    use crate::analysis::SourceFormat;
+
+    match (input.source_format, &input.source) {
+        (SourceFormat::OpenCodeSqliteV2, RawSource::Sqlite(_))
+        | (SourceFormat::OpenCodeJsonl, RawSource::File(_) | RawSource::Jsonl(_))
+        | (SourceFormat::Uncharacterized, _) => Ok(()),
+        (format, _) => anyhow::bail!("OpenCode source format {format:?} does not match its source"),
+    }
+}
+
+fn validate_database_schema(connection: &Connection) -> anyhow::Result<()> {
+    for (table, columns) in [
+        ("session", &["id", "time_created"] as &[_]),
+        ("message", &["id", "session_id", "data"] as &[_]),
+        ("part", &["message_id", "data"] as &[_]),
+    ] {
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let found: HashSet<String> = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !columns.iter().all(|column| found.contains(*column)) {
+            anyhow::bail!("OpenCode SQLite source has an unsupported {table} schema");
+        }
+    }
+    Ok(())
 }
 
 fn visit_database_connection(
@@ -733,7 +780,8 @@ fn message_event(value: &Value, fallback_ts: Option<i64>) -> Option<NormalizedEv
     event.ts_ms?;
     event.model = string_field(object, &["modelID", "modelId", "model"]);
     event.provider = string_field(object, &["providerID"]);
-    event.thinking_mode = string_field(object, &["variant"]);
+    // A variant label does not prove a reasoning policy.
+    event.thinking_mode = None;
     event.usage = object
         .get("tokens")
         .and_then(Value::as_object)
@@ -1072,6 +1120,35 @@ mod tests {
 
         assert!(state.pending.is_none());
         assert_eq!(sink.0, 10_000);
+    }
+
+    #[test]
+    fn sqlite_admission_requires_the_v2_table_contract() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session (id TEXT, time_created INTEGER);
+                 CREATE TABLE message (id TEXT, session_id TEXT, data TEXT);",
+            )
+            .unwrap();
+        assert!(validate_database_schema(&connection).is_err());
+
+        connection
+            .execute_batch("CREATE TABLE part (message_id TEXT, data TEXT);")
+            .unwrap();
+        assert!(validate_database_schema(&connection).is_ok());
+    }
+
+    #[test]
+    fn explicit_format_cannot_be_reclassified_from_the_raw_source() {
+        let input = SessionInput {
+            agent: "opencode".to_owned(),
+            session_id: "synthetic".to_owned(),
+            source: RawSource::Jsonl(String::new()),
+            source_format: crate::analysis::SourceFormat::OpenCodeSqliteV2,
+            fork_parent_session_id: None,
+        };
+        assert!(validate_input(&input).is_err());
     }
 
     /// Collects every `TurnContent` record a visit emits, in order.

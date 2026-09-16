@@ -298,6 +298,7 @@ mod tests {
                         .join("\n"),
                 ),
                 fork_parent_session_id: None,
+                source_format: Default::default(),
             };
             reader_for("claude").visit(&input, &mut sink).unwrap();
             let mut facts = TurnFacts::default();

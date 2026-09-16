@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import type {
   LiveProviderUsagePayload,
   LiveUsageForecastPayload,
+  LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
   ProviderUsagePayload,
@@ -1023,6 +1024,39 @@ describe("UsageView — plan limits layered over local estimates", () => {
     )
 
     expect(screen.getByRole("status")).toHaveTextContent(/sign in again/i)
+  })
+
+  it.each<{ error: LiveUsageSourceErrorPayload; note: string }>([
+    {
+      error: {
+        source: "claude-usage-fetch",
+        provider: "anthropic",
+        displayName: "Claude",
+        category: "unavailable",
+        detail: "keychainUnreadable",
+      },
+      note: "Couldn't read Claude Code's login from the Keychain. If a prompt appears, choose Always Allow.",
+    },
+    {
+      error: {
+        source: "antigravity-usage-fetch",
+        provider: "google",
+        displayName: "Google",
+        category: "authentication",
+        detail: "refreshUnsupported",
+      },
+      note: "Antigravity's login has expired. Sign in inside Antigravity again.",
+    },
+  ])("shows qualified guidance for $error.detail", ({ error, note }) => {
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({ providers: [], errors: [error] })}
+        now={NOW}
+      />,
+    )
+    expect(screen.getByRole("status")).toHaveTextContent(note)
+    expect(screen.queryByText(/Check your connection/)).not.toBeInTheDocument()
   })
 
   it("shows rate-limit, schema, and unavailable live failures", () => {

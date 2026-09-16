@@ -110,7 +110,7 @@ fn v43_adds_remediation_and_model_attribution() {
     connection.pragma_update(None, "user_version", 42).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v43").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 47);
+    assert_eq!(store.schema_version().unwrap(), 48);
     let connection = store.lock();
     let columns: i64 = connection
         .query_row(
@@ -167,7 +167,7 @@ fn v44_adds_nullable_snapshots_and_strict_contributions_without_backfill() {
 
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v44").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 47);
+    assert_eq!(store.schema_version().unwrap(), 48);
     assert!(store.remediation_display_snapshot("old").unwrap().is_none());
     let connection = store.lock();
     let strict: i64 = connection
@@ -189,7 +189,7 @@ fn v46_adds_reasoning_attribution_without_rewriting_model_columns() {
     connection.pragma_update(None, "user_version", 45).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v46").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 47);
+    assert_eq!(store.schema_version().unwrap(), 48);
     let columns: i64 = store
         .lock()
         .query_row(
@@ -764,6 +764,59 @@ fn auto_write_does_not_upgrade_an_existing_action_watch() {
     assert_eq!(existing.remediation_id, watch.remediation_id);
     assert_eq!(existing.state, RemediationState::Watching);
     assert_eq!(existing.effective_boundary_ms, Some(10_000));
+}
+
+#[test]
+fn auto_write_upgrades_an_unverifiable_action_watch() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    let mut prompt_input = remediation("prompt", "target", RemediationState::Watching, 10);
+    prompt_input.result_json = r#"{"version":1,"verification":{"status":"verificationUnavailable"},"savings":{"status":"unavailable"}}"#.into();
+    let prompt = store
+        .create_or_reuse_remediation(&prompt_input, std::slice::from_ref(&guard))
+        .unwrap()
+        .unwrap();
+    let mut snapshot = display_snapshot(&prompt.remediation_id);
+    snapshot.origin = "action".into();
+    snapshot.effective_boundary_ms = prompt.effective_boundary_ms.unwrap();
+    snapshot.verified_boundary_ms = None;
+    store
+        .upsert_remediation_display_snapshot(&snapshot)
+        .unwrap();
+    assert!(
+        store
+            .mark_remediation_action_joined(&prompt.remediation_id, 10_000)
+            .unwrap()
+    );
+
+    let reserved = store
+        .create_or_reuse_remediation(
+            &remediation("auto", "target", RemediationState::Reserved, 20),
+            &[guard],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(reserved.remediation_id, prompt.remediation_id);
+    assert_eq!(reserved.state, RemediationState::Reserved);
+
+    assert!(
+        store
+            .cancel_remediation_reservation(&reserved.remediation_id)
+            .unwrap()
+    );
+    let restored = store
+        .remediation(&reserved.remediation_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.state, RemediationState::Watching);
+    assert_eq!(restored.result_json, prompt.result_json);
+    assert_eq!(restored.action_joined_at_ms, Some(10_000));
+    assert_eq!(
+        store
+            .remediation_display_snapshot(&restored.remediation_id)
+            .unwrap(),
+        Some(snapshot)
+    );
 }
 
 #[test]

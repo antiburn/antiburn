@@ -10,14 +10,14 @@
 //! around them belongs to the views — so these payloads carry values and facts,
 //! never labels.
 
+use crate::provider_usage::live::{Detection, LoginCarrier, SourceErrorDetail};
 use antiburn_local::analysis::{
     ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, ModelRun,
-    ProviderIncidentKind, QuotaLimitKind, RepeatedContextAccounting, SessionCost, SessionEvidence,
-    SourceFormat,
+    RepeatedContextAccounting, SessionCost, SessionEvidence, SourceFormat,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
-    ProviderIncidentsSection, QuotaPressureSection, ReportCatalogs, SessionBadge, model_family,
+    BadgeId, BadgeStatus, DetectorId, EfficiencyReport, NotAssessedReason, ReportCatalogs,
+    SessionBadge, model_family,
 };
 use antiburn_local::pricing::canonical_model_key;
 use serde::{Deserialize, Serialize};
@@ -483,176 +483,14 @@ pub struct SessionLimitAllocationSummary {
     pub generated_at: String,
 }
 
-/* -------------------------------------------------------------------------
- * Local insights report
- *
- * Mirrors of `antiburn_local::insights` report types. The payloads carry
- * counts, statuses, and structured reasons only — no transcript content,
- * no session identifiers, no evidence text. The category and reason names
- * are identifiers; the pane owns every reader-facing word.
- * ---------------------------------------------------------------------- */
-
-/// Coverage of the report window: every discovered session, partitioned
-/// by why it is or is not in the assessed cohort (FR-12).
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsCoveragePayload {
-    /// Every session the window covers — the coverage denominator. It is
-    /// always at least as large as the assessed cohort.
-    pub discovered: u64,
-    pub unknown_start: u64,
-    pub pending: u64,
-    pub processing: u64,
-    pub failed: u64,
-    pub unsupported: u64,
-    pub stale: u64,
-    pub ready: u64,
-    pub actively_growing: u64,
-    pub awaiting_provider_support: u64,
-}
-
-/// The exclusive status of one report category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum InsightsCategoryStatus {
-    Findings,
-    Clean,
-    NotAssessed,
-}
-
-/// One of the nine report categories, with its status and denominators.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsCategoryPayload {
-    /// Stable category identifier, e.g. `sessionsOverDepth`.
-    pub id: &'static str,
-    /// Sessions whose capabilities let this category assess them.
-    pub eligible: u64,
-    /// Sessions this category actually assessed.
-    pub assessed: u64,
-    pub status: InsightsCategoryStatus,
-    /// Sessions with at least one finding. `None` unless the status is
-    /// `findings`.
-    pub finding_sessions: Option<u64>,
-    /// Structured reason identifier. `None` unless the status is
-    /// `notAssessed`.
-    pub not_assessed_reason: Option<&'static str>,
-}
-
-/// Deduplicated hits for one quota limit kind.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsQuotaLimitPayload {
-    /// Stable limit-kind identifier, e.g. `rollingWindow`.
-    pub kind: &'static str,
-    pub hits: u64,
-}
-
-/// Bounded quota-pressure findings from transcript-attributable incidents.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsQuotaFindingsPayload {
-    pub total_hits: u64,
-    pub hard_hits: u64,
-    pub warnings: u64,
-    pub affected_session_count: u64,
-    pub hits_by_limit_kind: Vec<InsightsQuotaLimitPayload>,
-    /// Bounded set of transcript-attributed model names.
-    pub affected_models: Vec<String>,
-    pub affected_models_truncated: bool,
-    pub first_observed_ts_ms: i64,
-    pub last_observed_ts_ms: i64,
-}
-
-/// The quota-pressure section, outside the nine-category contract.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsQuotaPressurePayload {
-    /// False exactly when the transcripts carry no quota evidence.
-    pub assessed: bool,
-    pub findings: Option<InsightsQuotaFindingsPayload>,
-}
-
-/// Deduplicated hits for one provider-incident kind.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsProviderIncidentKindPayload {
-    /// Stable incident-kind identifier, e.g. `capacity`.
-    pub kind: &'static str,
-    pub hits: u64,
-}
-
-/// Bounded provider-incident findings from transcript-attributable incidents.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsProviderIncidentFindingsPayload {
-    pub total_hits: u64,
-    pub affected_session_count: u64,
-    pub hits_by_kind: Vec<InsightsProviderIncidentKindPayload>,
-    /// Bounded set of transcript-attributed model names.
-    pub affected_models: Vec<String>,
-    pub affected_models_truncated: bool,
-    pub first_observed_ts_ms: i64,
-    pub last_observed_ts_ms: i64,
-}
-
-/// The provider-incidents section, outside the nine-category contract.
-///
-/// A sibling of [`InsightsQuotaPressurePayload`]: this section carries
-/// provider-side failures the user's own usage did not cause, so it is
-/// never folded into quota pressure.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsProviderIncidentsPayload {
-    /// False exactly when the transcripts carry no provider incident evidence.
-    pub assessed: bool,
-    pub findings: Option<InsightsProviderIncidentFindingsPayload>,
-}
-
-/// Bounded unknown record vocabulary from the local evidence cohort.
-///
-/// Type discriminators are schema vocabulary, not transcript content.
-/// The engine limits each value to 256 bytes and each report to 16 values.
-/// The counts are not exclusive. The engine bounds the diagnostic markers for both limit counts.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsUnrecognizedRecordsPayload {
-    pub types: Vec<String>,
-    pub types_truncated: bool,
-    pub sessions_with_types: u64,
-    pub inert_sessions: u64,
-    pub evidence_bearing_sessions: u64,
-    pub capped_sessions: u64,
-    pub truncated_sessions: u64,
-}
-
-/// The thirty-day insights report, as the pane renders it.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsReportPayload {
-    /// The one environment scope this report covers (`native`, or
-    /// `wsl:<distro>`). A report never combines scopes.
-    pub environment_key: String,
-    pub window_start_epoch: i64,
-    pub window_end_epoch: i64,
-    pub computed_at_epoch: i64,
-    pub coverage: InsightsCoveragePayload,
-    /// Size of the assessed cohort. Presented separately from the
-    /// coverage denominator, never in its place.
-    pub assessed_sessions: u64,
-    pub categories: Vec<InsightsCategoryPayload>,
-    pub quota_pressure: InsightsQuotaPressurePayload,
-    pub provider_incidents: InsightsProviderIncidentsPayload,
-    pub unrecognized_records: InsightsUnrecognizedRecordsPayload,
-    pub catalog_revision: i64,
-}
-
 /// One detector rendered by All checks.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
     pub finding: u64,
+    /// Agents with findings, or complete clean results when no finding exists.
+    pub agents: Vec<String>,
     pub clean: u64,
     pub unavailable: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
@@ -686,6 +524,23 @@ pub enum BurnCheckDetectorId {
     CacheChurn,
 }
 
+/// A reader-owned suppression for one entire burn check.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckSnoozePayload {
+    pub detector: BurnCheckDetectorId,
+    /// This release supports the whole check. The field reserves target scope.
+    pub scope: BurnCheckSnoozeScope,
+    /// Milliseconds since the Unix epoch. `None` means the reader chose forever.
+    pub until: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckSnoozeScope {
+    Check,
+}
+
 impl From<BurnCheckDetectorId> for DetectorId {
     fn from(value: BurnCheckDetectorId) -> Self {
         match value {
@@ -713,6 +568,7 @@ pub enum BurnCheckSourceFormat {
     CursorJsonl,
     CursorCliAgentJsonl,
     CursorCliStoreDb,
+    CursorChatStoreDb,
     CursorIdeComposer,
     CursorLegacyChatJson,
     AntigravityJson,
@@ -723,8 +579,12 @@ pub enum BurnCheckSourceFormat {
     CopilotCliJsonl,
     CopilotIdeChatJson,
     ClineSessionJson,
+    ClineMessagesContractV1,
     KiroSessionJson,
     KiroChat,
+    KiroCliV2Bundle,
+    KiroCliV3Bundle,
+    KiroChatSaveExport,
     AmpThreadJson,
     AmpFileChanges,
     WindsurfWorkspaceJson,
@@ -744,6 +604,7 @@ impl From<SourceFormat> for BurnCheckSourceFormat {
             SourceFormat::CursorJsonl => Self::CursorJsonl,
             SourceFormat::CursorCliAgentJsonl => Self::CursorCliAgentJsonl,
             SourceFormat::CursorCliStoreDb => Self::CursorCliStoreDb,
+            SourceFormat::CursorChatStoreDb => Self::CursorChatStoreDb,
             SourceFormat::CursorIdeComposer => Self::CursorIdeComposer,
             SourceFormat::CursorLegacyChatJson => Self::CursorLegacyChatJson,
             SourceFormat::AntigravityJson => Self::AntigravityJson,
@@ -754,8 +615,12 @@ impl From<SourceFormat> for BurnCheckSourceFormat {
             SourceFormat::CopilotCliJsonl => Self::CopilotCliJsonl,
             SourceFormat::CopilotIdeChatJson => Self::CopilotIdeChatJson,
             SourceFormat::ClineSessionJson => Self::ClineSessionJson,
+            SourceFormat::ClineMessagesContractV1 => Self::ClineMessagesContractV1,
             SourceFormat::KiroSessionJson => Self::KiroSessionJson,
             SourceFormat::KiroChat => Self::KiroChat,
+            SourceFormat::KiroCliV2Bundle => Self::KiroCliV2Bundle,
+            SourceFormat::KiroCliV3Bundle => Self::KiroCliV3Bundle,
+            SourceFormat::KiroChatSaveExport => Self::KiroChatSaveExport,
             SourceFormat::AmpThreadJson => Self::AmpThreadJson,
             SourceFormat::AmpFileChanges => Self::AmpFileChanges,
             SourceFormat::WindsurfWorkspaceJson => Self::WindsurfWorkspaceJson,
@@ -1019,6 +884,9 @@ pub struct BurnCheckTargetPayload {
     pub finding: BurnCheckFindingPayload,
     pub display: BurnCheckDisplayFactsPayload,
     pub occurrence_count: u64,
+    pub affected_session_count: u64,
+    pub project_name: Option<String>,
+    pub project_location: Option<String>,
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
@@ -1086,8 +954,10 @@ pub struct AutoFixReviewPayload {
     pub scope: BurnCheckScopeKind,
     pub setting: AutoFixSetting,
     pub config_file: String,
+    pub selector_label: String,
     pub current_value: String,
     pub proposed_value: String,
+    pub behavior_override_warning: bool,
     pub effect: AutoFixEffect,
     pub side_effect: AutoFixSideEffect,
 }
@@ -1097,13 +967,25 @@ pub struct AutoFixReviewPayload {
 pub enum AutoFixSetting {
     Model,
     Reasoning,
+    Compaction,
+    SubagentModel,
+    McpServer,
+    BuiltInTool,
+    Skill,
+    FastMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AutoFixEffect {
-    FutureModelSelection,
-    FutureReasoningEffort,
+    ModelSelection,
+    ReasoningEffort,
+    SessionCompaction,
+    WorkerModelSelection,
+    McpAvailability,
+    ToolAvailability,
+    SkillAvailability,
+    ServiceTierSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1111,6 +993,12 @@ pub enum AutoFixEffect {
 pub enum AutoFixSideEffect {
     ModelBehaviorMayChange,
     ResponsesMayUseLessReasoning,
+    EarlierSessionSummarization,
+    WorkerBehaviorMayChange,
+    ServerWillNotBeAvailable,
+    ToolWillNotBeAvailable,
+    SkillWillNotBeAvailable,
+    ResponsesMayTakeLonger,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1168,6 +1056,7 @@ pub enum PromptFixUnavailableReason {
     TargetNotFound,
     PromptSizeLimit,
     EssentialIdentityUnavailable,
+    ProtectedBuiltInTool,
     DeferredAgent,
     UnsupportedSourceFormat,
     CheckUnsupportedForAgent,
@@ -1200,18 +1089,6 @@ pub enum CopyPromptFixBurnCheckTargetOutcome {
 pub enum CopyPromptFixBurnCheckOutcome {
     PromptReady { prompt: String },
     Unavailable,
-}
-
-/// Report calculation state plus the evidence backlog counts.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InsightsStatusPayload {
-    /// True while a report reduction runs.
-    pub calculating: bool,
-    /// Evidence rows that wait for processing in this report's scope.
-    pub pending: u64,
-    /// Evidence rows a worker is processing now, in this report's scope.
-    pub processing: u64,
 }
 
 /// One session identity requested for a hygiene badge reduction.
@@ -1574,20 +1451,6 @@ impl SessionHygienePayload {
     }
 }
 
-fn detector_id_str(id: DetectorId) -> &'static str {
-    match id {
-        DetectorId::SessionsOverDepth => "sessionsOverDepth",
-        DetectorId::ModelOverthinking => "modelOverthinking",
-        DetectorId::OverpoweredSubagents => "overpoweredSubagents",
-        DetectorId::UnusedMcpServers => "unusedMcpServers",
-        DetectorId::UnusedBuiltInTools => "unusedBuiltInTools",
-        DetectorId::UnusedSkills => "unusedSkills",
-        DetectorId::OldModelUsage => "oldModelUsage",
-        DetectorId::OveruseOfFastMode => "overuseOfFastMode",
-        DetectorId::CacheChurn => "cacheChurn",
-    }
-}
-
 impl From<DetectorId> for BurnCheckDetectorId {
     fn from(value: DetectorId) -> Self {
         match value {
@@ -1628,6 +1491,7 @@ impl From<antiburn_local::remediation::RemediationUnavailableReason>
             RemediationUnavailableReason::EssentialIdentityUnavailable => {
                 Self::EssentialIdentityUnavailable
             }
+            RemediationUnavailableReason::ProtectedBuiltInTool => Self::ProtectedBuiltInTool,
             RemediationUnavailableReason::DeferredAgent => Self::DeferredAgent,
             RemediationUnavailableReason::UnsupportedSourceFormat => Self::UnsupportedSourceFormat,
             RemediationUnavailableReason::CheckUnsupportedForAgent => {
@@ -1910,6 +1774,9 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             },
             display: value.display.into(),
             occurrence_count: u64::try_from(value.occurrences).unwrap_or(u64::MAX),
+            affected_session_count: u64::try_from(value.affected_sessions).unwrap_or(u64::MAX),
+            project_name: value.project_name,
+            project_location: value.project_location,
             auto_fix: match value.auto_fix {
                 crate::remediation::AutoFixAvailability::Available => {
                     AutoFixAvailabilityPayload::Available
@@ -1956,16 +1823,40 @@ impl From<crate::remediation::AutoFixReview> for AutoFixReviewPayload {
             setting: match value.setting {
                 crate::remediation::AutoFixSetting::Model => AutoFixSetting::Model,
                 crate::remediation::AutoFixSetting::Reasoning => AutoFixSetting::Reasoning,
+                crate::remediation::AutoFixSetting::Compaction => AutoFixSetting::Compaction,
+                crate::remediation::AutoFixSetting::SubagentModel => AutoFixSetting::SubagentModel,
+                crate::remediation::AutoFixSetting::McpServer => AutoFixSetting::McpServer,
+                crate::remediation::AutoFixSetting::BuiltInTool => AutoFixSetting::BuiltInTool,
+                crate::remediation::AutoFixSetting::Skill => AutoFixSetting::Skill,
+                crate::remediation::AutoFixSetting::FastMode => AutoFixSetting::FastMode,
             },
             config_file: value.config_file,
+            selector_label: value.selector_label,
             current_value: value.current_value,
             proposed_value: value.proposed_value,
+            behavior_override_warning: value.behavior_override_warning,
             effect: match value.effect {
-                crate::remediation::AutoFixEffect::FutureModelSelection => {
-                    AutoFixEffect::FutureModelSelection
+                crate::remediation::AutoFixEffect::ModelSelection => AutoFixEffect::ModelSelection,
+                crate::remediation::AutoFixEffect::ReasoningEffort => {
+                    AutoFixEffect::ReasoningEffort
                 }
-                crate::remediation::AutoFixEffect::FutureReasoningEffort => {
-                    AutoFixEffect::FutureReasoningEffort
+                crate::remediation::AutoFixEffect::SessionCompaction => {
+                    AutoFixEffect::SessionCompaction
+                }
+                crate::remediation::AutoFixEffect::WorkerModelSelection => {
+                    AutoFixEffect::WorkerModelSelection
+                }
+                crate::remediation::AutoFixEffect::McpAvailability => {
+                    AutoFixEffect::McpAvailability
+                }
+                crate::remediation::AutoFixEffect::ToolAvailability => {
+                    AutoFixEffect::ToolAvailability
+                }
+                crate::remediation::AutoFixEffect::SkillAvailability => {
+                    AutoFixEffect::SkillAvailability
+                }
+                crate::remediation::AutoFixEffect::ServiceTierSelection => {
+                    AutoFixEffect::ServiceTierSelection
                 }
             },
             side_effect: match value.side_effect {
@@ -1974,6 +1865,24 @@ impl From<crate::remediation::AutoFixReview> for AutoFixReviewPayload {
                 }
                 crate::remediation::AutoFixSideEffect::ResponsesMayUseLessReasoning => {
                     AutoFixSideEffect::ResponsesMayUseLessReasoning
+                }
+                crate::remediation::AutoFixSideEffect::EarlierSessionSummarization => {
+                    AutoFixSideEffect::EarlierSessionSummarization
+                }
+                crate::remediation::AutoFixSideEffect::WorkerBehaviorMayChange => {
+                    AutoFixSideEffect::WorkerBehaviorMayChange
+                }
+                crate::remediation::AutoFixSideEffect::ServerWillNotBeAvailable => {
+                    AutoFixSideEffect::ServerWillNotBeAvailable
+                }
+                crate::remediation::AutoFixSideEffect::ToolWillNotBeAvailable => {
+                    AutoFixSideEffect::ToolWillNotBeAvailable
+                }
+                crate::remediation::AutoFixSideEffect::SkillWillNotBeAvailable => {
+                    AutoFixSideEffect::SkillWillNotBeAvailable
+                }
+                crate::remediation::AutoFixSideEffect::ResponsesMayTakeLonger => {
+                    AutoFixSideEffect::ResponsesMayTakeLonger
                 }
             },
         }
@@ -2030,141 +1939,6 @@ fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
     }
 }
 
-fn quota_limit_kind_str(kind: QuotaLimitKind) -> &'static str {
-    match kind {
-        QuotaLimitKind::RollingWindow => "rollingWindow",
-        QuotaLimitKind::Weekly => "weekly",
-        QuotaLimitKind::ModelSpecific => "modelSpecific",
-        QuotaLimitKind::WeightedUsage => "weightedUsage",
-        QuotaLimitKind::RateLimit => "rateLimit",
-        QuotaLimitKind::UsageLimit => "usageLimit",
-    }
-}
-
-fn provider_incident_kind_str(kind: ProviderIncidentKind) -> &'static str {
-    match kind {
-        ProviderIncidentKind::Capacity => "capacity",
-    }
-}
-
-impl From<EfficiencyReport> for InsightsReportPayload {
-    fn from(report: EfficiencyReport) -> Self {
-        let coverage = &report.context.coverage;
-        let categories = DetectorId::ALL
-            .iter()
-            .map(|&id| {
-                let counts = report.detectors[id.index()];
-                let (status, finding_sessions, not_assessed_reason) =
-                    match &report.detector_statuses[id.index()] {
-                        DetectorStatus::Findings(findings) => (
-                            InsightsCategoryStatus::Findings,
-                            Some(findings.finding_sessions),
-                            None,
-                        ),
-                        DetectorStatus::Clean => (InsightsCategoryStatus::Clean, None, None),
-                        DetectorStatus::NotAssessed(reason) => (
-                            InsightsCategoryStatus::NotAssessed,
-                            None,
-                            Some(not_assessed_reason_str(*reason)),
-                        ),
-                    };
-                InsightsCategoryPayload {
-                    id: detector_id_str(id),
-                    eligible: counts.eligible,
-                    assessed: counts.assessed,
-                    status,
-                    finding_sessions,
-                    not_assessed_reason,
-                }
-            })
-            .collect();
-        let quota_pressure = match &report.quota_pressure {
-            QuotaPressureSection::NotAssessed => InsightsQuotaPressurePayload {
-                assessed: false,
-                findings: None,
-            },
-            QuotaPressureSection::Findings(findings) => InsightsQuotaPressurePayload {
-                assessed: true,
-                findings: Some(InsightsQuotaFindingsPayload {
-                    total_hits: findings.total_hits,
-                    hard_hits: findings.hard_hits,
-                    warnings: findings.warnings,
-                    affected_session_count: findings.affected_session_count,
-                    hits_by_limit_kind: findings
-                        .hits_by_limit_kind
-                        .iter()
-                        .map(|(&kind, &hits)| InsightsQuotaLimitPayload {
-                            kind: quota_limit_kind_str(kind),
-                            hits,
-                        })
-                        .collect(),
-                    affected_models: findings.affected_models.iter().cloned().collect(),
-                    affected_models_truncated: findings.affected_models_truncated,
-                    first_observed_ts_ms: findings.first_observed_ts_ms,
-                    last_observed_ts_ms: findings.last_observed_ts_ms,
-                }),
-            },
-        };
-        let provider_incidents = match &report.provider_incidents {
-            ProviderIncidentsSection::NotAssessed => InsightsProviderIncidentsPayload {
-                assessed: false,
-                findings: None,
-            },
-            ProviderIncidentsSection::Findings(findings) => InsightsProviderIncidentsPayload {
-                assessed: true,
-                findings: Some(InsightsProviderIncidentFindingsPayload {
-                    total_hits: findings.total_hits,
-                    affected_session_count: findings.affected_session_count,
-                    hits_by_kind: findings
-                        .hits_by_kind
-                        .iter()
-                        .map(|(&kind, &hits)| InsightsProviderIncidentKindPayload {
-                            kind: provider_incident_kind_str(kind),
-                            hits,
-                        })
-                        .collect(),
-                    affected_models: findings.affected_models.iter().cloned().collect(),
-                    affected_models_truncated: findings.affected_models_truncated,
-                    first_observed_ts_ms: findings.first_observed_ts_ms,
-                    last_observed_ts_ms: findings.last_observed_ts_ms,
-                }),
-            },
-        };
-        Self {
-            environment_key: report.context.environment_key,
-            window_start_epoch: report.context.window.start_epoch,
-            window_end_epoch: report.context.window.end_epoch,
-            computed_at_epoch: report.context.computed_at_epoch,
-            coverage: InsightsCoveragePayload {
-                discovered: coverage.discovered,
-                unknown_start: coverage.unknown_start,
-                pending: coverage.pending,
-                processing: coverage.processing,
-                failed: coverage.failed,
-                unsupported: coverage.unsupported,
-                stale: coverage.stale,
-                ready: coverage.ready,
-                actively_growing: coverage.actively_growing,
-                awaiting_provider_support: coverage.awaiting_provider_support,
-            },
-            assessed_sessions: report.assessed_sessions,
-            categories,
-            quota_pressure,
-            provider_incidents,
-            unrecognized_records: InsightsUnrecognizedRecordsPayload {
-                types: report.unrecognized_records.types.into_iter().collect(),
-                types_truncated: report.unrecognized_records.types_truncated,
-                sessions_with_types: report.unrecognized_records.sessions_with_types,
-                inert_sessions: report.unrecognized_records.inert_sessions,
-                evidence_bearing_sessions: report.unrecognized_records.evidence_bearing_sessions,
-                capped_sessions: report.unrecognized_records.capped_sessions,
-                truncated_sessions: report.unrecognized_records.truncated_sessions,
-            },
-            catalog_revision: report.catalog_revision,
-        }
-    }
-}
-
 impl ChecksReportPayload {
     pub fn from_report(
         report: &EfficiencyReport,
@@ -2178,6 +1952,14 @@ impl ChecksReportPayload {
                 ChecksCategoryPayload {
                     id: id.into(),
                     finding: counts.finding,
+                    agents: if counts.finding > 0 {
+                        &report.finding_agents[id.index()]
+                    } else {
+                        &report.clean_agents[id.index()]
+                    }
+                    .iter()
+                    .cloned()
+                    .collect(),
                     clean: counts.clean,
                     unavailable: counts.unavailable,
                     estimated_token_burn_basis_points: report
@@ -2411,6 +2193,8 @@ pub struct LiveUsageSourceError {
     pub display_name: String,
     /// `authentication`, `rateLimited`, `schema`, or `unavailable`.
     pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<SourceErrorDetail>,
 }
 
 /// One provider antiburn can meter, and whether the reader shows it.
@@ -2427,6 +2211,15 @@ pub struct LiveUsageMeter {
     pub display_name: String,
     /// False when the reader turned this meter off.
     pub shown: bool,
+    #[serde(default)]
+    pub detection: Detection,
+    /// Where the login was found, when a carrier was. Kept through the
+    /// `signedIn` upgrade so the note can name the tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier: Option<LoginCarrier>,
+    /// `carrier`'s display name, so the views never restate the enum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier_label: Option<String>,
 }
 
 /// Live provider usage, as one snapshot.
@@ -2458,17 +2251,84 @@ pub struct LiveUsageSummary {
 mod tests {
     use super::*;
 
-    mod insights {
-        use std::collections::{BTreeMap, BTreeSet};
+    #[test]
+    fn legacy_live_errors_round_trip_without_a_detail_field() {
+        let json = serde_json::json!({
+            "source": "fixture", "provider": "anthropic", "displayName": "Claude", "category": "unavailable"
+        });
+        let error: LiveUsageSourceError = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(error.detail, None);
+        assert_eq!(serde_json::to_value(error).unwrap(), json);
+    }
 
+    #[test]
+    fn live_error_details_use_closed_camel_case_values() {
+        for (detail, wire, provider, category) in [
+            (
+                SourceErrorDetail::KeychainUnreadable,
+                "keychainUnreadable",
+                "anthropic",
+                "unavailable",
+            ),
+            (
+                SourceErrorDetail::RefreshUnsupported,
+                "refreshUnsupported",
+                "google",
+                "authentication",
+            ),
+        ] {
+            let json = serde_json::json!({
+                "source": "fixture", "provider": provider, "displayName": "Fixture",
+                "category": category, "detail": wire
+            });
+            let error: LiveUsageSourceError = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(error.detail, Some(detail));
+            assert_eq!(serde_json::to_value(error).unwrap(), json);
+        }
+    }
+
+    #[test]
+    fn a_legacy_live_meter_round_trips_with_unknown_detection() {
+        let meter: LiveUsageMeter = serde_json::from_value(serde_json::json!({
+            "provider": "anthropic", "displayName": "Claude", "shown": true
+        }))
+        .unwrap();
+        assert_eq!(meter.detection, Detection::Unknown);
+        let json = serde_json::to_value(&meter).unwrap();
+        assert_eq!(json["detection"], "unknown");
+        assert_eq!(
+            serde_json::from_value::<LiveUsageMeter>(json).unwrap(),
+            meter
+        );
+    }
+
+    #[test]
+    fn live_detection_uses_camel_case_wire_values() {
+        for (detection, wire) in [
+            (Detection::Unknown, "unknown"),
+            (Detection::NotInstalled, "notInstalled"),
+            (Detection::InstalledNotSignedIn, "installedNotSignedIn"),
+            (Detection::SignedIn, "signedIn"),
+        ] {
+            let json = serde_json::to_value(detection).unwrap();
+            assert_eq!(json, wire);
+            assert_eq!(
+                serde_json::from_value::<Detection>(json).unwrap(),
+                detection
+            );
+        }
+    }
+
+    mod insights {
         use antiburn_local::analysis::{
             ContextEvidence, EvidenceSource, ModelControlObservation, ModelTokens,
             RelationConfidence, RelationProvenance, RepeatedContext, SessionEvidenceAccumulator,
             SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
         };
         use antiburn_local::insights::{
-            CoverageCounts, DetectorCounts, DetectorFindings, EfficiencyReportAccumulator,
-            QuotaPressureFindings, ReportContext, ReportWindow, SessionExample, session_badges,
+            CoverageCounts, DetectorCounts, DetectorFindings, DetectorStatus,
+            EfficiencyReportAccumulator, ReportContext, ReportWindow, SessionExample,
+            session_badges,
         };
 
         use super::*;
@@ -2488,127 +2348,12 @@ mod tests {
             })
         }
 
-        /// The wire shape is the privacy contract: the payload names
-        /// exactly these keys, and none of them can carry transcript
-        /// content or evidence text. Session identities are bounded navigation targets.
-        #[test]
-        fn the_report_payload_serializes_camel_case_counts_and_nothing_else() {
-            let mut report = report();
-            report.detector_statuses[0] = DetectorStatus::Findings(DetectorFindings {
-                finding_sessions: 2,
-                examples: Vec::new(),
-            });
-            report.quota_pressure = QuotaPressureSection::Findings(QuotaPressureFindings {
-                hits_by_limit_kind: BTreeMap::from([(QuotaLimitKind::Weekly, 3)]),
-                total_hits: 3,
-                hard_hits: 1,
-                warnings: 2,
-                affected_session_count: 1,
-                affected_session_examples: Vec::new(),
-                affected_models: BTreeSet::from(["claude-3-5-haiku-20241022".to_owned()]),
-                affected_models_truncated: false,
-                first_observed_ts_ms: 1_000,
-                last_observed_ts_ms: 2_000,
-                observed_times_ms: vec![1_000, 2_000],
-            });
-
-            let value = serde_json::to_value(InsightsReportPayload::from(report)).unwrap();
-
-            // `serde_json` maps iterate alphabetically, so the expected
-            // lists are sorted.
-            let top_keys: Vec<&str> = value
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect();
-            assert_eq!(
-                top_keys,
-                [
-                    "assessedSessions",
-                    "catalogRevision",
-                    "categories",
-                    "computedAtEpoch",
-                    "coverage",
-                    "environmentKey",
-                    "providerIncidents",
-                    "quotaPressure",
-                    "unrecognizedRecords",
-                    "windowEndEpoch",
-                    "windowStartEpoch",
-                ]
-            );
-            assert_eq!(value["environmentKey"], "native");
-            assert_eq!(value["coverage"]["unknownStart"], 0);
-
-            let categories = value["categories"].as_array().unwrap();
-            assert_eq!(categories.len(), 9);
-            for category in categories {
-                let keys: Vec<&str> = category
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .map(String::as_str)
-                    .collect();
-                assert_eq!(
-                    keys,
-                    [
-                        "assessed",
-                        "eligible",
-                        "findingSessions",
-                        "id",
-                        "notAssessedReason",
-                        "status",
-                    ]
-                );
-            }
-            assert_eq!(categories[0]["id"], "sessionsOverDepth");
-            assert_eq!(categories[0]["status"], "findings");
-            assert_eq!(categories[0]["findingSessions"], 2);
-            assert_eq!(categories[8]["id"], "cacheChurn");
-            assert_eq!(categories[8]["status"], "notAssessed");
-            assert_eq!(categories[8]["notAssessedReason"], "noSessionsInWindow");
-
-            let quota = value["quotaPressure"].as_object().unwrap();
-            let quota_keys: Vec<&str> = quota.keys().map(String::as_str).collect();
-            assert_eq!(quota_keys, ["assessed", "findings"]);
-            let findings = quota["findings"].as_object().unwrap();
-            let finding_keys: Vec<&str> = findings.keys().map(String::as_str).collect();
-            assert_eq!(
-                finding_keys,
-                [
-                    "affectedModels",
-                    "affectedModelsTruncated",
-                    "affectedSessionCount",
-                    "firstObservedTsMs",
-                    "hardHits",
-                    "hitsByLimitKind",
-                    "lastObservedTsMs",
-                    "totalHits",
-                    "warnings",
-                ]
-            );
-            assert_eq!(findings["hitsByLimitKind"][0]["kind"], "weekly");
-
-            let unrecognized = value["unrecognizedRecords"].as_object().unwrap();
-            let unrecognized_keys: Vec<&str> = unrecognized.keys().map(String::as_str).collect();
-            assert_eq!(
-                unrecognized_keys,
-                [
-                    "cappedSessions",
-                    "evidenceBearingSessions",
-                    "inertSessions",
-                    "sessionsWithTypes",
-                    "truncatedSessions",
-                    "types",
-                    "typesTruncated",
-                ]
-            );
-        }
-
         #[test]
         fn checks_report_serializes_only_display_fields() {
             let mut report = report();
+            report.finding_agents[0].extend(["codex".to_owned(), "claude-code".to_owned()]);
+            report.clean_agents[0].insert("cursor".to_owned());
+            report.clean_agents[1].insert("opencode".to_owned());
             report.estimated_token_burn_basis_points = Some(1_625);
             report.detector_estimated_token_burn_basis_points[0] = Some(500);
             report.detector_statuses[0] = DetectorStatus::Findings(DetectorFindings {
@@ -2629,6 +2374,14 @@ mod tests {
 
             let value =
                 serde_json::to_value(ChecksReportPayload::from_report(&report, true, 0)).unwrap();
+            assert_eq!(
+                value["categories"][0]["agents"],
+                serde_json::json!(["claude-code", "codex"])
+            );
+            assert_eq!(
+                value["categories"][1]["agents"],
+                serde_json::json!(["opencode"])
+            );
             assert!(value["categories"][0].get("examples").is_none());
             assert!(value.get("coverage").is_none());
             assert!(value.get("quotaPressure").is_none());
@@ -2666,6 +2419,7 @@ mod tests {
             assert_eq!(
                 category_keys,
                 [
+                    "agents",
                     "clean",
                     "estimatedTokenBurnBasisPoints",
                     "finding",
@@ -2682,69 +2436,6 @@ mod tests {
             assert_eq!(value["evidenceSettled"], false);
             assert_eq!(value["pendingEvidence"], 4);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
-        }
-
-        #[test]
-        fn unrecognized_types_survive_dto_conversion() {
-            let mut report = report();
-            report.unrecognized_records.types =
-                BTreeSet::from(["zeta".to_owned(), "alpha".to_owned()]);
-            report.unrecognized_records.types_truncated = true;
-            report.unrecognized_records.sessions_with_types = 4;
-            report.unrecognized_records.inert_sessions = 3;
-            report.unrecognized_records.evidence_bearing_sessions = 2;
-            report.unrecognized_records.capped_sessions = 1;
-            report.unrecognized_records.truncated_sessions = 1;
-
-            let value = serde_json::to_value(InsightsReportPayload::from(report)).unwrap();
-            assert_eq!(
-                value["unrecognizedRecords"],
-                serde_json::json!({
-                    "types": ["alpha", "zeta"],
-                    "typesTruncated": true,
-                    "sessionsWithTypes": 4,
-                    "inertSessions": 3,
-                    "evidenceBearingSessions": 2,
-                    "cappedSessions": 1,
-                    "truncatedSessions": 1,
-                })
-            );
-        }
-
-        /// A quota section with no evidence serializes as not assessed,
-        /// never as an empty findings shape a view could read as clean.
-        #[test]
-        fn an_unassessed_quota_section_serializes_with_null_findings() {
-            let value = serde_json::to_value(InsightsReportPayload::from(report())).unwrap();
-            assert_eq!(value["quotaPressure"]["assessed"], false);
-            assert!(value["quotaPressure"]["findings"].is_null());
-        }
-
-        /// A provider-incidents section with no evidence serializes as not
-        /// assessed, never as an empty findings shape a view could read as
-        /// clean. Mirrors `an_unassessed_quota_section_serializes_with_null_findings`.
-        #[test]
-        fn an_unassessed_provider_incidents_section_serializes_with_null_findings() {
-            let value = serde_json::to_value(InsightsReportPayload::from(report())).unwrap();
-            assert_eq!(value["providerIncidents"]["assessed"], false);
-            assert!(value["providerIncidents"]["findings"].is_null());
-        }
-
-        #[test]
-        fn the_status_payload_serializes_camel_case() {
-            let value = serde_json::to_value(InsightsStatusPayload {
-                calculating: true,
-                pending: 4,
-                processing: 1,
-            })
-            .unwrap();
-            let keys: Vec<&str> = value
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect();
-            assert_eq!(keys, ["calculating", "pending", "processing"]);
         }
 
         #[test]
@@ -2862,9 +2553,11 @@ mod tests {
                 scope: BurnCheckScopeKind::Project,
                 setting: AutoFixSetting::Model,
                 config_file: "~/.claude/settings.json".into(),
+                selector_label: "model".into(),
                 current_value: "old-model".into(),
                 proposed_value: "new-model".into(),
-                effect: AutoFixEffect::FutureModelSelection,
+                behavior_override_warning: false,
+                effect: AutoFixEffect::ModelSelection,
                 side_effect: AutoFixSideEffect::ModelBehaviorMayChange,
             })
             .unwrap();
@@ -2879,13 +2572,58 @@ mod tests {
                 "reasoning"
             );
             assert_eq!(
-                serde_json::to_value(AutoFixEffect::FutureReasoningEffort).unwrap(),
-                "futureReasoningEffort"
+                serde_json::to_value(AutoFixEffect::ReasoningEffort).unwrap(),
+                "reasoningEffort"
             );
             assert_eq!(
                 serde_json::to_value(AutoFixSideEffect::ResponsesMayUseLessReasoning).unwrap(),
                 "responsesMayUseLessReasoning"
             );
+        }
+
+        #[test]
+        fn auto_fix_review_vocabulary_is_exhaustive_and_serialized() {
+            let settings = [
+                AutoFixSetting::Model,
+                AutoFixSetting::Reasoning,
+                AutoFixSetting::Compaction,
+                AutoFixSetting::SubagentModel,
+                AutoFixSetting::McpServer,
+                AutoFixSetting::BuiltInTool,
+                AutoFixSetting::Skill,
+                AutoFixSetting::FastMode,
+            ];
+            let effects = [
+                AutoFixEffect::ModelSelection,
+                AutoFixEffect::ReasoningEffort,
+                AutoFixEffect::SessionCompaction,
+                AutoFixEffect::WorkerModelSelection,
+                AutoFixEffect::McpAvailability,
+                AutoFixEffect::ToolAvailability,
+                AutoFixEffect::SkillAvailability,
+                AutoFixEffect::ServiceTierSelection,
+            ];
+            let side_effects = [
+                AutoFixSideEffect::ModelBehaviorMayChange,
+                AutoFixSideEffect::ResponsesMayUseLessReasoning,
+                AutoFixSideEffect::EarlierSessionSummarization,
+                AutoFixSideEffect::WorkerBehaviorMayChange,
+                AutoFixSideEffect::ServerWillNotBeAvailable,
+                AutoFixSideEffect::ToolWillNotBeAvailable,
+                AutoFixSideEffect::SkillWillNotBeAvailable,
+                AutoFixSideEffect::ResponsesMayTakeLonger,
+            ];
+            assert_eq!(settings.len(), effects.len());
+            assert_eq!(settings.len(), side_effects.len());
+            for value in settings {
+                assert!(serde_json::to_value(value).unwrap().is_string());
+            }
+            for value in effects {
+                assert!(serde_json::to_value(value).unwrap().is_string());
+            }
+            for value in side_effects {
+                assert!(serde_json::to_value(value).unwrap().is_string());
+            }
         }
 
         #[test]

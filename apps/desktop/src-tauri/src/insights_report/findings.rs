@@ -64,6 +64,9 @@ pub(crate) fn remediation_assessments(
     let mut truncated = false;
     while let Some(row) = rows.next()? {
         let session = current_finding_session(row)?;
+        let Some(started_at_epoch) = session.started_at_epoch else {
+            continue;
+        };
         sessions_scanned += 1;
         if sessions_scanned > CURRENT_FINDING_SESSION_SCAN_BUDGET {
             truncated = true;
@@ -95,7 +98,7 @@ pub(crate) fn remediation_assessments(
             assessment,
             observed_at_ms,
             finding_observed_at_ms,
-            started_at_ms: session.started_at_epoch.saturating_mul(1_000),
+            started_at_ms: started_at_epoch.saturating_mul(1_000),
             workspace_candidate: session.workspace_candidate,
             source_format: session.evidence.capabilities.source_format,
             session_id: session.session_id,
@@ -349,7 +352,7 @@ pub(crate) struct CurrentFindingSession {
     analyzer_revision: i64,
     evidence_schema_revision: i64,
     metrics_schema_revision: i64,
-    started_at_epoch: i64,
+    started_at_epoch: Option<i64>,
     workspace_candidate: Option<PathBuf>,
     initial_context: Option<InitialContextBreakdown>,
     effective_model_target_hash: Option<String>,
@@ -450,6 +453,9 @@ pub(crate) fn list_current_findings_on_snapshot(
         ])?;
         while let Some(row) = rows.next()? {
             let session = current_finding_session(row)?;
+            if session.started_at_epoch.is_none() {
+                continue;
+            }
             sessions_scanned += 1;
             after_session_read();
             let assessment = assess_current_detector(
@@ -464,11 +470,10 @@ pub(crate) fn list_current_findings_on_snapshot(
                 continue;
             };
             for finding in session_findings {
-                findings.push(current_finding(
-                    &session,
-                    finding.clone(),
-                    catalogs.revision,
-                ));
+                if let Some(finding) = current_finding(&session, finding.clone(), catalogs.revision)
+                {
+                    findings.push(finding);
+                }
                 if findings.len() > CURRENT_FINDING_LIMIT {
                     break;
                 }
@@ -532,7 +537,7 @@ pub(crate) fn publication_findings_in(
             FindingAssessment::Findings(values) => values
                 .into_iter()
                 .take(100)
-                .map(|finding| current_finding(&session, finding, catalogs.revision))
+                .filter_map(|finding| current_finding(&session, finding, catalogs.revision))
                 .collect(),
             _ => Vec::new(),
         };
@@ -706,14 +711,15 @@ pub(crate) fn current_finding(
     session: &CurrentFindingSession,
     finding: Finding,
     catalog_revision: i64,
-) -> CurrentFinding {
+) -> Option<CurrentFinding> {
+    let started_at_epoch = session.started_at_epoch?;
     let observed_at_ms = finding_observation_ms(&session.evidence, &finding).unwrap_or_else(|| {
         match &session.evidence.time_range {
             antiburn_local::analysis::EvidenceValue::Complete(range) => range.last_ts_ms,
-            _ => session.started_at_epoch.saturating_mul(1_000),
+            _ => started_at_epoch.saturating_mul(1_000),
         }
     });
-    CurrentFinding {
+    Some(CurrentFinding {
         finding,
         environment_key: session.environment_key.clone(),
         agent: session.agent.clone(),
@@ -727,7 +733,7 @@ pub(crate) fn current_finding(
         evidence_schema_revision: session.evidence_schema_revision,
         metrics_schema_revision: session.metrics_schema_revision,
         catalog_revision,
-        started_at_epoch: session.started_at_epoch,
+        started_at_epoch,
         observed_at_ms,
         workspace_candidate: session.workspace_candidate.clone(),
         effective_model_target_hash: session.effective_model_target_hash.clone(),
@@ -736,7 +742,7 @@ pub(crate) fn current_finding(
         effective_reasoning_target_hash: session.effective_reasoning_target_hash.clone(),
         effective_reasoning_scope: session.effective_reasoning_scope.clone(),
         effective_reasoning: session.effective_reasoning.clone(),
-    }
+    })
 }
 
 pub(crate) fn finding_observation_ms(evidence: &SessionEvidence, finding: &Finding) -> Option<i64> {
@@ -813,6 +819,6 @@ pub(crate) fn freshness_matches(cached: &CurrentFinding, session: &CurrentFindin
         && cached.analyzer_revision == session.analyzer_revision
         && cached.evidence_schema_revision == session.evidence_schema_revision
         && cached.metrics_schema_revision == session.metrics_schema_revision
-        && cached.started_at_epoch == session.started_at_epoch
+        && Some(cached.started_at_epoch) == session.started_at_epoch
         && cached.workspace_candidate == session.workspace_candidate
 }

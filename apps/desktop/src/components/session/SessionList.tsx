@@ -7,7 +7,7 @@ import {
 import { useCallback, useRef, useState, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
-import type { SessionHygienePayload } from "../../lib/insightsIpc"
+import type { BurnCheckDetectorId, SessionHygienePayload } from "../../lib/insightsIpc"
 import {
   agentDisplayName,
   agentProvider,
@@ -27,6 +27,7 @@ import {
 } from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { sessionBurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import { visibleSessionHygieneChecks } from "../../lib/snoozedBurnChecks"
 import { sessionHygieneFor, type SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
 import { BurnCheckStatus } from "../burn-checks/BurnCheckStatus"
 import { Tooltip } from "../presentation/Tooltip"
@@ -87,6 +88,7 @@ export interface SessionListEntry {
 }
 
 export interface SessionListProps {
+  snoozedDetectors?: ReadonlySet<BurnCheckDetectorId>
   /** Sessions to show. Ordering and grouping are this component's job. */
   entries: SessionListEntry[]
   /** Calendar-day window for finished sessions. Also drives the empty copy. */
@@ -274,6 +276,7 @@ function groupHeadingId(label: string): string {
 }
 
 export interface SessionRowProps {
+  snoozedDetectors?: ReadonlySet<BurnCheckDetectorId>
   entry: SessionListEntry
   hygiene: SessionHygienePayload
   onOpen?: () => void
@@ -326,6 +329,7 @@ export function SessionRow({
   limitBadge,
   showCost = true,
   compact = false,
+  snoozedDetectors = new Set(),
 }: SessionRowProps) {
   const selectionMode = !!entry.sessionId && !!onSelect
   const clickable = !!entry.sessionId && (!!onOpen || selectionMode)
@@ -342,7 +346,10 @@ export function SessionRow({
     ? `${entry.repo}${entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}`
     : ""
   const compactTrailingTime = hasRepo && repositoryLabel.length > 18
-  const hygieneChecks = sessionHygieneChecks(hygiene)
+  const hygieneChecks = visibleSessionHygieneChecks(
+    sessionHygieneChecks(hygiene),
+    snoozedDetectors,
+  )
   const hasContextDetails = !!entry.branch || !!entry.wslDistro
   const hasContextIdentity = hasContextAnchor || hasRepo || hasContextDetails
   const contextDescription = [
@@ -625,6 +632,7 @@ export function SessionRow({
  * ordering, grouping, the sticky group label, and row presentation.
  */
 export function SessionList({
+  snoozedDetectors = new Set(),
   entries,
   days,
   emptyTitle,
@@ -856,7 +864,7 @@ export function SessionList({
     <section
       aria-label="Sessions"
       data-tauri-drag-region={draggableHeader ? "" : undefined}
-      className="flex h-full min-h-0 flex-col pt-2"
+      className={cn("flex h-full min-h-0 flex-col", !onBadgeMetricChange && "pt-2")}
       onKeyDownCapture={moveVirtualFocus}
     >
       <span className="sr-only" aria-live="polite" aria-atomic="true">
@@ -980,6 +988,7 @@ export function SessionList({
                                       })
                                     : INITIAL_SESSION_HYGIENE
                                 }
+                                snoozedDetectors={snoozedDetectors}
                                 {...(onOpenSession
                                   ? {
                                       onOpen: () => {

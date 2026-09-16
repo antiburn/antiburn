@@ -722,7 +722,7 @@ export type Interaction =
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
       kind: "surfaceStateObserved"
-      surface: StateSurface
+      surface: Surface
       state: SurfaceState
       origin: SurfaceOrigin
     }
@@ -765,7 +765,6 @@ export type Surface =
   | "settings"
   | "burn_checks"
 
-export type StateSurface = Surface | "insights"
 export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
@@ -962,14 +961,16 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
 /**
  * The last provider limit snapshot. This command does not contact a provider.
  */
-export async function getLiveUsage(): Promise<LiveUsageSummaryPayload> {
+export async function getLiveUsage(
+  utcOffsetMinutes = -new Date().getTimezoneOffset(),
+): Promise<LiveUsageSummaryPayload> {
   if (!hasShell()) return EMPTY_LIVE_USAGE
   // Coerced rather than passed through: a shell that answered with nothing is
   // the same fact as a shell with no source, and the views should not each
   // carry a null branch for a state that has a perfectly good empty value.
   return (
     (await invoke<LiveUsageSummaryPayload | null>("get_live_usage", {
-      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+      utcOffsetMinutes,
     })) ?? EMPTY_LIVE_USAGE
   )
 }

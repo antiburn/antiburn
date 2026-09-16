@@ -15,6 +15,10 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::analysis::evidence::{
+    ProviderIncident, ProviderIncidentKind, QuotaConfidence, QuotaHitSeverity, QuotaIncident,
+    QuotaLimitKind,
+};
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::{ClaudeContextAccumulator, parse_markdown_bullet};
 use crate::analysis::interface::{
@@ -26,7 +30,7 @@ use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage
 use crate::analysis::records::{
     RecordShape, context_observations, evidence_observations, extract_content_parts,
     is_inert_recognized_eventless, is_inert_unrecognized, is_recognized_eventless, parse_record,
-    record_discriminator, thread_identity_field, thread_link_observation,
+    parse_ts, record_discriminator, thread_identity_field, thread_link_observation,
 };
 use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
@@ -250,6 +254,74 @@ fn skill_resource_observations(value: &Value) -> Vec<EvidenceObservation> {
     }
 }
 
+/// Maps one failed-API-request `assistant` record to a quota incident or a
+/// provider incident. Reviewed against the harness version `2.1.270`
+/// bundle; the same top-level shape was seen back to at least `2.1.185`.
+/// Reads only `type`, `isApiErrorMessage`, `timestamp`, `apiErrorStatus`,
+/// and `error`. Never reads `message.content[].text`: that field holds
+/// free, unpinned error text the project never stores.
+///
+/// `apiErrorStatus` (an HTTP status) wins over `error` (Claude Code's own
+/// coarser classification) when both are present. `error: "unknown"` with
+/// no status is the connection-refused case, but the label is too broad to
+/// claim a connection failure without reading the message text, so it maps
+/// to `None`; [`ProviderIncidentKind::Connection`] stays Codex-only for now.
+///
+/// `last_model` is the caller's `state.last_seen_model`, read before this
+/// record's own `message.model` (always the literal `"<synthetic>"` on an
+/// API error record) can overwrite it. A last-seen model of `"<synthetic>"`
+/// itself (no real request observed yet) becomes `None`.
+fn api_error_observation(value: &Value, last_model: Option<&str>) -> Option<EvidenceObservation> {
+    if value.get("type").and_then(Value::as_str) != Some("assistant")
+        || value.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true)
+    {
+        return None;
+    }
+    let ts_ms = parse_ts(value.get("timestamp")?)?;
+    let status = value
+        .get("apiErrorStatus")
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok());
+    let error = value.get("error").and_then(Value::as_str);
+    let model = last_model
+        .filter(|model| *model != "<synthetic>")
+        .map(ToOwned::to_owned);
+
+    let kind = match (status, error) {
+        (Some(529), _) => ProviderIncidentKind::Capacity,
+        (Some(500..=599), _) => ProviderIncidentKind::ServerError,
+        (Some(429), _) => {
+            return Some(EvidenceObservation::QuotaIncident(QuotaIncident {
+                ts_ms,
+                limit_kind: QuotaLimitKind::RateLimit,
+                severity: QuotaHitSeverity::HardHit,
+                model,
+                reset_ts_ms: None,
+                utilization_pct: None,
+                confidence: QuotaConfidence::Observed,
+            }));
+        }
+        (None, Some("server_error")) => ProviderIncidentKind::ServerError,
+        (None, Some("rate_limit")) => {
+            return Some(EvidenceObservation::QuotaIncident(QuotaIncident {
+                ts_ms,
+                limit_kind: QuotaLimitKind::RateLimit,
+                severity: QuotaHitSeverity::HardHit,
+                model,
+                reset_ts_ms: None,
+                utilization_pct: None,
+                confidence: QuotaConfidence::Observed,
+            }));
+        }
+        _ => return None,
+    };
+    Some(EvidenceObservation::ProviderIncident(ProviderIncident {
+        ts_ms,
+        kind,
+        model,
+    }))
+}
+
 /// The `uuid` set to skip when replaying `path`: everything
 /// [`sidecar_fork_skip_uuids`] finds, unioned with everything
 /// [`fork_parent_session_skip_uuids`] finds from `fork_parent_session_id`
@@ -407,7 +479,7 @@ impl SessionReader for ClaudeSessionReader {
         "claude"
     }
 
-    fn capabilities(&self, _source: &RawSource) -> crate::analysis::SourceCapabilities {
+    fn capabilities(&self, _input: &SessionInput) -> crate::analysis::SourceCapabilities {
         crate::analysis::SourceCapabilities::claude()
     }
 
@@ -452,6 +524,12 @@ impl SessionReader for ClaudeSessionReader {
                         "sqlite source must be handled by the sqlite adapter: {}",
                         path.display()
                     )
+                }
+                RawSource::ClineBundle { .. } => {
+                    anyhow::bail!("Cline bundle is not a Claude source")
+                }
+                RawSource::KiroCliV2Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a Claude source")
                 }
             };
             sink.finish(state.into_summary());
@@ -730,6 +808,16 @@ impl ClaudeSessionReader {
                             sink.record(NormalizedRecord::Observation(Box::new(observation)));
                         }
                         continue;
+                    }
+
+                    // Emit the API-error observation before `observe_model`
+                    // runs below, so the incident's model comes from the
+                    // last real request, not from this error record's own
+                    // synthetic `message.model`.
+                    if let Some(observation) =
+                        api_error_observation(&value, state.last_seen_model.as_deref())
+                    {
+                        sink.record(NormalizedRecord::Observation(Box::new(observation)));
                     }
 
                     state.context.observe(&value);
@@ -1097,6 +1185,7 @@ mod tests {
             session_id: "claimed-session".to_string(),
             source: RawSource::File(path.to_path_buf()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         }
     }
 
@@ -1431,6 +1520,7 @@ mod tests {
             session_id: "plain-session".to_string(),
             source: RawSource::Jsonl(FIRST_RECORD.to_string()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = CountingSink::default();
 
@@ -1471,6 +1561,7 @@ mod tests {
             session_id: "content-session".to_string(),
             source: RawSource::Jsonl(format!("{assistant_record}\n{tool_result_record}\n")),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = ContentCapturingSink::default();
 
@@ -2302,6 +2393,7 @@ mod tests {
             session_id: "agent-x".to_string(),
             source: RawSource::File(fork_path),
             fork_parent_session_id: Some("parent".to_string()),
+            source_format: Default::default(),
         };
         let mut collector = SessionCollector::new("claude", "agent-x");
 
@@ -2397,5 +2489,24 @@ mod tests {
         let summary = state.into_summary();
         assert_eq!(summary.context_window, None);
         assert_eq!(summary.context_window_source, ContextWindowSource::Inferred);
+    }
+
+    /// `"<synthetic>"` names no real model. When it is the only model the
+    /// stream has observed so far, the mapped incident carries no model.
+    #[test]
+    fn api_error_observation_drops_a_synthetic_last_model() {
+        let value = serde_json::json!({
+            "type": "assistant",
+            "isApiErrorMessage": true,
+            "timestamp": "2026-01-05T10:00:06Z",
+            "error": "server_error",
+            "apiErrorStatus": 500,
+        });
+        let observation = api_error_observation(&value, Some("<synthetic>"))
+            .expect("a 5xx status must map to a provider incident");
+        let EvidenceObservation::ProviderIncident(incident) = observation else {
+            panic!("expected a ProviderIncident observation");
+        };
+        assert_eq!(incident.model, None);
     }
 }

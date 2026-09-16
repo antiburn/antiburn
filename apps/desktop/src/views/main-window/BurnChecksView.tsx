@@ -5,6 +5,7 @@ import { isMacOS } from "../../lib/platform"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { Skeleton } from "../../components/ui/Skeleton"
 import { type BurnChecksSession } from "./BurnChecksSession"
+import { BurnChecksHeader } from "./burn-checks/BurnChecksHeader"
 import { BurnChecksReport } from "./burn-checks/BurnChecksReport"
 
 export function BurnChecksView({
@@ -22,10 +23,10 @@ export function BurnChecksView({
   const report = state.report
   if (!report)
     return (
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
-        {isMacOS() && (
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
+        {state.error && isMacOS() && (
           <div
-            className="h-[var(--main-window-titlebar-height)] shrink-0"
+            className="main-window-empty-titlebar"
             data-tauri-drag-region
             aria-hidden="true"
           />
@@ -43,84 +44,83 @@ export function BurnChecksView({
             </div>
           </div>
         ) : (
-          <ScrollPane className="min-h-0" topEdgeFade>
-            <div
-              role="region"
-              aria-label="Loading Burn checks"
-              aria-busy="true"
-              className="w-full px-8 py-6"
-            >
-              <p role="status" className="sr-only">
-                Loading Burn checks.
-              </p>
-              <section
-                data-skeleton="hero"
-                className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-[var(--space-2xl)] py-[calc(var(--space-lg)*2)]"
-              >
-                <div className="contents">
-                  <Skeleton
-                    data-skeleton-slot="icon"
-                    className="h-[88px] w-[88px] rounded-full"
-                  />
-                  <div className="flex min-h-[88px] min-w-0 flex-col justify-between">
-                    <Skeleton className="h-4 w-24" />
-                    <Skeleton data-skeleton-slot="result" className="h-9 w-40" />
-                    <Skeleton data-skeleton-slot="summary" className="h-4 w-72 max-w-full" />
-                    <Skeleton className="h-4 w-24" />
-                  </div>
-                </div>
-              </section>
-              <div className="mt-8 px-1">
-                <Skeleton data-skeleton="group-label" className="h-6 w-28" />
-              </div>
-              <div className="mt-3 overflow-hidden rounded-control border border-separator/40 bg-surface-card/50">
-                {["w-40", "w-32", "w-44"].map((width) => (
-                  <div
-                    key={width}
-                    data-skeleton="check-row"
-                    className="grid grid-cols-[28px_minmax(0,1fr)_max-content_14px] items-center gap-x-3 border-b border-separator px-4 py-3 last:border-b-0"
+          <div
+            role="region"
+            aria-label="Loading Burn checks"
+            aria-busy="true"
+            className="burn-checks-page w-full"
+          >
+            <p role="status" className="sr-only">
+              Loading Burn checks.
+            </p>
+            <div className="burn-checks-report">
+              <div className="burn-checks-layout">
+                <section
+                  className="main-window-collection burn-checks-collection"
+                  aria-label="Loading burn check collection"
+                >
+                  <BurnChecksHeader />
+                  <ScrollPane
+                    className="min-h-0"
+                    viewportClassName="burn-checks-collection-scroll"
                   >
-                    <Skeleton
-                      data-skeleton-slot="icon"
-                      className="h-4 w-4 justify-self-center"
-                    />
-                    <span className="min-w-0 space-y-1.5">
-                      <Skeleton data-skeleton-slot="title" className={`h-3 ${width}`} />
-                      <Skeleton data-skeleton-slot="summary" className="h-3 w-24" />
-                    </span>
-                    <Skeleton data-skeleton-slot="metric" className="h-3 w-20" />
-                    <Skeleton data-skeleton-slot="disclosure" className="h-3.5 w-3.5" />
-                  </div>
-                ))}
+                    <div className="burn-checks-collection-content">
+                      <Skeleton data-skeleton="group-label" className="h-6 w-28" />
+                      <div className="burn-checks-group-body mt-3">
+                        {["w-40", "w-32", "w-44"].map((width) => (
+                          <div
+                            key={width}
+                            data-skeleton="check-row"
+                            className="grid min-h-[70px] grid-cols-[32px_minmax(0,1fr)] items-center gap-x-3 rounded-[var(--radius-popover)] bg-session-card px-3 py-3"
+                          >
+                            <Skeleton
+                              data-skeleton-slot="icon"
+                              className="h-8 w-8 rounded-full justify-self-center"
+                            />
+                            <span className="flex min-w-0 flex-col gap-1.5">
+                              <Skeleton data-skeleton-slot="title" className={`h-3 ${width}`} />
+                              <Skeleton data-skeleton-slot="summary" className="h-3 w-24" />
+                              <Skeleton data-skeleton-slot="metric" className="h-3 w-20" />
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </ScrollPane>
+                </section>
+                <section
+                  className="main-window-detail burn-checks-detail-pane"
+                  aria-label="Loading burn check details"
+                >
+                  <ScrollPane className="min-h-0" viewportClassName="burn-checks-detail-scroll">
+                    <div className="burn-checks-detail-content" data-skeleton="detail">
+                      <Skeleton className="h-6 w-48 max-w-full" />
+                      <Skeleton className="mt-2 h-4 w-32 max-w-full" />
+                      <div className="mt-4 border-t border-separator pt-4">
+                        <Skeleton className="h-4 w-80 max-w-full" />
+                        <Skeleton className="mt-3 h-7 w-28" />
+                      </div>
+                    </div>
+                  </ScrollPane>
+                </section>
               </div>
             </div>
-          </ScrollPane>
+          </div>
         )}
       </div>
     )
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
-      {isMacOS() && (
-        <div
-          className="h-[var(--main-window-titlebar-height)] shrink-0"
-          data-tauri-drag-region
-          aria-hidden="true"
-        />
+    <div className="burn-checks-page w-full bg-surface-window">
+      <h1 className="sr-only">Burn checks</h1>
+      {state.error && (
+        <p role="status" className="px-6 pt-2 type-callout text-system-red-text">
+          Could not refresh Burn checks. Previous results remain visible.{" "}
+          <button className="underline" onClick={session.refresh}>
+            Retry
+          </button>
+        </p>
       )}
-      <ScrollPane className="min-h-0" topEdgeFade>
-        <div className="w-full px-8 py-6">
-          <h1 className="sr-only">Burn checks</h1>
-          {state.error && (
-            <p role="status" className="mb-3 type-callout text-system-red-text">
-              Could not refresh Burn checks. Previous results remain visible.{" "}
-              <button className="underline" onClick={session.refresh}>
-                Retry
-              </button>
-            </p>
-          )}
-          <BurnChecksReport report={report} session={session} state={state} />
-        </div>
-      </ScrollPane>
+      <BurnChecksReport report={report} session={session} state={state} />
     </div>
   )
 }

@@ -23,19 +23,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use base64::Engine as _;
-use rusqlite::OpenFlags;
+use rusqlite::{OpenFlags, OptionalExtension as _};
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::provider_usage::live::antigravity;
 use crate::provider_usage::live::model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, UsageSource,
+    Confidence, Detection, Freshness, LoginCarrier, Presence, ProviderUsageError,
+    ProviderUsageSnapshot, SourceErrorDetail, UsageSource,
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
 use super::antigravity_local::{LocalProbe, LocalUsageTransport};
-use super::cooldown::Cooldown;
+use super::cooldown::{Cooldown, FetchFailure};
 use super::http;
+#[cfg(target_os = "macos")]
+#[cfg(target_os = "macos")]
+use super::presence::KeychainMetadata;
+use super::presence::{self, PresenceProbe, SystemPresenceProbe};
 
 const SOURCE_ID: &str = super::ANTIGRAVITY_SOURCE_ID;
 const MAX_CREDENTIAL_BYTES: u64 = 256 * 1024;
@@ -178,17 +183,142 @@ impl LiveUsageSource for AntigravityDirectFetch {
         true
     }
 
+    fn detect(&self, _online: bool) -> Presence {
+        detect_presence(
+            &SystemPresenceProbe {
+                #[cfg(target_os = "macos")]
+                try_keychain: self.try_keychain,
+            },
+            &SqliteIdeState,
+            self.agy_path.as_deref(),
+            &self.ide_paths,
+        )
+    }
+
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
         let now = OffsetDateTime::now_utc();
         self.cooldown.poll(now, max_age, || {
-            Ok(fetch_with_refresh_fallback(
+            fetch_with_refresh_fallback(
                 self.transport.as_ref(),
                 self.local.as_ref(),
                 self.credentials(now).as_ref(),
                 &self.refreshed,
                 now,
-            )?)
+            )
         })
+    }
+}
+
+/// The keyring entry `agy` keeps its login in.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "gemini";
+#[cfg(target_os = "macos")]
+const KEYCHAIN_ACCOUNT: &str = "antigravity";
+
+/// The CLI's own executable name on `PATH`. Only the macOS branch checks it.
+#[cfg(target_os = "macos")]
+const BINARY: &str = "agy";
+
+/// The one vendor-specific presence check: whether the IDE's state database
+/// holds the unified OAuth key. Read-only, key column only, never the value.
+/// Injectable beside [`PresenceProbe`] so a test can record the call.
+trait IdeStateProbe {
+    fn ide_has_oauth_key(&self, path: &Path) -> Result<bool, ()>;
+}
+
+struct SqliteIdeState;
+
+impl IdeStateProbe for SqliteIdeState {
+    fn ide_has_oauth_key(&self, path: &Path) -> Result<bool, ()> {
+        ide_has_oauth_key(path)
+    }
+}
+
+fn ide_has_oauth_key(path: &Path) -> Result<bool, ()> {
+    if fs::metadata(path).map_err(|_| ())?.len() > MAX_STATE_DB_BYTES {
+        return Err(());
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| ())?;
+    connection
+        .busy_timeout(std::time::Duration::from_millis(100))
+        .map_err(|_| ())?;
+    connection
+        .query_row(
+            "SELECT 1 FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.oauthToken' LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(|_| ())
+}
+
+/// Presence rules, in order: the `agy` token file is a login; an IDE state
+/// database with the OAuth key is a login; the keyring entry is a login
+/// (macOS only); a tool directory or the binary is an install without a
+/// login; nothing is no install. Off macOS the keyring and the running
+/// language server are not checked, so a negative stays `Unknown`.
+fn detect_presence(
+    probe: &impl PresenceProbe,
+    ide_state: &impl IdeStateProbe,
+    agy_path: Option<&Path>,
+    ide_paths: &[PathBuf],
+) -> Presence {
+    if let Some(path) = agy_path {
+        match presence::path_exists(probe, path) {
+            Ok(true) => return Presence::via(Detection::SignedIn, LoginCarrier::AgyToken),
+            Ok(false) => {}
+            Err(_) => return Presence::UNKNOWN,
+        }
+    }
+    for path in ide_paths {
+        match presence::path_exists(probe, path) {
+            Ok(true) => match ide_state.ide_has_oauth_key(path) {
+                Ok(true) => {
+                    return Presence::via(Detection::SignedIn, LoginCarrier::AntigravityIde);
+                }
+                Ok(false) => {}
+                Err(()) => return Presence::UNKNOWN,
+            },
+            Ok(false) => {}
+            Err(_) => return Presence::UNKNOWN,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Presence::UNKNOWN
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match probe.keychain_metadata(KEYCHAIN_SERVICE, Some(KEYCHAIN_ACCOUNT)) {
+            KeychainMetadata::Found(_) => {
+                return Presence::via(Detection::SignedIn, LoginCarrier::AntigravityKeyring);
+            }
+            KeychainMetadata::Absent => {}
+            KeychainMetadata::Unreadable => return Presence::UNKNOWN,
+        }
+        let Some(agy_dir) = agy_path.and_then(Path::parent) else {
+            return Presence::UNKNOWN;
+        };
+        // IDE paths end with User/globalStorage/state.vscdb. Check the application support directory above them.
+        let directories = std::iter::once(agy_dir)
+            .chain(ide_paths.iter().filter_map(|path| path.ancestors().nth(3)));
+        for directory in directories {
+            match presence::path_exists(probe, directory) {
+                Ok(true) => return Presence::new(Detection::InstalledNotSignedIn),
+                Ok(false) => {}
+                Err(_) => return Presence::UNKNOWN,
+            }
+        }
+        if probe.binary_present(BINARY) {
+            Presence::new(Detection::InstalledNotSignedIn)
+        } else {
+            Presence::new(Detection::NotInstalled)
+        }
     }
 }
 
@@ -548,9 +678,51 @@ trait AntigravityTransport: Send + Sync {
         &self,
         _refresh_token: &str,
         _now: OffsetDateTime,
-    ) -> Result<Credentials, ProviderUsageError> {
-        Err(ProviderUsageError::Unavailable)
+    ) -> Result<Credentials, RefreshError> {
+        Err(ProviderUsageError::Unavailable.into())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RefreshError {
+    error: ProviderUsageError,
+    detail: Option<SourceErrorDetail>,
+}
+
+impl From<ProviderUsageError> for RefreshError {
+    fn from(error: ProviderUsageError) -> Self {
+        Self {
+            error,
+            detail: None,
+        }
+    }
+}
+
+impl From<RefreshError> for FetchFailure {
+    fn from(failure: RefreshError) -> Self {
+        Self {
+            error: failure.error,
+            detail: failure.detail,
+            last_known: None,
+        }
+    }
+}
+
+fn refresh_client_credentials<'a>(
+    client_id: Option<&'a str>,
+    client_secret: Option<&'a str>,
+) -> Result<(&'a str, &'a str), RefreshError> {
+    let unsupported = RefreshError {
+        error: ProviderUsageError::Authentication,
+        detail: Some(SourceErrorDetail::RefreshUnsupported),
+    };
+    let client_id = client_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(unsupported)?;
+    let client_secret = client_secret
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(unsupported)?;
+    Ok((client_id, client_secret))
 }
 
 struct LiveTransport;
@@ -619,51 +791,53 @@ impl AntigravityTransport for LiveTransport {
         &self,
         refresh_token: &str,
         now: OffsetDateTime,
-    ) -> Result<Credentials, ProviderUsageError> {
-        let client_id = CLIENT_ID
-            .filter(|value| !value.trim().is_empty())
-            .ok_or(ProviderUsageError::Authentication)?;
-        let client_secret = CLIENT_SECRET
-            .filter(|value| !value.trim().is_empty())
-            .ok_or(ProviderUsageError::Authentication)?;
-        let response = http::client()
-            .post(TOKEN_ENDPOINT)
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", refresh_token),
-                ("client_id", client_id),
-                ("client_secret", client_secret),
-            ])
-            .send()
-            .map_err(|_| ProviderUsageError::Unavailable)?;
-        check_status(response.status())?;
-        let body = http::read_capped_body(response)?;
-        let value: Value = serde_json::from_str(&body).map_err(|_| {
-            ProviderUsageError::Schema(
-                crate::provider_usage::live::model::SchemaReason::InvalidValue,
-            )
-        })?;
-        let access_token = value
-            .get("access_token")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or(ProviderUsageError::Schema(
-                crate::provider_usage::live::model::SchemaReason::MissingRequiredField,
-            ))?;
-        let expires_in = value
-            .get("expires_in")
-            .and_then(Value::as_i64)
-            .filter(|seconds| (1..=86_400).contains(seconds))
-            .ok_or(ProviderUsageError::Schema(
-                crate::provider_usage::live::model::SchemaReason::InvalidValue,
-            ))?;
-        Ok(Credentials {
-            access_token: access_token.to_owned(),
-            refresh_token: Some(refresh_token.to_owned()),
-            expires_at: Some(now + time::Duration::seconds(expires_in)),
-        })
+    ) -> Result<Credentials, RefreshError> {
+        refresh_access_token(refresh_token, now, CLIENT_ID, CLIENT_SECRET)
     }
+}
+
+fn refresh_access_token(
+    refresh_token: &str,
+    now: OffsetDateTime,
+    client_id: Option<&str>,
+    client_secret: Option<&str>,
+) -> Result<Credentials, RefreshError> {
+    let (client_id, client_secret) = refresh_client_credentials(client_id, client_secret)?;
+    let response = http::client()
+        .post(TOKEN_ENDPOINT)
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+        ])
+        .send()
+        .map_err(|_| ProviderUsageError::Unavailable)?;
+    check_status(response.status())?;
+    let body = http::read_capped_body(response)?;
+    let value: Value = serde_json::from_str(&body).map_err(|_| {
+        ProviderUsageError::Schema(crate::provider_usage::live::model::SchemaReason::InvalidValue)
+    })?;
+    let access_token = value
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(ProviderUsageError::Schema(
+            crate::provider_usage::live::model::SchemaReason::MissingRequiredField,
+        ))?;
+    let expires_in = value
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .filter(|seconds| (1..=86_400).contains(seconds))
+        .ok_or(ProviderUsageError::Schema(
+            crate::provider_usage::live::model::SchemaReason::InvalidValue,
+        ))?;
+    Ok(Credentials {
+        access_token: access_token.to_owned(),
+        refresh_token: Some(refresh_token.to_owned()),
+        expires_at: Some(now + time::Duration::seconds(expires_in)),
+    })
 }
 
 fn fetch_cloud(
@@ -775,7 +949,7 @@ fn fetch_with_refresh_fallback(
     credentials: Option<&Credentials>,
     refreshed: &RefreshCache,
     now: OffsetDateTime,
-) -> Result<Option<ProviderUsageSnapshot>, ProviderUsageError> {
+) -> Result<Option<ProviderUsageSnapshot>, FetchFailure> {
     if credentials.is_none() {
         cached_refresh(refreshed, None, now);
     }
@@ -792,10 +966,14 @@ fn fetch_with_refresh_fallback(
                 .and_then(|credentials| google_subject(cloud, &credentials.access_token));
             Ok(Some(snapshot))
         }
-        Ok(None) => cloud_error.map_or(Ok(None), Err),
+        Ok(None) => cloud_error.map_or(Ok(None), |error| Err(error.into())),
         Err(local_error) => Err(match cloud_error {
-            Some(cloud_error) => preferred_error(cloud_error, local_error),
-            None => local_error,
+            Some(cloud_error)
+                if preferred_error(cloud_error.error, local_error) == cloud_error.error =>
+            {
+                cloud_error.into()
+            }
+            _ => local_error.into(),
         }),
     }
 }
@@ -805,7 +983,7 @@ fn fetch_cloud_with_refresh(
     credentials: &Credentials,
     refreshed: &RefreshCache,
     now: OffsetDateTime,
-) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
+) -> Result<ProviderUsageSnapshot, RefreshError> {
     let mut credentials = credentials.clone();
     if let Some(cached) = cached_refresh(refreshed, credentials.refresh_token.as_deref(), now) {
         credentials = cached;
@@ -819,9 +997,9 @@ fn fetch_cloud_with_refresh(
     match fetch_cloud(transport, &credentials, now) {
         Err(ProviderUsageError::Authentication) if !did_refresh => {
             let credentials = refresh_credentials(transport, &credentials, refreshed, now)?;
-            fetch_cloud(transport, &credentials, now)
+            fetch_cloud(transport, &credentials, now).map_err(Into::into)
         }
-        result => result,
+        result => result.map_err(Into::into),
     }
 }
 
@@ -863,7 +1041,7 @@ fn refresh_credentials(
     credentials: &Credentials,
     refreshed: &RefreshCache,
     now: OffsetDateTime,
-) -> Result<Credentials, ProviderUsageError> {
+) -> Result<Credentials, RefreshError> {
     let refresh_token = credentials
         .refresh_token
         .as_deref()
@@ -909,6 +1087,264 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    use super::super::presence::RecordingPresence;
+    use std::io;
+
+    /// A probe whose unlisted paths answer from the fixture on disk.
+    fn probe() -> RecordingPresence {
+        RecordingPresence {
+            fallthrough: true,
+            ..Default::default()
+        }
+    }
+
+    /// Records the IDE key check on the same call log as the probe.
+    struct RecordingIdeState<'a>(&'a RecordingPresence);
+
+    impl IdeStateProbe for RecordingIdeState<'_> {
+        fn ide_has_oauth_key(&self, path: &Path) -> Result<bool, ()> {
+            self.0
+                .record(format!("ide_has_oauth_key:{}", path.display()));
+            ide_has_oauth_key(path)
+        }
+    }
+
+    fn detected(probe: &RecordingPresence, agy: &Path, ide: &[PathBuf]) -> Detection {
+        detect_presence(probe, &RecordingIdeState(probe), Some(agy), ide).detection
+    }
+
+    fn presence_paths(root: &Path) -> (PathBuf, [PathBuf; 2]) {
+        (
+            root.join(".gemini/antigravity-cli/antigravity-oauth-token"),
+            ["Antigravity IDE", "Antigravity"]
+                .map(|name| root.join(name).join("User/globalStorage/state.vscdb")),
+        )
+    }
+
+    fn write_presence_database(path: &Path, key: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let connection = rusqlite::Connection::open(path).unwrap();
+        connection
+            .execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY)", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO ItemTable (key) VALUES (?1)", [key])
+            .unwrap();
+    }
+
+    #[test]
+    fn detection_without_carriers_uses_only_metadata_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agy, ide) = presence_paths(dir.path());
+        let probe = probe();
+        let expected = if cfg!(target_os = "macos") {
+            Detection::NotInstalled
+        } else {
+            Detection::Unknown
+        };
+        assert_eq!(detected(&probe, &agy, &ide), expected);
+        let expected_calls = vec![
+            format!("path_exists:{}", agy.display()),
+            format!("path_exists:{}", ide[0].display()),
+            format!("path_exists:{}", ide[1].display()),
+            #[cfg(target_os = "macos")]
+            "keychain_metadata".into(),
+            #[cfg(target_os = "macos")]
+            format!("path_exists:{}", agy.parent().unwrap().display()),
+            #[cfg(target_os = "macos")]
+            format!(
+                "path_exists:{}",
+                dir.path().join("Antigravity IDE").display()
+            ),
+            #[cfg(target_os = "macos")]
+            format!("path_exists:{}", dir.path().join("Antigravity").display()),
+            #[cfg(target_os = "macos")]
+            "binary_present".into(),
+        ];
+        assert_eq!(*probe.calls.borrow(), expected_calls);
+    }
+
+    #[test]
+    fn detection_of_empty_tool_directories_is_platform_limited() {
+        for name in [".gemini/antigravity-cli", "Antigravity IDE", "Antigravity"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (agy, ide) = presence_paths(dir.path());
+            fs::create_dir_all(dir.path().join(name)).unwrap();
+            let expected = if cfg!(target_os = "macos") {
+                Detection::InstalledNotSignedIn
+            } else {
+                Detection::Unknown
+            };
+            assert_eq!(detected(&probe(), &agy, &ide), expected);
+        }
+    }
+
+    #[test]
+    fn detection_of_a_token_file_never_parses_it_or_probes_other_carriers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agy, ide) = presence_paths(dir.path());
+        fs::create_dir_all(agy.parent().unwrap()).unwrap();
+        fs::write(&agy, "not valid JSON").unwrap();
+        let probe = probe();
+        assert_eq!(
+            detect_presence(&probe, &RecordingIdeState(&probe), Some(&agy), &ide),
+            Presence::via(Detection::SignedIn, LoginCarrier::AgyToken)
+        );
+        assert_eq!(
+            *probe.calls.borrow(),
+            [format!("path_exists:{}", agy.display())]
+        );
+    }
+
+    #[test]
+    fn detection_queries_the_oauth_key_without_a_value_column() {
+        for index in 0..2 {
+            let dir = tempfile::tempdir().unwrap();
+            let (agy, ide) = presence_paths(dir.path());
+            write_presence_database(&ide[index], "antigravityUnifiedStateSync.oauthToken");
+            let before = fs::read(&ide[index]).unwrap();
+            let probe = probe();
+            assert_eq!(
+                detect_presence(&probe, &RecordingIdeState(&probe), Some(&agy), &ide),
+                Presence::via(Detection::SignedIn, LoginCarrier::AntigravityIde)
+            );
+            let mut expected = vec![format!("path_exists:{}", agy.display())];
+            expected.extend(
+                ide[..=index]
+                    .iter()
+                    .map(|path| format!("path_exists:{}", path.display())),
+            );
+            expected.push(format!("ide_has_oauth_key:{}", ide[index].display()));
+            assert_eq!(*probe.calls.borrow(), expected);
+            assert_eq!(fs::read(&ide[index]).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn detection_does_not_treat_an_unrelated_database_key_as_a_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agy, ide) = presence_paths(dir.path());
+        write_presence_database(&ide[0], "unrelated.setting");
+        let expected = if cfg!(target_os = "macos") {
+            Detection::InstalledNotSignedIn
+        } else {
+            Detection::Unknown
+        };
+        assert_eq!(detected(&probe(), &agy, &ide), expected);
+    }
+
+    #[test]
+    fn detection_keeps_database_open_and_query_errors_unknown() {
+        for invalid_database in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let (agy, ide) = presence_paths(dir.path());
+            fs::create_dir_all(ide[0].parent().unwrap()).unwrap();
+            if invalid_database {
+                fs::write(&ide[0], "not a SQLite database").unwrap();
+            } else {
+                rusqlite::Connection::open(&ide[0]).unwrap();
+            }
+            let probe = probe();
+            assert_eq!(detected(&probe, &agy, &ide), Detection::Unknown);
+            assert_eq!(
+                probe.calls.borrow().last().unwrap(),
+                &format!("ide_has_oauth_key:{}", ide[0].display())
+            );
+        }
+    }
+
+    #[test]
+    fn the_presence_query_does_not_create_a_missing_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.vscdb");
+        assert_eq!(ide_has_oauth_key(&path), Err(()));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn detection_rejects_an_oversized_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agy, ide) = presence_paths(dir.path());
+        write_presence_database(&ide[0], "antigravityUnifiedStateSync.oauthToken");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&ide[0])
+            .unwrap()
+            .set_len(MAX_STATE_DB_BYTES + 1)
+            .unwrap();
+        assert_eq!(detected(&probe(), &agy, &ide), Detection::Unknown);
+    }
+
+    #[test]
+    fn detection_keeps_path_metadata_errors_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agy, ide) = presence_paths(dir.path());
+        let paths = [
+            agy.as_path(),
+            ide[0].as_path(),
+            ide[1].as_path(),
+            #[cfg(target_os = "macos")]
+            agy.parent().unwrap(),
+            #[cfg(target_os = "macos")]
+            ide[0].ancestors().nth(3).unwrap(),
+            #[cfg(target_os = "macos")]
+            ide[1].ancestors().nth(3).unwrap(),
+        ];
+        for path in paths {
+            for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+                let mut probe = probe();
+                probe.paths.insert(path.into(), Err(kind));
+                assert_eq!(detected(&probe, &agy, &ide), Detection::Unknown);
+                assert_eq!(
+                    probe.calls.borrow().last().unwrap(),
+                    &format!("path_exists:{}", path.display())
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detection_uses_keychain_attributes_without_a_secret_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agy, ide) = presence_paths(dir.path());
+        for (metadata, expected) in [
+            (
+                KeychainMetadata::Found(b"synthetic attributes".to_vec()),
+                Presence::via(Detection::SignedIn, LoginCarrier::AntigravityKeyring),
+            ),
+            (KeychainMetadata::Unreadable, Presence::UNKNOWN),
+        ] {
+            let probe = RecordingPresence {
+                fallthrough: true,
+                keychain: Some(metadata),
+                ..Default::default()
+            };
+            assert_eq!(
+                detect_presence(&probe, &RecordingIdeState(&probe), Some(&agy), &ide),
+                expected
+            );
+            assert_eq!(probe.calls.borrow().last().unwrap(), "keychain_metadata");
+            assert_eq!(probe.calls.borrow().len(), 4);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detection_accepts_an_agy_binary_without_a_login_carrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agy, ide) = presence_paths(dir.path());
+        let probe = RecordingPresence {
+            fallthrough: true,
+            binary: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            detected(&probe, &agy, &ide),
+            Detection::InstalledNotSignedIn
+        );
+    }
 
     const NOW: i64 = 1_800_000_000;
     const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
@@ -1055,7 +1491,7 @@ mod tests {
             &self,
             refresh_token: &str,
             now: OffsetDateTime,
-        ) -> Result<Credentials, ProviderUsageError> {
+        ) -> Result<Credentials, RefreshError> {
             assert_eq!(refresh_token, "synthetic-refresh");
             self.refreshes.fetch_add(1, Ordering::SeqCst);
             Ok(Credentials {
@@ -1186,6 +1622,121 @@ mod tests {
         assert_eq!(snapshot.windows.len(), 2);
         assert_eq!(snapshot.windows[0].id, "antigravity-gemini-5h");
         assert_eq!(snapshot.windows[1].id, "antigravity-claude-gpt-5h");
+    }
+
+    struct UnstampedTransport;
+
+    impl AntigravityTransport for UnstampedTransport {
+        fn load(&self, _: &str) -> Result<HttpReply, ProviderUsageError> {
+            panic!("expired credentials must refresh before cloud retrieval")
+        }
+
+        fn quota(&self, _: &str, _: &str) -> Result<HttpReply, ProviderUsageError> {
+            panic!("expired credentials must refresh before cloud retrieval")
+        }
+
+        fn refresh(&self, token: &str, now: OffsetDateTime) -> Result<Credentials, RefreshError> {
+            refresh_access_token(token, now, None, Some("synthetic-secret"))
+        }
+    }
+
+    #[test]
+    fn missing_or_blank_refresh_configuration_reports_unsupported_without_network_access() {
+        let now = OffsetDateTime::from_unix_timestamp(NOW).unwrap();
+        for (client_id, client_secret) in [
+            (None, Some("synthetic-secret")),
+            (Some("synthetic-client"), None),
+            (Some("  "), Some("synthetic-secret")),
+            (Some("synthetic-client"), Some("\t")),
+            (None, None),
+        ] {
+            let failure = refresh_access_token("synthetic-refresh", now, client_id, client_secret)
+                .err()
+                .unwrap();
+            assert_eq!(failure.error, ProviderUsageError::Authentication);
+            assert_eq!(failure.detail, Some(SourceErrorDetail::RefreshUnsupported));
+        }
+        assert_eq!(
+            refresh_client_credentials(Some("synthetic-client"), Some("synthetic-secret")),
+            Ok(("synthetic-client", "synthetic-secret"))
+        );
+    }
+
+    #[test]
+    fn unsupported_refresh_detail_survives_failed_fallback_and_clears_on_local_success() {
+        let now = OffsetDateTime::from_unix_timestamp(NOW).unwrap();
+        let expired = Credentials {
+            access_token: "expired-access".into(),
+            refresh_token: Some("synthetic-refresh".into()),
+            expires_at: Some(now - time::Duration::seconds(1)),
+        };
+        for local_result in [
+            Ok(false),
+            Err(ProviderUsageError::Unavailable),
+            Err(ProviderUsageError::Authentication),
+        ] {
+            let cooldown = Cooldown::new();
+            let cache = Mutex::default();
+            let local = FakeLocal {
+                calls: Arc::default(),
+                result: local_result,
+            };
+            let outcome = cooldown.poll(now, MAX_AGE, || {
+                fetch_with_refresh_fallback(
+                    &UnstampedTransport,
+                    &local,
+                    Some(&expired),
+                    &cache,
+                    now,
+                )
+            });
+            assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
+            assert_eq!(outcome.detail, Some(SourceErrorDetail::RefreshUnsupported));
+            let cached = cooldown.poll(now, MAX_AGE, || panic!("cooldown must skip the refresh"));
+            assert_eq!(cached.detail, outcome.detail);
+
+            cooldown.open_for_test();
+            let local = FakeLocal {
+                calls: Arc::default(),
+                result: Ok(true),
+            };
+            let recovered = cooldown.poll(now, MAX_AGE, || {
+                fetch_with_refresh_fallback(
+                    &UnstampedTransport,
+                    &local,
+                    Some(&expired),
+                    &cache,
+                    now,
+                )
+            });
+            assert_eq!(recovered.error, None);
+            assert_eq!(recovered.detail, None);
+            assert_eq!(recovered.snapshots.len(), 1);
+        }
+    }
+
+    #[test]
+    fn ordinary_refresh_and_local_failures_have_no_detail() {
+        let now = OffsetDateTime::from_unix_timestamp(NOW).unwrap();
+        let credentials = Credentials {
+            refresh_token: None,
+            ..credentials()
+        };
+        let failure =
+            refresh_credentials(&UnstampedTransport, &credentials, &Mutex::default(), now)
+                .err()
+                .unwrap();
+        assert_eq!(failure.error, ProviderUsageError::Authentication);
+        assert_eq!(failure.detail, None);
+        let local = FakeLocal {
+            calls: Arc::default(),
+            result: Err(ProviderUsageError::Unavailable),
+        };
+        let failure =
+            fetch_with_refresh_fallback(&UnstampedTransport, &local, None, &Mutex::default(), now)
+                .unwrap_err();
+        assert_eq!(failure.error, ProviderUsageError::Unavailable);
+        assert_eq!(failure.detail, None);
     }
 
     #[test]

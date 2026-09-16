@@ -34,7 +34,9 @@ use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 
 use super::super::SourceOutcome;
-use super::super::model::{Freshness, ProviderUsageError, ProviderUsageSnapshot};
+use super::super::model::{
+    Freshness, ProviderUsageError, ProviderUsageSnapshot, SourceErrorDetail,
+};
 
 /// The floor under a caller-requested failure cooldown.
 ///
@@ -84,6 +86,7 @@ pub struct Cooldown {
 struct Inner {
     snapshot: Option<ProviderUsageSnapshot>,
     error: Option<ProviderUsageError>,
+    detail: Option<SourceErrorDetail>,
     last_attempt: Option<(Instant, bool)>,
 }
 
@@ -137,6 +140,7 @@ impl Cooldown {
                 Ok(snapshot) => {
                     inner.snapshot = snapshot;
                     inner.error = None;
+                    inner.detail = None;
                     inner.last_attempt = Some((Instant::now(), true));
                 }
                 Err(failure) => {
@@ -146,6 +150,7 @@ impl Cooldown {
                         inner.snapshot = Some(*known);
                     }
                     inner.error = Some(failure.error);
+                    inner.detail = failure.detail;
                     inner.last_attempt = Some((Instant::now(), false));
                 }
             }
@@ -159,8 +164,12 @@ impl Cooldown {
             (Some(snapshot), Some(error)) => SourceOutcome {
                 snapshots: vec![snapshot],
                 error: Some(error),
+                detail: inner.detail,
             },
-            (None, Some(error)) => SourceOutcome::failed(error),
+            (None, Some(error)) => match inner.detail {
+                Some(detail) => SourceOutcome::failed_with_detail(error, detail),
+                None => SourceOutcome::failed(error),
+            },
             (None, None) => SourceOutcome::absent(),
         }
     }
@@ -206,6 +215,7 @@ fn failure_cooldown(max_age: Duration) -> Duration {
 #[derive(Debug)]
 pub struct FetchFailure {
     pub error: ProviderUsageError,
+    pub detail: Option<SourceErrorDetail>,
     /// Boxed so that a failure stays small on the `Err` path.
     pub last_known: Option<Box<ProviderUsageSnapshot>>,
 }
@@ -214,6 +224,7 @@ impl From<ProviderUsageError> for FetchFailure {
     fn from(error: ProviderUsageError) -> FetchFailure {
         FetchFailure {
             error,
+            detail: None,
             last_known: None,
         }
     }
@@ -320,6 +331,70 @@ mod tests {
             supplemental: None,
             reset_credits: None,
         }
+    }
+
+    #[test]
+    fn error_details_survive_cached_errors_and_clear_after_success() {
+        for (error, detail) in [
+            (
+                ProviderUsageError::Unavailable,
+                SourceErrorDetail::KeychainUnreadable,
+            ),
+            (
+                ProviderUsageError::Authentication,
+                SourceErrorDetail::RefreshUnsupported,
+            ),
+        ] {
+            for has_snapshot in [false, true] {
+                for success_has_snapshot in [false, true] {
+                    let cooldown = Cooldown::new();
+                    let outcome = cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+                        Err(FetchFailure {
+                            error,
+                            detail: Some(detail),
+                            last_known: has_snapshot.then(|| Box::new(snapshot(at(1_000), 40.0))),
+                        })
+                    });
+                    assert_eq!(outcome.detail, Some(detail));
+                    assert_eq!(outcome.snapshots.len(), usize::from(has_snapshot));
+                    let cached = cooldown.poll(at(1_001), DEFAULT_MAX_AGE, || {
+                        panic!("cooldown must skip the fetch")
+                    });
+                    assert_eq!(cached.error, outcome.error);
+                    assert_eq!(cached.detail, outcome.detail);
+                    assert_eq!(cached.snapshots.len(), outcome.snapshots.len());
+                    cooldown.open_for_test();
+                    let recovered = cooldown.poll(at(1_002), DEFAULT_MAX_AGE, || {
+                        Ok(success_has_snapshot.then(|| snapshot(at(1_002), 50.0)))
+                    });
+                    assert_eq!(recovered.error, None);
+                    assert_eq!(recovered.detail, None);
+                    let cached = cooldown.poll(at(1_003), DEFAULT_MAX_AGE, || {
+                        panic!("cooldown must skip the fetch")
+                    });
+                    assert_eq!(cached.error, None);
+                    assert_eq!(cached.detail, None);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_unqualified_failure_replaces_the_previous_detail() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+            Err(FetchFailure {
+                error: ProviderUsageError::Unavailable,
+                detail: Some(SourceErrorDetail::KeychainUnreadable),
+                last_known: None,
+            })
+        });
+        cooldown.open_for_test();
+        let outcome = cooldown.poll(at(1_001), DEFAULT_MAX_AGE, || {
+            Err(ProviderUsageError::RateLimited.into())
+        });
+        assert_eq!(outcome.error, Some(ProviderUsageError::RateLimited));
+        assert_eq!(outcome.detail, None);
     }
 
     #[test]
@@ -437,6 +512,7 @@ mod tests {
         let outcome = cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
             Err(FetchFailure {
                 error: ProviderUsageError::RateLimited,
+                detail: None,
                 last_known: Some(Box::new(snapshot(at(700), 55.0))),
             })
         });
@@ -458,6 +534,7 @@ mod tests {
         let outcome = cooldown.poll(at(1_300), DEFAULT_MAX_AGE, || {
             Err(FetchFailure {
                 error: ProviderUsageError::RateLimited,
+                detail: None,
                 last_known: Some(Box::new(snapshot(at(1_200), 55.0))),
             })
         });
@@ -478,6 +555,7 @@ mod tests {
         let outcome = cooldown.poll(at(1_660), DEFAULT_MAX_AGE, || {
             Err(FetchFailure {
                 error: ProviderUsageError::RateLimited,
+                detail: None,
                 last_known: Some(Box::new(snapshot(at(1_500), 55.0))),
             })
         });
@@ -497,6 +575,7 @@ mod tests {
         let outcome = cooldown.poll(at(2_000), DEFAULT_MAX_AGE, || {
             Err(FetchFailure {
                 error: ProviderUsageError::Unavailable,
+                detail: None,
                 last_known: Some(Box::new(snapshot(at(900), 55.0))),
             })
         });

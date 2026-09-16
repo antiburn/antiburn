@@ -2008,9 +2008,14 @@ mod tests {
     fn quota_incidents_stay_unsupported_when_the_source_capability_is_false() {
         use crate::analysis::evidence::{QuotaConfidence, QuotaHitSeverity, QuotaLimitKind};
 
-        // Claude does not claim `quota_incidents`, so a pushed incident
+        // OpenCode does not claim `quota_incidents`, so a pushed incident
         // must not leak into a supported group.
-        let mut accumulator = accumulator(true);
+        let mut accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "opencode".to_owned(),
+            session_id: "s1".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::opencode(),
+        });
         accumulator.observe_observation(&EvidenceObservation::QuotaIncident(QuotaIncident {
             ts_ms: 100,
             limit_kind: QuotaLimitKind::RateLimit,
@@ -2031,9 +2036,14 @@ mod tests {
     fn provider_incidents_stay_unsupported_when_the_source_capability_is_false() {
         use crate::analysis::evidence::ProviderIncidentKind;
 
-        // Claude does not claim `provider_incidents`, so a pushed incident
+        // OpenCode does not claim `provider_incidents`, so a pushed incident
         // must not leak into a supported group.
-        let mut accumulator = accumulator(true);
+        let mut accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "opencode".to_owned(),
+            session_id: "s1".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::opencode(),
+        });
         accumulator.observe_observation(&EvidenceObservation::ProviderIncident(ProviderIncident {
             ts_ms: 100,
             kind: ProviderIncidentKind::Capacity,
@@ -2054,6 +2064,7 @@ mod tests {
             source: RawSource::Jsonl(
                 r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- orbit: Synthetic source."}}"#.to_owned(),
             ),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         };
         let mut composite = composite_with_rows("claude", "attachment");
@@ -2073,6 +2084,7 @@ mod tests {
             agent: "claude".to_owned(),
             session_id: "unknown".to_owned(),
             source: RawSource::Jsonl(r#"{"type":"telemetry_ping","payload":"private"}"#.to_owned()),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         };
         let mut composite = composite_with_rows("claude", "unknown");
@@ -2267,6 +2279,7 @@ mod tests {
                         .to_string(),
                     ),
                     fork_parent_session_id: None,
+                    source_format: Default::default(),
                 };
                 let mut sink = CompositeSink::with_turn_rows(
                     SessionMetricsAccumulator::new("claude", id),

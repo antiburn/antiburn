@@ -151,14 +151,11 @@
   --color-bg-key: hsl(0 0% 100% / 0.2);
 
   --color-bg-header: hsl(0 0% 0% / 0.025);
-  /* Raised fill for text inputs/textareas. Light mode = whiter than surface;
-     dark mode = lighter gray than surface. The explicit [data-theme] values
-     are solid, so material behind the window cannot bleed through; the
-     default :root and prefers-color-scheme branches stay translucent to match
-     the rest of those palettes. */
-  --color-bg-input: hsl(0 0% 100% / 0.5);
+  /* Solid input fills prevent the window material from showing through.
+     System uses the same fills as the explicit Light and Dark themes. */
+  --color-bg-input: hsl(0 0% 100%);
 
-  --color-bg-window: hsl(0 0% 96.4% / 0.8);
+  --color-bg-window: hsl(0 0% 96.4%);
   --color-bg-sidebar: hsl(0 0% 0% / 0.03);
   --color-bg-selected: hsl(0 0% 0% / 0.09);
 
@@ -278,14 +275,14 @@
     --color-bg-primary: hsl(0 0% 11.7% / 0.92);
     --color-bg-secondary: hsl(0 0% 100% / 0.12);
     --color-bg-tertiary: hsl(0 0% 100% / 0.18);
-    --color-bg-row-hover: hsl(0 0% 100% / 0.07);
+    --color-bg-row-hover: hsl(0 0% 100% / 0.04);
     --color-bg-card: hsl(0 0% 100% / 0.08);
     --color-stats-edge-val: hsl(0 0% 100% / 0.05);
     --color-bg-session-card: hsl(0 0% 100% / 0.03);
     --color-bg-key: hsl(0 0% 100% / 0.2);
     --color-bg-header: hsl(0 0% 100% / 0.03);
-    --color-bg-input: hsl(0 0% 100% / 0.08);
-    --color-bg-window: hsl(0 0% 15.6% / 0.8);
+    --color-bg-input: hsl(240 1.6% 23%);
+    --color-bg-window: hsl(0 0% 12.5%);
     --color-bg-sidebar: hsl(0 0% 100% / 0.04);
     --color-bg-selected: hsl(0 0% 100% / 0.14);
     --color-text-primary: hsl(0 0% 100% / 0.92);

@@ -231,6 +231,46 @@ mod tests {
         assert_eq!(findings.observed_times_ms, vec![100, 250, 400]);
     }
 
+    /// Two sessions each carry a distinct mix of kinds. `hits_by_kind`
+    /// locks the per-kind counts across both sessions.
+    #[test]
+    fn mixed_kinds_across_two_sessions_lock_the_per_kind_counts() {
+        let mut accumulator = ProviderIncidentsAccumulator::default();
+        accumulator.observe_session(
+            &identity("s1"),
+            &EvidenceValue::Complete(SessionProviderEvidence {
+                incidents: vec![
+                    incident(100, ProviderIncidentKind::Capacity, "model-a"),
+                    incident(200, ProviderIncidentKind::ServerError, "model-a"),
+                ],
+            }),
+        );
+        accumulator.observe_session(
+            &identity("s2"),
+            &EvidenceValue::Complete(SessionProviderEvidence {
+                incidents: vec![
+                    incident(300, ProviderIncidentKind::ServerError, "model-b"),
+                    incident(400, ProviderIncidentKind::Connection, "model-b"),
+                    incident(500, ProviderIncidentKind::Connection, "model-b"),
+                ],
+            }),
+        );
+
+        let ProviderIncidentsSection::Findings(findings) = accumulator.finish() else {
+            panic!("expected findings");
+        };
+        assert_eq!(findings.total_hits, 5);
+        assert_eq!(
+            findings.hits_by_kind,
+            BTreeMap::from([
+                (ProviderIncidentKind::Capacity, 1),
+                (ProviderIncidentKind::ServerError, 2),
+                (ProviderIncidentKind::Connection, 2),
+            ])
+        );
+        assert_eq!(findings.affected_session_count, 2);
+    }
+
     #[test]
     fn reported_collections_stay_bounded() {
         let mut accumulator = ProviderIncidentsAccumulator::default();

@@ -341,3 +341,22 @@ html[data-platform="macos"] .ui-scroll-viewport {
 .ui-scrollbar-thumb:hover {
   background: rgb(128 128 128 / 0.7);
 }
+
+.ui-popover-anchor {
+  position: relative;
+}
+.ui-info-popover-trigger {
+  display: grid;
+  inline-size: 40px;
+  block-size: 40px;
+  place-items: center;
+}
+.ui-menu.ui-info-popover {
+  position: absolute;
+  inset-block-start: calc(100% + var(--space-xs));
+  inset-inline-end: 0;
+  inline-size: min(300px, calc(100vw - var(--space-2xl) * 2));
+  padding: var(--space-lg);
+  border-radius: var(--radius-popover);
+  transform-origin: top right;
+}

@@ -70,8 +70,8 @@ impl SessionReader for AntigravitySessionReader {
         "antigravity"
     }
 
-    fn capabilities(&self, source: &RawSource) -> crate::analysis::SourceCapabilities {
-        antigravity_capabilities(source)
+    fn capabilities(&self, input: &SessionInput) -> crate::analysis::SourceCapabilities {
+        antigravity_capabilities(input)
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -86,32 +86,7 @@ impl SessionReader for AntigravitySessionReader {
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
         (|| -> anyhow::Result<VisitOutcome> {
-            let summary = match &input.source {
-                RawSource::File(path) => {
-                    let file = File::open(path)?;
-                    if is_jsonl_path(path) {
-                        self.visit_jsonl(BufReader::new(file), &|| false, false, sink)?
-                    } else {
-                        self.visit_cascade(file, &|| false, sink)?
-                    }
-                }
-                RawSource::Jsonl(content) => {
-                    if is_cascade_content(content) {
-                        self.visit_cascade(Cursor::new(content.as_bytes()), &|| false, sink)?
-                    } else {
-                        let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
-                        self.visit_jsonl(
-                            BufReader::new(Cursor::new(content.as_bytes()).chain(suffix)),
-                            &|| false,
-                            false,
-                            sink,
-                        )?
-                    }
-                }
-                RawSource::Sqlite(path) => {
-                    self.visit_database(path, &input.session_id, &|| false, sink)?
-                }
-            };
+            let summary = self.visit_admitted(input, &|| false, sink)?;
             sink.finish(summary);
             Ok(VisitOutcome::Unvalidated)
         })()
@@ -138,12 +113,19 @@ impl SessionReader for AntigravitySessionReader {
                 AppendOnlyGuarantee::Evidenced => claim.boundary,
                 AppendOnlyGuarantee::Absent => u64::MAX,
             };
-            let summary = if is_jsonl_path(path) {
-                self.visit_jsonl(BufReader::new(pinned.reader(limit)), cancel, false, sink)?
-            } else {
-                let model = self.probe_cascade_model(pinned.reader(limit), cancel)?;
-                self.visit_cascade_with_model(pinned.reader(limit), cancel, sink, model)?
-            };
+            let summary =
+                match input.source_format_or(crate::analysis::SourceFormat::AntigravityJson) {
+                    crate::analysis::SourceFormat::AntigravityBrainJsonl => {
+                        self.visit_jsonl(BufReader::new(pinned.reader(limit)), cancel, false, sink)?
+                    }
+                    crate::analysis::SourceFormat::AntigravityCascadeJson => {
+                        let model = self.probe_cascade_model(pinned.reader(limit), cancel)?;
+                        self.visit_cascade_with_model(pinned.reader(limit), cancel, sink, model)?
+                    }
+                    format => anyhow::bail!(
+                        "Antigravity source format {format:?} is not a claimable file"
+                    ),
+                };
             let outcome = match guarantee {
                 AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
                     Some(reason) => VisitOutcome::SourceChanged(reason),
@@ -198,6 +180,7 @@ impl SessionReader for AntigravitySessionReader {
         }
         let connection = open_database(path)?;
         connection.execute_batch("BEGIN")?;
+        validate_database_schema(&connection)?;
         let actual = db_fingerprint_connection(&connection)
             .map(|database| {
                 combine_db_fingerprint(
@@ -220,31 +203,33 @@ impl SessionReader for AntigravitySessionReader {
             return Ok(VisitOutcome::SourceChanged(reason));
         }
         connection.execute_batch("COMMIT")?;
+        // Reopen after the transaction to detect a commit that landed during
+        // the snapshot read. SQLite exposes uncheckpointed WAL rows here.
+        let verification = open_database(path)?;
+        let observed = db_fingerprint_connection(&verification)
+            .map(|database| {
+                combine_db_fingerprint(
+                    database,
+                    transcript_claim
+                        .as_ref()
+                        .map(|(_, claim)| claim.fingerprint.as_str()),
+                )
+            })
+            .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
+        if observed.as_deref() != Some(claimed_fingerprint) {
+            return Ok(VisitOutcome::SourceChanged(
+                SourceChangedReason::FingerprintMismatch,
+            ));
+        }
         sink.finish(summary);
         Ok(VisitOutcome::AcceptedFull)
     }
 }
 
-fn antigravity_capabilities(source: &RawSource) -> crate::analysis::SourceCapabilities {
+fn antigravity_capabilities(input: &SessionInput) -> crate::analysis::SourceCapabilities {
     use crate::analysis::{SourceCapabilities, SourceFormat};
 
-    let format = match source {
-        RawSource::Sqlite(_) => SourceFormat::AntigravitySqlite,
-        RawSource::File(path) if is_jsonl_path(path) => SourceFormat::AntigravityBrainJsonl,
-        RawSource::File(path)
-            if path
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .contains("chatsessions") =>
-        {
-            SourceFormat::AntigravityWorkspaceChatJson
-        }
-        RawSource::File(_) => SourceFormat::AntigravityCascadeJson,
-        RawSource::Jsonl(content) if is_cascade_content(content) => {
-            SourceFormat::AntigravityCascadeJson
-        }
-        RawSource::Jsonl(_) => SourceFormat::AntigravityBrainJsonl,
-    };
+    let format = input.source_format_or(SourceFormat::AntigravityJson);
     if matches!(format, SourceFormat::AntigravityWorkspaceChatJson) {
         return SourceCapabilities::uncharacterized(format);
     }
@@ -260,6 +245,45 @@ fn antigravity_capabilities(source: &RawSource) -> crate::analysis::SourceCapabi
 }
 
 impl AntigravitySessionReader {
+    fn visit_admitted(
+        &self,
+        input: &SessionInput,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<SessionSummary> {
+        use crate::analysis::SourceFormat;
+
+        match (
+            input.source_format_or(SourceFormat::AntigravityJson),
+            &input.source,
+        ) {
+            (SourceFormat::AntigravityBrainJsonl, RawSource::File(path)) => {
+                self.visit_jsonl(BufReader::new(File::open(path)?), cancel, false, sink)
+            }
+            (SourceFormat::AntigravityBrainJsonl, RawSource::Jsonl(content)) => {
+                let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
+                self.visit_jsonl(
+                    BufReader::new(Cursor::new(content.as_bytes()).chain(suffix)),
+                    cancel,
+                    false,
+                    sink,
+                )
+            }
+            (SourceFormat::AntigravityCascadeJson, RawSource::File(path)) => {
+                self.visit_cascade(File::open(path)?, cancel, sink)
+            }
+            (SourceFormat::AntigravityCascadeJson, RawSource::Jsonl(content)) => {
+                self.visit_cascade(Cursor::new(content.as_bytes()), cancel, sink)
+            }
+            (SourceFormat::AntigravitySqlite, RawSource::Sqlite(path)) => {
+                self.visit_database(path, &input.session_id, cancel, sink)
+            }
+            (format, _) => {
+                anyhow::bail!("Antigravity source format {format:?} does not match its source")
+            }
+        }
+    }
+
     fn visit_jsonl(
         &self,
         reader: impl BufRead,
@@ -311,6 +335,7 @@ impl AntigravitySessionReader {
         };
         let connection = open_database(path)?;
         connection.execute_batch("BEGIN")?;
+        validate_database_schema(&connection)?;
         let summary = self.visit_database_rows(&connection, summary, cancel, sink)?;
         connection.execute_batch("COMMIT")?;
         Ok(summary)
@@ -599,6 +624,30 @@ fn table_exists(connection: &Connection, table: &str) -> rusqlite::Result<bool> 
         params![table],
         |row| row.get(0),
     )
+}
+
+fn validate_database_schema(connection: &Connection) -> anyhow::Result<()> {
+    let user_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if user_version != 1 {
+        anyhow::bail!("Antigravity SQLite source has unsupported user_version {user_version}");
+    }
+    let mut admitted = false;
+    for (table, columns) in [
+        ("gen_metadata", &["idx", "data"] as &[_]),
+        ("steps", &["idx", "metadata"] as &[_]),
+    ] {
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let found: HashSet<String> = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !found.is_empty() && columns.iter().all(|column| found.contains(*column)) {
+            admitted = true;
+        }
+    }
+    if !admitted {
+        anyhow::bail!("Antigravity SQLite source has no supported usage schema");
+    }
+    Ok(())
 }
 
 struct ChatMetadata<'a> {
@@ -1115,60 +1164,6 @@ impl<'a> ProtoFields<'a> {
             _ => return None,
         }
         (self.offset <= self.data.len()).then_some(())
-    }
-}
-
-fn is_jsonl_path(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
-}
-
-fn is_cascade_content(content: &str) -> bool {
-    let mut has_steps = false;
-    let mut deserializer = serde_json::Deserializer::from_str(content);
-    let _ = CascadeShapeSeed(&mut has_steps).deserialize(&mut deserializer);
-    has_steps
-}
-
-struct CascadeShapeSeed<'a>(&'a mut bool);
-
-impl<'de> DeserializeSeed<'de> for CascadeShapeSeed<'_> {
-    type Value = ();
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_map(CascadeShapeVisitor(self.0))
-    }
-}
-
-struct CascadeShapeVisitor<'a>(&'a mut bool);
-
-impl<'de> Visitor<'de> for CascadeShapeVisitor<'_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an Antigravity cascade object")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "steps" => {
-                    *self.0 = true;
-                    map.next_value::<IgnoredAny>()?;
-                }
-                _ => {
-                    map.next_value::<IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -2706,11 +2701,22 @@ mod tests {
     }
 
     fn input(source: RawSource) -> SessionInput {
+        let source_format = match &source {
+            RawSource::Sqlite(_) => crate::analysis::SourceFormat::AntigravitySqlite,
+            RawSource::File(_) => crate::analysis::SourceFormat::AntigravityBrainJsonl,
+            RawSource::Jsonl(content) if content.contains("\"steps\"") => {
+                crate::analysis::SourceFormat::AntigravityCascadeJson
+            }
+            RawSource::Jsonl(_) => crate::analysis::SourceFormat::AntigravityBrainJsonl,
+            RawSource::ClineBundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
+            RawSource::KiroCliV2Bundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
+        };
         SessionInput {
             agent: "antigravity".to_owned(),
             session_id: "synthetic-antigravity".to_owned(),
             source,
             fork_parent_session_id: None,
+            source_format,
         }
     }
 
@@ -2857,7 +2863,8 @@ mod tests {
         let connection = Connection::open(&db_path).unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE trajectory_meta (trajectory_id TEXT PRIMARY KEY, cascade_id TEXT, trajectory_type INTEGER, source INTEGER);
+                "PRAGMA user_version = 1;
+                 CREATE TABLE trajectory_meta (trajectory_id TEXT PRIMARY KEY, cascade_id TEXT, trajectory_type INTEGER, source INTEGER);
                  CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 0, has_subtrajectory NUMERIC NOT NULL DEFAULT false, metadata BLOB, error_details BLOB, permissions BLOB, task_details BLOB, render_info BLOB, step_payload BLOB, step_format INTEGER NOT NULL DEFAULT 0);
                  CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER NOT NULL DEFAULT 0);
                  CREATE TABLE executor_metadata (idx INTEGER PRIMARY KEY, data BLOB);
@@ -2906,6 +2913,7 @@ mod tests {
                 session_id: session_id.to_owned(),
                 source: RawSource::Sqlite(db_path),
                 fork_parent_session_id: None,
+                source_format: crate::analysis::SourceFormat::AntigravitySqlite,
             },
         )
     }
@@ -2938,6 +2946,48 @@ mod tests {
 
         // Unknown step types are left for the caller to decide.
         assert_eq!(role_for("FLOOP"), None);
+    }
+
+    #[test]
+    fn sqlite_admission_requires_a_reviewed_usage_table() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA user_version = 1; CREATE TABLE gen_metadata (id INTEGER, payload BLOB);",
+            )
+            .unwrap();
+        assert!(validate_database_schema(&connection).is_err());
+
+        connection
+            .execute_batch("CREATE TABLE steps (idx INTEGER, metadata BLOB);")
+            .unwrap();
+        assert!(validate_database_schema(&connection).is_ok());
+    }
+
+    #[test]
+    fn sqlite_admission_rejects_an_unpinned_user_version() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE steps (idx INTEGER, metadata BLOB);")
+            .unwrap();
+        assert!(validate_database_schema(&connection).is_err());
+    }
+
+    #[test]
+    fn explicit_format_cannot_be_reclassified_from_inline_content() {
+        let input = SessionInput {
+            source: RawSource::Jsonl(
+                r#"{"steps":{"steps":[{"type":"CORTEX_STEP_TYPE_USER_INPUT"}]}}"#.to_owned(),
+            ),
+            source_format: crate::analysis::SourceFormat::AntigravityBrainJsonl,
+            ..input(RawSource::Jsonl(String::new()))
+        };
+        let mut sink = SessionCollector::new(&input.agent, &input.session_id);
+        assert!(
+            AntigravitySessionReader
+                .visit_admitted(&input, &|| false, &mut sink)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -3167,23 +3217,6 @@ mod tests {
     }
 
     #[test]
-    fn structural_inline_cascade_detection_accepts_whitespace_and_newlines() {
-        let cascade = r#"
-        {
-          "source" : "antigravity_api",
-          "steps" : { "steps" : [] }
-        }
-        "#;
-        let steps_only = "{\n  \"steps\" : { \"steps\" : [] }\n}";
-        let brain = r#"{"type":"USER_INPUT","content":"hello"}"#;
-
-        assert!(is_cascade_content(cascade));
-        assert!(is_cascade_content(steps_only));
-        assert!(!is_cascade_content(brain));
-        assert!(!is_cascade_content("{broken"));
-    }
-
-    #[test]
     fn malformed_and_oversized_brain_records_do_not_hide_neighbors() {
         let mut content = String::from(
             "{\"type\":\"USER_INPUT\",\"created_at\":\"2026-01-01T00:00:00Z\",\"content\":\"first\"}\n{broken\n",
@@ -3269,29 +3302,15 @@ mod tests {
         let brain = input(RawSource::Jsonl(
             "{\"type\":\"USER_INPUT\",\"content\":\"hello\"}\n".to_owned(),
         ));
-        let cascade = input(RawSource::Jsonl(
+        let mut cascade = input(RawSource::Jsonl(
             r#"{"source":"antigravity_api","steps":{"steps":[{"type":"CORTEX_STEP_TYPE_USER_INPUT","userInput":{"userResponse":"hello"}}]}}"#
                 .to_owned(),
         ));
+        cascade.source_format = crate::analysis::SourceFormat::AntigravityCascadeJson;
 
         for input in [brain, cascade] {
             let mut sink = SessionCollector::new(&input.agent, &input.session_id);
-            let result = match &input.source {
-                RawSource::Jsonl(content) if is_cascade_content(content) => {
-                    AntigravitySessionReader.visit_cascade(
-                        Cursor::new(content.as_bytes()),
-                        &|| true,
-                        &mut sink,
-                    )
-                }
-                RawSource::Jsonl(content) => AntigravitySessionReader.visit_jsonl(
-                    BufReader::new(Cursor::new(content.as_bytes())),
-                    &|| true,
-                    false,
-                    &mut sink,
-                ),
-                _ => unreachable!(),
-            };
+            let result = AntigravitySessionReader.visit_admitted(&input, &|| true, &mut sink);
             assert!(result.is_err());
         }
     }

@@ -4,6 +4,7 @@ import { useCallback } from "react"
 import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
 import type { TokensCostSplit } from "../../components/session/tokensCard"
 import { renderAgentIcon } from "../../lib/agentIcon"
+import { writeClipboardText } from "../../lib/clipboard"
 import {
   deleteSessionData,
   revealSource,
@@ -11,6 +12,7 @@ import {
   type SessionAnalysisPayload,
 } from "../../lib/ipc"
 import { agentSupportsAnalysis } from "../../lib/presentation/agents"
+import { sessionDiscussionPrompt } from "../../lib/presentation/sessionDiscussionPrompt"
 import type { SessionSubject } from "../../lib/sessionSubject"
 import {
   inclusiveCostSubject,
@@ -222,6 +224,11 @@ export function SessionPane({
     void revealSource(sourcePath)
   }, [sourcePath])
 
+  const handleCopyPath = useCallback(async () => {
+    if (!sourcePath) throw new Error("No source path")
+    await writeClipboardText(sourcePath)
+  }, [sourcePath])
+
   const hygieneIdentity = {
     agent: subject.agent,
     sessionId: subject.sessionId,
@@ -229,6 +236,18 @@ export function SessionPane({
   }
   const hygieneBySession = useSessionHygiene(active ? [hygieneIdentity] : [])
   const hygiene = sessionHygieneFor(hygieneBySession, hygieneIdentity)
+  const handleCopyDiscussionPrompt = useCallback(async () => {
+    if (!sourcePath) throw new Error("No source path")
+    const prompt = sessionDiscussionPrompt({
+      subject,
+      payload,
+      hygiene,
+      loading,
+      refreshing,
+      error,
+    })
+    await writeClipboardText(prompt)
+  }, [sourcePath, subject, payload, hygiene, loading, refreshing, error])
   const { cost, costSplit } = payload
     ? toLocalCost(subject, payload)
     : { cost: null, costSplit: null }
@@ -325,7 +344,13 @@ export function SessionPane({
       onOpenOrchestrator={openOrchestrator}
       onOpenRelatedSession={openRelated}
       onDeleteSession={() => void handleDelete()}
-      {...(sourcePath ? { onRevealSource: handleReveal } : {})}
+      {...(sourcePath
+        ? {
+            onRevealSource: handleReveal,
+            onCopySourcePath: handleCopyPath,
+            onCopyDiscussionPrompt: handleCopyDiscussionPrompt,
+          }
+        : {})}
       renderAgentIcon={renderAgentIcon}
       embedded={embedded}
       active={active}

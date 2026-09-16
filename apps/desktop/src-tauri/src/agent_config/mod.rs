@@ -7,8 +7,8 @@ mod vendors;
 
 pub use config::{
     ApplyConflict, ApplyError, ApplyReadbackError, ConfigChange, ConfigContext, ConfigOperation,
-    ConfigScope, ConfigSetting, ConfigUnavailableReason, EffectiveConfig, EffectiveModel,
-    PreparedChange,
+    ConfigOperationValue, ConfigScope, ConfigSetting, ConfigUnavailableReason, EffectiveConfig,
+    EffectiveModel, PhysicalSelector, PreparedChange, PreparedOperation,
 };
 pub use editor::AgentConfigEditor;
 

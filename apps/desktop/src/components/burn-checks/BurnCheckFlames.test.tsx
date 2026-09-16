@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
-import { BurnCheckFlames } from "./BurnCheckFlames"
+import { BurnCheckFlame, BurnCheckFlames } from "./BurnCheckFlames"
 
 describe("BurnCheckFlames", () => {
   it.each([
@@ -38,5 +38,21 @@ describe("BurnCheckFlames", () => {
         `url(#${svg.querySelector("mask")!.id})`,
       )
     }
+  })
+})
+
+describe("BurnCheckFlame", () => {
+  it.each([
+    [0, 0],
+    [50, 0.115],
+    [5_000, 11.5],
+    [10_000, 23],
+  ])("fills the single decorative flame for %i basis points", (basisPoints, height) => {
+    const { container } = render(<BurnCheckFlame basisPoints={basisPoints} />)
+    expect(screen.queryByRole("meter")).not.toBeInTheDocument()
+    expect(container.querySelector("[tabindex]")).not.toBeInTheDocument()
+    const fills = container.querySelectorAll("g > rect[fill^='url']")
+    expect(fills).toHaveLength(1)
+    expect(Number(fills[0]!.getAttribute("height"))).toBeCloseTo(height)
   })
 })

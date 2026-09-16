@@ -7,9 +7,10 @@ use antiburn_local::analysis::{
     ANALYZER_REVISION, CompositeSink, ContextWindowSource, CoverageReason,
     EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource, EvidenceValue, MAX_RECORD_BYTES,
     MemoryTurnRowStore, NormalizedSession, OrderingObservation, PARSER_REVISION, PartialReason,
-    RawSource, RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts,
-    TurnRowSink, TurnRowStore, TurnScope, analyze_session, analyze_sources_with, merge_metrics,
+    ProviderIncidentKind, QuotaHitSeverity, QuotaLimitKind, RawSource, RecordCoverage,
+    SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
+    TurnRowStore, TurnScope, analyze_session, analyze_sources_with, merge_metrics,
     merge_subagent_events, normalize_source, reader_for,
 };
 use antiburn_local::insights::{
@@ -147,6 +148,9 @@ fn fixture(name: &str) -> &'static str {
         "fork_lineage_fork" => {
             include_str!("fixtures/claude_characterization/fork_lineage_fork.jsonl")
         }
+        "api_error_records" => {
+            include_str!("fixtures/claude_characterization/api_error_records.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -157,6 +161,7 @@ fn input(name: &str) -> SessionInput {
         session_id: name.to_string(),
         source: RawSource::Jsonl(fixture(name).to_string()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -248,6 +253,7 @@ fn file_input_bytes(name: &str, source: &[u8], directory: &tempfile::TempDir) ->
         session_id: name.to_string(),
         source: RawSource::File(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -729,28 +735,99 @@ fn a_missing_delegated_model_blocks_a_clean_overpowered_subagents_claim() {
     );
 }
 
+/// The fixture's mapped `isApiErrorMessage` records become a `QuotaIncident`
+/// or a `ProviderIncident`, in file order, with the model from the last
+/// real request the stream observed (`claude-sonnet-4-6`; the synthetic
+/// error records never overwrite it). `529` is `Capacity`; another `5xx`
+/// status, or `error: "server_error"` with no usable status, is
+/// `ServerError`; `429`, or `error: "rate_limit"` with no status, is a
+/// `QuotaIncident`. Every other shape (`error: "unknown"` with no status,
+/// a non-429 4xx, a non-integer status falling back to a non-`server_error`/
+/// `rate_limit` label, an ordinary record without `isApiErrorMessage`, and a
+/// record with no top-level `timestamp`) produces nothing.
 #[test]
-fn quota_incidents_are_unsupported_for_claude() {
-    let evidence = stream_composite(&input("delegated_turns"))
-        .evidence()
-        .expect("evidence must publish");
-    assert!(!evidence.capabilities.quota_incidents);
-    assert!(matches!(
-        evidence.quota_incidents,
-        EvidenceValue::Unsupported
-    ));
-}
+fn api_error_records_map_only_the_reviewed_shapes() {
+    let composite = stream_composite(&input("api_error_records"));
+    let evidence = composite.evidence().expect("evidence must publish");
 
-#[test]
-fn provider_incidents_are_unsupported_for_claude() {
-    let evidence = stream_composite(&input("delegated_turns"))
-        .evidence()
-        .expect("evidence must publish");
-    assert!(!evidence.capabilities.provider_incidents);
-    assert!(matches!(
-        evidence.provider_incidents,
-        EvidenceValue::Unsupported
-    ));
+    assert!(evidence.capabilities.quota_incidents);
+    assert!(evidence.capabilities.provider_incidents);
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+
+    let EvidenceValue::Complete(quota) = &evidence.quota_incidents else {
+        panic!("quota incidents must be complete for this fixture");
+    };
+    let observed: Vec<_> = quota
+        .incidents
+        .iter()
+        .map(|incident| {
+            (
+                incident.ts_ms,
+                incident.limit_kind,
+                incident.severity,
+                incident.model.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        observed,
+        vec![
+            (
+                1_767_607_205_000,
+                QuotaLimitKind::RateLimit,
+                QuotaHitSeverity::HardHit,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_206_000,
+                QuotaLimitKind::RateLimit,
+                QuotaHitSeverity::HardHit,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+        ]
+    );
+
+    let EvidenceValue::Complete(provider) = &evidence.provider_incidents else {
+        panic!("provider incidents must be complete for this fixture");
+    };
+    let observed_provider: Vec<_> = provider
+        .incidents
+        .iter()
+        .map(|incident| (incident.ts_ms, incident.kind, incident.model.clone()))
+        .collect();
+    assert_eq!(
+        observed_provider,
+        vec![
+            (
+                1_767_607_202_000,
+                ProviderIncidentKind::Capacity,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_203_000,
+                ProviderIncidentKind::ServerError,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_204_000,
+                ProviderIncidentKind::ServerError,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_210_000,
+                ProviderIncidentKind::ServerError,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+            (
+                1_767_607_212_000,
+                ProviderIncidentKind::ServerError,
+                Some("claude-sonnet-4-6".to_owned())
+            ),
+        ]
+    );
+
+    let rendered = serde_json::to_string(&evidence).unwrap();
+    assert!(!rendered.contains("API Error: synthetic"));
 }
 
 fn fixture_cache(name: &str) -> antiburn_local::analysis::CacheEvidence {
@@ -1419,6 +1496,7 @@ fn incomplete_final_record_is_not_committed() {
         session_id: "incomplete_final_record".to_string(),
         source: RawSource::Jsonl(completed),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let normalized = normalize_source(&completed_input).expect("completed source must normalize");
     assert_eq!(normalized.events.len(), 3);
@@ -1469,6 +1547,7 @@ fn an_in_memory_source_commits_an_unterminated_final_record() {
         session_id: "unterminated-memory".to_string(),
         source: RawSource::Jsonl(three_record_source()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).expect("in-memory source must normalize");
     assert_eq!(session.events.len(), 3);
@@ -1481,6 +1560,7 @@ fn a_slash_command_skill_resolves_when_its_marker_arrives_later() {
         session_id: "late-skill-marker".to_string(),
         source: RawSource::Jsonl(late_skill_source(true)),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).expect("skill source must normalize");
     let detail = session.events[0]
@@ -1517,6 +1597,7 @@ fn a_builtin_named_skill_resolves_when_its_marker_arrives_later() {
         session_id: "builtin-named-skill".to_string(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-named-skill");
     reader_for("claude")
@@ -1564,6 +1645,7 @@ fn builtin_commands_do_not_exhaust_late_skill_metric_candidates() {
         session_id: "builtin-command-budget".to_string(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-command-budget");
     reader_for("claude")
@@ -1579,6 +1661,7 @@ fn a_skill_marker_in_a_record_with_no_role_is_still_collected() {
         session_id: "roleless-skill-marker".to_string(),
         source: RawSource::Jsonl(late_skill_source(false)),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).expect("skill source must normalize");
     let detail = session.events[0]
@@ -1603,6 +1686,7 @@ fn two_priceable_models_of_equal_rank_keep_the_first_seen() {
         session_id: "equal-rank-models".to_string(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).expect("model source must normalize");
     assert_eq!(session.model.as_deref(), Some("claude-opus-4-7-20260115"));
@@ -1616,6 +1700,7 @@ fn an_unopenable_file_source_omits_the_whole_session() {
         session_id: "unopenable".to_string(),
         source: RawSource::File(directory.path().join("missing.jsonl")),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let normalize_failed = normalize_source(&input).is_err();
     let session_was_omitted = analyze_sources_with(vec![input], false).sessions.is_empty();
@@ -1647,6 +1732,7 @@ fn an_oversized_metric_bearing_record_is_dropped_for_both_source_variants() {
             session_id: "oversized-metrics-memory".to_string(),
             source: RawSource::Jsonl(source),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
     ];
 
@@ -1788,18 +1874,21 @@ fn fork_replay_session(directory: &tempfile::TempDir) -> [SessionInput; 3] {
             session_id: "fork-replay-parent".to_string(),
             source: RawSource::File(parent_path),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
         SessionInput {
             agent: "claude".to_string(),
             session_id: "fork-replay-normal-child".to_string(),
             source: RawSource::File(normal_path),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
         SessionInput {
             agent: "claude".to_string(),
             session_id: "fork-replay-fork-child".to_string(),
             source: RawSource::File(fork_path),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
     ]
 }
@@ -1934,6 +2023,7 @@ fn fork_lineage_session(directory: &tempfile::TempDir) -> SessionInput {
         session_id: "fork".to_string(),
         source: RawSource::File(fork_path),
         fork_parent_session_id: Some("parent".to_string()),
+        source_format: Default::default(),
     }
 }
 

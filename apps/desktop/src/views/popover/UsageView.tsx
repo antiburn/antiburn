@@ -492,7 +492,7 @@ function ProviderCard({
             const status = liveProviderStatus({ errors, generatedAt }, reading)
             const graceNote =
               status.kind === "grace"
-                ? liveGraceNote(status.category, reading.provider, status.ageMs)
+                ? liveGraceNote(status.category, reading.provider, status.ageMs, status.detail)
                 : null
             return (
               <div key={key} className="space-y-1.5">
@@ -537,7 +537,7 @@ function ProviderCard({
                 role="status"
                 className="rounded-control bg-system-orange/10 px-2 py-1.5 type-caption text-system-orange"
               >
-                {liveErrorNote(error.category, error.provider)}
+                {liveErrorNote(error.category, error.provider, error.detail)}
               </p>
             ))}
 

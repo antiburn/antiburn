@@ -1,0 +1,4 @@
+{"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z"}
+{"type":"message","id":"root","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","provider":"openai","api":"responses","model":"gpt-5","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}
+{"type":"message","id":"first","parentId":"root","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","provider":"openai","api":"responses","model":"gpt-5","usage":{"input":2,"output":2,"cacheRead":0,"cacheWrite":0},"content":[]}}
+{"type":"message","id":"second","parentId":"root","timestamp":"2026-01-01T00:00:03Z","message":{"role":"assistant","provider":"openai","api":"responses","model":"gpt-5","usage":{"input":3,"output":3,"cacheRead":0,"cacheWrite":0},"content":[]}}

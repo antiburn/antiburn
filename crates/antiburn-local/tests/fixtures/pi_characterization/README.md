@@ -1,22 +1,28 @@
 # Synthetic Pi characterization fixtures
 
 These fixtures are hand-authored synthetic Pi records. They come from
-aggregate structural observation of a local installation. That observation
-records field names, JSON types, and structural invariants only. No captured
-session value appears here.
+the pinned Pi V3 session contract and the reviewed example extension. They use
+only invented values and contain no captured session data.
+
+An accepted Pi V3 source starts with one `type: "session"` record with
+`version: 3` and a valid timestamp. The reader rejects headerless, malformed,
+unsupported-version, and duplicate-ID input before it can emit Pi evidence.
+The `headerless_*` fixtures exist only to prove that rejection.
 
 The adapter treats the top-level timestamp as authoritative. It accounts for
 only the four disjoint usage buckets. It never reads or stores `customType`
 payload values. Diagnostics can store only bounded native row, role, and
 content-block discriminators when a structural check fails closed. Persisted
-evidence and metrics do not retain content, identifiers, paths, provider
-metadata, or API metadata.
+evidence and metrics do not retain transcript content, paths, or extension
+payload values. They retain bounded session identity and provider/API/model
+facts when those facts are required for evidence.
 
 Pi supports request occupancy, cache writes when the selected API reports
 them, timestamps, tool calls, model identity, token classes, thinking levels,
-compaction boundaries, and thread identity. It does not claim tool catalogs,
-MCP attribution, speed or service tiers, subagent links, quota events, or a
-harness version.
+compaction boundaries, record identity, and thread identity. It does not claim
+tool catalogs, MCP attribution, speed or service tiers, quota events, or a
+harness version. The reviewed example extension can provide finding-only
+subagent evidence. Arbitrary extensions remain fail closed.
 
 Every entry after the `session` header carries a top-level `id` and
 `parentId`. Exactly one entry per file has `parentId: null` — the thread

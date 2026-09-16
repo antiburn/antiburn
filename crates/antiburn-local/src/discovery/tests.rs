@@ -68,6 +68,8 @@ async fn a_non_claude_file_source_uses_whole_document_fallback() {
         session_id: "session-1".to_string(),
         environment: log.environment,
         source: log.source,
+        source_format: crate::analysis::SourceFormat::PiV3Jsonl,
+        surface: "cli".to_owned(),
         updated_at_epoch: log.updated_at,
     };
     let expected_fingerprint = FingerprintInputs {
@@ -84,6 +86,11 @@ async fn a_non_claude_file_source_uses_whole_document_fallback() {
     assert_eq!(version.streamability, Streamability::RecordStream);
     assert_eq!(version.estimated_bytes, Some(content.len() as u64));
     assert_eq!(version.fingerprint, expected_fingerprint);
+    assert_eq!(
+        version.source_format,
+        crate::analysis::SourceFormat::PiV3Jsonl
+    );
+    assert_eq!(version.surface, "cli");
 }
 
 #[tokio::test]
@@ -222,11 +229,11 @@ fn supports_subagents_only_for_subagent_vendors() {
         (AgentKind::Claude, true),
         (AgentKind::Codex, true),
         (AgentKind::Antigravity, true),
+        (AgentKind::Kiro, true),
         (AgentKind::Cursor, false),
         (AgentKind::Copilot, false),
         (AgentKind::Cline, false),
         (AgentKind::OpenCode, false),
-        (AgentKind::Kiro, false),
         (AgentKind::AmpCode, false),
         (AgentKind::Windsurf, false),
         (AgentKind::Pi, false),
@@ -926,15 +933,14 @@ fn surface_paths_each_agent_returns_expected_shape() {
         );
     }
 
-    // IDE-only agents.
-    for ty in [AgentKind::Kiro, AgentKind::Windsurf] {
-        let sp = Explorers::DISK.surface_paths_for(&ty, &home);
-        assert!(sp.cli.is_empty(), "{ty:?} should not expose CLI roots");
-        assert!(
-            !sp.ide_desktop.is_empty(),
-            "{ty:?} should expose IDE/Desktop roots"
-        );
-    }
+    // Windsurf is IDE-only.
+    let ty = AgentKind::Windsurf;
+    let sp = Explorers::DISK.surface_paths_for(&ty, &home);
+    assert!(sp.cli.is_empty(), "{ty:?} should not expose CLI roots");
+    assert!(
+        !sp.ide_desktop.is_empty(),
+        "{ty:?} should expose IDE/Desktop roots"
+    );
 }
 
 #[test]

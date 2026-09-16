@@ -185,7 +185,7 @@
         "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 37,
+      "parserRevision": 38,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -197,6 +197,31 @@
             "kind": "capacity",
             "model": "gpt-6-astra",
             "tsMs": 1767607206000
+          },
+          {
+            "kind": "server_error",
+            "model": "gpt-6-astra",
+            "tsMs": 1767607209000
+          },
+          {
+            "kind": "server_error",
+            "model": "gpt-6-astra",
+            "tsMs": 1767607212000
+          },
+          {
+            "kind": "server_error",
+            "model": "gpt-6-astra",
+            "tsMs": 1767607213000
+          },
+          {
+            "kind": "connection",
+            "model": "gpt-6-astra",
+            "tsMs": 1767607214000
+          },
+          {
+            "kind": "connection",
+            "model": "gpt-6-astra",
+            "tsMs": 1767607215000
           }
         ]
       }

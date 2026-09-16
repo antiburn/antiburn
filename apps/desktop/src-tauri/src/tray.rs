@@ -13,12 +13,14 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::AppHandle;
+#[cfg(debug_assertions)]
+use tauri::Emitter;
 use tauri::image::Image;
 #[cfg(debug_assertions)]
 use tauri::menu::CheckMenuItem;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, Wry};
+use tauri::{Manager, Wry};
 
 #[cfg(debug_assertions)]
 use crate::commands;
@@ -1021,6 +1023,7 @@ mod tests {
                 provider: "openai".to_string(),
                 display_name: "Codex".to_string(),
                 category: "unavailable".to_string(),
+                detail: None,
             }],
             generated_at: "2026-09-04T12:20:01Z".to_string(),
             ..Default::default()

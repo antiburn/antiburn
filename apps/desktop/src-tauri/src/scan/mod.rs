@@ -157,8 +157,6 @@ pub enum ScanTrigger {
     /// A settings save that finished onboarding, widened the activity
     /// window, or resumed discovery.
     SettingsTransition,
-    /// The Insights pane was opened.
-    InsightsPane,
     /// A repository was included or ignored.
     RepositoryToggle,
     /// A scan root was added.
@@ -180,7 +178,6 @@ impl ScanTrigger {
             ScanTrigger::WatcherAgents { .. } => "watcher_agents",
             ScanTrigger::WatcherOverflow => "watcher_overflow",
             ScanTrigger::SettingsTransition => "settings_transition",
-            ScanTrigger::InsightsPane => "insights_pane",
             ScanTrigger::RepositoryToggle => "repository_toggle",
             ScanTrigger::ScanRootAdded => "scan_root_added",
             ScanTrigger::FolderAccessGranted => "folder_access_granted",
@@ -207,7 +204,6 @@ impl ScanTrigger {
             | ScanTrigger::WatcherOverflow => false,
             ScanTrigger::Launch
             | ScanTrigger::SettingsTransition
-            | ScanTrigger::InsightsPane
             | ScanTrigger::RepositoryToggle
             | ScanTrigger::ScanRootAdded
             | ScanTrigger::FolderAccessGranted
@@ -1592,6 +1588,8 @@ async fn describe_one_with_activity(
         session_id: session_id.clone(),
         environment: log.environment.clone(),
         source: log.source.clone(),
+        source_format: crate::analysis::source_format(log.agent_type, &log.source),
+        surface: log.surface_label(home).to_string(),
         updated_at_epoch: log.updated_at,
     };
     let source_fingerprint = Explorers::DISK

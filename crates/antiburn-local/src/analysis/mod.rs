@@ -16,12 +16,13 @@
 //! ever leaves the process.
 //!
 //! ```no_run
-//! use antiburn_local::analysis::{analyze_sources, SessionInput, RawSource};
+//! use antiburn_local::analysis::{analyze_sources, RawSource, SessionInput, SourceFormat};
 //!
 //! let inputs = vec![SessionInput {
 //!     agent: "claude".into(),
 //!     session_id: "abc".into(),
 //!     source: RawSource::File("/path/to/abc.jsonl".into()),
+//!     source_format: SourceFormat::ClaudeJsonl,
 //!     fork_parent_session_id: None,
 //! }];
 //! let summary = analyze_sources(inputs);
@@ -117,6 +118,9 @@ pub use vendors::claude::ClaudeSessionReader;
 pub use vendors::pi::PiSessionReader;
 pub use vendors::{has_dedicated_reader, reader_for};
 
+// +1 for Pi V3 source admission. The adapter now requires the leading valid
+// `session` header and rejects duplicate record IDs, so stored Pi sessions
+// must re-ingest before they can retain V3 evidence.
 // +1 for native Antigravity token classes and paired transcript roles. Stored
 // database sessions must re-ingest for model and cache checks.
 // +1 for Codex collab-family recognition: `collab_agent_spawn_begin`,
@@ -187,7 +191,13 @@ pub use vendors::{has_dedicated_reader, reader_for};
 // `error` object now maps to a `QuotaIncident` for the three reviewed
 // `codex_error_info` codes, so a stored Codex session must reparse to
 // collect them (`vendors::codex::task_complete_incident`).
-pub const PARSER_REVISION: i64 = 37;
+// +1 for provider incident parity: Codex's remaining transport/server
+// `codex_error_info` codes now map to `ServerError`/`Connection`
+// (`vendors::codex::task_complete_observation`), and a Claude
+// `isApiErrorMessage` assistant record now maps to a quota or provider
+// incident (`vendors::claude::api_error_observation`), so a stored Claude
+// or Codex session must reparse to collect them.
+pub const PARSER_REVISION: i64 = 38;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -287,6 +297,7 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 5;
 /// before it restores a snapshot; this constant and the rule are
 /// documented here so a future revision bump remembers to bump this one
 /// too, when the change touches resumable state.
+// +1 because PiStreamState gained its source-admission state.
 // +1 because `ClaudeStreamState` gained a `context_window_source` field.
 // +1 because parent evidence now includes delegated model control observations.
 // This batch also changes retained nested resource and paired subagent state.

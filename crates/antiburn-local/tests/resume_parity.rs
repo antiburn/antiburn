@@ -94,6 +94,7 @@ fn session_input(agent: &str, session_id: &str, path: &Path) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::File(path.to_path_buf()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 

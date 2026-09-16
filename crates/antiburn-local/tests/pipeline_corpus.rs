@@ -56,6 +56,7 @@ fn file_input(session_id: &str, path: &Path) -> SessionInput {
         session_id: session_id.to_string(),
         source: RawSource::File(path.to_path_buf()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -385,6 +386,7 @@ fn provider_db_backed_source_flows_end_to_end_into_a_report() {
         session_id: session.session_id.clone(),
         source: RawSource::Sqlite(db_path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut composite = composite_for(&input);
     let outcome = reader_for(&input.agent)

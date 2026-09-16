@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 47);
+    assert_eq!(super::schema::MIGRATIONS.len(), 48);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 47);
+    assert_eq!(store.schema_version().unwrap(), 48);
     let index_exists = store
         .lock()
         .query_row(
@@ -38,6 +38,27 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
         .unwrap();
     assert!(assistant_index_sql.contains("environment_key, agent, session_id, claim_fence"));
     assert!(assistant_index_sql.contains("WHERE role = 'assistant'"));
+}
+
+#[test]
+fn v48_adds_typed_config_attribution_columns_without_backfill() {
+    let store = store();
+    let connection = store.lock();
+    for column in [
+        "effective_config_path",
+        "effective_config_selector",
+        "effective_config_precedence_hash",
+        "effective_config_resource_name",
+        "effective_config_value_json",
+    ] {
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session_evidence') WHERE name = ?1)",
+                [column],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+    }
 }
 
 #[test]

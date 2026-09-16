@@ -1,14 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource,
-    EvidenceValue, ModelTokens, PARSER_REVISION, SessionEvidence, SessionEvidenceAccumulator,
-    SignalCoverage, SourceCapabilities, SourceFormat, SourceKind, TurnFacts,
+    EvidenceValue, PARSER_REVISION, SessionEvidence, SessionEvidenceAccumulator, SignalCoverage,
+    SourceCapabilities, SourceFormat, SourceKind, TurnFacts,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport,
-    EfficiencyReportAccumulator, ModelReplacementEntry, ReportCatalogs, ReportContext,
-    ReportWindow, clean_facts_complete, session_badges,
+    BadgeStatus, CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport,
+    EfficiencyReportAccumulator, ReportCatalogs, ReportContext, ReportWindow, clean_facts_complete,
+    session_badges,
 };
 
 macro_rules! source_formats {
@@ -32,6 +32,7 @@ source_formats! {
     CursorJsonl => "cursor_jsonl",
     CursorCliAgentJsonl => "cursor_cli_agent_jsonl",
     CursorCliStoreDb => "cursor_cli_store_db",
+    CursorChatStoreDb => "cursor_chat_store_db",
     CursorIdeComposer => "cursor_ide_composer",
     CursorLegacyChatJson => "cursor_legacy_chat_json",
     AntigravityJson => "antigravity_json",
@@ -42,8 +43,12 @@ source_formats! {
     CopilotCliJsonl => "copilot_cli_jsonl",
     CopilotIdeChatJson => "copilot_ide_chat_json",
     ClineSessionJson => "cline_session_json",
+    ClineMessagesContractV1 => "cline_messages_contract_v1",
     KiroSessionJson => "kiro_session_json",
     KiroChat => "kiro_chat",
+    KiroCliV2Bundle => "kiro_cli_v2_bundle",
+    KiroCliV3Bundle => "kiro_cli_v3_bundle",
+    KiroChatSaveExport => "kiro_chat_save_export",
     AmpThreadJson => "amp_thread_json",
     AmpFileChanges => "amp_file_changes",
     WindsurfWorkspaceJson => "windsurf_workspace_json",
@@ -80,14 +85,54 @@ fn complete_evidence(format: SourceFormat) -> SessionEvidence {
     row
 }
 
-fn partial<T>(value: &mut EvidenceValue<T>) {
-    let EvidenceValue::Complete(observed) = std::mem::take(value) else {
-        panic!("the test must degrade complete evidence");
+fn source_capabilities(format: SourceFormat) -> SourceCapabilities {
+    let mut capabilities = match format {
+        SourceFormat::ClaudeJsonl => SourceCapabilities::claude(),
+        SourceFormat::CodexRolloutJsonl => SourceCapabilities::codex(),
+        SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2 => {
+            SourceCapabilities::opencode()
+        }
+        SourceFormat::PiV3Jsonl => SourceCapabilities::pi(),
+        SourceFormat::CursorJsonl
+        | SourceFormat::CursorCliAgentJsonl
+        | SourceFormat::CursorCliStoreDb
+        | SourceFormat::CursorChatStoreDb
+        | SourceFormat::CursorIdeComposer
+        | SourceFormat::CursorLegacyChatJson => SourceCapabilities::cursor(),
+        SourceFormat::AntigravityJson
+        | SourceFormat::AntigravityBrainJsonl
+        | SourceFormat::AntigravityCascadeJson
+        | SourceFormat::AntigravityWorkspaceChatJson
+        | SourceFormat::AntigravitySqlite => SourceCapabilities::antigravity(),
+        SourceFormat::CopilotCliJsonl
+        | SourceFormat::CopilotIdeChatJson
+        | SourceFormat::ClineSessionJson
+        | SourceFormat::KiroSessionJson
+        | SourceFormat::KiroChat
+        | SourceFormat::KiroCliV2Bundle
+        | SourceFormat::KiroCliV3Bundle
+        | SourceFormat::KiroChatSaveExport
+        | SourceFormat::AmpThreadJson
+        | SourceFormat::AmpFileChanges
+        | SourceFormat::WindsurfWorkspaceJson
+        | SourceFormat::WindsurfMirrorJson
+        | SourceFormat::WindsurfCascadeProtobuf
+        | SourceFormat::Uncharacterized => SourceCapabilities::uncharacterized(format),
+        SourceFormat::ClineMessagesContractV1 => SourceCapabilities::cline_messages_contract_v1(),
     };
-    *value = EvidenceValue::Partial {
-        observed,
-        reason: CoverageReason::MalformedRecord,
-    };
+    capabilities.source_format = format;
+    capabilities
+}
+
+fn evidence_from_source_contract(format: SourceFormat) -> SessionEvidence {
+    let facts = TurnFacts::default();
+    SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "contract".to_owned(),
+        session_id: source_keys(format).1.to_owned(),
+        kind: SourceKind::Jsonl,
+        capabilities: source_capabilities(format),
+    })
+    .evidence(&facts)
 }
 
 fn report(row: SessionEvidence, catalogs: ReportCatalogs) -> EfficiencyReport {
@@ -114,16 +159,8 @@ fn report(row: SessionEvidence, catalogs: ReportCatalogs) -> EfficiencyReport {
 #[test]
 fn every_source_and_detector_denies_clean_on_partial_facts() {
     for &format in SOURCE_FORMATS {
-        let mut row = complete_evidence(format);
+        let mut row = evidence_from_source_contract(format);
         row.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
-        partial(&mut row.context);
-        partial(&mut row.models);
-        partial(&mut row.tools);
-        partial(&mut row.eligibility);
-        partial(&mut row.subagents);
-        partial(&mut row.cache);
-        partial(&mut row.time_range);
-        partial(&mut row.compactions);
         for detector in DetectorId::ALL {
             assert!(
                 !clean_facts_complete(detector, &row),
@@ -156,7 +193,7 @@ fn every_source_and_detector_denies_clean_on_partial_facts() {
 }
 
 #[test]
-fn uncharacterized_source_contracts_deny_clean_even_with_complete_facts() {
+fn source_formats_outside_the_clean_allowlist_deny_clean_with_synthetic_complete_facts() {
     for &format in SOURCE_FORMATS {
         if matches!(
             format,
@@ -165,6 +202,7 @@ fn uncharacterized_source_contracts_deny_clean_even_with_complete_facts() {
                 | SourceFormat::OpenCodeJsonl
                 | SourceFormat::OpenCodeSqliteV2
                 | SourceFormat::PiV3Jsonl
+                | SourceFormat::CopilotCliJsonl
         ) {
             continue;
         }
@@ -187,62 +225,93 @@ fn uncharacterized_source_contracts_deny_clean_even_with_complete_facts() {
 }
 
 #[test]
-fn every_source_preserves_direct_depth_and_old_model_findings() {
-    let mut catalogs = ReportCatalogs::default();
-    catalogs.model_replacements.entries.insert(
-        "contract-old-model".to_owned(),
-        ModelReplacementEntry {
-            replacement: "contract-new-model".to_owned(),
-            available_since_ts_ms: 100,
-            rationale: "Synthetic replacement rule".to_owned(),
-            source_url: "https://example.invalid/model".to_owned(),
-        },
+fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
+    const CHECK_COVERAGE: &str = include_str!("../../../docs/check-coverage.md");
+    const SESSION_COVERAGE: &str = include_str!("../../../docs/session-coverage.md");
+    const CHECK_STATUSES: &[&str] = &["Assessable", "Partial", "Unsupported", "Unknown"];
+
+    let expected: BTreeSet<_> = SOURCE_FORMATS
+        .iter()
+        .map(|format| source_keys(*format).0)
+        .collect();
+
+    let check_inventory =
+        markdown_table_rows(CHECK_COVERAGE, "## Source Inventory", "## Coverage Matrix");
+    assert_table_source_formats(&check_inventory, &expected, "check source inventory");
+
+    let check_matrix = markdown_table_rows(
+        CHECK_COVERAGE,
+        "## Coverage Matrix",
+        "## Evidence Boundaries",
     );
-    for &format in SOURCE_FORMATS {
-        for incomplete in [false, true] {
-            let mut row = complete_evidence(format);
-            let EvidenceValue::Complete(context) = &mut row.context else {
-                unreachable!()
-            };
-            context.max_request_context_tokens = catalogs.depth_cap_tokens + 1;
-            let EvidenceValue::Complete(models) = &mut row.models else {
-                unreachable!()
-            };
-            models.by_model.insert(
-                "contract-old-model".to_owned(),
-                ModelTokens {
-                    turns: 1,
-                    first_ts_ms: 100,
-                    last_ts_ms: 100,
-                    ..ModelTokens::default()
-                },
+    assert_table_source_formats(&check_matrix, &expected, "check coverage matrix");
+    for row in check_matrix {
+        assert_eq!(row.len(), 10, "check coverage matrix has nine check cells");
+        for status in &row[1..] {
+            assert!(
+                CHECK_STATUSES.contains(&status.as_str()),
+                "invalid check coverage status {status:?}"
             );
-            if incomplete {
-                row.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
-                partial(&mut row.context);
-                partial(&mut row.models);
-            }
-            for badge in session_badges(&row, &catalogs) {
-                if matches!(badge.id, BadgeId::SessionOverdepth | BadgeId::ObsoleteModel) {
-                    assert_eq!(
-                        badge.status,
-                        BadgeStatus::Finding,
-                        "{format:?}/{:?}, partial: {incomplete}",
-                        badge.id
-                    );
-                }
-            }
-            let report = report(row, catalogs.clone());
-            for detector in [DetectorId::SessionsOverDepth, DetectorId::OldModelUsage] {
-                assert!(
-                    matches!(
-                        report.detector_statuses[detector.index()],
-                        DetectorStatus::Findings(_)
-                    ),
-                    "{format:?}/{detector:?}, partial: {incomplete}"
-                );
-                assert_eq!(report.detectors[detector.index()].finding, 1);
-            }
         }
     }
+
+    let session_matrix =
+        markdown_table_rows(SESSION_COVERAGE, "## Source Matrix", "## Provider Routes");
+    assert_table_source_formats(&session_matrix, &expected, "session source matrix");
+}
+
+#[test]
+fn public_burn_check_table_keeps_fail_closed_readers_unavailable() {
+    const SUPPORT: &str = include_str!("../../../docs/support.md");
+    let rows = markdown_table_rows(SUPPORT, "## Burn Check remediation", "## Cost estimates");
+    let results: BTreeMap<_, _> = rows
+        .into_iter()
+        .map(|row| {
+            assert_eq!(row.len(), 4, "Burn Check support row has four cells");
+            (row[0].clone(), row[1].clone())
+        })
+        .collect();
+
+    for agent in ["Cline", "Kiro", "Amp", "Windsurf"] {
+        assert_eq!(
+            results.get(agent),
+            Some(&"Unavailable".to_owned()),
+            "{agent}"
+        );
+    }
+    assert_eq!(
+        results.get("GitHub Copilot"),
+        Some(&"Supported S/O".to_owned())
+    );
+}
+
+fn markdown_table_rows(document: &str, start: &str, end: &str) -> Vec<Vec<String>> {
+    let section = document
+        .split_once(start)
+        .unwrap_or_else(|| panic!("missing section {start}"))
+        .1
+        .split_once(end)
+        .unwrap_or_else(|| panic!("missing section end {end}"))
+        .0;
+    section
+        .lines()
+        .filter(|line| line.starts_with('|') && !line.contains("---"))
+        .skip(1)
+        .map(|line| {
+            line.trim_matches('|')
+                .split('|')
+                .map(|cell| cell.trim().trim_matches('`').to_owned())
+                .collect()
+        })
+        .collect()
+}
+
+fn assert_table_source_formats(rows: &[Vec<String>], expected: &BTreeSet<&str>, table: &str) {
+    let actual: BTreeSet<_> = rows.iter().map(|row| row[0].as_str()).collect();
+    assert_eq!(actual, *expected, "{table}");
+    assert_eq!(
+        rows.len(),
+        expected.len(),
+        "{table} has duplicate source formats"
+    );
 }

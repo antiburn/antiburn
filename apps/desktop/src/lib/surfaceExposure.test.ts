@@ -147,20 +147,6 @@ describe("SurfaceExposureTracker", () => {
     })
   })
 
-  it("records Insights state without inventing a surface view", () => {
-    const tracker = new SurfaceExposureTracker()
-
-    tracker.expose({ surface: "insights", origin: "user", state: "empty" })
-
-    expect(noteInteraction).toHaveBeenCalledOnce()
-    expect(noteInteraction).toHaveBeenCalledWith({
-      kind: "surfaceStateObserved",
-      surface: "insights",
-      state: "empty",
-      origin: "user",
-    })
-  })
-
   it("reports live provider states only for a deliberate exposure", () => {
     const summary = liveUsage({ providers: [provider()] })
     const tracker = new SurfaceExposureTracker()

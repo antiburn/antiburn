@@ -29,6 +29,7 @@
     "@radix-ui/react-tooltip": "1.2.16",
     "@tanstack/react-virtual": "3.14.11",
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-clipboard-manager": "2.3.3",
     "@tauri-apps/plugin-dialog": "2.7.3",
     "lucide-react": "1.44.0",
     "react": "19.3.0",

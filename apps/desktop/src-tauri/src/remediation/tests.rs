@@ -9,7 +9,7 @@ use antiburn_local::analysis::{
     SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
 };
 
-const SOURCE_FORMATS: [SourceFormat; 26] = [
+const SOURCE_FORMATS: [SourceFormat; 31] = [
     SourceFormat::ClaudeJsonl,
     SourceFormat::CodexRolloutJsonl,
     SourceFormat::OpenCodeJsonl,
@@ -18,6 +18,7 @@ const SOURCE_FORMATS: [SourceFormat; 26] = [
     SourceFormat::CursorJsonl,
     SourceFormat::CursorCliAgentJsonl,
     SourceFormat::CursorCliStoreDb,
+    SourceFormat::CursorChatStoreDb,
     SourceFormat::CursorIdeComposer,
     SourceFormat::CursorLegacyChatJson,
     SourceFormat::AntigravityJson,
@@ -28,8 +29,12 @@ const SOURCE_FORMATS: [SourceFormat; 26] = [
     SourceFormat::CopilotCliJsonl,
     SourceFormat::CopilotIdeChatJson,
     SourceFormat::ClineSessionJson,
+    SourceFormat::ClineMessagesContractV1,
     SourceFormat::KiroSessionJson,
     SourceFormat::KiroChat,
+    SourceFormat::KiroCliV2Bundle,
+    SourceFormat::KiroCliV3Bundle,
+    SourceFormat::KiroChatSaveExport,
     SourceFormat::AmpThreadJson,
     SourceFormat::AmpFileChanges,
     SourceFormat::WindsurfWorkspaceJson,
@@ -190,6 +195,19 @@ fn publication_attribution_covers_supported_vendor_sources_and_settings() {
             case.agent,
             case.source
         );
+        assert_eq!(
+            attribution.records.len(),
+            1 + usize::from(case.reasoning.is_some()),
+            "{:?} {:?}",
+            case.agent,
+            case.source
+        );
+        assert!(attribution.records.iter().all(|record| {
+            std::path::Path::new(&record.path).ends_with(case.config_path)
+                && !record.selector.is_empty()
+                && record.expected_value_json.starts_with('"')
+                && record.precedence_hash.len() == 64
+        }));
     }
 }
 
@@ -334,6 +352,24 @@ fn automatic_replacement_requires_a_reviewed_exact_route() {
 }
 
 #[test]
+fn core_built_in_tools_have_no_automatic_disable_operation() {
+    let cause = |tool: &str| FindingCause::UnusedBuiltInTool {
+        tool: tool.into(),
+        tokens: antiburn_local::remediation::BuiltInToolTokens::Definition(100),
+        cost_usd: None,
+        pricing_revision: None,
+    };
+    for tool in ["Bash", "Edit", "Read", "Write"] {
+        assert_eq!(
+            reviewed_config_operation(AgentKind::Claude, &cause(tool)),
+            None,
+            "{tool}"
+        );
+    }
+    assert!(reviewed_config_operation(AgentKind::Claude, &cause("Workflow")).is_some());
+}
+
+#[test]
 fn reasoning_auto_fix_requires_an_above_cap_reviewed_route() {
     let cause = |reasoning: &str| FindingCause::ModelOverthinking {
         provider: Some("openai".into()),
@@ -352,6 +388,117 @@ fn reasoning_auto_fix_requires_an_above_cap_reviewed_route() {
     );
     assert!(reviewed_config_operation(AgentKind::Codex, &cause("high")).is_none());
     assert!(reviewed_config_operation(AgentKind::Claude, &cause("xhigh")).is_none());
+}
+
+#[test]
+fn fast_mode_auto_fix_requires_an_explicit_fast_mode_finding() {
+    let cause = FindingCause::OveruseOfFastMode {
+        provider: Some("anthropic".into()),
+        api: Some("messages".into()),
+        model: "claude-opus-5".into(),
+        delegated_turns: 2,
+    };
+    assert_eq!(
+        reviewed_config_operation(AgentKind::Claude, &cause),
+        Some(ConfigOperation {
+            setting: ConfigSetting::FastMode,
+            expected_value: crate::agent_config::ConfigOperationValue::Boolean(true),
+            proposed_value: crate::agent_config::ConfigOperationValue::Delete,
+        })
+    );
+    assert_eq!(
+        reviewed_config_operation(AgentKind::Codex, &cause),
+        Some(ConfigOperation {
+            setting: ConfigSetting::FastMode,
+            expected_value: "fast".into(),
+            proposed_value: "standard".into(),
+        })
+    );
+    for agent in [AgentKind::OpenCode, AgentKind::Pi, AgentKind::Antigravity] {
+        assert_eq!(reviewed_config_operation(agent, &cause), None, "{agent:?}");
+    }
+    assert_eq!(
+        config_setting_from_name("fastMode"),
+        Some(ConfigSetting::FastMode)
+    );
+}
+
+#[test]
+fn fast_mode_lifecycle_support_excludes_publication_attribution() {
+    for (agent, source) in [
+        (AgentKind::Claude, SourceFormat::ClaudeJsonl),
+        (AgentKind::Codex, SourceFormat::CodexRolloutJsonl),
+    ] {
+        let policy = vendor_policy(agent).unwrap();
+        assert_eq!(
+            policy.action_support(
+                RemediationAction::AutomaticEdit(ConfigSetting::FastMode),
+                source
+            ),
+            ActionSupport::Supported
+        );
+        assert_eq!(
+            policy.action_support(
+                RemediationAction::RecoverUncertainWrite(ConfigSetting::FastMode),
+                source
+            ),
+            ActionSupport::Supported
+        );
+        assert_eq!(
+            policy.action_support(
+                RemediationAction::PublicationAttribution(ConfigSetting::FastMode),
+                source
+            ),
+            ActionSupport::Unsupported
+        );
+    }
+}
+
+#[test]
+fn cache_churn_has_no_automatic_operation_without_a_reviewed_causal_control() {
+    let cause = FindingCause::CacheChurn {
+        model: "gpt-5.6".into(),
+        repeated_tokens: 400,
+        paid_tokens: 1_000,
+        threshold_basis_points: 3_000,
+    };
+    for agent in [
+        AgentKind::Claude,
+        AgentKind::Codex,
+        AgentKind::OpenCode,
+        AgentKind::Pi,
+        AgentKind::Antigravity,
+    ] {
+        assert_eq!(reviewed_config_operation(agent, &cause), None, "{agent:?}");
+    }
+}
+
+#[test]
+fn overdepth_operation_requires_a_disabled_control_or_an_excessive_limit() {
+    let cause = FindingCause::SessionsOverDepth {
+        maximum_tokens: 300_000,
+        limit_tokens: 200_000,
+        requests: Vec::new(),
+        omitted_requests: Some(0),
+    };
+    assert_eq!(
+        compaction_operation(&cause, "false"),
+        Some(ConfigOperation {
+            setting: ConfigSetting::Compaction,
+            expected_value: crate::agent_config::ConfigOperationValue::Boolean(false),
+            proposed_value: crate::agent_config::ConfigOperationValue::Boolean(true),
+        })
+    );
+    assert_eq!(
+        compaction_operation(&cause, "300000"),
+        Some(ConfigOperation {
+            setting: ConfigSetting::Compaction,
+            expected_value: crate::agent_config::ConfigOperationValue::Number(300_000),
+            proposed_value: crate::agent_config::ConfigOperationValue::Number(200_000),
+        })
+    );
+    assert!(compaction_operation(&cause, "200000").is_none());
+    assert!(compaction_operation(&cause, "true").is_none());
 }
 
 #[test]
@@ -584,7 +731,7 @@ fn session_fallback_scope_includes_the_agent() {
 }
 
 #[test]
-fn non_durable_findings_keep_session_or_worker_scope_with_a_workspace() {
+fn current_config_controls_use_the_workspace_scope_when_available() {
     let secret = [7; 32];
     let workspace = Some("workspace");
     let depth = FindingCause::SessionsOverDepth {
@@ -606,15 +753,15 @@ fn non_durable_findings_keep_session_or_worker_scope_with_a_workspace() {
         parent_call_id: Some("call".into()),
     };
 
-    for cause in [&depth, &cache] {
+    for cause in [&depth, &worker] {
         let (kind, first) = finding_scope(&secret, "claude-code", "session-a", cause, workspace);
         let (_, second) = finding_scope(&secret, "claude-code", "session-b", cause, workspace);
-        assert_eq!(kind, "session");
-        assert_ne!(first, second);
+        assert_eq!(kind, "project");
+        assert_eq!(first, second);
     }
-    let (kind, first) = finding_scope(&secret, "claude-code", "session-a", &worker, workspace);
-    let (_, second) = finding_scope(&secret, "claude-code", "session-b", &worker, workspace);
-    assert_eq!(kind, "worker");
+    let (kind, first) = finding_scope(&secret, "claude-code", "session-a", &cache, workspace);
+    let (_, second) = finding_scope(&secret, "claude-code", "session-b", &cache, workspace);
+    assert_eq!(kind, "session");
     assert_ne!(first, second);
 }
 

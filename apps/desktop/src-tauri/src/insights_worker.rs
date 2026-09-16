@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
 use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
+use crate::analytics::ingested_incidents::{self, IngestedIncidents};
 use crate::commands;
 use crate::dto::ActivityEntry;
 use crate::fork_lineage;
@@ -163,6 +164,10 @@ async fn run_worker(app: tauri::AppHandle) {
     let announce_idle = move || {
         let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
     };
+    let analytics_app = app.clone();
+    let report_ingested = move |agent: AgentKind, ingested: IngestedIncidents| {
+        crate::analytics::record_provider_incidents_ingested(&analytics_app, agent, &ingested);
+    };
     let clock = || unix_now();
     let store = app.state::<Store>();
     let handle = app.state::<WorkerHandle>();
@@ -173,6 +178,7 @@ async fn run_worker(app: tauri::AppHandle) {
         &run_pass,
         &announce,
         &announce_idle,
+        &report_ingested,
     )
     .await;
 }
@@ -212,12 +218,27 @@ pub(crate) fn completion_entry(store: &Store, key: &SessionKey, now: i64) -> Opt
     commands::activity_entry(store, &repositories, session, now).ok()
 }
 
+/// What applying one evidence pass's outcome did to the store.
+pub(crate) struct AppliedOutcome {
+    /// Whether the claim-fenced store write actually applied. This is
+    /// `false` only when this claim lost the race against a newer one.
+    /// [`apply_outcome`] returned this same meaning as a bare `bool` before
+    /// this type existed.
+    pub applied: bool,
+    /// The agent and its newly reportable incidents. This is set only when
+    /// this outcome published a session, and its transcript gained a fresh
+    /// incident its previously published evidence did not carry. It is
+    /// `None` on every other outcome, including a publish with nothing new
+    /// to report.
+    pub ingested: Option<(AgentKind, IngestedIncidents)>,
+}
+
 pub(crate) fn apply_outcome(
     store: &Store,
     claim: &EvidenceClaim,
     pass: &EvidencePass,
     now: i64,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<AppliedOutcome> {
     match pass.outcome {
         PassOutcome::Published => {
             let record = pass
@@ -250,42 +271,80 @@ pub(crate) fn apply_outcome(
                 evidence_schema_revision: evidence.schema_revision,
                 evidence_json: serde_json::to_string(evidence)?,
             };
-            store.publish_projections(
+            // Read this session's previously published evidence before
+            // `publish_projections` overwrites it. This lets
+            // `ingested_incidents::newly_reportable` find which incidents
+            // are new. Both this read and the write below lock the store's
+            // single `Mutex<Connection>` (see `Store::lock`). Nothing here
+            // awaits between them, so no other Store operation can run in
+            // the gap. This claim's own row also stays `status =
+            // 'processing'` under this claim's fence until
+            // `publish_projections` updates it. So no other claim can
+            // complete a competing publish for the same session in that
+            // gap either.
+            let previous = store
+                .evidence(&claim.key)?
+                .and_then(|row| row.evidence_json)
+                .and_then(|json| serde_json::from_str::<SessionEvidence>(&json).ok());
+            let applied = store.publish_projections(
                 &record,
                 pass.analysis.started_at_epoch,
                 &completion,
                 &relations,
                 &pass.source_outcomes,
-            )
+            )?;
+            let ingested = applied
+                .then(|| {
+                    let reportable = ingested_incidents::newly_reportable(
+                        previous.as_ref(),
+                        evidence,
+                        now_ms(now),
+                    );
+                    if reportable.is_empty() {
+                        return None;
+                    }
+                    crate::agents::kind_from_slug(&claim.key.agent).map(|agent| (agent, reportable))
+                })
+                .flatten();
+            Ok(AppliedOutcome { applied, ingested })
         }
-        PassOutcome::SourceChanged => store.fail_evidence(
-            claim,
-            EvidenceFailure::Retry {
-                next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
-                counts_as_attempt: true,
-            },
-            EVIDENCE_ERROR_SOURCE_CHANGED,
-        ),
-        PassOutcome::SourceMissing => store.fail_evidence(
-            claim,
-            EvidenceFailure::Failed {
-                revisions: analysis::projection_revisions(),
-            },
-            EVIDENCE_ERROR_SOURCE_MISSING,
-        ),
-        PassOutcome::Unsupported => store.fail_evidence(
-            claim,
-            EvidenceFailure::Failed {
-                revisions: analysis::projection_revisions(),
-            },
-            EVIDENCE_ERROR_UNSUPPORTED,
-        ),
+        PassOutcome::SourceChanged => Ok(AppliedOutcome {
+            applied: store.fail_evidence(
+                claim,
+                EvidenceFailure::Retry {
+                    next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
+                    counts_as_attempt: true,
+                },
+                EVIDENCE_ERROR_SOURCE_CHANGED,
+            )?,
+            ingested: None,
+        }),
+        PassOutcome::SourceMissing => Ok(AppliedOutcome {
+            applied: store.fail_evidence(
+                claim,
+                EvidenceFailure::Failed {
+                    revisions: analysis::projection_revisions(),
+                },
+                EVIDENCE_ERROR_SOURCE_MISSING,
+            )?,
+            ingested: None,
+        }),
+        PassOutcome::Unsupported => Ok(AppliedOutcome {
+            applied: store.fail_evidence(
+                claim,
+                EvidenceFailure::Failed {
+                    revisions: analysis::projection_revisions(),
+                },
+                EVIDENCE_ERROR_UNSUPPORTED,
+            )?,
+            ingested: None,
+        }),
         PassOutcome::Unreadable(reason) => {
             let last_error = format!(
                 "{EVIDENCE_ERROR_UNREADABLE}{UNREADABLE_REASON_SEPARATOR}{}",
                 reason.as_error_suffix()
             );
-            if reason == UnreadableReason::Cancelled {
+            let applied = if reason == UnreadableReason::Cancelled {
                 // The source was never actually tried, so this retry must
                 // not consume one of the claim's attempts.
                 store.fail_evidence(
@@ -295,7 +354,7 @@ pub(crate) fn apply_outcome(
                         counts_as_attempt: false,
                     },
                     &last_error,
-                )
+                )?
             } else if claim.retry_count < MAX_EVIDENCE_ATTEMPTS {
                 store.fail_evidence(
                     claim,
@@ -304,7 +363,7 @@ pub(crate) fn apply_outcome(
                         counts_as_attempt: true,
                     },
                     &last_error,
-                )
+                )?
             } else {
                 store.fail_evidence(
                     claim,
@@ -312,10 +371,20 @@ pub(crate) fn apply_outcome(
                         revisions: analysis::projection_revisions(),
                     },
                     &last_error,
-                )
-            }
+                )?
+            };
+            Ok(AppliedOutcome {
+                applied,
+                ingested: None,
+            })
         }
     }
+}
+
+/// Convert the worker's whole-second publish clock to milliseconds, the
+/// unit every incident's `ts_ms` uses.
+fn now_ms(now_epoch_secs: i64) -> i64 {
+    now_epoch_secs.saturating_mul(1000)
 }
 
 #[cfg(not(test))]
@@ -333,6 +402,7 @@ pub(crate) async fn process_next(
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) -> anyhow::Result<bool> {
     let Some(claim) =
         store.claim_next_evidence(&crate::agents::evidence_cohort(), clock(), LEASE_SECS)?
@@ -371,13 +441,16 @@ pub(crate) async fn process_next(
         return Ok(true);
     };
     pass.analysis.analyzed_generation = claim.source_generation;
-    let applied = apply_outcome(store, &claim, &pass, clock())?;
-    let published = applied && pass.outcome == PassOutcome::Published;
+    let outcome = apply_outcome(store, &claim, &pass, clock())?;
+    let published = outcome.applied && pass.outcome == PassOutcome::Published;
     if published {
         fork_lineage::link_claude_fork(store, &claim.key)?;
     }
     if published && let Some(entry) = completion_entry(store, &claim.key, clock()) {
         announce(entry);
+    }
+    if let Some((agent, ingested)) = outcome.ingested {
+        report_ingested(agent, ingested);
     }
     Ok(true)
 }
@@ -387,6 +460,7 @@ pub(crate) async fn process_next_work(
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) -> anyhow::Result<bool> {
     let now = clock();
     if let Some(recovery) = store.next_remediation_write_recovery(now)? {
@@ -403,7 +477,7 @@ pub(crate) async fn process_next_work(
         )?;
         return Ok(true);
     }
-    let processed = process_next(store, clock, run_pass, announce).await?;
+    let processed = process_next(store, clock, run_pass, announce, report_ingested).await?;
     if processed {
         return Ok(true);
     }
@@ -426,10 +500,11 @@ pub(crate) async fn worker_loop(
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
     announce_idle: &(dyn Fn() + Send + Sync),
+    report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) {
     let mut processed = false;
     loop {
-        match process_next_work(store, clock, run_pass, announce).await {
+        match process_next_work(store, clock, run_pass, announce, report_ingested).await {
             Ok(true) => {
                 processed = true;
                 announce_idle();

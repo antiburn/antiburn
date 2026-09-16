@@ -26,6 +26,7 @@ pub mod config;
 #[cfg(feature = "analytics")]
 mod delivery;
 pub mod event;
+pub mod ingested_incidents;
 #[cfg(feature = "analytics")]
 mod resources;
 
@@ -170,6 +171,15 @@ pub fn record_provider_incidents(
 }
 
 #[cfg(not(feature = "analytics"))]
+pub fn record_provider_incidents_ingested(
+    _app: &tauri::AppHandle,
+    _agent: antiburn_local::model::AgentKind,
+    _ingested: &ingested_incidents::IngestedIncidents,
+) {
+    let _ = event::EventName::ProviderIncidentsIngested;
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn record_usage_observed(
     _app: &tauri::AppHandle,
     _snapshots: &[crate::provider_usage::live::ProviderUsageSnapshot],
@@ -220,6 +230,7 @@ mod enabled {
     use antiburn_local::insights::{
         ProviderIncidentsSection, QuotaPressureSection, UnrecognizedRecords,
     };
+    use antiburn_local::model::AgentKind;
     use tauri::Manager as _;
 
     use crate::provider_usage::factor::LearnedFactor;
@@ -228,7 +239,7 @@ mod enabled {
     use super::delivery::{DeliverySchedule, FlushOutcome};
     use super::event::{
         Event, EventName, Facts, Interaction, LiveUsageProvider, LiveUsageState, OnboardingFlow,
-        Origin, SettingsPane, Surface,
+        Origin, Surface,
     };
     use super::{config, delivery, event, resources};
     use crate::store::{AppSettings, Store};
@@ -722,9 +733,6 @@ mod enabled {
                 surface,
                 origin: Origin::User,
             } if surface != Surface::Settings => note_deliberate_activity(Instant::now()),
-            Interaction::SettingsPaneViewed {
-                pane: SettingsPane::Insights,
-            } => note_deliberate_activity(Instant::now()),
             _ => {}
         }
     }
@@ -1126,7 +1134,7 @@ mod enabled {
         true
     }
 
-    /// Record a safe summary when an Insights cohort contains unknown types.
+    /// Record a safe summary when an assessed cohort contains unknown types.
     pub fn record_unrecognized_records(app: &tauri::AppHandle, summary: &UnrecognizedRecords) {
         if !allowed(app) {
             return;
@@ -1255,6 +1263,42 @@ mod enabled {
     fn provider_incident_kind_label(kind: ProviderIncidentKind) -> &'static str {
         match kind {
             ProviderIncidentKind::Capacity => "capacity",
+            ProviderIncidentKind::ServerError => "server_error",
+            ProviderIncidentKind::Connection => "connection",
+        }
+    }
+
+    /// Record every newly reportable incident from one evidence publish.
+    ///
+    /// This fires one event per `(kind, count)` pair with `count > 0`. That
+    /// is at most five events per publish, one for each kind
+    /// [`ingested_incidents::IngestedIncidentKind`] names. This function
+    /// keeps no in-memory suppression state. The caller's own content-based
+    /// dedup against the session's previously published evidence, plus the
+    /// freshness window, bound this event instead. See
+    /// `insights_worker::apply_outcome`.
+    pub fn record_provider_incidents_ingested(
+        app: &tauri::AppHandle,
+        agent: AgentKind,
+        ingested: &super::ingested_incidents::IngestedIncidents,
+    ) {
+        if !allowed(app) {
+            return;
+        }
+        for (&kind, &count) in &ingested.counts {
+            if count == 0 {
+                continue;
+            }
+            record(
+                app,
+                EventName::ProviderIncidentsIngested,
+                Facts {
+                    label: Some(agent.slug()),
+                    detail: Some(kind.label()),
+                    bucket: Some(event::bucket(count as u64)),
+                    ..Facts::default()
+                },
+            );
         }
     }
 
@@ -2601,6 +2645,29 @@ mod enabled {
             let outcomes = provider_incident_outcomes(&section);
 
             assert_eq!(outcomes, vec![("capacity", "1-9")]);
+        }
+
+        /// All three closed-vocabulary labels round-trip through
+        /// `provider_incident_outcomes`, in `ProviderIncidentKind`'s
+        /// declaration order (`hits_by_kind` is a `BTreeMap` keyed by it).
+        #[test]
+        fn every_incident_kind_label_round_trips() {
+            let section = ProviderIncidentsSection::Findings(provider_findings(BTreeMap::from([
+                (ProviderIncidentKind::Capacity, 1),
+                (ProviderIncidentKind::ServerError, 5),
+                (ProviderIncidentKind::Connection, 30),
+            ])));
+
+            let outcomes = provider_incident_outcomes(&section);
+
+            assert_eq!(
+                outcomes,
+                vec![
+                    ("capacity", "1-9"),
+                    ("server_error", "1-9"),
+                    ("connection", "10-49"),
+                ]
+            );
         }
 
         #[test]

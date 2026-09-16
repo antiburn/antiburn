@@ -173,10 +173,10 @@ describe("MainWindowView", () => {
     expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
   })
 
-  it("opens Overview by default and keeps Burn checks and Sessions in the sidebar", () => {
+  it("opens Overview by default and keeps Checks and Sessions in the sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
-    // Overview, Burn checks, Sessions, and Sessions' five fixed filter
+    // Overview, Checks, Sessions, and Sessions' five fixed filter
     // children (no harness rows yet, since no entries have loaded).
     expect(screen.getAllByRole("tab")).toHaveLength(8)
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
@@ -186,8 +186,8 @@ describe("MainWindowView", () => {
     expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
     expect(screen.getByText("Overview workspace")).toBeVisible()
     expect(screen.queryByText("Burn checks workspace")).toBeNull()
-    fireEvent.click(screen.getByRole("tab", { name: "Burn checks" }))
-    expect(screen.getByRole("tabpanel", { name: "Burn checks" })).toBeVisible()
+    fireEvent.click(screen.getByRole("tab", { name: "Checks" }))
+    expect(screen.getByRole("tabpanel", { name: "Checks" })).toBeVisible()
     expect(screen.getByText("Burn checks workspace")).toBeVisible()
     fireEvent.click(screen.getByRole("tab", { name: "Sessions" }))
     expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
@@ -210,10 +210,7 @@ describe("MainWindowView", () => {
     expect(activitySession().setFilter).toHaveBeenCalledWith({ kind: "all" })
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
     fireEvent.click(screen.getByRole("button", { name: "Open Burn checks" }))
-    expect(screen.getByRole("tab", { name: "Burn checks" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    )
+    expect(screen.getByRole("tab", { name: "Checks" })).toHaveAttribute("aria-selected", "true")
   })
 
   it("opens the existing Settings window without changing the selected section", () => {
@@ -346,18 +343,18 @@ describe("MainWindowView", () => {
       expect(tab("Sessions")).toHaveAttribute("aria-selected", "false")
     })
 
-    it("lands on Burn checks when the popover requests that section", async () => {
+    it("lands on Checks when the popover requests that section", async () => {
       render(<MainWindowView />)
       await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
       expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
       act(() => {
         ipcMocks.sectionTarget!({ revision: 1, section: "burnChecks" })
       })
-      expect(screen.getByRole("tab", { name: "Burn checks" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Checks" })).toHaveAttribute(
         "aria-selected",
         "true",
       )
-      expect(screen.getByRole("tabpanel", { name: "Burn checks" })).toBeVisible()
+      expect(screen.getByRole("tabpanel", { name: "Checks" })).toBeVisible()
     })
 
     it("keeps the current filter when a cross-window request selects Sessions", async () => {

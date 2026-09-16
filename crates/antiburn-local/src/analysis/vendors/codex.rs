@@ -78,7 +78,7 @@ impl SessionReader for CodexSessionReader {
         "codex"
     }
 
-    fn capabilities(&self, _source: &RawSource) -> crate::analysis::SourceCapabilities {
+    fn capabilities(&self, _input: &SessionInput) -> crate::analysis::SourceCapabilities {
         crate::analysis::SourceCapabilities::codex()
     }
 
@@ -130,6 +130,12 @@ impl SessionReader for CodexSessionReader {
                         "sqlite source must be handled by the sqlite adapter: {}",
                         path.display()
                     )
+                }
+                RawSource::ClineBundle { .. } => {
+                    anyhow::bail!("Cline bundle is not a Codex source")
+                }
+                RawSource::KiroCliV2Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a Codex source")
                 }
             };
             let summary = state.finish(sink);
@@ -992,16 +998,30 @@ fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>
 }
 
 /// Maps one `event_msg`/`task_complete` record's non-null `error` object to
-/// a quota incident or a provider incident, for the three reviewed
-/// `codex_error_info` codes. `server_overloaded` names a provider-side
-/// capacity failure the user's own usage did not cause, so it maps to a
-/// `ProviderIncident` instead of a `QuotaIncident`.
+/// a quota incident or a provider incident, for the reviewed
+/// `codex_error_info` codes. `server_overloaded` and `internal_server_error`
+/// name a provider-side failure the user's own usage did not cause, so they
+/// map to a `ProviderIncident` instead of a `QuotaIncident`.
 ///
 /// `codex_error_info` is the pinned `openai/codex` `CodexErrorInfo` enum's
 /// serde form: a unit variant serializes as a bare string
 /// (`"server_overloaded"`); a struct variant serializes as a single-key
-/// object (`{"http_connection_failed":{"http_status_code":503}}`). Every
-/// other code, an absent or non-object `error`, or a missing top-level
+/// object (`{"http_connection_failed":{"http_status_code":503}}`). The four
+/// transport struct variants (`http_connection_failed`,
+/// `response_stream_connection_failed`, `response_stream_disconnected`,
+/// `response_too_many_failed_attempts`) carry an optional
+/// `http_status_code`: `500..=599` maps to `ServerError`; an absent or
+/// `null` status maps to `Connection`; any other status is ambiguous and
+/// maps to `None`, because the retry wrapper hides which layer produced it.
+///
+/// Ignored on purpose: `context_window_exceeded` and
+/// `session_budget_exceeded` name the user's own context or configured
+/// budget, not a provider or quota event. `cyber_policy`,
+/// `misalignment_policy_violation`, `unauthorized`, `bad_request`,
+/// `sandbox_error`, `active_turn_not_steerable`, `thread_rollback_failed`,
+/// and `other` are not provider incidents or quota incidents.
+///
+/// Every other code, an absent or non-object `error`, or a missing top-level
 /// `timestamp` returns `None`; the record stays allowlisted-eventless with
 /// no diagnostic. The observation never carries the error's `message` text.
 fn task_complete_observation(value: &Value, model: Option<&str>) -> Option<EvidenceObservation> {
@@ -1013,20 +1033,40 @@ fn task_complete_observation(value: &Value, model: Option<&str>) -> Option<Evide
         return None;
     }
     let error = payload.get("error")?.as_object()?;
-    let code = match error.get("codex_error_info")? {
-        Value::String(code) => code.as_str(),
-        Value::Object(fields) if fields.len() == 1 => fields.keys().next()?.as_str(),
-        _ => return None,
-    };
+    let info = error.get("codex_error_info")?;
     let ts_ms = value.get("timestamp").and_then(parse_ts)?;
     // `task_complete` with a non-null error means the turn terminated, so
     // every mapped code is a hard hit, never an advance warning.
+    let (code, struct_fields) = match info {
+        Value::String(code) => (code.as_str(), None),
+        Value::Object(fields) if fields.len() == 1 => {
+            let (code, inner) = fields.iter().next()?;
+            (code.as_str(), Some(inner))
+        }
+        _ => return None,
+    };
     match code {
         "server_overloaded" => Some(EvidenceObservation::ProviderIncident(ProviderIncident {
             ts_ms,
             kind: ProviderIncidentKind::Capacity,
             model: model.map(ToOwned::to_owned),
         })),
+        "internal_server_error" => Some(EvidenceObservation::ProviderIncident(ProviderIncident {
+            ts_ms,
+            kind: ProviderIncidentKind::ServerError,
+            model: model.map(ToOwned::to_owned),
+        })),
+        "http_connection_failed"
+        | "response_stream_connection_failed"
+        | "response_stream_disconnected"
+        | "response_too_many_failed_attempts" => {
+            let kind = transport_incident_kind(struct_fields?)?;
+            Some(EvidenceObservation::ProviderIncident(ProviderIncident {
+                ts_ms,
+                kind,
+                model: model.map(ToOwned::to_owned),
+            }))
+        }
         "rate_limit_exceeded" => Some(EvidenceObservation::QuotaIncident(QuotaIncident {
             ts_ms,
             limit_kind: QuotaLimitKind::RateLimit,
@@ -1046,6 +1086,29 @@ fn task_complete_observation(value: &Value, model: Option<&str>) -> Option<Evide
             confidence: QuotaConfidence::Observed,
         })),
         _ => None,
+    }
+}
+
+/// Reads `http_status_code` from one Codex transport error's struct-variant
+/// fields and names the provider incident it maps to. The value must be a
+/// JSON object. A status in `500..=599` names a `ServerError`; an absent or
+/// `null` status names a `Connection` failure; any other status is
+/// ambiguous, because the retry wrapper hides which layer produced it, so
+/// this returns `None`.
+fn transport_incident_kind(fields: &Value) -> Option<ProviderIncidentKind> {
+    let fields = fields.as_object()?;
+    match fields.get("http_status_code") {
+        None => Some(ProviderIncidentKind::Connection),
+        Some(Value::Null) => Some(ProviderIncidentKind::Connection),
+        Some(Value::Number(status)) => {
+            let status = status.as_u64()?;
+            if (500..=599).contains(&status) {
+                Some(ProviderIncidentKind::ServerError)
+            } else {
+                None
+            }
+        }
+        Some(_) => None,
     }
 }
 
@@ -2438,8 +2501,12 @@ mod tests {
         // `error` object and `process_value` emits the mapped quota or
         // provider incident observation; `is_recognized_eventless` still
         // allowlists `task_complete` as eventless, so coverage and
-        // diagnostics are unchanged.
-        const EXPECTED_FINGERPRINT: u64 = 6_617_144_581_780_975_234;
+        // diagnostics are unchanged. `task_complete_observation` now also
+        // maps `internal_server_error` and the four transport struct
+        // variants' `http_status_code` to a `ServerError` or `Connection`
+        // provider incident, through the new `transport_incident_kind`
+        // helper; this changed the fingerprinted byte range.
+        const EXPECTED_FINGERPRINT: u64 = 5_782_876_435_163_781_937;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -2654,6 +2721,7 @@ mod tests {
             session_id: "synthetic-token-usage".to_owned(),
             source: RawSource::Jsonl(jsonl.to_owned()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = SessionCollector::new("codex", "synthetic-token-usage");
         CodexSessionReader
@@ -3013,6 +3081,7 @@ mod tests {
             session_id: "old-allowlist-with-signal".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -3044,6 +3113,7 @@ mod tests {
             session_id: "zero-component-heartbeat".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -3156,6 +3226,7 @@ mod tests {
             session_id: "content-session".to_string(),
             source: RawSource::Jsonl(jsonl),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = ContentCapturingSink::default();
 
@@ -3272,6 +3343,7 @@ mod tests {
             session_id: "fork-speed".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = SessionCollector::new("codex", "fork-speed");
 
@@ -3337,6 +3409,7 @@ mod tests {
             session_id: "spawn-owned".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -3385,6 +3458,7 @@ mod tests {
             session_id: "spawn-replayed-prefix".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -3408,6 +3482,7 @@ mod tests {
             session_id: "spawn-other-name".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -3454,6 +3529,7 @@ mod tests {
                 session_id: "claimed-session".to_string(),
                 source: RawSource::File(path.to_path_buf()),
                 fork_parent_session_id: None,
+                source_format: Default::default(),
             }
         }
 

@@ -9,11 +9,12 @@ Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/D
 | Capability | State | Extracted source fact |
 | --- | --- | --- |
 | Request context tokens | yes | `token_count.info.last_token_usage.input_tokens` and cached input |
-| Cache-write tokens | no | The public type defaults the field, but the rollout does not reliably emit it |
+| Cache-write tokens | yes | `token_count.info.last_token_usage.cache_write_input_tokens` when the rollout emits it |
 | Timestamps and order | yes | Every public `RolloutLine` has `timestamp` |
 | Tool invocations | yes | Persisted response tool-call variants; unknown and paginated variants degrade coverage |
-| Skill and MCP attribution | no | Legacy calls do not reliably identify a server or skill source |
-| Tool definitions | no | No persisted complete tool catalogue |
+| Skill attribution | observed subset | Selected full skill documents can prove injection and invocation, not a full historical inventory |
+| MCP attribution | observed subset | Completed `tool_search_output` namespace records can prove named server exposure, not a full historical inventory |
+| Tool definitions | yes | The harness version and model resolve against the embedded built-in tool catalogue |
 | Model identity | yes | `turn_context.model` |
 | Token classes | yes | Input, cached input, output, and reasoning output are distinct |
 | Reasoning effort tier | yes | `turn_context.effort`; missing attribution degrades coverage |
@@ -25,10 +26,14 @@ Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/D
 | Thread identity | yes | One rollout is one thread; a discovered child rollout streams with `Delegated` scope, so a child thread never merges into the parent's main-scope facts |
 | Record identity | no | Records carry no per-record id (`uuid`) or parent link, so `previous_turn` stays unsupported |
 | Quota incidents | yes | `event_msg`/`task_complete` with a non-null `error`; only `rate_limit_exceeded` and `usage_limit_exceeded` are mapped |
-| Provider incidents | yes | `event_msg`/`task_complete` with a non-null `error`; only `server_overloaded` is mapped, as `Capacity` |
-| Harness version | no | The evidence sink has no version ingestion path in this slice |
+| Provider incidents | yes | `event_msg`/`task_complete` with a non-null `error`; `server_overloaded` and `internal_server_error` map to `Capacity`/`ServerError`, and the four transport struct variants map by `http_status_code` to `ServerError` (5xx) or `Connection` (absent or null) |
+| Harness version | yes | `session_meta.payload.cli_version` |
 
-Sessions Over Depth, Model Overthinking, Overpowered Subagents, Old Model Usage, and Fast-Mode Overuse have all capability prerequisites. Every other detector remains not assessed. Cache Churn needs record identity, which Codex does not claim, so it stays not assessed even though Codex claims thread identity. Fast-mode overuse needed Subagent relationships in addition to `fast_tier`; now that the adapter publishes the subagent relationship, both it and Overpowered Subagents move into the assessed set.
+Sessions Over Depth, Model Overthinking, Overpowered Subagents, Old Model Usage,
+Fast-Mode Overuse, and Cache Churn have the required capability prerequisites.
+MCP, built-in-tool, and skill evidence supports only observed-subset findings.
+No resource reader proves a full historical inventory, so M/B/K cannot report a
+session-wide clean result.
 
 An unrecognized `(type, payload.type)` combination no longer fails coverage closed by default (#229 parity). `is_inert_codex_record` proves a record structurally inert — no usage, model, effort, service tier, role, tool-shaped, or compaction-shaped keys at the depth its readers cover — before the record is skipped with `Complete` coverage and its discriminator retained. A record that fails the proof stays `Unusable(UnrecognizedRecordType)`, exactly as before. `event_msg`/`item_completed` and top-level `inter_agent_communication_metadata` are allowlisted as proven echoes of records this adapter already models (measured against 1,034 local rollouts: no sampled record of either family carried usage, a model, or an effort) and pass the lighter check that only reads the record's root and root `payload` object; every other unrecognized family is proved inert one record at a time by the strict, any-depth check. `session_meta`, `turn_context`, `world_state`, and the pre-existing `event_msg` housekeeping payloads bypass the structural check entirely: their own evidence-bearing fields (`turn_context.model`/`.effort`, `thread_settings_applied`'s `service_tier`) are read by `observe_model_and_effort` / `service_tier_speed` on every record, before classification runs, so nothing about them is left unproven.
 
@@ -51,7 +56,7 @@ Codex multi-agent ("collab") sessions add a tenth `event_msg` family: `collab_ag
 - `collab_agent_records.jsonl` has a parent turn call `spawn_agent`, then the full ten-variant collab family: a `spawn_begin`/`spawn_end` pair in the pre-completion-tracking shape (no `completed_at_ms`, string `status`), a second pair in the current shape (`completed_at_ms` present, object `status`), an `interaction_begin`/`interaction_end` pair, a `waiting_begin`/`waiting_end` pair, and a `close_end`. Coverage stays `Complete`, `records_unusable` and `records_unrecognized_inert` are both `0`, metrics match the same fixture with the collab lines removed, and the `spawn_agent` call still publishes exactly one `SubagentSpawn`.
 - `session_overdepth_finding.jsonl` reports one turn's input tokens above the Sessions Over Depth cap, giving that badge a finding.
 - `model_overthinking_finding.jsonl` sets `turn_context.effort` to `max`, giving Model Overthinking a finding.
-- `task_complete_errors.jsonl` has one ordinary turn, then eight `task_complete` shapes: a clean turn, the three mapped `codex_error_info` codes (`server_overloaded`, `rate_limit_exceeded`, `usage_limit_exceeded`), an unmapped struct-variant code, the unmapped `"other"` code, an `error` with no `codex_error_info`, and a mapped code with no top-level `timestamp`. Only the three mapped, timestamped codes become an incident: `server_overloaded` becomes one `ProviderIncident`, and `rate_limit_exceeded`/`usage_limit_exceeded` become two `QuotaIncident`s; coverage stays `Complete` and `records_unrecognized_inert` stays `0`.
+- `task_complete_errors.jsonl` has one ordinary turn, then sixteen `task_complete` shapes: a clean turn, the four originally-reviewed `codex_error_info` codes (`server_overloaded`, `rate_limit_exceeded`, `usage_limit_exceeded`, and `http_connection_failed` with a `503` status, which now maps to `ServerError`), the unmapped `"other"` code, an `error` with no `codex_error_info`, a mapped code with no top-level `timestamp`, `internal_server_error`, `http_connection_failed` with a `502` status, `response_stream_connection_failed` with a `null` status, `response_stream_disconnected` with no `http_status_code` key, `response_too_many_failed_attempts` with a `429` status (ignored, ambiguous layer), `http_connection_failed` with a string `"503"` status (ignored, not an integer), `context_window_exceeded` (ignored, the user's own context), and `active_turn_not_steerable` (ignored). `server_overloaded` and `internal_server_error` become `Capacity`/`ServerError` `ProviderIncident`s; `rate_limit_exceeded`/`usage_limit_exceeded` become `QuotaIncident`s; the four transport struct variants with a `5xx` or absent/`null` status become `ServerError`/`Connection` `ProviderIncident`s; coverage stays `Complete` and `records_unrecognized_inert` stays `0`.
 
 ### #229-parity cases (no golden; exercised by dedicated assertions in `codex_characterization.rs`)
 

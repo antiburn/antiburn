@@ -202,6 +202,7 @@ pub fn run() {
             })),
     )
     .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_opener::init())
     .plugin(webview_defaults::plugin())
     .invoke_handler(with_app_commands!(command_handlers))
@@ -836,6 +837,7 @@ mod tests {
                 &runner,
                 &|entry| task_announced.lock().unwrap().push(entry),
                 &|| {},
+                &|_, _| {},
             )
             .await;
         });
