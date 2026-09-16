@@ -208,29 +208,29 @@ colors:
   # Token-map work modes: one colour per kind of work a turn did. They are
   # separate tokens so the map can re-tune without moving product chrome.
   # None of them is orange, coral, black, or white: orange and coral mean
-  # burn, and black and white vanish on the desktop. `talking` is dimmed:
-  # plain text is the quiet mode.
+  # burn, and black and white vanish on the desktop. All seven are bold and
+  # fully opaque so a single dot reads on the glass.
   mode-looking: # read + search; mirrors system-blue
-    light: "hsl(211.2 100% 50%)"
-    dark: "hsl(210 100% 51.9%)"
+    light: "hsl(215 100% 48%)"
+    dark: "hsl(215 100% 60%)"
   mode-running: # shell + tests; mirrors system-green
-    light: "hsl(135 59% 34%)"
-    dark: "hsl(135 70% 52.3%)"
+    light: "hsl(140 80% 36%)"
+    dark: "hsl(140 90% 50%)"
   mode-changing: # edits; the system purple
-    light: "hsl(280 68% 60%)"
-    dark: "hsl(280 85% 65%)"
+    light: "hsl(280 85% 55%)"
+    dark: "hsl(280 100% 70%)"
   mode-delegating: # sub-agent spawns and sub-agent turns; mirrors system-indigo
-    light: "hsl(241 61% 58.8%)"
-    dark: "hsl(241 73% 63%)"
+    light: "hsl(245 90% 60%)"
+    dark: "hsl(245 100% 72%)"
   mode-thinking: # extended thinking with no tool; mirrors system-gold
-    light: "hsl(40.6 96% 40.4%)"
-    dark: "hsl(48 100% 50%)"
-  mode-talking: # plain assistant text; the system mint at 60%
-    light: "hsl(177 100% 39% / 0.6)"
-    dark: "hsl(178 72% 64% / 0.6)"
+    light: "hsl(45 100% 42%)"
+    dark: "hsl(52 100% 55%)"
+  mode-talking: # plain assistant text; a hot pink, well away from burn orange
+    light: "hsl(330 90% 55%)"
+    dark: "hsl(330 100% 68%)"
   mode-other: # MCP, skills, web; the system teal
-    light: "hsl(189 61% 48%)"
-    dark: "hsl(189 72% 56%)"
+    light: "hsl(192 100% 38%)"
+    dark: "hsl(190 100% 55%)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-stroke: # the context line; a cool blue, lit at rest
     light: "hsl(221.2 83% 53.3%)"

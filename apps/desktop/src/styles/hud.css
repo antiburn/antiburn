@@ -80,13 +80,13 @@
    */
   --color-hud-control-ink-val: hsl(0 0% 32%);
   --color-hud-control-edge-val: hsl(0 0% 80%);
-  --color-mode-looking-val: hsl(211.2 100% 50%);
-  --color-mode-running-val: hsl(135 59% 34%);
-  --color-mode-changing-val: hsl(280 68% 60%);
-  --color-mode-delegating-val: hsl(241 61% 58.8%);
-  --color-mode-thinking-val: hsl(40.6 96% 40.4%);
-  --color-mode-talking-val: hsl(177 100% 39% / 0.6);
-  --color-mode-other-val: hsl(189 61% 48%);
+  --color-mode-looking-val: hsl(215 100% 48%);
+  --color-mode-running-val: hsl(140 80% 36%);
+  --color-mode-changing-val: hsl(280 85% 55%);
+  --color-mode-delegating-val: hsl(245 90% 60%);
+  --color-mode-thinking-val: hsl(45 100% 42%);
+  --color-mode-talking-val: hsl(330 90% 55%);
+  --color-mode-other-val: hsl(192 100% 38%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -103,13 +103,13 @@
     --color-led-off-val: hsl(0 0% 50% / 0.45);
     --color-led-notch-val: hsl(0 0% 20% / 0.95);
     --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
-    --color-mode-looking-val: hsl(210 100% 51.9%);
-    --color-mode-running-val: hsl(135 70% 52.3%);
-    --color-mode-changing-val: hsl(280 85% 65%);
-    --color-mode-delegating-val: hsl(241 73% 63%);
-    --color-mode-thinking-val: hsl(48 100% 50%);
-    --color-mode-talking-val: hsl(178 72% 64% / 0.6);
-    --color-mode-other-val: hsl(189 72% 56%);
+    --color-mode-looking-val: hsl(215 100% 60%);
+    --color-mode-running-val: hsl(140 90% 50%);
+    --color-mode-changing-val: hsl(280 100% 70%);
+    --color-mode-delegating-val: hsl(245 100% 72%);
+    --color-mode-thinking-val: hsl(52 100% 55%);
+    --color-mode-talking-val: hsl(330 100% 68%);
+    --color-mode-other-val: hsl(190 100% 55%);
   }
 }
 
@@ -126,13 +126,13 @@
   --color-led-off-val: hsl(0 0% 50% / 0.45);
   --color-led-notch-val: hsl(0 0% 20% / 0.95);
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
-  --color-mode-looking-val: hsl(211.2 100% 50%);
-  --color-mode-running-val: hsl(135 59% 34%);
-  --color-mode-changing-val: hsl(280 68% 60%);
-  --color-mode-delegating-val: hsl(241 61% 58.8%);
-  --color-mode-thinking-val: hsl(40.6 96% 40.4%);
-  --color-mode-talking-val: hsl(177 100% 39% / 0.6);
-  --color-mode-other-val: hsl(189 61% 48%);
+  --color-mode-looking-val: hsl(215 100% 48%);
+  --color-mode-running-val: hsl(140 80% 36%);
+  --color-mode-changing-val: hsl(280 85% 55%);
+  --color-mode-delegating-val: hsl(245 90% 60%);
+  --color-mode-thinking-val: hsl(45 100% 42%);
+  --color-mode-talking-val: hsl(330 90% 55%);
+  --color-mode-other-val: hsl(192 100% 38%);
 }
 
 :root[data-theme="dark"] {
@@ -148,13 +148,13 @@
   --color-led-off-val: hsl(0 0% 50% / 0.45);
   --color-led-notch-val: hsl(0 0% 20% / 0.95);
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
-  --color-mode-looking-val: hsl(210 100% 51.9%);
-  --color-mode-running-val: hsl(135 70% 52.3%);
-  --color-mode-changing-val: hsl(280 85% 65%);
-  --color-mode-delegating-val: hsl(241 73% 63%);
-  --color-mode-thinking-val: hsl(48 100% 50%);
-  --color-mode-talking-val: hsl(178 72% 64% / 0.6);
-  --color-mode-other-val: hsl(189 72% 56%);
+  --color-mode-looking-val: hsl(215 100% 60%);
+  --color-mode-running-val: hsl(140 90% 50%);
+  --color-mode-changing-val: hsl(280 100% 70%);
+  --color-mode-delegating-val: hsl(245 100% 72%);
+  --color-mode-thinking-val: hsl(52 100% 55%);
+  --color-mode-talking-val: hsl(330 100% 68%);
+  --color-mode-other-val: hsl(190 100% 55%);
 }
 
 /* Reduced transparency makes the frame solid. It follows the theme blocks above. */

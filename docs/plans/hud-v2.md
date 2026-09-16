@@ -357,3 +357,7 @@ sampled from real transcripts.
     mode variables no utility used, so the dots drew black.
 12. **Live LED dims, never off.** The blink goes from the mode colour to 35%
     of it, so it reads as the lit LED pulsing, not an off LED flashing.
+13. **Bolder mode colours.** The seven `mode-*` tokens move to saturated,
+    fully opaque hues (blue, green, purple, indigo, yellow, hot pink, cyan).
+    `talking` loses its 60% alpha and becomes pink so it no longer reads as a
+    dim teal next to `other`.
