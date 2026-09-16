@@ -686,7 +686,12 @@ export class OverlaySession {
     this.hudExposure.observe(this.snapshot.bars.length > 0 ? "ready" : "empty", generation)
     if (response && this.hudOrigin === "user") {
       for (const provider of liveDisplayableProviders(response)) {
-        if (!liveWindows(provider).some((window) => window.usedPercent !== null)) continue
+        if (
+          !liveWindows(provider, { includeIdleModelLimits: true }).some(
+            (window) => window.usedPercent !== null,
+          )
+        )
+          continue
         this.hudExposure.observeLiveUsage(response, provider.provider, generation)
       }
     }

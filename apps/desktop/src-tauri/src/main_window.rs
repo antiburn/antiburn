@@ -1613,6 +1613,7 @@ pub fn close(window: &WebviewWindow) {
     state.readiness().cancel_pending_verification();
     state.cancel_open_request();
     state.note_closed();
+    ::tracing::info!(event = "main_window_closed", window = LABEL);
     flush_placement(window.app_handle());
     let _ = antiburn_main_window::conceal(window);
     emit_visibility_changed(window);
@@ -1678,11 +1679,19 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
         .into_iter()
         .any(|label| window_is_focused(app, label))
         || hud_owns_activation(app);
-    if !state.should_restore_after_activation(
+    let restore = state.should_restore_after_activation(
         main_visible,
         main_minimized,
         another_window_owns_activation,
-    ) {
+    );
+    ::tracing::info!(
+        event = "app_activated",
+        main_visible,
+        main_minimized,
+        another_window_owns_activation,
+        restore
+    );
+    if !restore {
         return;
     }
     ::tracing::info!(event = "main_window_open_source", source = "app_activation");

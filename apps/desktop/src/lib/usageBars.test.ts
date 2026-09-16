@@ -126,8 +126,8 @@ describe("deriveUsageBars", () => {
     ])
   })
 
-  it("drops windows without a percentage and untouched supplemental windows", () => {
-    const hidden = usageWindow({
+  it("drops windows without a percentage but keeps untouched model limits", () => {
+    const idle = usageWindow({
       id: "weekly-opus",
       role: "supplemental",
       scopeModel: "Opus",
@@ -136,14 +136,9 @@ describe("deriveUsageBars", () => {
     })
     expect(
       deriveUsageBars(
-        summary([provider({ windows: [usageWindow({ usedPercent: null }), hidden] })]),
-      ),
-    ).toEqual([])
-    expect(
-      deriveUsageBars(
-        summary([provider({ windows: [{ ...hidden, hasNonzeroUsageInCurrentPeriod: true }] })]),
-      ).map((bar) => bar.label),
-    ).toEqual(["Opus weekly limit"])
+        summary([provider({ windows: [usageWindow({ usedPercent: null }), idle] })]),
+      ).map((bar) => [bar.label, bar.percent]),
+    ).toEqual([["Opus weekly limit", 0]])
   })
 
   it("does not return an invalid reset date", () => {

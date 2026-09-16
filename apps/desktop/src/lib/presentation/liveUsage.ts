@@ -369,8 +369,20 @@ export function isUsageWindowVisible(window: LiveUsageWindowPayload): boolean {
   )
 }
 
+/** Options for `liveWindows`. */
+export interface LiveWindowsOptions {
+  /**
+   * Keep a supplemental model-scoped limit on screen at 0%. The HUD wants
+   * every limit it can draw, so a reader sees a model limit before it moves.
+   */
+  includeIdleModelLimits?: boolean
+}
+
 /** Windows worth rendering, primary ones first. */
-export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindowPayload[] {
+export function liveWindows(
+  provider: LiveProviderUsagePayload,
+  options: LiveWindowsOptions = {},
+): LiveUsageWindowPayload[] {
   const rank = (window: LiveUsageWindowPayload) => {
     if (window.role === "primaryShort") return 0
     if (window.role === "primaryLong") return 1
@@ -386,7 +398,10 @@ export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindow
   return candidates
     .filter(
       (window) =>
-        provider.provider === GOOGLE || localAntigravity || isUsageWindowVisible(window),
+        provider.provider === GOOGLE ||
+        localAntigravity ||
+        options.includeIdleModelLimits === true ||
+        isUsageWindowVisible(window),
     )
     .sort((a, b) => rank(a) - rank(b))
 }

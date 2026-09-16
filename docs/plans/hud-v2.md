@@ -348,3 +348,8 @@ sampled from real transcripts.
    summary.
 8. **Dark frame is black.** `hud-frame` dark is 60% black, with a softer top
    stroke.
+9. **Model limits show at 0%.** The HUD draws a supplemental per-model limit
+   even before it moves. The popover and main window keep hiding idle ones
+   (`liveWindows` takes `includeIdleModelLimits`).
+10. **Drag reopen diagnostics.** `app_activated` logs the restore decision
+    and `main_window_closed` logs a close, so the next repro names the path.

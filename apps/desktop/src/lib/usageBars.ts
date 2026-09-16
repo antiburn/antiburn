@@ -104,7 +104,9 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
   const withBars = (response ? liveDisplayableProviders(response) : [])
     .map((provider) => ({
       provider,
-      windows: liveWindows(provider).filter((window) => window.usedPercent != null),
+      windows: liveWindows(provider, { includeIdleModelLimits: true }).filter(
+        (window) => window.usedPercent != null,
+      ),
     }))
     .filter((group) => group.windows.length > 0)
 
