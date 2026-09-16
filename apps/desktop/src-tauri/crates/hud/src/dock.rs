@@ -15,9 +15,16 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, WebviewWindow};
 
-/// How much of the docked HUD stays on screen, in logical pixels.
+/// How much of the docked HUD frame stays on screen, in logical pixels.
 #[cfg(any(target_os = "macos", test))]
 const TAB: f64 = 8.0;
+
+/// The transparent gap between the window's side edges and the HUD frame.
+///
+/// The webview draws the frame with an 8 px margin on the left and right, so
+/// a side tab adds this gap to keep `TAB` of the frame visible.
+#[cfg(any(target_os = "macos", test))]
+const SIDE_INSET: f64 = 8.0;
 
 /// How near a display edge a dropped HUD docks, in logical pixels.
 #[cfg(any(target_os = "macos", test))]
@@ -236,7 +243,12 @@ pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
         let Some(window_rect) = window_rect(window) else {
             return;
         };
-        docked_position(dock.edge, &frame, &window_rect, TAB * dock.scale)
+        docked_position(
+            dock.edge,
+            &frame,
+            &window_rect,
+            tab_depth(dock.edge, dock.scale),
+        )
     };
     let _ = window.set_position(PhysicalPosition::new(target.0, target.1));
 }
@@ -269,13 +281,15 @@ fn dock_at(app: &AppHandle, window: &WebviewWindow, edge: DockEdge) {
         dock.scale = scale;
         dock.docked = true;
         dock.generation += 1;
-        let target = docked_position(edge, &frame, &window_rect, TAB * scale);
+        let target = docked_position(edge, &frame, &window_rect, tab_depth(edge, scale));
         ((window_rect.x, window_rect.y), target, dock.generation)
     };
     super::hide_detail(app);
-    tracing::info!(event = "hud_dock", edge = ?edge);
+    tracing::info!(event = "hud_dock", edge = ?edge, x = target.0, y = target.1);
     let watcher = (app.clone(), window.clone());
     slide(window.clone(), start, target, generation, move || {
+        let parked = window_rect(&watcher.1).map(|rect| (rect.x, rect.y));
+        tracing::info!(event = "hud_dock_parked", ?parked, generation);
         spawn_tab_watcher(watcher.0, watcher.1, generation);
     });
 }
@@ -366,6 +380,9 @@ fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
                 on_tab_since = None;
                 continue;
             }
+            if on_tab_since.is_none() {
+                tracing::info!(event = "hud_tab_hover", generation);
+            }
             let since = *on_tab_since.get_or_insert_with(Instant::now);
             if since.elapsed() < TAB_HOLD {
                 continue;
@@ -401,6 +418,7 @@ fn spawn_auto_dock(app: AppHandle, window: WebviewWindow, generation: u64, hold:
                 continue;
             }
             if should_dock(now, start, hold, last_inside) {
+                tracing::info!(event = "hud_auto_dock", generation);
                 dock_at(&app, &window, edge);
                 return;
             }
@@ -438,6 +456,17 @@ fn monitor_rect(monitor: &Monitor) -> Rect {
         y: f64::from(monitor.position().y),
         width: f64::from(monitor.size().width),
         height: f64::from(monitor.size().height),
+    }
+}
+
+/// How far the window reaches into the screen at `edge`, in physical pixels.
+///
+/// A side tab adds the window's transparent side gap, so the frame shows.
+#[cfg(any(target_os = "macos", test))]
+fn tab_depth(edge: DockEdge, scale: f64) -> f64 {
+    match edge {
+        DockEdge::Left | DockEdge::Right => (TAB + SIDE_INSET) * scale,
+        DockEdge::Top | DockEdge::Bottom => TAB * scale,
     }
 }
 
@@ -507,6 +536,14 @@ mod tests {
         width: 176.0,
         height: 60.0,
     };
+
+    #[test]
+    fn side_tabs_add_the_transparent_gap() {
+        assert_eq!(tab_depth(DockEdge::Left, 2.0), 32.0);
+        assert_eq!(tab_depth(DockEdge::Right, 1.0), 16.0);
+        assert_eq!(tab_depth(DockEdge::Top, 2.0), 16.0);
+        assert_eq!(tab_depth(DockEdge::Bottom, 1.0), 8.0);
+    }
 
     #[test]
     fn docked_positions_leave_only_the_tab_on_screen() {
