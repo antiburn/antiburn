@@ -26,10 +26,6 @@ const TAB: f64 = 8.0;
 #[cfg(any(target_os = "macos", test))]
 const SIDE_INSET: f64 = 8.0;
 
-/// How near a display edge a dropped HUD docks, in logical pixels.
-#[cfg(any(target_os = "macos", test))]
-const SNAP: f64 = 16.0;
-
 /// How long one slide takes.
 #[cfg(target_os = "macos")]
 const SLIDE_DURATION: Duration = Duration::from_millis(200);
@@ -159,7 +155,7 @@ pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
         && let Some(edge) = edge_dropped_on(
             &monitor_rect(&monitor),
             &window_rect,
-            SNAP * monitor.scale_factor(),
+            SIDE_INSET * monitor.scale_factor(),
         )
     {
         dock_at(app, &window, edge);
@@ -376,7 +372,19 @@ fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
                     return;
                 }
             }
-            if !super::cursor_inside(&window).unwrap_or(false) {
+            let on_strip = {
+                let dock = state();
+                match (dock.frame, window.cursor_position().ok()) {
+                    (Some(frame), Some(cursor)) => on_tab_strip(
+                        dock.edge,
+                        &frame,
+                        tab_depth(dock.edge, dock.scale),
+                        (cursor.x, cursor.y),
+                    ),
+                    _ => false,
+                }
+            };
+            if !on_strip {
                 on_tab_since = None;
                 continue;
             }
@@ -492,9 +500,32 @@ fn flush_position(edge: DockEdge, frame: &Rect, window: &Rect) -> (f64, f64) {
     }
 }
 
-/// The edge a dropped window touches, within `snap`, nearest first. Pure.
+/// True when `cursor` rests in the strip `tab` deep along `edge`, anywhere
+/// on that edge of `frame`. The strip, not the window, is the tab. Pure.
 #[cfg(any(target_os = "macos", test))]
-fn edge_dropped_on(frame: &Rect, window: &Rect, snap: f64) -> Option<DockEdge> {
+fn on_tab_strip(edge: DockEdge, frame: &Rect, tab: f64, cursor: (f64, f64)) -> bool {
+    let (x, y) = cursor;
+    let inside_x = x >= frame.x && x < frame.x + frame.width;
+    let inside_y = y >= frame.y && y < frame.y + frame.height;
+    match edge {
+        DockEdge::Left => inside_y && x >= frame.x && x < frame.x + tab,
+        DockEdge::Right => {
+            inside_y && x >= frame.x + frame.width - tab && x < frame.x + frame.width
+        }
+        DockEdge::Top => inside_x && y >= frame.y && y < frame.y + tab,
+        DockEdge::Bottom => {
+            inside_x && y >= frame.y + frame.height - tab && y < frame.y + frame.height
+        }
+    }
+}
+
+/// The edge a dropped window's frame went past, deepest first. Pure.
+///
+/// A window that stops short of the edge stays free, so a HUD can sit near an
+/// edge without docking. `side_inset` is the window's transparent side gap:
+/// the frame is past a side edge only when the window is past it by more.
+#[cfg(any(target_os = "macos", test))]
+fn edge_dropped_on(frame: &Rect, window: &Rect, side_inset: f64) -> Option<DockEdge> {
     let gaps = [
         (DockEdge::Left, window.x - frame.x),
         (
@@ -508,7 +539,13 @@ fn edge_dropped_on(frame: &Rect, window: &Rect, snap: f64) -> Option<DockEdge> {
         ),
     ];
     gaps.into_iter()
-        .filter(|(_, gap)| *gap <= snap)
+        .filter(|(edge, gap)| {
+            let limit = match edge {
+                DockEdge::Left | DockEdge::Right => -side_inset,
+                DockEdge::Top | DockEdge::Bottom => 0.0,
+            };
+            *gap < limit
+        })
         .min_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(edge, _)| edge)
 }
@@ -586,34 +623,59 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_near_an_edge_docks_there() {
+    fn only_a_drop_past_an_edge_docks_there() {
         let mid = WINDOW;
-        assert_eq!(edge_dropped_on(&FRAME, &mid, SNAP), None);
+        assert_eq!(edge_dropped_on(&FRAME, &mid, SIDE_INSET), None);
+        // Near the edge, still on screen: free.
         let near_right = Rect { x: 920.0, ..WINDOW };
+        assert_eq!(edge_dropped_on(&FRAME, &near_right, SIDE_INSET), None);
+        // Only the transparent side gap is off screen: free.
+        let gap_off = Rect { x: 928.0, ..WINDOW };
+        assert_eq!(edge_dropped_on(&FRAME, &gap_off, SIDE_INSET), None);
+        let past_right = Rect { x: 940.0, ..WINDOW };
         assert_eq!(
-            edge_dropped_on(&FRAME, &near_right, SNAP),
+            edge_dropped_on(&FRAME, &past_right, SIDE_INSET),
             Some(DockEdge::Right)
         );
-        let past_right = Rect {
-            x: 1050.0,
-            ..WINDOW
-        };
+        let flush_top = Rect { y: 50.0, ..WINDOW };
+        assert_eq!(edge_dropped_on(&FRAME, &flush_top, SIDE_INSET), None);
+        let past_top = Rect { y: 40.0, ..WINDOW };
         assert_eq!(
-            edge_dropped_on(&FRAME, &past_right, SNAP),
-            Some(DockEdge::Right)
-        );
-        let near_top = Rect { y: 60.0, ..WINDOW };
-        assert_eq!(
-            edge_dropped_on(&FRAME, &near_top, SNAP),
+            edge_dropped_on(&FRAME, &past_top, SIDE_INSET),
             Some(DockEdge::Top)
         );
-        // A corner picks the nearer edge.
+        // A corner picks the edge the window is further past.
         let corner = Rect {
-            x: 104.0,
-            y: 58.0,
+            x: 80.0,
+            y: 45.0,
             ..WINDOW
         };
-        assert_eq!(edge_dropped_on(&FRAME, &corner, SNAP), Some(DockEdge::Left));
+        assert_eq!(
+            edge_dropped_on(&FRAME, &corner, SIDE_INSET),
+            Some(DockEdge::Left)
+        );
+    }
+
+    #[test]
+    fn the_tab_strip_runs_the_whole_edge() {
+        assert!(on_tab_strip(DockEdge::Right, &FRAME, 16.0, (1090.0, 600.0)));
+        assert!(on_tab_strip(DockEdge::Right, &FRAME, 16.0, (1099.0, 51.0)));
+        assert!(!on_tab_strip(
+            DockEdge::Right,
+            &FRAME,
+            16.0,
+            (1080.0, 300.0)
+        ));
+        assert!(!on_tab_strip(
+            DockEdge::Right,
+            &FRAME,
+            16.0,
+            (1090.0, 700.0)
+        ));
+        assert!(on_tab_strip(DockEdge::Left, &FRAME, 16.0, (100.0, 300.0)));
+        assert!(on_tab_strip(DockEdge::Top, &FRAME, 8.0, (500.0, 57.0)));
+        assert!(!on_tab_strip(DockEdge::Top, &FRAME, 8.0, (500.0, 58.0)));
+        assert!(on_tab_strip(DockEdge::Bottom, &FRAME, 8.0, (500.0, 649.0)));
     }
 
     #[test]

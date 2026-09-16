@@ -179,8 +179,8 @@
   /* Brand — the antiburn orange. The mark itself fills large shapes in both
      themes. On a light surface it measures 2.9:1, so text and small glyphs
      take the darkened value, which clears 4.5:1. */
-  --color-brand-tint-val: hsl(17.6 100% 58.6%);
-  --color-brand-unlit-val: hsl(17.7 75% 58.6%);
+  --color-brand-tint-val: hsl(17.6 100% 54%);
+  --color-brand-unlit-val: hsl(17.7 75% 54%);
   --color-brand-val: hsl(18 92% 39%);
 
   /* Status — accessible variants, tuned for contrast on a light surface */
@@ -206,7 +206,7 @@
   --color-agent-mark-val: hsl(52 11% 13.3%);
 
   /* Burn Checks */
-  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 54%);
   --color-burn-check-failure-text-val: hsl(18 100% 36.4%);
   --color-burn-check-pass-fill-val: hsl(191.5 83% 36.8%);
   --color-burn-check-neutral-val: hsl(209 6% 73.7%);
@@ -294,9 +294,9 @@
     --color-selected-fill-val: hsl(240 6% 84%);
     --color-selected-ink-val: hsl(240 4% 12%);
     /* The mark measures 7.4:1 on a dark surface, so text keeps it too. */
-    --color-brand-tint-val: hsl(17.6 100% 58.6%);
-    --color-brand-unlit-val: hsl(17.7 75% 58.6%);
-    --color-brand-val: hsl(17.6 100% 58.6%);
+    --color-brand-tint-val: hsl(17.6 100% 54%);
+    --color-brand-unlit-val: hsl(17.7 75% 54%);
+    --color-brand-val: hsl(17.6 100% 54%);
     --color-system-green-val: hsl(135 70% 52.3%);
     --color-system-orange-val: hsl(36 100% 62.5%);
     --color-system-orange-tint-val: hsl(36.4 100% 52%);
@@ -314,7 +314,7 @@
     --color-shimmer-val: hsl(0 0% 100%);
     --color-system-gold-text-val: hsl(43.5 88% 66%);
     --color-agent-mark-val: hsl(60 15% 96.2%);
-    --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+    --color-burn-check-failure-fill-val: hsl(17.6 100% 54%);
     --color-burn-check-failure-text-val: hsl(18 100% 68%);
     --color-burn-check-pass-fill-val: hsl(192 63% 47.6%);
     --color-burn-check-neutral-val: hsl(210 3% 50.5%);
@@ -363,8 +363,8 @@
   --color-accent-hover-val: hsl(210.4 100% 39%);
   --color-selected-fill-val: hsl(240 6% 26%);
   --color-selected-ink-val: hsl(0 0% 100%);
-  --color-brand-tint-val: hsl(17.6 100% 58.6%);
-  --color-brand-unlit-val: hsl(17.7 75% 58.6%);
+  --color-brand-tint-val: hsl(17.6 100% 54%);
+  --color-brand-unlit-val: hsl(17.7 75% 54%);
   --color-brand-val: hsl(18 92% 39%);
   --color-system-green-val: hsl(135 59% 34%);
   --color-system-orange-val: hsl(27 100% 35.1%);
@@ -383,7 +383,7 @@
   --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(41 100% 28.6%);
   --color-agent-mark-val: hsl(52 11% 13.3%);
-  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 54%);
   --color-burn-check-failure-text-val: hsl(18 100% 36.4%);
   --color-burn-check-pass-fill-val: hsl(191.5 83% 36.8%);
   --color-burn-check-neutral-val: hsl(209 6% 73.7%);
@@ -432,9 +432,9 @@
   --color-accent-hover-val: hsl(213.5 91% 42%);
   --color-selected-fill-val: hsl(240 6% 84%);
   --color-selected-ink-val: hsl(240 4% 12%);
-  --color-brand-tint-val: hsl(17.6 100% 58.6%);
-  --color-brand-unlit-val: hsl(17.7 75% 58.6%);
-  --color-brand-val: hsl(17.6 100% 58.6%);
+  --color-brand-tint-val: hsl(17.6 100% 54%);
+  --color-brand-unlit-val: hsl(17.7 75% 54%);
+  --color-brand-val: hsl(17.6 100% 54%);
   --color-system-green-val: hsl(135 70% 52.3%);
   --color-system-orange-val: hsl(36 100% 62.5%);
   --color-system-orange-tint-val: hsl(36.4 100% 52%);
@@ -452,7 +452,7 @@
   --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(43.5 88% 66%);
   --color-agent-mark-val: hsl(60 15% 96.2%);
-  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 54%);
   --color-burn-check-failure-text-val: hsl(18 100% 68%);
   --color-burn-check-pass-fill-val: hsl(192 63% 47.6%);
   --color-burn-check-neutral-val: hsl(210 3% 50.5%);

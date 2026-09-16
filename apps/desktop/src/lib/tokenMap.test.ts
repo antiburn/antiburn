@@ -131,6 +131,23 @@ describe("deriveTokenMap", () => {
     expect(layout.dots.filter((dot) => !dot.small)).toHaveLength(4)
   })
 
+  it("keeps one small dot for a sub-agent that rounds to none", () => {
+    const parent = session(
+      "a",
+      { delegating: 5_000 },
+      {
+        subagents: [{ subagentId: "brief", tokensPerMin: 10, modes: { ...zero, looking: 50 } }],
+      },
+    )
+    const layout = deriveTokenMap(payload([parent]))
+    const small = layout.dots.filter((dot) => dot.small)
+    expect(small).toHaveLength(1)
+    expect(small[0]).toMatchObject({ mode: "looking", owner: "brief" })
+    expect(layout.dots.filter((dot) => !dot.small).every((dot) => dot.owner === null)).toBe(
+      true,
+    )
+  })
+
   it("drops a session that stopped writing and pulses the newest turn", () => {
     const recent = session("a", { looking: 5_000 }, { lastTurnEpoch: 990 })
     const older = session("b", { looking: 5_000 }, { lastTurnEpoch: 920 })

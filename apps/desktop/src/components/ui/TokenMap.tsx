@@ -18,7 +18,8 @@ const FRAME_PAD = 1.5
  *
  * `onHoverBlob` reports the blob under the pointer by key, or null when the
  * pointer leaves it. Each blob is one group, so a move from the frame to a
- * dot inside it is not a leave.
+ * dot inside it is not a leave. A sub-agent's dot also reports its owner, so
+ * the detail can name it.
  */
 export function TokenMap({
   layout,
@@ -27,7 +28,7 @@ export function TokenMap({
 }: {
   layout: TokenMapLayout
   className?: string
-  onHoverBlob?: (key: string | null) => void
+  onHoverBlob?: (key: string | null, subagentId?: string | null) => void
 }) {
   // Crop to the rows in use, so the dots stay close to the bars below.
   const rows = layout.blobs.reduce((max, blob) => Math.max(max, blob.y + blob.h), 1)
@@ -76,6 +77,13 @@ export function TokenMap({
                 fillOpacity={dot.dim ? 0.3 : 1}
                 className={dot.live ? "token-map-live" : undefined}
                 data-mode={dot.mode}
+                data-subagent={dot.owner ?? undefined}
+                onMouseEnter={
+                  onHoverBlob && dot.owner ? () => onHoverBlob(blob.key, dot.owner) : undefined
+                }
+                onMouseLeave={
+                  onHoverBlob && dot.owner ? () => onHoverBlob(blob.key, null) : undefined
+                }
               />
             ))}
         </g>

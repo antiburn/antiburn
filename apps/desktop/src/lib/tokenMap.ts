@@ -68,6 +68,8 @@ export type TokenMapDot = {
   /** True for the newest turn on the map. */
   live: boolean
   blob: number
+  /** The sub-agent id a small dot belongs to; null for the parent's dots. */
+  owner: string | null
 }
 
 export type TokenMapBlob = {
@@ -130,7 +132,7 @@ export function mapVisible(previousShown: boolean, shown: boolean, count: number
 }
 const GAP = 1
 
-type DotSpec = { mode: WorkMode; small: boolean }
+type DotSpec = { mode: WorkMode; small: boolean; owner: string | null }
 
 /** The session's total rate: parent plus every sub-agent. */
 export function sessionRate(session: HudTokenMapSession): number {
@@ -144,11 +146,14 @@ function dotsFor(
   modes: HudModeTokens,
   rate: number,
   dotValue: number,
-  small: boolean,
+  owner: string | null,
 ): DotSpec[] {
+  const small = owner != null
   const total = WORK_MODES.reduce((sum, mode) => sum + modes[mode], 0)
-  const count = Math.round(rate / dotValue)
-  if (total === 0 || count === 0) return []
+  if (total === 0) return []
+  // A sub-agent with tokens keeps one dot, so a short one is not lost.
+  const count = Math.max(small ? 1 : 0, Math.round(rate / dotValue))
+  if (count === 0) return []
   // Largest-remainder split, so the dot count per mode sums to `count`.
   const shares = WORK_MODES.map((mode) => ({ mode, exact: (modes[mode] / total) * count }))
   const floors = shares.map((share) => ({ ...share, count: Math.floor(share.exact) }))
@@ -161,7 +166,7 @@ function dotsFor(
     left -= 1
   }
   return floors.flatMap((share) =>
-    Array.from({ length: share.count }, () => ({ mode: share.mode, small })),
+    Array.from({ length: share.count }, () => ({ mode: share.mode, small, owner })),
   )
 }
 
@@ -171,14 +176,14 @@ function sessionDots(
   dotValue: number,
 ): { specs: DotSpec[]; dim: boolean } {
   const specs = [
-    ...dotsFor(session.modes, session.tokensPerMin, dotValue, false),
+    ...dotsFor(session.modes, session.tokensPerMin, dotValue, null),
     ...session.subagents.flatMap((subagent) =>
-      dotsFor(subagent.modes, subagent.tokensPerMin, dotValue, true),
+      dotsFor(subagent.modes, subagent.tokensPerMin, dotValue, subagent.subagentId),
     ),
   ]
   if (specs.length > 0) return { specs, dim: false }
   // A quiet session keeps one dim dot in its top mode, so it is not lost.
-  return { specs: [{ mode: topMode(session), small: false }], dim: true }
+  return { specs: [{ mode: topMode(session), small: false, owner: null }], dim: true }
 }
 
 /** The mode with the most parent tokens; the first mode in order on a tie. */
@@ -331,6 +336,7 @@ function build(
         dim,
         live: index === liveIndex && position === specs.length - 1,
         blob: index,
+        owner: spec.owner,
       })
     })
   })

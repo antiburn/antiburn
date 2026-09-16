@@ -94,6 +94,56 @@ describe("TokenMap", () => {
     expect(onHoverBlob).toHaveBeenLastCalledWith(null)
   })
 
+  it("names the sub-agent under the pointer and clears it on leave", () => {
+    const layout = deriveTokenMap({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: null,
+      sessions: [
+        {
+          agent: "claude-code",
+          sessionId: "s1",
+          title: null,
+          lastTurnEpoch: 1_000,
+          tokensPerMin: 1_000,
+          modes: {
+            looking: 1,
+            running: 0,
+            changing: 0,
+            delegating: 0,
+            thinking: 0,
+            talking: 0,
+            other: 0,
+          },
+          subagents: [
+            {
+              subagentId: "sub-1",
+              tokensPerMin: 500,
+              modes: {
+                looking: 0,
+                running: 1,
+                changing: 0,
+                delegating: 0,
+                thinking: 0,
+                talking: 0,
+                other: 0,
+              },
+            },
+          ],
+        },
+      ],
+    })
+    const onHoverBlob = vi.fn()
+    const { container } = render(<TokenMap layout={layout} onHoverBlob={onHoverBlob} />)
+    const dot = container.querySelector('circle[data-subagent="sub-1"]')!
+    expect(dot).not.toBeNull()
+    fireEvent.mouseEnter(dot)
+    expect(onHoverBlob).toHaveBeenLastCalledWith("claude-code:s1", "sub-1")
+    fireEvent.mouseLeave(dot)
+    // The leave clears the owner; the group may report its own leave after.
+    expect(onHoverBlob).toHaveBeenCalledWith("claude-code:s1", null)
+  })
+
   it("crops the square to the rows in use", () => {
     const layout = deriveTokenMap({
       nowEpoch: 1_000,

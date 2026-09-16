@@ -215,6 +215,19 @@ describe("HudDetailView", () => {
     expect(screen.getByText("delegating")).toBeInTheDocument()
   })
 
+  it("lights the sub-agent under the pointer and names its top mode", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() =>
+      push.emit!(
+        detailState({ map: detailMap(), target: "claude:hud", subagent: "abcdef1234" }),
+      ),
+    )
+    const row = screen.getByTestId("hud-detail-session").querySelector("li[data-lit]")!
+    expect(row).not.toBeNull()
+    expect(row).toHaveTextContent("sub-agent abcdef12 · mostly running")
+  })
+
   it("shows one agent's card when the target is its box", async () => {
     render(<HudDetailView />)
     await waitFor(() => expect(push.emit).not.toBeNull())

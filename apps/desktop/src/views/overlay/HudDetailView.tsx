@@ -21,6 +21,8 @@ type DetailSnapshot = {
   spend: string | null
   /** "usage" for the meter card, or a session key for that agent's card. */
   target: string
+  /** The sub-agent under the pointer, or null. */
+  subagent: string | null
   now: number
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
@@ -39,6 +41,7 @@ const INITIAL_SNAPSHOT: DetailSnapshot = {
   map: null,
   spend: null,
   target: "usage",
+  subagent: null,
 }
 
 function resetDate(resetsAt: string | null): Date | null {
@@ -137,6 +140,7 @@ class HudDetailSession {
         map: state.map ?? null,
         spend: state.spend ?? null,
         target: state.target ?? "usage",
+        subagent: state.subagent ?? null,
       }
       for (const listener of this.listeners) listener()
     })
@@ -236,7 +240,21 @@ function modeSplit(
 type HudDetailSession_ = NonNullable<HudDetailState["map"]>["sessions"][number]
 
 /** One agent box, spelled out: the session, its rate, its modes, its sub-agents. */
-function SessionCard({ session, dotValue }: { session: HudDetailSession_; dotValue: number }) {
+/** The mode that paid for most of `modes`; the first mode in order on a tie. */
+function topModeOf(modes: HudDetailSession_["modes"]): WorkMode {
+  return WORK_MODES.reduce((best, mode) => (modes[mode] > modes[best] ? mode : best))
+}
+
+function SessionCard({
+  session,
+  dotValue,
+  subagent,
+}: {
+  session: HudDetailSession_
+  dotValue: number
+  /** The sub-agent under the pointer; its row is lit and names its top mode. */
+  subagent: string | null
+}) {
   return (
     <div data-testid="hud-detail-session">
       <div className="flex items-baseline justify-between gap-2 type-caption">
@@ -258,19 +276,26 @@ function SessionCard({ session, dotValue }: { session: HudDetailSession_; dotVal
       <LedBar segments={HUD_SEGMENTS} className="mt-1" split={modeSplit(session.modes)} />
       {session.subagents.length > 0 && (
         <ul className="mt-1.5 space-y-0.5">
-          {session.subagents.map((subagent) => (
-            <li
-              key={subagent.subagentId}
-              className="flex items-baseline justify-between gap-2 type-caption"
-            >
-              <span className="led-caption text-label-secondary truncate">
-                sub-agent {subagent.subagentId.slice(0, 8)}
-              </span>
-              <span className="stats-number text-label shrink-0">
-                {formatRate(subagent.tokensPerMin)}/min
-              </span>
-            </li>
-          ))}
+          {session.subagents.map((entry) => {
+            const lit = entry.subagentId === subagent
+            return (
+              <li
+                key={entry.subagentId}
+                data-lit={lit || undefined}
+                className="flex items-baseline justify-between gap-2 type-caption"
+              >
+                <span
+                  className={`led-caption truncate ${lit ? "text-label" : "text-label-secondary"}`}
+                >
+                  sub-agent {entry.subagentId.slice(0, 8)}
+                  {lit ? ` · mostly ${topModeOf(entry.modes)}` : ""}
+                </span>
+                <span className="stats-number text-label shrink-0">
+                  {formatRate(entry.tokensPerMin)}/min
+                </span>
+              </li>
+            )
+          })}
         </ul>
       )}
       <p className="led-caption type-footnote text-label-secondary mt-1.5">
@@ -313,7 +338,11 @@ export function HudDetailView() {
           antiburn
         </p>
         {hoveredSession ? (
-          <SessionCard session={hoveredSession} dotValue={state.map!.dotValue} />
+          <SessionCard
+            session={hoveredSession}
+            dotValue={state.map!.dotValue}
+            subagent={state.subagent}
+          />
         ) : (
           <>
             {state.map && <MapLegend map={state.map} />}

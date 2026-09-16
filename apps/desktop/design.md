@@ -95,13 +95,13 @@ colors:
     dark: "hsl(240 4% 12%)"
   brand: # antiburn orange for text and small glyphs
     light: "hsl(18 92% 39%)"
-    dark: "hsl(17.6 100% 58.6%)"
+    dark: "hsl(17.6 100% 54%)"
   brand-tint: # antiburn orange for large fills
-    light: "hsl(17.6 100% 58.6%)"
-    dark: "hsl(17.6 100% 58.6%)"
+    light: "hsl(17.6 100% 54%)"
+    dark: "hsl(17.6 100% 54%)"
   brand-unlit: # an unlit meter segment: the brand tint, a quarter less saturated
-    light: "hsl(17.7 75% 58.6%)"
-    dark: "hsl(17.7 75% 58.6%)"
+    light: "hsl(17.7 75% 54%)"
+    dark: "hsl(17.7 75% 54%)"
   system-green:
     light: "hsl(135 59% 34%)"
     dark: "hsl(135 70% 52.3%)"
@@ -157,8 +157,8 @@ colors:
     light: "hsl(52 11% 13.3%)"
     dark: "hsl(60 15% 96.2%)"
   burn-check-failure-fill: # failure arcs and terminal marks
-    light: "hsl(17.6 100% 58.6%)"
-    dark: "hsl(17.6 100% 58.6%)"
+    light: "hsl(17.6 100% 54%)"
+    dark: "hsl(17.6 100% 54%)"
   burn-check-failure-text: # failure wording on session and summary surfaces
     light: "hsl(18 100% 36.4%)"
     dark: "hsl(18 100% 68%)"

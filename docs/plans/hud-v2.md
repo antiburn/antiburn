@@ -315,3 +315,16 @@ sampled from real transcripts.
 4. **Spend anchors start at $0.05 / $2.00 per minute** (Keith, 2026-09-16),
    to be checked against real transcripts before PR B ships.
 5. **Frame alpha is 60%** (Keith, 2026-09-16), after 30%, 50% and 40% on screen; the hover surface swap is gone and the stroke is a vertical gradient.
+
+## Tweaks after the first on-screen test (Keith, 2026-09-16)
+
+1. **The tab is the whole edge.** A docked HUD peeks in when the pointer
+   rests anywhere in the tab strip along its edge, not only on the window.
+2. **Dock only past the edge.** A drop docks when the frame is off screen at
+   mouseup. A HUD near an edge, still on screen, stays free.
+3. **Sub-agents always show.** A sub-agent with tokens in the window gets at
+   least one small dot, so a short sub-agent no longer rounds to nothing.
+4. **Hover a dot for its owner.** A small dot names its sub-agent: the detail
+   card highlights that row and says its top mode.
+5. **Brand tint deeper.** The lit LED coral drops from 58.6% to 54%
+   lightness; the unlit tint follows.

@@ -1189,6 +1189,8 @@ export interface HudDetailState {
    * for one agent box. The card shows the matching content.
    */
   target: string
+  /** The sub-agent whose dot the pointer is on, or null. */
+  subagent?: string | null
 }
 
 /** Request the hover detail window with the newest usage payload. */

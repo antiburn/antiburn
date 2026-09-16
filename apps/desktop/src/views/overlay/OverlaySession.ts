@@ -114,6 +114,8 @@ export class OverlaySession {
   private detailShown = false
   /** The agent box under the pointer, by blob key, or null over the meter. */
   private hoverBlob: string | null = null
+  /** The sub-agent whose dot is under the pointer, or null. */
+  private hoverSubagent: string | null = null
   /** Whether the map showed before the last poll, for its show hysteresis. */
   private previousShowMap = false
   private usagePoll: number | null = null
@@ -183,9 +185,10 @@ export class OverlaySession {
   }
 
   /** Note the agent box under the pointer. An open detail follows at once. */
-  setHoverBlob = (key: string | null): void => {
-    if (this.hoverBlob === key) return
+  setHoverBlob = (key: string | null, subagentId: string | null = null): void => {
+    if (this.hoverBlob === key && this.hoverSubagent === subagentId) return
     this.hoverBlob = key
+    this.hoverSubagent = subagentId
     if (!this.detailShown) return
     this.detailRevision += 1
     void showHudDetail(this.detailState("show")).catch(() => {})
@@ -585,6 +588,7 @@ export class OverlaySession {
       map: this.detailMap(),
       spend: this.snapshot.spend,
       target: this.detailTarget(),
+      subagent: this.hoverSubagent,
     }
   }
 
