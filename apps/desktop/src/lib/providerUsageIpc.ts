@@ -284,7 +284,9 @@ export async function getQuotaUsage(request: QuotaUsageRequest): Promise<QuotaUs
 }
 
 /** One session's estimated quota contributions, by provider and lane. */
-export async function getSessionQuota(request: SessionQuotaRequest): Promise<SessionQuotaPayload> {
+export async function getSessionQuota(
+  request: SessionQuotaRequest,
+): Promise<SessionQuotaPayload> {
   if (!isTauri()) return EMPTY_SESSION_QUOTA
   return invoke<SessionQuotaPayload>("get_session_quota", { request })
 }
