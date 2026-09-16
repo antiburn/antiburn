@@ -52,7 +52,8 @@ export interface QuotaBurnupChartProps {
   onPin: (series: QuotaChartSeries) => void
 }
 
-function formatQuotaPercent(value: number | null | undefined): string {
+/** "42%", or an em dash for a percent the lane cannot state. */
+export function formatQuotaPercent(value: number | null | undefined): string {
   return value == null ? "—" : `${Math.round(value)}%`
 }
 
