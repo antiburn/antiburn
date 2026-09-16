@@ -13,9 +13,9 @@ import "./overview.css"
  */
 
 /** The axis names every seventh day and the last one. */
-export const AXIS_LABEL_STEP = 7
+const AXIS_LABEL_STEP = 7
 /** A dated label this close to "Today" would collide with it. */
-export const AXIS_LABEL_CLEARANCE = 3
+const AXIS_LABEL_CLEARANCE = 3
 
 /** A day's tooltip opens almost at once; the pointer is already on the bar. */
 export const DAY_TOOLTIP_DELAY_MS = 100

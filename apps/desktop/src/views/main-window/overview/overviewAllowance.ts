@@ -19,7 +19,7 @@ import type {
  */
 
 /** The figure a window reaches when the provider has nothing left to give. */
-export const MAXED_PERCENT = 100
+const MAXED_PERCENT = 100
 
 /** One hour in seconds, for reading a wait in hours. */
 const SECONDS_PER_HOUR = 3600
