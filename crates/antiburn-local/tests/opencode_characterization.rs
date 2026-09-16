@@ -45,6 +45,7 @@ fn sqlite_input(path: &std::path::Path, session_id: &str) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -74,7 +75,7 @@ fn evidence_and_rows(input: &SessionInput) -> (SessionEvidence, Arc<MemoryTurnRo
         agent: input.agent.clone(),
         session_id: input.session_id.clone(),
         kind: SourceKind::from(&input.source),
-        capabilities: reader_for("opencode").capabilities(&input.source),
+        capabilities: reader_for("opencode").capabilities(input),
     });
     let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
     let turn_rows = TurnRowSink::new(
@@ -583,13 +584,13 @@ fn native_sqlite_streams_root_and_descendant_messages_in_order() {
     assert_eq!(child_assistant.thread_id.as_deref(), Some("child"));
     assert_eq!(child_assistant.source, EventSource::Subagent);
     let assistant = &session.events[2];
-    assert_eq!(assistant.thinking_mode.as_deref(), Some("high"));
+    assert_eq!(assistant.thinking_mode, None);
     assert_eq!(assistant.usage.input_tokens, 100);
     assert_eq!(assistant.usage.output_tokens, 25);
     assert_eq!(assistant.usage.cache_read_tokens, 30);
     assert_eq!(assistant.usage.cache_creation_tokens, 40);
     assert_eq!(assistant.model.as_deref(), Some("model-a"));
-    assert_eq!(assistant.thinking_mode.as_deref(), Some("high"));
+    assert_eq!(assistant.thinking_mode, None);
     assert!(assistant.has_thinking);
     assert!(assistant.is_compaction_boundary);
     assert_eq!(assistant.tools.len(), 2);
@@ -1144,6 +1145,7 @@ fn export_stream_marks_a_child_message_as_delegated_with_one_spawn() {
         session_id: "root".to_owned(),
         source: RawSource::Jsonl(jsonl.to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
 
     let mut collector = SessionCollector::new("opencode", "root");
@@ -1269,6 +1271,35 @@ async fn database_claim_is_checked_inside_the_snapshot() {
     assert_eq!(matching.into_session().expect("finished").events.len(), 1);
 }
 
+#[tokio::test]
+async fn database_fingerprint_includes_uncheckpointed_wal_rows() {
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).expect("database");
+    connection
+        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+        .expect("enable WAL");
+    insert_session(&connection, "root", None, None, 100);
+
+    let before = Explorers::DISK
+        .provider_db_fingerprint(&AgentKind::OpenCode, &path, "root")
+        .await
+        .expect("initial fingerprint");
+    insert_message(
+        &connection,
+        "wal-message",
+        "root",
+        120,
+        r#"{"role":"user"}"#,
+    );
+
+    assert!(path.with_file_name("opencode.db-wal").exists());
+    let after = Explorers::DISK
+        .provider_db_fingerprint(&AgentKind::OpenCode, &path, "root")
+        .await
+        .expect("WAL fingerprint");
+    assert_ne!(before, after);
+}
+
 #[test]
 fn exported_messages_stream_without_session_wide_collection() {
     struct CountingSink {
@@ -1299,6 +1330,7 @@ fn exported_messages_stream_without_session_wide_collection() {
         session_id: "many".to_owned(),
         source: RawSource::Jsonl(jsonl),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut sink = CountingSink {
         records: 0,
@@ -1314,20 +1346,18 @@ fn exported_messages_stream_without_session_wide_collection() {
 
 #[test]
 fn metrics_and_evidence_publish_from_the_stream() {
-    let input = SessionInput {
-        agent: "opencode".to_owned(),
-        session_id: "evidence".to_owned(),
-        source: RawSource::Jsonl(
-            concat!(
-                r#"{"type":"message","messageID":"m1","time":{"created":1000},"payload":{"role":"assistant","modelID":"model-a","variant":"high","tokens":{"input":10,"output":2,"reasoning":3,"cache":{"read":4,"write":5}}}}"#,
-                "\n",
-                r#"{"type":"part","messageID":"m1","payload":{"type":"tool","tool":"read","state":{"input":{"filePath":"PRIVATE_PATH"}}}}"#,
-                "\n"
-            )
-            .to_owned(),
-        ),
-        fork_parent_session_id: None,
-    };
+    let input = SessionInput { agent: "opencode".to_owned(),
+    session_id: "evidence".to_owned(),
+    source: RawSource::Jsonl(
+        concat!(
+            r#"{"type":"message","messageID":"m1","time":{"created":1000},"payload":{"role":"assistant","modelID":"model-a","variant":"high","tokens":{"input":10,"output":2,"reasoning":3,"cache":{"read":4,"write":5}}}}"#,
+            "\n",
+            r#"{"type":"part","messageID":"m1","payload":{"type":"tool","tool":"read","state":{"input":{"filePath":"PRIVATE_PATH"}}}}"#,
+            "\n"
+        )
+        .to_owned(),
+    ),
+    fork_parent_session_id: None, source_format: Default::default() };
     let metrics = SessionMetricsAccumulator::new("opencode", "evidence");
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: "opencode".to_owned(),
@@ -1359,10 +1389,6 @@ fn metrics_and_evidence_publish_from_the_stream() {
         } => models,
         EvidenceValue::Unsupported => panic!("expected model evidence"),
     };
-    assert_eq!(models.control_observations.len(), 1);
-    assert_eq!(
-        models.control_observations[0].effort.as_deref(),
-        Some("high")
-    );
+    assert!(models.control_observations.is_empty());
     assert!(!json!(evidence).to_string().contains("PRIVATE_PATH"));
 }

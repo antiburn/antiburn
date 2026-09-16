@@ -57,6 +57,7 @@ fn jsonl_input(session: &GeneratedSession) -> SessionInput {
         session_id: session.session_id.clone(),
         source: RawSource::Jsonl(session.jsonl.clone()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -70,6 +71,7 @@ fn file_input_for(agent: &str, session_id: &str, path: &Path) -> SessionInput {
         session_id: session_id.to_string(),
         source: RawSource::File(path.to_path_buf()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -307,6 +309,7 @@ fn write_antigravity_native_layout(
             session_id,
             source: RawSource::Sqlite(db_path),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
         // The adapter scans generation rows twice and step rows once.
         row_visits: generations as u64 * 3,
@@ -771,6 +774,7 @@ fn materialization(criterion: &mut Criterion) {
                 session_id: session.session_id.clone(),
                 source: RawSource::Jsonl(content),
                 fork_parent_session_id: None,
+                source_format: Default::default(),
             };
             let mut composite = composite_for(&inline);
             let outcome = reader_for("claude")
@@ -800,6 +804,7 @@ fn provider_db(criterion: &mut Criterion) {
             session_id: session.session_id.clone(),
             source: RawSource::Sqlite(db_path),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         group.throughput(Throughput::Bytes(db_bytes));
         group.bench_with_input(
@@ -924,6 +929,7 @@ fn memory_probes() {
         session_id: "synthetic-antigravity-memory".to_owned(),
         source: RawSource::Jsonl(brain),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
     reader_for("antigravity")

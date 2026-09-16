@@ -6,8 +6,7 @@
 //! evidence accumulators and the row sink's next index from the previous
 //! step's snapshot — must equal "a full pass at `Sk`" for turn rows (every
 //! column, plus their `turn_content`), `SessionMetrics`, `SessionSummary`,
-//! `TurnFacts`, and `SessionEvidence`. See "Why a snapshot and not an
-//! offset" in `docs/plans/continuous-session-ingest.md`.
+//! `TurnFacts`, and `SessionEvidence`.
 //!
 //! [`assert_resume_parity`] is the driver every positive test below calls.
 //! Every compared value — rows, turn content, `TurnFacts`, `SessionMetrics`
@@ -94,6 +93,7 @@ fn session_input(agent: &str, session_id: &str, path: &Path) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::File(path.to_path_buf()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 

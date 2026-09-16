@@ -6,9 +6,12 @@
 
 mod antigravity;
 pub mod claude;
+mod cline;
 mod codex;
+mod copilot;
 mod cursor;
 mod generic_jsonl;
+mod kiro;
 mod opencode;
 mod passive;
 pub(crate) mod pi;
@@ -22,18 +25,9 @@ static CURSOR: cursor::CursorSessionReader = cursor::CursorSessionReader;
 static OPENCODE: opencode::OpenCodeSessionReader = opencode::OpenCodeSessionReader;
 static PI: pi::PiSessionReader = pi::PiSessionReader;
 static ANTIGRAVITY: antigravity::AntigravitySessionReader = antigravity::AntigravitySessionReader;
-static COPILOT: passive::PassiveSessionReader = passive::PassiveSessionReader {
-    agent: "copilot",
-    format: crate::analysis::SourceFormat::CopilotCliJsonl,
-};
-static CLINE: passive::PassiveSessionReader = passive::PassiveSessionReader {
-    agent: "cline",
-    format: crate::analysis::SourceFormat::ClineSessionJson,
-};
-static KIRO: passive::PassiveSessionReader = passive::PassiveSessionReader {
-    agent: "kiro",
-    format: crate::analysis::SourceFormat::KiroSessionJson,
-};
+static COPILOT: copilot::CopilotSessionReader = copilot::CopilotSessionReader;
+static CLINE: cline::ClineSessionReader = cline::ClineSessionReader;
+static KIRO: kiro::KiroSessionReader = kiro::KiroSessionReader;
 static AMP: passive::PassiveSessionReader = passive::PassiveSessionReader {
     agent: "amp-code",
     format: crate::analysis::SourceFormat::AmpThreadJson,
@@ -67,7 +61,15 @@ pub fn reader_for(agent: &str) -> &'static dyn SessionReader {
 pub fn has_dedicated_reader(agent: &str) -> bool {
     matches!(
         reader_for(agent).agent(),
-        "claude" | "codex" | "cursor" | "opencode" | "pi" | "antigravity"
+        "claude"
+            | "codex"
+            | "cursor"
+            | "opencode"
+            | "pi"
+            | "antigravity"
+            | "copilot"
+            | "cline"
+            | "kiro"
     )
 }
 
@@ -82,6 +84,12 @@ pub(crate) fn read_source(source: &RawSource) -> anyhow::Result<std::borrow::Cow
                 "sqlite source must be handled by the sqlite adapter: {}",
                 path.display()
             )
+        }
+        RawSource::ClineBundle { .. } => {
+            anyhow::bail!("Cline bundle must be handled by the Cline adapter")
+        }
+        RawSource::KiroCliV2Bundle { .. } => {
+            anyhow::bail!("Kiro CLI V2 bundle must be handled by the Kiro adapter")
         }
     }
 }
@@ -101,7 +109,17 @@ mod tests {
 
     #[test]
     fn dedicated_session_parsers_are_recognized_case_insensitively() {
-        for agent in ["claude", "codex", "cursor", "opencode", "pi", "antigravity"] {
+        for agent in [
+            "claude",
+            "codex",
+            "cursor",
+            "opencode",
+            "pi",
+            "antigravity",
+            "copilot",
+            "cline",
+            "kiro",
+        ] {
             assert!(has_dedicated_reader(agent));
             assert!(has_dedicated_reader(&agent.to_uppercase()));
         }
@@ -117,9 +135,6 @@ mod tests {
     #[test]
     fn passive_readers_keep_agent_specific_source_formats() {
         let cases = [
-            ("copilot", crate::analysis::SourceFormat::CopilotCliJsonl),
-            ("cline", crate::analysis::SourceFormat::ClineSessionJson),
-            ("kiro", crate::analysis::SourceFormat::KiroSessionJson),
             ("amp-code", crate::analysis::SourceFormat::AmpThreadJson),
             (
                 "windsurf",
@@ -131,7 +146,14 @@ mod tests {
             assert_eq!(reader_for(&agent.to_uppercase()).agent(), agent);
             assert!(!has_dedicated_reader(agent));
             assert!(!has_dedicated_reader(&agent.to_uppercase()));
-            let capabilities = reader_for(agent).capabilities(&RawSource::Jsonl(String::new()));
+            let input = crate::analysis::SessionInput {
+                agent: agent.to_owned(),
+                session_id: "test".to_owned(),
+                source: RawSource::Jsonl(String::new()),
+                source_format: expected,
+                fork_parent_session_id: None,
+            };
+            let capabilities = reader_for(agent).capabilities(&input);
             assert_eq!(capabilities.source_format, expected, "{agent}");
             assert_eq!(
                 capabilities,

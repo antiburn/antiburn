@@ -1,6 +1,7 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type * as ClipboardModule from "../../lib/clipboard"
 import type * as IpcModule from "../../lib/ipc"
 import type * as HygieneModule from "../../lib/useSessionHygiene"
 import type { SessionAnalysisPayload } from "../../lib/ipc"
@@ -12,6 +13,9 @@ import { SessionPane, type SessionPaneProps } from "./SessionPane"
 
 const mocks = vi.hoisted(() => ({
   revealSource: vi.fn(),
+  openProjectFolder: vi.fn(),
+  noteInteraction: vi.fn(),
+  writeClipboardText: vi.fn(),
   hygiene: {
     evidenceState: "stale",
     badges: [
@@ -25,9 +29,16 @@ const mocks = vi.hoisted(() => ({
   } as SessionHygienePayload,
 }))
 
+vi.mock("../../lib/clipboard", async (importOriginal) => ({
+  ...(await importOriginal<typeof ClipboardModule>()),
+  writeClipboardText: mocks.writeClipboardText,
+}))
+
 vi.mock("../../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof IpcModule>()),
   revealSource: mocks.revealSource,
+  openProjectFolder: mocks.openProjectFolder,
+  noteInteraction: mocks.noteInteraction,
 }))
 
 vi.mock("../../lib/useSessionHygiene", async (importOriginal) => ({
@@ -62,6 +73,7 @@ function analysisPayload(sourcePath: string | null): SessionAnalysisPayload {
     orchestration: null,
     relations: null,
     sourcePath,
+    projectPath: null,
     startedAtEpoch: null,
     analysisPending: false,
     analysisStale: false,
@@ -89,15 +101,9 @@ function pane(sourcePath: string | null) {
   return render(<SessionPane {...paneProps(sourcePath)} />)
 }
 
-const writeText = vi.fn()
-
 beforeEach(() => {
   vi.clearAllMocks()
-  writeText.mockResolvedValue(undefined)
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText },
-  })
+  mocks.writeClipboardText.mockResolvedValue(undefined)
 })
 
 describe("SessionPane — copy path", () => {
@@ -114,7 +120,7 @@ describe("SessionPane — copy path", () => {
       fireEvent.click(screen.getByLabelText("Copy path"))
     })
 
-    expect(writeText).toHaveBeenCalledExactlyOnceWith(sourcePath)
+    expect(mocks.writeClipboardText).toHaveBeenCalledExactlyOnceWith(sourcePath)
     expect(screen.getByTestId("copy-path-tick")).toBeTruthy()
   })
 
@@ -133,7 +139,7 @@ describe("SessionPane — copy path", () => {
       })
       await act(async () => {
         fireEvent.click(screen.getByLabelText("Copy path"), { [modifier]: true })
-        expect(writeText).toHaveBeenCalledExactlyOnceWith(expected)
+        expect(mocks.writeClipboardText).toHaveBeenCalledExactlyOnceWith(expected)
       })
       expect(expected).toContain("Fast mode was used for 4 delegated turns")
       expect(expected).toContain("Burn-check evidence: stale")
@@ -147,7 +153,9 @@ describe("SessionPane — copy path", () => {
     await act(async () =>
       fireEvent.click(screen.getByLabelText("Copy path"), { shiftKey: true }),
     )
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("/tmp/synthetic/session.jsonl")
+    expect(mocks.writeClipboardText).toHaveBeenCalledExactlyOnceWith(
+      "/tmp/synthetic/session.jsonl",
+    )
   })
 
   it("uses new loaded data after a refresh without copying old metrics", async () => {
@@ -156,7 +164,7 @@ describe("SessionPane — copy path", () => {
     const updated = { ...props.payload!, title: "Updated title", analysisStale: true }
     rerender(<SessionPane {...props} payload={updated} refreshing />)
     await act(async () => fireEvent.click(screen.getByLabelText("Copy path"), { altKey: true }))
-    expect(writeText).toHaveBeenCalledExactlyOnceWith(
+    expect(mocks.writeClipboardText).toHaveBeenCalledExactlyOnceWith(
       sessionDiscussionPrompt({
         subject: props.subject,
         payload: updated,
@@ -168,19 +176,12 @@ describe("SessionPane — copy path", () => {
     )
   })
 
-  it.each(["reject", "absent"])(
-    "does not show prompt success when the clipboard is %s",
-    async (failure) => {
-      pane("/tmp/synthetic/session.jsonl")
-      if (failure === "reject") writeText.mockRejectedValue(new Error("denied"))
-      else
-        Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined })
-      await act(async () =>
-        fireEvent.click(screen.getByLabelText("Copy path"), { altKey: true }),
-      )
-      expect(screen.queryByTestId("copy-path-tick")).toBeNull()
-    },
-  )
+  it("does not show prompt success when the clipboard write fails", async () => {
+    pane("/tmp/synthetic/session.jsonl")
+    mocks.writeClipboardText.mockRejectedValue(new Error("denied"))
+    await act(async () => fireEvent.click(screen.getByLabelText("Copy path"), { altKey: true }))
+    expect(screen.queryByTestId("copy-path-tick")).toBeNull()
+  })
 
   it("hides copy and reveal when the payload has no source path", () => {
     pane(null)
@@ -189,30 +190,16 @@ describe("SessionPane — copy path", () => {
   })
 
   it("shows no success tick when the clipboard write fails", async () => {
-    writeText.mockRejectedValue(new Error("denied"))
+    mocks.writeClipboardText.mockRejectedValue(new Error("denied"))
     pane("/Users/dev/.claude/projects/app/session-1.jsonl")
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Copy path"))
     })
 
-    expect(writeText).toHaveBeenCalledOnce()
+    expect(mocks.writeClipboardText).toHaveBeenCalledOnce()
     expect(screen.queryByTestId("copy-path-tick")).toBeNull()
     expect(screen.getByLabelText("Copy path")).toBeTruthy()
-  })
-
-  it("shows no success tick when the clipboard API is unavailable", async () => {
-    pane("/Users/dev/.claude/projects/app/session-1.jsonl")
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: undefined,
-    })
-
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText("Copy path"))
-    })
-
-    expect(screen.queryByTestId("copy-path-tick")).toBeNull()
   })
 
   it("keeps reveal wired to the shell command, separate from copy", async () => {
@@ -224,6 +211,74 @@ describe("SessionPane — copy path", () => {
     })
 
     expect(mocks.revealSource).toHaveBeenCalledExactlyOnceWith(sourcePath)
-    expect(writeText).not.toHaveBeenCalled()
+    expect(mocks.writeClipboardText).not.toHaveBeenCalled()
+  })
+})
+
+describe("SessionPane — project folder", () => {
+  it("opens and copies the project directory independently of the transcript", async () => {
+    const props = paneProps("/tmp/agent/session.jsonl")
+    props.payload!.projectPath = "/tmp/worktrees/project with spaces"
+    mocks.openProjectFolder.mockResolvedValue(undefined)
+    render(<SessionPane {...props} />)
+    const trigger = screen.getByRole("button", { name: "Project folder" })
+    act(() => trigger.focus())
+    await act(async () =>
+      fireEvent.click(
+        within(screen.getByRole("dialog")).getByRole("button", { name: "Copy path" }),
+      ),
+    )
+    expect(mocks.writeClipboardText).toHaveBeenCalledWith("/tmp/worktrees/project with spaces")
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "projectFolderAction",
+      action: "copy",
+      outcome: "succeeded",
+    })
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Open in/ })))
+    expect(mocks.openProjectFolder).toHaveBeenCalledWith("/tmp/worktrees/project with spaces")
+    expect(mocks.revealSource).not.toHaveBeenCalled()
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "projectFolderAction",
+      action: "open",
+      outcome: "succeeded",
+    })
+  })
+
+  it("hides unknown project folders without hiding transcript actions", () => {
+    pane("/tmp/agent/session.jsonl")
+    expect(screen.queryByRole("button", { name: "Project folder" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Reveal in file manager" })).toBeVisible()
+  })
+
+  it("records failed opens and keeps the project path copyable", async () => {
+    const props = paneProps(null)
+    props.payload!.projectPath = "/tmp/deleted-worktree"
+    mocks.openProjectFolder.mockRejectedValue(new Error("gone"))
+    render(<SessionPane {...props} />)
+    act(() => screen.getByRole("button", { name: "Project folder" }).focus())
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Open in/ })))
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "projectFolderAction",
+      action: "open",
+      outcome: "failed",
+    })
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy path" })))
+    expect(mocks.writeClipboardText).toHaveBeenCalledWith("/tmp/deleted-worktree")
+  })
+
+  it("records failed project copies without reporting success", async () => {
+    const props = paneProps(null)
+    props.payload!.projectPath = "/tmp/worktrees/project"
+    mocks.writeClipboardText.mockRejectedValue(new Error("denied"))
+    render(<SessionPane {...props} />)
+    act(() => screen.getByRole("button", { name: "Project folder" }).focus())
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy path" })))
+    expect(mocks.noteInteraction).toHaveBeenCalledExactlyOnceWith({
+      kind: "projectFolderAction",
+      action: "copy",
+      outcome: "failed",
+    })
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t copy the path")
+    expect(screen.queryByRole("button", { name: "Path copied" })).toBeNull()
   })
 })

@@ -119,6 +119,12 @@ pub enum TouchOutcome {
     /// The carrier changed from its pre-spawn fingerprint and settled at the
     /// named one. The caller may now read the secret — once.
     Settled(Fingerprint),
+    /// No `claude` binary exists to spawn. Nothing here can refresh the
+    /// credential.
+    CliMissing,
+    /// The carrier still matches a refresh that produced a dead credential.
+    /// Only a new sign-in changes this.
+    Terminal,
     /// The touch was skipped, failed to spawn, or never verified inside the
     /// deadline. The credential is exactly as expired as it was.
     NotRefreshed,
@@ -131,11 +137,14 @@ pub enum TouchOutcome {
 /// the hard deadline in [`MAX_POLLS`] is the child's lifetime cap.
 pub fn touch(env: &dyn TouchEnvironment, gate: &TouchGate) -> TouchOutcome {
     if !env.binary_present() {
-        return TouchOutcome::NotRefreshed;
+        return TouchOutcome::CliMissing;
     }
     let Some(before) = env.fingerprint() else {
         return TouchOutcome::NotRefreshed;
     };
+    if gate.is_terminal(&before) {
+        return TouchOutcome::Terminal;
+    }
     if !gate.begin(&before) {
         return TouchOutcome::NotRefreshed;
     }
@@ -238,6 +247,17 @@ impl TouchGate {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.in_flight = false;
+    }
+
+    /// Whether the carrier still matches a refresh that produced a dead
+    /// credential — see [`GateInner::terminal`].
+    fn is_terminal(&self, before: &Fingerprint) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .terminal
+            .as_ref()
+            == Some(before)
     }
 
     /// Record that the refresh settled at `fingerprint` and still produced a
@@ -372,7 +392,7 @@ impl TouchChild for PtyTouchChild {
 
 /// Whether `binary` names an executable file on the reader's `PATH` — the
 /// same resolution spawning it would use, without spawning anything.
-fn binary_on_path(binary: &str) -> bool {
+pub(super) fn binary_on_path(binary: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
@@ -404,7 +424,8 @@ fn hash(bytes: &[u8]) -> u64 {
 /// What one metadata read of the Keychain item found. Mirrors
 /// `anthropic_fetch`'s `KeychainRead`, for the `-w`-less read.
 #[cfg(target_os = "macos")]
-enum KeychainMetadata {
+#[derive(Clone)]
+pub(super) enum KeychainMetadata {
     Found(Vec<u8>),
     Absent,
     Unreadable,
@@ -418,7 +439,13 @@ enum KeychainMetadata {
 /// same bounded-subprocess shape as `anthropic_fetch::macos_keychain::read`:
 /// a reader thread, a hard deadline, and a kill on timeout.
 #[cfg(target_os = "macos")]
-fn keychain_metadata() -> KeychainMetadata {
+pub(super) fn keychain_metadata() -> KeychainMetadata {
+    keychain_metadata_for("Claude Code-credentials", None)
+}
+
+/// Read attributes for the selected service and account without requesting the secret.
+#[cfg(target_os = "macos")]
+pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> KeychainMetadata {
     use std::io::Read as _;
     use std::process::Stdio;
     use std::sync::mpsc;
@@ -431,8 +458,7 @@ fn keychain_metadata() -> KeychainMetadata {
     /// `errSecItemNotFound`, the same exit the secret read classifies.
     const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
 
-    let mut child = match antiburn_local::platform::process::headless_std_command("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials"])
+    let mut child = match keychain_metadata_command(service, account)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -486,12 +512,43 @@ fn keychain_metadata() -> KeychainMetadata {
     KeychainMetadata::Found(bytes)
 }
 
+#[cfg(target_os = "macos")]
+fn keychain_metadata_command(service: &str, account: Option<&str>) -> std::process::Command {
+    let mut command = antiburn_local::platform::process::headless_std_command("security");
+    command.args(["find-generic-password", "-s", service]);
+    if let Some(account) = account {
+        command.args(["-a", account]);
+    }
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metadata_commands_select_attributes_without_requesting_secrets() {
+        for (service, account, expected) in [
+            (
+                "Claude Code-credentials",
+                None,
+                vec!["find-generic-password", "-s", "Claude Code-credentials"],
+            ),
+            (
+                "gemini",
+                Some("antigravity"),
+                vec!["find-generic-password", "-s", "gemini", "-a", "antigravity"],
+            ),
+        ] {
+            let command = keychain_metadata_command(service, account);
+            assert_eq!(command.get_program(), "security");
+            assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
+        }
+    }
 
     /// A scripted world: each `fingerprint` call pops the next value, and
     /// the last value repeats once the script runs out.
@@ -600,7 +657,7 @@ mod tests {
     fn an_absent_binary_skips_the_touch_entirely() {
         let mut env = ScriptedEnv::new(&["a", "b"]);
         env.binary_present = false;
-        assert_eq!(touch(&env, &TouchGate::new()), TouchOutcome::NotRefreshed);
+        assert_eq!(touch(&env, &TouchGate::new()), TouchOutcome::CliMissing);
         assert_eq!(env.spawns.load(Ordering::SeqCst), 0);
         assert_eq!(env.polls.load(Ordering::SeqCst), 0);
     }
@@ -658,6 +715,9 @@ mod tests {
         // The carrier still matches the terminal fingerprint: waiting will
         // not fix `invalid_grant`, so no touch runs.
         assert!(!gate.begin(&Fingerprint("dead".into())));
+        let env = ScriptedEnv::new(&["dead", "fresh"]);
+        assert_eq!(touch(&env, &gate), TouchOutcome::Terminal);
+        assert_eq!(env.spawns.load(Ordering::SeqCst), 0);
         // The reader signed in again — the material changed — so the block
         // lifts on its own.
         assert!(gate.begin(&Fingerprint("fresh".into())));

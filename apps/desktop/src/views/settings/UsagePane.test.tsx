@@ -2,7 +2,13 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
-import type { AppSettings, LiveUsageSummaryPayload } from "../../lib/ipc"
+import type {
+  AppSettings,
+  LiveUsageMeterPayload,
+  LiveUsageSourceErrorPayload,
+  LiveUsageSummaryPayload,
+  LiveUsageWindowPayload,
+} from "../../lib/ipc"
 import { UsagePane } from "./UsagePane"
 
 const getLiveUsage = vi.hoisted(() => vi.fn())
@@ -47,7 +53,12 @@ vi.mock("../../lib/overlayWindow", async (importOriginal) => {
 
 vi.mock("../../lib/ipc", async () => {
   const actual = await vi.importActual<typeof Ipc>("../../lib/ipc")
-  return { ...actual, getLiveUsage, refreshLiveUsage, onLiveUsageChanged }
+  return {
+    ...actual,
+    getLiveUsage,
+    refreshLiveUsage,
+    onLiveUsageChanged,
+  }
 })
 
 const SETTINGS = { liveUsageEnabled: false } as unknown as AppSettings
@@ -98,11 +109,164 @@ describe("UsagePane", () => {
     )
   })
 
+  it("keeps asking while on screen and stops when it leaves", async () => {
+    vi.useFakeTimers()
+    try {
+      const { unmount } = render(
+        <UsagePane settings={SETTINGS as AppSettings} update={vi.fn()} loaded />,
+      )
+      // The subscribe path awaits the event listener before its first ask.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(refreshLiveUsage).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(refreshLiveUsage).toHaveBeenCalledTimes(2)
+      unmount()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120_000)
+      })
+      expect(refreshLiveUsage).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("writes the preference through when the switch moves", async () => {
     const update = pane()
     fireEvent.click(screen.getByRole("switch", { name: /keep my plan limits current/i }))
     expect(update).toHaveBeenCalledWith({ liveUsageEnabled: true })
     await waitFor(() => expect(refreshLiveUsage).toHaveBeenCalled())
+  })
+
+  it("says the switches show meters and that sign-in happens in the tool", () => {
+    pane()
+    expect(screen.getByRole("heading", { name: "Track Limits for" })).toBeInTheDocument()
+    expect(
+      screen.getByText("You need to sign in inside each tool to track its limits."),
+    ).toBeInTheDocument()
+  })
+
+  it.each<{ meter: LiveUsageMeterPayload; note: string }>([
+    {
+      meter: {
+        provider: "google",
+        displayName: "Google",
+        shown: true,
+        detection: "notInstalled",
+      },
+      note: "Couldn't find Antigravity or Antigravity usage on this computer.",
+    },
+    {
+      meter: {
+        provider: "anthropic",
+        displayName: "Claude",
+        shown: true,
+        detection: "installedNotSignedIn",
+      },
+      note: "Found Claude Code, but it isn't signed in.",
+    },
+    {
+      meter: {
+        provider: "anthropic",
+        displayName: "Claude",
+        shown: true,
+        detection: "signedIn",
+      },
+      note: "Signed in.",
+    },
+    {
+      meter: { provider: "anthropic", displayName: "Claude", shown: true },
+      note: "Not checked yet.",
+    },
+  ])(
+    "explains $meter.provider detection $meter.detection without a reading",
+    async ({ meter, note }) => {
+      getLiveUsage.mockResolvedValue(summary({ meters: [meter] }))
+      pane({ liveUsageEnabled: true })
+      expect(await screen.findByText(note)).toBeInTheDocument()
+      expect(
+        screen.getByRole("switch", { name: `Show ${meter.displayName} meter` }),
+      ).toBeChecked()
+    },
+  )
+
+  it("names the tool a found login came from", async () => {
+    getLiveUsage.mockResolvedValue(
+      summary({
+        meters: [
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "signedIn",
+            carrier: "pi",
+            carrierLabel: "Pi",
+          },
+        ],
+      }),
+    )
+    pane({ liveUsageEnabled: true })
+    expect(await screen.findByText("Signed in through Pi.")).toBeInTheDocument()
+  })
+
+  it.each<{ error: LiveUsageSourceErrorPayload; note: string }>([
+    {
+      error: {
+        source: "claude-usage-fetch",
+        provider: "anthropic",
+        displayName: "Claude",
+        category: "unavailable",
+        detail: "keychainUnreadable",
+      },
+      note: "Couldn't read Claude Code's login from the Keychain. If a prompt appears, choose Always Allow.",
+    },
+    {
+      error: {
+        source: "antigravity-usage-fetch",
+        provider: "google",
+        displayName: "Google",
+        category: "authentication",
+        detail: "refreshUnsupported",
+      },
+      note: "Antigravity's login has expired. Sign in inside Antigravity again.",
+    },
+  ])("shows $error.detail guidance before the detection note", async ({ error, note }) => {
+    getLiveUsage.mockResolvedValue(
+      summary({
+        meters: [
+          {
+            provider: error.provider,
+            displayName: error.displayName,
+            shown: true,
+            detection: "signedIn",
+          },
+        ],
+        errors: [error],
+      }),
+    )
+    pane({ liveUsageEnabled: true })
+    expect(await screen.findByText(note)).toBeInTheDocument()
+    expect(screen.queryByText(/^Signed in/)).not.toBeInTheDocument()
+  })
+
+  it("keeps the off-switch guidance and disables provider switches despite detection", async () => {
+    getLiveUsage.mockResolvedValue(
+      summary({
+        meters: [
+          { provider: "anthropic", displayName: "Claude", shown: true, detection: "signedIn" },
+        ],
+      }),
+    )
+    pane({ liveUsageEnabled: false })
+    const label = await screen.findByText("Claude")
+    expect(label.closest("div")).toHaveTextContent(
+      "Turn the switch above back on to ask for current plan limits.",
+    )
+    expect(screen.getByRole("switch", { name: "Show Claude meter" })).toBeDisabled()
+    expect(screen.queryByText(/^Signed in/)).not.toBeInTheDocument()
   })
 
   it("always offers the Google meter without a live reading", async () => {
@@ -111,7 +275,7 @@ describe("UsagePane", () => {
     await waitFor(() => expect(screen.getByText("Google")).toBeInTheDocument())
     const toggle = screen.getByRole("switch", { name: "Show Google meter" })
     expect(toggle).toBeChecked()
-    expect(screen.getByText(/No readings yet\. Sign in with Google/)).toBeInTheDocument()
+    expect(screen.getByText("Not checked yet.")).toBeInTheDocument()
 
     fireEvent.click(toggle)
 
@@ -133,7 +297,9 @@ describe("UsagePane", () => {
     )
     pane()
     await waitFor(() =>
-      expect(screen.getByText(/sign in again with your coding tool/i)).toBeInTheDocument(),
+      expect(
+        screen.getByText("Claude sign-in expired. Sign in again, then retry."),
+      ).toBeInTheDocument(),
     )
     // And it is not reported as "nothing found", which would send the reader
     // to use their coding tool when the problem is that they are signed out of it.
@@ -164,8 +330,74 @@ describe("UsagePane", () => {
     )
     pane()
     await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
-    expect(screen.getByText(/Asked Claude directly/)).toBeInTheDocument()
-    expect(screen.getByText("Live 5m ago")).toBeInTheDocument()
+    expect(screen.getByText("Signed in · 0 limits tracked 5m ago")).toBeInTheDocument()
+    expect(screen.queryByText(/Asked Claude directly/)).not.toBeInTheDocument()
+  })
+
+  it("counts only the limits the reader can see", async () => {
+    // Codex on a Pro plan: one weekly primary window plus supplemental
+    // per-feature windows the HUD hides until they show usage. The count
+    // must match the bars, not the payload.
+    const window = (overrides: Partial<LiveUsageWindowPayload>): LiveUsageWindowPayload => ({
+      id: "weekly",
+      role: "primaryLong",
+      kind: "weekly",
+      scopeModel: null,
+      usedPercent: 17,
+      startsAt: null,
+      resetsAt: "2027-01-15T14:30:00Z",
+      hasNonzeroUsageInCurrentPeriod: true,
+      forecast: {
+        unavailableReason: "sparseHistory",
+        confidence: null,
+        consumptionRate: null,
+        paceRatio: null,
+        paceTrend: null,
+        runwayAt: null,
+        usedToday: null,
+      },
+      ...overrides,
+    })
+    getLiveUsage.mockResolvedValue(
+      summary({
+        providers: [
+          {
+            provider: "openai",
+            accountKey: null,
+            displayName: "Codex",
+            support: "live",
+            freshness: "fresh",
+            sourceLabel: "Asked Codex directly",
+            observedAt: new Date(Date.now() - 21_000).toISOString(),
+            windows: [
+              window({}),
+              window({
+                id: "weekly-code-review",
+                role: "supplemental",
+                scopeModel: "code-review",
+                usedPercent: 0,
+                hasNonzeroUsageInCurrentPeriod: false,
+              }),
+              window({
+                id: "weekly-something",
+                role: "supplemental",
+                scopeModel: "something",
+                usedPercent: 0,
+                hasNonzeroUsageInCurrentPeriod: false,
+              }),
+            ],
+            extraUsage: null,
+            resetCredits: null,
+            plan: null,
+            accountUuid: null,
+            accountEmail: null,
+          },
+        ],
+      }),
+    )
+    pane()
+    await waitFor(() => expect(screen.getByText("Codex")).toBeInTheDocument())
+    expect(screen.getByText("Signed in · 1 limit tracked 21s ago")).toBeInTheDocument()
   })
 
   it("lists every provider it can meter, with nothing to report yet", async () => {
@@ -290,37 +522,54 @@ describe("UsagePane — the grace period", () => {
     refreshLiveUsage.mockResolvedValue(summary())
   })
 
-  it("replaces the failure note with a grace note while the reading is within its window", async () => {
-    // 4 minutes before `GENERATED_AT`.
-    getLiveUsage.mockResolvedValue(withGracedReading("2027-01-15T11:56:00Z"))
-    pane()
-    await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
-    expect(
-      screen.getByText(
-        "Asked Claude directly. 0 limits reported. Claude rate limited the last check; reading from 4 min ago.",
-      ),
-    ).toBeInTheDocument()
-    expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()
+  it("keeps the last reading beside a failed check, however old", async () => {
+    // A rate limit is a provider answering: the sign-in worked. The row keeps
+    // the figure from the earlier check, that check's own time, and the reason.
+    for (const observedAt of ["2027-01-15T11:56:00Z", "2027-01-15T11:49:00Z"]) {
+      getLiveUsage.mockResolvedValue(withGracedReading(observedAt))
+      const { unmount } = render(
+        <UsagePane
+          settings={{ ...SETTINGS, liveUsageEnabled: true }}
+          update={vi.fn()}
+          loaded
+        />,
+      )
+      await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
+      expect(
+        screen.getByText(/^Signed in · 0 limits tracked .* · rate limited$/),
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()
+      unmount()
+    }
   })
 
-  it("drops the reading and falls back to the plain failure note once past the grace", async () => {
-    // 11 minutes before `GENERATED_AT`.
-    getLiveUsage.mockResolvedValue(withGracedReading("2027-01-15T11:49:00Z"))
-    pane()
-    await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
-    expect(
-      screen.getByText(/rate limited usage checks\. Wait, then retry\./),
-    ).toBeInTheDocument()
-    expect(screen.queryByText(/Asked Claude directly/)).not.toBeInTheDocument()
+  it("says signed in for a rate limit with no reading yet", async () => {
+    getLiveUsage.mockResolvedValue(
+      summary({
+        generatedAt: GENERATED_AT,
+        providers: [],
+        errors: [
+          {
+            source: "claude-usage-fetch",
+            provider: "anthropic",
+            displayName: "Claude",
+            category: "rateLimited",
+          },
+        ],
+        meters: [{ provider: "anthropic", displayName: "Claude", shown: true }],
+      }),
+    )
+    pane({ liveUsageEnabled: true })
+    await waitFor(() => expect(screen.getByText("Claude")).toBeInTheDocument())
+    expect(screen.getByText("Signed in · rate limited · retrying")).toBeInTheDocument()
   })
 
-  it("reads exactly the grace boundary as still shown", async () => {
+  it("keeps the reading at the grace boundary too", async () => {
     // Exactly 10 minutes before `GENERATED_AT` — LIVE_USAGE_GRACE_MS itself.
     getLiveUsage.mockResolvedValue(withGracedReading("2027-01-15T11:50:00Z"))
     pane()
     await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
-    expect(screen.getByText(/Asked Claude directly/)).toBeInTheDocument()
-    expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()
+    expect(screen.getByText(/^Signed in · 0 limits tracked/)).toBeInTheDocument()
   })
 })
 

@@ -7,6 +7,7 @@ import {
   defaultScanRoots,
   finishOnboarding,
   getFolderPermissions,
+  getLiveUsage,
   getScanStatus,
   getSettings,
   listRepositories,
@@ -19,6 +20,7 @@ import {
   scanNow,
   setRepositoryEnabled,
   type Interaction,
+  type LiveUsageMeterPayload,
   type RepositoryItemPayload,
   type ScanStatus,
 } from "../../lib/ipc"
@@ -59,6 +61,7 @@ export type OnboardingSnapshot = {
   permissions: FolderPermissions
   repositories: LocalRepositoryItem[]
   scanStatus: ScanStatus | null
+  liveUsageMeters: LiveUsageMeterPayload[] | null
   /**
    * Draft of the disabled-agent set, persisted by `finish`. Seeded once from
    * scan results: agents with sessions start on, the rest start off.
@@ -126,6 +129,7 @@ export class OnboardingSession {
       permissions: EMPTY_PERMISSIONS,
       repositories: [],
       scanStatus: null,
+      liveUsageMeters: null,
       disabledAgents: [],
       nudgesRespectDnd: false,
       hygieneSummary: null,
@@ -313,6 +317,7 @@ export class OnboardingSession {
       applyTheme(settings.theme)
       this.update({
         loadState: "ready",
+        liveUsageMeters: null,
         loadError: null,
         activityWindowDays: settings.activityWindowDays,
         launchAtLogin: settings.launchAtLogin,
@@ -326,6 +331,13 @@ export class OnboardingSession {
       })
       if (scanVersion === this.scanEventVersion && scanStatus) this.applyScanStatus(scanStatus)
       this.noteOnboardingStep("welcome")
+      // Detection must not delay onboarding or change its load state on failure.
+      void getLiveUsage(-new Date().getTimezoneOffset())
+        .then(({ meters }) => {
+          if (generation !== this.generation) return
+          this.update({ liveUsageMeters: meters })
+        })
+        .catch(() => undefined)
     } catch (error) {
       if (generation !== this.generation) return
       this.update({

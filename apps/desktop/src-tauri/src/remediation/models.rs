@@ -20,6 +20,10 @@ pub struct BurnCheckTarget {
     pub finding: FindingDisplay,
     pub display: BurnCheckDisplayFacts,
     pub occurrences: usize,
+    pub affected_sessions: usize,
+    pub project_name: Option<String>,
+    pub project_location: Option<String>,
+    pub project_path: Option<String>,
     pub auto_fix: AutoFixAvailability,
     pub prompt_fix: PromptFixAvailability,
     pub watch: Option<WatchStatus>,
@@ -239,6 +243,7 @@ pub enum SavingsUnknownReason {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BurnCheckTargetList {
     pub targets: Vec<BurnCheckTarget>,
+    pub sample_sessions: Vec<BurnCheckSampleSession>,
     pub truncated: bool,
 }
 
@@ -266,8 +271,10 @@ pub struct AutoFixReview {
     pub scope: BurnCheckScopeKind,
     pub setting: AutoFixSetting,
     pub config_file: String,
+    pub selector_label: String,
     pub current_value: String,
     pub proposed_value: String,
+    pub behavior_override_warning: bool,
     pub effect: AutoFixEffect,
     pub side_effect: AutoFixSideEffect,
 }
@@ -276,18 +283,36 @@ pub struct AutoFixReview {
 pub enum AutoFixSetting {
     Model,
     Reasoning,
+    Compaction,
+    SubagentModel,
+    McpServer,
+    BuiltInTool,
+    Skill,
+    FastMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoFixEffect {
-    FutureModelSelection,
-    FutureReasoningEffort,
+    ModelSelection,
+    ReasoningEffort,
+    SessionCompaction,
+    WorkerModelSelection,
+    McpAvailability,
+    ToolAvailability,
+    SkillAvailability,
+    ServiceTierSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoFixSideEffect {
     ModelBehaviorMayChange,
     ResponsesMayUseLessReasoning,
+    EarlierSessionSummarization,
+    WorkerBehaviorMayChange,
+    ServerWillNotBeAvailable,
+    ToolWillNotBeAvailable,
+    SkillWillNotBeAvailable,
+    ResponsesMayTakeLonger,
 }
 
 #[derive(Debug, Clone, PartialEq)]

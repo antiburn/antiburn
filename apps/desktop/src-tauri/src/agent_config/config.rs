@@ -22,6 +22,117 @@ pub enum ConfigScope {
 pub enum ConfigSetting {
     Model,
     Reasoning,
+    Compaction,
+    SubagentModel,
+    McpServer,
+    BuiltInTool,
+    Skill,
+    FastMode,
+}
+
+/// A value used by one exact persisted configuration operation.
+///
+/// New remediation controls must use this type instead of encoding a structured
+/// change in a string value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigOperationValue {
+    Scalar(String),
+    Boolean(bool),
+    Number(u64),
+    List(Vec<String>),
+    MapEntry { key: String, value: String },
+    Delete,
+}
+
+impl ConfigOperationValue {
+    pub fn key(&self) -> Option<&str> {
+        match self {
+            Self::MapEntry { key, .. } => Some(key),
+            Self::Scalar(_) | Self::Boolean(_) | Self::Number(_) | Self::List(_) | Self::Delete => {
+                None
+            }
+        }
+    }
+
+    pub fn scalar(&self) -> Option<&str> {
+        match self {
+            Self::Scalar(value) => Some(value),
+            Self::Boolean(_)
+            | Self::Number(_)
+            | Self::List(_)
+            | Self::MapEntry { .. }
+            | Self::Delete => None,
+        }
+    }
+
+    pub fn display_value(&self) -> String {
+        match self {
+            Self::Scalar(value) => value.clone(),
+            Self::Boolean(value) => value.to_string(),
+            Self::Number(value) => value.to_string(),
+            Self::List(values) => values.join(", "),
+            Self::MapEntry { key, value } => format!("{key}={value}"),
+            Self::Delete => "remove".to_owned(),
+        }
+    }
+}
+
+impl From<String> for ConfigOperationValue {
+    fn from(value: String) -> Self {
+        Self::Scalar(value)
+    }
+}
+
+impl From<&str> for ConfigOperationValue {
+    fn from(value: &str) -> Self {
+        Self::Scalar(value.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_operation_values_do_not_coerce_structured_changes_to_scalars() {
+        let values = [
+            ConfigOperationValue::Scalar("value".into()),
+            ConfigOperationValue::Boolean(false),
+            ConfigOperationValue::Number(1),
+            ConfigOperationValue::List(vec!["one".into()]),
+            ConfigOperationValue::MapEntry {
+                key: "server".into(),
+                value: "off".into(),
+            },
+            ConfigOperationValue::Delete,
+        ];
+        assert_eq!(values[0].scalar(), Some("value"));
+        assert!(values[1..].iter().all(|value| value.scalar().is_none()));
+        assert_eq!(values[1].display_value(), "false");
+    }
+
+    #[test]
+    fn selector_vocabulary_covers_each_supported_file_grammar() {
+        let selectors = [
+            PhysicalSelector::Json(vec!["model".into()]),
+            PhysicalSelector::Jsonc(vec!["model".into()]),
+            PhysicalSelector::Toml(vec!["model".into()]),
+            PhysicalSelector::MarkdownFrontmatter(vec!["model".into()]),
+        ];
+        assert_eq!(selectors.len(), 4);
+    }
+}
+
+/// The supported physical selector grammars.
+///
+/// A selector identifies one persisted control. It does not identify an agent
+/// setting by its display name alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhysicalSelector {
+    Json(Vec<String>),
+    Jsonc(Vec<String>),
+    Toml(Vec<String>),
+    MarkdownFrontmatter(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,16 +190,16 @@ pub struct ConfigChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigOperation {
     pub setting: ConfigSetting,
-    pub expected_value: String,
-    pub proposed_value: String,
+    pub expected_value: ConfigOperationValue,
+    pub proposed_value: ConfigOperationValue,
 }
 
 impl ConfigOperation {
     pub fn model(change: &ConfigChange) -> Self {
         Self {
             setting: ConfigSetting::Model,
-            expected_value: change.expected_value.clone(),
-            proposed_value: change.proposed_value.clone(),
+            expected_value: change.expected_value.clone().into(),
+            proposed_value: change.proposed_value.clone().into(),
         }
     }
 }
@@ -100,6 +211,8 @@ pub struct PreparedChange {
     pub(super) selector: &'static str,
     #[cfg(not(windows))]
     pub(super) operation: OperationSelector,
+    #[cfg(not(windows))]
+    pub(super) expected_value: String,
     pub(super) path: PathBuf,
     pub(super) scope: ConfigScope,
     #[cfg(not(windows))]
@@ -120,6 +233,106 @@ pub struct PreparedChange {
     pub(super) permissions: fs::Permissions,
     #[cfg(unix)]
     pub(super) ownership: FileOwnership,
+}
+
+/// A reviewed group of file changes for one supported setting.
+pub struct PreparedOperation {
+    pub(super) changes: Vec<PreparedChange>,
+    #[cfg(not(windows))]
+    pub(super) creations: Vec<PreparedCreation>,
+    pub(super) warning: bool,
+}
+
+#[cfg(not(windows))]
+pub(super) struct PreparedCreation {
+    pub(super) setting: ConfigSetting,
+    pub(super) selector: &'static str,
+    pub(super) scope: ConfigScope,
+    pub(super) path: PathBuf,
+    pub(super) safety_root: PathBuf,
+    pub(super) bytes: Vec<u8>,
+}
+
+impl fmt::Debug for PreparedOperation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("PreparedOperation");
+        debug.field("changes", &self.changes.len());
+        #[cfg(not(windows))]
+        debug.field("creations", &self.creations.len());
+        debug.field("warning", &self.warning).finish()
+    }
+}
+
+impl PreparedOperation {
+    #[cfg(all(test, not(windows)))]
+    pub(crate) fn primary(&self) -> &PreparedChange {
+        // Existing-file operations keep the first change as their primary target.
+        &self.changes[0]
+    }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.changes
+            .iter()
+            .map(PreparedChange::retained_bytes)
+            .sum::<usize>()
+            + {
+                #[cfg(not(windows))]
+                {
+                    self.creations
+                        .iter()
+                        .map(|change| change.bytes.len())
+                        .sum::<usize>()
+                }
+                #[cfg(windows)]
+                {
+                    0
+                }
+            }
+    }
+
+    pub(crate) const fn behavior_override_warning(&self) -> bool {
+        self.warning
+    }
+
+    pub(crate) fn physical_identity(&self) -> (&Path, &'static str) {
+        if let Some(change) = self.changes.first() {
+            return change.physical_identity();
+        }
+        #[cfg(not(windows))]
+        {
+            let creation = &self.creations[0];
+            (&creation.path, creation.selector)
+        }
+        #[cfg(windows)]
+        unreachable!("a Windows operation always has a file change")
+    }
+
+    pub(crate) fn scope(&self) -> ConfigScope {
+        if let Some(change) = self.changes.first() {
+            return change.scope();
+        }
+        #[cfg(not(windows))]
+        return self.creations[0].scope;
+        #[cfg(windows)]
+        unreachable!("a Windows operation always has a file change")
+    }
+
+    pub(crate) fn setting(&self) -> ConfigSetting {
+        if let Some(change) = self.changes.first() {
+            return change.setting();
+        }
+        #[cfg(not(windows))]
+        return self.creations[0].setting;
+        #[cfg(windows)]
+        unreachable!("a Windows operation always has a file change")
+    }
+
+    pub(crate) fn creates_file(&self) -> bool {
+        #[cfg(not(windows))]
+        return self.changes.is_empty() && !self.creations.is_empty();
+        #[cfg(windows)]
+        return false;
+    }
 }
 
 impl fmt::Debug for PreparedChange {

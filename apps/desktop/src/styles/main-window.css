@@ -8,6 +8,7 @@
 
      The width carries the 12px inner padding on each side. */
   --main-window-panel-width: clamp(156px, calc(20vw - 44px), 316px);
+  --main-window-collection-width: 340px;
 
   position: relative;
   display: flex;
@@ -15,6 +16,20 @@
   min-block-size: 0;
   overflow: hidden;
   background-color: var(--color-bg-window);
+}
+
+.burn-check-category-icon,
+.burn-check-category-icon-size {
+  inline-size: calc(var(--space-xl) + var(--space-sm));
+  block-size: calc(var(--space-xl) + var(--space-sm));
+}
+
+.burn-check-category-icon {
+  background-color: color-mix(
+    in srgb,
+    currentColor var(--burn-check-category-tint),
+    transparent
+  );
 }
 
 /* Keep the drag region above the sidebar and clear of feature controls. */
@@ -129,7 +144,7 @@
 }
 
 .main-window-collection {
-  flex: 0 0 340px;
+  flex: 0 0 var(--main-window-collection-width);
   border-inline-end: 1px solid var(--color-border);
 }
 
@@ -170,36 +185,4 @@
   position: absolute;
   inset: 0 0 auto;
   block-size: var(--main-window-titlebar-height);
-}
-
-/* Use the brand hover treatment only in Burn Checks. */
-.burn-check-action {
-  background: var(--color-surface-window);
-  border-color: var(--color-separator);
-  color: var(--color-label);
-  transition:
-    background-color var(--duration-fast) ease-out,
-    border-color var(--duration-fast) ease-out,
-    color var(--duration-fast) ease-out,
-    box-shadow var(--duration-fast) ease-out,
-    transform var(--duration-quick) ease-out;
-}
-
-.burn-check-action:enabled:hover {
-  background: var(--color-brand);
-  border-color: var(--color-brand);
-  color: var(--color-selected-ink);
-  box-shadow: var(--shadow-raised);
-}
-
-.burn-check-action:enabled:active {
-  background: color-mix(in srgb, var(--color-brand) 90%, var(--color-label));
-  border-color: var(--color-brand);
-  box-shadow: none;
-}
-
-.burn-check-action:disabled {
-  opacity: 1;
-  transform: none;
-  box-shadow: none;
 }

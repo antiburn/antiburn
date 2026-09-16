@@ -18,6 +18,7 @@ fn input(source: RawSource) -> SessionInput {
         session_id: "synthetic".into(),
         source,
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -30,7 +31,7 @@ fn evidence(input: &SessionInput) -> SessionEvidence {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             kind: SourceKind::from(&input.source),
-            capabilities: reader.capabilities(&input.source),
+            capabilities: reader.capabilities(input),
         }),
         TurnRowSink::new(
             Arc::clone(&store) as Arc<dyn TurnRowStore>,
@@ -168,13 +169,12 @@ fn source_classification_reads_metadata_not_payload_text() {
         ("store_db", SourceFormat::CursorCliStoreDb),
         ("agent_transcript", SourceFormat::CursorCliAgentJsonl),
     ] {
-        let input = input(RawSource::Jsonl(format!(
+        let mut input = input(RawSource::Jsonl(format!(
             "{{\"cursor_source\": \"{marker}\", \"sessionId\":\"synthetic\"}}\n{{\"role\":\"assistant\",\"model\":\"old-model\",\"timestamp\":1000}}"
         )));
+        input.source_format = format;
         assert_eq!(
-            reader_for("cursor")
-                .capabilities(&input.source)
-                .source_format,
+            reader_for("cursor").capabilities(&input).source_format,
             format
         );
         assert!(matches!(
@@ -182,8 +182,9 @@ fn source_classification_reads_metadata_not_payload_text() {
             EvidenceCoverage::Complete
         ));
     }
-    let source =
-        RawSource::Jsonl(r#"{"role":"assistant","content":{"cursor_source":"store_db"}}"#.into());
+    let source = input(RawSource::Jsonl(
+        r#"{"role":"assistant","content":{"cursor_source":"store_db"}}"#.into(),
+    ));
     assert_eq!(
         reader_for("cursor").capabilities(&source).source_format,
         SourceFormat::CursorJsonl

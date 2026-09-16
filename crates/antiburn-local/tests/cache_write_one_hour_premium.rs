@@ -48,6 +48,7 @@ fn input() -> SessionInput {
         session_id: "one-hour-premium".to_string(),
         source: RawSource::Jsonl(FIXTURE.to_string()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 

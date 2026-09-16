@@ -29,9 +29,13 @@ impl VendorRemediationPolicy for PiPolicy {
         if source == SourceFormat::PiV3Jsonl
             && matches!(
                 action,
-                RemediationAction::AutomaticEdit(_)
-                    | RemediationAction::RecoverUncertainWrite(_)
-                    | RemediationAction::PublicationAttribution(_)
+                RemediationAction::AutomaticEdit(
+                    ConfigSetting::Model | ConfigSetting::Reasoning | ConfigSetting::Compaction
+                ) | RemediationAction::RecoverUncertainWrite(
+                    ConfigSetting::Model | ConfigSetting::Reasoning | ConfigSetting::Compaction
+                ) | RemediationAction::PublicationAttribution(
+                    ConfigSetting::Model | ConfigSetting::Reasoning | ConfigSetting::Compaction
+                )
             )
         {
             ActionSupport::Supported
@@ -78,5 +82,23 @@ mod tests {
         for (candidate, trusted, expected) in cases {
             assert_eq!(trusted_workspace(candidate, trusted), expected);
         }
+    }
+
+    #[test]
+    fn skill_exclusions_remain_unsupported_without_path_and_array_precedence() {
+        assert_eq!(
+            POLICY.action_support(
+                RemediationAction::AutomaticEdit(ConfigSetting::Skill),
+                SourceFormat::PiV3Jsonl,
+            ),
+            ActionSupport::Unsupported
+        );
+        assert_eq!(
+            POLICY.action_support(
+                RemediationAction::RecoverUncertainWrite(ConfigSetting::Skill),
+                SourceFormat::PiV3Jsonl,
+            ),
+            ActionSupport::Unsupported
+        );
     }
 }

@@ -83,6 +83,12 @@ pub(super) fn fixed_route_setting_observed(
     let model = match setting {
         ConfigSetting::Model => value,
         ConfigSetting::Reasoning => effective_model.unwrap_or_default(),
+        ConfigSetting::Compaction
+        | ConfigSetting::SubagentModel
+        | ConfigSetting::McpServer
+        | ConfigSetting::BuiltInTool
+        | ConfigSetting::Skill
+        | ConfigSetting::FastMode => return false,
     };
     let Some(route) = fixed_route_target(agent.slug(), model) else {
         return false;
@@ -109,6 +115,12 @@ pub(super) fn routed_setting_observed(
     let route = match setting {
         ConfigSetting::Model => value,
         ConfigSetting::Reasoning => effective_model.unwrap_or_default(),
+        ConfigSetting::Compaction
+        | ConfigSetting::SubagentModel
+        | ConfigSetting::McpServer
+        | ConfigSetting::BuiltInTool
+        | ConfigSetting::Skill
+        | ConfigSetting::FastMode => return false,
     };
     let Some((provider, model)) = route.split_once('/') else {
         return false;
@@ -130,7 +142,7 @@ mod tests {
     use super::*;
     use antiburn_local::analysis::TurnCounts;
 
-    const SOURCE_FORMATS: [SourceFormat; 26] = [
+    const SOURCE_FORMATS: [SourceFormat; 31] = [
         SourceFormat::ClaudeJsonl,
         SourceFormat::CodexRolloutJsonl,
         SourceFormat::OpenCodeJsonl,
@@ -139,6 +151,7 @@ mod tests {
         SourceFormat::CursorJsonl,
         SourceFormat::CursorCliAgentJsonl,
         SourceFormat::CursorCliStoreDb,
+        SourceFormat::CursorChatStoreDb,
         SourceFormat::CursorIdeComposer,
         SourceFormat::CursorLegacyChatJson,
         SourceFormat::AntigravityJson,
@@ -149,8 +162,12 @@ mod tests {
         SourceFormat::CopilotCliJsonl,
         SourceFormat::CopilotIdeChatJson,
         SourceFormat::ClineSessionJson,
+        SourceFormat::ClineMessagesContractV1,
         SourceFormat::KiroSessionJson,
         SourceFormat::KiroChat,
+        SourceFormat::KiroCliV2Bundle,
+        SourceFormat::KiroCliV3Bundle,
+        SourceFormat::KiroChatSaveExport,
         SourceFormat::AmpThreadJson,
         SourceFormat::AmpFileChanges,
         SourceFormat::WindsurfWorkspaceJson,
@@ -164,8 +181,14 @@ mod tests {
         let actions = [
             RemediationAction::AutomaticEdit(ConfigSetting::Model),
             RemediationAction::AutomaticEdit(ConfigSetting::Reasoning),
+            RemediationAction::AutomaticEdit(ConfigSetting::McpServer),
+            RemediationAction::AutomaticEdit(ConfigSetting::BuiltInTool),
+            RemediationAction::AutomaticEdit(ConfigSetting::Skill),
             RemediationAction::RecoverUncertainWrite(ConfigSetting::Model),
             RemediationAction::RecoverUncertainWrite(ConfigSetting::Reasoning),
+            RemediationAction::RecoverUncertainWrite(ConfigSetting::McpServer),
+            RemediationAction::RecoverUncertainWrite(ConfigSetting::BuiltInTool),
+            RemediationAction::RecoverUncertainWrite(ConfigSetting::Skill),
             RemediationAction::PublicationAttribution(ConfigSetting::Model),
             RemediationAction::PublicationAttribution(ConfigSetting::Reasoning),
         ];
@@ -184,7 +207,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(supported.len(), 24);
+        assert_eq!(supported.len(), 42);
     }
 
     #[test]

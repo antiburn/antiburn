@@ -1,5 +1,6 @@
 import {
   Bot,
+  BookOpen,
   Brain,
   Database,
   Gauge,
@@ -53,7 +54,7 @@ export const CHECK_UI: Record<BurnCheckDetectorId, CheckUiMetadata> = {
       "Load only the built-in tools needed for this work to avoid repeated unused definitions.",
   },
   unusedSkills: {
-    icon: Wrench,
+    icon: BookOpen,
     recommendation: "Load this skill only when the request needs it to avoid unused context.",
   },
   oldModelUsage: {

@@ -63,8 +63,8 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
            END AS bucket,
            CASE WHEN s.started_at_epoch IS NOT NULL AND e.status IS NULL
                  THEN 1 ELSE 0 END AS awaiting_provider_support,
-           CASE WHEN e.status IS NULL OR e.status = 'pending' OR e.status = 'processing'
-                THEN 1 ELSE 0 END AS evidence_pending
+            CASE WHEN e.status = 'pending' OR e.status = 'processing'
+                 THEN 1 ELSE 0 END AS evidence_pending
       FROM session s
       LEFT JOIN session_evidence e
         ON e.environment_key = s.environment_key
@@ -2854,7 +2854,7 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn action_origin_watching_watch_blocks_prepare_while_passive_watches_can_upgrade() {
+    fn verifiable_action_watch_blocks_prepare_while_unverifiable_watch_can_upgrade() {
         let data_dir = TempDir::new().unwrap();
         let home = data_dir.path().join("home");
         let case = ReasoningFixture {
@@ -2909,6 +2909,44 @@ mod tests {
             Err(crate::remediation::ControllerError::AutoFixUnavailable(
                 crate::remediation::AutoFixUnavailableReason::ActiveWatch
             ))
+        );
+
+        let watch_id = listed.targets[0].watch.as_ref().unwrap().watch_id.clone();
+        store
+            .lock()
+            .execute(
+                "UPDATE remediation SET result_json = ?2 WHERE remediation_id = ?1",
+                rusqlite::params![
+                    watch_id,
+                    r#"{"version":1,"verification":{"status":"verificationUnavailable"},"savings":{"status":"unavailable"}}"#
+                ],
+            )
+            .unwrap();
+        let listed = controller
+            .list_burn_check_targets_with_home(
+                &store,
+                DetectorId::ModelOverthinking,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+                &home,
+            )
+            .unwrap();
+        assert_eq!(
+            listed.targets[0].auto_fix,
+            crate::remediation::AutoFixAvailability::Available
+        );
+        let review = controller
+            .prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id)
+            .unwrap();
+        controller
+            .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(config_path)
+                .unwrap()
+                .contains("medium")
         );
     }
 
@@ -2970,7 +3008,7 @@ mod tests {
     }
 
     #[test]
-    fn check_level_prompt_is_denied_without_a_failed_check_or_when_a_target_exists() {
+    fn check_level_prompt_requires_a_failed_check_but_allows_current_targets() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
@@ -2988,10 +3026,10 @@ mod tests {
         );
 
         publish_mcp_findings(&store, "current-finding", 120, &["server-a"]);
-        assert_eq!(
-            controller.copy_prompt_fix_burn_check(&store, DetectorId::UnusedMcpServers, context),
-            Err(crate::remediation::ControllerError::CheckPromptUnavailable)
-        );
+        let prompt = controller
+            .copy_prompt_fix_burn_check(&store, DetectorId::UnusedMcpServers, context)
+            .unwrap();
+        assert!(prompt.prompt.contains("Failed check\nUnused MCP servers"));
     }
 
     #[test]

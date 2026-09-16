@@ -15,7 +15,7 @@
 //! timestamps precede the session header. The adapter checks only parent-link
 //! key presence and never reads the private path value.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 
@@ -46,7 +46,7 @@ impl SessionReader for PiSessionReader {
         "pi"
     }
 
-    fn capabilities(&self, _source: &RawSource) -> crate::analysis::SourceCapabilities {
+    fn capabilities(&self, _input: &SessionInput) -> crate::analysis::SourceCapabilities {
         crate::analysis::SourceCapabilities::pi()
     }
 
@@ -81,6 +81,10 @@ impl SessionReader for PiSessionReader {
                 }
                 RawSource::Sqlite(_) => {
                     anyhow::bail!("sqlite source must be handled by the sqlite adapter")
+                }
+                RawSource::ClineBundle { .. } => anyhow::bail!("Cline bundle is not a Pi source"),
+                RawSource::KiroCliV2Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a Pi source")
                 }
             };
             sink.finish(state.finish());
@@ -264,6 +268,7 @@ impl PiSessionReader {
                 FramedRecord::Skipped(skip) => match skip {
                     RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
                         sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
+                        state.reject_admission();
                     }
                     RecordSkip::ReadFailed { index, kind } => {
                         anyhow::bail!("Pi record {index} read failed: {kind:?}");
@@ -277,9 +282,10 @@ impl PiSessionReader {
                         .context("Pi transcript record is not valid UTF-8")?;
                     let Ok(value) = serde_json::from_str::<Value>(record) else {
                         sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+                        state.reject_admission();
                         continue;
                     };
-                    state.observe(value, sink);
+                    state.observe_admitted(value, sink);
                 }
             }
         }
@@ -308,6 +314,8 @@ struct PiSubagentCall {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct PiStreamState {
+    admission: PiAdmission,
+    admission_checked: bool,
     model: Option<String>,
     current_model: Option<String>,
     current_provider: Option<String>,
@@ -324,16 +332,61 @@ struct PiStreamState {
     /// `thinking_level_change`, `compaction`, …) alike — a message whose
     /// `parentId` names a `model_change` row still joins that row's thread.
     threads: ThreadResolver,
+    /// Pi's persisted V3 entries form a tree, but the file has no durable leaf
+    /// pointer. A second child would make the selected branch ambiguous.
+    branch_parents: HashSet<String>,
+    branched_tree: bool,
     policy_by_id: HashMap<String, PiPolicy>,
     subagent_calls: HashMap<String, PiSubagentCall>,
     subagent_incomplete: bool,
 }
 
+#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
+enum PiAdmission {
+    #[default]
+    AwaitingHeader,
+    Accepted,
+    Rejected,
+}
+
 impl PiStreamState {
+    fn reject_admission(&mut self) {
+        if matches!(self.admission, PiAdmission::AwaitingHeader) {
+            self.admission = PiAdmission::Rejected;
+        }
+    }
+
+    fn observe_admitted(&mut self, value: Value, sink: &mut dyn RecordSink) {
+        self.admission_checked = true;
+        match self.admission {
+            PiAdmission::Accepted => self.observe(value, sink),
+            PiAdmission::Rejected => {}
+            PiAdmission::AwaitingHeader => {
+                let Some(reason) = pi_header_rejection(&value) else {
+                    self.admission = PiAdmission::Accepted;
+                    self.observe_session_header(&value);
+                    return;
+                };
+                self.admission = PiAdmission::Rejected;
+                sink.record(NormalizedRecord::Unusable(reason));
+            }
+        }
+    }
+
     fn observe(&mut self, value: Value, sink: &mut dyn RecordSink) {
         let id = thread_identity_field(&value, "id");
         let parent_id = thread_identity_field(&value, "parentId");
+        if id.as_deref().is_some_and(|id| self.threads.contains(id)) {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            return;
+        }
         let thread_id = self.threads.resolve(id.as_deref(), parent_id.as_deref());
+        if id.is_some()
+            && let Some(parent_id) = parent_id.as_deref()
+            && !self.branch_parents.insert(parent_id.to_owned())
+        {
+            self.branched_tree = true;
+        }
         // Rows without lineage fields retain the existing headerless input behavior.
         if id.is_some() || value.get("parentId").is_some() {
             let policy = parent_id
@@ -414,7 +467,9 @@ impl PiStreamState {
             )));
         }
         match row_type {
-            Some("session") if is_inert_shape(value) => self.observe_session(value, sink),
+            Some("session") => {
+                sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            }
             Some("message") => self.observe_message(value, thread_id, sink),
             Some("model_change") => self.observe_model_change(value, sink, false),
             Some("thinking_level_change") => self.observe_thinking_level_change(value, sink, false),
@@ -428,7 +483,7 @@ impl PiStreamState {
         }
     }
 
-    fn observe_session(&mut self, value: &Value, sink: &mut dyn RecordSink) {
+    fn observe_session_header(&mut self, value: &Value) {
         let has_parent = value
             .as_object()
             .is_some_and(|header| header.contains_key("parentSession"));
@@ -438,17 +493,10 @@ impl PiStreamState {
             self.fork_attribution_incomplete = self.fork_start_ms.is_none();
         }
 
-        let supported = value
-            .get("version")
-            .is_some_and(|version| version.as_u64() == Some(3) || version.as_str() == Some("3"));
-        if !supported {
-            unrecognized("session", sink);
-            return;
-        }
-        let Some(timestamp) = value.get("timestamp").and_then(parse_ts) else {
-            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
-            return;
-        };
+        let timestamp = value
+            .get("timestamp")
+            .and_then(parse_ts)
+            .expect("admitted Pi header has a timestamp");
         if self.started_at_ms.is_none() {
             self.started_at_ms = Some(timestamp);
         }
@@ -892,6 +940,9 @@ impl PiStreamState {
             .then_some(PartialReason::AttributionIncomplete)
             .into_iter()
             .collect();
+        if self.admission_checked && matches!(self.admission, PiAdmission::AwaitingHeader) {
+            coverage_gaps.push(PartialReason::MalformedRecord);
+        }
         // A capped thread resolver means some records past the cap could not
         // be linked into their real thread: the same kind of attribution
         // loss the cache group's unresolved-parent-link check reports. See
@@ -899,9 +950,14 @@ impl PiStreamState {
         if self.threads.capped() {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
+        if self.branched_tree {
+            coverage_gaps.push(PartialReason::AttributionIncomplete);
+        }
         if self.subagent_incomplete || self.subagent_calls.values().any(|call| !call.resolved) {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
+        coverage_gaps.sort_unstable();
+        coverage_gaps.dedup();
         SessionSummary {
             cache_write_tokens_available: self.cache_write_tokens_available.unwrap_or(true),
             context_window: None,
@@ -915,6 +971,22 @@ impl PiStreamState {
             skill_descriptions: HashMap::new(),
         }
     }
+}
+
+fn pi_header_rejection(value: &Value) -> Option<PartialReason> {
+    if value.get("type").and_then(Value::as_str) != Some("session") {
+        return Some(PartialReason::UnrecognizedRecordType);
+    }
+    let version = value.get("version");
+    if !version.is_some_and(|version| version.as_u64() == Some(3) || version.as_str() == Some("3"))
+    {
+        return Some(PartialReason::UnrecognizedRecordType);
+    }
+    value
+        .get("timestamp")
+        .and_then(parse_ts)
+        .is_none()
+        .then_some(PartialReason::MalformedRecord)
 }
 
 fn pi_subagent_id<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -1089,6 +1161,8 @@ mod tests {
     use tempfile::TempDir;
 
     const FIRST_RECORD: &str = concat!(
+        r#"{"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z"}"#,
+        "\n",
         r#"{"type":"message","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}"#,
         "\n",
     );
@@ -1103,6 +1177,7 @@ mod tests {
             session_id: "claimed-session".to_string(),
             source: RawSource::File(path.to_path_buf()),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         }
     }
 
@@ -1761,8 +1836,11 @@ mod tests {
         let input = SessionInput {
             agent: "pi".to_owned(),
             session_id: "providers".to_owned(),
-            source: RawSource::Jsonl(content.to_owned()),
+            source: RawSource::Jsonl(format!(
+                "{{\"type\":\"session\",\"version\":3,\"timestamp\":0}}\n{content}"
+            )),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = SummarySink::default();
 
@@ -1799,8 +1877,11 @@ mod tests {
         let input = SessionInput {
             agent: "pi".to_owned(),
             session_id: "bounded-providers".to_owned(),
-            source: RawSource::Jsonl(content),
+            source: RawSource::Jsonl(format!(
+                "{{\"type\":\"session\",\"version\":3,\"timestamp\":0}}\n{content}"
+            )),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = SummarySink::default();
 
@@ -1923,8 +2004,11 @@ mod tests {
         let input = SessionInput {
             agent: "pi".to_string(),
             session_id: "content-session".to_string(),
-            source: RawSource::Jsonl(format!("{assistant_record}\n{tool_result_record}\n")),
+            source: RawSource::Jsonl(format!(
+                "{{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{assistant_record}\n{tool_result_record}\n"
+            )),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         };
         let mut sink = ContentCapturingSink::default();
 

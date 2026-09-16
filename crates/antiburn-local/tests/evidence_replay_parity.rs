@@ -1,7 +1,6 @@
 //! Parity check between the live pipeline's `SessionEvidence` and the same
 //! evidence rebuilt from a `SessionCoverageRecord` read back through a
-//! store. Modelled on `turn_row_replay_parity.rs`. See phase 2, "evidence
-//! from rows", in `docs/plans/continuous-session-ingest.md`.
+//! store. Modelled on `turn_row_replay_parity.rs`.
 //!
 //! For every vendor characterization fixture `turn_facts_parity.rs` sweeps,
 //! this streams the fixture once through a `CompositeSink` (metrics +
@@ -285,6 +284,7 @@ fn run_fixture(
         session_id: fixture.to_owned(),
         source: RawSource::Jsonl(jsonl.to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     run_fixture_and_replay(agent, fixture, &input, capabilities)
 }
@@ -685,6 +685,7 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 

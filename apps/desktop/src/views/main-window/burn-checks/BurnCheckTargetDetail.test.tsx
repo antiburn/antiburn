@@ -1,8 +1,15 @@
-import { render, screen } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { act, fireEvent, render, screen } from "@testing-library/react"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BurnCheckTargetPayload } from "../../../lib/insightsIpc"
 import { BurnCheckTargetDetail, targetCostLine } from "./BurnCheckTargetDetail"
+import { scopeLabel } from "./BurnCheckTargetPresentation"
+import { performProjectFolderAction } from "../../../lib/projectFolder"
+
+vi.mock("../../../lib/projectFolder", () => ({
+  performProjectFolderAction: vi.fn().mockResolvedValue(undefined),
+}))
+beforeEach(() => vi.mocked(performProjectFolderAction).mockClear())
 
 function target(overrides: Partial<BurnCheckTargetPayload> = {}): BurnCheckTargetPayload {
   return {
@@ -43,10 +50,12 @@ function target(overrides: Partial<BurnCheckTargetPayload> = {}): BurnCheckTarge
 }
 
 describe("target cost line", () => {
-  it("renders the dollar line only when the estimate priced to a dollar unit", () => {
+  it("uses the distinct affected-session count instead of the occurrence count", () => {
     expect(
       targetCostLine(
         target({
+          affectedSessionCount: 1,
+          occurrenceCount: 4,
           display: {
             ...target().display,
             estimatedOpportunity: { value: 8.2, unit: "apiEquivalentUsd" },
@@ -54,15 +63,14 @@ describe("target cost line", () => {
         }),
       ),
     ).toBe(
-      "~$8.20 in cache reads of this unused definition across 2 sessions, sub-agent requests included.",
+      "~$8.20 in cache reads of this unused definition across 1 session, sub-agent requests included.",
     )
   })
 
-  it("uses the singular session word for one occurrence", () => {
+  it("falls back to occurrence wording when the affected-session count is unavailable", () => {
     expect(
       targetCostLine(
         target({
-          occurrenceCount: 1,
           display: {
             ...target().display,
             estimatedOpportunity: { value: 1, unit: "apiEquivalentUsd" },
@@ -70,7 +78,7 @@ describe("target cost line", () => {
         }),
       ),
     ).toBe(
-      "~$1.00 in cache reads of this unused definition across 1 session, sub-agent requests included.",
+      "~$1.00 in cache reads of this unused definition across 2 occurrences, sub-agent requests included.",
     )
   })
 
@@ -108,8 +116,80 @@ describe("BurnCheckTargetDetail", () => {
     expect(screen.getByText(/~\$8\.20 in cache reads/)).toBeInTheDocument()
   })
 
-  it("hides the cost line when the estimate is unavailable", () => {
-    render(<BurnCheckTargetDetail target={target()} refresh={() => undefined} />)
-    expect(screen.queryByText(/in cache reads/)).not.toBeInTheDocument()
+  it("offers full-path folder actions and distinguishes samples from affected sessions", async () => {
+    render(
+      <BurnCheckTargetDetail
+        reportRow
+        refresh={() => undefined}
+        target={target({
+          projectName: "example-project",
+          projectLocation: "…/worktrees/example-project",
+          projectPath: "/tmp/worktrees/example-project",
+          affectedSessionCount: 7,
+          display: { ...target().display, scopeKind: "project" },
+          samples: [
+            {
+              navigationHandle: "sample-one",
+              title: "Example session",
+              agent: "claude-code",
+              surface: "cli",
+              observedAtMs: 1,
+              repo: "demo",
+              timestamp: "2026-09-14T12:00:00Z",
+              isActive: false,
+              hasForkParent: false,
+              forkChildCount: 0,
+              cost: null,
+              models: [],
+              modelRuns: [],
+              hygiene: { evidenceState: "pending", badges: [] },
+            },
+          ],
+        })}
+      />,
+    )
+    expect(screen.getByText("· example-project")).toBeInTheDocument()
+    expect(screen.queryByText("…/worktrees/example-project")).not.toBeInTheDocument()
+    act(() => screen.getByRole("button", { name: "Project folder" }).focus())
+    expect(document.querySelector(".project-folder-path")).toHaveTextContent(
+      "/tmp/worktrees/example-project",
+    )
+    expect(screen.getByRole("dialog").parentElement).toBe(document.body)
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy path" })))
+    expect(performProjectFolderAction).toHaveBeenCalledWith(
+      "/tmp/worktrees/example-project",
+      "copy",
+    )
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Open in/ })))
+    expect(performProjectFolderAction).toHaveBeenCalledWith(
+      "/tmp/worktrees/example-project",
+      "open",
+    )
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Failed sessions/ })).toBeNull()
+    expect(screen.getByRole("button", { name: /Example session/ })).toBeVisible()
+  })
+
+  it("does not use a shortened display location as an actionable path", () => {
+    render(
+      <BurnCheckTargetDetail
+        reportRow
+        refresh={() => undefined}
+        target={target({ projectLocation: "…/worktrees/example-project" })}
+      />,
+    )
+    expect(screen.queryByRole("button", { name: "Project folder" })).toBeNull()
+  })
+})
+
+describe("scopeLabel", () => {
+  it.each([
+    ["global", "Global configuration"],
+    ["project", "Project configuration"],
+    ["session", "Session scope"],
+    ["worker", "Worker scope"],
+  ] as const)("formats %s scope", (scope, label) => {
+    expect(scopeLabel(scope)).toBe(label)
   })
 })

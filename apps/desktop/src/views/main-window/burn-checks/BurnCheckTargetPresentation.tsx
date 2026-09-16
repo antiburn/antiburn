@@ -1,5 +1,5 @@
 import { ChevronDown } from "lucide-react"
-import { useId, useState } from "react"
+import { useRef, useState } from "react"
 
 import { cn } from "../../../lib/cn"
 import {
@@ -8,7 +8,11 @@ import {
   type BurnCheckTargetPayload,
 } from "../../../lib/insightsIpc"
 import { CHECK_LABELS } from "../../../lib/presentation/checks"
-import { SessionSampleRow } from "../../../components/session/SessionSampleRow"
+import { ScrollPane } from "../../../components/ui/ScrollPane"
+import { SessionRow } from "../../../components/session/SessionList"
+import { toActivityEntry } from "../../../lib/activityEntries"
+import { renderAgentIcon } from "../../../lib/agentIcon"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
 
 export function DisclosureChevron({ open }: { open: boolean }) {
   return (
@@ -16,7 +20,7 @@ export function DisclosureChevron({ open }: { open: boolean }) {
       size={14}
       strokeWidth={2}
       className={cn(
-        "text-label-tertiary transition-transform duration-[var(--duration-fast)]",
+        "text-label-tertiary transition-transform duration-[var(--duration-fast)] ease-out-quart",
         open && "rotate-180",
       )}
       aria-hidden="true"
@@ -25,7 +29,16 @@ export function DisclosureChevron({ open }: { open: boolean }) {
 }
 
 export function scopeLabel(scope: BurnCheckTargetPayload["display"]["scopeKind"]): string {
-  return `${scope.charAt(0).toUpperCase()}${scope.slice(1)} scope`
+  switch (scope) {
+    case "global":
+      return "Global configuration"
+    case "project":
+      return "Project configuration"
+    case "session":
+      return "Session scope"
+    case "worker":
+      return "Worker scope"
+  }
 }
 
 export function targetTitle(target: BurnCheckTargetPayload): string {
@@ -78,55 +91,103 @@ export function ActionLimit({ target }: { target: BurnCheckTargetPayload }) {
   return <p className="mt-2 type-callout text-label-tertiary">{reason}</p>
 }
 
-export function SampleSessions({ samples }: { samples: BurnCheckSamplePayload[] }) {
-  const [open, setOpen] = useState(false)
+function sizeSessionList(viewport: HTMLDivElement | null) {
+  const list = viewport?.querySelector("[data-failed-session-cards]")
+  if (!viewport || !list) return
+  const measure = () => {
+    const first = list.children.item(0)
+    const fifth = list.children.item(4)
+    if (!first || !fifth) return
+    const height = fifth.getBoundingClientRect().bottom - first.getBoundingClientRect().top
+    if (height > 0) viewport.style.maxHeight = `${height}px`
+  }
+  measure()
+  const observer = new ResizeObserver(measure)
+  observer.observe(list)
+  for (const card of Array.from(list.children).slice(0, 5)) observer.observe(card)
+  return () => {
+    observer.disconnect()
+    viewport.style.removeProperty("max-height")
+  }
+}
+
+export function FailedSessions({
+  samples,
+  total,
+}: {
+  samples: BurnCheckSamplePayload[]
+  total?: number
+}) {
   const [status, setStatus] = useState<string | null>(null)
   const [busyHandle, setBusyHandle] = useState<string | null>(null)
-  const id = useId()
-  const displayedSamples = samples.slice(0, 3)
-  if (displayedSamples.length === 0) return null
+  const opening = useRef(false)
+  const scrollable = samples.length > 5
+  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
+  if (total === 0) return null
+  const cards = (
+    <div data-failed-session-cards className="flex flex-col gap-2">
+      {samples.length === 0 && (
+        <p className="type-callout text-label-secondary">
+          No failed sessions are available to open.
+        </p>
+      )}
+      {samples.map((sample) => (
+        <SessionRow
+          key={sample.navigationHandle}
+          entry={toActivityEntry(sample)}
+          hygiene={sample.hygiene}
+          snoozedDetectors={snoozedDetectors}
+          renderAgentIcon={renderAgentIcon}
+          showAgentLabel
+          busy={busyHandle !== null}
+          onOpen={async () => {
+            if (opening.current) return
+            opening.current = true
+            setBusyHandle(sample.navigationHandle)
+            setStatus(null)
+            try {
+              const result = await openBurnCheckSample(sample.navigationHandle)
+              if (result?.outcome === "opened") return
+              setStatus(
+                result?.outcome === "deleted"
+                  ? "This session was deleted."
+                  : result?.outcome === "expired"
+                    ? "This session is no longer available."
+                    : "This session is unavailable.",
+              )
+            } catch {
+              setStatus("Could not open this session. Try again.")
+            } finally {
+              opening.current = false
+              setBusyHandle(null)
+            }
+          }}
+        />
+      ))}
+    </div>
+  )
   return (
-    <div className="mt-3">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen((value) => !value)}
-        className="-mx-2 inline-flex items-center gap-1.5 rounded-control px-2 py-1 text-left type-callout font-semibold! text-label-secondary transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 hover:text-label active:transform-none active:opacity-100"
+    <div className="burn-check-samples">
+      <div
+        role={scrollable ? undefined : "region"}
+        aria-label={scrollable ? undefined : "Failed sessions"}
+        className="mt-1"
       >
-        {displayedSamples.length} Sample sessions
-      </button>
-      <div id={id} hidden={!open} className="mt-1 space-y-1">
-        {displayedSamples.map((sample) => (
-          <SessionSampleRow
-            key={sample.navigationHandle}
-            title={sample.title}
-            agent={sample.agent}
-            surface={sample.surface}
-            observedAtMs={sample.observedAtMs}
-            busy={busyHandle !== null}
-            onOpen={async () => {
-              if (busyHandle) return
-              setBusyHandle(sample.navigationHandle)
-              setStatus(null)
-              try {
-                const result = await openBurnCheckSample(sample.navigationHandle)
-                if (result?.outcome === "opened") return
-                setStatus(
-                  result?.outcome === "deleted"
-                    ? "This sample session was deleted."
-                    : result?.outcome === "expired"
-                      ? "This sample session is no longer available."
-                      : "This sample session is unavailable.",
-                )
-              } catch {
-                setStatus("Could not open this sample session. Try again.")
-              } finally {
-                setBusyHandle(null)
-              }
-            }}
-          />
-        ))}
+        {scrollable ? (
+          <ScrollPane
+            topEdgeFade
+            bottomEdgeFade
+            className="flex-none"
+            viewportRef={sizeSessionList}
+            viewportTabIndex={0}
+            viewportLabel="Failed sessions"
+            viewportClassName="pr-3 overscroll-y-contain"
+          >
+            {cards}
+          </ScrollPane>
+        ) : (
+          cards
+        )}
       </div>
       {status && (
         <p role="status" className="mt-2 type-callout text-label-secondary">

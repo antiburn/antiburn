@@ -46,13 +46,13 @@ pub struct InsightsController {
 
 #[derive(Default)]
 struct Consumers {
-    settings_active: bool,
     checks: Option<String>,
 }
 
 impl InsightsController {
     /// True while a report reduction runs.
-    pub fn is_calculating(&self) -> bool {
+    #[cfg(test)]
+    fn is_calculating(&self) -> bool {
         self.lock_slot().as_ref().is_some_and(|run| !run.finished())
     }
 
@@ -68,12 +68,6 @@ impl InsightsController {
         }
     }
 
-    pub fn release_settings(&self) {
-        let mut consumers = self.lock_consumers();
-        consumers.settings_active = false;
-        self.cancel_if_unused(&consumers);
-    }
-
     pub fn release_checks(&self, consumer_id: &str) {
         let mut consumers = self.lock_consumers();
         if consumers.checks.as_deref() == Some(consumer_id) {
@@ -83,7 +77,7 @@ impl InsightsController {
     }
 
     fn cancel_if_unused(&self, consumers: &Consumers) {
-        if !consumers.settings_active && consumers.checks.is_none() {
+        if consumers.checks.is_none() {
             self.cancel();
         }
     }
@@ -94,7 +88,7 @@ impl InsightsController {
     }
 
     /// Resolves one report, sharing the running reduction when one runs.
-    pub async fn report(
+    async fn report(
         &self,
         data_dir: PathBuf,
         request: ReportRequest,
@@ -103,15 +97,6 @@ impl InsightsController {
             reduce_report(data_dir, request, cancel)
         })
         .await
-    }
-
-    pub async fn settings_report(
-        &self,
-        data_dir: PathBuf,
-        request: ReportRequest,
-    ) -> Result<ReducedReport, String> {
-        self.lock_consumers().settings_active = true;
-        self.report(data_dir, request).await
     }
 
     pub async fn checks_report(
@@ -381,12 +366,9 @@ mod tests {
     }
 
     #[test]
-    fn one_consumer_cannot_cancel_a_reduction_needed_by_the_other() {
+    fn releasing_the_last_consumer_cancels_the_reduction() {
         let controller = InsightsController::default();
         controller.lock_consumers().checks = Some("checks-1".to_string());
-
-        controller.release_settings();
-        assert_eq!(controller.cancel_requests(), 0);
 
         controller.release_checks("checks-1");
         assert_eq!(controller.cancel_requests(), 1);

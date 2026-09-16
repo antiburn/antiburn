@@ -15,9 +15,22 @@ pub(super) fn scope_display(scope: &str) -> BurnCheckScopeKind {
 }
 
 pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampleSession> {
+    let mut findings = findings.iter().collect::<Vec<_>>();
+    findings.sort_by(|left, right| {
+        right
+            .observed_at_ms
+            .cmp(&left.observed_at_ms)
+            .then_with(|| {
+                (&left.environment_key, &left.agent, &left.session_id).cmp(&(
+                    &right.environment_key,
+                    &right.agent,
+                    &right.session_id,
+                ))
+            })
+    });
     let mut seen = BTreeSet::new();
     findings
-        .iter()
+        .into_iter()
         .filter(|finding| {
             seen.insert((
                 finding.environment_key.clone(),
@@ -25,7 +38,6 @@ pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampl
                 finding.session_id.clone(),
             ))
         })
-        .take(3)
         .map(|finding| BurnCheckSampleSession {
             environment_key: finding.environment_key.clone(),
             agent: finding.agent.clone(),
@@ -53,7 +65,8 @@ pub(super) fn burn_check_display_facts(target: &CachedTarget) -> BurnCheckDispla
                 .config
                 .as_ref()
                 .filter(|config| config.operation.setting == ConfigSetting::Reasoning)
-                .and_then(|config| safe_display_value(&config.operation.proposed_value)),
+                .and_then(|config| config.operation.proposed_value.scalar())
+                .and_then(safe_display_value),
         ),
         FindingCause::OverpoweredSubagents { worker_model, .. } => (
             BurnCheckResourceKind::Worker,
@@ -91,7 +104,11 @@ pub(super) fn burn_check_display_facts(target: &CachedTarget) -> BurnCheckDispla
             BurnCheckResourceKind::Speed,
             safe_display_value(model),
             Some("fast".to_owned()),
-            None,
+            target
+                .config
+                .as_ref()
+                .filter(|config| config.operation.setting == ConfigSetting::FastMode)
+                .map(|config| config.operation.proposed_value.display_value()),
         ),
         FindingCause::CacheChurn { model, .. } => (
             BurnCheckResourceKind::Cache,
@@ -386,4 +403,54 @@ pub(super) fn prompt_with_evidence_paths(
     }
     prompt.push_str(&suffix);
     Ok(prompt)
+}
+
+pub(super) fn project_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(safe_display_value)
+        .filter(|name| name != "[private value]")
+}
+
+pub(super) fn project_location(path: &Path) -> Option<String> {
+    let name = project_name(path)?;
+    let parent = path.parent().and_then(project_name)?;
+    Some(format!("…/{parent}/{name}"))
+}
+
+pub(super) fn project_path(path: &Path) -> Option<String> {
+    path.is_absolute()
+        .then(|| path.to_str().map(str::to_owned))
+        .flatten()
+}
+
+#[cfg(test)]
+mod project_name_tests {
+    use super::*;
+
+    #[test]
+    fn folder_actions_keep_the_full_local_path_even_after_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing project");
+        assert_eq!(project_path(&path), path.to_str().map(str::to_owned));
+        assert_eq!(project_path(Path::new("relative/project")), None);
+    }
+
+    #[test]
+    fn shows_only_a_sanitized_project_name() {
+        assert_eq!(
+            project_name(Path::new("/Users/person/work/antiburn")),
+            Some("antiburn".into())
+        );
+        assert_eq!(project_name(Path::new("/Users/person/token=secret")), None);
+        assert_eq!(project_name(Path::new("/")), None);
+        assert_eq!(
+            project_location(Path::new("/Users/person/work/antiburn")),
+            Some("…/work/antiburn".into())
+        );
+        assert_eq!(
+            project_location(Path::new("/Users/person/token=secret/antiburn")),
+            None
+        );
+    }
 }

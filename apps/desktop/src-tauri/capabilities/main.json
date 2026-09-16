@@ -9,6 +9,7 @@
     "core:event:allow-unlisten",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
+    "clipboard-manager:allow-write-text",
     "dialog:allow-confirm",
     "allow-cancel-checks-report",
     "allow-apply-prepared-burn-check-operation",
@@ -30,6 +31,9 @@
     "allow-get-subagent-analysis",
     "allow-list-recent-sessions",
     "allow-list-burn-check-targets",
+    "allow-list-burn-check-snoozes",
+    "allow-set-burn-check-snooze",
+    "allow-clear-burn-check-snooze",
     "allow-main-window-ready",
     "allow-note-interaction",
     "allow-take-main-window-section-target",
@@ -46,6 +50,7 @@
     "allow-report-main-window-render-status",
     "allow-request-main-window-recovery",
     "allow-reveal-source",
+    "allow-open-project-folder",
     "allow-set-settings"
   ]
 }

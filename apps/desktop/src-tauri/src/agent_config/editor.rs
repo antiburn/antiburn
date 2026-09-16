@@ -9,8 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::config::{ApplyConflict, ApplyError, ApplyReadbackError};
 use super::config::{
     ConfigChange, ConfigContext, ConfigOperation, ConfigSetting, ConfigUnavailableReason,
-    EffectiveConfig, PreparedChange,
+    EffectiveConfig, PreparedOperation,
 };
+#[cfg(not(windows))]
+use super::config::{ConfigScope, PreparedChange};
 use super::filesystem::{canonical_root, read_checked};
 #[cfg(not(windows))]
 use super::filesystem::{create_temporary, file_identity, file_ownership, map_write_error};
@@ -29,11 +31,21 @@ impl AgentConfigEditor {
         context: &ConfigContext,
         setting: ConfigSetting,
     ) -> Result<EffectiveConfig, ConfigUnavailableReason> {
+        self.effective_for_value(context, setting, None)
+    }
+
+    pub fn effective_for_value(
+        &self,
+        context: &ConfigContext,
+        setting: ConfigSetting,
+        expected: Option<&str>,
+    ) -> Result<EffectiveConfig, ConfigUnavailableReason> {
         let vendor = validate_read_context(context, setting, current_platform())?;
         let home = canonical_root(&context.home_root)?;
         let (workspace_cwd, trusted_workspace_root) = canonical_workspace(context)?;
-        let target = vendor.resolve_target(
+        let target = vendor.resolve_target_for_value(
             setting,
+            expected,
             &home,
             workspace_cwd.as_deref(),
             trusted_workspace_root.as_deref(),
@@ -58,62 +70,99 @@ impl AgentConfigEditor {
         self.effective(context, ConfigSetting::Model)
     }
 
+    #[cfg(windows)]
     pub fn prepare_operation(
         &self,
         context: &ConfigContext,
         operation: &ConfigOperation,
-    ) -> Result<PreparedChange, ConfigUnavailableReason> {
+    ) -> Result<PreparedOperation, ConfigUnavailableReason> {
+        validate_write_context(context, operation.setting, current_platform())?;
+        Err(ConfigUnavailableReason::AutomaticApplyUnsupported)
+    }
+
+    #[cfg(not(windows))]
+    pub fn prepare_operation(
+        &self,
+        context: &ConfigContext,
+        operation: &ConfigOperation,
+    ) -> Result<PreparedOperation, ConfigUnavailableReason> {
         let vendor = validate_write_context(context, operation.setting, current_platform())?;
-        validate_value(operation.setting, &operation.expected_value)?;
-        validate_value(operation.setting, &operation.proposed_value)?;
+        let expected = operation.expected_value.display_value();
+        let proposed = operation.proposed_value.display_value();
+        validate_value(operation.setting, &expected)?;
+        validate_value(operation.setting, &proposed)?;
         if operation.expected_value == operation.proposed_value {
             return Err(ConfigUnavailableReason::InvalidTarget);
         }
         let home = canonical_root(&context.home_root)?;
         let (workspace_cwd, trusted_workspace_root) = canonical_workspace(context)?;
-        let target = vendor.resolve_target(
+        let target = vendor.resolve_target_for_value(
             operation.setting,
+            operation
+                .expected_value
+                .scalar()
+                .or_else(|| operation.expected_value.key()),
             &home,
             workspace_cwd.as_deref(),
             trusted_workspace_root.as_deref(),
-        )?;
-        let file = read_checked(&target.path, &target.safety_root)?;
-        let current = vendor
-            .read_value(&file.bytes, &target.operation)?
-            .ok_or(ConfigUnavailableReason::MissingTarget)?;
-        if current != operation.expected_value {
-            return Err(ConfigUnavailableReason::CurrentValueMismatch);
+        );
+        let mut changes = Vec::new();
+        let mut creations = Vec::new();
+        let target = match target {
+            Ok(target) => Some(target),
+            Err(
+                ConfigUnavailableReason::MissingConfig | ConfigUnavailableReason::MissingTarget,
+            ) if context.agent == antiburn_local::model::AgentKind::Claude
+                && operation.setting == ConfigSetting::BuiltInTool =>
+            {
+                let (path, bytes) =
+                    vendor.standalone_global(operation.setting, &home, &proposed)?;
+                creations.push(super::config::PreparedCreation {
+                    setting: operation.setting,
+                    selector: vendor.standalone_selector(operation.setting),
+                    scope: ConfigScope::Global,
+                    safety_root: home.clone(),
+                    path,
+                    bytes,
+                });
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(target) = target {
+            let file = read_checked(&target.path, &target.safety_root)?;
+            let current = vendor.read_value(&file.bytes, &target.operation)?;
+            if current.as_deref() != Some(expected.as_str()) {
+                return Err(ConfigUnavailableReason::CurrentValueMismatch);
+            }
+            let proposed_bytes = vendor.edit_value(&file.bytes, &target.operation, &proposed)?;
+            changes.push(PreparedChange {
+                agent: context.agent,
+                setting: operation.setting,
+                selector: target.operation.physical_selector(),
+                operation: target.operation,
+                expected_value: expected.clone(),
+                path: target.path,
+                scope: target.scope,
+                resolution_home_root: home.clone(),
+                workspace_cwd: workspace_cwd.clone(),
+                trusted_workspace_root: trusted_workspace_root.clone(),
+                safety_root: target.safety_root,
+                original_bytes: file.bytes,
+                proposed_bytes,
+                identity: file.identity,
+                permissions: file.permissions,
+                #[cfg(unix)]
+                ownership: file.ownership,
+            });
         }
-        #[cfg(not(windows))]
-        let proposed_bytes =
-            vendor.edit_value(&file.bytes, &target.operation, &operation.proposed_value)?;
-        Ok(PreparedChange {
-            #[cfg(not(windows))]
-            agent: context.agent,
-            setting: operation.setting,
-            selector: target.operation.physical_selector(),
-            #[cfg(not(windows))]
-            operation: target.operation,
-            path: target.path,
-            scope: target.scope,
-            #[cfg(not(windows))]
-            resolution_home_root: home,
-            #[cfg(not(windows))]
-            workspace_cwd,
-            #[cfg(not(windows))]
-            trusted_workspace_root,
-            #[cfg(not(windows))]
-            safety_root: target.safety_root,
-            #[cfg(not(windows))]
-            original_bytes: file.bytes,
-            #[cfg(not(windows))]
-            proposed_bytes,
-            #[cfg(not(windows))]
-            identity: file.identity,
-            #[cfg(not(windows))]
-            permissions: file.permissions,
-            #[cfg(unix)]
-            ownership: file.ownership,
+        if changes.is_empty() && creations.is_empty() {
+            return Err(ConfigUnavailableReason::InvalidTarget);
+        }
+        Ok(PreparedOperation {
+            warning: context.runtime_override_present || context.managed_configuration_present,
+            changes,
+            creations,
         })
     }
 
@@ -121,16 +170,120 @@ impl AgentConfigEditor {
         &self,
         context: &ConfigContext,
         change: &ConfigChange,
-    ) -> Result<PreparedChange, ConfigUnavailableReason> {
+    ) -> Result<PreparedOperation, ConfigUnavailableReason> {
         self.prepare_operation(context, &ConfigOperation::model(change))
     }
 
     #[cfg(not(windows))]
-    pub fn apply(&self, prepared: &PreparedChange) -> Result<(), ApplyError> {
+    pub fn apply(&self, prepared: &PreparedOperation) -> Result<(), ApplyError> {
+        let mut applied = Vec::new();
+        for change in &prepared.changes {
+            let result = if applied.is_empty() {
+                self.apply_change(change)
+            } else {
+                self.apply_change_without_resolution(change)
+            };
+            if let Err(error) = result {
+                let mut rollback_failed = false;
+                for completed in applied.into_iter().rev() {
+                    rollback_failed |= self.rollback_change(completed).is_err();
+                }
+                return Err(if rollback_failed {
+                    ApplyError::Readback(ApplyReadbackError::ReadFailed)
+                } else {
+                    error
+                });
+            }
+            applied.push(change);
+        }
+        for creation in &prepared.creations {
+            if let Err(error) = self.apply_creation(creation) {
+                let mut rollback_failed = false;
+                for created in prepared
+                    .creations
+                    .iter()
+                    .take_while(|item| item.path != creation.path)
+                {
+                    rollback_failed |= self.rollback_creation(created).is_err();
+                }
+                for completed in applied.into_iter().rev() {
+                    rollback_failed |= self.rollback_change(completed).is_err();
+                }
+                return Err(if rollback_failed {
+                    ApplyError::Readback(ApplyReadbackError::ReadFailed)
+                } else {
+                    error
+                });
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn apply_creation(&self, creation: &super::config::PreparedCreation) -> Result<(), ApplyError> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let parent = creation
+            .path
+            .parent()
+            .ok_or(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+        create_safe_parent_directories(parent, &creation.safety_root)?;
+        if std::fs::symlink_metadata(&creation.path).is_ok() {
+            return Err(ApplyError::Conflict(ApplyConflict::ChangedIdentity));
+        }
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&creation.path)
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        output
+            .write_all(&creation.bytes)
+            .and_then(|()| output.sync_all())
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        drop(output);
+        let readback = read_checked(&creation.path, &creation.safety_root)
+            .map_err(|_| ApplyError::Readback(ApplyReadbackError::ReadFailed))?;
+        if readback.bytes != creation.bytes {
+            return Err(ApplyError::Readback(ApplyReadbackError::ChangedContent));
+        }
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| ApplyError::Readback(ApplyReadbackError::DirectorySync))
+    }
+
+    #[cfg(not(windows))]
+    fn rollback_creation(
+        &self,
+        creation: &super::config::PreparedCreation,
+    ) -> Result<(), ApplyError> {
+        let bytes = std::fs::read(&creation.path)
+            .map_err(|_| ApplyError::Readback(ApplyReadbackError::ReadFailed))?;
+        if bytes != creation.bytes {
+            return Err(ApplyError::Conflict(ApplyConflict::ChangedContent));
+        }
+        std::fs::remove_file(&creation.path)
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))
+    }
+
+    #[cfg(not(windows))]
+    fn apply_change(&self, prepared: &PreparedChange) -> Result<(), ApplyError> {
         let vendor = vendor_for(prepared.agent);
+        let resource_name = match &prepared.operation {
+            super::vendors::OperationSelector::NamedClaudeMcpServer(name)
+            | super::vendors::OperationSelector::NamedTomlMcpServer(name)
+            | super::vendors::OperationSelector::NamedJsonMcpServer(name)
+            | super::vendors::OperationSelector::NamedClaudeBuiltInTool(name)
+            | super::vendors::OperationSelector::NamedOpenCodeBuiltInTool(name)
+            | super::vendors::OperationSelector::NamedPiDefaultTool(name)
+            | super::vendors::OperationSelector::NamedClaudeSkill(name)
+            | super::vendors::OperationSelector::NamedTomlSkill(name)
+            | super::vendors::OperationSelector::NamedOpenCodeSkill(name) => Some(name.as_str()),
+            _ => None,
+        };
         let current_target = vendor
-            .resolve_target(
+            .resolve_target_for_value(
                 prepared.setting,
+                resource_name.or(Some(&prepared.expected_value)),
                 &prepared.resolution_home_root,
                 prepared.workspace_cwd.as_deref(),
                 prepared.trusted_workspace_root.as_deref(),
@@ -218,6 +371,112 @@ impl AgentConfigEditor {
         }
         Ok(())
     }
+
+    #[cfg(not(windows))]
+    fn rollback_change(&self, prepared: &PreparedChange) -> Result<(), ApplyError> {
+        let rollback = PreparedChange {
+            agent: prepared.agent,
+            setting: prepared.setting,
+            selector: prepared.selector,
+            operation: prepared.operation.clone(),
+            expected_value: prepared.expected_value.clone(),
+            path: prepared.path.clone(),
+            scope: prepared.scope,
+            resolution_home_root: prepared.resolution_home_root.clone(),
+            workspace_cwd: prepared.workspace_cwd.clone(),
+            trusted_workspace_root: prepared.trusted_workspace_root.clone(),
+            safety_root: prepared.safety_root.clone(),
+            original_bytes: prepared.proposed_bytes.clone(),
+            proposed_bytes: prepared.original_bytes.clone(),
+            identity: file_identity(
+                &fs::symlink_metadata(&prepared.path)
+                    .map_err(|_| ApplyError::Readback(ApplyReadbackError::ReadFailed))?,
+            ),
+            permissions: prepared.permissions.clone(),
+            #[cfg(unix)]
+            ownership: prepared.ownership,
+        };
+        self.apply_change_without_resolution(&rollback)
+    }
+
+    #[cfg(not(windows))]
+    fn apply_change_without_resolution(&self, prepared: &PreparedChange) -> Result<(), ApplyError> {
+        let parent = prepared
+            .path
+            .parent()
+            .ok_or(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+        let file_name = prepared
+            .path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::WriteFailed))?
+            .as_nanos();
+        let temporary = parent.join(format!(".{file_name}.antiburn-rollback-{nonce}.tmp"));
+        let result = (|| {
+            let mut output = create_temporary(&temporary, &prepared.permissions)
+                .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+            output
+                .write_all(&prepared.proposed_bytes)
+                .and_then(|()| output.sync_all())
+                .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+            drop(output);
+            let current = read_checked(&prepared.path, &prepared.safety_root)
+                .map_err(ApplyError::Unavailable)?;
+            if current.identity != prepared.identity {
+                return Err(ApplyError::Conflict(ApplyConflict::ChangedIdentity));
+            }
+            if current.bytes != prepared.original_bytes {
+                return Err(ApplyError::Conflict(ApplyConflict::ChangedContent));
+            }
+            fs::rename(&temporary, &prepared.path)
+                .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+}
+
+#[cfg(not(windows))]
+fn create_safe_parent_directories(
+    parent: &std::path::Path,
+    safety_root: &std::path::Path,
+) -> Result<(), ApplyError> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let relative = parent
+        .strip_prefix(safety_root)
+        .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+    let mut current = safety_root.to_owned();
+    for component in relative.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&current)
+                    .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+                let metadata = fs::symlink_metadata(&current)
+                    .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath));
+                }
+            }
+            Err(error) => {
+                return Err(ApplyError::Unavailable(map_write_error(error)));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_read_context(
@@ -247,7 +506,14 @@ fn validate_write_context(
     setting: ConfigSetting,
     platform: &str,
 ) -> Result<&'static dyn super::vendors::VendorConfig, ConfigUnavailableReason> {
-    let vendor = validate_read_context(context, setting, platform)?;
+    if !context.native_environment || !editor_access_supported(platform, false) {
+        return Err(ConfigUnavailableReason::UnsupportedEnvironment);
+    }
+    let vendor = vendor_for(context.agent);
+    match vendor.policy(setting) {
+        VendorPolicy::AutomaticEdit => {}
+        VendorPolicy::Unsupported(reason) => return Err(reason),
+    }
     if !editor_access_supported(platform, true) {
         return Err(ConfigUnavailableReason::AutomaticApplyUnsupported);
     }
@@ -295,10 +561,53 @@ const fn current_platform() -> &'static str {
     return "unsupported";
 }
 
+#[cfg(not(windows))]
 fn validate_value(setting: ConfigSetting, value: &str) -> Result<(), ConfigUnavailableReason> {
     let max = match setting {
-        ConfigSetting::Model => 256,
+        ConfigSetting::Model | ConfigSetting::SubagentModel => 256,
         ConfigSetting::Reasoning => 64,
+        ConfigSetting::Compaction => {
+            if value == "true" || value == "false" || value.parse::<u64>().is_ok() {
+                return Ok(());
+            }
+            return Err(ConfigUnavailableReason::InvalidTarget);
+        }
+        ConfigSetting::FastMode => {
+            if matches!(value, "true" | "false" | "fast" | "standard" | "remove") {
+                return Ok(());
+            }
+            return Err(ConfigUnavailableReason::InvalidTarget);
+        }
+        ConfigSetting::McpServer => {
+            let Some((name, enabled)) = value.split_once('=') else {
+                return Err(ConfigUnavailableReason::InvalidTarget);
+            };
+            if matches!(enabled, "true" | "false")
+                && !name.is_empty()
+                && name.len() <= 256
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            {
+                return Ok(());
+            }
+            return Err(ConfigUnavailableReason::InvalidTarget);
+        }
+        ConfigSetting::BuiltInTool | ConfigSetting::Skill => {
+            let Some((name, enabled)) = value.split_once('=') else {
+                return Err(ConfigUnavailableReason::InvalidTarget);
+            };
+            if matches!(enabled, "true" | "false")
+                && !name.is_empty()
+                && name.len() <= 256
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Ok(());
+            }
+            return Err(ConfigUnavailableReason::InvalidTarget);
+        }
     };
     if value.is_empty()
         || value.len() > max

@@ -20,9 +20,27 @@ impl VendorRemediationPolicy for CodexPolicy {
     fn action_support(&self, action: RemediationAction, source: SourceFormat) -> ActionSupport {
         match (action, source) {
             (
-                RemediationAction::AutomaticEdit(_)
-                | RemediationAction::RecoverUncertainWrite(_)
-                | RemediationAction::PublicationAttribution(_),
+                RemediationAction::AutomaticEdit(
+                    ConfigSetting::Model
+                    | ConfigSetting::Reasoning
+                    | ConfigSetting::Compaction
+                    | ConfigSetting::FastMode
+                    | ConfigSetting::SubagentModel
+                    | ConfigSetting::McpServer
+                    | ConfigSetting::Skill,
+                )
+                | RemediationAction::RecoverUncertainWrite(
+                    ConfigSetting::Model
+                    | ConfigSetting::Reasoning
+                    | ConfigSetting::Compaction
+                    | ConfigSetting::FastMode
+                    | ConfigSetting::SubagentModel
+                    | ConfigSetting::McpServer
+                    | ConfigSetting::Skill,
+                )
+                | RemediationAction::PublicationAttribution(
+                    ConfigSetting::Model | ConfigSetting::Reasoning | ConfigSetting::Compaction,
+                ),
                 SourceFormat::CodexRolloutJsonl,
             ) => ActionSupport::Supported,
             _ => ActionSupport::Unsupported,
@@ -56,7 +74,7 @@ impl VendorRemediationPolicy for CodexPolicy {
             (None, None) => true,
             (Some(candidate), Some(root)) => candidate
                 .canonicalize()
-                .is_ok_and(|candidate| candidate == root),
+                .is_ok_and(|candidate| candidate.starts_with(root)),
             _ => false,
         }
     }
@@ -77,13 +95,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_auto_fix_rejects_untrusted_and_nested_working_directories() {
+    fn codex_auto_fix_accepts_trusted_nested_working_directories() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
         let nested = root.join("nested");
         std::fs::create_dir(&nested).unwrap();
         assert!(POLICY.workspace_precedence_supported(Some(&root), Some(&root)));
-        assert!(!POLICY.workspace_precedence_supported(Some(&nested), Some(&root)));
+        assert!(POLICY.workspace_precedence_supported(Some(&nested), Some(&root)));
         assert!(!POLICY.workspace_precedence_supported(Some(&root), None));
         assert!(
             super::super::claude::POLICY.workspace_precedence_supported(Some(&nested), Some(&root))

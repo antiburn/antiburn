@@ -2,8 +2,7 @@
 //! projection. Content lives only in `turn_content`. `NormalizedSession`,
 //! `SessionEvidence` (diagnostics included), `SessionMetrics`, and every
 //! other table in the schema must never carry it. Deleting a session's turn
-//! rows must remove it completely. See "Privacy with content stored" in
-//! `docs/plans/session-evidence-harness-parity.md`.
+//! rows must remove it completely.
 //!
 //! This file carries one fixture per vendor that stores content: Claude,
 //! Codex, OpenCode, and Pi. `cursor`, `antigravity`, and the generic JSONL
@@ -117,6 +116,7 @@ fn run_pipeline(
         session_id: session_id.to_string(),
         source,
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
 
     // The normalized model never carries message text.

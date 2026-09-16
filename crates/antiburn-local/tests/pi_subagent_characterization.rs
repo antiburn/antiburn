@@ -23,6 +23,7 @@ fn analyze(source: RawSource) -> (SessionEvidence, SessionMetricsAccumulator) {
         session_id: "official-subagent".to_owned(),
         source,
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let metrics = SessionMetricsAccumulator::new("pi", &input.session_id);
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {

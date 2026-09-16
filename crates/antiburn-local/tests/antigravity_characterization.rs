@@ -12,11 +12,22 @@ use antiburn_local::insights::{
 use rusqlite::{Connection, params};
 
 fn input(source: RawSource) -> SessionInput {
+    let source_format = match &source {
+        RawSource::Sqlite(_) => SourceFormat::AntigravitySqlite,
+        RawSource::File(_) => SourceFormat::AntigravityBrainJsonl,
+        RawSource::Jsonl(content) if content.contains("\"steps\"") => {
+            SourceFormat::AntigravityCascadeJson
+        }
+        RawSource::Jsonl(_) => SourceFormat::AntigravityBrainJsonl,
+        RawSource::ClineBundle { .. } => SourceFormat::Uncharacterized,
+        RawSource::KiroCliV2Bundle { .. } => SourceFormat::Uncharacterized,
+    };
     SessionInput {
         agent: "antigravity".into(),
         session_id: "synthetic".into(),
         source,
         fork_parent_session_id: None,
+        source_format,
     }
 }
 
@@ -29,7 +40,7 @@ fn evidence(input: &SessionInput) -> SessionEvidence {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             kind: SourceKind::from(&input.source),
-            capabilities: reader.capabilities(&input.source),
+            capabilities: reader.capabilities(input),
         }),
         TurnRowSink::new(
             Arc::clone(&store) as Arc<dyn TurnRowStore>,
@@ -138,7 +149,7 @@ fn database(
     }
     let path = conversations.join("synthetic.db");
     let connection = Connection::open(&path).unwrap();
-    connection.execute_batch("CREATE TABLE steps (idx INTEGER, metadata BLOB); CREATE TABLE gen_metadata (idx INTEGER, data BLOB);").unwrap();
+    connection.execute_batch("PRAGMA user_version = 1; CREATE TABLE steps (idx INTEGER, metadata BLOB); CREATE TABLE gen_metadata (idx INTEGER, data BLOB);").unwrap();
     let usage = [0x10, 10, 0x18, 2, 0x3a, 1, b'a'];
     let mut step = Vec::new();
     if !missing_time {
@@ -166,7 +177,9 @@ fn database(
     if malformed {
         connection.execute_batch("INSERT INTO steps VALUES (1, X'80'); INSERT INTO steps VALUES (2, NULL); INSERT INTO gen_metadata VALUES (1, X'80');").unwrap();
     }
-    (directory, input(RawSource::Sqlite(path)))
+    let mut input = input(RawSource::Sqlite(path));
+    input.source_format = SourceFormat::AntigravitySqlite;
+    (directory, input)
 }
 
 #[test]

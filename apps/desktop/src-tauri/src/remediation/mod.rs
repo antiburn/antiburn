@@ -27,9 +27,9 @@ use antiburn_local::remediation::{
     REMEDIATION_POLICY_REVISION, RemediationUnavailableReason, SAVINGS_METHOD_REVISION,
     SavingsEstimateInput, SavingsEstimateMethod, SavingsInterval, SavingsValue, TargetAssessment,
     VERIFICATION_METHOD_REVISION, VerificationOutcome, VerificationStage,
-    VerificationUnknownReason, estimate_old_model_savings, estimate_savings,
-    fallback_remediation_prompt, remediation_prompt, verification_evidence_supported,
-    verify_old_model, verify_prompt_watch,
+    VerificationUnknownReason, built_in_tool_remediation_supported, estimate_old_model_savings,
+    estimate_savings, fallback_remediation_prompt, remediation_prompt,
+    verification_evidence_supported, verify_old_model, verify_prompt_watch,
 };
 use anyhow::{Context, Result};
 use hmac::{Hmac, KeyInit, Mac};
@@ -37,7 +37,8 @@ use serde_json::json;
 use sha2::Sha256;
 
 use crate::agent_config::{
-    AgentConfigEditor, ConfigContext, ConfigOperation, ConfigScope, ConfigSetting, PreparedChange,
+    AgentConfigEditor, ConfigContext, ConfigOperation, ConfigScope, ConfigSetting,
+    PreparedOperation,
 };
 use crate::insights_report::{self, CurrentFinding, CurrentFindingsRequest};
 use crate::store::{PassiveRemediation, SessionKey};
@@ -47,8 +48,8 @@ use crate::store::{
 };
 use vendors::{ActionSupport, RemediationAction, vendor_policy};
 
-pub(crate) use config::publication_config_attribution;
 use config::*;
+pub(crate) use config::{PublicationSettingAttribution, publication_config_attribution};
 #[cfg(test)]
 pub(crate) use config::{hashed_workspace_key, publication_config_attribution_with_home};
 use display::*;
@@ -121,6 +122,7 @@ struct CachedTarget {
 #[derive(Clone)]
 struct CachedConfig {
     context: ConfigContext,
+    additional_contexts: Vec<ConfigContext>,
     operation: ConfigOperation,
     physical_key: String,
 }
@@ -141,10 +143,10 @@ struct TimedTarget {
     created_at_epoch: i64,
 }
 
-struct PreparedOperation {
+struct PreparedAutoFix {
     id: String,
     target: CachedTarget,
-    prepared: Option<PreparedChange>,
+    prepared: Option<PreparedOperation>,
     retained_bytes: usize,
     created_at_epoch: i64,
     completed: Option<AutoFixResult>,
@@ -153,7 +155,7 @@ struct PreparedOperation {
 #[derive(Default)]
 struct ControllerState {
     targets: VecDeque<TimedTarget>,
-    prepared: VecDeque<PreparedOperation>,
+    prepared: VecDeque<PreparedAutoFix>,
 }
 
 pub struct RemediationController {
@@ -203,6 +205,7 @@ impl RemediationController {
             },
         )
         .map_err(|_| ControllerError::Internal)?;
+        let check_samples = sample_sessions(&page.findings);
         let mut grouped: BTreeMap<String, CachedTarget> = BTreeMap::new();
         for finding in page.findings {
             let display = finding
@@ -212,7 +215,22 @@ impl RemediationController {
             let (group_key, target) = self.resolve_target(store, finding, display.agent, home)?;
             grouped
                 .entry(group_key)
-                .and_modify(|entry| entry.findings.extend(target.findings.clone()))
+                .and_modify(|entry| {
+                    entry.findings.extend(target.findings.clone());
+                    match (&mut entry.config, target.config.as_ref()) {
+                        (Some(existing), Some(incoming))
+                            if existing.operation == incoming.operation
+                                && existing.physical_key == incoming.physical_key =>
+                        {
+                            existing.additional_contexts.push(incoming.context.clone());
+                            existing
+                                .additional_contexts
+                                .extend(incoming.additional_contexts.clone());
+                        }
+                        (None, None) => {}
+                        _ => entry.config = None,
+                    }
+                })
                 .or_insert(target);
         }
         let truncated = page.truncated || grouped.len() > MAX_TARGETS;
@@ -237,11 +255,7 @@ impl RemediationController {
                 .transpose()?
                 .flatten();
             let auto_fix = match (&target.config, watch.as_ref()) {
-                (Some(_), Some(watch))
-                    if watch.lifecycle != RemediationState::Recurred
-                        && !(watch.lifecycle == RemediationState::Watching
-                            && watch.origin == RemediationOrigin::Passive) =>
-                {
+                (Some(_), Some(watch)) if auto_fix_blocked_by_watch(watch) => {
                     AutoFixAvailability::Unavailable(AutoFixUnavailableReason::ActiveWatch)
                 }
                 (Some(_), _) => AutoFixAvailability::Available,
@@ -250,12 +264,35 @@ impl RemediationController {
                 ),
             };
             let id = random_id().map_err(|_| ControllerError::Internal)?;
+            let target_samples = sample_sessions(&target.findings);
             targets.push(BurnCheckTarget {
                 finding_id: stable_finding_id(&target),
                 action_id: id.clone(),
                 finding: display,
                 display: display_facts,
                 occurrences: target.findings.len(),
+                affected_sessions: target_samples.len(),
+                project_name: (target.scope_kind == "project")
+                    .then(|| {
+                        target.findings[0]
+                            .workspace_candidate()
+                            .and_then(display::project_name)
+                    })
+                    .flatten(),
+                project_location: (target.scope_kind == "project")
+                    .then(|| {
+                        target.findings[0]
+                            .workspace_candidate()
+                            .and_then(display::project_location)
+                    })
+                    .flatten(),
+                project_path: (target.scope_kind == "project")
+                    .then(|| {
+                        target.findings[0]
+                            .workspace_candidate()
+                            .and_then(display::project_path)
+                    })
+                    .flatten(),
                 auto_fix,
                 prompt_fix: match remediation_prompt(&target.findings[0].finding) {
                     Ok(_) => PromptFixAvailability::Available,
@@ -263,7 +300,7 @@ impl RemediationController {
                 },
                 watch,
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
-                sample_sessions: sample_sessions(&target.findings),
+                sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
             cached.push(TimedTarget {
@@ -282,7 +319,11 @@ impl RemediationController {
             }
             state.targets.push_back(entry);
         }
-        Ok(BurnCheckTargetList { targets, truncated })
+        Ok(BurnCheckTargetList {
+            targets,
+            sample_sessions: check_samples,
+            truncated,
+        })
     }
 
     #[cfg(all(test, not(windows)))]
@@ -361,18 +402,6 @@ impl RemediationController {
             return Err(ControllerError::CheckPromptUnavailable);
         };
         if findings.finding_sessions == 0 {
-            return Err(ControllerError::CheckPromptUnavailable);
-        }
-        let current = insights_report::list_current_findings(
-            &self.data_dir,
-            CurrentFindingsRequest {
-                environment_key: context.environment_key.clone(),
-                window: context.window,
-                detector,
-            },
-        )
-        .map_err(|_| ControllerError::Internal)?;
-        if !current.findings.is_empty() {
             return Err(ControllerError::CheckPromptUnavailable);
         }
         let paths = representative_paths(
@@ -495,9 +524,7 @@ impl RemediationController {
             .map(|watch| public_watch(store, watch))
             .transpose()?
             .flatten()
-            && watch.lifecycle != RemediationState::Recurred
-            && !(watch.lifecycle == RemediationState::Watching
-                && watch.origin == RemediationOrigin::Passive)
+            && auto_fix_blocked_by_watch(&watch)
         {
             return Err(ControllerError::AutoFixUnavailable(
                 AutoFixUnavailableReason::ActiveWatch,
@@ -538,6 +565,18 @@ impl RemediationController {
         {
             return Err(ControllerError::TargetChanged);
         }
+        for context in &config.additional_contexts {
+            if !self.prepared_context_matches(
+                store,
+                target.agent,
+                &target.scope_kind,
+                config,
+                context,
+                prepared.creates_file(),
+            )? {
+                return Err(ControllerError::TargetChanged);
+            }
+        }
         let prepared_operation_id = random_id().map_err(|_| ControllerError::Internal)?;
         let retained_bytes = prepared.retained_bytes();
         if retained_bytes > PREPARED_CACHE_BYTES {
@@ -545,25 +584,46 @@ impl RemediationController {
                 AutoFixUnavailableReason::SafetyCheckFailed,
             ));
         }
+        let setting = match config.operation.setting {
+            ConfigSetting::Model => AutoFixSetting::Model,
+            ConfigSetting::Reasoning => AutoFixSetting::Reasoning,
+            ConfigSetting::Compaction => AutoFixSetting::Compaction,
+            ConfigSetting::FastMode => AutoFixSetting::FastMode,
+            ConfigSetting::SubagentModel => AutoFixSetting::SubagentModel,
+            ConfigSetting::McpServer => AutoFixSetting::McpServer,
+            ConfigSetting::BuiltInTool => AutoFixSetting::BuiltInTool,
+            ConfigSetting::Skill => AutoFixSetting::Skill,
+        };
         let review = AutoFixReview {
             prepared_operation_id: prepared_operation_id.clone(),
             expires_at_epoch: now.saturating_add(ID_TTL.as_secs() as i64),
             agent: target.agent,
             scope: scope_display(&target.scope_kind),
-            setting: match config.operation.setting {
-                ConfigSetting::Model => AutoFixSetting::Model,
-                ConfigSetting::Reasoning => AutoFixSetting::Reasoning,
-            },
+            setting,
             config_file: display_config_file(prepared.physical_identity().0, &context.home_root),
-            current_value: config.operation.expected_value.clone(),
-            proposed_value: config.operation.proposed_value.clone(),
-            effect: match config.operation.setting {
-                ConfigSetting::Model => AutoFixEffect::FutureModelSelection,
-                ConfigSetting::Reasoning => AutoFixEffect::FutureReasoningEffort,
+            selector_label: prepared.physical_identity().1.to_owned(),
+            current_value: config.operation.expected_value.display_value(),
+            proposed_value: config.operation.proposed_value.display_value(),
+            behavior_override_warning: prepared.behavior_override_warning(),
+            effect: match setting {
+                AutoFixSetting::Model => AutoFixEffect::ModelSelection,
+                AutoFixSetting::Reasoning => AutoFixEffect::ReasoningEffort,
+                AutoFixSetting::Compaction => AutoFixEffect::SessionCompaction,
+                AutoFixSetting::SubagentModel => AutoFixEffect::WorkerModelSelection,
+                AutoFixSetting::McpServer => AutoFixEffect::McpAvailability,
+                AutoFixSetting::BuiltInTool => AutoFixEffect::ToolAvailability,
+                AutoFixSetting::Skill => AutoFixEffect::SkillAvailability,
+                AutoFixSetting::FastMode => AutoFixEffect::ServiceTierSelection,
             },
-            side_effect: match config.operation.setting {
-                ConfigSetting::Model => AutoFixSideEffect::ModelBehaviorMayChange,
-                ConfigSetting::Reasoning => AutoFixSideEffect::ResponsesMayUseLessReasoning,
+            side_effect: match setting {
+                AutoFixSetting::Model => AutoFixSideEffect::ModelBehaviorMayChange,
+                AutoFixSetting::Reasoning => AutoFixSideEffect::ResponsesMayUseLessReasoning,
+                AutoFixSetting::Compaction => AutoFixSideEffect::EarlierSessionSummarization,
+                AutoFixSetting::SubagentModel => AutoFixSideEffect::WorkerBehaviorMayChange,
+                AutoFixSetting::McpServer => AutoFixSideEffect::ServerWillNotBeAvailable,
+                AutoFixSetting::BuiltInTool => AutoFixSideEffect::ToolWillNotBeAvailable,
+                AutoFixSetting::Skill => AutoFixSideEffect::SkillWillNotBeAvailable,
+                AutoFixSetting::FastMode => AutoFixSideEffect::ResponsesMayTakeLonger,
             },
         };
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
@@ -577,7 +637,7 @@ impl RemediationController {
                 ));
             }
         }
-        state.prepared.push_back(PreparedOperation {
+        state.prepared.push_back(PreparedAutoFix {
             id: prepared_operation_id,
             target,
             prepared: Some(prepared),
@@ -753,19 +813,27 @@ impl RemediationController {
         let secret = store
             .provider_account_secret()
             .map_err(|_| ControllerError::Internal)?;
-        let identity = target_identity(&secret, &finding, project_root.as_deref());
+        let mut identity = target_identity(&secret, &finding, project_root.as_deref());
+        let attributed_physical_key = identity.physical_target_key.clone();
         let mut config = None;
-        if let (Some(home), Some(operation)) = (
-            home,
-            reviewed_config_operation(agent, finding.finding.cause()),
-        ) && automatic_editor_supported(
-            agent,
-            operation.setting,
-            finding.finding.source_format,
-            &identity.scope_kind,
-            &finding.environment_key,
-            current_editor_platform(),
-        ) && (finding.workspace_candidate().is_none() || project_root.is_some())
+        let operation = reviewed_config_operation(agent, finding.finding.cause());
+        if let Some(home) = home
+            && (operation.is_some()
+                || matches!(
+                    finding.finding.cause(),
+                    FindingCause::SessionsOverDepth { .. }
+                ))
+            && automatic_editor_supported(
+                agent,
+                operation
+                    .as_ref()
+                    .map_or(ConfigSetting::Compaction, |operation| operation.setting),
+                finding.finding.source_format,
+                &identity.scope_kind,
+                &finding.environment_key,
+                current_editor_platform(),
+            )
+            && (finding.workspace_candidate().is_none() || project_root.is_some())
             && workspace_precedence_supported(
                 agent,
                 finding.workspace_candidate(),
@@ -795,26 +863,82 @@ impl RemediationController {
             };
             context.runtime_override_present = runtime_override_present(agent);
             context.managed_configuration_present = managed_configuration_present(agent, home);
-            if let Ok(effective) = self.editor.effective(&context, operation.setting)
-                && effective.value == operation.expected_value
-            {
-                let selector_qualifier = physical_selector_qualifier(
-                    &self.editor,
+            if let Some(operation) = operation.or_else(|| {
+                self.editor
+                    .effective(&context, ConfigSetting::Compaction)
+                    .ok()
+                    .and_then(|effective| {
+                        compaction_operation(finding.finding.cause(), &effective.value)
+                    })
+            }) {
+                let effective = self.editor.effective_for_value(
                     &context,
-                    effective.physical_identity().1,
+                    operation.setting,
+                    operation
+                        .expected_value
+                        .scalar()
+                        .or_else(|| operation.expected_value.key()),
                 );
-                let key = physical_key(
-                    store,
-                    agent,
-                    effective.physical_identity(),
-                    selector_qualifier.as_deref(),
-                )
-                .map_err(|_| ControllerError::Internal)?;
-                if identity.physical_target_key.as_deref() == Some(key.as_str())
-                    && identity.scope_kind == scope_name(effective.scope)
+                if let Ok(effective) = effective
+                    && operation.expected_value.display_value() == effective.value
                 {
+                    let selector_qualifier = physical_selector_qualifier(
+                        &self.editor,
+                        &context,
+                        effective.physical_identity().1,
+                    );
+                    let key = physical_key(
+                        store,
+                        agent,
+                        effective.physical_identity(),
+                        selector_qualifier.as_deref(),
+                    )
+                    .map_err(|_| ControllerError::Internal)?;
+                    if let Some(attributed_key) = attributed_physical_key.as_ref() {
+                        if attributed_key == &key
+                            && identity.scope_kind == scope_name(effective.scope)
+                        {
+                            config = Some(CachedConfig {
+                                context: context.clone(),
+                                additional_contexts: Vec::new(),
+                                operation: operation.clone(),
+                                physical_key: key,
+                            });
+                        }
+                    } else {
+                        bind_current_config_identity(
+                            &mut identity,
+                            &secret,
+                            &finding,
+                            agent,
+                            effective.scope,
+                            &key,
+                        );
+                        config = Some(CachedConfig {
+                            context: context.clone(),
+                            additional_contexts: Vec::new(),
+                            operation: operation.clone(),
+                            physical_key: key,
+                        });
+                    }
+                } else if attributed_physical_key.is_none()
+                    && operation.setting == ConfigSetting::BuiltInTool
+                    && let Ok(prepared) = self.editor.prepare_operation(&context, &operation)
+                    && prepared.creates_file()
+                {
+                    let key = physical_key(store, agent, prepared.physical_identity(), None)
+                        .map_err(|_| ControllerError::Internal)?;
+                    bind_current_config_identity(
+                        &mut identity,
+                        &secret,
+                        &finding,
+                        agent,
+                        ConfigScope::Global,
+                        &key,
+                    );
                     config = Some(CachedConfig {
                         context,
+                        additional_contexts: Vec::new(),
                         operation,
                         physical_key: key,
                     });
@@ -865,18 +989,62 @@ impl RemediationController {
         &self,
         store: &Store,
         target: &CachedTarget,
-        prepared: &PreparedChange,
+        prepared: &PreparedOperation,
     ) -> Result<(), ControllerError> {
         self.revalidate(target)?;
         let config = target
             .config
             .as_ref()
             .ok_or(ControllerError::TargetChanged)?;
+        if prepared.creates_file() {
+            let selector_qualifier = physical_selector_qualifier(
+                &self.editor,
+                &config.context,
+                prepared.physical_identity().1,
+            );
+            let current_key = physical_key(
+                store,
+                target.agent,
+                prepared.physical_identity(),
+                selector_qualifier.as_deref(),
+            )
+            .map_err(|_| ControllerError::Internal)?;
+            if prepared.setting() != config.operation.setting
+                || prepared.scope()
+                    != scope_from_name(&target.scope_kind).ok_or(ControllerError::TargetChanged)?
+                || current_key != config.physical_key
+            {
+                return Err(ControllerError::Conflict);
+            }
+            for context in std::iter::once(&config.context).chain(&config.additional_contexts) {
+                if !self.prepared_context_matches(
+                    store,
+                    target.agent,
+                    &target.scope_kind,
+                    config,
+                    context,
+                    true,
+                )? {
+                    return Err(ControllerError::Conflict);
+                }
+            }
+            return Ok(());
+        }
+        for context in std::iter::once(&config.context).chain(&config.additional_contexts) {
+            if !self.config_context_matches(store, target, config, context)? {
+                return Err(ControllerError::Conflict);
+            }
+        }
         let effective = self
             .editor
-            .effective(
+            .effective_for_value(
                 &refreshed_config_context(&config.context),
                 config.operation.setting,
+                config
+                    .operation
+                    .expected_value
+                    .scalar()
+                    .or_else(|| config.operation.expected_value.key()),
             )
             .map_err(|_| ControllerError::Conflict)?;
         let selector_qualifier = physical_selector_qualifier(
@@ -891,7 +1059,7 @@ impl RemediationController {
             selector_qualifier.as_deref(),
         )
         .map_err(|_| ControllerError::Internal)?;
-        if effective.value != config.operation.expected_value
+        if config.operation.expected_value.display_value() != effective.value
             || effective.setting != prepared.setting()
             || effective.scope != prepared.scope()
             || effective.scope
@@ -909,6 +1077,70 @@ impl RemediationController {
             return Err(ControllerError::Conflict);
         }
         Ok(())
+    }
+
+    fn config_context_matches(
+        &self,
+        store: &Store,
+        target: &CachedTarget,
+        config: &CachedConfig,
+        context: &ConfigContext,
+    ) -> Result<bool, ControllerError> {
+        let Ok(effective) = self.editor.effective_for_value(
+            &refreshed_config_context(context),
+            config.operation.setting,
+            config
+                .operation
+                .expected_value
+                .scalar()
+                .or_else(|| config.operation.expected_value.key()),
+        ) else {
+            return Ok(false);
+        };
+        let selector_qualifier =
+            physical_selector_qualifier(&self.editor, context, effective.physical_identity().1);
+        let key = physical_key(
+            store,
+            target.agent,
+            effective.physical_identity(),
+            selector_qualifier.as_deref(),
+        )
+        .map_err(|_| ControllerError::Internal)?;
+        Ok(
+            config.operation.expected_value.display_value() == effective.value
+                && scope_name(effective.scope) == target.scope_kind
+                && key == config.physical_key,
+        )
+    }
+
+    fn prepared_context_matches(
+        &self,
+        store: &Store,
+        agent: AgentKind,
+        scope_kind: &str,
+        config: &CachedConfig,
+        context: &ConfigContext,
+        creates_file: bool,
+    ) -> Result<bool, ControllerError> {
+        let Ok(prepared) = self
+            .editor
+            .prepare_operation(&refreshed_config_context(context), &config.operation)
+        else {
+            return Ok(false);
+        };
+        let selector_qualifier =
+            physical_selector_qualifier(&self.editor, context, prepared.physical_identity().1);
+        let key = physical_key(
+            store,
+            agent,
+            prepared.physical_identity(),
+            selector_qualifier.as_deref(),
+        )
+        .map_err(|_| ControllerError::Internal)?;
+        Ok(prepared.creates_file() == creates_file
+            && prepared.setting() == config.operation.setting
+            && scope_name(prepared.scope()) == scope_kind
+            && key == config.physical_key)
     }
 
     fn persist_display_snapshot(
@@ -1046,6 +1278,16 @@ impl RemediationController {
     }
 }
 
+fn auto_fix_blocked_by_watch(watch: &WatchStatus) -> bool {
+    watch.lifecycle != RemediationState::Recurred
+        && !(watch.lifecycle == RemediationState::Watching
+            && (watch.origin == RemediationOrigin::Passive
+                || matches!(
+                    watch.verification,
+                    VerificationStatus::VerificationUnavailable
+                )))
+}
+
 fn display_config_file(path: &Path, home: &Path) -> String {
     path.strip_prefix(home)
         .map(|relative| format!("~/{}", relative.display()))
@@ -1085,6 +1327,7 @@ fn watch_verification_available(
                 && definition.target_model.is_some()
                 && definition.target_control.is_some()
         }
+        DetectorId::OverpoweredSubagents => false,
         _ => false,
     }
 }
@@ -1100,6 +1343,49 @@ fn verification_source_matches_agent(agent: &str, source_format: SourceFormat) -
             )
             | ("pi", SourceFormat::PiV3Jsonl)
     )
+}
+
+fn bind_current_config_identity(
+    identity: &mut TargetIdentity,
+    secret: &[u8; 32],
+    finding: &CurrentFinding,
+    agent: AgentKind,
+    scope: ConfigScope,
+    physical_key: &str,
+) {
+    identity.scope_kind = scope_name(scope).to_owned();
+    identity.scope_key = if scope == ConfigScope::Global {
+        physical_key.to_owned()
+    } else {
+        identity
+            .workspace_key
+            .clone()
+            .unwrap_or_else(|| physical_key.to_owned())
+    };
+    identity.canonical_identity = finding.finding.canonical_identity(&identity.scope_key);
+    identity.physical_target_key = Some(physical_key.to_owned());
+    identity.group_key = hashed_parts_with_secret(
+        secret,
+        TARGET_DOMAIN,
+        &[
+            &finding.environment_key,
+            agent.slug(),
+            &identity.scope_kind,
+            &identity.scope_key,
+            physical_key,
+            &identity.canonical_identity,
+        ],
+    );
+    identity.target_key = hashed_parts_with_secret(
+        secret,
+        TARGET_DOMAIN,
+        &[
+            &finding.environment_key,
+            agent.slug(),
+            physical_key,
+            &identity.canonical_identity,
+        ],
+    );
 }
 
 fn prune_prepared(state: &mut ControllerState, now: i64) {

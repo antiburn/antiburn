@@ -189,7 +189,10 @@ impl Store {
             if remediation.state == RemediationState::Reserved
                 && existing.state == RemediationState::Watching
                 && transaction.query_row(
-                    "SELECT COALESCE(origin = 'passive', 0)
+                    "SELECT COALESCE(
+                            origin = 'passive'
+                            OR json_extract(result_json, '$.verification.status') = 'verificationUnavailable',
+                            0)
                        FROM remediation WHERE remediation_id = ?1",
                     [&existing.remediation_id],
                     |row| row.get::<_, bool>(0),

@@ -12,6 +12,7 @@ sources:
   - src/styles/platform-controls.css
   - src/styles/hud.css
   - src/styles/main-window.css
+  - src/styles/burn-checks-report.css
   - src/styles/session-analysis-colors.css
   - src/styles/overview-series-colors.css
   - src/styles/session-rows.css
@@ -25,10 +26,8 @@ colors:
   # Hue uses at most one decimal. Saturation and lightness use at most two decimals.
   # Alpha uses at most three decimals. Remove trailing zeros. Achromatic colors use hue 0.
   # name → Tailwind utility via bg-/text-/border-<name>
-  # Both values are the explicit [data-theme="light"|"dark"] palettes.
-  # A `# @media <theme>: <value>` note states the system-preference value where it
-  # differs. The drift check reads those notes: a difference it cannot find a note
-  # for is a failure, and so is a note that no longer differs.
+  # System selects the same palette as explicit Light or Dark from the OS preference.
+  # The drift check requires the system and explicit palette values to match.
   surface: # the menu-bar popover, which sits on the window material
     light: "hsl(0 0% 100% / 0.85)" # reduced-transparency: hsl(0 0% 100%)
     dark: "hsl(0 0% 11.7% / 0.92)"
@@ -55,10 +54,10 @@ colors:
     dark: "hsl(0 0% 100% / 0.03)"
   surface-hover: # stays clear of surface-selected, so a hover never reads as a selection
     light: "hsl(0 0% 0% / 0.04)"
-    dark: "hsl(0 0% 100% / 0.04)" # @media dark: hsl(0 0% 100% / 0.07)
+    dark: "hsl(0 0% 100% / 0.04)"
   surface-window: # standard decorated window
-    light: "hsl(0 0% 96.4%)" # @media light: hsl(0 0% 96.4% / 0.8)
-    dark: "hsl(0 0% 12.5%)" # @media dark: hsl(0 0% 15.6% / 0.8)
+    light: "hsl(0 0% 96.4%)"
+    dark: "hsl(0 0% 12.5%)"
   surface-sidebar: # source-list / sidebar material
     light: "hsl(0 0% 0% / 0.03)"
     dark: "hsl(0 0% 100% / 0.04)"
@@ -66,8 +65,8 @@ colors:
     light: "hsl(0 0% 0% / 0.09)"
     dark: "hsl(0 0% 100% / 0.14)"
   input-fill:
-    light: "hsl(0 0% 100%)" # @media light: hsl(0 0% 100% / 0.5)
-    dark: "hsl(240 1.6% 23%)" # @media dark: hsl(0 0% 100% / 0.08)
+    light: "hsl(0 0% 100%)"
+    dark: "hsl(240 1.6% 23%)"
   label: # live system label token where available
     light: "hsl(0 0% 0% / 0.85)"
     dark: "hsl(0 0% 100% / 0.92)"
@@ -170,6 +169,34 @@ colors:
   burn-check-neutral: # unassessed arcs and neutral lifecycle marks
     light: "hsl(209 6% 73.7%)"
     dark: "hsl(210 3% 50.5%)"
+  # Main Burn Checks category icons; each circle derives its tint from the icon.
+  check-tools:
+    light: "hsl(27.5 89.4% 51.7%)"
+    dark: "hsl(28.7 100% 59%)"
+  check-mcp:
+    light: "hsl(196.2 100% 42.7%)"
+    dark: "hsl(196 86.4% 53.5%)"
+  check-overthinking:
+    light: "hsl(263 88% 64.4%)"
+    dark: "hsl(260 100% 73.3%)"
+  check-skills:
+    light: "hsl(47 100% 44.9%)"
+    dark: "hsl(47.6 100% 58.2%)"
+  check-subagents:
+    light: "hsl(341 88% 59.4%)"
+    dark: "hsl(342.8 100% 65%)"
+  check-old-model:
+    light: "hsl(40 100% 47%)"
+    dark: "hsl(38.3 100% 58.6%)"
+  check-fast-mode:
+    light: "hsl(47 100% 30.5%)"
+    dark: "hsl(57.6 91% 55.5%)"
+  check-cache:
+    light: "hsl(175.3 100% 35.5%)"
+    dark: "hsl(174.3 74% 47.6%)"
+  check-depth:
+    light: "hsl(158 89% 39.6%)"
+    dark: "hsl(156 75% 47.2%)"
   # Floating-HUD sub-palette only (src/styles/hud.css)
   burn:
     light: "hsl(18 100% 50%)"
@@ -452,12 +479,16 @@ components:
     className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
     topEdgeFade: "ScrollPane topEdgeFade opt-in; activates above scrollTop 1px; alpha 25% at 0px, 75% at 5px, 100% at 12px"
+    bottomEdgeFade: "ScrollPane bottomEdgeFade opt-in; activates with more than 1px below the viewport; mirrors the top fade"
 ---
 
 # antiburn Desktop — Design System
 
 The token reference is the YAML front matter above. Light and Dark live in one file:
 every `colors` entry carries both values, and only those values differ between themes.
+System follows changes to the OS appearance and uses the same Light or Dark palette,
+including its opacity and native system colours. Reduced transparency applies equally
+to System and the corresponding explicit theme.
 Notes for what isn't expressible as a token:
 
 - **Overview panels** — the provider usage meters stay 180 CSS pixels wide
@@ -626,6 +657,8 @@ Notes for what isn't expressible as a token:
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to
   dissolve into a fixed top boundary. It masks only the viewport contents after `scrollTop > 1`;
+  opt into `bottomEdgeFade` to mirror that mask while more content remains below. The bottom
+  boundary updates on scroll and content or viewport resize. Keep scrollbars outside both masks;
   keep fixed labels outside `ScrollPane`. Do not recreate the effect with an overlay, fill, backdrop
   blur, or feature-specific gradient.
 - **Settings type ladder** — one descending step per level, set by the `ui/` primitives rather than
@@ -764,28 +797,57 @@ only for related-session history. Embedded shortcuts stay inside the detail pane
 hygiene reads, relative-time clocks, and active-row motion. The menu-bar list shares this card presentation
 while keeping its existing navigation behavior.
 
-Burn checks uses the workspace as one flexible pane instead of adding a collection pane. It has no
-visual page header. The scroll viewport starts with the report summary and keeps a screen-reader-only
-page heading. The viewport uses the shared top-edge fade and centers a single-column overview. The summary and grouped check
-rows extend the anchored preview. Both surfaces use the same check names, icons, assessed-session
+Burn checks keeps a screen-reader-only page heading and a compact collection header.
+Both panes use `CollectionToolbar`: `pt-2`, `h-8`, `mb-1`, and `px-3` share Tailwind’s
+rem-based geometry. At the 13px root these resolve to 6.5px, 26px, 3.25px, and 9.75px.
+Burn checks adds no first-card top inset. Labels use `type-caption`. Passed and Snoozed
+separators use 8px spacing on each side; collapsed headings have no bottom margin.
+Their disclosure controls retain a 40px minimum hit area.
+Resource cards use `session-card` fill, `rounded-control`, 16px padding, and 16px separation.
+Project context appears once below the title and actions, using the full text-column width.
+Keep it on one line, truncating overflow while retaining the inline folder control.
+The folder hover panel reveals the full recorded local path and supports open/copy actions
+on pointer hover or keyboard focus.
+Failed sessions use the shared session cards without a separate heading, count badge, or disclosure.
+Show all available cards. Lists longer than five cards scroll within the measured height of the
+first five cards. Counts and dates use tabular numerals.
+The project row keeps a bare 14px folder icon in a 20px target and a `mt-1` count gap.
+Resource titles use a 16px vendor column and an 8px gap. Center each vendor against the
+first title line. Metadata, affected counts, and session cards share the title text column.
+Leave 8px before the session list.
+Resource titles and generic finding copy center their first line within a 40px action row.
+The actions align with that first line and wrap without negative vertical offsets.
+Every finding explanation appears below the header metrics.
+Checks without resource cards place their actions at the header’s right edge. Resource actions
+remain inside their cards. Do not repeat explanations or check-level actions in the body.
+The collection and detail panes start at the top of the workspace. The collection docks directly to
+the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
+does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll
+viewports. Padding belongs inside the panes; no centered report wrapper or outer horizontal
+gutter separates the collection from the sidebar. Both surfaces use the same check names, icons, assessed-session
 counts, order, token-burn percentages, summaries, and semantic status colors. This parity comes from
 shared presentation helpers. Do not copy labels or calculate percentages in either surface. Do not
 sum category percentages. Use color only for the compact status icon and metric. Other text and
 surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows;
-the summary never presents incomplete historical evidence as a pending product state. Groups use `surface-card/50`, a subtle `border-separator/40` outline, `rounded-control`,
-internal row separators, and accessible disclosure buttons. Expanded failures use one short, check-specific
-finding sentence, followed by the available actions. Do not show internal target identities,
+settled historical coverage gaps use a not-assessed count, not a processing state. Category rows use
+separate `session-card` rounded controls and accessible selection buttons. The selected detail uses one short, check-specific
+finding sentence below the heading. The prompt action sits at the heading’s right edge. Do not show internal target identities,
 repeated observations, repeated guidance, or detail refresh and bounded-list notices. Only unused MCP servers and unused skills show
-named resource rows. A separate nested disclosure lists bounded sample sessions. Opening a sample selects it in the
-standard Sessions collection and detail layout. Returning to Burn checks preserves the check and
-sample disclosure state. `Fix` opens a small modal that shows the effect, scope, and one
-current-to-new value. The modal traps focus, focuses Cancel first, and closes from Cancel, Escape,
-or the backdrop. At narrow widths, summaries, details, and actions stack without horizontal
-scrolling. The cold loading state uses one busy region, one screen-reader status, an uncontained summary,
-a group label, and three shaped row skeletons. An expanded check uses the same one-region,
+named resource rows. Show bounded failed-session lists directly. Opening a card selects it in the
+standard Sessions collection and detail layout. Returning to Burn checks preserves the check
+selection. A single-target `Fix` opens a small modal that shows the effect, scope, and one
+current-to-new value. Multiple targets open a chooser grouped by agent and scope. State a shared
+disable action once above the list, not in every row, and identify built-in tool choices as optional. Use the standard `PushButton` and the same
+custom checkbox treatment as notification milestones. Selection starts empty, and the primary
+review action stays visibly disabled until the reader selects a target. The modal traps focus,
+focuses Cancel first, and closes from Cancel, Escape, or the backdrop. At narrow widths, summaries, details, and actions stack without horizontal
+scrolling. At constrained detail widths, prose and actions wrap without horizontal scrolling;
+the collection-and-detail structure remains unchanged. The cold loading state uses one busy region,
+one screen-reader status, the compact collection header, three shaped collection-row skeletons, and one detail skeleton.
+A selected check uses the same one-region,
 one-status rule with a compact body, action, and sample skeleton. It must not announce each skeleton. The quiet
 `Your savings` disclosure appears only when at least one supported estimate exists. Place it below
-the report summary and before failed checks. Its neutral vertical list supports any number of
+the check groups in the collection viewport. Its neutral vertical list supports any number of
 contributing checks and collapses into the total. Show token and dollar savings together only when
 they cover the same scope and period.
 Clipboard success replaces `Copy fix prompt` with a disabled `Copied` button for three seconds.
@@ -849,88 +911,173 @@ tokens or the menu-bar list's default appearance to achieve it.
   checks in normal scroll order otherwise. The total appears once in the top cost
   block.
 
-### Main Burn Checks cosmetic polish
+### Main Burn Checks layout
 
-The main report keeps Zack’s failed/passed grouping, ordering, disclosure states,
-target loading, sample navigation, and actions. The summary has no card. Use
-Marty’s `SegmentedRadialDial` at 88px diameter with an 8px stroke and 100% opacity. Use an
-explicit 88px grid column, a flexible text column, and a 24px gap. The ring
-has no center icon. Put a grey 12px `Flame` before the `type-callout`
-“Estimated burn” label, matching its height. The dial uses `brand-tint` for
-avoidable usage and `measure` darker cyan for the remainder. Positive burn has a
-4px minimum arc length at the stroke centerline, about 1.59% of this ring,
-so tiny issues remain visible. Larger values retain their actual proportions.
-The remainder uses the display share so the ring totals 100%. Zero burn has no
-orange arc, and unknown estimates show a neutral ring. Keep zero gaps and flat
-endpoints. The visible text and accessible name retain the exact supplied value
-or its existing display formatting; the arc can overstate values below the floor.
-This display floor belongs only to the hero call site. Other uses retain the
-shared component’s existing proportions and rounded endpoints.
+The collection and detail panes fill the workspace height at every supported breakpoint.
+Use the shared 340px collection width beside the flexible detail pane. Keep the
+screen-reader page heading, but omit a full-width overview, aggregate outcome dial,
+and summary card. Put the failed-check heading and count badge on the left of the collection header,
+with “30 days” on the right. Use secondary `type-callout` for the period.
+Use 8px top, 12px horizontal, and 4px bottom padding from the spacing tokens.
+Use a 32px toolbar row to match Sessions, with centered text.
+Keep the first card’s 8px viewport inset, matching the Sessions list. The first card begins at 52px.
+Keep the screen-reader page heading. Do not give the header a card surface.
 
-Use neutral `type-large-title` with `font-semibold!` for the complete percentage. Write “Less than 1%”
-for a positive estimate below 1%; do not add decorative decimals. Use `type-body`
-for “Of assessed usage could be avoided.” and `type-callout` for the check count,
-with no extra paragraph margins. The text column has an 88px minimum height and
-distributes its lines to align with the circle. It can grow for wrapped text or
-processing status. The failed count has a small `share-waste-text` dot; its words
-stay neutral. Use the documented line heights and 32px vertical hero padding.
-Use explicit 88px wrapper geometry to match the SVG; rem-based spacing utilities
-do not match it with the app’s 13px root font.
-The page fills the workspace with 32px horizontal padding and no centered
-maximum-width column. The cold skeleton follows this hierarchy.
+The header has no assessment info icon, tooltip, or coverage navigation action.
 
-Use `type-title-2` group headings with 32px space above and 12px below. Check
-rows use 16px horizontal and 12px vertical padding, `type-title-3` titles,
-`type-body` summaries, and `font-mono` percentage figures. Metric qualifiers and
-“burn” labels use neutral sans-serif text, with 6px gaps between the pieces. Omit “token” from the main
-view’s displayed metrics; shared percentage calculation and popover copy stay
-unchanged. Check category icons are bare 15px glyphs, with no tinted container. Use
-`label-secondary` for all category icons, including passed checks. Keep their
-existing grid alignment. Failed-session counts use `share-waste-text`; other
-values, savings, and status text below the hero use neutral label colours. Provider logos retain their
-brand colours. Action-success glyphs use `token-in` cyan.
+Do not show processing or not-assessed status in the collection header.
+Settled reports without coverage gaps need no permanent assessment sentence.
+Keep savings, dollar estimates, verification state, retry paths, and report-backed actions.
+Verified savings appear below the check groups in the collection viewport.
 
-Parent check groups use `surface-card/50` with a subtle `border-separator/40`
-outline. Expanded problems and named targets use borderless `surface-card/75`
-for slightly stronger grouping. Savings retains borderless `surface-card/50`.
-Expanded problems use
-`rounded-control` and 16px padding. Keep internal row dividers. Named MCP and skill targets form a responsive grid with a local
-18rem minimum card width, 12px gaps, and 16px outer padding. Cards stack when
-space is narrow. Long resource names wrap. Regular check details keep one card.
-Every action and sample disclosure stays inside its original problem. The hero
-follows Keith’s sketch, using the dial from Marty’s `feat/desktop-pr4-burn-check-design`
-branch at `9cb51e4f`. The approved 02D refinement moves the grey flame beside the label.
+Use quiet `type-footnote` section headings with counts in muted `surface-card`
+circle badges. Badges have a 16px minimum width and height, tabular numerals,
+and a radius of half `space-lg`; larger counts can expand horizontally.
+Prefix failed checks with `CircleAlert` and passed checks with `CircleCheck`.
+Use `burn-check-failure-fill` for failed icons and `burn-check-pass-fill` for passed icons. The passed group retains its disclosure chevron and keyboard behavior.
+Place a collapsed Snoozed group below Passed checks with a neutral Clock and a current count badge.
+Separate adjacent collection groups with a semantic separator aligned to the card edges,
+with 16px above and below the line.
+Snoozed rows retain their check card and show a 13px Clock in secondary ink beside the
+Snoozed-until or Snoozed-forever label. The selected detail heading provides the direct
+BellRing Unsnooze action. A newly snoozed row enters once over `--duration-medium`;
+reduced motion disables that movement through the shared motion rule.
+Category rows use `rounded-popover`, a 10px gap derived from half `space-xl`,
+and the Session-card state recipe: `session-card` at rest,
+`surface-secondary/50` on unselected hover, and `surface-selected/60` when selected.
+The selected fill persists on hover; keyboard focus remains independent. Omit
+selected leading stripes and category-row chevrons.
+
+Main-view check category icons use 16px glyphs with a 1.9px stroke inside
+28px circles. Keep the existing 32px grid column. The circle diameter uses
+`--space-xl` plus `--space-sm`; the icon and loading skeleton share this geometry.
+The skeleton uses a neutral circular fill. `BurnCheckCategoryIcon` maps each detector
+to a static `text-check-*` utility. Each category keeps its color for failed, passed, and
+snoozed results. These decorative icons do not replace the visible check names.
+
+Circle backgrounds mix `currentColor` with transparent using the shared
+`--burn-check-category-tint`: 10% in light mode and 14% in dark mode. Define the
+percentage in every palette branch with the category colors. Keep the existing
+card surface visible through the tint; do not add a white base or tint the card.
+The bright light-mode palette is approved for decorative category icons. Fast mode
+uses a deeper gold to distinguish its thin gauge strokes from the circle tint.
+The main view uses `BookOpen` for skills; other surfaces keep their existing icons.
+
+| Detector ID            | Icon       | Category token       |
+| ---------------------- | ---------- | -------------------- |
+| `unusedBuiltInTools`   | `Wrench`   | `check-tools`        |
+| `unusedMcpServers`     | `Server`   | `check-mcp`          |
+| `modelOverthinking`    | `Brain`    | `check-overthinking` |
+| `unusedSkills`         | `BookOpen` | `check-skills`       |
+| `overpoweredSubagents` | `Bot`      | `check-subagents`    |
+| `oldModelUsage`        | `History`  | `check-old-model`    |
+| `overuseOfFastMode`    | `Gauge`    | `check-fast-mode`    |
+| `cacheChurn`           | `Database` | `check-cache`        |
+| `sessionsOverDepth`    | `Layers3`  | `check-depth`        |
+
+Place neutral 40px vendor watermarks at the bottom-right of category cards, behind the text.
+Reuse `session-vendor-watermark` opacity (5% light, 6% dark), with 4px separation for distinct marks.
+Use the report’s full-cohort finding agents, or clean agents for a passing category.
+Normalize the evidence agent `claude` to the presentation identity `claude-code`.
+Deduplicate icon identities, omit unknown agents, and never infer vendors from bounded samples.
+Titles use medium `type-body`; outcomes use monospaced, tabular `type-footnote`.
+Failed counts use semibold failure ink. Passed counts in failed rows use secondary ink.
+A passing row can retain cyan. Keep the shared gradient flame and exact burn estimate
+below the counts. Zero remains unlit; small positive estimates retain “<1%”.
+
+Select the first failed category initially, or the first passed category when no
+failure exists. Preserve selection while its category exists. Keep details mounted
+so session lists, prepared prompts, fix dialogs, and transient action state survive
+selection and resizing. Up, Down, Home, and End select categories; Enter focuses the detail.
+
+Keep detail headings above their independent scroll viewports. The heading and body
+fill the available detail pane width with 24px horizontal padding on each side.
+The divider spans the pane. Failed-session lists remain left-aligned and cap at 960px,
+shrinking to the available width on smaller windows. Use shared session-card navigation
+and an 8px gap between cards within the Burn Checks report.
+Use one reading column at every breakpoint: description, actions when needed,
+then sample sessions. Do not split guidance and samples into parallel columns.
+The header title uses a left-aligned 960px maximum-width container; its divider stays full width.
+Place actions beside each finding in the body, at the reading column’s right edge.
+For a generic finding, align actions with its description. For named resources, align them with the resource title.
+Constrain each complete resource list to 960px, including titles, actions, descriptions, samples, and dividers.
+Separate resources with a quiet divider, 24px space above, and 24px below. Do not nest resource cards around sample cards.
+Actions wrap at constrained widths. Heading and body start at the same left inset.
+
+On detail panes at least 760px wide, a decorative 280px vector antiburn dot-grid “a”
+can occupy the bottom-right corner. Increase it to 360px when the detail pane reaches 1200px.
+Inset the artwork 12px from the right and crop only 12px at the bottom, preserving its right-hand stroke.
+Use the existing dot layout in `antiburn-mark.svg`, with its viewBox fitted to the visible dots
+and a diagonal transparent-to-7.5% label-color gradient.
+Show it only when unused space below the content is at least the current mark size.
+Observe viewport and content sizes so expanded samples cannot overlap the mark.
+Keep it static, hidden from accessibility, and transparent to pointer input.
+
+Detail headings repeat the card’s failed/passed counts and available burn and cost
+metadata through the same presentation component. They also show “N session(s) affected”
+from the report’s per-session finding count.
+Named MCP and skill checks append “affected resource” counts, with “shown” for truncated lists.
+Lead with affected sessions, then the shared check metadata. Explain the named check once in its header.
+Show each resource’s sanitized project name when available. The local folder panel and
+its explicit actions use the full recorded project path; other display labels remain sanitized.
+Do not infer configuration filenames.
+Show its distinct affected-session count from the backend, never the occurrence or sample count.
+Keep generic recommendations outside resource rows; retain cost, availability, and verification details.
+Show session cards directly without a failed-session heading or disclosure.
+Keep lists of five or fewer cards fully visible. Longer lists scroll within the
+measured height of their first five cards, including gaps. Recalculate that height
+when content or width changes. Preserve keyboard access to the list and its cards.
+Use `ScrollPane` for these longer lists, with its shared scrollbar and both edge fades.
+Reserve `pr-3` inside the viewport so the scrollbar stays beside the cards, matching the session pane.
+Never sum target occurrences or bounded sample counts to derive affected sessions.
+Named findings retain provider marks, names, scopes, and resource-header actions.
+Put each check description in a full-width row below the header metrics. Actions follow in a
+separate row, so they do not reduce the description width. Order check and resource actions as
+Snooze or Unsnooze, Fix when available, then Copy fix prompt. Batch exact prompt targets when
+available. Use the check-level fallback when no exact prompt target is available.
+Add a quiet “Snooze” action for each finding, including single findings.
+It opens the shared menu material with one week, one month, and forever choices.
+Its face stays transparent. The same `RemindLaterAction` becomes Unsnooze for a snoozed check;
+do not add a separate Unsnooze control.
+Named-resource actions remain in their resource headers. Preserve their status and copy feedback.
+Loaded details use no enclosing card. Loading, retry, empty, and passed states keep
+contained cards. Named findings use quiet separators with no additional horizontal inset.
 
 ### Burn Checks action buttons
 
-The opt-in `burn-check-action` variant in `main-window.css` styles the existing
-copy, fix, and change-selection buttons. Keep `ui-push-button` and its standard
-22px control height, 10px horizontal padding, and `rounded-control`. Use regular
-`type-callout` labels, 12px icons, and a 4px gap, matching `PushButton`. The resting surface uses `surface-window`, `separator`,
-and `label`. Enabled hover uses solid `brand` fill and border with
-`selected-ink` text and `shadow-raised`. Press mixes 10% `label` into the
-brand fill and removes the shadow. Transitions use `duration-fast`, with `duration-quick`
-for press movement. The shared keyboard focus ring stays visible. Disabled and
-completed states keep the neutral surface and do not lift or change on hover.
-Success icons use `token-in` cyan. No other buttons use this variant.
-In named target cards, Copy fix prompt fills the available width up to 24rem
-and is horizontally centred. In wide check-level detail panels, actions use
-their natural width and align left beneath the description. Keep the copied
-state in the same slot. Sample-session disclosure labels use semibold callout
-text and the count first, such as “3 Sample sessions”, with no chevron. Hover
-uses `surface-secondary/50` and `label` text with the standard fast transition. Preserve their
-expanded state, keyboard interaction, and accessible disclosure attributes.
+The report-only `burn-check-action` variant in `burn-checks-report.css` styles
+copy, fix, retry, and change-selection controls. Its visible face is 28px high,
+with a 40px hit area and a 44px hit area for coarse pointers. Use `type-callout`
+labels, 12px icons, 10px horizontal face padding, and `rounded-control`. The
+resting face uses a borderless `surface-card` face and `label`. Hover uses neutral
+`surface-hover`; press uses `surface-selected`. Do not use accent or brand color
+for the resting or hover face. Keep the shared keyboard focus ring. Disabled
+and completed states stay neutral. Success icons use `token-in`.
+
+Use natural-width controls in check and named-target details. Keep the copied
+state in the same slot.
+
+Failed sessions use the full shared `SessionRow` cards: `session-card` fill,
+popover corners, real Burn Check status, title, available model and cost data,
+and the neutral vendor watermark. Add a visible source-agent label beside the
+model on this surface; wrap the metadata when space is narrow. Retain the shared
+hover and focus treatments without scaling or extra entrance motion. Respect
+snoozed detectors as the session lists do. Show all available failed sessions from
+the bounded backend result in one mixed-agent list, newest first. Deduplicate
+sessions by their full source identity. Each card's status describes all checks
+assessed for that session.
+Empty available samples use neutral explanatory text.
 
 The menu-bar Burn Checks summary uses `surface-card/50` at rest and
 `surface-secondary/70` on hover or focus within, with a `duration-fast` colour
 transition. Its summary button uses a pointer cursor. Hover does not open the
 checks companion; clicking opens Burn Checks in the main window.
 
-On macOS, Burn Checks reserves a fixed 40px drag strip above its scroll area,
-using `--main-window-titlebar-height` and `data-tauri-drag-region`. The strip
-remains available in loading and error states. Sidebar dragging remains
-available; report controls scroll below the strip and stay interactive.
-Windows and Linux use their native title bars without this added strip.
+On macOS, the collection and detail headers use `data-tauri-drag-region="deep"`.
+Non-interactive header surfaces remain draggable; the info and action buttons remain interactive.
+The loading collection header provides the same drag region. The empty error state
+uses an absolute 40px fallback drag region without reserving layout space.
+Windows and Linux use native title bars without these attributes.
 
 ### Floating HUD LED rings
 
@@ -952,3 +1099,28 @@ Inside the HUD, unlit segments raise `led-off` to full opacity. The token keeps
 its 45% alpha everywhere else, because the popover and the detail card paint
 their own surfaces to hold it. The HUD has none. These ring and opacity values
 are local to `src/styles/hud.css` and are not palette or shadow tokens.
+
+### Project folder actions
+
+Session and Burn Check project rows have a bare 14px folder icon in a 20px target. The folder
+panel opens after 300ms of pointer hover or immediately on keyboard focus.
+A 200ms leave delay lets the pointer cross the 8px gap into the panel. It stays
+open while the pointer or focus is inside. Escape, outside press, window blur,
+viewport resize, and surrounding scroll dismiss it. Hover never moves focus.
+
+The shared `.ui-menu` surface uses an opaque `surface-window`, `shadow-popover`,
+and `rounded-popover`, with no entry animation. The body portal uses layer 100
+and favors the detail pane when its 390px maximum width fits. It clamps to the
+window with 8px clearance and flips above the trigger when needed. Content size
+changes update its placement, including inline errors. The panel
+scrolls internally when its contents exceed the available window height.
+
+The header holds the Project folder label and bare open-folder and copy icons.
+Both use 14px glyphs, 20px targets, 8px separation, and color-only hover feedback.
+These compact desktop targets follow the approved bare-icon design. Keep button
+semantics and keyboard focus indicators without visible button chrome or press
+scaling. Action tooltips name the host file manager and Copy path. Copy success
+replaces its icon with a check for two seconds and announces the result. Errors
+stay inline. The selectable monospace path prefers directory-boundary wraps and
+gives the final directory primary ink. No path, folder name, or error text enters
+analytics. Unknown project paths hide the control; deleted paths remain copyable.

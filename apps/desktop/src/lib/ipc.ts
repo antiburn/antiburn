@@ -301,6 +301,8 @@ export interface SessionAnalysisPayload {
   relations: SessionRelationsPayload | null
   /** The provider's own transcript, for the reveal action. */
   sourcePath: string | null
+  /** The stored absolute working directory. */
+  projectPath: string | null
   /** Unix seconds of this session's own first transcript event, or null when
    * unknown. The sub-agent roster uses it to show each member's start as
    * elapsed time from the session start. */
@@ -789,11 +791,12 @@ export type Interaction =
       kind: "onboardingStepViewed"
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
+  | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
       kind: "surfaceStateObserved"
-      surface: StateSurface
+      surface: Surface
       state: SurfaceState
       origin: SurfaceOrigin
     }
@@ -836,7 +839,6 @@ export type Surface =
   | "settings"
   | "burn_checks"
 
-export type StateSurface = Surface | "insights"
 export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
@@ -1053,14 +1055,16 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
 /**
  * The last provider limit snapshot. This command does not contact a provider.
  */
-export async function getLiveUsage(): Promise<LiveUsageSummaryPayload> {
+export async function getLiveUsage(
+  utcOffsetMinutes = -new Date().getTimezoneOffset(),
+): Promise<LiveUsageSummaryPayload> {
   if (!hasShell()) return EMPTY_LIVE_USAGE
   // Coerced rather than passed through: a shell that answered with nothing is
   // the same fact as a shell with no source, and the views should not each
   // carry a null branch for a state that has a perfectly good empty value.
   return (
     (await invoke<LiveUsageSummaryPayload | null>("get_live_usage", {
-      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+      utcOffsetMinutes,
     })) ?? EMPTY_LIVE_USAGE
   )
 }
@@ -1269,6 +1273,12 @@ export async function deleteSessionData(
     sessionId,
     wslDistro: wslDistro ?? null,
   })
+}
+
+/** Open the project directory through the native file manager. */
+export async function openProjectFolder(path: string): Promise<void> {
+  if (!hasShell()) throw new Error("The native file manager is unavailable")
+  await invoke("open_project_folder", { path })
 }
 
 /** Reveal a transcript in the platform's file manager. */

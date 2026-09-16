@@ -5,6 +5,9 @@
   "windows": ["popover"],
   "permissions": [
     "allow-list-burn-check-targets",
+    "allow-list-burn-check-snoozes",
+    "allow-set-burn-check-snooze",
+    "allow-clear-burn-check-snooze",
     "allow-prepare-auto-fix-burn-check-target",
     "allow-apply-prepared-burn-check-operation",
     "allow-copy-prompt-fix-burn-check-target",

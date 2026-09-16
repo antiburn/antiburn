@@ -2065,6 +2065,7 @@ mod tests {
             source: RawSource::Jsonl(
                 r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- orbit: Synthetic source."}}"#.to_owned(),
             ),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         };
         let mut composite = composite_with_rows("claude", "attachment");
@@ -2084,6 +2085,7 @@ mod tests {
             agent: "claude".to_owned(),
             session_id: "unknown".to_owned(),
             source: RawSource::Jsonl(r#"{"type":"telemetry_ping","payload":"private"}"#.to_owned()),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         };
         let mut composite = composite_with_rows("claude", "unknown");
@@ -2278,6 +2280,7 @@ mod tests {
                         .to_string(),
                     ),
                     fork_parent_session_id: None,
+                    source_format: Default::default(),
                 };
                 let mut sink = CompositeSink::with_turn_rows(
                     SessionMetricsAccumulator::new("claude", id),

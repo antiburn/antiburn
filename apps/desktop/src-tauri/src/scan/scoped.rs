@@ -1,6 +1,5 @@
 //! Scoped passes: the narrow work a watcher burst can answer without a full
-//! discovery walk. See `docs/plans/continuous-session-ingest.md`, "Phase 5b",
-//! rules T1 to T7, for the contract this module implements.
+//! discovery walk.
 //!
 //! [`classify_burst`] routes session, title-store, agent, and database changes.
 //! [`Floors`] limits each lane and keeps deferred work.

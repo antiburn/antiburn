@@ -44,7 +44,7 @@ impl IngestedIncidentKind {
     ///
     /// This matches the vocabulary `provider_incident_kind_label` and
     /// `quota_limit_kind_label` already use. The same kind reports the same
-    /// string whether Insights or this event names it.
+    /// string whether the report or this event names it.
     ///
     /// Only the enabled build's `record_provider_incidents_ingested` calls
     /// this method. A disabled build needs only the kind, not its string

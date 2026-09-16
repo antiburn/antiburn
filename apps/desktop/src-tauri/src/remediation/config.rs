@@ -30,6 +30,16 @@ pub(crate) fn hashed_workspace_key(store: &Store, workspace: &Path) -> Result<St
 pub(crate) struct PublicationConfigAttribution {
     pub model: Option<(String, String, String)>,
     pub reasoning: Option<(String, String, String)>,
+    pub records: Vec<PublicationSettingAttribution>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PublicationSettingAttribution {
+    pub setting: ConfigSetting,
+    pub path: String,
+    pub selector: String,
+    pub expected_value_json: String,
+    pub precedence_hash: String,
 }
 
 pub(crate) fn publication_config_attribution(
@@ -109,7 +119,23 @@ pub(crate) fn publication_config_attribution_with_home(
         effective_model.as_ref().map(|value| value.value.as_str()),
         &models.control_observations,
     )?;
-    Ok(PublicationConfigAttribution { model, reasoning })
+    let mut records = Vec::new();
+    if let Some(record) = model.as_ref().map(|value| value.record.clone()) {
+        records.push(record);
+    }
+    if let Some(record) = reasoning.as_ref().map(|value| value.record.clone()) {
+        records.push(record);
+    }
+    Ok(PublicationConfigAttribution {
+        model: model.map(|value| value.legacy),
+        reasoning: reasoning.map(|value| value.legacy),
+        records,
+    })
+}
+
+struct AttributedSetting {
+    legacy: (String, String, String),
+    record: PublicationSettingAttribution,
 }
 
 fn publication_setting_attribution(
@@ -120,7 +146,7 @@ fn publication_setting_attribution(
     effective: Option<&crate::agent_config::EffectiveConfig>,
     effective_model: Option<&str>,
     observations: &[antiburn_local::analysis::ModelControlObservation],
-) -> Result<Option<(String, String, String)>> {
+) -> Result<Option<AttributedSetting>> {
     let Some(effective) = effective else {
         return Ok(None);
     };
@@ -137,16 +163,38 @@ fn publication_setting_attribution(
     {
         return Ok(None);
     }
-    Ok(Some((
-        physical_key(
-            store,
-            agent,
-            effective.physical_identity(),
-            physical_selector_value(effective.physical_identity().1, effective_model),
-        )?,
-        scope_name(effective.scope).to_owned(),
-        effective.value.clone(),
-    )))
+    let selector_qualifier =
+        physical_selector_value(effective.physical_identity().1, effective_model);
+    let target_hash = physical_key(
+        store,
+        agent,
+        effective.physical_identity(),
+        selector_qualifier,
+    )?;
+    let scope = scope_name(effective.scope).to_owned();
+    let expected_value_json = serde_json::to_string(&effective.value)?;
+    let (path, selector) = effective.physical_identity();
+    let precedence_hash = hashed_parts(
+        store,
+        b"config-precedence",
+        &[
+            agent.slug(),
+            &path.to_string_lossy(),
+            selector,
+            selector_qualifier.unwrap_or_default(),
+            &expected_value_json,
+        ],
+    )?;
+    Ok(Some(AttributedSetting {
+        legacy: (target_hash, scope.clone(), effective.value.clone()),
+        record: PublicationSettingAttribution {
+            setting: effective.setting,
+            path: path.to_string_lossy().into_owned(),
+            selector: selector.to_owned(),
+            expected_value_json,
+            precedence_hash,
+        },
+    }))
 }
 
 pub(super) fn physical_key(
@@ -270,7 +318,7 @@ pub(super) fn recovery_workspace_cwd(root: &Path, relative: Option<&str>) -> Res
 #[cfg(not(windows))]
 pub(super) fn apply_prepared_change(
     editor: &AgentConfigEditor,
-    prepared: &PreparedChange,
+    prepared: &crate::agent_config::PreparedOperation,
 ) -> Result<(), crate::agent_config::ApplyError> {
     editor.apply(prepared)
 }
@@ -278,7 +326,7 @@ pub(super) fn apply_prepared_change(
 #[cfg(windows)]
 pub(super) fn apply_prepared_change(
     _: &AgentConfigEditor,
-    _: &PreparedChange,
+    _: &crate::agent_config::PreparedOperation,
 ) -> Result<(), crate::agent_config::ApplyError> {
     Err(crate::agent_config::ApplyError::Unavailable(
         crate::agent_config::ConfigUnavailableReason::AutomaticApplyUnsupported,

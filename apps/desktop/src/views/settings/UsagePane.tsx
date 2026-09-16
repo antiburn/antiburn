@@ -18,13 +18,16 @@ import {
 import { HudVisibilitySession } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import {
-  liveDisplayableProviders,
+  liveDetectionNote,
   liveErrorNote,
-  liveGraceNote,
-  liveProviderStatus,
-  liveSourceNote,
+  liveSourceAge,
+  liveUnavailableReason,
+  liveWindows,
 } from "../../lib/presentation/liveUsage"
 import type { AppSettingsController } from "./useAppSettings"
+
+/** How often the pane re-asks while on screen. Matches the popover. */
+const USAGE_VISIBLE_POLL_MS = 60_000
 
 /**
  * Usage: where the plan limits come from, and the one switch that turns it
@@ -42,11 +45,8 @@ import type { AppSettingsController } from "./useAppSettings"
  * because a switch with two consequences has to say both or a reader turning
  * it off for one reason is surprised by the other.
  *
- * Show Meter, below, is the same switch one provider at a time. Hidden means
- * antiburn does not ask that provider, so the same two consequences apply and
- * the row says so. The list is a roster of what antiburn can meter, not a list
- * of what answered: a hidden provider reports nothing, and a list built from
- * readings would drop the row that turns it back on.
+ * The provider switches apply the same controls to one provider at a time.
+ * Hidden providers produce no readings. The roster keeps their switches available.
  */
 
 export type UsagePaneProps = AppSettingsController
@@ -66,13 +66,22 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
       load: () => getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
       subscribe: async (set) => {
         const unlisten = await onLiveUsageChanged(set)
-        void refreshLiveUsage().catch(() => undefined)
-        return unlisten
+        // Ask now, then keep asking while this pane is on screen — the same
+        // cadence as the open popover — so a reader who signs in inside a
+        // tool sees the row change without leaving Settings. The backend's
+        // cooldown decides whether a poll reaches the network; detection
+        // runs on every one.
+        const refresh = () => void refreshLiveUsage().catch(() => undefined)
+        refresh()
+        const timer = setInterval(refresh, USAGE_VISIBLE_POLL_MS)
+        return () => {
+          clearInterval(timer)
+          unlisten()
+        }
       },
     }),
   )
   const live = useSyncExternalStore(store.subscribe, store.getSnapshot)
-
   const on = settings?.liveUsageEnabled ?? false
   const hidden = settings?.liveUsageHiddenProviders ?? []
   const meters = roster(live)
@@ -129,10 +138,16 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         </SectionGroup>
       )}
 
-      <SectionGroup title="Show Meter">
+      <SectionGroup title="Track Limits for">
+        <p className="px-1 type-footnote text-label-secondary">
+          You need to sign in inside each tool to track its limits.
+        </p>
         <Card>
           {meters.map((meter) => {
-            const reading = liveDisplayableProviders(live).find(
+            // The last reading, however old: this row reports what antiburn
+            // knows, and a failed check is a reason beside it, not a reason
+            // to hide it. The popover and HUD apply the grace window.
+            const reading = live.providers.find(
               (provider) => provider.provider === meter.provider,
             )
             const failure = live.errors.find((error) => error.provider === meter.provider)
@@ -146,8 +161,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
                   on,
                   reading,
                   failure,
-                  name: meter.displayName,
-                  generatedAt: live.generatedAt,
+                  meter,
                 })}
                 dimmed={!on}
                 trailing={
@@ -158,13 +172,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
                     disabled={!on}
                   />
                 }
-              >
-                {shown && reading && (
-                  <p className="type-caption tabular-nums text-label-tertiary">
-                    {liveSourceNote(reading)}
-                  </p>
-                )}
-              </Row>
+              ></Row>
             )
           })}
         </Card>
@@ -219,45 +227,33 @@ function meterNote({
   on,
   reading,
   failure,
-  name,
-  generatedAt,
+  meter,
 }: {
   shown: boolean
   on: boolean
   reading: LiveUsageSummaryPayload["providers"][number] | undefined
   failure: LiveUsageSummaryPayload["errors"][number] | undefined
-  name: string
-  /** The snapshot's own moment, for measuring a grace-period reading's age. */
-  generatedAt: string
+  meter: LiveUsageMeterPayload
 }): string {
+  const { provider, displayName: name } = meter
   if (!shown) {
     return `antiburn does not ask ${name} for usage, and ${name} milestone notifications do not fire.`
   }
-  // Report what the snapshot holds before reporting a switch. A reading and a
-  // failure can both be true — a stale figure that a fresh attempt could not
-  // replace — and the reader needs the second sentence to read the first one
-  // correctly.
-  const parts: string[] = []
+  // A reading and a failure can both be true — a figure from an earlier
+  // check that the latest one could not replace — so the row keeps the
+  // figure and its own check time, and adds why the latest check failed.
   if (reading) {
-    parts.push(
-      `${reading.sourceLabel}. ${reading.windows.length} limit${
-        reading.windows.length === 1 ? "" : "s"
-      } reported.`,
-    )
+    const count = liveWindows(reading).length
+    const line = `Signed in · ${count} limit${count === 1 ? "" : "s"} tracked ${liveSourceAge(reading)}`
+    return failure
+      ? `${line} · ${liveUnavailableReason(failure.category, failure.detail)}`
+      : line
   }
   if (failure) {
-    // `reading` here has already dropped a `failed` status — see
-    // `liveDisplayableProviders` above — so only `grace` is left to detect.
-    const status = reading
-      ? liveProviderStatus({ errors: [failure], generatedAt }, reading)
-      : null
-    parts.push(
-      status?.kind === "grace"
-        ? liveGraceNote(status.category, failure.provider, status.ageMs)
-        : liveErrorNote(failure.category),
-    )
+    // A rate limit is a provider answering — the sign-in worked.
+    return failure.category === "rateLimited"
+      ? "Signed in · rate limited · retrying"
+      : liveErrorNote(failure.category, provider, failure.detail)
   }
-  if (parts.length > 0) return parts.join(" ")
-  if (!on) return "Turn the switch above back on to ask for current plan limits."
-  return `No readings yet. Sign in with ${name} and this fills in.`
+  return liveDetectionNote(provider, meter.detection ?? "unknown", on, meter.carrierLabel)
 }

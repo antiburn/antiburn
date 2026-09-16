@@ -11,6 +11,8 @@ import type { SessionListEntry } from "../components/session/SessionList"
 import { agentDisplayName } from "./presentation/agents"
 import { sessionBurnCheckPresentation } from "./presentation/burnChecks"
 import { INITIAL_SESSION_HYGIENE, sessionHygieneChecks } from "./presentation/sessionHygiene"
+import type { BurnCheckDetectorId } from "./insightsIpc"
+import { visibleSessionHygieneChecks } from "./snoozedBurnChecks"
 import { sessionHygieneFor, type SessionHygieneSnapshot } from "./useSessionHygiene"
 
 /** One selectable filter over the loaded session list. */
@@ -58,6 +60,7 @@ export function parseSessionFilterId(id: string): SessionFilter {
 function hygieneCountsFor(
   hygieneSnapshot: SessionHygieneSnapshot,
   entry: SessionListEntry,
+  snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
 ): { failed: number; passed: number; unassessed: number } {
   const payload = entry.sessionId
     ? sessionHygieneFor(hygieneSnapshot, {
@@ -66,8 +69,10 @@ function hygieneCountsFor(
         wslDistro: entry.wslDistro ?? null,
       })
     : INITIAL_SESSION_HYGIENE
-  return sessionBurnCheckPresentation(sessionHygieneChecks(payload), payload.evidenceState)
-    .counts
+  return sessionBurnCheckPresentation(
+    visibleSessionHygieneChecks(sessionHygieneChecks(payload), snoozed),
+    payload.evidenceState,
+  ).counts
 }
 
 /** Whether one entry belongs to the given filter. */
@@ -75,6 +80,7 @@ export function matchesSessionFilter(
   entry: SessionListEntry,
   hygieneSnapshot: SessionHygieneSnapshot,
   filter: SessionFilter,
+  snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
 ): boolean {
   switch (filter.kind) {
     case "notable":
@@ -84,9 +90,9 @@ export function matchesSessionFilter(
     case "agent":
       return entry.agent === filter.agent
     case "failing":
-      return hygieneCountsFor(hygieneSnapshot, entry).failed >= 1
+      return hygieneCountsFor(hygieneSnapshot, entry, snoozed).failed >= 1
     case "passing": {
-      const counts = hygieneCountsFor(hygieneSnapshot, entry)
+      const counts = hygieneCountsFor(hygieneSnapshot, entry, snoozed)
       return counts.failed === 0 && counts.passed >= 1
     }
     case "all":
@@ -99,8 +105,11 @@ export function filterSessionEntries(
   entries: readonly SessionListEntry[],
   hygieneSnapshot: SessionHygieneSnapshot,
   filter: SessionFilter,
+  snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
 ): SessionListEntry[] {
-  return entries.filter((entry) => matchesSessionFilter(entry, hygieneSnapshot, filter))
+  return entries.filter((entry) =>
+    matchesSessionFilter(entry, hygieneSnapshot, filter, snoozed),
+  )
 }
 
 /** A count for every fixed filter, plus one row per harness present. */

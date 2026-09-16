@@ -1,8 +1,10 @@
 //! Kiro log discovery.
 //!
-//! Kiro stores agent session files in:
+//! Kiro stores IDE and CLI session files in:
 //! - `<Kiro app config>/User/globalStorage/kiro.kiroagent/workspace-sessions/**/<sessionId>.json`
 //! - `<Kiro app config>/User/globalStorage/kiro.kiroagent/*.chat`
+//! - `~/.kiro/sessions/cli/<uuid>.json` plus `<uuid>.jsonl` (CLI V2)
+//! - `~/.kiro/sessions/<workspace>/sess_<uuid>/session.json` plus `messages.jsonl` (CLI V3)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,7 +22,10 @@ pub async fn all_log_dirs() -> Vec<PathBuf> {
         Some(h) => h,
         None => return Vec::new(),
     };
-    vec![kiro_storage_root_in(&home)]
+    vec![
+        kiro_storage_root_in(&home),
+        kiro_cli_sessions_root_in(&home),
+    ]
 }
 
 pub struct KiroExplorer;
@@ -40,37 +45,82 @@ impl AgentExplorer for KiroExplorer {
     /// - `/.config/kiro/user/globalstorage/kiro.kiroagent/`                      → `ide_desktop` (Linux)
     /// - `/appdata/roaming/kiro/user/globalstorage/kiro.kiroagent/`              → `ide_desktop` (Windows)
     ///
-    /// No CLI substring — Kiro CLI path is undocumented (P1 spike in the
-    /// 2026-05-25 audit).
     fn owns_path(&self, path_lower: &str) -> bool {
         path_lower.contains("/library/application support/kiro/user/globalstorage/kiro.kiroagent/")
             || path_lower.contains("/.config/kiro/user/globalstorage/kiro.kiroagent/")
             || path_lower.contains("/appdata/roaming/kiro/user/globalstorage/kiro.kiroagent/")
+            || path_lower.contains("/.kiro/sessions/cli/")
+            || path_lower.contains("/.kiro/sessions/") && path_lower.contains("/sess_")
     }
 
-    // Kiro IDE globalStorage only on `main` — Kiro CLI path layout is a P1
-    // spike in the 2026-05-25 audit.
     fn unmatched_surface(&self) -> &'static str {
-        "ide_desktop"
+        "unknown"
     }
 
-    /// IDE-only: `<app-config>/Kiro/User/globalStorage/kiro.kiroagent/`. Kiro
-    /// CLI layout is still a P1 spike (2026-05-25 audit).
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         SurfacePaths {
-            cli: Vec::new(),
+            cli: vec![kiro_cli_sessions_root_in(home)],
             ide_desktop: vec![kiro_storage_root_in(home)],
             mirror: Vec::new(),
         }
     }
 
-    /// The same IDE storage root discovery walks.
     fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
-        self.surface_paths(home)
-            .ide_desktop
+        let paths = self.surface_paths(home);
+        paths
+            .cli
             .into_iter()
+            .chain(paths.ide_desktop)
             .map(WatchRoot::recursive)
             .collect()
+    }
+
+    fn supports_subagents(&self) -> bool {
+        true
+    }
+
+    async fn list_subagents(&self, parent_transcript: &Path) -> Vec<PathBuf> {
+        let Some(parent_id) = parent_transcript
+            .file_stem()
+            .and_then(|value| value.to_str())
+        else {
+            return Vec::new();
+        };
+        let Some(directory) = parent_transcript.parent() else {
+            return Vec::new();
+        };
+        if directory.file_name().and_then(|value| value.to_str()) != Some("cli") {
+            return Vec::new();
+        }
+        let mut entries = match tokio::fs::read_dir(directory).await {
+            Ok(entries) => entries,
+            Err(_) => return Vec::new(),
+        };
+        let mut children = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if !is_kiro_session_file(&path) || path == parent_transcript {
+                continue;
+            }
+            let Ok(bytes) = tokio::fs::read(&path).await else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            if value.get("parent_session_id").and_then(Value::as_str) == Some(parent_id) {
+                children.push(path);
+            }
+        }
+        children.sort();
+        children
+    }
+
+    fn subagent_id(&self, path: &Path) -> Option<String> {
+        path.file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| is_uuid(value))
+            .map(str::to_owned)
     }
 }
 
@@ -191,6 +241,10 @@ fn kiro_storage_root_in(home: &Path) -> PathBuf {
         .join("kiro.kiroagent")
 }
 
+fn kiro_cli_sessions_root_in(home: &Path) -> PathBuf {
+    home.join(".kiro").join("sessions")
+}
+
 fn is_kiro_session_file(path: &Path) -> bool {
     let file_name = match path.file_name().and_then(|n| n.to_str()) {
         Some(name) => name,
@@ -198,6 +252,26 @@ fn is_kiro_session_file(path: &Path) -> bool {
     };
 
     if file_name.ends_with(".chat") {
+        return true;
+    }
+
+    if let Some(parent) = path.parent()
+        && parent.file_name().and_then(|name| name.to_str()) == Some("cli")
+        && file_name.ends_with(".json")
+        && let Some(id) = path.file_stem().and_then(|name| name.to_str())
+    {
+        return is_uuid(id) && parent.join(format!("{id}.jsonl")).is_file();
+    }
+
+    if file_name == "session.json"
+        && let Some(parent) = path.parent()
+        && parent.join("messages.jsonl").is_file()
+        && parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("sess_"))
+            .is_some_and(is_uuid)
+    {
         return true;
     }
 
@@ -209,7 +283,25 @@ fn is_kiro_session_file(path: &Path) -> bool {
     false
 }
 
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
 async fn session_id_for_file(path: &Path, canonical: bool) -> String {
+    if path.file_name().and_then(|name| name.to_str()) == Some("session.json")
+        && let Some(id) = path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("sess_"))
+            .filter(|id| is_uuid(id))
+    {
+        return id.to_owned();
+    }
     if canonical {
         return path
             .file_stem()
@@ -324,5 +416,43 @@ mod tests {
             SessionSource::Inline { .. } => panic!("expected file source"),
             SessionSource::ProviderDb { .. } => panic!("expected file source"),
         }
+    }
+
+    #[tokio::test]
+    async fn v2_child_relation_uses_only_parent_session_id() {
+        let temp = TempDir::new().unwrap();
+        let cli = temp.path().join("cli");
+        tokio::fs::create_dir_all(&cli).await.unwrap();
+        let root = cli.join("11111111-1111-4111-8111-111111111111.json");
+        let child = cli.join("22222222-2222-4222-8222-222222222222.json");
+        tokio::fs::write(
+            &root,
+            include_str!("../../../tests/fixtures/kiro_cli_v2_bundle/root.json"),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            root.with_extension("jsonl"),
+            include_str!("../../../tests/fixtures/kiro_cli_v2_bundle/root.jsonl"),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &child,
+            include_str!("../../../tests/fixtures/kiro_cli_v2_bundle/child.json"),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            child.with_extension("jsonl"),
+            include_str!("../../../tests/fixtures/kiro_cli_v2_bundle/child.jsonl"),
+        )
+        .await
+        .unwrap();
+        let ignored_history = cli.join("11111111-1111-4111-8111-111111111111.history");
+        let ignored_lock = cli.join("11111111-1111-4111-8111-111111111111.lock");
+        assert!(!is_kiro_session_file(&ignored_history));
+        assert!(!is_kiro_session_file(&ignored_lock));
+        assert_eq!(KiroExplorer.list_subagents(&root).await, vec![child]);
     }
 }

@@ -67,6 +67,7 @@ export function OnboardingView() {
         onToggleRepository={session.toggleRepository}
         onDiscover={session.rescan}
         scanStatus={state.scanStatus}
+        liveUsageMeters={state.liveUsageMeters}
         disabledAgents={state.disabledAgents}
         onAgentEnabledChange={session.setAgentEnabled}
         launchAtLogin={state.launchAtLogin}

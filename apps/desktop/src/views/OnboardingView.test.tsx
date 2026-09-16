@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import type { LiveUsageMeterPayload, LiveUsageSummaryPayload } from "../lib/ipc"
 import { OnboardingView } from "./OnboardingView"
+import { OnboardingSession } from "./onboarding/OnboardingSession"
 
 const invoke = vi.hoisted(() => vi.fn())
 const openDialog = vi.hoisted(() => vi.fn())
@@ -32,6 +34,17 @@ const SETTINGS = {
   analyticsEnabled: true,
   disabledAgents: [],
   nudgesRespectDnd: false,
+}
+
+const LIVE_USAGE: LiveUsageSummaryPayload = {
+  providers: [],
+  errors: [],
+  generatedAt: "",
+  meters: [
+    { provider: "openai", displayName: "Codex", shown: true, detection: "unknown" },
+    { provider: "anthropic", displayName: "Claude", shown: true, detection: "signedIn" },
+    { provider: "google", displayName: "Google", shown: true, detection: "notInstalled" },
+  ],
 }
 
 /** A finished analysis pass over the four scanned sessions. */
@@ -108,6 +121,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve((args as Record<string, unknown> | undefined)?.["settings"])
       case "finish_onboarding":
         return Promise.resolve({ ...SETTINGS, onboardingCompleted: true })
+      case "get_live_usage":
+        return Promise.resolve(LIVE_USAGE)
       case "get_hygiene_summary":
         return Promise.resolve(HYGIENE_SUMMARY)
       case "list_scan_roots":
@@ -166,10 +181,165 @@ describe("OnboardingView", () => {
     fireEvent.keyDown(document, { key: ",", ctrlKey: true })
     expect(invoke).toHaveBeenCalledWith("open_settings_window", { pane: null })
 
+    expect(invoke.mock.calls.some(([command]) => command === "get_live_usage")).toBe(false)
     resolveSettings(SETTINGS)
     expect(
       await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
     ).toBeInTheDocument()
+  })
+
+  it("shows detected login carriers and omits Codex while its detection is unknown", async () => {
+    render(<OnboardingView />)
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await waitFor(() => {
+      expect(screen.getByText("Detected: Claude Code ✓ · Antigravity ✗").textContent).toBe(
+        "Detected: Claude Code ✓ · Antigravity ✗",
+      )
+    })
+    expect(invoke).toHaveBeenCalledWith("get_live_usage", {
+      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+    })
+    expect(invoke.mock.calls.some(([command]) => command === "refresh_live_usage")).toBe(false)
+  })
+
+  it.each<{ name: string; meters: LiveUsageMeterPayload[] }>([
+    {
+      name: "all unknown",
+      meters: LIVE_USAGE.meters.map((meter) => ({ ...meter, detection: "unknown" })),
+    },
+    { name: "empty", meters: [] },
+    {
+      name: "legacy fields",
+      meters: [{ provider: "anthropic", displayName: "Claude", shown: true }],
+    },
+  ])("omits the detection line for $name meters", async ({ meters }) => {
+    let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
+    mockCommands({
+      get_live_usage: new Promise<LiveUsageSummaryPayload>((resolve) => {
+        resolveUsage = resolve
+      }),
+    })
+    render(<OnboardingView />)
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await screen.findByRole("heading", { name: "Scan Locations: Agents" })
+    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
+    await act(async () => {
+      resolveUsage({ ...LIVE_USAGE, meters })
+    })
+    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
+  })
+
+  it("updates the detection line when an independent request finishes", async () => {
+    let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
+    mockCommands({
+      get_live_usage: new Promise<LiveUsageSummaryPayload>((resolve) => {
+        resolveUsage = resolve
+      }),
+    })
+    render(<OnboardingView />)
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await screen.findByRole("heading", { name: "Scan Locations: Agents" })
+    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
+    await act(async () => {
+      resolveUsage({
+        ...LIVE_USAGE,
+        meters: [
+          { provider: "openai", displayName: "Codex", shown: true, detection: "signedIn" },
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "installedNotSignedIn",
+          },
+        ],
+      })
+    })
+    expect(await screen.findByText("Detected: Codex ✓ · Claude Code ✗")).toBeInTheDocument()
+  })
+
+  it("says when a login comes through Pi, proven or not", async () => {
+    let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
+    mockCommands({
+      get_live_usage: new Promise<LiveUsageSummaryPayload>((resolve) => {
+        resolveUsage = resolve
+      }),
+    })
+    render(<OnboardingView />)
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await screen.findByRole("heading", { name: "Scan Locations: Agents" })
+    await act(async () => {
+      resolveUsage({
+        ...LIVE_USAGE,
+        meters: [
+          {
+            provider: "openai",
+            displayName: "Codex",
+            shown: true,
+            detection: "signedIn",
+            carrier: "pi",
+            carrierLabel: "Pi",
+          },
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "unknown",
+            carrier: "pi",
+            carrierLabel: "Pi",
+          },
+        ],
+      })
+    })
+    expect(
+      await screen.findByText("Detected: Codex ✓ via Pi · Claude Code ? via Pi"),
+    ).toBeInTheDocument()
+  })
+
+  it("still reaches Ready when the detection request rejects", async () => {
+    mockCommands({ get_live_usage: () => Promise.reject(new Error("detection unavailable")) })
+    render(<OnboardingView />)
+    await advanceToReady()
+    expect(invoke).toHaveBeenCalledWith("get_live_usage", expect.any(Object))
+    expect(screen.queryByText("antiburn could not start setup")).not.toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Ready" })).toBeInTheDocument()
+  })
+
+  it("does not wait for a pending detection request to show essential onboarding content", async () => {
+    mockCommands({ get_live_usage: new Promise<LiveUsageSummaryPayload>(() => {}) })
+    render(<OnboardingView />)
+    expect(
+      await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
+    ).toBeInTheDocument()
+    expect(invoke).toHaveBeenCalledWith("get_live_usage", expect.any(Object))
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+    expect(
+      await screen.findByRole("heading", { name: "Scan Locations: Agents" }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+    expect(await screen.findByRole("heading", { name: "Ready" })).toBeInTheDocument()
+  })
+
+  it("ignores a detection response after the session stops", async () => {
+    let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
+    mockCommands({
+      get_live_usage: new Promise<LiveUsageSummaryPayload>((resolve) => {
+        resolveUsage = resolve
+      }),
+    })
+    const session = new OnboardingSession()
+    const listener = vi.fn()
+    const stop = session.subscribe(listener)
+    await waitFor(() => expect(session.getSnapshot().loadState).toBe("ready"))
+    expect(session.getSnapshot().liveUsageMeters).toBeNull()
+    stop()
+    listener.mockClear()
+    await act(async () => {
+      resolveUsage(LIVE_USAGE)
+    })
+    expect(session.getSnapshot().liveUsageMeters).toBeNull()
+    expect(listener).not.toHaveBeenCalled()
   })
 
   it("releases its shell subscriptions when the window view unmounts", async () => {

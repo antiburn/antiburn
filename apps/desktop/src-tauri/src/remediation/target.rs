@@ -56,21 +56,18 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
             _ => None,
         },
         physical_target_key: target.physical_target_key.clone(),
-        config_setting: target.physical_target_key.as_ref().and_then(|_| {
-            match target.findings[0].finding.cause() {
-                FindingCause::OldModelUsage { .. } => Some("model".to_owned()),
-                FindingCause::ModelOverthinking { .. } => Some("reasoning".to_owned()),
-                _ => None,
-            }
-        }),
+        config_setting: target
+            .config
+            .as_ref()
+            .map(|config| config_setting_name(config.operation.setting).to_owned()),
         config_expected_value: target
             .config
             .as_ref()
-            .map(|config| config.operation.expected_value.clone()),
+            .map(|config| config.operation.expected_value.display_value()),
         config_proposed_value: target
             .config
             .as_ref()
-            .map(|config| config.operation.proposed_value.clone()),
+            .map(|config| config.operation.proposed_value.display_value()),
         verification_method_revision: VERIFICATION_METHOD_REVISION,
         remediation_policy_revision: Some(REMEDIATION_POLICY_REVISION),
         savings_method_revision: SAVINGS_METHOD_REVISION,
@@ -109,9 +106,7 @@ pub(super) fn target_identity(
     let attributed = match finding.finding.cause() {
         FindingCause::OldModelUsage { .. }
             if reviewed_config_operation(agent, finding.finding.cause()).is_some_and(
-                |operation| {
-                    finding.effective_model.as_deref() == Some(operation.expected_value.as_str())
-                },
+                |operation| finding.effective_model.as_deref() == operation.expected_value.scalar(),
             ) =>
         {
             Some((
@@ -189,32 +184,15 @@ pub(super) fn finding_scope(
     workspace_key: Option<&str>,
 ) -> (String, String) {
     match cause {
-        FindingCause::SessionsOverDepth { .. } | FindingCause::CacheChurn { .. } => (
+        FindingCause::CacheChurn { .. } => (
             "session".to_owned(),
             session_scope_key(secret, agent, session_id),
-        ),
-        FindingCause::OverpoweredSubagents {
-            worker_ordinal,
-            parent_call_id,
-            ..
-        } => (
-            "worker".to_owned(),
-            hashed_parts_with_secret(
-                secret,
-                b"worker",
-                &[
-                    agent,
-                    session_id,
-                    &worker_ordinal.to_string(),
-                    parent_call_id.as_deref().unwrap_or_default(),
-                ],
-            ),
         ),
         _ => workspace_key.map_or_else(
             || {
                 (
-                    "session".to_owned(),
-                    session_scope_key(secret, agent, session_id),
+                    "global".to_owned(),
+                    hashed_parts_with_secret(secret, b"global", &[agent]),
                 )
             },
             |workspace_key| ("project".to_owned(), workspace_key.to_owned()),
@@ -353,6 +331,59 @@ pub(super) fn reviewed_config_operation(
     cause: &FindingCause,
 ) -> Option<ConfigOperation> {
     match cause {
+        FindingCause::OverpoweredSubagents { worker_model, .. } => {
+            let replacement = if worker_model.starts_with("claude-") {
+                "claude-sonnet-5"
+            } else if worker_model.starts_with("gpt-") {
+                "gpt-5.6-luna"
+            } else if worker_model.starts_with("gemini-") {
+                "gemini-3.8-flash"
+            } else {
+                return None;
+            };
+            Some(ConfigOperation {
+                setting: ConfigSetting::SubagentModel,
+                expected_value: worker_model.clone().into(),
+                proposed_value: replacement.into(),
+            })
+        }
+        FindingCause::UnusedMcpServer { server, .. } => Some(ConfigOperation {
+            setting: ConfigSetting::McpServer,
+            expected_value: crate::agent_config::ConfigOperationValue::MapEntry {
+                key: server.clone(),
+                value: "true".to_owned(),
+            },
+            proposed_value: crate::agent_config::ConfigOperationValue::MapEntry {
+                key: server.clone(),
+                value: "false".to_owned(),
+            },
+        }),
+        FindingCause::UnusedBuiltInTool { tool, .. }
+            if built_in_tool_remediation_supported(tool) =>
+        {
+            Some(ConfigOperation {
+                setting: ConfigSetting::BuiltInTool,
+                expected_value: crate::agent_config::ConfigOperationValue::MapEntry {
+                    key: tool.clone(),
+                    value: "true".to_owned(),
+                },
+                proposed_value: crate::agent_config::ConfigOperationValue::MapEntry {
+                    key: tool.clone(),
+                    value: "false".to_owned(),
+                },
+            })
+        }
+        FindingCause::UnusedSkill { skill, .. } => Some(ConfigOperation {
+            setting: ConfigSetting::Skill,
+            expected_value: crate::agent_config::ConfigOperationValue::MapEntry {
+                key: skill.clone(),
+                value: "true".to_owned(),
+            },
+            proposed_value: crate::agent_config::ConfigOperationValue::MapEntry {
+                key: skill.clone(),
+                value: "false".to_owned(),
+            },
+        }),
         FindingCause::OldModelUsage {
             provider,
             model,
@@ -367,8 +398,8 @@ pub(super) fn reviewed_config_operation(
             };
             Some(ConfigOperation {
                 setting: ConfigSetting::Model,
-                expected_value: config_value(model)?,
-                proposed_value: config_value(replacement)?,
+                expected_value: config_value(model)?.into(),
+                proposed_value: config_value(replacement)?.into(),
             })
         }
         FindingCause::ModelOverthinking {
@@ -387,8 +418,25 @@ pub(super) fn reviewed_config_operation(
         {
             Some(ConfigOperation {
                 setting: ConfigSetting::Reasoning,
-                expected_value: reasoning.clone(),
-                proposed_value: "medium".to_owned(),
+                expected_value: reasoning.clone().into(),
+                proposed_value: "medium".into(),
+            })
+        }
+        FindingCause::OveruseOfFastMode { .. }
+            if matches!(agent, AgentKind::Claude | AgentKind::Codex) =>
+        {
+            Some(ConfigOperation {
+                setting: ConfigSetting::FastMode,
+                expected_value: match agent {
+                    AgentKind::Claude => crate::agent_config::ConfigOperationValue::Boolean(true),
+                    AgentKind::Codex => "fast".into(),
+                    _ => unreachable!(),
+                },
+                proposed_value: match agent {
+                    AgentKind::Claude => crate::agent_config::ConfigOperationValue::Boolean(false),
+                    AgentKind::Codex => "standard".into(),
+                    _ => unreachable!(),
+                },
             })
         }
         _ => None,
@@ -419,11 +467,53 @@ pub(super) fn reviewed_reasoning_above_cap(
         && !proposed.family_policy.effort.above_cap.contains("medium")
 }
 
+pub(super) fn compaction_operation(cause: &FindingCause, current: &str) -> Option<ConfigOperation> {
+    let FindingCause::SessionsOverDepth { limit_tokens, .. } = cause else {
+        return None;
+    };
+    if current == "false" {
+        return Some(ConfigOperation {
+            setting: ConfigSetting::Compaction,
+            expected_value: crate::agent_config::ConfigOperationValue::Boolean(false),
+            proposed_value: crate::agent_config::ConfigOperationValue::Boolean(true),
+        });
+    }
+    let current = current.parse::<u64>().ok()?;
+    if current > *limit_tokens {
+        Some(ConfigOperation {
+            setting: ConfigSetting::Compaction,
+            expected_value: crate::agent_config::ConfigOperationValue::Number(current),
+            proposed_value: crate::agent_config::ConfigOperationValue::Number(*limit_tokens),
+        })
+    } else {
+        None
+    }
+}
+
 pub(super) fn config_setting_from_name(value: &str) -> Option<ConfigSetting> {
     match value {
         "model" => Some(ConfigSetting::Model),
         "reasoning" => Some(ConfigSetting::Reasoning),
+        "compaction" => Some(ConfigSetting::Compaction),
+        "fastMode" => Some(ConfigSetting::FastMode),
+        "subagentModel" => Some(ConfigSetting::SubagentModel),
+        "mcpServer" => Some(ConfigSetting::McpServer),
+        "builtInTool" => Some(ConfigSetting::BuiltInTool),
+        "skill" => Some(ConfigSetting::Skill),
         _ => None,
+    }
+}
+
+fn config_setting_name(setting: ConfigSetting) -> &'static str {
+    match setting {
+        ConfigSetting::Model => "model",
+        ConfigSetting::Reasoning => "reasoning",
+        ConfigSetting::Compaction => "compaction",
+        ConfigSetting::SubagentModel => "subagentModel",
+        ConfigSetting::McpServer => "mcpServer",
+        ConfigSetting::BuiltInTool => "builtInTool",
+        ConfigSetting::Skill => "skill",
+        ConfigSetting::FastMode => "fastMode",
     }
 }
 

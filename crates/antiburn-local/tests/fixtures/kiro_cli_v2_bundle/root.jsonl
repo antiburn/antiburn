@@ -1,0 +1,1 @@
+{"version":"v1","kind":"AssistantMessage","data":{"message_id":"root-message","content":[{"kind":"toolUse","data":{"toolUseId":"root-tool","name":"subagent","input":{}}}]}}

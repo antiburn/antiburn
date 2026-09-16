@@ -37,6 +37,21 @@ pub fn default_auth_path() -> Option<PathBuf> {
     Some(antiburn_local::paths::home_dir()?.join(".pi/agent/auth.json"))
 }
 
+/// The provider keys the store holds, and nothing under them.
+///
+/// Detection asks this to learn *which* providers to ask Pi about. The
+/// values are never inspected: Pi's own `auth check --no-refresh` answers
+/// whether an entry is usable, so no token passes through this process.
+pub fn provider_keys(path: &Path) -> Option<std::collections::BTreeSet<String>> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_AUTH_BYTES {
+        return None;
+    }
+    let contents = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&contents).ok()?;
+    Some(value.as_object()?.keys().cloned().collect())
+}
+
 /// Read a live OAuth entry for `provider_key`.
 pub fn read_entry(path: &Path, provider_key: &str) -> Option<PiOauth> {
     let metadata = fs::metadata(path).ok()?;

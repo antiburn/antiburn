@@ -161,6 +161,7 @@ fn input(name: &str) -> SessionInput {
         session_id: name.to_string(),
         source: RawSource::Jsonl(fixture(name).to_string()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -252,6 +253,7 @@ fn file_input_bytes(name: &str, source: &[u8], directory: &tempfile::TempDir) ->
         session_id: name.to_string(),
         source: RawSource::File(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -1524,6 +1526,7 @@ fn incomplete_final_record_is_not_committed() {
         session_id: "incomplete_final_record".to_string(),
         source: RawSource::Jsonl(completed),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let normalized = normalize_source(&completed_input).expect("completed source must normalize");
     assert_eq!(normalized.events.len(), 3);
@@ -1574,6 +1577,7 @@ fn an_in_memory_source_commits_an_unterminated_final_record() {
         session_id: "unterminated-memory".to_string(),
         source: RawSource::Jsonl(three_record_source()),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).expect("in-memory source must normalize");
     assert_eq!(session.events.len(), 3);
@@ -1586,6 +1590,7 @@ fn a_slash_command_skill_resolves_when_its_marker_arrives_later() {
         session_id: "late-skill-marker".to_string(),
         source: RawSource::Jsonl(late_skill_source(true)),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).expect("skill source must normalize");
     let detail = session.events[0]
@@ -1622,6 +1627,7 @@ fn a_builtin_named_skill_resolves_when_its_marker_arrives_later() {
         session_id: "builtin-named-skill".to_string(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-named-skill");
     reader_for("claude")
@@ -1669,6 +1675,7 @@ fn builtin_commands_do_not_exhaust_late_skill_metric_candidates() {
         session_id: "builtin-command-budget".to_string(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-command-budget");
     reader_for("claude")
@@ -1684,6 +1691,7 @@ fn a_skill_marker_in_a_record_with_no_role_is_still_collected() {
         session_id: "roleless-skill-marker".to_string(),
         source: RawSource::Jsonl(late_skill_source(false)),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).expect("skill source must normalize");
     let detail = session.events[0]
@@ -1708,6 +1716,7 @@ fn two_priceable_models_of_equal_rank_keep_the_first_seen() {
         session_id: "equal-rank-models".to_string(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let session = normalize_source(&input).expect("model source must normalize");
     assert_eq!(session.model.as_deref(), Some("claude-opus-4-7-20260115"));
@@ -1721,6 +1730,7 @@ fn an_unopenable_file_source_omits_the_whole_session() {
         session_id: "unopenable".to_string(),
         source: RawSource::File(directory.path().join("missing.jsonl")),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let normalize_failed = normalize_source(&input).is_err();
     let session_was_omitted = analyze_sources_with(vec![input], false).sessions.is_empty();
@@ -1752,6 +1762,7 @@ fn an_oversized_metric_bearing_record_is_dropped_for_both_source_variants() {
             session_id: "oversized-metrics-memory".to_string(),
             source: RawSource::Jsonl(source),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
     ];
 
@@ -1893,18 +1904,21 @@ fn fork_replay_session(directory: &tempfile::TempDir) -> [SessionInput; 3] {
             session_id: "fork-replay-parent".to_string(),
             source: RawSource::File(parent_path),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
         SessionInput {
             agent: "claude".to_string(),
             session_id: "fork-replay-normal-child".to_string(),
             source: RawSource::File(normal_path),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
         SessionInput {
             agent: "claude".to_string(),
             session_id: "fork-replay-fork-child".to_string(),
             source: RawSource::File(fork_path),
             fork_parent_session_id: None,
+            source_format: Default::default(),
         },
     ]
 }
@@ -2039,6 +2053,7 @@ fn fork_lineage_session(directory: &tempfile::TempDir) -> SessionInput {
         session_id: "fork".to_string(),
         source: RawSource::File(fork_path),
         fork_parent_session_id: Some("parent".to_string()),
+        source_format: Default::default(),
     }
 }
 

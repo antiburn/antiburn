@@ -3,8 +3,7 @@
 //! One table maps `(harness, fixture, BadgeId)` to the badge status the real
 //! pipeline must report: `SessionInput` through the vendor adapter, the
 //! composite evidence sink, and `session_badges(&evidence,
-//! &ReportCatalogs::default())`. This is the first instalment of the Phase 5
-//! acceptance artifact in `docs/plans/session-evidence-harness-parity.md`.
+//! &ReportCatalogs::default())`.
 //!
 //! Every fixture is synthetic. Existing characterization fixtures cover most
 //! cells; the rest are new files under each suite's own fixture directory,
@@ -144,8 +143,17 @@ fn evidence_for(
     let input = SessionInput {
         agent: agent.to_owned(),
         session_id: name.to_owned(),
-        source: RawSource::Jsonl(text.to_owned()),
+        source: RawSource::Jsonl(
+            if agent == "pi" && !text.starts_with("{\"type\":\"session\"") {
+                format!(
+                    "{{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{text}"
+                )
+            } else {
+                text.to_owned()
+            },
+        ),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -426,13 +434,14 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
         session_id: input.session_id.clone(),
         kind: SourceKind::from(&input.source),
-        capabilities: reader_for("opencode").capabilities(&input.source),
+        capabilities: reader_for("opencode").capabilities(&input),
     });
     let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
     let turn_rows = TurnRowSink::new(

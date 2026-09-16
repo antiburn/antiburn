@@ -7,7 +7,7 @@ import {
 import { useCallback, useRef, useState, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
-import type { SessionHygienePayload } from "../../lib/insightsIpc"
+import type { BurnCheckDetectorId, SessionHygienePayload } from "../../lib/insightsIpc"
 import {
   agentDisplayName,
   agentProvider,
@@ -27,6 +27,7 @@ import {
 } from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { sessionBurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import { visibleSessionHygieneChecks } from "../../lib/snoozedBurnChecks"
 import { sessionHygieneFor, type SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
 import { BurnCheckStatus } from "../burn-checks/BurnCheckStatus"
 import { Tooltip } from "../presentation/Tooltip"
@@ -87,6 +88,7 @@ export interface SessionListEntry {
 }
 
 export interface SessionListProps {
+  snoozedDetectors?: ReadonlySet<BurnCheckDetectorId>
   /** Sessions to show. Ordering and grouping are this component's job. */
   entries: SessionListEntry[]
   /** Calendar-day window for finished sessions. Also drives the empty copy. */
@@ -274,6 +276,7 @@ function groupHeadingId(label: string): string {
 }
 
 export interface SessionRowProps {
+  snoozedDetectors?: ReadonlySet<BurnCheckDetectorId>
   entry: SessionListEntry
   hygiene: SessionHygienePayload
   onOpen?: () => void
@@ -286,6 +289,8 @@ export interface SessionRowProps {
   wslIcon?: ReactNode | undefined
   showRepository?: boolean | undefined
   showCost?: boolean
+  showAgentLabel?: boolean
+  busy?: boolean
   /**
    * One line: the status, the title, the first model, the time and the
    * cost. For a summary list outside Sessions, where the card's second
@@ -325,10 +330,13 @@ export function SessionRow({
   showRepository = false,
   limitBadge,
   showCost = true,
+  showAgentLabel = false,
+  busy = false,
   compact = false,
+  snoozedDetectors = new Set(),
 }: SessionRowProps) {
   const selectionMode = !!entry.sessionId && !!onSelect
-  const clickable = !!entry.sessionId && (!!onOpen || selectionMode)
+  const clickable = !!onOpen || selectionMode
   const primary = primaryLine(entry)
   const modelRuns = entry.modelRuns ?? []
   const modelPairs = modelRunShortPairs(modelRuns)
@@ -342,9 +350,12 @@ export function SessionRow({
     ? `${entry.repo}${entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}`
     : ""
   const compactTrailingTime = hasRepo && repositoryLabel.length > 18
-  const hygieneChecks = sessionHygieneChecks(hygiene)
+  const hygieneChecks = visibleSessionHygieneChecks(
+    sessionHygieneChecks(hygiene),
+    snoozedDetectors,
+  )
   const hasContextDetails = !!entry.branch || !!entry.wslDistro
-  const hasContextIdentity = hasContextAnchor || hasRepo || hasContextDetails
+  const hasContextIdentity = hasContextAnchor || hasRepo || hasContextDetails || showAgentLabel
   const contextDescription = [
     `Session source: ${agentDisplayName(entry.agent)}.`,
     modelNames.length > 0 ? `Models: ${modelNames.join(", ")}.` : "",
@@ -422,9 +433,12 @@ export function SessionRow({
         role: "button" as const,
         tabIndex: tabIndex ?? 0,
         "aria-current": selected ? ("true" as const) : undefined,
+        "aria-busy": busy || undefined,
+        "aria-disabled": busy || undefined,
         "data-session-row": "",
         onClick: selectionMode
           ? (event: React.MouseEvent<HTMLDivElement>) => {
+              if (busy) return
               const target = event.target as Element
               const nestedControl = target.closest(
                 'button, a, input, select, textarea, [role="button"]',
@@ -433,7 +447,9 @@ export function SessionRow({
               event.currentTarget.focus()
               onSelect?.()
             }
-          : onOpen,
+          : () => {
+              if (!busy) onOpen?.()
+            },
         onKeyDown: (event: React.KeyboardEvent) => {
           // Only when the row itself has focus: a nested control's Enter
           // belongs to that control, not to the card behind it.
@@ -442,6 +458,7 @@ export function SessionRow({
             (event.key === "Enter" || event.key === " ")
           ) {
             event.preventDefault()
+            if (busy) return
             if (selectionMode) {
               if (event.key === "Enter") onOpenDetail?.()
               else onSelect?.()
@@ -453,6 +470,16 @@ export function SessionRow({
       }
     : {}
 
+  const cardStateClassName = cn(
+    selected ? "bg-surface-selected/60" : "bg-session-card",
+    entry.isActive && active && "activity-row-active",
+    clickable && "cursor-pointer",
+    busy && "cursor-wait! opacity-60",
+    clickable &&
+      !selected &&
+      "hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
+  )
+
   if (compact) {
     const presentation = sessionBurnCheckPresentation(hygieneChecks, hygiene.evidenceState)
     const cost = showCost ? entry.cost : undefined
@@ -461,12 +488,7 @@ export function SessionRow({
         className={cn(
           "session-card group relative isolate flex w-full min-w-0 items-center gap-x-3 overflow-hidden",
           "rounded-[var(--radius-popover)] px-3 py-2",
-          selected ? "bg-surface-selected/60" : "bg-session-card",
-          entry.isActive && active && "activity-row-active",
-          clickable && "cursor-pointer",
-          clickable &&
-            !selected &&
-            "hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
+          cardStateClassName,
         )}
         data-session-row-compact=""
         {...interactiveProps}
@@ -505,12 +527,7 @@ export function SessionRow({
         "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-0.5",
         "items-center",
         "rounded-[var(--radius-popover)] px-3 py-3",
-        selected ? "bg-surface-selected/60" : "bg-session-card",
-        entry.isActive && active && "activity-row-active",
-        clickable && "cursor-pointer",
-        clickable &&
-          !selected &&
-          "hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
+        cardStateClassName,
       )}
       {...interactiveProps}
     >
@@ -539,17 +556,27 @@ export function SessionRow({
 
       {(hasContextIdentity || entry.timestamp) && (
         <div
-          className="relative z-10 col-2 flex w-full min-w-0 items-baseline gap-x-2"
+          className={cn(
+            "relative z-10 col-2 flex w-full min-w-0 items-baseline gap-x-2",
+            showAgentLabel && "flex-wrap gap-y-0.5",
+          )}
           data-session-context-row=""
         >
           {hasContextAnchor && (
             <Tooltip label={contextTooltip}>
               <div
                 aria-label={contextDescription}
-                className="flex shrink-0 items-baseline gap-x-1.5 type-callout text-label-tertiary"
+                className={cn(
+                  "flex items-baseline gap-x-1.5 type-callout text-label-tertiary",
+                  showAgentLabel ? "min-w-0" : "shrink-0",
+                )}
               >
                 {firstModel && (
-                  <span className="shrink-0 whitespace-nowrap">
+                  <span
+                    className={
+                      showAgentLabel ? "min-w-0 truncate" : "shrink-0 whitespace-nowrap"
+                    }
+                  >
                     <span className="font-semibold! text-label-secondary">
                       {firstModel.model}
                     </span>
@@ -566,6 +593,12 @@ export function SessionRow({
                 )}
               </div>
             </Tooltip>
+          )}
+
+          {showAgentLabel && (
+            <span className="inline-flex shrink-0 items-baseline gap-x-1.5 type-footnote text-label-tertiary">
+              {agentDisplayName(entry.agent)}
+            </span>
           )}
 
           {hasContextDetails && (
@@ -625,6 +658,7 @@ export function SessionRow({
  * ordering, grouping, the sticky group label, and row presentation.
  */
 export function SessionList({
+  snoozedDetectors = new Set(),
   entries,
   days,
   emptyTitle,
@@ -856,7 +890,7 @@ export function SessionList({
     <section
       aria-label="Sessions"
       data-tauri-drag-region={draggableHeader ? "" : undefined}
-      className="flex h-full min-h-0 flex-col pt-2"
+      className={cn("flex h-full min-h-0 flex-col", !onBadgeMetricChange && "pt-2")}
       onKeyDownCapture={moveVirtualFocus}
     >
       <span className="sr-only" aria-live="polite" aria-atomic="true">
@@ -980,7 +1014,8 @@ export function SessionList({
                                       })
                                     : INITIAL_SESSION_HYGIENE
                                 }
-                                {...(onOpenSession
+                                snoozedDetectors={snoozedDetectors}
+                                {...(onOpenSession && virtualItem.item.entry.sessionId
                                   ? {
                                       onOpen: () => {
                                         onMeasurementsChange?.(virtualizer.takeSnapshot())

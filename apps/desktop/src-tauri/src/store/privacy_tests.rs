@@ -7,8 +7,7 @@
 //! `session_evidence`, `session_analysis`, `session_relation`, and any table
 //! a future migration adds. It also calls the real [`Store::delete_session`]
 //! and [`Store::clear_local_session_data`] methods, not a lower-level
-//! stand-in for them. See "Privacy with content stored" in
-//! `docs/plans/session-evidence-harness-parity.md`.
+//! stand-in for them.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -164,6 +163,7 @@ fn ingest_and_publish(store: &Store, kind: AgentKind, session_id: &str, source: 
         session_id: session_id.to_owned(),
         source,
         fork_parent_session_id: None,
+        source_format: Default::default(),
     };
     let mut pass = crate::analysis::evidence_pass_with_turn_rows(
         std::slice::from_ref(&input),

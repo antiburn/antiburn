@@ -126,7 +126,25 @@ pub enum RunOutcome {
 pub trait RefreshRunner: Send + Sync {
     /// Run the delegated refresh for `provider_key` and report how it ended.
     fn run(&self, provider_key: &str) -> RunOutcome;
+
+    /// Ask Pi whether `provider_key` is usable, with `--no-refresh`: a pure
+    /// read that never writes the store. Detection uses this.
+    fn check(&self, provider_key: &str) -> RunOutcome;
 }
+
+/// What Pi says about one provider entry, for detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PiStatus {
+    /// The store names the provider and Pi reports its credential ready.
+    Ready,
+    /// The store lacks the provider, or Pi reports the entry unusable.
+    NotReady,
+    /// Pi could not be asked. Say nothing.
+    Unknown,
+}
+
+/// How long one `--no-refresh` answer stands in for another ask.
+const CHECK_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// What [`PiRefresher::recover`] tells its caller to do next.
 ///
@@ -155,6 +173,9 @@ pub struct PiRefresher {
     /// When the last attempt *started*. Claimed before the spawn, so an
     /// overlapping caller sees it and deduplicates instead of racing.
     last_attempt: Mutex<Option<Instant>>,
+    /// The last `--no-refresh` answer and when it was asked, so detection
+    /// polls do not spawn node on every pass.
+    last_check: Mutex<Option<(Instant, PiStatus)>>,
 }
 
 impl PiRefresher {
@@ -168,6 +189,7 @@ impl PiRefresher {
         PiRefresher {
             runner,
             last_attempt: Mutex::new(None),
+            last_check: Mutex::new(None),
         }
     }
 
@@ -178,6 +200,9 @@ impl PiRefresher {
         struct Never;
         impl RefreshRunner for Never {
             fn run(&self, _provider_key: &str) -> RunOutcome {
+                RunOutcome::Unavailable
+            }
+            fn check(&self, _provider_key: &str) -> RunOutcome {
                 RunOutcome::Unavailable
             }
         }
@@ -234,6 +259,43 @@ impl PiRefresher {
     }
 }
 
+impl PiRefresher {
+    /// Whether the store at `auth_path` holds a usable `provider_key`,
+    /// as Pi itself reports it.
+    ///
+    /// Reads only the store's key names to decide whether there is anything
+    /// to ask about, then lets `pi auth check --no-refresh --json` answer.
+    /// No token is read here, and Pi does not write. The answer is held for
+    /// [`CHECK_TTL`] so a detection pass costs at most one spawn per window.
+    pub fn status(&self, auth_path: &Path, provider_key: &str) -> PiStatus {
+        let Some(keys) = pi_auth::provider_keys(auth_path) else {
+            return PiStatus::Unknown;
+        };
+        if !keys.contains(provider_key) {
+            return PiStatus::NotReady;
+        }
+        let mut last = self
+            .last_check
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, status)) = *last
+            && at.elapsed() < CHECK_TTL
+        {
+            return status;
+        }
+        let status = match self.runner.check(provider_key) {
+            RunOutcome::Completed => PiStatus::Ready,
+            RunOutcome::Rejected => PiStatus::NotReady,
+            RunOutcome::Unavailable => PiStatus::Unknown,
+        };
+        // An unavailable lever is not an answer worth holding.
+        if status != PiStatus::Unknown {
+            *last = Some((Instant::now(), status));
+        }
+        status
+    }
+}
+
 impl Default for PiRefresher {
     fn default() -> PiRefresher {
         PiRefresher::new()
@@ -263,7 +325,17 @@ impl RefreshRunner for LiveRunner {
         let Some(node) = locate_node(&candidate_dirs()) else {
             return RunOutcome::Unavailable;
         };
-        run_delegated(&node, &cli, provider_key)
+        run_delegated(&node, &cli, provider_key, true)
+    }
+
+    fn check(&self, provider_key: &str) -> RunOutcome {
+        let Some(cli) = locate_package_cli_in(&candidate_dirs()) else {
+            return RunOutcome::Unavailable;
+        };
+        let Some(node) = locate_node(&candidate_dirs()) else {
+            return RunOutcome::Unavailable;
+        };
+        run_delegated(&node, &cli, provider_key, false)
     }
 }
 
@@ -423,11 +495,14 @@ fn locate_node(dirs: &[PathBuf]) -> Option<PathBuf> {
 /// [`TIMEOUT`] and classify what came back. Without `--no-refresh`, this
 /// command refreshes an expired OAuth credential through Pi's own locked
 /// `getAuth` path and persists the rotation itself.
-fn run_delegated(node: &Path, cli: &Path, provider_key: &str) -> RunOutcome {
+fn run_delegated(node: &Path, cli: &Path, provider_key: &str, refresh: bool) -> RunOutcome {
     let mut command = antiburn_local::platform::process::headless_std_command(node);
     command
         .arg(cli)
         .args(["auth", "check", "--provider", provider_key, "--json"]);
+    if !refresh {
+        command.arg("--no-refresh");
+    }
     match bounded_run(&mut command, TIMEOUT) {
         BoundedRun::Exited { success, stdout } => classify_output(success, &stdout),
         BoundedRun::Failed => RunOutcome::Unavailable,
@@ -565,6 +640,10 @@ mod tests {
             if let Some((path, body)) = &self.rewrite {
                 fs::write(path, body).expect("rewrite store");
             }
+            self.outcome
+        }
+        fn check(&self, _provider_key: &str) -> RunOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             self.outcome
         }
     }

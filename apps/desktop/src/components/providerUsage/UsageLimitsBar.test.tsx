@@ -530,6 +530,25 @@ describe("UsageLimitsBar — degraded state", () => {
     expect(seat).toHaveAttribute("title", "Claude — rate limited")
   })
 
+  it.each<{ error: LiveUsageSourceErrorPayload; note: string }>([
+    {
+      error: sourceError({ category: "unavailable", detail: "keychainUnreadable" }),
+      note: "Couldn't read Claude Code's login from the Keychain. If a prompt appears, choose Always Allow.",
+    },
+    {
+      error: sourceError({
+        provider: "google",
+        displayName: "Google",
+        category: "authentication",
+        detail: "refreshUnsupported",
+      }),
+      note: "Antigravity's login has expired. Sign in inside Antigravity again.",
+    },
+  ])("shows qualified guidance for $error.detail when expanded", ({ error, note }) => {
+    bar({ live: liveSummary({ providers: [], errors: [error] }), expanded: true })
+    expect(screen.getByRole("group", { name: error.displayName })).toHaveTextContent(note)
+  })
+
   it("explains the failure in the expanded listing", () => {
     bar({
       live: liveSummary({ providers: [], errors: [sourceError()] }),

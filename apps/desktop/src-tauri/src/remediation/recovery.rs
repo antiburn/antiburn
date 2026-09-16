@@ -120,7 +120,15 @@ pub(crate) fn recover_uncertain_write(
     };
     context.runtime_override_present = runtime_override_present(agent);
     context.managed_configuration_present = managed_configuration_present(agent, &home);
-    let Ok(effective) = AgentConfigEditor::new().effective(&context, setting) else {
+    let expected_target = match setting {
+        ConfigSetting::McpServer | ConfigSetting::BuiltInTool | ConfigSetting::Skill => {
+            definition.resource.as_deref()
+        }
+        _ => definition.config_expected_value.as_deref(),
+    };
+    let Ok(effective) =
+        AgentConfigEditor::new().effective_for_value(&context, setting, expected_target)
+    else {
         return store.defer_remediation_recovery(
             &record.remediation_id,
             "verificationUnavailable",

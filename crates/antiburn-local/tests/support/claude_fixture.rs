@@ -24,6 +24,7 @@ pub fn session_input(name: &str) -> SessionInput {
         session_id: name.to_owned(),
         source: RawSource::Jsonl(read_fixture(name)),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     }
 }
 
@@ -37,6 +38,7 @@ pub fn stream_source(name: &str, source: String) -> CompositeSink {
         session_id: name.to_owned(),
         source: RawSource::Jsonl(source),
         fork_parent_session_id: None,
+        source_format: Default::default(),
     })
 }
 

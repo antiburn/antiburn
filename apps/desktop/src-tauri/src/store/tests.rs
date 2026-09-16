@@ -383,6 +383,7 @@ fn published_evidence_pass(record: &SessionRecord) -> crate::analysis::EvidenceP
 "#
                 .into(),
             ),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         }],
         &|| false,
@@ -1084,6 +1085,11 @@ fn session_evidence_table_shape_is_stable() {
             "effective_reasoning_target_hash",
             "effective_reasoning_scope",
             "effective_reasoning",
+            "effective_config_path",
+            "effective_config_selector",
+            "effective_config_precedence_hash",
+            "effective_config_resource_name",
+            "effective_config_value_json",
         ]
     );
 }
@@ -2848,6 +2854,7 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
 "#
                     .into(),
                 ),
+                source_format: Default::default(),
                 fork_parent_session_id: None,
             }],
             &|| false,
@@ -2922,6 +2929,7 @@ async fn analysis_from_rows_still_serves_a_published_pass_after_a_requeue() {
 "#
                     .into(),
                 ),
+                source_format: Default::default(),
                 fork_parent_session_id: None,
             }],
             &|| false,

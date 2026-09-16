@@ -105,6 +105,7 @@ async fn run_worker_step(
             agent: "claude".into(),
             session_id,
             source: RawSource::File(parent_path.clone()),
+            source_format: Default::default(),
             fork_parent_session_id: None,
         }];
         if let Some(child_path) = child_path.clone() {
@@ -113,6 +114,7 @@ async fn run_worker_step(
                 session_id: child_session_id,
                 source: RawSource::File(child_path),
                 fork_parent_session_id: None,
+                source_format: Default::default(),
             });
         }
         let captured_outcomes = Arc::clone(&captured_outcomes_for_analyzer);

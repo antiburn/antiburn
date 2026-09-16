@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import type {
   LiveProviderUsagePayload,
+  LiveUsageDetection,
   LiveUsageForecastPayload,
   LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
@@ -9,6 +10,7 @@ import type {
 } from "../ipc"
 import {
   liveAuthNote,
+  liveDetectionNote,
   liveDisplayableProviders,
   liveErrorNote,
   liveExtraUsageLabel,
@@ -664,6 +666,57 @@ function sourceError(
   }
 }
 
+describe("live detection notes", () => {
+  const cases: [string, LiveUsageDetection, string][] = [
+    [
+      "anthropic",
+      "notInstalled",
+      "Couldn't find Claude Code or Claude Code usage on this computer.",
+    ],
+    ["anthropic", "installedNotSignedIn", "Found Claude Code, but it isn't signed in."],
+    ["anthropic", "signedIn", "Signed in."],
+    ["anthropic", "unknown", "Not checked yet."],
+    [
+      "google",
+      "notInstalled",
+      "Couldn't find Antigravity or Antigravity usage on this computer.",
+    ],
+    ["google", "installedNotSignedIn", "Found Antigravity, but it isn't signed in."],
+    ["openai", "notInstalled", "Couldn't find Codex or Codex usage on this computer."],
+    ["openai", "installedNotSignedIn", "Found Codex, but it isn't signed in."],
+    [
+      "unrecognized",
+      "notInstalled",
+      "Couldn't find this tool or this tool usage on this computer.",
+    ],
+  ]
+
+  it.each(cases)("keeps the %s %s note to one line", (provider, detection, note) => {
+    expect(liveDetectionNote(provider, detection, true)).toBe(note)
+  })
+
+  it.each(cases)("keeps the disabled note for %s detection %s", (provider, detection) => {
+    expect(liveDetectionNote(provider, detection, false)).toBe(
+      "Turn the switch above back on to ask for current plan limits.",
+    )
+  })
+
+  it("names the tool the login came from, never a command", () => {
+    expect(liveDetectionNote("anthropic", "signedIn", true, "Claude Code (Keychain)")).toBe(
+      "Signed in through Claude Code (Keychain).",
+    )
+    expect(liveDetectionNote("openai", "signedIn", true, "Pi")).toBe("Signed in through Pi.")
+    expect(liveDetectionNote("anthropic", "installedNotSignedIn", true, "Pi")).toBe(
+      "Found Pi, but it isn't signed in to Claude Code.",
+    )
+  })
+
+  it("defaults absent detection to not checked", () => {
+    expect(liveDetectionNote("anthropic", undefined, true)).toBe("Not checked yet.")
+    expect(liveDetectionNote("anthropic", "unknown", true, "Pi")).toBe("Not checked yet.")
+  })
+})
+
 describe("the failure surface", () => {
   it("banners only the failure a reader can act on", () => {
     expect(liveAuthNote(summary())).toBeNull()
@@ -722,8 +775,125 @@ describe("the failure surface", () => {
   it("phrases each failure category in a couple of words", () => {
     expect(liveUnavailableReason("rateLimited")).toBe("rate limited")
     expect(liveUnavailableReason("authentication")).toBe("sign-in needed")
+    expect(liveUnavailableReason("authentication", "refreshPending")).toBe("refreshing sign-in")
+    expect(liveUnavailableReason("authentication", "cliMissing")).toBe("stale token")
+    expect(liveUnavailableReason("authentication", "signInRequired")).toBe("sign-in needed")
     expect(liveUnavailableReason("schema")).toBe("unreadable reply")
     expect(liveUnavailableReason("somethingNew")).toBe("unreachable")
+  })
+
+  it.each<{
+    error: LiveUsageSourceErrorPayload
+    note: string
+  }>([
+    {
+      error: sourceError({ category: "unavailable", detail: "keychainUnreadable" }),
+      note: "Couldn't read Claude Code's login from the Keychain. If a prompt appears, choose Always Allow.",
+    },
+    {
+      error: sourceError({
+        provider: "google",
+        displayName: "Google",
+        category: "authentication",
+        detail: "refreshUnsupported",
+      }),
+      note: "Antigravity's login has expired. Sign in inside Antigravity again.",
+    },
+    {
+      error: sourceError({ category: "authentication", detail: "cliMissing" }),
+      note: "Claude Code's login has expired and there's nothing here to refresh it. Sign in inside Claude Code.",
+    },
+    {
+      error: sourceError({ category: "authentication", detail: "signInRequired" }),
+      note: "Claude Code's login has expired. Sign in inside Claude Code again.",
+    },
+    {
+      error: sourceError({ category: "authentication", detail: "refreshPending" }),
+      note: "Claude Code's login has expired. It refreshes on the next check.",
+    },
+  ])("qualifies $error.detail and preserves it for the HUD", ({ error, note }) => {
+    expect(liveErrorNote(error.category, error.provider, error.detail)).toBe(note)
+    const entries = liveUnavailableProviders(summary({ providers: [], errors: [error] }))
+    expect(entries).toEqual([
+      {
+        provider: error.provider,
+        displayName: error.displayName,
+        category: error.category,
+        detail: error.detail,
+      },
+    ])
+  })
+
+  it("keeps unrelated error/detail combinations byte-identical", () => {
+    const categories = [
+      "authentication",
+      "rateLimited",
+      "schema",
+      "unavailable",
+      "somethingNew",
+    ]
+    const details: LiveUsageSourceErrorPayload["detail"][] = [
+      undefined,
+      "keychainUnreadable",
+      "refreshUnsupported",
+      "cliMissing",
+      "signInRequired",
+      "refreshPending",
+    ]
+    const claudeSignInDetails = ["cliMissing", "signInRequired", "refreshPending"]
+    for (const provider of [undefined, "anthropic", "google", "openai", "unrecognized"]) {
+      for (const category of categories) {
+        for (const detail of details) {
+          if (category === "unavailable" && detail === "keychainUnreadable") continue
+          if (
+            category === "authentication" &&
+            provider === "anthropic" &&
+            claudeSignInDetails.includes(detail ?? "")
+          )
+            continue
+          if (
+            category === "authentication" &&
+            provider === "google" &&
+            detail === "refreshUnsupported"
+          )
+            continue
+          expect(liveErrorNote(category, provider, detail)).toBe(
+            liveErrorNote(category, provider),
+          )
+        }
+      }
+    }
+  })
+
+  it.each([
+    ["anthropic", "Claude"],
+    ["openai", "Codex"],
+  ])("preserves existing category-only wording for %s", (provider, name) => {
+    expect(liveErrorNote("authentication", provider)).toBe(
+      `${name} sign-in expired. Sign in again, then retry.`,
+    )
+    expect(liveErrorNote("rateLimited", provider)).toBe(
+      `${name} rate limited usage checks. Wait, then retry.`,
+    )
+    expect(liveErrorNote("schema", provider)).toBe(
+      `${name} usage changed. Update antiburn, then retry.`,
+    )
+    expect(liveErrorNote("unavailable", provider)).toBe(
+      `${name} usage is unavailable. Check your connection, then retry.`,
+    )
+  })
+
+  it("preserves category-only wording without a known provider", () => {
+    expect(liveErrorNote("authentication")).toBe(
+      "Sign in again with your coding tool, then retry.",
+    )
+    expect(liveErrorNote("rateLimited")).toBe(
+      "Your provider rate limited usage checks. Wait, then retry.",
+    )
+    expect(liveErrorNote("schema")).toBe("Provider usage changed. Update antiburn, then retry.")
+    expect(liveErrorNote("unavailable")).toBe(
+      "Provider usage is unavailable. Check your connection, then retry.",
+    )
   })
 
   it("gives each Google failure one concise action", () => {
@@ -763,6 +933,34 @@ describe("the grace period", () => {
       reading,
     )
     expect(status).toEqual({ kind: "failed", category: "rateLimited" })
+  })
+
+  it("keeps a pending delegated refresh in grace past the window", () => {
+    // 11 minutes old — past the window — but the CLI has not been asked yet.
+    const reading = provider({ observedAt: "2027-01-15T11:49:00Z" })
+    const error = sourceError({ category: "authentication", detail: "refreshPending" })
+    const status = liveProviderStatus({ errors: [error], generatedAt: GENERATED_AT }, reading)
+    expect(status).toEqual({
+      kind: "grace",
+      category: "authentication",
+      ageMs: 11 * 60_000,
+      detail: "refreshPending",
+    })
+    expect(liveGraceNote("authentication", "anthropic", 11 * 60_000, "refreshPending")).toBe(
+      "Claude login expired; it refreshes on the next check. Reading from 11 min ago.",
+    )
+  })
+
+  it("fails a settled-but-dead sign-in past the window and carries the detail", () => {
+    const reading = provider({ observedAt: "2027-01-15T11:49:00Z" })
+    const error = sourceError({ category: "authentication", detail: "signInRequired" })
+    expect(liveProviderStatus({ errors: [error], generatedAt: GENERATED_AT }, reading)).toEqual(
+      {
+        kind: "failed",
+        category: "authentication",
+        detail: "signInRequired",
+      },
+    )
   })
 
   it("reads exactly the grace boundary as still grace", () => {

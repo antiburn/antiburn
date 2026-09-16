@@ -27,7 +27,8 @@ interface AgentInfo {
   defaultSurface: AgentSurface
   /**
    * Whether the engine has a usable session parser for this agent.
-   * Passive source registration does not enable analysis.
+   * This does not describe discovery or Burn Check support. Passive source
+   * registration does not enable analysis.
    */
   supportsAnalysis: boolean
 }
@@ -64,7 +65,7 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "Cline",
     icon: "cline",
     defaultSurface: "unknown",
-    supportsAnalysis: false,
+    supportsAnalysis: true,
   },
   opencode: {
     displayName: "OpenCode",
@@ -75,8 +76,8 @@ const AGENTS: Record<string, AgentInfo> = {
   kiro: {
     displayName: "Kiro",
     icon: "kiro",
-    defaultSurface: "ide_desktop",
-    supportsAnalysis: false,
+    defaultSurface: "unknown",
+    supportsAnalysis: true,
   },
   "amp-code": {
     displayName: "Amp",

@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1012,13 +1012,25 @@ ALTER TABLE session_evidence ADD COLUMN effective_reasoning TEXT;
 /// v47 stores the one-hour cache-write premium subset for pricing.
 const V47: &str = antiburn_local::analysis::TURN_SCHEMA_V8_SQL;
 
-/// v48 records a provider-stated refusal on the reading that carries it.
+/// v48 reserves typed remediation attribution fields. Existing publications
+/// remain unavailable for these controls because their source data cannot be
+/// reconstructed safely.
+const V48: &str = r#"
+ALTER TABLE session_evidence ADD COLUMN effective_config_path TEXT;
+ALTER TABLE session_evidence ADD COLUMN effective_config_selector TEXT;
+ALTER TABLE session_evidence ADD COLUMN effective_config_precedence_hash TEXT;
+ALTER TABLE session_evidence ADD COLUMN effective_config_resource_name TEXT;
+ALTER TABLE session_evidence ADD COLUMN effective_config_value_json TEXT CHECK (
+    effective_config_value_json IS NULL OR json_valid(effective_config_value_json));
+"#;
+
+/// v49 records a provider-stated refusal on the reading that carries it.
 ///
 /// A used figure of 100% is not a refusal. Only the provider saying it
 /// refused a request is one. Codex states this on the same `rate_limits`
 /// object the reading already comes from, so the observation row is where
 /// it belongs.
-const V48: &str = r#"
+const V49: &str = r#"
 ALTER TABLE provider_usage_observation ADD COLUMN refusal_kind TEXT;
 
 CREATE INDEX provider_usage_observation_refusal
@@ -1026,7 +1038,7 @@ CREATE INDEX provider_usage_observation_refusal
     WHERE refusal_kind IS NOT NULL;
 "#;
 
-/// v49 keeps one rollup row for each allowance period.
+/// v50 keeps one rollup row for each allowance period.
 ///
 /// Utilization is a per-period question: the peak the reader reached inside
 /// each window instance. Retention prunes the raw readings at 90 days, so
@@ -1036,7 +1048,7 @@ CREATE INDEX provider_usage_observation_refusal
 /// The rollup holds only the figures. The period row keeps the identity, the
 /// start, and the reset, so retention now also keeps a period that has a
 /// rollup.
-const V49: &str = r#"
+const V50: &str = r#"
 CREATE TABLE provider_usage_period_rollup (
     period_id         INTEGER PRIMARY KEY
                       REFERENCES provider_usage_period(id),
