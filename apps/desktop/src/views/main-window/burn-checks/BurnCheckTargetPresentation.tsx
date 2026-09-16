@@ -58,7 +58,7 @@ export function watchStatus(target: BurnCheckTargetPayload): string | null {
     case "watching":
       return "Awaiting verification from a later complete session."
     case "fixed":
-      return "Verified after your fix."
+      return watch.origin === "passive" ? "Verified improvement." : "Verified after your fix."
     case "stillUnresolved":
       return "Fresh evidence still shows this finding."
     case "recurred":
@@ -66,7 +66,7 @@ export function watchStatus(target: BurnCheckTargetPayload): string | null {
     case "recoveryNeeded":
       return "The write result is uncertain. Review the setting before another change."
     case "verificationUnavailable":
-      return null
+      return "Current evidence cannot verify this fix."
   }
 }
 

@@ -326,12 +326,12 @@ fn prompt_support_matrix_matches_all_five_phase_one_agents() {
         (
             "opencode",
             &[SourceFormat::OpenCodeJsonl, SourceFormat::OpenCodeSqliteV2][..],
-            [true, false, true, false, false, true, true, false, true],
+            [true, false, true, true, true, true, true, false, true],
         ),
         (
             "pi",
             &[SourceFormat::PiV3Jsonl][..],
-            [true, true, true, false, false, false, true, false, true],
+            [true, true, true, true, true, true, true, false, true],
         ),
         (
             "antigravity",
@@ -372,6 +372,29 @@ fn prompt_support_matrix_matches_all_five_phase_one_agents() {
         ),
         Err(RemediationUnavailableReason::UnsupportedSourceFormat)
     );
+}
+
+#[test]
+fn advisory_resource_prompt_does_not_claim_session_injection() {
+    let finding = Finding::advisory_resource(
+        AgentKind::Pi,
+        SourceFormat::PiV3Jsonl,
+        FindingCause::UnusedSkill {
+            skill: "review".into(),
+            tokens: Some(25),
+            cost_usd: None,
+            pricing_revision: None,
+        },
+    )
+    .unwrap();
+
+    let prompt = remediation_prompt(&finding).unwrap();
+    assert!(
+        prompt
+            .as_str()
+            .contains("current or indexed resource inventory")
+    );
+    assert!(!prompt.as_str().contains("fully injected skill document"));
 }
 
 #[test]

@@ -37,6 +37,11 @@ type FailedCommandOutcome<Outcome, Success extends string> = Exclude<
   null | { outcome: Success }
 >
 
+type FailedApplyOutcome = Exclude<
+  Awaited<ReturnType<typeof applyPreparedBurnCheckOperation>>,
+  null | { outcome: "appliedAwaitingVerification" } | { outcome: "applied" }
+>
+
 type FailureInput =
   | {
       stage: "prepare"
@@ -47,10 +52,7 @@ type FailureInput =
     }
   | {
       stage: "apply"
-      outcome: FailedCommandOutcome<
-        Awaited<ReturnType<typeof applyPreparedBurnCheckOperation>>,
-        "appliedAwaitingVerification"
-      > | null
+      outcome: FailedApplyOutcome | null
     }
 
 function attemptKey(target: BurnCheckTargetPayload): string {
@@ -90,6 +92,7 @@ function applyAnalytics(
   if (outcome.outcome === "appliedAwaitingVerification") {
     return "applied_awaiting_verification"
   }
+  if (outcome.outcome === "applied") return "applied_verification_unavailable"
   return outcome.outcome === "recoveryNeeded" ? "recovery_needed" : outcome.outcome
 }
 
@@ -265,19 +268,27 @@ export function BurnCheckTargetActions({
           : null
       noteInteraction({ kind: "burnCheckAutoFixCompleted", outcome: applyAnalytics(outcome) })
       if (clearStaleApply(startedAttemptKey, completedWatchId)) return
-      if (outcome?.outcome === "appliedAwaitingVerification") {
+      if (
+        outcome?.outcome === "appliedAwaitingVerification" ||
+        outcome?.outcome === "applied"
+      ) {
+        const watchId =
+          outcome.outcome === "appliedAwaitingVerification" ? outcome.watchId : null
         flushSync(() => {
           setAction((value) => ({
             ...value,
-            acceptedWatchId: outcome.watchId,
+            acceptedWatchId: watchId,
             busy: null,
             review: null,
-            status: null,
+            status:
+              outcome.outcome === "applied"
+                ? "Change applied. Current evidence cannot verify this fix."
+                : null,
           }))
         })
         trigger.current?.focus()
         setAction((value) => ({ ...value, applied: true }))
-        scheduleSuccessReset("applied", startedAttemptKey, outcome.watchId)
+        scheduleSuccessReset("applied", startedAttemptKey, watchId)
         refresh()
         return
       }
@@ -316,7 +327,7 @@ export function BurnCheckTargetActions({
       if (prompt === null) {
         const outcome = await copyPromptFixBurnCheckTarget(target.actionId)
         const completedWatchId =
-          outcome?.outcome === "promptReady" ? outcome.watch.watchId : null
+          outcome?.outcome === "promptReady" ? (outcome.watch?.watchId ?? null) : null
         noteInteraction({ kind: "burnCheckPromptPrepared", outcome: promptAnalytics(outcome) })
         if (completionIsStale(startedAttemptKey, completedWatchId)) return
         if (!outcome || outcome.outcome !== "promptReady") {
@@ -332,7 +343,7 @@ export function BurnCheckTargetActions({
           return
         }
         prompt = outcome.prompt
-        acceptedWatchId = outcome.watch.watchId
+        acceptedWatchId = outcome.watch?.watchId ?? null
       }
       await writeClipboardText(prompt)
       if (completionIsStale(startedAttemptKey, acceptedWatchId)) return

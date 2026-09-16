@@ -216,17 +216,6 @@ pub const fn verification_evidence_supported(
             source_format,
             SourceFormat::ClaudeJsonl | SourceFormat::CodexRolloutJsonl
         ),
-        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools => matches!(
-            source_format,
-            SourceFormat::ClaudeJsonl | SourceFormat::CodexRolloutJsonl
-        ),
-        DetectorId::UnusedSkills => matches!(
-            source_format,
-            SourceFormat::ClaudeJsonl
-                | SourceFormat::CodexRolloutJsonl
-                | SourceFormat::OpenCodeJsonl
-                | SourceFormat::OpenCodeSqliteV2
-        ),
         _ => false,
     }
 }

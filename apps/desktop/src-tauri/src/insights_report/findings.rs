@@ -142,6 +142,12 @@ fn scoped_resource_clean_for_verification(
     ) {
         return Ok(false);
     }
+    let mut turn_probe = || {};
+    let mut resource_turn_probe = |_| {};
+    let mut probes = TokenBurnProbes {
+        turn: &mut turn_probe,
+        resource_turn: &mut resource_turn_probe,
+    };
     let token_evidence = token_burn_evidence(
         connection,
         TokenBurnSessionKey {
@@ -161,7 +167,7 @@ fn scoped_resource_clean_for_verification(
             catalogs,
         },
         cancel,
-        &mut || {},
+        &mut probes,
     )?;
     Ok(antiburn_local::remediation::scoped_resource_no_finding(
         detector,
@@ -452,8 +458,16 @@ pub async fn reduce_report(
     request: ReportRequest,
     cancel: Arc<AtomicBool>,
 ) -> Result<ReducedReport> {
+    let resource_home = antiburn_local::paths::home_dir();
     tokio::task::spawn_blocking(move || {
-        reduce_with_state_on_snapshot(&data_dir, request, &mut || {}, &cancel, &mut || {})
+        reduce_with_state_on_snapshot(
+            &data_dir,
+            request,
+            &mut || {},
+            &cancel,
+            &mut || {},
+            resource_home.as_deref(),
+        )
     })
     .await
     .context("report reduction task failed")?
@@ -461,12 +475,30 @@ pub async fn reduce_report(
 
 /// Reduces one report on the caller's blocking thread.
 pub fn reduce_report_blocking(data_dir: &Path, request: ReportRequest) -> Result<ReducedReport> {
+    let resource_home = antiburn_local::paths::home_dir();
     reduce_with_state_on_snapshot(
         data_dir,
         request,
         &mut || {},
         &AtomicBool::new(false),
         &mut || {},
+        resource_home.as_deref(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn reduce_report_blocking_with_home(
+    data_dir: &Path,
+    request: ReportRequest,
+    home: &Path,
+) -> Result<ReducedReport> {
+    reduce_with_state_on_snapshot(
+        data_dir,
+        request,
+        &mut || {},
+        &AtomicBool::new(false),
+        &mut || {},
+        Some(home),
     )
 }
 
@@ -684,6 +716,11 @@ pub(crate) fn assess_current_detector(
             catalogs,
         ));
     }
+    let mut resource_turn_probe = |_| {};
+    let mut probes = TokenBurnProbes {
+        turn: turn_probe,
+        resource_turn: &mut resource_turn_probe,
+    };
     let token_evidence = token_burn_evidence(
         connection,
         TokenBurnSessionKey {
@@ -703,7 +740,7 @@ pub(crate) fn assess_current_detector(
             catalogs,
         },
         cancel,
-        turn_probe,
+        &mut probes,
     )?;
     Ok(
         antiburn_local::remediation::assess_detector_with_source_evidence(

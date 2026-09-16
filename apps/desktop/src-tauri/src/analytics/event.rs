@@ -478,6 +478,7 @@ pub enum AutoFixReviewOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum AutoFixOutcome {
     AppliedAwaitingVerification,
+    AppliedVerificationUnavailable,
     RecoveryNeeded,
     Stale,
     Expired,
@@ -772,6 +773,7 @@ wire_values!(AutoFixReviewOutcome, {
 #[cfg(feature = "analytics")]
 wire_values!(AutoFixOutcome, {
     AutoFixOutcome::AppliedAwaitingVerification => "applied_awaiting_verification",
+    AutoFixOutcome::AppliedVerificationUnavailable => "applied_verification_unavailable",
     AutoFixOutcome::RecoveryNeeded => "recovery_needed",
     AutoFixOutcome::Stale => "stale",
     AutoFixOutcome::Expired => "expired",
@@ -1620,6 +1622,7 @@ mod tests {
         assert_safe(facts, None, None);
         for outcome in [
             AutoFixOutcome::AppliedAwaitingVerification,
+            AutoFixOutcome::AppliedVerificationUnavailable,
             AutoFixOutcome::RecoveryNeeded,
             AutoFixOutcome::Stale,
             AutoFixOutcome::Expired,

@@ -174,6 +174,27 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// Builds one advisory resource finding without inventing session evidence.
+    pub fn advisory_resource(
+        agent: AgentKind,
+        source_format: SourceFormat,
+        cause: FindingCause,
+    ) -> Option<Self> {
+        matches!(
+            cause,
+            FindingCause::UnusedMcpServer { .. }
+                | FindingCause::UnusedBuiltInTool { .. }
+                | FindingCause::UnusedSkill { .. }
+        )
+        .then(|| Self {
+            detector: cause.detector(),
+            source_format,
+            agent: agent.slug().to_owned(),
+            session_id: String::new(),
+            cause,
+        })
+    }
+
     /// Returns the exact agent identity for trusted backend selector binding.
     pub fn agent(&self) -> &str {
         &self.agent
@@ -182,6 +203,17 @@ impl Finding {
     /// Returns the exact session identity for trusted backend selector binding.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Returns true when the finding comes from the target-based resource assessment.
+    pub fn is_advisory_resource(&self) -> bool {
+        self.session_id.is_empty()
+            && matches!(
+                self.cause,
+                FindingCause::UnusedMcpServer { .. }
+                    | FindingCause::UnusedBuiltInTool { .. }
+                    | FindingCause::UnusedSkill { .. }
+            )
     }
 
     /// Returns the exact detector cause for trusted backend selector binding.

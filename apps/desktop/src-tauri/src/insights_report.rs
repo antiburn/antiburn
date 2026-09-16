@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +13,7 @@ use antiburn_local::insights::{
     ReportCatalogs, ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
     TokenBurnTurnAccumulator, TokenBurnTurnEvidence,
 };
+use antiburn_local::model::AgentKind;
 use antiburn_local::model_catalog::ModelCatalog;
 use antiburn_local::pricing::{ModelTokens, canonical_model_key};
 use antiburn_local::remediation::{Finding, FindingAssessment, ModelVerificationObservation};
@@ -24,7 +26,12 @@ use crate::store::{RemediationRecord, open_read_only};
 use antiburn_local::remediation::SAVINGS_METHOD_REVISION;
 
 mod findings;
+mod resources;
 
+pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedResourceTarget};
+
+#[cfg(test)]
+pub(crate) use findings::reduce_report_blocking_with_home;
 pub(crate) use findings::{
     CurrentDetectorAssessment, ensure_not_cancelled, old_model_remediation_evidence,
     publication_findings_in, remediation_assessments,
@@ -41,6 +48,8 @@ pub use findings::{list_current_findings, revalidate_current_finding};
 const REPORT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CURRENT_FINDING_SESSION_SCAN_BUDGET: usize = 512;
 const CURRENT_FINDING_LIMIT: usize = 512;
+const MAX_RESOURCE_REPOSITORIES: usize = 256;
+const MAX_RESOURCE_INVENTORY_CONTEXTS: usize = 256;
 
 const CURRENT_EVIDENCE_PREDICATE: &str = "
     e.status = 'ready'
@@ -175,6 +184,7 @@ pub struct ReducedReport {
     pub report: EfficiencyReport,
     pub evidence_settled: bool,
     pub pending_evidence: u64,
+    pub(crate) resources: ResourceAssessment,
 }
 
 /// Selects one detector's current findings in a bounded report window.
@@ -233,10 +243,15 @@ fn reduce_on_snapshot(
     after_denominator: &mut dyn FnMut(),
     cancel: &AtomicBool,
 ) -> Result<EfficiencyReport> {
-    Ok(
-        reduce_with_state_on_snapshot(data_dir, request, after_denominator, cancel, &mut || {})?
-            .report,
-    )
+    Ok(reduce_with_state_on_snapshot(
+        data_dir,
+        request,
+        after_denominator,
+        cancel,
+        &mut || {},
+        None,
+    )?
+    .report)
 }
 
 fn reduce_with_state_on_snapshot(
@@ -245,6 +260,7 @@ fn reduce_with_state_on_snapshot(
     after_denominator: &mut dyn FnMut(),
     cancel: &AtomicBool,
     turn_probe: &mut dyn FnMut(),
+    resource_home: Option<&Path>,
 ) -> Result<ReducedReport> {
     ensure_not_cancelled(cancel)?;
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
@@ -280,6 +296,12 @@ fn reduce_with_state_on_snapshot(
     ensure_not_cancelled(cancel)?;
 
     let mut accumulator = EfficiencyReportAccumulator::new();
+    let mut resource_builder = resources::ResourceAssessmentBuilder::default();
+    if coverage.discovered != coverage.ready {
+        resource_builder.mark_window_incomplete();
+    }
+    let repository_roots = trusted_repository_roots(&transaction, &mut resource_builder)?;
+    let mut inventory_contexts = BTreeSet::new();
     let depth_cap = u128::from(accumulator.catalogs().depth_cap_tokens);
     let cohort_sql = COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
     {
@@ -293,6 +315,7 @@ fn reduce_with_state_on_snapshot(
             EVIDENCE_SCHEMA_REVISION,
             METRICS_SCHEMA_REVISION,
         ])?;
+        let mut resource_session_index = 0_usize;
         while let Some(row) = rows.next()? {
             ensure_not_cancelled(cancel)?;
             let evidence_json: String = row.get(0)?;
@@ -303,6 +326,10 @@ fn reduce_with_state_on_snapshot(
             let published_fence: i64 = row.get(3)?;
             let initial_context_json: Option<String> = row.get(4)?;
             let cwd: Option<String> = row.get(5)?;
+            let agent_kind = crate::agents::kind_from_slug(&agent);
+            let project_root = cwd
+                .as_deref()
+                .and_then(|cwd| trusted_repository_for_cwd(Path::new(cwd), &repository_roots));
             let initial_context = initial_context_json
                 .as_deref()
                 .map(serde_json::from_str::<InitialContextBreakdown>)
@@ -311,6 +338,22 @@ fn reduce_with_state_on_snapshot(
             let token_burn_context = TokenBurnReportContext {
                 catalogs: accumulator.catalogs(),
                 depth_cap,
+            };
+            let mut resource_turn_probe = |context_tokens| {
+                if let Some(agent_kind) =
+                    agent_kind.filter(|agent| resources::first_tier_agents().contains(agent))
+                {
+                    resource_builder.observe_turn(
+                        agent_kind,
+                        project_root,
+                        resource_session_index,
+                        context_tokens,
+                    );
+                }
+            };
+            let mut probes = TokenBurnProbes {
+                turn: turn_probe,
+                resource_turn: &mut resource_turn_probe,
             };
             let token_evidence = token_burn_evidence(
                 &transaction,
@@ -325,9 +368,41 @@ fn reduce_with_state_on_snapshot(
                 &evidence,
                 &token_burn_context,
                 cancel,
-                turn_probe,
+                &mut probes,
             )?;
+            if let Some(agent_kind) =
+                agent_kind.filter(|agent| resources::first_tier_agents().contains(agent))
+            {
+                if project_root.is_none() {
+                    resource_builder.mark_scan_failed(agent_kind);
+                }
+                resource_builder.observe_session(
+                    &request.environment_key,
+                    agent_kind,
+                    &session_id,
+                    project_root,
+                    &evidence,
+                    initial_context.as_ref(),
+                );
+                resource_builder.observe_resource_estimates(
+                    agent_kind,
+                    project_root,
+                    resource_session_index,
+                    &token_evidence,
+                );
+                if let (Some(cwd), Some(root)) = (cwd.as_deref(), project_root) {
+                    let context = (agent_kind, PathBuf::from(cwd), root.to_owned());
+                    if inventory_contexts.contains(&context)
+                        || inventory_contexts.len() < MAX_RESOURCE_INVENTORY_CONTEXTS
+                    {
+                        inventory_contexts.insert(context);
+                    } else {
+                        resource_builder.mark_scan_failed(agent_kind);
+                    }
+                }
+            }
             accumulator.observe_session_with_token_burn(evidence, token_evidence);
+            resource_session_index = resource_session_index.saturating_add(1);
         }
     }
 
@@ -349,11 +424,100 @@ fn reduce_with_state_on_snapshot(
     );
     drop(transaction);
     drop(connection);
+    if let Some(home) = resource_home {
+        scan_resource_inventories(&mut resource_builder, home, inventory_contexts);
+    } else {
+        for agent in resources::first_tier_agents() {
+            resource_builder.mark_scan_failed(agent);
+        }
+    }
+    let resources = resource_builder.finish(&report);
+    debug_assert!(
+        [
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::UnusedSkills,
+        ]
+        .into_iter()
+        .all(|detector| resources.detector(detector).is_some())
+    );
     Ok(ReducedReport {
         report,
         evidence_settled: pending_evidence == 0,
         pending_evidence,
+        resources,
     })
+}
+
+fn trusted_repository_roots(
+    connection: &rusqlite::Connection,
+    resource_builder: &mut resources::ResourceAssessmentBuilder,
+) -> Result<Vec<PathBuf>> {
+    let mut statement = connection.prepare(
+        "SELECT repo_root FROM repository
+          WHERE enabled = 1 AND status = 'accessible' AND repo_root IS NOT NULL
+          ORDER BY repo_root
+          LIMIT ?1",
+    )?;
+    let mut roots = Vec::new();
+    let rows = statement.query_map([MAX_RESOURCE_REPOSITORIES as i64 + 1], |row| {
+        row.get::<_, String>(0)
+    })?;
+    for row in rows {
+        let Ok(root) = row else {
+            resource_builder.mark_window_incomplete();
+            continue;
+        };
+        match PathBuf::from(root).canonicalize() {
+            Ok(root) => roots.push(root),
+            Err(_) => resource_builder.mark_window_incomplete(),
+        }
+    }
+    if roots.len() > MAX_RESOURCE_REPOSITORIES {
+        resource_builder.mark_window_incomplete();
+    }
+    Ok(roots.into_iter().take(MAX_RESOURCE_REPOSITORIES).collect())
+}
+
+fn trusted_repository_for_cwd<'a>(cwd: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
+    let cwd = cwd.canonicalize().ok()?;
+    roots
+        .iter()
+        .filter(|root| cwd.starts_with(root))
+        .max_by_key(|root| root.components().count())
+        .map(PathBuf::as_path)
+}
+
+fn scan_resource_inventories(
+    builder: &mut resources::ResourceAssessmentBuilder,
+    home: &Path,
+    contexts: BTreeSet<(AgentKind, PathBuf, PathBuf)>,
+) {
+    for agent in resources::first_tier_agents() {
+        let mut context = crate::agent_config::ConfigContext::native(agent, home, None);
+        context.runtime_override_present = crate::remediation::runtime_override_present(agent);
+        context.managed_configuration_present =
+            crate::remediation::managed_configuration_present(agent, home);
+        match crate::agent_config::advisory_resource_inventory(&context, []) {
+            Ok(inventory) => builder.observe_inventory(inventory, None),
+            Err(_) => builder.mark_scan_failed(agent),
+        }
+    }
+    for (agent, cwd, root) in contexts {
+        let Some(mut context) =
+            crate::remediation::config_context(agent, home, Some(&cwd), Some(&root))
+        else {
+            builder.mark_scan_failed(agent);
+            continue;
+        };
+        context.runtime_override_present = crate::remediation::runtime_override_present(agent);
+        context.managed_configuration_present =
+            crate::remediation::managed_configuration_present(agent, home);
+        match crate::agent_config::advisory_resource_inventory(&context, []) {
+            Ok(inventory) => builder.observe_inventory(inventory, Some(&root)),
+            Err(_) => builder.mark_scan_failed(agent),
+        }
+    }
 }
 
 struct TokenBurnSessionKey<'a> {
@@ -374,6 +538,11 @@ struct TokenBurnReportContext<'a> {
     depth_cap: u128,
 }
 
+struct TokenBurnProbes<'a> {
+    turn: &'a mut dyn FnMut(),
+    resource_turn: &'a mut dyn FnMut(u128),
+}
+
 fn token_burn_evidence(
     connection: &rusqlite::Connection,
     key: TokenBurnSessionKey<'_>,
@@ -381,7 +550,7 @@ fn token_burn_evidence(
     evidence: &SessionEvidence,
     report_context: &TokenBurnReportContext<'_>,
     cancel: &AtomicBool,
-    turn_probe: &mut dyn FnMut(),
+    probes: &mut TokenBurnProbes<'_>,
 ) -> Result<SessionTokenBurnEvidence> {
     // The partial index limits row discovery to this session's assistant turns.
     // This build omits rusqlite hooks, so probes run per row and before finalization.
@@ -394,15 +563,8 @@ fn token_burn_evidence(
     ])?;
     let mut source_groups = initial_context.map(|initial_context| {
         [
-            key.cwd.and_then(|cwd| {
-                source_token_counters(
-                    initial_context,
-                    "mcp_instructions",
-                    &format!("{}:cwd:{cwd}", key.agent),
-                    None,
-                )
-            }),
-            source_token_counters(initial_context, "builtin_tool", key.agent, None)
+            source_token_counters(initial_context, "mcp_instructions", key.agent, key.cwd),
+            source_token_counters(initial_context, "builtin_tool", key.agent, key.cwd)
                 .filter(|sources| !sources.is_empty()),
             source_token_counters(initial_context, "skill_instructions", key.agent, key.cwd),
         ]
@@ -412,7 +574,7 @@ fn token_burn_evidence(
     let mut raw_total_tokens = 0_u128;
     let mut overdepth_avoidable_tokens = 0_u128;
     while let Some(row) = rows.next()? {
-        turn_probe();
+        (probes.turn)();
         ensure_not_cancelled(cancel)?;
         let scope: String = row.get(0)?;
         let model: Option<String> = row.get(1)?;
@@ -424,8 +586,25 @@ fn token_burn_evidence(
         let cache_read_tokens = u64::try_from(row.get::<_, i64>(7)?)?;
         let cache_write_tokens = u64::try_from(row.get::<_, i64>(8)?)?;
         let cache_write_1h_tokens = u64::try_from(row.get::<_, i64>(9)?)?;
+        let input = u128::from(input_tokens);
+        let output = u128::from(output_tokens);
+        let cache_read = u128::from(cache_read_tokens);
+        let cache_write = u128::from(cache_write_tokens);
+        let context = input
+            .checked_add(cache_read)
+            .and_then(|value| value.checked_add(cache_write))
+            .context("turn context token total overflowed")?;
+        let turn_total = context
+            .checked_add(output)
+            .context("turn token total overflowed")?;
+        if scope == "main" || scope == "delegated" {
+            (probes.resource_turn)(context);
+        }
         let Some(model) = model.filter(|model| !model.trim().is_empty()) else {
             has_unattributed_assistant_turn = true;
+            raw_total_tokens = raw_total_tokens
+                .checked_add(turn_total)
+                .context("session token total overflowed")?;
             continue;
         };
         let turn = TokenBurnTurnEvidence {
@@ -440,17 +619,6 @@ fn token_burn_evidence(
             cache_write_tokens,
             cache_write_1h_tokens,
         };
-        let input = u128::from(input_tokens);
-        let output = u128::from(output_tokens);
-        let cache_read = u128::from(cache_read_tokens);
-        let cache_write = u128::from(cache_write_tokens);
-        let context = input
-            .checked_add(cache_read)
-            .and_then(|value| value.checked_add(cache_write))
-            .context("turn context token total overflowed")?;
-        let turn_total = context
-            .checked_add(output)
-            .context("turn token total overflowed")?;
         raw_total_tokens = raw_total_tokens
             .checked_add(turn_total)
             .context("session token total overflowed")?;
@@ -482,7 +650,7 @@ fn token_burn_evidence(
     if raw_total_tokens > 0 {
         result.total_tokens = Some(raw_total_tokens);
     }
-    turn_probe();
+    (probes.turn)();
     ensure_not_cancelled(cancel)?;
     turn_accumulator.finish_into(&mut result);
     result.overdepth_avoidable_tokens = Some(overdepth_avoidable_tokens);
@@ -514,7 +682,7 @@ fn source_token_counters(
     initial_context: &InitialContextBreakdown,
     source_kind: &str,
     agent: &str,
-    skill_cwd: Option<&str>,
+    project_cwd: Option<&str>,
 ) -> Option<Vec<SourceTokenCounter>> {
     let matching = initial_context
         .sources
@@ -536,10 +704,8 @@ fn source_token_counters(
             if name.is_empty() {
                 return None;
             }
-            let scope = if source_kind == "skill_instructions"
-                && matches!(source.origin, SourceOrigin::Project | SourceOrigin::Unknown)
-            {
-                format!("{agent}:cwd:{}", skill_cwd?)
+            let scope = if matches!(source.origin, SourceOrigin::Project | SourceOrigin::Unknown) {
+                format!("{agent}:cwd:{}", project_cwd?)
             } else {
                 format!("{agent}:{}", source_origin_key(source.origin))
             };
@@ -961,6 +1127,12 @@ mod tests {
 
         let connection = open_read_only(data_dir.path(), REPORT_BUSY_TIMEOUT).unwrap();
         let catalogs = ReportCatalogs::default();
+        let mut turn_probe = || {};
+        let mut resource_turn_probe = |_| {};
+        let mut probes = TokenBurnProbes {
+            turn: &mut turn_probe,
+            resource_turn: &mut resource_turn_probe,
+        };
         let result = token_burn_evidence(
             &connection,
             TokenBurnSessionKey {
@@ -977,7 +1149,7 @@ mod tests {
                 catalogs: &catalogs,
             },
             &AtomicBool::new(false),
-            &mut || {},
+            &mut probes,
         )
         .unwrap();
 
@@ -2453,7 +2625,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_enrolls_scoped_resource_findings_for_verification() {
+    fn publication_does_not_enroll_resource_findings_without_target_proof() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "historical", 120, &["server-a"]);
@@ -2461,7 +2633,7 @@ mod tests {
             .lock()
             .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 0);
     }
 
     #[test]
@@ -2680,9 +2852,9 @@ mod tests {
             .copy_prompt_fix_burn_check_target(&store, &listed.targets[0].action_id)
             .unwrap();
         assert!(action.prompt.contains("Remediation reference: ABR-"));
-        assert_eq!(action.watch.watch_id, passive_id);
+        assert_eq!(action.watch.as_ref().unwrap().watch_id, passive_id);
         assert_eq!(
-            action.watch.origin,
+            action.watch.as_ref().unwrap().origin,
             crate::remediation::RemediationOrigin::Passive
         );
         let joined = store.remediation(&passive_id).unwrap().unwrap();
@@ -2722,17 +2894,14 @@ mod tests {
             .prompt;
 
         assert_eq!(prompt.matches("Exact target ").count(), action_ids.len());
-        assert_eq!(
-            prompt.matches("Remediation reference: ABR-").count(),
-            action_ids.len()
-        );
+        assert!(!prompt.contains("Remediation reference: ABR-"));
         assert_eq!(
             store
                 .lock()
                 .query_row("SELECT COUNT(*) FROM remediation", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            i64::try_from(action_ids.len()).unwrap()
+            0
         );
         assert_eq!(
             controller.copy_prompt_fix_burn_check_targets(&store, &[]),
@@ -2741,7 +2910,7 @@ mod tests {
     }
 
     #[test]
-    fn invoked_named_resource_watch_rejects_a_clean_assessment_from_another_scope() {
+    fn resource_prompt_does_not_claim_detector_level_verification() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "baseline", 120, &["server-a"]);
@@ -2759,32 +2928,15 @@ mod tests {
         let action = controller
             .copy_prompt_fix_burn_check_target(&store, &listed.targets[0].action_id)
             .unwrap();
-        assert_eq!(
-            action.watch.verification,
-            crate::remediation::VerificationStatus::Watching {
-                reason: None,
-                method_revision: Some(antiburn_local::remediation::VERIFICATION_METHOD_REVISION),
-                evidence_revision: None,
-            }
-        );
-        assert_eq!(
-            action.watch.lifecycle,
-            crate::store::RemediationState::Watching
-        );
-
-        publish_invoked_mcp(&store, "later-clean", 121, "server-a");
-        let dirty = store.next_dirty_remediation().unwrap().unwrap();
-        assert!(
-            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &dirty, 121,)
-                .unwrap()
-        );
+        assert!(action.watch.is_none());
+        assert!(!action.prompt.contains("Remediation reference: ABR-"));
         assert_eq!(
             store
-                .remediation(&action.watch.watch_id)
-                .unwrap()
-                .unwrap()
-                .state,
-            crate::store::RemediationState::Watching
+                .lock()
+                .query_row("SELECT COUNT(*) FROM remediation", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
         );
         assert!(store.remediation_contributions(1_000).unwrap().is_empty());
     }
@@ -3331,6 +3483,49 @@ mod tests {
         }
     }
 
+    mod resource_assessment_integration {
+        use super::*;
+
+        #[test]
+        fn the_report_window_adds_current_config_candidates_to_the_resource_assessment() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+            let home = data_dir.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::write(
+                home.join(".claude.json"),
+                r#"{"mcpServers":{"docs":{"command":"docs"}}}"#,
+            )
+            .unwrap();
+
+            let reduced = reduce_with_state_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+                &mut || {},
+                Some(&home),
+            )
+            .unwrap();
+
+            let assessment = reduced
+                .resources
+                .detector(DetectorId::UnusedMcpServers)
+                .unwrap();
+            assert_eq!(assessment.candidate_count, 1);
+            assert_eq!(assessment.unused_count, 1);
+            assert_eq!(assessment.targets[0].canonical_name, "docs");
+            let payload = crate::dto::ChecksReportPayload::from_reduced_report(&reduced);
+            let category = &payload.categories[DetectorId::UnusedMcpServers.index()];
+            assert_eq!(category.finding, 1);
+            assert_eq!(category.clean, 0);
+            assert_eq!(category.unavailable, 0);
+            assert_eq!(category.agents, vec!["claude-code"]);
+            assert_eq!(category.estimated_token_burn_basis_points, None);
+        }
+    }
+
     mod cancellation {
         use super::*;
 
@@ -3405,6 +3600,7 @@ mod tests {
                         cancel.store(true, Ordering::SeqCst);
                     }
                 },
+                None,
             )
             .unwrap_err();
 
@@ -3434,6 +3630,7 @@ mod tests {
                         cancel.store(true, Ordering::SeqCst);
                     }
                 },
+                None,
             )
             .unwrap_err();
 
@@ -3460,6 +3657,7 @@ mod tests {
                         cancel.store(true, Ordering::SeqCst);
                     }
                 },
+                None,
             )
             .unwrap_err();
 

@@ -128,15 +128,81 @@ needs a resolvable Git repository CWD. Disabled roots and their linked
 worktrees are excluded before evidence processing; missing or unresolved CWDs
 are unavailable, never clean.
 
-No current reader proves a full historical resource inventory. All M/B/K checks
-deny report `Clean`, even when a nested observed-resource map is complete. A
-scoped finding requires complete coverage of that observed subset, calls, and
-eligible activity. An unrelated partial resource group does not block it. For
-an activated M/B/K remediation only, one later complete applicable assessment
-with no same canonical resource finding is scoped remediation verification
-clean. This does not make the session or report clean. Unavailable, partial,
-wrong-source, wrong-agent, wrong-scope, truncated, and non-applicable evidence
-does not verify the target.
+No current session reader proves a full historical resource inventory. The
+legacy per-session M/B/K rules deny `Clean`, even when a nested observed-resource
+map is complete. The desktop target assessment can report clean only when every
+applicable current inventory scan and positive-use input is complete and within
+its bounds. A scoped finding requires complete coverage of that observed subset,
+calls, and eligible activity. An unrelated partial resource group does not block it.
+Detector-level absence never verifies an M/B/K remediation. Unavailable,
+partial, wrong-source, wrong-agent, wrong-scope, truncated, and non-applicable
+evidence does not verify the target.
+
+The native desktop advisory inventory is separate from these per-session
+detector rules. It enumerates bounded standard current resources for Claude
+Code, Codex, OpenCode, and Pi and can merge current indexed resource
+observations. Its result contains logical names, state, scope, provenance, and
+limits only. Skill candidates can include a proportional token estimate for the
+frontmatter `title` or `name` plus `description`. The estimate excludes the
+skill body. The inventory contains no physical path or selector.
+
+The desktop 30-day report reduction now creates a separate target-based M/B/K
+assessment. One key contains the exact agent, resource kind, normalized name,
+and global or canonical repository scope. Any exact positive use in that scope
+suppresses the key. Remaining candidates become one target each, not one target
+per session. The assessment records target totals and at most three supporting
+sessions per target. The shipped Checks DTO and action command use this
+assessment for M/B/K category counts, agents, status, burn estimates, and named
+target rows. They do not use the older session-based M/B/K rows.
+
+Positive use can come from tool counts, invoked loaded sources,
+catalog-backed tool definitions, or persisted initial-context source rows.
+Observed positive facts remain valid inside partial evidence. Partial or
+unsupported facts, malformed or dynamic applicable inventory, unknown scope,
+ambiguous aliases, failed scans, and repository, context, use, directory, or
+target caps block clean. They do not remove a known finding from an unrelated
+kind, scope, or agent. Disabled current resources do not become candidates.
+
+Global candidates share use only across the same agent. Project candidates
+share use only inside one canonical accessible repository. A raw call with no
+origin uses a same-name project candidate in its repository before a global
+candidate. Unknown-origin indexed resources do not become scoped targets.
+Same-name resources in separate scopes and repositories stay separate.
+
+Resource burn estimates use the report's existing total-token denominator and
+rounding. Skill listing tokens use the existing proportional `chars / 4`
+estimate and replicate across applicable assistant turns. MCP estimates use
+only measured indexed definition tokens. Claude Code and Codex built-in tools
+reuse measured catalog definitions. OpenCode 1.2.15 and Pi 0.52.12 use pinned
+default catalog captures. A matching positive use removes the target and its
+estimate. A missing definition, missing denominator, cap, truncation, or
+arithmetic failure omits the percentage. Category percentages sum the same
+remaining target token values, so an incomplete target estimate also makes the
+category estimate unavailable.
+
+Provider matching accepts exact case-insensitive names and the reviewed call
+forms: Claude Code and Codex `mcp__<server>__<tool>`, OpenCode
+`<server>_<tool>`, and `pi-mcp-extension` 1.5.0 default
+`mcp_<sanitized-server>_<tool>`. Claude Code and Codex accept a unique bare
+suffix for namespaced skills and the final segment of a catalog-backed built-in
+alias. Ambiguous skill aliases suppress nothing and block clean. OpenCode and
+Pi MCP names can be ambiguous because the server and tool share one underscore
+delimiter. Such a call suppresses every possible matching server finding and
+blocks clean, but it does not count any server as used. OpenCode and Pi use exact
+skill and built-in names.
+
+The accepted current shapes are Claude standard user/project `mcpServers`,
+standard `.claude/skills`, `skillOverrides`, and exact permission controls;
+Codex trusted layered `mcp_servers` with omitted `enabled` treated as enabled,
+plus standard `.agents/skills` and compatibility `.codex/skills`; OpenCode
+JSON/JSONC direct and `mcp.servers` maps, standard skill roots, Boolean `tools`,
+and object or array permission controls; and Pi `defaultTools`, standard skill
+roots, explicit non-pattern skill directories, and pinned
+`pi-mcp-extension` 1.5.0. The Pi package manifest must name version 1.5.0 and
+`./src/index.ts`; the reviewed producer commit is
+`8a01fc53f3289d2e8eb492d67ba45cd84d64e7f2`. Runtime, managed, remote, plugin,
+pattern, lazy Pi MCP, malformed, unsafe, capped, conflicting, and partial
+indexed sources remain explicit clean-result limits.
 
 Report-time token estimates (`insights/report.rs::token_cost` and
 `TokenBurnTurnEvidence`), old-model remediation savings, and provider-limit
@@ -269,12 +335,13 @@ new quota/provider incident source. Reviewed passive alternatives:
 | Antigravity                 | D, O                | Brain/cascade steps and native SQLite preserve direct usage/model findings where present. Missing model/time is not filled from an earlier step or an invented database timestamp. Private identity, enum, and completeness gaps deny clean.                                                                                                                                                                                                                                                                     |
 | Antigravity                 | T, S, M, B, K, F, C | Confirmed unsupported in the reviewed native evidence. Token classes do not establish compatible request linkage or cache cause. Runtime descriptors and unproved relationship sidecars do not establish persisted delegation, controls, or resource exposure. Workspace chat remains uncharacterized.                                                                                                                                                                                                           |
 
-M automatic remediation accepts only one named, enabled server with eligible
-activity and complete observed calls. Codex resolves exactly one active trusted
-project or global `mcp_servers.<name>` table. Claude resolves exactly one
-standard project or global MCP source and adds only its matching deny rule to
-one same-scope existing settings file. OpenCode has an exact `enabled = false`
-editor, but M remains unsupported until its sources provide observed injection.
+M automatic remediation accepts only one named, enabled target with indexed
+provenance and an exact current editor resolution. Codex resolves exactly one
+active trusted project or global `mcp_servers.<name>` table. Claude resolves
+exactly one standard project or global MCP source and adds only its matching
+deny rule to one same-scope existing settings file. OpenCode has an exact
+`enabled = false` editor, but M remains prompt-only when indexed provenance or
+one exact current control is unavailable.
 Antigravity has no public source and precedence proof for one persisted disable
 field. Cursor MCP remediation is unavailable and never reads a private toggle
 store or invokes a CLI command.
@@ -292,9 +359,9 @@ fallback and does not force a positive minimum.
 
 ## Passive Verification
 
-Every exact finding with supported positive verification from a winning `Ready`
-evidence publication can create one passive attempt, up to 100 attempts per
-publication. Candidate filtering applies the detector, agent, source-format,
+Every T, O, or F finding with supported positive verification from a winning
+`Ready` evidence publication can create one passive attempt, up to 100 attempts
+per publication. Candidate filtering applies the detector, agent, source-format,
 physical-target, and non-resource requirements before bounded selection. The
 selection is fair across all nine detectors. V45 does not backfill old published
 rows. The immutable boundary is the publication time
@@ -315,9 +382,9 @@ accepted passive evidence. An explicit action can store
 | D     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | The finding identity is one historical session. A later session is not positive proof that the original session changed.                                                          |
 | T     | Supported   | Supported   | Unavailable | Supported   | Unavailable | A complete later assessment plus an explicit same-route, same-model lower control proves the transition. Pi proves only its agent-selected policy.                                |
 | S     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | A later worker or call has a different identity. No accepted source records a durable worker-setting transition.                                                                  |
-| M     | Supported   | Supported   | Unavailable | Unavailable | Unavailable | One later complete applicable scoped assessment with no same canonical server finding verifies only that activated target. It is not report clean or full-inventory proof.          |
-| B     | Supported   | Supported   | Unavailable | Unavailable | Unavailable | One later complete applicable scoped assessment with no same canonical tool finding verifies only that activated target. It is not report clean or full-inventory proof.            |
-| K     | Supported   | Supported   | Supported   | Unavailable | Unavailable | One later complete applicable scoped assessment with no same canonical skill finding verifies only that activated target. It is not report clean or full-inventory proof.           |
+| M     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a server was removed or disabled. |
+| B     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a tool was removed or disabled. |
+| K     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a skill was removed or disabled. |
 | O     | Supported   | Supported   | Supported   | Supported   | Unavailable | The strict verifier requires actual replacement use on the same publication-attributed physical target, scope, provider, and API. Antigravity has no physical target attribution. |
 | F     | Supported   | Supported   | Unavailable | Unavailable | Unavailable | A complete later assessment plus an explicit same-route, same-model standard-tier delegated request proves the transition.                                                        |
 | C     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | A later request pair is not the same session-route target and does not prove a durable cache-policy transition.                                                                   |
@@ -325,23 +392,28 @@ accepted passive evidence. An explicit action can store
 Truncated assessment sets, sessions that start at or before the boundary,
 missing controls, changed detector or catalog policy, stale projections, and
 unsupported source contracts return verification unavailable or continue
-watching. They never become fixed through generic absence, except the scoped
-M/B/K remediation rule above. A fixed supported target recurs only on a later
+watching. They never become fixed through generic absence. A fixed supported target recurs only on a later
 exact positive observation. Prior contributions end at the recurrence boundary
 and remain durable.
 
-Named M/B/K resource targets can use scoped remediation verification only. Their
-stored resource selector identifies the existing canonical resource; they cannot
-use model proof, establish report clean, or create savings.
+Named M/B/K resource targets do not support verification. Prompt-only actions
+therefore create no durable watch. Their stored resource selector cannot use
+model proof, establish report clean, or create verified savings.
+
+A successful M/B/K Auto Fix retains only the crash-safe write record with
+`verificationUnavailable`. The result is `applied_verification_unavailable`, not
+`applied_awaiting_verification`, and the UI does not move the check into the
+awaiting-verification group.
 
 ## Automatic Editor Support
 
-`Auto Fix` means the backend can bind a finding to one publication-time
-effective physical setting, prepare a reviewed edit, and recover an uncertain
-write. `Prompt only` means the existing bounded prompt can describe the finding,
-but the backend cannot prove one safe physical edit. Source versions mean the
-accepted source shapes in the source inventory. No row claims every historical
-agent release.
+`Auto Fix` means the backend can bind a finding to one effective physical
+setting, prepare a reviewed edit, and recover an uncertain write. Resource Auto
+Fix additionally requires indexed provenance and an exact current resource,
+scope, value, and physical key. `Prompt only` means the existing bounded prompt
+can describe the finding, but the backend cannot prove one safe physical edit.
+Source versions mean the accepted source shapes in the source inventory. No row
+claims every historical agent release.
 
 Each Auto Fix edits one winning control. An inherited value selects its global
 or user control. A project target requires the exact explicit project setting or
@@ -357,29 +429,29 @@ publication-time scope and physical target.
 | Claude Code                      | Reasoning effort            | Auto Fix                      | `ClaudeJsonl` T findings only. The publication must bind the observed level to an existing effective top-level `effortLevel` or model-specific `modelSettings.<model>.effortLevel`. The reviewed replacement is `medium`.                                                                                                                                                                                                                                                                           |
 | Claude Code                      | Fast mode                   | Auto Fix                      | `ClaudeJsonl` F findings only. The finding needs explicit fast-tier evidence and the current winning existing `fastMode` value must be `true`; the editor writes `false` to that one control so an inherited global `true` cannot become effective. No publication-time config attribution is required.                                                                                                                                                                                             |
 | Claude Code                      | Named subagent model        | Auto Fix                      | `ClaudeJsonl` S findings only. The current scan must locate exactly one named Markdown agent whose frontmatter `model` equals the observed worker model.                                                                                                                                                                                                                                                                                                                                            |
-| Claude Code                      | MCP control                 | Prompt only                   | The source proves only an observed server subset. It does not prove full resource ownership, dependencies, or one effective local, project, plugin, managed, or connector control.                                                                                                                                                                                                                                                                                                                  |
-| Claude Code                      | Skill control               | Auto Fix                      | A K finding must have complete invocation coverage and one exact injected skill identity. The editor accepts only one current standard `SKILL.md` winner, then writes that skill's `skillOverrides.<name> = "off"` entry.                                                                                                                                                                                                                                                                           |
+| Claude Code                      | MCP control                 | Auto Fix or prompt only       | Auto Fix requires indexed provenance, one current standard project or global MCP source, and one exact same-scope existing settings target. Otherwise the named target remains prompt-only.                                                                                                                                                                                                                                                                                                      |
+| Claude Code                      | Skill control               | Auto Fix or prompt only       | Auto Fix requires indexed provenance and one current standard `SKILL.md` winner. The editor writes only `skillOverrides.<name> = "off"`. Inventory-only or ambiguous targets remain prompt-only.                                                                                                                                                                                                                                                                                                |
 | Codex                            | Model replacement           | Auto Fix                      | `CodexRolloutJsonl` only. The publication must bind the observed main-thread model to an existing effective top-level `model`. Project edits require an explicit `trust_level = "trusted"` entry and a repository-root cwd.                                                                                                                                                                                                                                                                         |
 | Codex                            | Reasoning effort            | Auto Fix                      | `CodexRolloutJsonl` T findings only. The publication must bind the observed level to an existing effective top-level `model_reasoning_effort`. The reviewed replacement is `medium`.                                                                                                                                                                                                                                                                                                                |
 | Codex                            | Fast service tier           | Auto Fix                      | `CodexRolloutJsonl` F findings only. The finding needs explicit fast-tier evidence and the current winning existing `service_tier` must be `fast`; the editor changes it to reviewed `standard`. No publication-time config attribution is required.                                                                                                                                                                                                                                                |
 | Codex                            | Named subagent model        | Auto Fix                      | `CodexRolloutJsonl` S findings only. The current scan must locate exactly one named agent TOML file whose `model` equals the observed worker model.                                                                                                                                                                                                                                                                                                                                                 |
-| Codex                            | MCP enablement              | Prompt only                   | Exact observed server exposure does not prove resource ownership, dependencies, or the effective layered `enabled` selector at publication.                                                                                                                                                                                                                                                                                                                                                         |
-| Codex                            | Skill enablement            | Auto Fix                      | A K finding must have complete invocation coverage and one exact injected skill identity. The editor accepts only one current trusted standard `SKILL.md` winner and its matching `skills.config.<name>.enabled = false` entry.                                                                                                                                                                                                                                                                     |
+| Codex                            | MCP enablement              | Auto Fix or prompt only       | Auto Fix requires indexed provenance and one exact active trusted project or global `mcp_servers.<name>` table. Inventory-only, duplicate, or untrusted targets remain prompt-only.                                                                                                                                                                                                                                                                                                                |
+| Codex                            | Skill enablement            | Auto Fix or prompt only       | Auto Fix requires indexed provenance and one current trusted standard `SKILL.md` winner with one matching `skills.config.<name>.enabled` control. Other targets remain prompt-only.                                                                                                                                                                                                                                                                                                               |
 | OpenCode                         | Model default               | Auto Fix                      | `OpenCodeJsonl` and `OpenCodeSqliteV2` O findings only. Direct `openai`, `anthropic`, and `google` provider IDs use their reviewed native API when OpenCode omits it. Publication must bind the observed `provider/model` route to the effective merged `model` value. Dynamic, remote, agent, mode, and managed overrides are rejected.                                                                                                                                                            |
 | OpenCode                         | Named subagent model        | Auto Fix                      | S findings only. The current scan must locate exactly one named Markdown agent whose frontmatter `model` equals the observed worker model. Variant-only workers remain unavailable.                                                                                                                                                                                                                                                                                                                 |
 | OpenCode                         | Reasoning control           | Unavailable                   | The accepted sources have no historical effort map. A variant label is not an effective reasoning control.                                                                                                                                                                                                                                                                                                                                                                                          |
-| OpenCode                         | MCP control                 | Unavailable                   | The accepted sources have no model-facing MCP inventory or publication-time physical control attribution.                                                                                                                                                                                                                                                                                                                                                                                           |
-| OpenCode                         | Skill control               | Auto Fix                      | A K finding must have complete invocation coverage and one exact injected skill identity. The editor derives only one current standard `SKILL.md` winner and appends one V2 `skill` deny with that exact resource.                                                                                                                                                                                                                                                                                  |
+| OpenCode                         | MCP control                 | Prompt only                   | Current inventory can create a named target. Auto Fix still requires indexed provenance and one exact effective V2 MCP control.                                                                                                                                                                                                                                                                                                                                                                     |
+| OpenCode                         | Skill control               | Auto Fix or prompt only       | Auto Fix requires indexed provenance and one current standard `SKILL.md` winner. The editor appends one V2 `skill` deny with that exact resource. Other targets remain prompt-only.                                                                                                                                                                                                                                                                                                                |
 | Pi                               | Model and provider default  | Auto Fix                      | `PiV3Jsonl` O findings only. Publication must bind the observed `provider/model` route to an existing paired `defaultProvider` and `defaultModel` setting.                                                                                                                                                                                                                                                                                                                                          |
 | Pi                               | Thinking level              | Auto Fix                      | `PiV3Jsonl` T findings only. Publication must bind the saved agent-selected level to an existing route-specific `modelThinkingLevels` entry or `defaultThinkingLevel`. The reviewed replacement is `medium`.                                                                                                                                                                                                                                                                                        |
-| Pi                               | Skill exclusion             | Unavailable                   | The reviewed source does not prove the winning skill path or array precedence for a path exclusion. No `SKILL.md` file is changed.                                                                                                                                                                                                                                                                                                                                                                  |
+| Pi                               | MCP, built-in, or skill control | Prompt only                | Current inventory can create named M/B/K targets. The reviewed source does not provide the indexed provenance and exact winning control required for Auto Fix. No `SKILL.md` file is changed.                                                                                                                                                                                                                                                                                                      |
 | Pi, Cursor, Antigravity          | Named subagent model        | Unavailable                   | Pi extension output and Cursor or Antigravity findings do not bind one effective persisted worker-model selector.                                                                                                                                                                                                                                                                                                                                                                                   |
 | Claude Code, Codex, OpenCode, Pi | Session compaction          | Auto Fix for D only           | The current project or global config must contain a supported disabled compaction flag or a numeric limit above the finding depth cap. The editor enables the flag or lowers that limit to the cap. Ordinary session growth, enabled controls, fixed instructions, runtime overrides, and unsupported schemas remain unavailable.                                                                                                                                                                   |
 | Antigravity                      | Model or documented setting | Prompt only for O findings    | Accepted sources can retain direct model use, but no accepted IDE or CLI source binds it to one effective documented physical setting.                                                                                                                                                                                                                                                                                                                                                              |
 | Antigravity                      | MCP control                 | Unavailable                   | The reviewed native evidence has no MCP exposure or effective-control contract. IDE and CLI configuration cannot be interchanged.                                                                                                                                                                                                                                                                                                                                                                   |
 | Claude Code                      | Built-in tool               | Auto Fix for optional B tools | One exact observed tool must have a matching canonical permission name. A project target requires that bare name in its exact `permissions.allow` array. Otherwise the inherited control is global. The editor can add the bare deny to existing global settings or create the missing global settings file. `Bash`, `Edit`, `Read`, and `Write` remain measured but cannot receive Auto Fix or a targeted disable prompt. Wildcards, scoped rules, and general permission changes are unavailable. |
 | Codex                            | Built-in tool               | Unavailable                   | The documented `apps.<id>.tools.<tool>.enabled` control applies to an app tool, not one built-in tool identity.                                                                                                                                                                                                                                                                                                                                                                                     |
-| OpenCode, Pi                     | Built-in tool               | Unavailable pending inventory | OpenCode has a V2 action-specific deny editor and Pi has a `defaultTools` list editor, but accepted sources do not prove a complete B inventory or a current effective target.                                                                                                                                                                                                                                                                                                                      |
+| OpenCode, Pi                     | Built-in tool               | Prompt only                   | Current inventory can create a named target. Auto Fix requires indexed provenance and one exact current effective control; without both, the target remains prompt-only.                                                                                                                                                                                                                                                                                                                           |
 
 The prompt matrix below comes from `remediation/prompts.rs`. A `Yes` still needs
 one finding that passes the source coverage gates above.

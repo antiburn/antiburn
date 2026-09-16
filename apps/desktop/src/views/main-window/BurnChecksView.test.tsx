@@ -115,6 +115,7 @@ const target: BurnCheckTargetPayload = {
     lastObservedAtMs: 2,
     estimateMethod: "oldModelPriceDifference",
     estimatedOpportunity: null,
+    estimatedTokenBurnBasisPoints: null,
     verificationLimit: "freshEvidenceFromSameSourceAndTarget",
   },
   occurrenceCount: 1,
@@ -944,6 +945,7 @@ describe("BurnChecksView", () => {
     expect(dialog).toHaveTextContent("~/.claude/settings.json · model")
     expect(dialog).toHaveTextContent("claude-opus-4-6 → claude-sonnet-5")
     expect(dialog).toHaveTextContent("Responses can change")
+    expect(dialog).toHaveTextContent("previous content in a sibling .bak file")
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled(),
@@ -1011,6 +1013,23 @@ describe("BurnChecksView", () => {
       expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
     )
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
+  })
+
+  it("explains when current evidence cannot verify an applied change", async () => {
+    commands.apply.mockResolvedValueOnce({ outcome: "applied" })
+    setup()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Change applied. Current evidence cannot verify this fix.",
+    )
+    expect(commands.noteInteraction).toHaveBeenCalledWith({
+      kind: "burnCheckAutoFixCompleted",
+      outcome: "applied_verification_unavailable",
+    })
   })
 
   it("reviews and applies all selected automatic fixes", async () => {

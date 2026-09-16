@@ -196,6 +196,74 @@ Mutable current configuration can support a reviewed model, compaction, or tool 
 cannot prove what a historical request exposed unless the session records the
 inputs needed to select that catalog entry.
 
+The desktop also has a bounded read-only advisory resource inventory for native
+Claude Code, Codex, OpenCode, and Pi contexts. It returns logical MCP server,
+skill, and built-in tool candidates with current enabled state, global or
+project scope, provenance, and explicit limits. It returns no path, selector, or
+writable target. Skill candidates can carry a proportional estimate for listing
+frontmatter only. The body is not read for the estimate. This inventory is not
+session evidence.
+
+The reviewed current inputs are standard Claude user and project MCP files,
+`.claude/skills`, skill overrides, and exact permission controls; trusted Codex
+user and project `mcp_servers` layers plus `.agents/skills` and compatibility
+`.codex/skills`; OpenCode JSON/JSONC `mcp` and `mcp.servers` shapes, standard
+skill roots, `tools`, and permission controls; and Pi `defaultTools`, standard
+skill roots, explicit non-pattern skill directories, and
+`pi-mcp-extension` 1.5.0. Pi MCP activation additionally requires an installed
+manifest with the exact package name, version, and `./src/index.ts` extension.
+Its reviewed producer is commit
+`8a01fc53f3289d2e8eb492d67ba45cd84d64e7f2`.
+
+Known candidates survive malformed or dynamic unrelated inputs. The inventory
+records those inputs as limits. Indexed `SessionEvidence` can add observed MCP,
+skill, and catalog-backed built-in candidates, including candidates from a
+partial observed subset. It never turns that subset into current enablement or
+historical completeness.
+
+The native 30-day report reduction now builds a separate bounded resource
+assessment. It reads positive use from tool counts, invoked loaded sources,
+catalog-backed tool definitions, and persisted initial-context source rows.
+Positive facts from partial evidence can suppress an exact candidate. Partial
+evidence cannot prove non-use or a clean result. The reducer retains at most
+4,096 distinct positive-use identities, 4,096 resource turn groups, 4,096
+measured resource-session entries, 512 candidates and unused targets per
+detector, three supporting sessions per target, 256 repository roots, and 256
+distinct agent, working-directory, and repository inventory contexts. A cap
+blocks clean but does not remove retained findings.
+
+Global use applies only to the same agent. Project use applies only to the
+canonical accessible repository root selected by longest path containment.
+Unknown source origin does not create a scoped fallback target. When a raw call
+has no source origin, a same-name project candidate in that repository takes
+precedence over the global candidate. Same-name resources in different scopes
+or repositories remain separate.
+
+The pinned positive identities are case-insensitive exact resource names;
+`mcp__<server>__<tool>` for Claude Code and Codex; `<server>_<tool>` for
+OpenCode; and the default `mcp_<sanitized-server>_<tool>` shape from
+`pi-mcp-extension` 1.5.0. Claude Code and Codex additionally accept one unique
+bare suffix for a namespaced skill and the final segment of a catalog-backed
+built-in alias. Ambiguous skill aliases suppress no target and block clean. An
+ambiguous OpenCode or Pi MCP call suppresses all possible matching server
+findings and blocks clean without counting a server as used. OpenCode and Pi use
+exact skill and built-in identities.
+
+The Checks payload and target action command use this assessment for M/B/K
+status, counts, named targets, and estimates. Skill listings replicate only the
+frontmatter estimate across applicable turns. MCP estimates require measured
+indexed definition tokens. Built-in estimates use measured Claude Code and
+Codex definitions or pinned OpenCode and Pi catalog captures. Missing inputs,
+caps, and arithmetic failures omit the estimate instead of fabricating one.
+
+Resource Auto Fix requires both indexed provenance and one exact current editor
+resolution for the same agent, name, kind, scope, value, and physical key.
+Inventory-only and unresolved targets remain prompt-only. Because M/B/K absence
+cannot verify a transition, these prompt-only actions create no durable watch.
+A successful resource Auto Fix keeps a crash-recovery record whose verification
+and savings states are unavailable. It does not claim that later evidence will
+verify the change.
+
 For native sessions, the desktop can add nullable model and reasoning remediation
 metadata when it publishes `Ready` evidence. This applies to `ClaudeJsonl`,
 `CodexRolloutJsonl`, `OpenCodeJsonl`, `OpenCodeSqliteV2`, and `PiV3Jsonl` as the
@@ -245,7 +313,7 @@ global config, and it never creates a project config. This editor behavior does
 not expand the accepted `ClaudeJsonl` history or B finding eligibility.
 
 The winning evidence-publication transaction now enrolls at most 100 exact
-passive findings. Enrollment starts only after desktop schema V45 is installed;
+passive T, O, and F findings. Enrollment starts only after desktop schema V45 is installed;
 the V45 migration does not scan or infer attempts from older evidence. The
 publication time in milliseconds is the immutable verification boundary, so a
 historical session first published after rollout cannot become a retroactive
@@ -281,8 +349,10 @@ attempts or contributions.
 - No current M/B/K reader proves a full historical inventory. Observed subset
   completeness plus complete calls can support scoped findings, not clean. B
   Auto Fix uses the Claude Code source only when the finding provides one exact
-  canonical tool name. OpenCode V2 and Pi editors remain source-gated until a
-  reader proves their effective inventory and target.
+  canonical tool name. The advisory inventory has no mutation path. The report
+  and action integration can select an Auto Fix target only when indexed
+  provenance and the existing exact mutation resolver identify the same current
+  resource, scope, value, and physical key. Other targets remain prompt-only.
 - Selected OpenCode skills and Codex skill documents are observed injection and
   invocation, not unused listing overhead. Claude M/K also remain subset-scoped.
 - OpenCode CoreV2 `session_message` is not the current `OpenCodeSqliteV2` table

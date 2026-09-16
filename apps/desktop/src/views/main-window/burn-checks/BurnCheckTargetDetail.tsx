@@ -1,8 +1,12 @@
 import { Folder } from "lucide-react"
+import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
 import { InfoPopover } from "../../../components/presentation/InfoPopover"
 import type { BurnCheckDetectorId, BurnCheckTargetPayload } from "../../../lib/insightsIpc"
 import { renderAgentIcon } from "../../../lib/agentIcon"
-import { formatApiEquivalentUsd } from "../../../lib/presentation/checks"
+import {
+  formatApiEquivalentUsd,
+  formatTokenBurnPercent,
+} from "../../../lib/presentation/checks"
 import { CHECK_UI } from "../../checks/checkUi"
 import { RemindLaterAction } from "./RemindLaterAction"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
@@ -81,6 +85,13 @@ export function BurnCheckTargetDetail({
                   )}
                 </InfoPopover>
               )}
+              {target.display.estimatedTokenBurnBasisPoints != null && (
+                <span className="inline-flex items-center gap-1 text-label-secondary">
+                  <BurnCheckFlame basisPoints={target.display.estimatedTokenBurnBasisPoints} />
+                  {formatTokenBurnPercent(target.display.estimatedTokenBurnBasisPoints)} token
+                  burn
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -92,17 +103,15 @@ export function BurnCheckTargetDetail({
         )}
       </div>
       <div className={reportRow ? "burn-check-resource-body" : undefined}>
-        {reportRow ? (
+        {reportRow && target.affectedSessionCount != null ? (
           <p className="mt-1 type-callout tabular-nums text-label-secondary">
-            {target.affectedSessionCount != null
-              ? `${target.affectedSessionCount} ${target.affectedSessionCount === 1 ? "session" : "sessions"} affected`
-              : "Affected-session count unavailable"}
+            {`${target.affectedSessionCount} ${target.affectedSessionCount === 1 ? "session" : "sessions"} affected`}
           </p>
-        ) : (
+        ) : !reportRow ? (
           <p className="mt-2 type-body text-pretty text-label-secondary">
             {guidance.recommendation}
           </p>
-        )}
+        ) : null}
         {costLine && (
           <p className="mt-1 type-callout tabular-nums text-label-secondary">{costLine}</p>
         )}

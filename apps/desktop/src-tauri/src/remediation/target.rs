@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
-    let (provider, api, old_model, replacement) = match target.findings[0].finding.cause() {
+    let (provider, api, old_model, replacement) = match target.finding().cause() {
         FindingCause::OldModelUsage {
             provider,
             api,
@@ -20,7 +20,7 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
         }
         _ => (None, None, None, None),
     };
-    let (target_model, target_control) = match target.findings[0].finding.cause() {
+    let (target_model, target_control) = match target.finding().cause() {
         FindingCause::ModelOverthinking {
             model, reasoning, ..
         } => (Some(model.clone()), Some(reasoning.clone())),
@@ -37,9 +37,9 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
     });
     WatchDefinition {
         version: 1,
-        detector: target.findings[0].finding.detector.key().into(),
+        detector: target.finding().detector.key().into(),
         canonical_identity: target.canonical_identity.clone(),
-        source_format: target.findings[0].finding.source_format.into(),
+        source_format: target.finding().source_format.into(),
         workspace_key: target.workspace_key.clone(),
         workspace_relative_cwd: target
             .config
@@ -49,7 +49,7 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
         api,
         old_model,
         replacement,
-        resource: match target.findings[0].finding.cause() {
+        resource: match target.finding().cause() {
             FindingCause::UnusedMcpServer { server, .. } => Some(server.clone()),
             FindingCause::UnusedBuiltInTool { tool, .. } => Some(tool.clone()),
             FindingCause::UnusedSkill { skill, .. } => Some(skill.clone()),
@@ -172,6 +172,53 @@ pub(super) fn target_identity(
     }
 }
 
+pub(super) fn resource_target_identity(
+    secret: &[u8; 32],
+    environment_key: &str,
+    finding: &Finding,
+    scope: &insights_report::ResourceAssessmentScope,
+) -> Option<TargetIdentity> {
+    let agent = crate::agents::kind_from_slug(finding.agent())?;
+    let (scope_kind, scope_key, workspace_key) = match scope {
+        insights_report::ResourceAssessmentScope::Global => (
+            "global".to_owned(),
+            hashed_parts_with_secret(secret, b"global", &[agent.slug()]),
+            None,
+        ),
+        insights_report::ResourceAssessmentScope::Project(root) => {
+            let root = root.to_str()?;
+            let workspace_key = hashed_parts_with_secret(secret, b"workspace", &[root]);
+            (
+                "project".to_owned(),
+                workspace_key.clone(),
+                Some(workspace_key),
+            )
+        }
+    };
+    let canonical_identity = finding.canonical_identity(&scope_key);
+    let group_key = hashed_parts_with_secret(
+        secret,
+        TARGET_DOMAIN,
+        &[
+            environment_key,
+            agent.slug(),
+            &scope_kind,
+            &scope_key,
+            "",
+            &canonical_identity,
+        ],
+    );
+    Some(TargetIdentity {
+        group_key: group_key.clone(),
+        target_key: group_key,
+        canonical_identity,
+        workspace_key,
+        scope_kind,
+        scope_key,
+        physical_target_key: None,
+    })
+}
+
 pub(super) fn session_scope_key(secret: &[u8; 32], agent: &str, session_id: &str) -> String {
     hashed_parts_with_secret(secret, b"session", &[agent, session_id])
 }
@@ -217,6 +264,7 @@ pub(crate) fn passive_remediations(
         let identity = target_identity(secret, &finding, canonical_workspace.as_deref());
         let target = CachedTarget {
             findings: vec![finding],
+            resource: None,
             target_key: identity.target_key.clone(),
             canonical_identity: identity.canonical_identity,
             workspace_key: identity.workspace_key,
@@ -243,7 +291,7 @@ pub(crate) fn passive_remediations(
         let snapshot = StoredDisplaySnapshot {
             version: 1,
             finding_id: stable_finding_id(&target),
-            display: burn_check_display_facts(&target),
+            display: burn_check_display_facts(&target, None),
         };
         let source_generation = target.findings[0].source_generation.to_string();
         let published_fence = target.findings[0].published_fence.to_string();

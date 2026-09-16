@@ -188,6 +188,13 @@ Auto Fix uses two explicit steps.
 1. `prepare_auto_fix_burn_check_target` revalidates the evidence and effective setting. It prepares exact replacement bytes and returns a bounded semantic review.
 2. `apply_prepared_burn_check_operation` accepts only the prepared-operation ID. It revalidates evidence, scope, precedence, selector, file identity, and original bytes before replacement.
 
+Before Auto Fix replaces an existing config file, it atomically writes the exact
+pre-update bytes to a sibling `<config-file>.bak` and syncs that backup. A safe
+existing backup is replaced, and the new backup remains after success. Auto Fix
+does not create a backup when it creates a new config file because no prior
+content exists. A backup failure leaves the config unchanged. Recovery never
+restores a backup without a user action.
+
 The review names the agent, scope, setting, current value, proposed value,
 effect, and side effect. It does not expose a path or raw config.
 
@@ -214,8 +221,10 @@ A failure before replacement cancels the reservation. A result that can follow
 replacement enters durable `recoveryNeeded`. Recovery resolves the same agent,
 source, setting, scope, trusted root, relative cwd, physical selector, and
 replacement value. It starts verification only when readback proves the change.
-An old value cancels the uncertain write. A changed or unprovable target remains
-blocked and cannot start a second write.
+For an unverifiable operation, successful readback records
+`verificationUnavailable` and returns an applied result without promising later
+verification. An old value cancels the uncertain write. A changed or unprovable
+target remains blocked and cannot start a second write.
 
 Repeated confirmation returns the saved result only for the same completed
 prepared operation. Expired, evicted, or failed operations cannot be reused.
@@ -235,8 +244,8 @@ agents. Source coverage can still block a finding for one session.
 | --------------------------------------------------------------------------------------------------------- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | No  | No  | Yes | Yes | No  | Yes |
-| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | No  | No  | No  | Yes | No  | Yes |
+| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
+| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No  | Yes |
 | Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
 
 `AntigravityWorkspaceChatJson` is uncharacterized and has no prompt support.
@@ -254,8 +263,9 @@ Cursor and the other source formats have no remediation prompt support.
 
 Model Auto Fix applies only to a reviewed obsolete model and its reviewed
 replacement. Reasoning Auto Fix applies only to a reviewed above-cap level when
-`medium` is a valid below-cap value. M can disable one exact observed, enabled
-MCP server for Claude Code or Codex. Claude appends only
+`medium` is a valid below-cap value. Resource Auto Fix requires indexed
+provenance plus one exact current enabled resource, effective scope, value, and
+physical key. M can disable one such MCP server for Claude Code or Codex. Claude appends only
 `mcp__<name>__*` to an existing same-scope deny list. Codex sets only
 `mcp_servers.<name>.enabled = false`. OpenCode has a safe exact `mcp.<name>.enabled`
 editor, but its accepted sources do not yet provide M evidence. Antigravity
@@ -272,7 +282,9 @@ tasks require them. OpenCode has an exact V2 action deny editor and Pi can
 remove one unique `defaultTools` member from the winning settings file, but both
 remain source-gated until their accepted sources prove a complete tool inventory.
 Codex B Auto Fix is unavailable because its documented app-tool controls do not
-identify one built-in tool. Skill, worker, depth, speed, and cache edits remain
+identify one built-in tool. OpenCode skill targets can receive Auto Fix when
+indexed provenance and one exact standard skill winner resolve to the V2
+permission control. Other skill, worker, depth, speed, and cache edits remain
 prompt-only or unavailable.
 
 Claude fast-mode Auto Fix writes `fastMode: false` to the one winning control.
@@ -320,9 +332,12 @@ reserved -> writing -> recoveryNeeded -> watching -> fixed -> recurred
 waitingForPromptUse -> watching
 ```
 
-Prompt actions enter `waitingForPromptUse`. They enter `watching` only after
-their exact marker is captured in user content. Auto Fix uses the write states first. A
-successful file readback means `watching`, not `fixed`.
+Verifiable prompt actions enter `waitingForPromptUse`. They enter `watching`
+only after their exact marker is captured in user content. An M/B/K prompt with
+no exact verification route returns no watch or remediation reference. Auto Fix
+uses the write states first. A successful file readback starts `watching` only
+when positive verification exists. Otherwise the applied result and retained
+write record state that verification is unavailable.
 
 Only sessions that start after the effective boundary can prove a transition.
 The source format and exact scope must match. Truncated pages, partial evidence,
@@ -330,7 +345,7 @@ missing controls, stale projections, and changed policy or catalog revisions do
 not prove a fix.
 
 T and F use positive control proof. O uses actual model-use proof. Generic clean
-absence is not enough for resource targets. After a fixed transition, the first
+absence never verifies resource targets. After a fixed transition, the first
 later exact positive finding marks recurrence. Recurrence stops new savings at
 its evidence time. It does not erase the earlier verified contribution.
 
@@ -340,9 +355,11 @@ deletion, report age, or leaving the report window never proves a fix.
 ## Opportunity And Savings
 
 `Estimated opportunity` describes the current finding before proof. It uses
-only available bounded finding facts. The current UI can show a numeric
-opportunity for D and for replicated B definitions. Other methods stay unknown
-when their inputs are absent.
+only available bounded finding facts. M/B/K target rows can show replicated
+tokens and a burn percentage when their definition or listing tokens and the
+report denominator are available. Skill estimates include listing frontmatter,
+not the skill body. MCP estimates require measured indexed definitions. Other
+methods stay unknown when their inputs are absent.
 
 `Verified savings` describes a verified later transition. Every verified transition
 can store one improvement count. O can also store cumulative API-equivalent USD

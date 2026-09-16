@@ -142,6 +142,8 @@ export interface BurnCheckDisplayFactsPayload {
   estimateMethod: BurnCheckEstimateMethod | null
   /** Present only when the backend returns a reviewed value and unit. */
   estimatedOpportunity: BurnCheckEstimatedValuePayload | null
+  /** Complete attributed target tokens divided by the report token denominator. */
+  estimatedTokenBurnBasisPoints: number | null
   verificationLimit: VerificationCoverageLimit
 }
 
@@ -224,7 +226,7 @@ export interface BurnCheckTargetPayload {
   finding: BurnCheckFindingPayload
   display: BurnCheckDisplayFactsPayload
   occurrenceCount: number
-  affectedSessionCount?: number
+  affectedSessionCount?: number | null
   projectName?: string | null
   projectLocation?: string | null
   autoFix: AutoFixAvailabilityPayload
@@ -324,6 +326,7 @@ export type PrepareAutoFixBurnCheckTargetOutcome =
 
 export type ApplyPreparedBurnCheckOperationOutcome =
   | { outcome: "appliedAwaitingVerification"; watchId: string }
+  | { outcome: "applied" }
   | { outcome: "recoveryNeeded"; watchId: string }
   | { outcome: "stale" }
   | { outcome: "expired" }
@@ -340,7 +343,7 @@ export type PromptFixUnavailableReason =
   | "checkUnsupportedForAgent"
 
 export type CopyPromptFixBurnCheckTargetOutcome =
-  | { outcome: "promptReady"; prompt: string; watch: BurnCheckWatchPayload }
+  | { outcome: "promptReady"; prompt: string; watch: BurnCheckWatchPayload | null }
   | { outcome: "stale" }
   | { outcome: "expired" }
   | { outcome: "unavailable"; reason: PromptFixUnavailableReason }

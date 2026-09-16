@@ -514,7 +514,9 @@ fn split_route(route: &str) -> Result<(&str, &str), ConfigUnavailableReason> {
     }
 }
 
-fn global_root(home: &Path) -> Result<std::path::PathBuf, ConfigUnavailableReason> {
+pub(in crate::agent_config) fn global_root(
+    home: &Path,
+) -> Result<std::path::PathBuf, ConfigUnavailableReason> {
     global_root_for(
         home,
         std::env::var_os("PI_AGENT_DIR").as_deref(),

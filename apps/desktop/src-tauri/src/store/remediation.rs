@@ -41,6 +41,50 @@ pub struct RemediationDisplaySnapshot {
     pub recurred_boundary_ms: Option<i64>,
 }
 
+fn is_exact_resource_write(remediation: &Remediation) -> bool {
+    if remediation.environment_key != "native" || remediation.state != RemediationState::Reserved {
+        return false;
+    }
+    let Ok(definition) = serde_json::from_str::<serde_json::Value>(&remediation.definition_json)
+    else {
+        return false;
+    };
+    let Some(object) = definition.as_object() else {
+        return false;
+    };
+    let detector = object
+        .get("detector")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let setting = object
+        .get("configSetting")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let valid_resource_operation = matches!(
+        (detector, setting),
+        ("unused_mcp_servers", "mcpServer")
+            | ("unused_built_in_tools", "builtInTool")
+            | ("unused_skills", "skill")
+    );
+    valid_resource_operation
+        && object
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && object
+            .get("physicalTargetKey")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && object
+            .get("configExpectedValue")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.contains('='))
+        && object
+            .get("configProposedValue")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.contains('='))
+}
+
 /// A retained remediation with its safe display snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemediationWithDisplaySnapshot {
@@ -180,7 +224,7 @@ impl Store {
             validate_json("definition_json", &remediation.definition_json)?;
             validate_json("result_json", &remediation.result_json)?;
             ensure!(
-                !guards.is_empty(),
+                !guards.is_empty() || is_exact_resource_write(remediation),
                 "a remediation requires current evidence"
             );
         }
@@ -359,14 +403,20 @@ impl Store {
         remediation_id: &str,
         boundary_ms: i64,
         now: i64,
+        verification_available: bool,
     ) -> Result<bool> {
+        let result = if verification_available {
+            r#"{"version":1,"verification":{"status":"watching"},"savings":{"status":"pending"}}"#
+        } else {
+            r#"{"version":1,"verification":{"status":"verificationUnavailable"},"savings":{"status":"unavailable"}}"#
+        };
         Ok(self.lock().execute(
             "UPDATE remediation SET state = 'watching',
                 effective_boundary_ms = COALESCE(joined_boundary_ms, ?2),
-                result_json = '{\"version\":1,\"verification\":{\"status\":\"watching\"},\"savings\":{\"status\":\"pending\"}}',
+                result_json = ?4,
                 dirty_revision = dirty_revision + 1, updated_at_epoch = MAX(updated_at_epoch, ?3)
               WHERE remediation_id = ?1 AND state IN ('writing', 'recoveryNeeded')",
-            params![remediation_id, boundary_ms, now],
+            params![remediation_id, boundary_ms, now, result],
         )? == 1)
     }
 

@@ -20,7 +20,7 @@ pub struct BurnCheckTarget {
     pub finding: FindingDisplay,
     pub display: BurnCheckDisplayFacts,
     pub occurrences: usize,
-    pub affected_sessions: usize,
+    pub affected_sessions: Option<usize>,
     pub project_name: Option<String>,
     pub project_location: Option<String>,
     pub auto_fix: AutoFixAvailability,
@@ -109,6 +109,8 @@ pub struct BurnCheckDisplayFacts {
     pub estimate_method: Option<BurnCheckEstimateMethod>,
     #[serde(default)]
     pub estimated_opportunity: Option<SavingsValue>,
+    #[serde(default)]
+    pub estimated_token_burn_basis_points: Option<u16>,
     pub verification_limit: BurnCheckVerificationLimit,
 }
 
@@ -275,7 +277,7 @@ pub enum BurnCheckRemediationOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptFixResult {
     pub prompt: String,
-    pub watch: WatchStatus,
+    pub watch: Option<WatchStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,6 +288,7 @@ pub struct CheckPromptFixResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoFixResult {
     pub watch_id: String,
+    pub verification_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

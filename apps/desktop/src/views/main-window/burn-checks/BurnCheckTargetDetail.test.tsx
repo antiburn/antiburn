@@ -30,6 +30,7 @@ function target(overrides: Partial<BurnCheckTargetPayload> = {}): BurnCheckTarge
       lastObservedAtMs: 2,
       estimateMethod: "builtInDefinitionReplication",
       estimatedOpportunity: null,
+      estimatedTokenBurnBasisPoints: null,
       verificationLimit: "freshEvidenceFromSameSourceAndTarget",
     },
     occurrenceCount: 2,
@@ -108,6 +109,18 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     expect(screen.getByText(/~\$8\.20 in cache reads/)).toBeInTheDocument()
+  })
+
+  it("shows complete attributed target burn with the target metadata", () => {
+    render(
+      <BurnCheckTargetDetail
+        refresh={() => undefined}
+        target={target({
+          display: { ...target().display, estimatedTokenBurnBasisPoints: 125 },
+        })}
+      />,
+    )
+    expect(screen.getByText("1% token burn")).toBeInTheDocument()
   })
 
   it("reveals the folder on demand and distinguishes samples from affected sessions", () => {

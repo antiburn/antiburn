@@ -440,6 +440,48 @@ pub struct EfficiencyReport {
     pub estimated_token_burn_basis_points: Option<u16>,
     /// Each detector's token burn uses the same ratio.
     pub detector_estimated_token_burn_basis_points: [Option<u16>; DetectorId::COUNT],
+    token_burn_denominator: Option<u128>,
+    non_resource_token_burn_by_session: Option<Vec<u128>>,
+}
+
+impl EfficiencyReport {
+    /// Returns this report's burn percentage for complete attributed tokens.
+    pub fn estimated_token_burn_for_attributed_tokens(&self, tokens: u128) -> Option<u16> {
+        token_burn_basis_points(tokens, self.token_burn_denominator?)
+    }
+
+    /// Replaces resource-source burn while preserving the measured non-resource burn.
+    pub fn estimated_token_burn_with_resource_tokens_by_session(
+        &self,
+        resource_tokens_by_session: Option<&[(usize, u128)]>,
+    ) -> Option<u16> {
+        let tokens = match (
+            self.non_resource_token_burn_by_session.as_deref(),
+            resource_tokens_by_session,
+        ) {
+            (Some(non_resource), Some(resources)) => {
+                let mut total = non_resource
+                    .iter()
+                    .copied()
+                    .try_fold(0_u128, u128::checked_add)?;
+                for (index, resource) in resources {
+                    let non_resource = non_resource.get(*index).copied().unwrap_or(0);
+                    total = total.checked_add(resource.saturating_sub(non_resource))?;
+                }
+                total
+            }
+            (Some(non_resource), None) => non_resource
+                .iter()
+                .copied()
+                .try_fold(0_u128, u128::checked_add)?,
+            (None, Some(resources)) => resources
+                .iter()
+                .map(|(_, tokens)| *tokens)
+                .try_fold(0_u128, u128::checked_add)?,
+            (None, None) => return None,
+        };
+        self.estimated_token_burn_for_attributed_tokens(tokens)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1026,15 +1068,24 @@ impl TokenBurnAccumulator {
         }
     }
 
+    fn denominator(&self) -> Option<u128> {
+        (self.total_complete && self.total_tokens > 0).then_some(self.total_tokens)
+    }
+
     fn finish(
         self,
         statuses: &[DetectorStatus; DetectorId::COUNT],
-    ) -> (Option<u16>, [Option<u16>; DetectorId::COUNT]) {
+    ) -> (
+        Option<u16>,
+        [Option<u16>; DetectorId::COUNT],
+        Option<Vec<u128>>,
+    ) {
         let mut numerators = [None; DetectorId::COUNT];
         let mut combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_detector_by_session = vec![0_u128; self.sessions.len()];
-        let can_measure = self.total_complete && self.total_tokens > 0;
+        let denominator = self.denominator();
+        let can_measure = denominator.is_some();
 
         for (detector, value_for) in [
             (
@@ -1087,7 +1138,7 @@ impl TokenBurnAccumulator {
             let Some(total) = self.sessions.iter().try_fold(0_u128, |total, session| {
                 total.checked_add(value_for(session).unwrap_or(0))
             }) else {
-                return (None, [None; DetectorId::COUNT]);
+                return (None, [None; DetectorId::COUNT], None);
             };
             numerators[detector.index()] = Some(total);
             for (index, session) in self.sessions.iter().enumerate() {
@@ -1124,7 +1175,7 @@ impl TokenBurnAccumulator {
                 for (session, tokens) in &aggregate.by_session {
                     let Some(total) = source_detector_by_session[*session].checked_add(*tokens)
                     else {
-                        return (None, [None; DetectorId::COUNT]);
+                        return (None, [None; DetectorId::COUNT], None);
                     };
                     source_detector_by_session[*session] = total;
                 }
@@ -1136,33 +1187,37 @@ impl TokenBurnAccumulator {
                 .iter()
                 .try_fold(0_u128, |total, value| total.checked_add(*value))
             else {
-                return (None, [None; DetectorId::COUNT]);
+                return (None, [None; DetectorId::COUNT], None);
             };
             numerators[detector.index()] = Some(total);
             for (index, value) in source_detector_by_session.iter().enumerate() {
                 let Some(total) = source_combined_by_session[index].checked_add(*value) else {
-                    return (None, [None; DetectorId::COUNT]);
+                    return (None, [None; DetectorId::COUNT], None);
                 };
                 source_combined_by_session[index] = total;
             }
         }
+        let has_measured_non_resource_finding = [
+            DetectorId::SessionsOverDepth,
+            DetectorId::ModelOverthinking,
+            DetectorId::OverpoweredSubagents,
+            DetectorId::OldModelUsage,
+            DetectorId::OveruseOfFastMode,
+            DetectorId::CacheChurn,
+        ]
+        .into_iter()
+        .any(|detector| {
+            matches!(statuses[detector.index()], DetectorStatus::Findings(_))
+                && numerators[detector.index()].is_some()
+        });
+        let non_resource_token_burn_by_session =
+            has_measured_non_resource_finding.then(|| combined_by_session.clone());
         for (index, source_tokens) in source_combined_by_session.into_iter().enumerate() {
             combined_by_session[index] = combined_by_session[index].max(source_tokens);
         }
 
-        let percentage = |numerator: u128| {
-            if self.total_tokens == 0 {
-                return None;
-            }
-            numerator
-                .checked_mul(u128::from(BASIS_POINTS_SCALE))
-                .and_then(|scaled| scaled.checked_add(self.total_tokens / 2))
-                .map(|rounded| {
-                    (rounded / self.total_tokens)
-                        .min(u128::from(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS))
-                        as u16
-                })
-        };
+        let percentage =
+            |numerator| denominator.and_then(|total| token_burn_basis_points(numerator, total));
         let estimates = core::array::from_fn(|index| match &statuses[index] {
             DetectorStatus::Findings(_) => numerators[index].and_then(percentage),
             DetectorStatus::Clean => Some(0),
@@ -1179,8 +1234,17 @@ impl TokenBurnAccumulator {
         } else {
             None
         };
-        (combined, estimates)
+        (combined, estimates, non_resource_token_burn_by_session)
     }
+}
+
+fn token_burn_basis_points(numerator: u128, denominator: u128) -> Option<u16> {
+    numerator
+        .checked_mul(u128::from(BASIS_POINTS_SCALE))
+        .and_then(|scaled| scaled.checked_add(denominator / 2))
+        .map(|rounded| {
+            (rounded / denominator).min(u128::from(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS)) as u16
+        })
 }
 
 pub struct EfficiencyReportAccumulator {
@@ -1393,8 +1457,12 @@ impl EfficiencyReportAccumulator {
                 self.assessed_sessions,
             )
         });
-        let (estimated_token_burn_basis_points, detector_estimates) =
-            self.token_burn.finish(&detector_statuses);
+        let token_burn_denominator = self.token_burn.denominator();
+        let (
+            estimated_token_burn_basis_points,
+            detector_estimates,
+            non_resource_token_burn_by_session,
+        ) = self.token_burn.finish(&detector_statuses);
         EfficiencyReport {
             context,
             assessed_sessions: self.assessed_sessions,
@@ -1411,6 +1479,8 @@ impl EfficiencyReportAccumulator {
             capability_gap_examples: self.capability_gap_examples,
             estimated_token_burn_basis_points,
             detector_estimated_token_burn_basis_points: detector_estimates,
+            token_burn_denominator,
+            non_resource_token_burn_by_session,
         }
     }
 }
@@ -1668,6 +1738,22 @@ mod tests {
 
         assert_eq!(report.estimated_token_burn_basis_points, Some(750));
         assert_eq!(
+            report.estimated_token_burn_for_attributed_tokens(150),
+            Some(750)
+        );
+        assert_eq!(
+            report.estimated_token_burn_with_resource_tokens_by_session(Some(&[(0, 300)])),
+            Some(1_500)
+        );
+        assert_eq!(
+            report.estimated_token_burn_with_resource_tokens_by_session(Some(&[(1, 300)])),
+            Some(2_250)
+        );
+        assert_eq!(
+            report.estimated_token_burn_with_resource_tokens_by_session(None),
+            Some(750)
+        );
+        assert_eq!(
             report.detector_estimated_token_burn_basis_points
                 [DetectorId::SessionsOverDepth.index()],
             Some(750)
@@ -1884,6 +1970,7 @@ mod tests {
             None
         );
         assert_eq!(report.estimated_token_burn_basis_points, None);
+        assert_eq!(report.estimated_token_burn_for_attributed_tokens(1), None);
     }
 
     #[test]
@@ -1943,7 +2030,7 @@ mod tests {
                 examples: Vec::new(),
             });
         }
-        let (combined, per_detector) = token_burn.finish(&statuses);
+        let (combined, per_detector, _) = token_burn.finish(&statuses);
 
         assert_eq!(combined, Some(8_000));
         assert_eq!(
@@ -1969,7 +2056,7 @@ mod tests {
         );
         let statuses = finding_statuses(&[DetectorId::SessionsOverDepth]);
 
-        let (combined, estimates) = token_burn.finish(&statuses);
+        let (combined, estimates, _) = token_burn.finish(&statuses);
 
         assert_eq!(combined, Some(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS));
         assert_eq!(
@@ -2090,7 +2177,7 @@ mod tests {
             replicated_cost_usd: None,
         }]);
         token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3]);
-        let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
+        let (combined, estimates, _) = token_burn.finish(&finding_statuses(&all_findings));
 
         assert_eq!(combined, Some(800));
         assert_eq!(
@@ -2150,7 +2237,7 @@ mod tests {
         }]);
         token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3]);
 
-        let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
+        let (combined, estimates, _) = token_burn.finish(&finding_statuses(&all_findings));
 
         assert_eq!(combined, Some(880));
         assert_eq!(
@@ -2201,7 +2288,7 @@ mod tests {
             [false, true, false],
         );
 
-        let (_, estimates) = token_burn.finish(&finding_statuses(&[
+        let (_, estimates, _) = token_burn.finish(&finding_statuses(&[
             DetectorId::SessionsOverDepth,
             DetectorId::UnusedBuiltInTools,
         ]));
@@ -2323,7 +2410,8 @@ mod tests {
         findings[DetectorId::ModelOverthinking.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         token_burn.observe(evidence, findings, [false; 3]);
-        let (_, estimates) = token_burn.finish(&finding_statuses(&[DetectorId::ModelOverthinking]));
+        let (_, estimates, _) =
+            token_burn.finish(&finding_statuses(&[DetectorId::ModelOverthinking]));
         assert_eq!(
             estimates[DetectorId::ModelOverthinking.index()],
             Some(1_750)
@@ -2626,7 +2714,7 @@ mod tests {
                 examples: Vec::new(),
             });
 
-        let (combined, estimates) = token_burn.finish(&statuses);
+        let (combined, estimates, _) = token_burn.finish(&statuses);
 
         assert_eq!(combined, None);
         assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], None);
@@ -2696,7 +2784,7 @@ mod tests {
         );
         let statuses = finding_statuses(&[DetectorId::UnusedMcpServers]);
 
-        let (combined, estimates) = token_burn.finish(&statuses);
+        let (combined, estimates, _) = token_burn.finish(&statuses);
 
         assert_eq!(combined, Some(500));
         assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(500));
@@ -2873,7 +2961,7 @@ mod tests {
             });
         }
 
-        let (combined, estimates) = token_burn.finish(&statuses);
+        let (combined, estimates, _) = token_burn.finish(&statuses);
 
         assert_eq!(combined, Some(1_500));
         assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(1_000));

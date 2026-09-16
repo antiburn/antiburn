@@ -260,6 +260,42 @@ fn remediation_batch_rolls_back_when_a_later_insert_fails() {
 }
 
 #[test]
+fn only_exact_reserved_resource_writes_can_start_without_session_guards() {
+    let store = store();
+    let ordinary = remediation(
+        "ordinary",
+        "ordinary-target",
+        RemediationState::Reserved,
+        10,
+    );
+    assert!(store.create_or_reuse_remediation(&ordinary, &[]).is_err());
+
+    let mut resource = remediation(
+        "resource",
+        "resource-target",
+        RemediationState::Reserved,
+        10,
+    );
+    resource.definition_json = serde_json::json!({
+        "version": 1,
+        "detector": "unused_mcp_servers",
+        "resource": "docs",
+        "physicalTargetKey": "opaque-target",
+        "configSetting": "mcpServer",
+        "configExpectedValue": "docs=true",
+        "configProposedValue": "docs=false"
+    })
+    .to_string();
+
+    assert!(
+        store
+            .create_or_reuse_remediation(&resource, &[])
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
 fn remediation_snapshot_reads_are_bounded_and_ordered() {
     let directory = tempfile::TempDir::new().unwrap();
     let store = Store::open(directory.path()).unwrap();
@@ -730,7 +766,7 @@ fn prompt_watch_upgrades_to_a_crash_safe_auto_write() {
     );
     assert!(
         store
-            .finalize_remediation_write(&reserved.remediation_id, 23_000, 23)
+            .finalize_remediation_write(&reserved.remediation_id, 23_000, 23, true)
             .unwrap()
     );
     let watching = store
@@ -776,7 +812,7 @@ fn a_new_auto_write_starts_its_boundary_at_successful_readback() {
     );
     assert!(
         store
-            .finalize_remediation_write(&reserved.remediation_id, 23_456, 24)
+            .finalize_remediation_write(&reserved.remediation_id, 23_456, 24, true)
             .unwrap()
     );
     let watching = store
@@ -918,6 +954,51 @@ fn auto_write_replaces_a_waiting_prompt_attempt_and_restores_it_when_cancelled()
             .unwrap()
             .state,
         RemediationState::WaitingForPromptUse
+    );
+}
+
+#[test]
+fn copied_prompt_does_not_replace_an_active_passive_watch() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    let passive = store
+        .create_or_reuse_remediation(
+            &remediation("passive", "target", RemediationState::Watching, 10),
+            std::slice::from_ref(&guard),
+        )
+        .unwrap()
+        .unwrap();
+    let snapshot = display_snapshot(&passive.remediation_id);
+    store
+        .upsert_remediation_display_snapshot(&snapshot)
+        .unwrap();
+
+    let copied = store
+        .create_or_reuse_remediation(
+            &remediation(
+                "copied",
+                "target",
+                RemediationState::WaitingForPromptUse,
+                20,
+            ),
+            &[guard],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(copied.remediation_id, passive.remediation_id);
+    assert_eq!(copied.state, RemediationState::Watching);
+    assert_eq!(
+        copied.effective_boundary_ms,
+        Some(snapshot.effective_boundary_ms)
+    );
+    assert_eq!(copied.definition_json, passive.definition_json);
+    assert_eq!(copied.result_json, passive.result_json);
+    assert_eq!(
+        store
+            .remediation_display_snapshot(&passive.remediation_id)
+            .unwrap(),
+        Some(snapshot)
     );
 }
 

@@ -34,6 +34,12 @@ type ReportUiState = {
   passedPreference: boolean | null
 }
 
+function isUnusedResourceDetector(id: ChecksCategoryPayload["id"]) {
+  return (
+    id === "unusedMcpServers" || id === "unusedBuiltInTools" || id === "unusedSkills"
+  )
+}
+
 function LoadingCheckDetail() {
   return (
     <article
@@ -94,7 +100,7 @@ function CheckDetailContent({
         <p className="type-callout text-label-secondary">
           {`No finding in ${check.clean} complete sessions.`}
         </p>
-        {remediation?.outcome === "passed" && (
+        {remediation?.outcome === "passed" && remediation.origin === "action" && (
           <p className="mt-1 type-footnote text-burn-check-pass-fill">Verified after your fix.</p>
         )}
       </div>
@@ -107,7 +113,7 @@ function CheckDetailContent({
       <LoadingCheckDetail />
     )
   }
-  if (check.id === "unusedSkills" || check.id === "unusedMcpServers") {
+  if (isUnusedResourceDetector(check.id)) {
     if (targets.data.targets.length === 0) {
       return (
         <BurnCheckDetail
@@ -161,7 +167,7 @@ function CheckDetail({
 }) {
   const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
   const targetList = state.targets[check.id]?.data
-  const named = check.id === "unusedSkills" || check.id === "unusedMcpServers"
+  const named = isUnusedResourceDetector(check.id)
   const resourceName = "affected resource"
   const resourceCount =
     named && targetList
@@ -391,9 +397,20 @@ export function BurnChecksReport({
   const snoozedIds = snoozedDetectorIds(snoozed)
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
   const awaitingIds = new Set(
-    state.remediationProgress?.attempts
-      .filter((attempt) => attempt.lifecycle === "watching")
-      .map((attempt) => attempt.detector),
+    presentation.failures
+      .filter((check) => {
+        const targets = state.targets[check.id]?.data?.targets
+        return (
+          targets !== undefined &&
+          targets.length > 0 &&
+          targets.every(
+            (target) =>
+              target.watch?.lifecycle === "watching" &&
+              target.watch.verification.status === "watching",
+          )
+        )
+      })
+      .map((check) => check.id),
   )
   const activeAwaiting = presentation.failures.filter(
     (check) => !snoozedIds.has(check.id) && awaitingIds.has(check.id),
@@ -408,7 +425,11 @@ export function BurnChecksReport({
   const checks = [...activeFailures, ...activeAwaiting, ...activeWins, ...snoozedChecks]
   const reportKey = checks.map((check) => check.id).join(":")
   const initialId =
-    activeFailures[0]?.id ?? activeAwaiting[0]?.id ?? activeWins[0]?.id ?? snoozedChecks[0]?.id ?? null
+    activeFailures[0]?.id ??
+    activeAwaiting[0]?.id ??
+    activeWins[0]?.id ??
+    snoozedChecks[0]?.id ??
+    null
   const [ui, setUi] = useState<ReportUiState>(() => ({
     reportKey,
     selectedId: initialId,
