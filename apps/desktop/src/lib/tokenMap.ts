@@ -113,19 +113,31 @@ export type TokenMapOptions = {
 /** One cell per LED, so the map shares the VU meter's grid. */
 const DEFAULT_CELLS = 20
 
-/** Sessions on the map before it shows. One session leaves the live LED alone. */
-export const MIN_MAP_SESSIONS = 2
+/** Agents on the map before it shows. One agent leaves the live LED alone. */
+export const MIN_MAP_AGENTS = 2
 
 /**
- * Whether the map shows after a poll that found `count` live sessions.
+ * The live agents on the map: every session, plus each sub-agent that wrote
+ * tokens in the window. A session with one busy sub-agent counts as two.
+ */
+export function agentCount(layout: TokenMapLayout): number {
+  return layout.blobs.reduce(
+    (total, blob) =>
+      total + 1 + blob.subagents.filter((subagent) => subagent.tokensPerMin > 0).length,
+    0,
+  )
+}
+
+/**
+ * Whether the map shows after a poll that found `count` live agents.
  *
- * The map hides at once when it drops below two sessions. A map that hid on
+ * The map hides at once when it drops below two agents. A map that hid on
  * the last poll stays hidden for this one, so a session flickering around
  * zero does not flash the map on and off. `previousShown` and `shown` are
  * the states before and after the last poll.
  */
 export function mapVisible(previousShown: boolean, shown: boolean, count: number): boolean {
-  if (count < MIN_MAP_SESSIONS) return false
+  if (count < MIN_MAP_AGENTS) return false
   if (shown) return true
   const justHid = previousShown && !shown
   return !justHid

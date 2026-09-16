@@ -36,7 +36,13 @@ import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 import { blinkPeriod, describeSpend } from "../../lib/ledPeriod"
-import { deriveTokenMap, frameColor, mapVisible, type TokenMapLayout } from "../../lib/tokenMap"
+import {
+  agentCount,
+  deriveTokenMap,
+  frameColor,
+  mapVisible,
+  type TokenMapLayout,
+} from "../../lib/tokenMap"
 import { playPop } from "../../lib/hudSounds"
 import {
   blockedBars,
@@ -350,7 +356,7 @@ export class OverlaySession {
             void wakeOverlayWindow("burn").catch(() => {})
           }
           const hadMap = this.snapshot.showMap
-          const showMap = mapVisible(this.previousShowMap, hadMap, tokenMap.blobs.length)
+          const showMap = mapVisible(this.previousShowMap, hadMap, agentCount(tokenMap))
           this.previousShowMap = hadMap
           this.commitLayout({
             tokenMap,

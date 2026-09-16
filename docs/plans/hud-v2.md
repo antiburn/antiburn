@@ -308,7 +308,9 @@ sampled from real transcripts.
 
 1. **Single session hides the map** (Keith, 2026-09-16). Only the active VU
    LED shows, flashing at spend speed and coloured by activity type. Boxes
-   appear from two sessions up.
+   appear from two agents up, where a busy sub-agent counts as an agent
+   (Keith, 2026-09-16: "if there's 2 or more agents/subagents running there
+   should be the map showing").
 2. **Mode palette** (Keith, 2026-09-16): changing → purple, other → teal,
    talking → mint at 60%. The other four stay.
 3. **Wake dwell is 5 s** (Keith, 2026-09-16), extended while hovered.

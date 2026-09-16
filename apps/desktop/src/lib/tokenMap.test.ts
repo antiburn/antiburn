@@ -6,6 +6,7 @@ import {
   deriveTokenMap,
   formatRate,
   frameColor,
+  agentCount,
   mapVisible,
   sessionRate,
 } from "./tokenMap"
@@ -213,6 +214,32 @@ describe("deriveTokenMap", () => {
     expect(mapVisible(false, false, 2)).toBe(true)
     // A shown map stays shown.
     expect(mapVisible(true, true, 3)).toBe(true)
+  })
+
+  it("counts a busy sub-agent as an agent of its own", () => {
+    const alone = deriveTokenMap({
+      nowEpoch: 1_000,
+      windowSecs: 60,
+      spend: null,
+      sessions: [session("a", { looking: 500 })],
+    })
+    expect(agentCount(alone)).toBe(1)
+    const withSub = deriveTokenMap({
+      nowEpoch: 1_000,
+      windowSecs: 60,
+      spend: null,
+      sessions: [
+        {
+          ...session("a", { looking: 500 }),
+          subagents: [
+            { subagentId: "busy", tokensPerMin: 100, modes: { ...zero, running: 500 } },
+            { subagentId: "idle", tokensPerMin: 0, modes: zero },
+          ],
+        },
+      ],
+    })
+    expect(agentCount(withSub)).toBe(2)
+    expect(mapVisible(false, false, agentCount(withSub))).toBe(true)
   })
 
   it("formats rates for labels", () => {

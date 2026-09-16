@@ -77,8 +77,8 @@ fits the square. It steps up at once and steps down only after a full window
 has passed below the coarser value, so a burst does not flicker the scale. The
 detail window states the current dot value.
 
-The map shows at two or more live sessions. It hides at once when it drops to
-one, and a map that just hid waits one poll before it comes back, so a session
+The map shows at two or more live agents, where a sub-agent that wrote tokens
+in the window counts as one. It hides at once when it drops to one, and a map that just hid waits one poll before it comes back, so a session
 flickering around zero does not flash it. With one session, the usage card in
 the detail window still lists that session.
 
