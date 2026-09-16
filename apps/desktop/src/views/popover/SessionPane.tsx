@@ -11,6 +11,7 @@ import {
   withPopoverHold,
   type SessionAnalysisPayload,
 } from "../../lib/ipc"
+import { performProjectFolderAction } from "../../lib/projectFolder"
 import { agentSupportsAnalysis } from "../../lib/presentation/agents"
 import { sessionDiscussionPrompt } from "../../lib/presentation/sessionDiscussionPrompt"
 import type { SessionSubject } from "../../lib/sessionSubject"
@@ -218,6 +219,8 @@ export function SessionPane({
     onDeleted()
   }, [subject, onDeleted, embedded])
 
+  const projectPath = payload?.projectPath ?? null
+
   const sourcePath = payload?.sourcePath ?? null
   const handleReveal = useCallback(() => {
     if (!sourcePath) return
@@ -349,6 +352,15 @@ export function SessionPane({
             onRevealSource: handleReveal,
             onCopySourcePath: handleCopyPath,
             onCopyDiscussionPrompt: handleCopyDiscussionPrompt,
+          }
+        : {})}
+      {...(projectPath
+        ? {
+            projectFolder: {
+              path: projectPath,
+              onOpen: () => performProjectFolderAction(projectPath, "open"),
+              onCopy: () => performProjectFolderAction(projectPath, "copy"),
+            },
           }
         : {})}
       renderAgentIcon={renderAgentIcon}

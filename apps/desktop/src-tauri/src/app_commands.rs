@@ -83,6 +83,7 @@ macro_rules! with_app_commands {
             commands::restart_onboarding => "restart_onboarding",
             commands::restart_to_update => "restart_to_update",
             commands::reveal_source => "reveal_source",
+            commands::open_project_folder => "open_project_folder",
             commands::scan_now => "scan_now",
             commands::set_hud_detail_size => "set_hud_detail_size",
             commands::set_popover_height => "set_popover_height",

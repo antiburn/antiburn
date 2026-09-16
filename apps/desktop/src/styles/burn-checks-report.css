@@ -19,17 +19,6 @@
   flex: none;
 }
 
-.burn-checks-collection-toolbar .ui-info-popover-trigger {
-  position: relative;
-  block-size: calc(var(--spacing) * 8);
-}
-
-.burn-checks-collection-toolbar .ui-info-popover-trigger::after {
-  position: absolute;
-  inset: calc((var(--spacing) * 8 - 40px) / 2) 0;
-  content: "";
-}
-
 .burn-checks-layout {
   display: flex;
   min-block-size: 0;
@@ -210,17 +199,6 @@
 .burn-check-resource-metadata,
 .burn-check-resource-body {
   margin-inline-start: var(--space-2xl);
-}
-
-.burn-check-resource-metadata .ui-info-popover-trigger {
-  position: relative;
-  block-size: calc(var(--spacing) * 8);
-}
-
-.burn-check-resource-metadata .ui-info-popover-trigger::after {
-  position: absolute;
-  inset: calc((var(--spacing) * 8 - 40px) / 2) 0;
-  content: "";
 }
 
 .burn-check-resource {
