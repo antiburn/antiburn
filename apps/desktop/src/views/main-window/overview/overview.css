@@ -161,6 +161,13 @@
    row and stack below 540px, where three hero figures no longer fit. The
    stack card and the limits card sit in a row and stack below 700px, where
    the meter dots of the limits card no longer fit beside the checks.
+
+   The page is 528px wide at the 1000px minimum window, which is the floor:
+   the sidebar is 220px, the page holds 32px of padding on each side, and the
+   meter card and its margins take the rest. The card grows with the window,
+   but slower than the window, so the page only gets wider. The allowance
+   totals must hold their row at that floor, because a second row of hero
+   figures pushes the chart down the page.
    ========================================================================== */
 
 .overview-page {
@@ -250,13 +257,16 @@
 
    One cell for each provider account. Inside a cell the utilization figure
    and the time blocked sit side by side, because the two answer different
-   questions about the same account. The cells stack at the same width the
-   spend totals stack at.
+   questions about the same account. The cells stack later than the spend
+   totals, because the accounts must hold their row at the page floor.
    ========================================================================== */
 
+/* Two accounts hold one row at the 528px page floor: two 248px cells and the
+   16px gap measure 512px. The captions take two lines at that width, which
+   costs less height than a second row of accounts. */
 .overview-allowance {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
   gap: var(--space-lg);
 }
 
@@ -271,7 +281,9 @@
   gap: var(--space-md);
 }
 
-@container (max-width: 540px) {
+/* The accounts stack at the width the auto-fit grid drops to one column, so
+   a stacked account never keeps the border of a column beside it. */
+@container (max-width: 512px) {
   .overview-allowance {
     grid-template-columns: minmax(0, 1fr);
   }
