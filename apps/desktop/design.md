@@ -168,6 +168,34 @@ colors:
   burn-check-neutral: # unassessed arcs and neutral lifecycle marks
     light: "hsl(209 6% 73.7%)"
     dark: "hsl(210 3% 50.5%)"
+  # Main Burn Checks category icons; each circle derives its tint from the icon.
+  check-tools:
+    light: "hsl(27.5 89.4% 51.7%)"
+    dark: "hsl(28.7 100% 59%)"
+  check-mcp:
+    light: "hsl(196.2 100% 42.7%)"
+    dark: "hsl(196 86.4% 53.5%)"
+  check-overthinking:
+    light: "hsl(263 88% 64.4%)"
+    dark: "hsl(260 100% 73.3%)"
+  check-skills:
+    light: "hsl(47 100% 44.9%)"
+    dark: "hsl(47.6 100% 58.2%)"
+  check-subagents:
+    light: "hsl(341 88% 59.4%)"
+    dark: "hsl(342.8 100% 65%)"
+  check-old-model:
+    light: "hsl(40 100% 47%)"
+    dark: "hsl(38.3 100% 58.6%)"
+  check-fast-mode:
+    light: "hsl(47 100% 30.5%)"
+    dark: "hsl(57.6 91% 55.5%)"
+  check-cache:
+    light: "hsl(175.3 100% 35.5%)"
+    dark: "hsl(174.3 74% 47.6%)"
+  check-depth:
+    light: "hsl(158 89% 39.6%)"
+    dark: "hsl(156 75% 47.2%)"
   # Floating-HUD sub-palette only (src/styles/hud.css)
   burn:
     light: "hsl(18 100% 50%)"
@@ -889,8 +917,35 @@ Category rows use `rounded-popover`, a 10px gap derived from half `space-xl`,
 and the Session-card state recipe: `session-card` at rest,
 `surface-secondary/50` on unselected hover, and `surface-selected/60` when selected.
 The selected fill persists on hover; keyboard focus remains independent. Omit
-selected leading stripes and category-row chevrons. Keep muted circular
-`surface-card` icon backgrounds and neutral 15px glyphs. Use `BookOpen` for skills.
+selected leading stripes and category-row chevrons.
+
+Main-view check category icons use 16px glyphs with a 1.9px stroke inside
+28px circles. Keep the existing 32px grid column. The circle diameter uses
+`--space-xl` plus `--space-sm`; the icon and loading skeleton share this geometry.
+The skeleton uses a neutral circular fill. `BurnCheckCategoryIcon` maps each detector
+to a static `text-check-*` utility. Each category keeps its color for failed, passed, and
+snoozed results. These decorative icons do not replace the visible check names.
+
+Circle backgrounds mix `currentColor` with transparent using the shared
+`--burn-check-category-tint`: 10% in light mode and 14% in dark mode. Define the
+percentage in every palette branch with the category colors. Keep the existing
+card surface visible through the tint; do not add a white base or tint the card.
+The bright light-mode palette is approved for decorative category icons. Fast mode
+uses a deeper gold to distinguish its thin gauge strokes from the circle tint.
+The main view uses `BookOpen` for skills; other surfaces keep their existing icons.
+
+| Detector ID            | Icon       | Category token       |
+| ---------------------- | ---------- | -------------------- |
+| `unusedBuiltInTools`   | `Wrench`   | `check-tools`        |
+| `unusedMcpServers`     | `Server`   | `check-mcp`          |
+| `modelOverthinking`    | `Brain`    | `check-overthinking` |
+| `unusedSkills`         | `BookOpen` | `check-skills`       |
+| `overpoweredSubagents` | `Bot`      | `check-subagents`    |
+| `oldModelUsage`        | `History`  | `check-old-model`    |
+| `overuseOfFastMode`    | `Gauge`    | `check-fast-mode`    |
+| `cacheChurn`           | `Database` | `check-cache`        |
+| `sessionsOverDepth`    | `Layers3`  | `check-depth`        |
+
 Place neutral 40px vendor watermarks at the bottom-right of category cards, behind the text.
 Reuse `session-vendor-watermark` opacity (5% light, 6% dark), with 4px separation for distinct marks.
 Use the report’s full-cohort finding agents, or clean agents for a passing category.
