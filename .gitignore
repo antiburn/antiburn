@@ -15,6 +15,12 @@ node_modules/
 !/.codex/hooks.json
 /.playwright-cli/
 
+# Keep local plans, handoffs, review reports, and captures out of commits.
+/.agent-artifacts/
+/docs/plans/
+/docs/reviews/
+/docs/design-reviews/
+
 # Signing material must never enter the tree. The updater keypair is minted
 # with an absolute path outside the repository (see
 # docs/runbooks/updater-key-recovery.md); this is the backstop.

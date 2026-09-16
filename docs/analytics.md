@@ -313,8 +313,7 @@ that imprecision better than the exact percentage the Usage surface shows.
 
 `antiburn.limit_factor_observed` reports on the background learning pass that
 turns meter readings and priced turns into the dollars-per-percent factor the
-session list's badge uses (see
-[`docs/plans/limit-factor-estimation.md`](plans/limit-factor-estimation.md)).
+session list's badge uses.
 It fires once per `(provider, lane)` pair the pass touched, mapping the
 provider's own plan and, for Claude, its reviewed tier through the closed
 vocabulary above rather than sending either string verbatim, and reducing the

@@ -459,7 +459,6 @@ pnpm --filter @antiburn/desktop exec prettier --check \
   ../../docs/remediation.md \
   ../../docs/check-coverage.md \
   ../../docs/session-coverage.md \
-  ../../docs/plans/burn-check-remediation.md \
   README.md design.md
 node scripts/check-design-drift.mjs
 git diff --check
