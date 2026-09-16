@@ -533,36 +533,13 @@ describe("BurnChecksView", () => {
     )
   })
 
-  it("keeps aggregate burn in dismissible assessment details and counts beside groups", async () => {
+  it("keeps group counts and the period without an assessment info control", async () => {
     setup(target, false, aggregate, report)
-    const trigger = await screen.findByRole("button", { name: "Assessment details" })
-    expect(screen.getByRole("heading", { name: "Failed checks 1" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Failed checks 1" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Passed checks 1" })).toBeVisible()
-    expect(screen.queryByText("1 check not assessed.")).not.toBeInTheDocument()
-    expect(screen.queryByText("Estimated token burn")).not.toBeInTheDocument()
-    expect(trigger.closest("header")).toContainElement(
-      screen.getByRole("heading", { name: "Failed checks 1" }),
-    )
-    fireEvent.click(trigger)
-    const details = screen.getByRole("region", { name: "Assessment details" })
-    expect(within(details).getByText("8%")).toBeVisible()
-    expect(within(details).getByText(/Estimate includes only checks/)).toBeVisible()
-    fireEvent.keyDown(document, { key: "Escape" })
-    expect(screen.queryByRole("region", { name: "Assessment details" })).not.toBeInTheDocument()
-    expect(trigger).toHaveFocus()
-    fireEvent.click(trigger)
-    fireEvent.pointerDown(document.body)
-    expect(trigger).toHaveAttribute("aria-expanded", "false")
-  })
-
-  it("reports the assessment state in the summary", async () => {
-    setup(target, false, aggregate, { ...report, evidenceSettled: true })
-
-    fireEvent.click(await screen.findByRole("button", { name: "Assessment details" }))
-    const summary = screen.getByRole("region", { name: "Assessment details" })
-    expect(
-      within(summary).getByText("Assessment complete for available evidence."),
-    ).toBeVisible()
+    expect(screen.getByText("30 days")).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Assessment details" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Coverage details")).not.toBeInTheDocument()
   })
 
   it("keeps processing count out of the collection header", async () => {
@@ -847,9 +824,6 @@ describe("BurnChecksView", () => {
       expect(header).toHaveAttribute("data-tauri-drag-region", "deep")
       const detailHeader = view.container.querySelector(".burn-check-detail-heading")!
       expect(detailHeader).toHaveAttribute("data-tauri-drag-region", "deep")
-      expect(screen.getByRole("button", { name: "Assessment details" })).not.toHaveAttribute(
-        "data-tauri-drag-region",
-      )
     } finally {
       userAgent.mockRestore()
     }

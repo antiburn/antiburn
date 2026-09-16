@@ -852,23 +852,15 @@ The collection and detail panes fill the workspace height at every supported bre
 Use the shared 340px collection width beside the flexible detail pane. Keep the
 screen-reader page heading, but omit a full-width overview, aggregate outcome dial,
 and summary card. Put the failed-check heading and count badge on the left of the collection header,
-with “30 days” and the info button on the right. Use secondary `type-callout` for the period.
+with “30 days” on the right. Use secondary `type-callout` for the period.
 Use 8px top, 12px horizontal, and 4px bottom padding from the spacing tokens.
-Use a 32px toolbar row to match Sessions, with centered text and the existing 40px info hit area.
+Use a 32px toolbar row to match Sessions, with centered text.
 Keep the first card’s 8px viewport inset, matching the Sessions list. The first card begins at 52px.
 Keep the screen-reader page heading. Do not give the header a card surface.
 
-Assessment details uses the shared `InfoPopover` component and `.ui-menu` material, border,
-and shadow. The panel uses `rounded-popover`, 16px padding, a 300px width constrained to
-its viewport, and a top-right transform origin. Keep the trigger’s 40px hit area.
-The title leads, followed by evidence status and period. A separated estimate section
-emphasizes the report-level value above its label and a footnote explaining coverage limits.
-Unknown estimates say “Unavailable”. Never sum category percentages. A separated footer
-contains “Coverage details”, which opens Insights settings. Outside press, focus leaving,
-and Escape dismiss the panel; Escape restores focus to its trigger.
+The header has no assessment info icon, tooltip, or coverage navigation action.
 
-Do not show processing or not-assessed status in the collection header. Assessment
-details can describe current worker activity and incomplete coverage.
+Do not show processing or not-assessed status in the collection header.
 Settled reports without coverage gaps need no permanent assessment sentence.
 Keep savings, dollar estimates, verification state, retry paths, and report-backed actions.
 Verified savings appear below the check groups in the collection viewport.
