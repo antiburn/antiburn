@@ -1568,9 +1568,8 @@ fn insights_report_request(now_epoch: i64) -> ReportRequest {
     // reduction queries are pinned to single-scope semantics, and
     // detector statuses cannot be recombined from two finished reports
     // (clean and not-assessed do not merge). On macOS and Linux the
-    // native scope is total, so nothing is excluded there. Per-environment
-    // reports for Windows hosts with WSL sessions are a recorded
-    // follow-up in docs/plans/local-insights-followups.md.
+    // native scope is total, so nothing is excluded there. Windows hosts
+    // do not have separate reports for each WSL environment.
     ReportRequest {
         environment_key: environment_key(None),
         window: antiburn_local::insights::ReportWindow {

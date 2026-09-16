@@ -1,7 +1,6 @@
 //! Parity check between the live pipeline's `SessionEvidence` and the same
 //! evidence rebuilt from a `SessionCoverageRecord` read back through a
-//! store. Modelled on `turn_row_replay_parity.rs`. See phase 2, "evidence
-//! from rows", in `docs/plans/continuous-session-ingest.md`.
+//! store. Modelled on `turn_row_replay_parity.rs`.
 //!
 //! For every vendor characterization fixture `turn_facts_parity.rs` sweeps,
 //! this streams the fixture once through a `CompositeSink` (metrics +
