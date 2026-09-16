@@ -698,7 +698,7 @@ describe("BurnChecksView", () => {
     expect(selected).toHaveAttribute("aria-pressed", "true")
     expect(selected).toHaveAttribute("data-outcome", "failed")
     expect(selected.querySelector(".lucide-chevron-right")).not.toBeInTheDocument()
-    expect(selected.querySelector(".rounded-full")).toHaveClass("bg-surface-card")
+    expect(selected.querySelector(".burn-check-category-icon")).toHaveClass("text-check-mcp")
     expect(selected.closest(".burn-checks-group-body")).toBeInTheDocument()
   })
 
