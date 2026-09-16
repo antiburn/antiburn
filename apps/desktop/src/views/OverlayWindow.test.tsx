@@ -2,13 +2,14 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../lib/ipc"
+import { providerBarColor } from "../lib/usageBars"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
 import { OverlayWindow } from "./OverlayWindow"
 
 const REFRESH_TEST_MS = 60_000
 
 const getLiveUsage = vi.hoisted(() => vi.fn())
-const getLatestSessionActivity = vi.hoisted(() => vi.fn())
+const getLiveSessions = vi.hoisted(() => vi.fn())
 const isOverlayWorkActive = vi.hoisted(() => vi.fn())
 const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
@@ -29,7 +30,7 @@ vi.mock("../lib/ipc", async () => {
   return {
     ...actual,
     getLiveUsage,
-    getLatestSessionActivity,
+    getLiveSessions,
     isOverlayWorkActive,
     showHudDetail,
     hideHudDetail,
@@ -186,6 +187,16 @@ function withSecondBar(): LiveUsageSummaryPayload {
   return payload
 }
 
+function withScopedBar(): LiveUsageSummaryPayload {
+  const payload = withSecondBar()
+  payload.providers[0]!.windows[1] = {
+    ...payload.providers[0]!.windows[1]!,
+    id: "weekly-fable",
+    scopeModel: "Fable",
+  }
+  return payload
+}
+
 function frame(container: HTMLElement): HTMLElement {
   return container.firstElementChild as HTMLElement
 }
@@ -223,6 +234,33 @@ async function advance(ms: number) {
   })
 }
 
+const SESSION_REF = { environmentKey: "native", agent: "claude-code", sessionId: "session-1" }
+
+function liveSession(
+  sessionId = "session-1",
+  agent = "claude-code",
+  model: string | null = null,
+) {
+  return {
+    session: { ...SESSION_REF, agent, sessionId },
+    agent,
+    lastActivityAt: Math.floor(Date.now() / 1000),
+    model,
+  }
+}
+
+function lifecycle(
+  kind: "started" | "activity" | "quiet" | "idle",
+  sessionId: string | null = "session-1",
+): Record<string, unknown> {
+  return {
+    kind,
+    session: sessionId == null ? null : { ...SESSION_REF, sessionId },
+    agent: "claude-code",
+    at: Math.floor(Date.now() / 1000),
+  }
+}
+
 describe("OverlayWindow", () => {
   let rectSpy: ReturnType<typeof vi.spyOn>
 
@@ -230,8 +268,8 @@ describe("OverlayWindow", () => {
     vi.stubGlobal("localStorage", storage)
     getLiveUsage.mockReset()
     getLiveUsage.mockResolvedValue(summary())
-    getLatestSessionActivity.mockReset()
-    getLatestSessionActivity.mockResolvedValue(null)
+    getLiveSessions.mockReset()
+    getLiveSessions.mockResolvedValue([])
     isOverlayWorkActive.mockReset()
     isOverlayWorkActive.mockResolvedValue(true)
     showHudDetail.mockClear()
@@ -289,7 +327,7 @@ describe("OverlayWindow", () => {
       await advance(0)
 
       expect(getLiveUsage).not.toHaveBeenCalled()
-      expect(getLatestSessionActivity).not.toHaveBeenCalled()
+      expect(getLiveSessions).not.toHaveBeenCalled()
       expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
       await advance(5 * 60_000)
       expect(getLiveUsage).not.toHaveBeenCalled()
@@ -309,7 +347,7 @@ describe("OverlayWindow", () => {
       act(() => emitNative("overlay_work_changed", true))
       await advance(0)
       expect(getLiveUsage).toHaveBeenCalledTimes(1)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
 
       act(() => emitNative("overlay_work_changed", false))
       expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
@@ -319,7 +357,7 @@ describe("OverlayWindow", () => {
       act(() => emitNative("overlay_work_changed", true))
       await advance(0)
       expect(getLiveUsage).toHaveBeenCalledTimes(2)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(2)
+      expect(getLiveSessions).toHaveBeenCalledTimes(2)
 
       act(() => emitNative("overlay_work_changed", false))
       act(() => emitNative("overlay_work_changed", true))
@@ -384,7 +422,7 @@ describe("OverlayWindow", () => {
     await act(async () => resolveActive(true))
 
     expect(getLiveUsage).not.toHaveBeenCalled()
-    expect(getLatestSessionActivity).not.toHaveBeenCalled()
+    expect(getLiveSessions).not.toHaveBeenCalled()
   })
 
   it("retries a transient native work-listener failure", async () => {
@@ -397,60 +435,256 @@ describe("OverlayWindow", () => {
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
   })
 
-  it("expires live activity once without polling", async () => {
+  it("ends the sweep at the bus's quiet event, and at its idle event", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    getLiveSessions.mockResolvedValue([liveSession()])
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
-      await advance(90_001)
-      expect(container.querySelector(".led-blink")).toBeNull()
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+      act(() => emitNative("session:lifecycle", lifecycle("quiet")))
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+
+      act(() => emitNative("session:lifecycle", lifecycle("activity")))
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+      act(() => emitNative("session:lifecycle", lifecycle("idle")))
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it("keeps a far-future activity expiry inside the browser timer bound", async () => {
+  it("ends the sweep 30 seconds after a session's last write, without an event", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    const day = 24 * 60 * 60 * 1000
-    getLatestSessionActivity.mockResolvedValue((Date.now() + 40 * day) / 1000)
-    const timeout = vi.spyOn(window, "setTimeout")
+    getLiveSessions.mockResolvedValue([liveSession()])
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-blink")).not.toBeNull()
-      expect(timeout).toHaveBeenCalledWith(expect.any(Function), 2_147_483_647)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+
+      await advance(29_000)
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+      await advance(1_001)
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
-      timeout.mockRestore()
       vi.useRealTimers()
     }
+  })
+
+  it("starts still when the snapshot's session wrote 45 seconds ago", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
+    const older = liveSession()
+    older.lastActivityAt -= 45
+    getLiveSessions.mockResolvedValue([older])
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(container.querySelector(".led-clock")).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps sweeping while another session is still live", async () => {
+    getLiveSessions.mockResolvedValue([liveSession("session-1"), liveSession("session-2")])
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+
+    act(() => emitNative("session:lifecycle", lifecycle("quiet", "session-1")))
+    expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+    act(() => emitNative("session:lifecycle", lifecycle("quiet", "session-2")))
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+  })
+
+  it("expires keyless agent activity after the sweep window", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+
+      act(() => emitNative("session:lifecycle", lifecycle("activity", null)))
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+
+      await advance(30_001)
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("re-reads the live set after a scan pass", async () => {
+    render(<OverlayWindow />)
+    await waitFor(() => expect(nativeEvents.get("scan:finished")?.size).toBe(1))
+    expect(getLiveSessions).toHaveBeenCalledTimes(1)
+
+    act(() => emitNative("scan:finished", {}))
+    expect(getLiveSessions).toHaveBeenCalledTimes(2)
   })
 
   it("uses pushed session activity and cleans its subscriptions on hide", async () => {
     const { container, unmount } = render(<OverlayWindow />)
-    await waitFor(() => expect(nativeEvents.get("sessions:entry-changed")?.size).toBe(1))
+    await waitFor(() => expect(nativeEvents.get("session:lifecycle")?.size).toBe(1))
 
-    act(() =>
-      emitNative("sessions:entry-changed", {
-        timestamp: new Date().toISOString(),
-      }),
-    )
-    expect(container.querySelector(".led-blink")).not.toBeNull()
+    act(() => emitNative("session:lifecycle", lifecycle("activity")))
+    expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
     act(() => emitNative("overlay_work_changed", false))
-    expect(nativeEvents.get("sessions:entry-changed")?.size ?? 0).toBe(0)
+    expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("scan:finished")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("sessions:invalidated")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
 
     unmount()
     expect(nativeEvents.get("overlay_work_changed")?.size ?? 0).toBe(0)
+  })
+
+  it("marks the first segment when usage is too low to light one", async () => {
+    const low = summary()
+    low.providers[0]!.windows[0]!.usedPercent = 1
+    getLiveUsage.mockResolvedValue(low)
+    getLiveSessions.mockResolvedValue([liveSession()])
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
+    expect(dots).toHaveLength(20)
+    // Nothing is lit, so the first segment flashes alone, in the brand tint.
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(dots[0]).toHaveClass("led-sweep-dot", "bg-led-off")
+    expect(dots[0]).not.toHaveAttribute("data-led-lit")
+    expect(container.querySelectorAll("[data-led-next]")).toHaveLength(1)
+    expect(dots[0]).toHaveAttribute("data-led-next", "true")
+  })
+
+  it("sweeps the one empty bar when there are no bars", async () => {
+    const empty = summary()
+    empty.providers = []
+    getLiveUsage.mockResolvedValue(empty)
+    getLiveSessions.mockResolvedValue([liveSession()])
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
+    expect(dots).toHaveLength(20)
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(dots[0]).toHaveClass("led-sweep-dot")
+    expect(dots[0]).toHaveAttribute("data-led-next", "true")
+    expect(container.querySelector("[data-led-lit]")).toBeNull()
+  })
+
+  it("sweeps every bar of the live provider, one row apart from the top", async () => {
+    getLiveUsage.mockResolvedValue(withSecondBar())
+    getLiveSessions.mockResolvedValue([liveSession()])
+    const { container } = render(<OverlayWindow />)
+
+    // 81% lights 16 of 20 on each bar; only the lit segments move.
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
+    const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(bars.map((bar) => bar.style.getPropertyValue("--led-row"))).toEqual(["0", "1"])
+    expect(bars[0]?.style.getPropertyValue("--led-segments")).toBe("20")
+  })
+
+  it("holds a model-scoped bar still while the session runs another model", async () => {
+    getLiveUsage.mockResolvedValue(withScopedBar())
+    getLiveSessions.mockResolvedValue([
+      liveSession("session-1", "claude-code", "claude-opus-4-6"),
+    ])
+    const { container } = render(<OverlayWindow />)
+
+    // Only the first bar sweeps. The Fable bar shows a model that the
+    // session does not run, so it holds still.
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(16))
+    const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(bars).toHaveLength(1)
+    expect(bars[0]?.style.getPropertyValue("--led-row")).toBe("0")
+  })
+
+  it("sweeps a model-scoped bar while the session runs that model", async () => {
+    getLiveUsage.mockResolvedValue(withScopedBar())
+    getLiveSessions.mockResolvedValue([
+      liveSession("session-1", "claude-code", "claude-fable-5"),
+    ])
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
+  })
+
+  it("runs one sweep clock for every bar, and only while a session is live", async () => {
+    getLiveUsage.mockResolvedValue(withSecondBar())
+    getLiveSessions.mockResolvedValue([liveSession()])
+    const { container } = render(<OverlayWindow />)
+
+    // One animation drives every bar, so the bars stay in phase however
+    // late a bar joined the sweep.
+    await waitFor(() => expect(container.querySelector(".led-clock")).not.toBeNull())
+    expect(container.querySelectorAll(".led-clock")).toHaveLength(1)
+    // The HUD floats over the reader's work, so its gleam runs softer.
+    expect(container.querySelector(".led-clock")).toHaveClass("led-clock-soft")
+    // The view writes no phase, because `installLivePhase` owns it. A delay
+    // from a render would move the sweep on every later render.
+    const clock = container.querySelector<HTMLElement>(".led-clock")
+    expect(clock?.style.getPropertyValue("--led-sweep-delay")).toBe("")
+    expect(clock?.style.animationDelay).toBe("")
+    expect(
+      container.querySelector(".led-clock")?.querySelectorAll(".led-sweep-dot"),
+    ).toHaveLength(32)
+  })
+
+  it("keeps the bars dark while the live session draws on another provider", async () => {
+    getLiveSessions.mockResolvedValue([liveSession("session-1", "cursor")])
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(container.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20),
+    )
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+  })
+
+  it("keeps a low-usage bar dark without a live session", async () => {
+    const low = summary()
+    low.providers[0]!.windows[0]!.usedPercent = 1
+    getLiveUsage.mockResolvedValue(low)
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+    expect(container.querySelector(".led-clock")).toBeNull()
+  })
+
+  it("marks the next segment to light, and gives the lit ones the gleam", async () => {
+    getLiveSessions.mockResolvedValue([liveSession()])
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+    const dots = container.querySelectorAll<HTMLElement>(".pointer-events-none .rounded-full")
+    // 81% of 20 segments rounds to 16 lit, so the mark sits on index 16.
+    expect(dots[15]).toHaveAttribute("data-led-lit", "true")
+    expect(dots[15]).not.toHaveAttribute("data-led-next")
+    expect(dots[15]?.style.backgroundColor).not.toBe("")
+    expect(dots[15]?.style.getPropertyValue("--led-index")).toBe("15")
+    expect(dots[15]).toHaveClass("led-sweep-dot")
+    // The stylesheet derives the gleam from the segment's own colour. jsdom
+    // normalises the background to rgb; the custom property keeps the source.
+    expect(dots[15]?.style.getPropertyValue("--led-color")).toBe(providerBarColor("anthropic"))
+    // The unlit segment does not move. It keeps the unlit colour and only
+    // holds the still mark under reduced motion.
+    expect(dots[16]).toHaveAttribute("data-led-next", "true")
+    expect(dots[16]).not.toHaveAttribute("data-led-lit")
+    expect(dots[16]).not.toHaveClass("led-sweep-dot")
+    expect(dots[16]).toHaveClass("bg-led-off")
+    expect(dots[16]?.style.backgroundColor).toBe("")
   })
 
   it("rests with bars only and a hidden close control", async () => {

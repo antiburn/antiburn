@@ -5,12 +5,12 @@ import type { MouseEvent as ReactMouseEvent } from "react"
 import { flushSync } from "react-dom"
 
 import {
-  getLatestSessionActivity,
+  getLiveSessions,
   getLiveUsage,
   hideHudDetail,
   isOverlayWorkActive,
   onLiveUsageChanged,
-  onSessionEntryChanged,
+  onSessionLifecycle,
   onSessionsInvalidated,
   resizeOverlayWindow,
   SCAN_EVENTS,
@@ -27,11 +27,20 @@ import {
 } from "../../lib/overlayWindow"
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
+import {
+  applyLifecycleEvent,
+  IDLE_LIVENESS,
+  isLive,
+  livenessExpiry,
+  livenessFromSnapshot,
+  liveModels,
+  liveProviders,
+  type Liveness,
+} from "../../lib/sessionLiveness"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
-const LIVE_WINDOW_SECS = 90
 const SHOW_DELAY_MS = 400
 const MAX_TIMEOUT_MS = 2_147_483_647
 
@@ -39,7 +48,12 @@ export type OverlaySnapshot = {
   bars: UsageBarItem[]
   hovered: boolean
   dragging: boolean
+  /** Whether any session is live, from the shell's lifecycle bus. */
   sessionLive: boolean
+  /** The providers a live session draws on, sorted. Their bars blink. */
+  liveProviders: readonly string[]
+  /** The models a live session runs, sorted. A model-scoped bar reads this. */
+  liveModels: readonly string[]
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
 }
@@ -49,6 +63,8 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   hovered: false,
   dragging: false,
   sessionLive: false,
+  liveProviders: [],
+  liveModels: [],
   noMeterSelected: false,
 }
 
@@ -57,6 +73,10 @@ type DragOrigin = {
   pointerY: number
   windowX: number
   windowY: number
+}
+
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index])
 }
 
 function sameBars(left: UsageBarItem[], right: UsageBarItem[]): boolean {
@@ -91,12 +111,12 @@ export class OverlaySession {
   private detailShown = false
   private usagePoll: number | null = null
   private livenessExpiry: number | null = null
-  private latestActivity: number | null = null
+  private liveness: Liveness = IDLE_LIVENESS
   private livenessRevision = 0
   private stopWorkListening: (() => void) | null = null
   private stopHoverListening: (() => void) | null = null
   private stopUsageListening: (() => void) | null = null
-  private stopSessionEntryListening: (() => void) | null = null
+  private stopLifecycleListening: (() => void) | null = null
   private stopScanListening: (() => void) | null = null
   private stopInvalidationListening: (() => void) | null = null
   private stopVisibilityListening: (() => void) | null = null
@@ -208,7 +228,13 @@ export class OverlaySession {
     this.active = true
     this.hudVisibilityKnown = false
     const generation = ++this.activityGeneration
-    this.update({ hovered: false, dragging: false, sessionLive: false })
+    this.update({
+      hovered: false,
+      dragging: false,
+      sessionLive: false,
+      liveProviders: [],
+      liveModels: [],
+    })
     this.connectPanel(generation)
     this.resumeHudExposure()
 
@@ -251,7 +277,7 @@ export class OverlaySession {
       .catch(() => {})
 
     this.listenForActivity(generation)
-    this.refreshLatestActivity(generation)
+    this.refreshLiveness(generation)
 
     void listen<boolean>("overlay_hover", (event) => {
       if (this.isCurrent(generation)) this.requestHover(Boolean(event.payload))
@@ -315,8 +341,8 @@ export class OverlaySession {
     this.stopHoverListening = null
     this.stopUsageListening?.()
     this.stopUsageListening = null
-    this.stopSessionEntryListening?.()
-    this.stopSessionEntryListening = null
+    this.stopLifecycleListening?.()
+    this.stopLifecycleListening = null
     this.stopScanListening?.()
     this.stopScanListening = null
     this.stopInvalidationListening?.()
@@ -330,8 +356,14 @@ export class OverlaySession {
     this.observer = null
     this.dragOrigin = null
     this.pendingMove = null
-    this.latestActivity = null
-    this.update({ hovered: false, dragging: false, sessionLive: false })
+    this.liveness = IDLE_LIVENESS
+    this.update({
+      hovered: false,
+      dragging: false,
+      sessionLive: false,
+      liveProviders: [],
+      liveModels: [],
+    })
   }
 
   private isCurrent(generation: number): boolean {
@@ -352,25 +384,27 @@ export class OverlaySession {
     this.livenessExpiry = null
   }
 
+  // The bus is the one source of "live". A keyed session turns on at
+  // `started` or `activity` and off at `quiet` or `idle`. The local clock
+  // closes the same 30 s window for a snapshot, a missed event, and keyless
+  // activity, a write the store has not indexed yet.
   private listenForActivity(generation: number): void {
-    void onSessionEntryChanged((entry) => {
+    void onSessionLifecycle((event) => {
       if (!this.isCurrent(generation)) return
-      const latest = Date.parse(entry.timestamp) / 1000
-      if (!Number.isFinite(latest)) return
+      // A snapshot still in flight predates this event and must not replace it.
       this.livenessRevision += 1
-      this.setLatestActivity(
-        this.latestActivity == null ? latest : Math.max(this.latestActivity, latest),
-        generation,
-      )
+      this.applyLiveness(applyLifecycleEvent(this.liveness, event), generation)
     })
       .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopSessionEntryListening = dispose
+        if (this.isCurrent(generation)) this.stopLifecycleListening = dispose
         else dispose()
       })
       .catch(() => {})
 
+    // A pass may have indexed or evicted sessions, and a lagged bus reader
+    // may have missed an event; the snapshot puts the set right either way.
     void listen(SCAN_EVENTS.finished, () => {
-      if (this.isCurrent(generation)) this.refreshLatestActivity(generation)
+      if (this.isCurrent(generation)) this.refreshLiveness(generation)
     })
       .then((dispose) => {
         if (this.isCurrent(generation)) this.stopScanListening = dispose
@@ -379,7 +413,7 @@ export class OverlaySession {
       .catch(() => {})
 
     void onSessionsInvalidated(() => {
-      if (this.isCurrent(generation)) this.refreshLatestActivity(generation)
+      if (this.isCurrent(generation)) this.refreshLiveness(generation)
     })
       .then((dispose) => {
         if (this.isCurrent(generation)) this.stopInvalidationListening = dispose
@@ -388,41 +422,33 @@ export class OverlaySession {
       .catch(() => {})
   }
 
-  private refreshLatestActivity(generation: number): void {
+  private refreshLiveness(generation: number): void {
     const revision = ++this.livenessRevision
-    void getLatestSessionActivity()
-      .then((latest) => {
+    void getLiveSessions()
+      .then((sessions) => {
         if (!this.isCurrent(generation) || revision !== this.livenessRevision) return
-        this.setLatestActivity(latest, generation)
+        this.applyLiveness(livenessFromSnapshot(sessions, this.liveness), generation)
       })
       .catch(() => {})
   }
 
-  private setLatestActivity(latest: number | null, generation: number): void {
-    this.latestActivity = latest
+  private applyLiveness(next: Liveness, generation: number): void {
+    this.liveness = next
     this.clearLivenessExpiry()
-    if (latest == null) {
-      this.update({ sessionLive: false })
-      return
-    }
-    const expiresAt = latest * 1000 + LIVE_WINDOW_SECS * 1000
-    const remaining = expiresAt - Date.now()
-    if (remaining < 0) {
-      this.update({ sessionLive: false })
-      return
-    }
-    this.update({ sessionLive: true })
+    const now = Date.now()
+    this.update({
+      sessionLive: isLive(next, now),
+      liveProviders: liveProviders(next, now),
+      liveModels: liveModels(next, now),
+    })
+    const expiresAt = livenessExpiry(next, now)
+    if (expiresAt == null) return
     this.livenessExpiry = window.setTimeout(
       () => {
         this.livenessExpiry = null
-        if (!this.isCurrent(generation) || this.latestActivity !== latest) return
-        if (Date.now() <= expiresAt) {
-          this.setLatestActivity(latest, generation)
-        } else {
-          this.update({ sessionLive: false })
-        }
+        if (this.isCurrent(generation)) this.applyLiveness(this.liveness, generation)
       },
-      Math.min(remaining + 1, MAX_TIMEOUT_MS),
+      Math.min(expiresAt - now + 1, MAX_TIMEOUT_MS),
     )
   }
 
@@ -546,6 +572,8 @@ export class OverlaySession {
       this.snapshot.hovered === next.hovered &&
       this.snapshot.dragging === next.dragging &&
       this.snapshot.sessionLive === next.sessionLive &&
+      sameList(this.snapshot.liveProviders, next.liveProviders) &&
+      sameList(this.snapshot.liveModels, next.liveModels) &&
       this.snapshot.noMeterSelected === next.noMeterSelected
     ) {
       return false
