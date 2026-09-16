@@ -353,3 +353,7 @@ sampled from real transcripts.
    (`liveWindows` takes `includeIdleModelLimits`).
 10. **Drag reopen diagnostics.** `app_activated` logs the restore decision
     and `main_window_closed` logs a close, so the next repro names the path.
+11. **Map dots in colour.** `hud.css` is `@theme static`: Tailwind dropped the
+    mode variables no utility used, so the dots drew black.
+12. **Live LED dims, never off.** The blink goes from the mode colour to 35%
+    of it, so it reads as the lit LED pulsing, not an off LED flashing.

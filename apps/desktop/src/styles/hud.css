@@ -1,6 +1,11 @@
 @import "@fontsource-variable/bitcount-prop-single/index.css";
 
-@theme {
+/*
+ * `static`, so every token below reaches the stylesheet. The map dots, the
+ * live LED and the detail legend read the mode colours through `var()`, and
+ * Tailwind drops a theme variable that no utility class uses.
+ */
+@theme static {
   --font-bitcount:
     "Bitcount Prop Single Variable", -apple-system, BlinkMacSystemFont, "SF Pro Text",
     system-ui, sans-serif;
@@ -247,7 +252,8 @@ body[data-transparent-window] #root {
 
   50%,
   100% {
-    background-color: var(--color-led-off);
+    /* The lit LED dims. It never goes out, so the eye reads a live segment. */
+    background-color: color-mix(in srgb, var(--led-on) 35%, transparent);
   }
 }
 
