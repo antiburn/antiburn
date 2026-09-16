@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   acknowledgeMainWindowSessionTarget: vi.fn(),
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
+  getSessionQuota: vi.fn(),
   loadSessionAnalysis: vi.fn(),
   noteInteraction: vi.fn(),
   stops: [] as ReturnType<typeof vi.fn>[],
@@ -100,6 +101,7 @@ beforeEach(() => {
   mocks.loadSessionAnalysis.mockResolvedValue(payload("Loaded"))
   mocks.getLiveUsage.mockResolvedValue(null)
   mocks.getSessionLimitAllocations.mockResolvedValue(null)
+  mocks.getSessionQuota.mockResolvedValue({ entries: [], generatedAt: "g" })
 })
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
@@ -548,6 +550,78 @@ describe("MainActivitySession", () => {
     expect(orderedActivityEntries(session.getSnapshot()).map((item) => item.sessionId)).toEqual(
       ["one", "two"],
     )
+  })
+
+  it("loads quota contributions alongside the analysis for the open subject", async () => {
+    mocks.getSessionQuota.mockResolvedValue({
+      entries: [
+        {
+          provider: "anthropic",
+          displayName: "Claude",
+          accountKey: "acct-1",
+          lane: "weekly",
+          laneLabel: "Weekly",
+          period: {
+            periodId: 1,
+            startsAtEpoch: 1,
+            resetsAtEpoch: 2,
+            startSource: "reported",
+            resetSource: "reported",
+            peakPercent: 10,
+          },
+          usd: 1.5,
+          percent: 5,
+          confidence: "learned",
+        },
+      ],
+      generatedAt: "q1",
+    })
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() => expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("q1"))
+    expect(mocks.getSessionQuota).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "claude", sessionId: "one", wslDistro: null }),
+    )
+    expect(session.getSnapshot().sessionQuotaError).toBe(false)
+  })
+
+  it("keeps the analysis visible and flags sessionQuotaError on a failed quota load", async () => {
+    mocks.getSessionQuota.mockRejectedValue(new Error("no"))
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() => expect(session.getSnapshot().sessionQuotaError).toBe(true))
+    expect(session.getSnapshot().analysis?.payload?.title).toBe("Loaded")
+    expect(session.getSnapshot().analysis?.error).toBe(false)
+  })
+
+  it("clears quota when the selection changes and reloads for the new subject", async () => {
+    mocks.getSessionQuota.mockResolvedValueOnce({
+      entries: [],
+      generatedAt: "q-one",
+    })
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("q-one"),
+    )
+    mocks.getSessionQuota.mockResolvedValueOnce({ entries: [], generatedAt: "q-two" })
+    session.selectEntry(session.getSnapshot().entries![1]!)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("q-two"),
+    )
+    expect(mocks.getSessionQuota).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: "two" }),
+    )
+  })
+
+  it("refreshes quota when the open subject's entry changes and on a live-usage push", async () => {
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(1))
+    mocks.events.get("entry")!(entry("one"))
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(2))
+    mocks.events.get("usage")!(null)
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(3))
   })
 
   it("releases listeners and ignores late results after disposal", async () => {
