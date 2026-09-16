@@ -254,8 +254,10 @@ Maintainer confirmation (2026-09-14): extend provider incidents with
 `codex_error_info` codes, and add Claude `isApiErrorMessage` records as a
 new quota/provider incident source. Reviewed passive alternatives:
 
-- Classifying Claude errors from `content[].text` — rejected: free text,
-  unpinned, and the project never reads or stores error message text.
+- Classifying Claude errors from `content[].text` — rejected: free text and
+  unpinned. The reader parses the limit family and the reset clock from an
+  `isApiErrorMessage` text and keeps neither the text nor any other message
+  text.
 - Mapping Claude `error: "unknown"` to `Connection` — rejected: the label
   covers more than connection failures.
 - Mapping non-5xx `http_status_code` values inside Codex transport

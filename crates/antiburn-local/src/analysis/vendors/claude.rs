@@ -352,7 +352,13 @@ fn quota_text_detail(text: &str) -> (QuotaLimitKind, Option<QuotaResetClock>) {
 /// holds none. Returns `None` for any text that does not match exactly.
 fn parse_reset_clock(text: &str) -> Option<QuotaResetClock> {
     let (clock, rest) = text.split_once("resets ")?.1.split_once(" (")?;
-    let zone = rest.split_once(')')?.0;
+    let (zone, after) = rest.split_once(')')?;
+    // The doc above promises an exact match. Text after the zone means the
+    // harness wrote a shape this parser does not know, so the clock it reads
+    // is a guess. A guess here becomes a stated wait on the Overview.
+    if !after.trim().is_empty() {
+        return None;
+    }
     let zone_is_name = !zone.is_empty()
         && zone.len() <= MAX_RESET_ZONE_LEN
         && zone
@@ -2634,6 +2640,9 @@ mod tests {
             "You've hit your session limit · resets soon",
             "You've hit your session limit · resets 25pm (Australia/Sydney)",
             "You've hit your session limit · resets 2pm (Australia Sydney)",
+            // Text after the zone is a shape this parser does not know, so
+            // the clock it reads is a guess.
+            "You've hit your session limit · resets 2pm (Australia/Sydney) or later",
             "",
         ] {
             let (_, clock) = quota_text_detail(text);
@@ -2641,6 +2650,11 @@ mod tests {
         }
         let (limit_kind, _) = quota_text_detail("API Error: 429 rate limit");
         assert_eq!(limit_kind, QuotaLimitKind::RateLimit);
+
+        // Only whitespace follows the zone, so the text still matches.
+        let (_, clock) =
+            quota_text_detail("You've hit your session limit · resets 2pm (Australia/Sydney)  ");
+        assert!(clock.is_some());
     }
 
     #[test]

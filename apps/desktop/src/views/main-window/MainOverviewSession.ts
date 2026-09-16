@@ -68,6 +68,10 @@ export interface MainOverviewSnapshot {
   /** Utilization and overage for each account, or null before the first
    *  successful read. */
   allowance: AllowanceUsageSummaryPayload | null
+  /** True while an allowance read is in flight and nothing is on the page. */
+  allowanceLoading: boolean
+  /** True when the newest allowance read failed and nothing replaced it. */
+  allowanceError: boolean
   /** The Burn checks report, or null before the first successful read. */
   report: ChecksReportPayload | null
   /** The newest local sessions, or null before the first successful read. */
@@ -103,6 +107,8 @@ export class MainOverviewSession {
     usage: null,
     usageError: false,
     allowance: null,
+    allowanceLoading: false,
+    allowanceError: false,
     report: null,
     recentSessions: null,
     loading: false,
@@ -226,7 +232,7 @@ export class MainOverviewSession {
       const work = this.workVersion
       const version = this.refreshVersion
       this.update({ loading: !this.snapshot.usage, refreshing: !!this.snapshot.usage })
-      void void this.loadAllowance(work, ++this.allowanceVersion)
+      void this.loadAllowance(work, ++this.allowanceVersion)
       this.refreshReport()
       this.refreshRecentSessions()
       try {
@@ -242,14 +248,19 @@ export class MainOverviewSession {
   }
 
   private async loadAllowance(work: number, version: number): Promise<void> {
+    this.update({ allowanceLoading: !this.snapshot.allowance })
     try {
       const allowance = await this.adapter.getAllowanceUsage()
       if (work === this.workVersion && version === this.allowanceVersion) {
-        this.update({ allowance })
+        this.update({ allowance, allowanceLoading: false, allowanceError: false })
       }
     } catch {
-      // The allowance totals show their own empty state. A failed read must
-      // not hide the cost totals beside them.
+      // The allowance panels state the failure themselves. A failed read must
+      // not hide the cost totals beside them, and it must not read as an
+      // account with no meter history.
+      if (work === this.workVersion && version === this.allowanceVersion) {
+        this.update({ allowanceLoading: false, allowanceError: true })
+      }
     }
   }
 
@@ -297,6 +308,6 @@ export class MainOverviewSession {
     this.refreshTask = null
     this.releaseConsumer()
     for (const stop of this.stops.splice(0)) stop()
-    this.update({ active: false, loading: false, refreshing: false })
+    this.update({ active: false, loading: false, refreshing: false, allowanceLoading: false })
   }
 }

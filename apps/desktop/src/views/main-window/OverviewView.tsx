@@ -87,6 +87,8 @@ export function OverviewView({
               days={usage?.days ?? []}
               previousDays={usage?.previousDays ?? []}
               allowance={state.allowance}
+              allowanceLoading={state.allowanceLoading}
+              allowanceError={state.allowanceError}
               loading={loading}
             />
             <div className="overview-stack p-[var(--space-lg)]">

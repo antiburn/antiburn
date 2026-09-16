@@ -94,6 +94,9 @@ export function ProviderLimitsPanel({
   // time, not the wall clock. A render must not read the clock.
   const at = live ? Date.parse(live.generatedAt) || 0 : 0
   const stale = limited.some(({ reading }) => reading.freshness === "stale")
+  // A read that answers with nothing leaves no account and no error. The
+  // panel says so, because a skeleton that stays states a read in flight.
+  const nothing = !live || (limited.length === 0 && unavailable.length === 0)
 
   return (
     <section
@@ -106,7 +109,7 @@ export function ProviderLimitsPanel({
           Stale
         </p>
       )}
-      {loading || !live ? (
+      {loading ? (
         <div className="flex flex-col gap-[var(--space-lg)]">
           {["first", "second"].map((seat) => (
             <div key={seat} className="flex flex-col gap-[var(--space-md)]">
@@ -116,7 +119,7 @@ export function ProviderLimitsPanel({
             </div>
           ))}
         </div>
-      ) : limited.length === 0 && unavailable.length === 0 ? (
+      ) : nothing ? (
         <p className="type-callout text-label-secondary">
           No provider limits to show. Sign in with a coding tool, or turn a meter on in
           Settings.

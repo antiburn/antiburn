@@ -133,22 +133,50 @@ fn reset_at_ms(incident: &QuotaIncident) -> Option<i64> {
 pub fn blocks(incidents: &[QuotaIncident]) -> Vec<Block> {
     let mut sorted: Vec<&QuotaIncident> = incidents.iter().collect();
     sorted.sort_by_key(|incident| (incident.ts_ms, incident.limit_kind));
+    // One open block for each limit kind, and the last refusal that kind saw.
+    //
+    // A five-hour limit and a weekly limit are two different windows. They
+    // refuse at their own times and state their own resets, so a refusal of
+    // one kind must never extend a block of the other. Merging them let a
+    // weekly reset state the wait for a five-hour block.
+    let mut open: Vec<(QuotaLimitKind, usize, i64)> = Vec::new();
     let mut blocks: Vec<Block> = Vec::new();
     for incident in sorted {
         let reset_at_ms = reset_at_ms(incident);
-        match blocks.last_mut() {
-            // The first refusal states when the block started. A retry
-            // inside the gap can still state the reset the first one
-            // missed, so the latest stated reset wins.
-            Some(last) if incident.ts_ms - last.started_at_ms <= STORM_GAP_MS => {
-                last.reset_at_ms = last.reset_at_ms.max(reset_at_ms);
+        let same_kind = open
+            .iter_mut()
+            .find(|(kind, _, _)| *kind == incident.limit_kind);
+        match same_kind {
+            // The gap that opens a new block is the gap between two
+            // refusals, not the span since the block started. A window that
+            // stays closed longer than the gap is still one block while the
+            // retries keep arriving inside it.
+            //
+            // A retry can state the reset the first refusal missed, so the
+            // latest stated reset wins.
+            Some((_, index, last_ts_ms)) if incident.ts_ms - *last_ts_ms <= STORM_GAP_MS => {
+                let block = &mut blocks[*index];
+                block.reset_at_ms = block.reset_at_ms.max(reset_at_ms);
+                *last_ts_ms = incident.ts_ms;
             }
-            _ => blocks.push(Block {
-                started_at_ms: incident.ts_ms,
-                reset_at_ms,
-            }),
+            Some((_, index, last_ts_ms)) => {
+                *index = blocks.len();
+                *last_ts_ms = incident.ts_ms;
+                blocks.push(Block {
+                    started_at_ms: incident.ts_ms,
+                    reset_at_ms,
+                });
+            }
+            None => {
+                open.push((incident.limit_kind, blocks.len(), incident.ts_ms));
+                blocks.push(Block {
+                    started_at_ms: incident.ts_ms,
+                    reset_at_ms,
+                });
+            }
         }
     }
+    blocks.sort_by_key(|block| block.started_at_ms);
     blocks
 }
 

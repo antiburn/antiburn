@@ -46,10 +46,12 @@ export function OverviewAllowanceTotals({
   accounts,
   spanDays,
   loading = false,
+  error = false,
 }: {
   accounts: readonly AllowanceUsageAccountPayload[]
   spanDays: number
   loading?: boolean
+  error?: boolean
 }) {
   if (loading) {
     return (
@@ -57,6 +59,17 @@ export function OverviewAllowanceTotals({
         <div className="overview-allowance">
           <AllowanceSkeleton />
         </div>
+      </section>
+    )
+  }
+  // A failed read is not an account with no meter history. The two states
+  // read the same to the eye, so each one states its own cause.
+  if (error && accounts.length === 0) {
+    return (
+      <section aria-label="Allowance">
+        <p role="alert" className="type-body text-label-secondary">
+          antiburn cannot read the allowance figures now. They appear here after the next read.
+        </p>
       </section>
     )
   }

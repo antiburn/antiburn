@@ -170,4 +170,14 @@ describe("ProviderLimitsPanel", () => {
     )
     expect(screen.queryByRole("group")).toBeNull()
   })
+
+  it("says there is nothing to show when the read answers with nothing", () => {
+    // A failed read leaves no summary and stops the loading state. The panel
+    // must answer, because a permanent skeleton states a read in progress.
+    render(<ProviderLimitsPanel live={null} loading={false} />)
+    expect(screen.getByText(/No provider limits to show/)).toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Provider limits" })).not.toHaveAttribute(
+      "aria-busy",
+    )
+  })
 })

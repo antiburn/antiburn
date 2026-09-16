@@ -173,7 +173,21 @@ describe("MainOverviewSession", () => {
     scanFinished()
     await vi.waitFor(() => expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2))
     expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first")
+    expect(session.getSnapshot().allowanceError).toBe(true)
     expect(session.getSnapshot().usageError).toBe(false)
+    stop()
+  })
+
+  it("marks a failed first allowance read, and stops its loading state", async () => {
+    // With no figures to keep, the page must state the failure. A loading
+    // state that never ends states a read that is still in flight.
+    const { adapter, session } = setup()
+    sessions.push(session)
+    vi.mocked(adapter.getAllowanceUsage).mockRejectedValueOnce(new Error("Unavailable"))
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().allowanceError).toBe(true))
+    expect(session.getSnapshot().allowance).toBeNull()
+    expect(session.getSnapshot().allowanceLoading).toBe(false)
     stop()
   })
 

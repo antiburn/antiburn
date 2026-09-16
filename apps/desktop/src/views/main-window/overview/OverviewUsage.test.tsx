@@ -196,4 +196,11 @@ describe("OverviewUsage", () => {
     renderTotals({ allowance: summary([]) })
     expect(screen.getByText(/no allowance readings yet/)).toBeInTheDocument()
   })
+
+  it("states a failed read rather than calling it an account with no history", () => {
+    // The two states look the same on the page, so each one names its cause.
+    renderTotals({ allowance: null, allowanceError: true })
+    expect(screen.getByRole("alert")).toHaveTextContent(/cannot read the allowance figures/)
+    expect(screen.queryByText(/no allowance readings yet/)).not.toBeInTheDocument()
+  })
 })

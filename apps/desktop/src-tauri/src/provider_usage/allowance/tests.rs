@@ -94,6 +94,34 @@ fn a_retry_storm_counts_once_and_keeps_the_stated_wait() {
 }
 
 #[test]
+fn retries_inside_the_gap_stay_one_block_however_long_the_window_stays_shut() {
+    // The gap separates two refusals. A window shut for longer than the gap
+    // is still one block while the retries keep arriving inside it. Counting
+    // from the block start split one outage into two.
+    let refusals: Vec<_> = (0..4)
+        .map(|step| {
+            incident(
+                REFUSED_AT_MS + step * (STORM_GAP_MS - 1_000),
+                QuotaLimitKind::RollingWindow,
+            )
+        })
+        .collect();
+    let blocks = blocks(&refusals);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].started_at_ms, REFUSED_AT_MS);
+}
+
+#[test]
+fn two_limit_kinds_refusing_together_are_two_blocks() {
+    // A five-hour limit and a weekly limit are different windows. One block
+    // holding both took the weekly reset as the wait for the five-hour one.
+    let rolling = incident(REFUSED_AT_MS, QuotaLimitKind::RollingWindow);
+    let weekly = incident(REFUSED_AT_MS + 60 * 1000, QuotaLimitKind::Weekly);
+    let blocks = blocks(&[rolling, weekly]);
+    assert_eq!(blocks.len(), 2);
+}
+
+#[test]
 fn a_refusal_past_the_storm_gap_is_its_own_block() {
     let first = incident(REFUSED_AT_MS, QuotaLimitKind::RollingWindow);
     let later = incident(

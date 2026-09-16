@@ -43,6 +43,8 @@ export class MainWindowLimitsSession {
   private readonly stops: Array<() => void> = []
   private generation = 0
   private visible = false
+  /** Counts the visibility events this start has seen. */
+  private visibleRevision = 0
 
   constructor(adapter: MainWindowLimitsAdapter = productionAdapter) {
     this.adapter = adapter
@@ -79,6 +81,7 @@ export class MainWindowLimitsSession {
         this.adapter.onVisible((visible) => {
           if (generation !== this.generation) return
           const gained = visible && !this.visible
+          this.visibleRevision += 1
           this.visible = visible
           if (gained) void this.load(generation)
         }),
@@ -92,8 +95,13 @@ export class MainWindowLimitsSession {
         }),
       ),
     ])
+    const revision = this.visibleRevision
     const visible = await this.adapter.getVisible().catch(() => false)
     if (generation !== this.generation) return
+    // The first read asks for the state at the moment the store started. An
+    // event that arrives while it is in flight carries a later state, so the
+    // read must not write over it.
+    if (revision !== this.visibleRevision) return
     this.visible = visible
     if (visible) await this.load(generation)
   }
@@ -113,6 +121,7 @@ export class MainWindowLimitsSession {
     this.generation += 1
     for (const stop of this.stops.splice(0)) stop()
     this.visible = false
+    this.visibleRevision = 0
     this.snapshot = { liveUsage: null, loading: true }
   }
 }

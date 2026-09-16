@@ -44,6 +44,8 @@ export function OverviewUsage({
   days,
   previousDays,
   allowance,
+  allowanceLoading = false,
+  allowanceError = false,
   loading = false,
 }: {
   metric: OverviewMetric
@@ -52,6 +54,8 @@ export function OverviewUsage({
   days: ProviderUsageDayPayload[]
   previousDays: ProviderUsageDayPayload[]
   allowance: AllowanceUsageSummaryPayload | null
+  allowanceLoading?: boolean
+  allowanceError?: boolean
   loading?: boolean
 }) {
   return (
@@ -77,11 +81,12 @@ export function OverviewUsage({
           <OverviewAllowanceTotals
             accounts={allowanceAccounts(allowance)}
             spanDays={allowance?.overageSpanDays ?? 0}
-            loading={loading && !allowance}
+            loading={allowanceLoading}
+            error={allowanceError}
           />
           <OverviewAllowanceChart
             accounts={allowanceAccounts(allowance)}
-            loading={loading && !allowance}
+            loading={allowanceLoading}
           />
         </>
       )}

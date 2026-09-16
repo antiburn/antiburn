@@ -65,6 +65,30 @@ describe("MainWindowLimitsSession", () => {
     stop()
   })
 
+  it("keeps a visibility event that arrives before the first read answers", async () => {
+    // The first read asks for the state at start. An event that arrives while
+    // it is in flight carries a later state and must win.
+    const { adapter, session, setVisible, liveChanged } = setup(false)
+    let answer: (value: boolean) => void = () => undefined
+    vi.mocked(adapter.getVisible).mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        answer = resolve
+      }),
+    )
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(adapter.getVisible).toHaveBeenCalled())
+
+    setVisible(true)
+    await vi.waitFor(() => expect(session.getSnapshot().liveUsage?.generatedAt).toBe("first"))
+    answer(false)
+    // Let the read's continuation run before the next push.
+    for (let tick = 0; tick < 5; tick += 1) await Promise.resolve()
+
+    liveChanged(liveUsage("pushed"))
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("pushed")
+    stop()
+  })
+
   it("leaves the sidebar usable when the read fails", async () => {
     const { adapter, session } = setup()
     vi.mocked(adapter.getLiveUsage).mockRejectedValueOnce(new Error("no reading"))

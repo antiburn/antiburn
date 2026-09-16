@@ -500,16 +500,15 @@ including its opacity and native system colours. Reduced transparency applies eq
 to System and the corresponding explicit theme.
 Notes for what isn't expressible as a token:
 
-- **Overview panels** — the provider usage meters stay 180 CSS pixels wide
-  (180 native logical points), including when the panels stack below 700px. The
-  usage meters use a card background and inset outline. The checks and sessions
-  section fills the remaining column without an outer card. Both retain 16px internal
-  padding. Individual burn findings match compact session cards: `bg-session-card`,
+- **Overview panels** — the usage meters use a card background and inset
+  outline. The checks and sessions section fills the remaining column without an
+  outer card. Both retain 16px internal padding. Individual burn findings match
+  compact session cards: `bg-session-card`,
   `--radius-popover` corners, 12px horizontal and 8px vertical padding, 6px gaps,
   and `hover:bg-surface-secondary/50` with the shared `session-card` transition.
   Finding rows have no separator lines. “Recent” sits at the left
   of the sessions header, on the same baseline as “All sessions”, with both using
-  `type-caption text-label-secondary`. The width stays local to `overview.css`.
+  `type-caption text-label-secondary`.
 
 - **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
   a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.
