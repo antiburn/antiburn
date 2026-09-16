@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 import { hasShell } from "./ipc"
+import type { ActivityEntryPayload } from "./ipc"
 import type { LocalSessionIdentity } from "./types/session"
 
 /* -------------------------------------------------------------------------
@@ -230,12 +231,16 @@ export interface BurnCheckTargetPayload {
 }
 
 /** Bounded display metadata plus an opaque, expiring route to one local session. */
-export interface BurnCheckSamplePayload {
+export interface BurnCheckSamplePayload extends Omit<
+  ActivityEntryPayload,
+  "sessionId" | "wslDistro"
+> {
   navigationHandle: string
   title: string
   agent: string
   surface: "cli" | "ide_desktop" | "unknown"
   observedAtMs: number
+  hygiene: SessionHygienePayload
 }
 
 export type OpenBurnCheckSampleOutcome =
@@ -246,6 +251,7 @@ export type OpenBurnCheckSampleOutcome =
 
 export interface BurnCheckTargetListPayload {
   targets: BurnCheckTargetPayload[]
+  samples: BurnCheckSamplePayload[]
   truncated: boolean
 }
 

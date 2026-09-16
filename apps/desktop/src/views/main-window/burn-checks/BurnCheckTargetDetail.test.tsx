@@ -127,6 +127,15 @@ describe("BurnCheckTargetDetail", () => {
               agent: "claude-code",
               surface: "cli",
               observedAtMs: 1,
+              repo: "demo",
+              timestamp: "2026-09-14T12:00:00Z",
+              isActive: false,
+              hasForkParent: false,
+              forkChildCount: 0,
+              cost: null,
+              models: [],
+              modelRuns: [],
+              hygiene: { evidenceState: "pending", badges: [] },
             },
           ],
         })}
@@ -138,12 +147,8 @@ describe("BurnCheckTargetDetail", () => {
     expect(screen.getByText("…/worktrees/example-project")).toBeInTheDocument()
     fireEvent.keyDown(document, { key: "Escape" })
     expect(screen.queryByText("…/worktrees/example-project")).not.toBeInTheDocument()
-    const disclosure = screen.getByRole("button", { name: "Sample session 1" })
-    expect(disclosure).toHaveAccessibleDescription("1 sample session out of 7 affected.")
-    expect(disclosure).toHaveAttribute("aria-expanded", "true")
-    expect(
-      screen.getByRole("button", { name: "Open sample session Example session" }),
-    ).toBeVisible()
+    expect(screen.queryByRole("button", { name: /Failed sessions/ })).toBeNull()
+    expect(screen.getByRole("button", { name: /Example session/ })).toBeVisible()
   })
 })
 

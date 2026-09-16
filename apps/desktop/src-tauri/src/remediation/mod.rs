@@ -205,6 +205,7 @@ impl RemediationController {
             },
         )
         .map_err(|_| ControllerError::Internal)?;
+        let check_samples = sample_sessions(&page.findings);
         let mut grouped: BTreeMap<String, CachedTarget> = BTreeMap::new();
         for finding in page.findings {
             let display = finding
@@ -263,24 +264,14 @@ impl RemediationController {
                 ),
             };
             let id = random_id().map_err(|_| ControllerError::Internal)?;
+            let target_samples = sample_sessions(&target.findings);
             targets.push(BurnCheckTarget {
                 finding_id: stable_finding_id(&target),
                 action_id: id.clone(),
                 finding: display,
                 display: display_facts,
                 occurrences: target.findings.len(),
-                affected_sessions: target
-                    .findings
-                    .iter()
-                    .map(|finding| {
-                        (
-                            &finding.environment_key,
-                            &finding.agent,
-                            &finding.session_id,
-                        )
-                    })
-                    .collect::<BTreeSet<_>>()
-                    .len(),
+                affected_sessions: target_samples.len(),
                 project_name: (target.scope_kind == "project")
                     .then(|| {
                         target.findings[0]
@@ -302,7 +293,7 @@ impl RemediationController {
                 },
                 watch,
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
-                sample_sessions: sample_sessions(&target.findings),
+                sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
             cached.push(TimedTarget {
@@ -321,7 +312,11 @@ impl RemediationController {
             }
             state.targets.push_back(entry);
         }
-        Ok(BurnCheckTargetList { targets, truncated })
+        Ok(BurnCheckTargetList {
+            targets,
+            sample_sessions: check_samples,
+            truncated,
+        })
     }
 
     #[cfg(all(test, not(windows)))]

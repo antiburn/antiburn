@@ -107,6 +107,8 @@ function CheckDetailContent({
         <BurnCheckDetail
           detector={check.id}
           targets={[]}
+          samples={targets.data.samples}
+          failedSessionCount={check.finding}
           refresh={session.refresh}
           contained
           reportRow
@@ -131,6 +133,8 @@ function CheckDetailContent({
     <BurnCheckDetail
       detector={check.id}
       targets={targets.data.targets}
+      samples={targets.data.samples}
+      failedSessionCount={check.finding}
       refresh={session.refresh}
       contained={targets.data.targets.length === 0}
       reportRow
