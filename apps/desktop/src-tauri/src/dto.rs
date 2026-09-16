@@ -904,6 +904,15 @@ pub struct BurnCheckSamplePayload {
     pub agent: String,
     pub surface: BurnCheckSampleSurface,
     pub observed_at_ms: i64,
+    pub repo: String,
+    pub timestamp: String,
+    pub is_active: bool,
+    pub has_fork_parent: bool,
+    pub fork_child_count: u32,
+    pub cost: Option<SessionCost>,
+    pub models: Vec<String>,
+    pub model_runs: Vec<ModelRun>,
+    pub hygiene: SessionHygienePayload,
 }
 
 /// Safe source category for a sample session display.
@@ -928,6 +937,7 @@ pub enum OpenBurnCheckSampleOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckTargetListPayload {
     pub targets: Vec<BurnCheckTargetPayload>,
+    pub samples: Vec<BurnCheckSamplePayload>,
     pub truncated: bool,
 }
 
@@ -1924,6 +1934,7 @@ impl From<crate::remediation::BurnCheckTargetList> for BurnCheckTargetListPayloa
     fn from(value: crate::remediation::BurnCheckTargetList) -> Self {
         Self {
             targets: value.targets.into_iter().map(Into::into).collect(),
+            samples: Vec::new(),
             truncated: value.truncated,
         }
     }
@@ -2901,6 +2912,18 @@ mod tests {
             agent: "codex".to_owned(),
             surface: BurnCheckSampleSurface::Cli,
             observed_at_ms: 1_760_000_000_000,
+            repo: "demo".to_owned(),
+            timestamp: "2026-09-14T12:00:00Z".to_owned(),
+            is_active: false,
+            has_fork_parent: false,
+            fork_child_count: 0,
+            cost: None,
+            models: Vec::new(),
+            model_runs: Vec::new(),
+            hygiene: SessionHygienePayload {
+                evidence_state: "pending",
+                badges: Vec::new(),
+            },
         })
         .expect("serialize");
         let encoded = value.to_string();

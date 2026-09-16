@@ -18,7 +18,7 @@ import {
 } from "./presentation/sessionAnalysis"
 
 /** Narrow the shell's surface string to the presentation layer's union. */
-function surfaceOf(payload: ActivityEntryPayload): AgentSurface {
+function surfaceOf(payload: Pick<ActivityEntryPayload, "surface" | "agent">): AgentSurface {
   if (payload.surface === "cli" || payload.surface === "ide_desktop") return payload.surface
   // `unknown` from the shell means "not classified", which is exactly what the
   // registry's slug-only fallback answers.
@@ -33,7 +33,8 @@ function surfaceOf(payload: ActivityEntryPayload): AgentSurface {
  * against — the row's high-cost flag then reads as false, never as an error.
  */
 export function toActivityEntry(
-  payload: ActivityEntryPayload,
+  payload: Omit<ActivityEntryPayload, "sessionId" | "wslDistro"> &
+    Partial<Pick<ActivityEntryPayload, "sessionId" | "wslDistro">>,
   highCostThreshold: number | null = null,
 ): SessionListEntry {
   return {

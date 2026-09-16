@@ -15,9 +15,22 @@ pub(super) fn scope_display(scope: &str) -> BurnCheckScopeKind {
 }
 
 pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampleSession> {
+    let mut findings = findings.iter().collect::<Vec<_>>();
+    findings.sort_by(|left, right| {
+        right
+            .observed_at_ms
+            .cmp(&left.observed_at_ms)
+            .then_with(|| {
+                (&left.environment_key, &left.agent, &left.session_id).cmp(&(
+                    &right.environment_key,
+                    &right.agent,
+                    &right.session_id,
+                ))
+            })
+    });
     let mut seen = BTreeSet::new();
     findings
-        .iter()
+        .into_iter()
         .filter(|finding| {
             seen.insert((
                 finding.environment_key.clone(),
@@ -25,7 +38,6 @@ pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampl
                 finding.session_id.clone(),
             ))
         })
-        .take(3)
         .map(|finding| BurnCheckSampleSession {
             environment_key: finding.environment_key.clone(),
             agent: finding.agent.clone(),

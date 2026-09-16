@@ -14,6 +14,15 @@ function syncTopEdgeFade(viewport: HTMLDivElement) {
   }
 }
 
+function syncBottomEdgeFade(viewport: HTMLDivElement) {
+  const shouldFade = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop > 1
+  if (shouldFade) {
+    viewport.setAttribute("data-scroll-edge-bottom", "active")
+  } else {
+    viewport.removeAttribute("data-scroll-edge-bottom")
+  }
+}
+
 /** Assign a ref. A function ref may return a cleanup, which is passed on. */
 function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void | (() => void) {
   if (typeof ref === "function") return ref(value)
@@ -31,34 +40,65 @@ export function ScrollPane({
   className = "",
   viewportClassName = "",
   viewportRef,
+  viewportTabIndex,
+  viewportLabel,
   topEdgeFade = false,
+  bottomEdgeFade = false,
 }: {
   children: ReactNode
   className?: string
   viewportClassName?: string
   viewportRef?: Ref<HTMLDivElement>
+  viewportTabIndex?: number
+  viewportLabel?: string
   /** Fade scrolling content into the viewport's top edge after it leaves the
    *  initial position. The scrollbar remains outside the mask. */
   topEdgeFade?: boolean
+  /** Fade the bottom edge while content remains below the viewport. */
+  bottomEdgeFade?: boolean
 }) {
   // Stable so React attaches it once per viewport. A caller's ref cleanup
   // must reach React, or the caller's listeners outlive the node.
   const assignViewportRef = useCallback(
     (node: HTMLDivElement | null) => {
       if (node && topEdgeFade) syncTopEdgeFade(node)
-      return assignRef(viewportRef, node)
+      const cleanup = assignRef(viewportRef, node)
+      if (!node || !bottomEdgeFade) return cleanup
+
+      const sync = () => syncBottomEdgeFade(node)
+      sync()
+      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync)
+      observer?.observe(node)
+      if (node.firstElementChild) observer?.observe(node.firstElementChild)
+      return () => {
+        observer?.disconnect()
+        node.removeAttribute("data-scroll-edge-bottom")
+        if (cleanup) cleanup()
+        else assignRef(viewportRef, null)
+      }
     },
-    [viewportRef, topEdgeFade],
+    [viewportRef, topEdgeFade, bottomEdgeFade],
   )
 
   return (
     <ScrollArea.Root className={cn("flex-1 overflow-hidden", className)}>
       <ScrollArea.Viewport
         ref={assignViewportRef}
-        onScroll={topEdgeFade ? (event) => syncTopEdgeFade(event.currentTarget) : undefined}
+        tabIndex={viewportTabIndex}
+        role={viewportLabel ? "region" : undefined}
+        aria-label={viewportLabel}
+        onScroll={
+          topEdgeFade || bottomEdgeFade
+            ? (event) => {
+                if (topEdgeFade) syncTopEdgeFade(event.currentTarget)
+                if (bottomEdgeFade) syncBottomEdgeFade(event.currentTarget)
+              }
+            : undefined
+        }
         className={cn(
           "ui-scroll-viewport h-full",
           topEdgeFade && "scroll-edge-fade-top",
+          bottomEdgeFade && "scroll-edge-fade-bottom",
           viewportClassName,
         )}
       >

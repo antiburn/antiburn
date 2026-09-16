@@ -10,10 +10,11 @@ import {
   copyPromptFixBurnCheck,
   type BurnCheckDetectorId,
   type BurnCheckTargetPayload,
+  type BurnCheckSamplePayload,
 } from "../../../lib/insightsIpc"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
 import { RemindLaterAction } from "./RemindLaterAction"
-import { SampleSessions, watchStatus } from "./BurnCheckTargetPresentation"
+import { FailedSessions, watchStatus } from "./BurnCheckTargetPresentation"
 import { BurnCheckTargetChooserDialog } from "./BurnCheckTargetChooserDialog"
 
 export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
@@ -26,17 +27,6 @@ export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   oldModelUsage: "Some sessions used an older model when a newer one was available.",
   overuseOfFastMode: "Some work paid for speed it did not need.",
   cacheChurn: "Some sessions kept paying to reload the same context.",
-}
-
-function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
-  const samples = Array.from(
-    new Map(
-      targets
-        .flatMap((target) => target.samples)
-        .map((sample) => [sample.navigationHandle, sample]),
-    ).values(),
-  ).slice(0, 3)
-  return <SampleSessions samples={samples} />
 }
 
 export function CheckPromptAction({
@@ -242,12 +232,16 @@ export function CheckDetailActions({
 export function BurnCheckDetail({
   detector,
   targets,
+  samples,
+  failedSessionCount,
   refresh,
   contained = false,
   reportRow = false,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
+  samples: BurnCheckSamplePayload[]
+  failedSessionCount: number
   refresh: () => void
   contained?: boolean
   reportRow?: boolean
@@ -277,7 +271,7 @@ export function BurnCheckDetail({
           {statuses[0]}
         </p>
       )}
-      <Samples targets={targets} />
+      <FailedSessions samples={samples} total={failedSessionCount} />
     </article>
   )
 }

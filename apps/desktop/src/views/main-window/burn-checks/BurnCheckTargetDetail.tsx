@@ -8,7 +8,7 @@ import { RemindLaterAction } from "./RemindLaterAction"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
 import {
   ActionLimit,
-  SampleSessions,
+  FailedSessions,
   scopeLabel,
   targetTitle,
   watchStatus,
@@ -113,12 +113,11 @@ export function BurnCheckTargetDetail({
             {status}
           </p>
         )}
-        <SampleSessions
+        <FailedSessions
           samples={target.samples}
-          {...(reportRow && target.affectedSessionCount != null
-            ? { affectedSessionCount: target.affectedSessionCount }
+          {...(target.affectedSessionCount != null
+            ? { total: target.affectedSessionCount }
             : {})}
-          insetRows={reportRow}
         />
       </div>
     </article>

@@ -223,20 +223,6 @@
   content: "";
 }
 
-.burn-check-samples > button {
-  min-block-size: 40px;
-}
-
-.burn-check-resource-body .burn-check-samples > button {
-  margin-inline-start: calc(-2 * var(--spacing));
-  gap: var(--space-sm);
-}
-
-.burn-check-resource-body .burn-check-samples > button > svg {
-  inline-size: var(--space-lg);
-  flex: none;
-}
-
 .burn-check-resource {
   padding: var(--space-lg);
   border-radius: var(--radius-control);

@@ -242,6 +242,7 @@ pub enum SavingsUnknownReason {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BurnCheckTargetList {
     pub targets: Vec<BurnCheckTarget>,
+    pub sample_sessions: Vec<BurnCheckSampleSession>,
     pub truncated: bool,
 }
 

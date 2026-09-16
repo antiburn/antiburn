@@ -438,6 +438,7 @@ components:
     className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
     topEdgeFade: "ScrollPane topEdgeFade opt-in; activates above scrollTop 1px; alpha 25% at 0px, 75% at 5px, 100% at 12px"
+    bottomEdgeFade: "ScrollPane bottomEdgeFade opt-in; activates with more than 1px below the viewport; mirrors the top fade"
 ---
 
 # antiburn Desktop — Design System
@@ -615,6 +616,8 @@ Notes for what isn't expressible as a token:
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to
   dissolve into a fixed top boundary. It masks only the viewport contents after `scrollTop > 1`;
+  opt into `bottomEdgeFade` to mirror that mask while more content remains below. The bottom
+  boundary updates on scroll and content or viewport resize. Keep scrollbars outside both masks;
   keep fixed labels outside `ScrollPane`. Do not recreate the effect with an overlay, fill, backdrop
   blur, or feature-specific gradient.
 - **Settings type ladder** — one descending step per level, set by the `ui/` primitives rather than
@@ -741,18 +744,16 @@ separators use 8px spacing on each side; collapsed headings have no bottom margi
 Their disclosure controls retain a 40px minimum hit area.
 Resource cards use `session-card` fill, `rounded-control`, 16px padding, and 16px separation.
 Project context appears once; a keyboard-accessible folder popover reveals its shortened location.
-Samples use `surface-card` inset rows against the quieter resource fill and show their displayed
-count in a muted circular badge. Use singular wording for one sample. Accessible descriptive
-text explains the sample count out of affected sessions when known. Counts and dates use tabular numerals.
+Failed sessions use the shared session cards without a separate heading, count badge, or disclosure.
+Show all available cards. Lists longer than five cards scroll within the measured height of the
+first five cards. Counts and dates use tabular numerals.
 The project row keeps a 26px visible folder control with a 40px hit area and a `mt-1` count gap.
 Resource titles use a 16px vendor column and an 8px gap. Center each vendor against the
-first title line. Metadata, affected counts, and expanded samples share the title text column.
-The disclosure chevron aligns with the affected-count text edge. Its button padding extends into
-the gutter; expanded sample cards retain their text-column alignment. Leave 8px before disclosures.
+first title line. Metadata, affected counts, and session cards share the title text column.
+Leave 8px before the session list.
 Resource titles and generic finding copy center their first line within a 40px action row.
 The actions align with that first line and wrap without negative vertical offsets.
-Sample disclosures stay transparent on hover; only text and chevron color change. Keep the count
-badge, focus ring, and 40px hit area. Every finding explanation appears below the header metrics.
+Every finding explanation appears below the header metrics.
 Checks without resource cards place their actions at the header’s right edge. Resource actions
 remain inside their cards. Do not repeat explanations or check-level actions in the body.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
@@ -768,9 +769,9 @@ settled historical coverage gaps use a not-assessed count, not a processing stat
 separate `session-card` rounded controls and accessible selection buttons. The selected detail uses one short, check-specific
 finding sentence below the heading. The prompt action sits at the heading’s right edge. Do not show internal target identities,
 repeated observations, repeated guidance, or detail refresh and bounded-list notices. Only unused MCP servers and unused skills show
-named resource rows. A separate nested disclosure lists bounded sample sessions. Opening a sample selects it in the
-standard Sessions collection and detail layout. Returning to Burn checks preserves the check and
-sample disclosure state. A single-target `Fix` opens a small modal that shows the effect, scope, and one
+named resource rows. Show bounded failed-session lists directly. Opening a card selects it in the
+standard Sessions collection and detail layout. Returning to Burn checks preserves the check
+selection. A single-target `Fix` opens a small modal that shows the effect, scope, and one
 current-to-new value. Multiple targets open a chooser grouped by agent and scope. State a shared
 disable action once above the list, not in every row, and identify built-in tool choices as optional. Use the standard `PushButton` and the same
 custom checkbox treatment as notification milestones. Selection starts empty, and the primary
@@ -903,14 +904,14 @@ below the counts. Zero remains unlit; small positive estimates retain “<1%”.
 
 Select the first failed category initially, or the first passed category when no
 failure exists. Preserve selection while its category exists. Keep details mounted
-so sample disclosures, prepared prompts, fix dialogs, and transient action state survive
+so session lists, prepared prompts, fix dialogs, and transient action state survive
 selection and resizing. Up, Down, Home, and End select categories; Enter focuses the detail.
 
 Keep detail headings above their independent scroll viewports. The heading and body
 fill the available detail pane width with 24px horizontal padding on each side.
-The divider spans the pane. Sample lists remain left-aligned and cap at 960px, shrinking
-to the available width on smaller windows. Sample rows use ArrowUpRight and an “Open session” tooltip.
-Use an 8px gap between sample cards within the Burn Checks report.
+The divider spans the pane. Failed-session lists remain left-aligned and cap at 960px,
+shrinking to the available width on smaller windows. Use shared session-card navigation
+and an 8px gap between cards within the Burn Checks report.
 Use one reading column at every breakpoint: description, actions when needed,
 then sample sessions. Do not split guidance and samples into parallel columns.
 The header title uses a left-aligned 960px maximum-width container; its divider stays full width.
@@ -938,9 +939,12 @@ Show each resource’s sanitized project name and two-component folder suffix wh
 Keep full private paths and secret-looking components out of the renderer. Do not infer configuration filenames.
 Show its distinct affected-session count from the backend, never the occurrence or sample count.
 Keep generic recommendations outside resource rows; retain cost, availability, and verification details.
-Use the stable disclosure label “Sample sessions · N” with a leading chevron.
-Start each sample disclosure collapsed when it contains multiple samples. Expand it when it contains
-exactly one sample. Preserve manual disclosure choices across selection and resize.
+Show session cards directly without a failed-session heading or disclosure.
+Keep lists of five or fewer cards fully visible. Longer lists scroll within the
+measured height of their first five cards, including gaps. Recalculate that height
+when content or width changes. Preserve keyboard access to the list and its cards.
+Use `ScrollPane` for these longer lists, with its shared scrollbar and both edge fades.
+Reserve `pr-3` inside the viewport so the scrollbar stays beside the cards, matching the session pane.
 Never sum target occurrences or bounded sample counts to derive affected sessions.
 Named findings retain provider marks, names, scopes, and resource-header actions.
 Generic copy actions appear beside the finding description with `aria-disabled` and a
@@ -966,14 +970,18 @@ for the resting or hover face. Keep the shared keyboard focus ring. Disabled
 and completed states stay neutral. Success icons use `token-in`.
 
 Use natural-width controls in check and named-target details. Keep the copied
-state in the same slot. The sample disclosure says “View N sample session(s)”
-or “Hide N sample session(s)” and carries a trailing 12px right chevron that
-rotates when open. Give the disclosure a 40px minimum hit area. Report sample rows
-request a trailing right chevron from the shared `SessionSampleRow`; other consumers
-retain its default arrow. Preserve sample navigation, busy states, unavailable
-messages, and disclosure state. Initially expand only disclosures with one sample.
-Once the user toggles a disclosure, preserve that choice
-across selection and window-size changes.
+state in the same slot.
+
+Failed sessions use the full shared `SessionRow` cards: `session-card` fill,
+popover corners, real Burn Check status, title, available model and cost data,
+and the neutral vendor watermark. Add a visible source-agent label beside the
+model on this surface; wrap the metadata when space is narrow. Retain the shared
+hover and focus treatments without scaling or extra entrance motion. Respect
+snoozed detectors as the session lists do. Show all available failed sessions from
+the bounded backend result in one mixed-agent list, newest first. Deduplicate
+sessions by their full source identity. Each card's status describes all checks
+assessed for that session.
+Empty available samples use neutral explanatory text.
 
 The menu-bar Burn Checks summary uses `surface-card/50` at rest and
 `surface-secondary/70` on hover or focus within, with a `duration-fast` colour
