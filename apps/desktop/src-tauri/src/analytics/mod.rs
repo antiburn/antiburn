@@ -117,6 +117,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::BurnCheckOutcomeObserved { outcome, origin } => {
             let _ = (outcome, origin);
         }
+        event::Interaction::ProjectFolderAction { action, outcome } => {
+            let _ = (action, outcome);
+        }
         event::Interaction::SessionFilterSelected { filter, agent } => {
             let _ = (filter, agent);
         }

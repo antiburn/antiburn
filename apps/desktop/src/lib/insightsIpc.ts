@@ -221,6 +221,8 @@ export interface BurnCheckTargetPayload {
   affectedSessionCount?: number
   projectName?: string | null
   projectLocation?: string | null
+  /** Full local directory for explicit folder actions. Never send to analytics. */
+  projectPath?: string | null
   autoFix: AutoFixAvailabilityPayload
   promptFix: PromptFixAvailabilityPayload
   watch: BurnCheckWatchPayload | null

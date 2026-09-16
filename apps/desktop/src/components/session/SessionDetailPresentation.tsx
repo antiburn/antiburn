@@ -58,6 +58,7 @@ import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
 import { hasDiscussionModifier, useDiscussionModifiers } from "../../lib/useDiscussionModifiers"
 import "../../styles/session-detail.css"
 import { Tooltip } from "../presentation/Tooltip"
+import { ProjectFolderActions } from "./ProjectFolderActions"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { SegmentedControl } from "../ui/SegmentedControl"
@@ -157,6 +158,7 @@ export interface SessionDetailPresentationProps {
   onCopySourcePath?: () => Promise<void>
   /** Copy a discussion prompt built from the loaded session evidence. */
   onCopyDiscussionPrompt?: () => Promise<void>
+  projectFolder?: { path: string; onOpen: () => Promise<void>; onCopy: () => Promise<void> }
   renderAgentIcon: AgentIconRenderer
   /** Remove the popover surface when a host supplies the surrounding pane. */
   embedded?: boolean
@@ -746,6 +748,7 @@ export function SessionDetailPresentation({
   onCopySourcePath,
   onCopyDiscussionPrompt,
   renderAgentIcon,
+  projectFolder,
   embedded = false,
   active = true,
 }: SessionDetailPresentationProps) {
@@ -876,12 +879,18 @@ export function SessionDetailPresentation({
       className="flex min-w-0 flex-col gap-y-0.5 session-detail-summary flex-1 basis-48 type-body"
       aria-label="Session summary"
     >
-      {(session.repo || session.wslDistro) && (
+      {(session.repo || session.wslDistro || projectFolder) && (
         <div className="flex min-w-0 items-center gap-1.5 type-caption text-label-tertiary">
           {session.repo && (
             <Tooltip label={session.repo}>
               <span className="truncate font-mono">{session.repo}</span>
             </Tooltip>
+          )}
+          {active && projectFolder && (
+            <ProjectFolderActions
+              key={`${localSessionKey(session.agent, session.sessionId, session.wslDistro)}:${projectFolder.path}`}
+              {...projectFolder}
+            />
           )}
           <WslOriginBadge distro={session.wslDistro} />
         </div>

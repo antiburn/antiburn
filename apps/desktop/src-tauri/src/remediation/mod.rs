@@ -279,6 +279,13 @@ impl RemediationController {
                             .and_then(display::project_location)
                     })
                     .flatten(),
+                project_path: (target.scope_kind == "project")
+                    .then(|| {
+                        target.findings[0]
+                            .workspace_candidate()
+                            .and_then(display::project_path)
+                    })
+                    .flatten(),
                 auto_fix,
                 prompt_fix: match remediation_prompt(&target.findings[0].finding) {
                     Ok(_) => PromptFixAvailability::Available,

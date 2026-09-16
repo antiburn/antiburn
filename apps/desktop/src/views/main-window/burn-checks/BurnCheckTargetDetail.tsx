@@ -1,5 +1,6 @@
-import { Folder } from "lucide-react"
-import { InfoPopover } from "../../../components/presentation/InfoPopover"
+import { ProjectFolderActions } from "../../../components/session/ProjectFolderActions"
+import { performProjectFolderAction } from "../../../lib/projectFolder"
+import "../../../styles/session-detail.css"
 import type { BurnCheckDetectorId, BurnCheckTargetPayload } from "../../../lib/insightsIpc"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { formatApiEquivalentUsd } from "../../../lib/presentation/checks"
@@ -40,6 +41,7 @@ export function BurnCheckTargetDetail({
   const status = watchStatus(target)
   const guidance = CHECK_UI[target.finding.detector]
   const costLine = targetCostLine(target)
+  const projectPath = target.projectPath
   return (
     <article
       className={
@@ -57,7 +59,7 @@ export function BurnCheckTargetDetail({
             <span className="min-w-0 wrap-anywhere">{targetTitle(target)}</span>
           </h3>
           <div className="burn-check-resource-metadata min-w-0">
-            <div className="flex flex-wrap items-center type-callout text-label-tertiary">
+            <div className="flex flex-wrap items-center gap-1.5 type-callout text-label-tertiary">
               <span>
                 {reportRow && target.display.scopeKind === "project"
                   ? "Project"
@@ -66,20 +68,13 @@ export function BurnCheckTargetDetail({
                   <span className="text-label"> · {target.projectName}</span>
                 )}
               </span>
-              {reportRow && target.projectLocation && (
-                <InfoPopover
-                  label="Folder location"
-                  icon={<Folder size={14} aria-hidden="true" />}
-                >
-                  {() => (
-                    <>
-                      <h4 className="type-headline text-label">Folder location</h4>
-                      <p className="mt-2 wrap-anywhere font-mono type-footnote text-label-secondary">
-                        {target.projectLocation}
-                      </p>
-                    </>
-                  )}
-                </InfoPopover>
+              {reportRow && projectPath && (
+                <ProjectFolderActions
+                  key={projectPath}
+                  path={projectPath}
+                  onOpen={() => performProjectFolderAction(projectPath, "open")}
+                  onCopy={() => performProjectFolderAction(projectPath, "copy")}
+                />
               )}
             </div>
           </div>
