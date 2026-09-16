@@ -191,6 +191,8 @@ pub struct SessionAnalysis {
     /// The transcript's own path, for the reveal action. Absent for sessions
     /// held in a vendor database rather than a file.
     pub source_path: Option<String>,
+    /// The stored absolute working directory, including the specific worktree.
+    pub project_path: Option<String>,
     /// True when no published row set exists yet for this session, so every
     /// other field above is [`SessionAnalysis::unavailable`]'s placeholder
     /// rather than a real read. The worker fills the gap on its own; the
@@ -889,6 +891,8 @@ pub struct BurnCheckTargetPayload {
     pub affected_session_count: Option<u64>,
     pub project_name: Option<String>,
     pub project_location: Option<String>,
+    /// Full local directory for explicit folder actions, excluded from analytics.
+    pub project_path: Option<String>,
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
@@ -906,6 +910,15 @@ pub struct BurnCheckSamplePayload {
     pub agent: String,
     pub surface: BurnCheckSampleSurface,
     pub observed_at_ms: i64,
+    pub repo: String,
+    pub timestamp: String,
+    pub is_active: bool,
+    pub has_fork_parent: bool,
+    pub fork_child_count: u32,
+    pub cost: Option<SessionCost>,
+    pub models: Vec<String>,
+    pub model_runs: Vec<ModelRun>,
+    pub hygiene: SessionHygienePayload,
 }
 
 /// Safe source category for a sample session display.
@@ -930,6 +943,7 @@ pub enum OpenBurnCheckSampleOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckTargetListPayload {
     pub targets: Vec<BurnCheckTargetPayload>,
+    pub samples: Vec<BurnCheckSamplePayload>,
     pub truncated: bool,
 }
 
@@ -1813,6 +1827,7 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
                 .map(|count| u64::try_from(count).unwrap_or(u64::MAX)),
             project_name: value.project_name,
             project_location: value.project_location,
+            project_path: value.project_path,
             auto_fix: match value.auto_fix {
                 crate::remediation::AutoFixAvailability::Available => {
                     AutoFixAvailabilityPayload::Available
@@ -1960,6 +1975,7 @@ impl From<crate::remediation::BurnCheckTargetList> for BurnCheckTargetListPayloa
     fn from(value: crate::remediation::BurnCheckTargetList) -> Self {
         Self {
             targets: value.targets.into_iter().map(Into::into).collect(),
+            samples: Vec::new(),
             truncated: value.truncated,
         }
     }
@@ -3062,6 +3078,18 @@ mod tests {
             agent: "codex".to_owned(),
             surface: BurnCheckSampleSurface::Cli,
             observed_at_ms: 1_760_000_000_000,
+            repo: "demo".to_owned(),
+            timestamp: "2026-09-14T12:00:00Z".to_owned(),
+            is_active: false,
+            has_fork_parent: false,
+            fork_child_count: 0,
+            cost: None,
+            models: Vec::new(),
+            model_runs: Vec::new(),
+            hygiene: SessionHygienePayload {
+                evidence_state: "pending",
+                badges: Vec::new(),
+            },
         })
         .expect("serialize");
         let encoded = value.to_string();

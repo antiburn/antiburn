@@ -451,3 +451,17 @@ contributor expectations. The implemented catalog and the reviewed Burn Checks
 integration now add runtime instrumentation with bounded delivery behavior.
 Collector configuration, dashboards, and the remaining proposed work remain
 described above.
+
+### Project folder action review — 2026-09-16
+
+Question: do readers use project folder open/copy, and which action fails?
+The renderer reports each settled explicit action with closed `open`/`copy` and
+`succeeded`/`failed` values. No hover event or path-derived property is collected.
+Session details and Burn Check project rows share the same action reporting.
+Concurrent presses are suppressed until an action settles; a later retry is a
+new attempt. Full paths stay in local IPC and the clipboard or native opener.
+The denominator is observed attempts per action, not all sessions or panel
+views. Native opener acceptance does not prove file-manager visibility. The
+existing consent and build gates apply; offline delivery and opt-out remain
+unobserved. Tests cover clipboard and opener success/failure separately from
+transcript actions and reject unknown analytics values and extra path fields.

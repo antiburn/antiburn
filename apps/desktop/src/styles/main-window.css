@@ -11,6 +11,20 @@
   background-color: var(--color-bg-window);
 }
 
+.burn-check-category-icon,
+.burn-check-category-icon-size {
+  inline-size: calc(var(--space-xl) + var(--space-sm));
+  block-size: calc(var(--space-xl) + var(--space-sm));
+}
+
+.burn-check-category-icon {
+  background-color: color-mix(
+    in srgb,
+    currentColor var(--burn-check-category-tint),
+    transparent
+  );
+}
+
 /* Keep the drag region above the sidebar and clear of feature controls. */
 .main-window-titlebar {
   position: absolute;

@@ -2887,13 +2887,21 @@ mod tests {
             .iter()
             .map(|target| target.action_id.clone())
             .collect::<Vec<_>>();
+        let resources = listed
+            .targets
+            .iter()
+            .filter_map(|target| target.finding.facts.labels.first())
+            .collect::<Vec<_>>();
 
         let prompt = controller
             .copy_prompt_fix_burn_check_targets(&store, &action_ids)
             .unwrap()
             .prompt;
 
-        assert_eq!(prompt.matches("Exact target ").count(), action_ids.len());
+        assert!(prompt.contains("Unused targets"));
+        for resource in resources {
+            assert!(prompt.contains(resource), "{prompt}");
+        }
         assert!(!prompt.contains("Remediation reference: ABR-"));
         assert_eq!(
             store

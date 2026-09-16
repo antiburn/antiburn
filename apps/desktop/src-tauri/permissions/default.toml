@@ -60,6 +60,7 @@ permissions = [
   "allow-restart-onboarding",
   "allow-restart-to-update",
   "allow-reveal-source",
+  "allow-open-project-folder",
   "allow-scan-now",
   "allow-set-hud-detail-size",
   "allow-set-popover-height",

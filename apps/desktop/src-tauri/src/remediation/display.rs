@@ -18,9 +18,22 @@ pub(super) fn scope_display(scope: &str) -> BurnCheckScopeKind {
 }
 
 pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampleSession> {
+    let mut findings = findings.iter().collect::<Vec<_>>();
+    findings.sort_by(|left, right| {
+        right
+            .observed_at_ms
+            .cmp(&left.observed_at_ms)
+            .then_with(|| {
+                (&left.environment_key, &left.agent, &left.session_id).cmp(&(
+                    &right.environment_key,
+                    &right.agent,
+                    &right.session_id,
+                ))
+            })
+    });
     let mut seen = BTreeSet::new();
     findings
-        .iter()
+        .into_iter()
         .filter(|finding| {
             seen.insert((
                 finding.environment_key.clone(),
@@ -28,7 +41,6 @@ pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampl
                 finding.session_id.clone(),
             ))
         })
-        .take(3)
         .map(|finding| BurnCheckSampleSession {
             environment_key: finding.environment_key.clone(),
             agent: finding.agent.clone(),
@@ -472,9 +484,23 @@ pub(super) fn project_location(path: &Path) -> Option<String> {
     Some(format!("…/{parent}/{name}"))
 }
 
+pub(super) fn project_path(path: &Path) -> Option<String> {
+    path.is_absolute()
+        .then(|| path.to_str().map(str::to_owned))
+        .flatten()
+}
+
 #[cfg(test)]
 mod project_name_tests {
     use super::*;
+
+    #[test]
+    fn folder_actions_keep_the_full_local_path_even_after_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing project");
+        assert_eq!(project_path(&path), path.to_str().map(str::to_owned));
+        assert_eq!(project_path(Path::new("relative/project")), None);
+    }
 
     #[test]
     fn shows_only_a_sanitized_project_name() {

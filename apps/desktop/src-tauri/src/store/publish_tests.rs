@@ -6,8 +6,6 @@
 //! remove every turn row an earlier, superseded pass left behind. This module
 //! pins both halves directly against turn rows and a zero-baseline session,
 //! a case the existing suite in `store/tests.rs` does not cover on its own.
-//! See `docs/plans/local-insights-followups.md` for the wider publish
-//! contract this backs.
 
 use std::path::Path;
 

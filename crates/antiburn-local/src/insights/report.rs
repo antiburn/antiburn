@@ -1778,7 +1778,7 @@ mod tests {
                 total_tokens: Some(1_000),
                 built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
                     scope: "claude:bundled".to_owned(),
-                    name: "read".to_owned(),
+                    name: "web_search".to_owned(),
                     replicated_tokens: 100,
                     invoked: false,
                     replicated_cost_usd: None,
@@ -1825,7 +1825,11 @@ mod tests {
             }
             let source = TokenBurnSourceEvidence {
                 scope: "claude:bundled".to_owned(),
-                name: "unused".to_owned(),
+                name: if detector == DetectorId::UnusedBuiltInTools {
+                    "web_search".to_owned()
+                } else {
+                    "unused".to_owned()
+                },
                 replicated_tokens: 100,
                 invoked: false,
                 replicated_cost_usd: None,
@@ -3434,7 +3438,7 @@ mod tests {
                 SessionTokenBurnEvidence {
                     built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
                         scope: "claude:bundled".to_owned(),
-                        name: "read".to_owned(),
+                        name: "web_search".to_owned(),
                         replicated_tokens: 100,
                         invoked,
                         replicated_cost_usd: None,

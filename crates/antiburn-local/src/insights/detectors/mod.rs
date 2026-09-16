@@ -808,7 +808,7 @@ mod tests {
         eligibility.assistant_turns = 1;
         let mut definitions = BTreeMap::new();
         definitions.insert(
-            "Read".to_owned(),
+            "WebSearch".to_owned(),
             ToolDefinition {
                 tokens: 73,
                 invoked: false,
@@ -839,7 +839,7 @@ mod tests {
         assert_eq!(
             causes,
             vec![FindingCause::UnusedBuiltInTool {
-                tool: "Read".to_owned(),
+                tool: "WebSearch".to_owned(),
                 tokens: BuiltInToolTokens::Definition(73),
                 cost_usd: None,
                 pricing_revision: None,

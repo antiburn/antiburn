@@ -33,9 +33,7 @@ use crate::analysis::model::{
 /// foreign key references `session (environment_key, agent, session_id)`.
 ///
 /// `turn_content` is the only place transcript text is persisted. Evidence
-/// JSON, metrics JSON, and every other projection never join to it — see
-/// `docs/plans/session-evidence-harness-parity.md`, "Privacy with content
-/// stored".
+/// JSON, metrics JSON, and every other projection never join to it.
 pub const TURN_SCHEMA_SQL: &str = r#"
 CREATE TABLE turn (
     rowid INTEGER PRIMARY KEY,
@@ -852,7 +850,7 @@ pub fn restamp_source_rows(
 ///
 /// Used when a source reads fully instead of resuming: its earlier
 /// published rows are replaced outright by the new full read, rather than
-/// appended to. See "R4. Fence semantics" in the phase 3b design rules in `docs/plans/continuous-session-ingest.md`.
+/// appended to.
 pub fn delete_source_rows_at_fence(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
@@ -920,8 +918,7 @@ impl ResumeRevisions {
     /// True when every one of `stored`'s six revision columns equals this
     /// value's own. A caller rejects a stored resume that fails this check
     /// instead of restoring it, falling back to a full read of that
-    /// source — see "R2. Resume conditions" in
-    /// the phase 3b design rules in `docs/plans/continuous-session-ingest.md`.
+    /// source.
     pub fn matches(&self, stored: &StoredResume) -> bool {
         self.snapshot_revision == stored.snapshot_revision
             && self.parser_revision == stored.parser_revision
@@ -1033,8 +1030,7 @@ pub fn delete_source_resume(
 /// revisions do not match `current`, regardless of session. A parser,
 /// analyzer, metrics, evidence, or coverage revision bump invalidates
 /// every persisted snapshot at once; the next winning publish for a source
-/// writes it a fresh one under the new revisions. See "R6. Invalidation"
-/// in the phase 3b design rules in `docs/plans/continuous-session-ingest.md`.
+/// writes it a fresh one under the new revisions.
 pub fn delete_stale_source_resume(
     conn: &Connection,
     current: &ResumeRevisions,

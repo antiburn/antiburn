@@ -33,7 +33,7 @@ fn causes() -> Vec<FindingCause> {
             pricing_revision: None,
         },
         FindingCause::UnusedBuiltInTool {
-            tool: "tool-a".to_owned(),
+            tool: "WebSearch".to_owned(),
             tokens: BuiltInToolTokens::Definition(100),
             cost_usd: None,
             pricing_revision: None,
@@ -129,8 +129,13 @@ fn every_detector_has_an_actionable_bounded_fallback_prompt() {
 
 #[test]
 fn core_built_in_tools_are_not_remediation_targets() {
-    for tool in ["Bash", "Edit", "Read", "Write", "bash"] {
-        assert!(!built_in_tool_remediation_supported(tool), "{tool}");
+    for tool in [
+        "Bash", "Edit", "Read", "Write", "bash", "Agent", "Subagent", "Task", "Search",
+    ] {
+        assert!(
+            !built_in_tool_remediation_supported(AgentKind::Claude, tool),
+            "{tool}"
+        );
         assert_eq!(
             build_prompt(
                 AgentKind::Claude,
@@ -146,9 +151,50 @@ fn core_built_in_tools_are_not_remediation_targets() {
             "{tool}"
         );
     }
-    for tool in ["ReportFindings", "ScheduleWakeup", "Workflow"] {
-        assert!(built_in_tool_remediation_supported(tool), "{tool}");
-    }
+    assert!(built_in_tool_remediation_supported(
+        AgentKind::Claude,
+        "WebSearch"
+    ));
+    assert!(built_in_tool_remediation_supported(
+        AgentKind::Claude,
+        "WebFetch"
+    ));
+    assert!(built_in_tool_remediation_supported(
+        AgentKind::Claude,
+        "Workflow"
+    ));
+    assert!(built_in_tool_remediation_supported(
+        AgentKind::Codex,
+        "web_search"
+    ));
+    assert!(built_in_tool_remediation_supported(
+        AgentKind::OpenCode,
+        "webfetch"
+    ));
+    assert!(!built_in_tool_remediation_supported(
+        AgentKind::Pi,
+        "websearch"
+    ));
+}
+
+#[test]
+fn advisory_core_tools_are_not_remediation_targets() {
+    let finding = Finding::advisory_resource(
+        AgentKind::Claude,
+        SourceFormat::ClaudeJsonl,
+        FindingCause::UnusedBuiltInTool {
+            tool: "Read".to_owned(),
+            tokens: BuiltInToolTokens::Definition(100),
+            cost_usd: None,
+            pricing_revision: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        remediation_prompt(&finding),
+        Err(RemediationUnavailableReason::ProtectedBuiltInTool)
+    );
 }
 
 #[test]
@@ -238,12 +284,6 @@ fn every_essential_prompt_identity_rejects_private_values() {
         FindingCause::UnusedMcpServer {
             server: private.to_owned(),
             tokens: None,
-            cost_usd: None,
-            pricing_revision: None,
-        },
-        FindingCause::UnusedBuiltInTool {
-            tool: private.to_owned(),
-            tokens: BuiltInToolTokens::Definition(1),
             cost_usd: None,
             pricing_revision: None,
         },
@@ -351,7 +391,17 @@ fn prompt_support_matrix_matches_all_five_phase_one_agents() {
                 let support = recommendation_support(agent, *source, detector);
                 assert_eq!(support.is_ok(), expected[index]);
                 if let Ok(agent) = support {
-                    assert!(build_prompt(agent, *source, &causes[index]).is_ok());
+                    let prompt = build_prompt(agent, *source, &causes[index]);
+                    if detector == DetectorId::UnusedBuiltInTools
+                        && !built_in_tool_remediation_supported(agent, "WebSearch")
+                    {
+                        assert_eq!(
+                            prompt,
+                            Err(RemediationUnavailableReason::ProtectedBuiltInTool)
+                        );
+                    } else {
+                        assert!(prompt.is_ok());
+                    }
                 }
             }
         }

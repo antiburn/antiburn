@@ -173,12 +173,33 @@ Resource burn estimates use the report's existing total-token denominator and
 rounding. Skill listing tokens use the existing proportional `chars / 4`
 estimate and replicate across applicable assistant turns. MCP estimates use
 only measured indexed definition tokens. Claude Code and Codex built-in tools
-reuse measured catalog definitions. OpenCode 1.2.15 and Pi 0.52.12 use pinned
+reuse measured catalog definitions. Only optional web-search tools can become B
+targets; required shell, read, write, edit, search, and subagent tools remain
+measured but never become findings. OpenCode 1.2.15 and Pi 0.52.12 use pinned
 default catalog captures. A matching positive use removes the target and its
 estimate. A missing definition, missing denominator, cap, truncation, or
 arithmetic failure omits the percentage. Category percentages sum the same
 remaining target token values, so an incomplete target estimate also makes the
 category estimate unavailable.
+
+B tool eligibility is a product safety policy, not a claim that vendors make
+other tools impossible to disable. The only eligible names are Claude Code
+`WebSearch`, `WebFetch`, and `Workflow`, Codex `web_search`, and OpenCode `websearch` and
+`webfetch`. Pi, Cursor, Copilot, Cline, Kiro, Amp Code, Antigravity, and
+Windsurf have no B target. Shell, read, write, edit, search, task, agent, and
+subagent tools remain measured but never become B targets for any agent.
+
+The reviewed primary sources are Claude Code [permissions](https://code.claude.com/docs/en/permissions)
+and [tools](https://code.claude.com/docs/en/tools), Codex [configuration
+reference](https://developers.openai.com/codex/config-file/config-reference),
+OpenCode [permissions](https://opencode.ai/docs/permissions/) and
+[tools](https://opencode.ai/docs/tools/), Pi [settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md#tools),
+and Cursor [SDK tool restrictions](https://cursor.com/docs/sdk/python#restricting-the-toolset).
+These sources show that several core tools are configurable. They do not
+identify them as optional, so antiburn does not suggest disabling them.
+Claude Code documents `Workflow` as a separate dynamic-workflow tool and
+documents independent feature controls in its [workflows](https://code.claude.com/docs/en/workflows#turn-workflows-off)
+and [settings reference](https://code.claude.com/docs/en/settings-reference#disableworkflows).
 
 Provider matching accepts exact case-insensitive names and the reviewed call
 forms: Claude Code and Codex `mcp__<server>__<tool>`, OpenCode

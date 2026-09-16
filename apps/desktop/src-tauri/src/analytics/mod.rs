@@ -117,6 +117,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::BurnCheckOutcomeObserved { outcome, origin } => {
             let _ = (outcome, origin);
         }
+        event::Interaction::ProjectFolderAction { action, outcome } => {
+            let _ = (action, outcome);
+        }
         event::Interaction::SessionFilterSelected { filter, agent } => {
             let _ = (filter, agent);
         }
@@ -668,8 +671,7 @@ mod enabled {
     /// Multiple accounts on one provider collapse onto the same
     /// `(provider, lane)` key — the payload carries no account dimension, by
     /// design, so there is nothing to key a second observation on. Within one
-    /// pass, only the first account processed for a pair can report; see
-    /// `docs/plans/limit-factor-estimation.md`'s Phase 3 decisions.
+    /// pass, only the first account processed for a pair can report.
     pub fn record_limit_factor_observed(app: &tauri::AppHandle, learned: &[LearnedFactor]) {
         let _lifecycle = lock_settings_transition();
         let _capture = CAPTURE_LOCK

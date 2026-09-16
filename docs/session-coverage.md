@@ -305,7 +305,7 @@ definition wins under the vendor's documented configuration roots. A missing or
 ambiguous definition makes Auto Fix unavailable. The edit changes only the
 vendor control and never deletes or changes `SKILL.md`.
 
-Claude B remediation uses one exact optional built-in tool name. A project
+Claude B remediation uses one exact optional web-search tool name. A project
 target requires the bare canonical name in that project's exact
 `permissions.allow` array. Otherwise an inherited tool resolves to global
 settings. This is the only approved remediation path that can create a missing

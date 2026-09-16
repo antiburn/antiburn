@@ -1,18 +1,13 @@
-import { Folder } from "lucide-react"
-import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
-import { InfoPopover } from "../../../components/presentation/InfoPopover"
-import type { BurnCheckDetectorId, BurnCheckTargetPayload } from "../../../lib/insightsIpc"
+import { ProjectFolderActions } from "../../../components/session/ProjectFolderActions"
+import { performProjectFolderAction } from "../../../lib/projectFolder"
+import "../../../styles/session-detail.css"
+import type { BurnCheckTargetPayload } from "../../../lib/insightsIpc"
 import { renderAgentIcon } from "../../../lib/agentIcon"
-import {
-  formatApiEquivalentUsd,
-  formatTokenBurnPercent,
-} from "../../../lib/presentation/checks"
+import { formatApiEquivalentUsd } from "../../../lib/presentation/checks"
 import { CHECK_UI } from "../../checks/checkUi"
-import { RemindLaterAction } from "./RemindLaterAction"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
 import {
-  ActionLimit,
-  SampleSessions,
+  FailedSessions,
   scopeLabel,
   targetTitle,
   watchStatus,
@@ -32,18 +27,17 @@ export function targetCostLine(target: BurnCheckTargetPayload): string | null {
 
 export function BurnCheckTargetDetail({
   target,
-  detector,
   refresh,
   reportRow = false,
 }: {
   target: BurnCheckTargetPayload
-  detector?: BurnCheckDetectorId
   refresh: () => void
   reportRow?: boolean
 }) {
   const status = watchStatus(target)
   const guidance = CHECK_UI[target.finding.detector]
   const costLine = targetCostLine(target)
+  const projectPath = target.projectPath
   return (
     <article
       className={
@@ -60,47 +54,27 @@ export function BurnCheckTargetDetail({
             </span>
             <span className="min-w-0 wrap-anywhere">{targetTitle(target)}</span>
           </h3>
-          <div className="burn-check-resource-metadata min-w-0">
-            <div className="flex flex-wrap items-center type-callout text-label-tertiary">
-              <span>
-                {reportRow && target.display.scopeKind === "project"
-                  ? "Project"
-                  : scopeLabel(target.display.scopeKind)}
-                {reportRow && target.projectName && (
-                  <span className="text-label"> · {target.projectName}</span>
-                )}
-              </span>
-              {reportRow && target.projectLocation && (
-                <InfoPopover
-                  label="Folder location"
-                  icon={<Folder size={14} aria-hidden="true" />}
-                >
-                  {() => (
-                    <>
-                      <h4 className="type-headline text-label">Folder location</h4>
-                      <p className="mt-2 wrap-anywhere font-mono type-footnote text-label-secondary">
-                        {target.projectLocation}
-                      </p>
-                    </>
-                  )}
-                </InfoPopover>
-              )}
-              {target.display.estimatedTokenBurnBasisPoints != null && (
-                <span className="inline-flex items-center gap-1 text-label-secondary">
-                  <BurnCheckFlame basisPoints={target.display.estimatedTokenBurnBasisPoints} />
-                  {formatTokenBurnPercent(target.display.estimatedTokenBurnBasisPoints)} token
-                  burn
-                </span>
-              )}
-            </div>
-          </div>
         </div>
-        {reportRow && (
-          <div className="flex flex-wrap items-start justify-end gap-2">
-            {detector && <RemindLaterAction detector={detector} />}
-            <BurnCheckTargetActions target={target} refresh={refresh} compact embedded />
-          </div>
-        )}
+      </div>
+      <div className="burn-check-resource-metadata min-w-0">
+        <div className="flex items-center gap-1.5 type-callout text-label-tertiary">
+          <span className="min-w-0 truncate">
+            {reportRow && target.display.scopeKind === "project"
+              ? "Project"
+              : scopeLabel(target.display.scopeKind)}
+            {reportRow && target.projectName && (
+              <span className="text-label"> · {target.projectName}</span>
+            )}
+          </span>
+          {reportRow && projectPath && (
+            <ProjectFolderActions
+              key={projectPath}
+              path={projectPath}
+              onOpen={() => performProjectFolderAction(projectPath, "open")}
+              onCopy={() => performProjectFolderAction(projectPath, "copy")}
+            />
+          )}
+        </div>
       </div>
       <div className={reportRow ? "burn-check-resource-body" : undefined}>
         {reportRow && target.affectedSessionCount != null ? (
@@ -116,18 +90,16 @@ export function BurnCheckTargetDetail({
           <p className="mt-1 type-callout tabular-nums text-label-secondary">{costLine}</p>
         )}
         {!reportRow && <BurnCheckTargetActions target={target} refresh={refresh} />}
-        <ActionLimit target={target} />
         {status && (
           <p role="status" className="mt-2 type-callout text-label-secondary">
             {status}
           </p>
         )}
-        <SampleSessions
+        <FailedSessions
           samples={target.samples}
-          {...(reportRow && target.affectedSessionCount != null
-            ? { affectedSessionCount: target.affectedSessionCount }
+          {...(target.affectedSessionCount != null
+            ? { total: target.affectedSessionCount }
             : {})}
-          insetRows={reportRow}
         />
       </div>
     </article>

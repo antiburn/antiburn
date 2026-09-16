@@ -329,6 +329,7 @@ impl RemediationController {
             },
         )
         .map_err(|_| ControllerError::Internal)?;
+        let check_samples = sample_sessions(&page.findings);
         let mut grouped: BTreeMap<String, CachedTarget> = BTreeMap::new();
         for finding in page.findings {
             let display = finding
@@ -387,6 +388,7 @@ impl RemediationController {
                 ),
             };
             let id = random_id().map_err(|_| ControllerError::Internal)?;
+            let target_samples = sample_sessions(&target.findings);
             targets.push(BurnCheckTarget {
                 finding_id: stable_finding_id(&target),
                 action_id: id.clone(),
@@ -421,6 +423,13 @@ impl RemediationController {
                             .and_then(display::project_location)
                     })
                     .flatten(),
+                project_path: (target.scope_kind == "project")
+                    .then(|| {
+                        target.findings[0]
+                            .workspace_candidate()
+                            .and_then(display::project_path)
+                    })
+                    .flatten(),
                 auto_fix,
                 prompt_fix: match remediation_prompt(&target.findings[0].finding) {
                     Ok(_) => PromptFixAvailability::Available,
@@ -428,7 +437,7 @@ impl RemediationController {
                 },
                 watch,
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
-                sample_sessions: target.sample_sessions(),
+                sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
             cached.push(TimedTarget {
@@ -447,7 +456,11 @@ impl RemediationController {
             }
             state.targets.push_back(entry);
         }
-        Ok(BurnCheckTargetList { targets, truncated })
+        Ok(BurnCheckTargetList {
+            targets,
+            sample_sessions: check_samples,
+            truncated,
+        })
     }
 
     fn list_resource_targets(
@@ -481,6 +494,8 @@ impl RemediationController {
         let expires = now.saturating_add(ID_TTL.as_secs() as i64);
         let mut targets = Vec::new();
         let mut cached = Vec::new();
+        let mut check_samples = Vec::new();
+        let mut seen_samples = BTreeSet::new();
         for resource in assessment.targets.iter().take(MAX_TARGETS) {
             let target = self.resolve_resource_target(store, resource, context.clone(), home)?;
             let display = target
@@ -512,6 +527,19 @@ impl RemediationController {
                 insights_report::ResourceAssessmentScope::Project(root) => project_name(root),
                 insights_report::ResourceAssessmentScope::Global => None,
             };
+            let target_samples = target.sample_sessions();
+            check_samples.extend(
+                target_samples
+                    .iter()
+                    .filter(|sample| {
+                        seen_samples.insert((
+                            sample.environment_key.clone(),
+                            sample.agent.clone(),
+                            sample.session_id.clone(),
+                        ))
+                    })
+                    .cloned(),
+            );
             targets.push(BurnCheckTarget {
                 finding_id: stable_finding_id(&target),
                 action_id: id.clone(),
@@ -521,6 +549,7 @@ impl RemediationController {
                 affected_sessions: None,
                 project_name,
                 project_location: None,
+                project_path: None,
                 auto_fix,
                 prompt_fix: match remediation_prompt(target.finding()) {
                     Ok(_) => PromptFixAvailability::Available,
@@ -528,7 +557,7 @@ impl RemediationController {
                 },
                 watch,
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
-                sample_sessions: target.sample_sessions(),
+                sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
             cached.push(TimedTarget {
@@ -547,7 +576,11 @@ impl RemediationController {
             }
             state.targets.push_back(entry);
         }
-        Ok(BurnCheckTargetList { targets, truncated })
+        Ok(BurnCheckTargetList {
+            targets,
+            sample_sessions: check_samples,
+            truncated,
+        })
     }
 
     #[cfg(all(test, not(windows)))]
@@ -680,6 +713,48 @@ impl RemediationController {
         // Validate every selected identity before this action records any watch.
         for target in &targets {
             self.revalidate(target)?;
+        }
+
+        if targets
+            .iter()
+            .all(|target| target.finding().is_advisory_resource())
+        {
+            let base = fallback_remediation_prompt(detector)
+                .map_err(ControllerError::PromptUnavailable)?
+                .into_string();
+            let items =
+                targets
+                    .iter()
+                    .enumerate()
+                    .map(|(index, target)| {
+                        remediation_prompt(target.finding())
+                            .map_err(ControllerError::PromptUnavailable)?;
+                        let display = target
+                            .finding()
+                            .display()
+                            .map_err(ControllerError::PromptUnavailable)?;
+                        let resource = display.facts.labels.first().ok_or(
+                            ControllerError::PromptUnavailable(
+                                RemediationUnavailableReason::EssentialIdentityUnavailable,
+                            ),
+                        )?;
+                        let resource = serde_json::to_string(resource)
+                            .map_err(|_| ControllerError::Internal)?;
+                        Ok(format!(
+                            "{}. Agent: {}; scope: {}; resource: {resource}",
+                            index + 1,
+                            display.agent.slug(),
+                            target.scope_kind,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, ControllerError>>()?;
+            let prompt = format!("{base}\n\nUnused targets\n{}", items.join("\n"));
+            if prompt.len() > antiburn_local::remediation::MAX_PROMPT_BYTES {
+                return Err(ControllerError::PromptUnavailable(
+                    RemediationUnavailableReason::PromptSizeLimit,
+                ));
+            }
+            return Ok(CheckPromptFixResult { prompt });
         }
 
         let mut prompt_parts = Vec::with_capacity(targets.len());

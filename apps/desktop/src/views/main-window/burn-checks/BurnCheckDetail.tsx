@@ -9,10 +9,11 @@ import {
   copyPromptFixBurnCheck,
   type BurnCheckDetectorId,
   type BurnCheckTargetPayload,
+  type BurnCheckSamplePayload,
 } from "../../../lib/insightsIpc"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
 import { RemindLaterAction } from "./RemindLaterAction"
-import { SampleSessions, watchStatus } from "./BurnCheckTargetPresentation"
+import { FailedSessions, watchStatus } from "./BurnCheckTargetPresentation"
 import { BurnCheckTargetChooserDialog } from "./BurnCheckTargetChooserDialog"
 
 export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
@@ -27,15 +28,12 @@ export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   cacheChurn: "Some sessions kept paying to reload the same context.",
 }
 
-function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
-  const samples = Array.from(
-    new Map(
-      targets
-        .flatMap((target) => target.samples)
-        .map((sample) => [sample.navigationHandle, sample]),
-    ).values(),
-  ).slice(0, 3)
-  return <SampleSessions samples={samples} />
+function isUnusedResourceDetector(detector: BurnCheckDetectorId) {
+  return (
+    detector === "unusedMcpServers" ||
+    detector === "unusedBuiltInTools" ||
+    detector === "unusedSkills"
+  )
 }
 
 export function CheckPromptAction({
@@ -51,7 +49,9 @@ export function CheckPromptAction({
   const [copied, setCopied] = useState(false)
   const [prompt, setPrompt] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
-  const promptTargets = targets.filter((target) => target.promptFix.status === "available")
+  const promptTargets = isUnusedResourceDetector(detector)
+    ? targets
+    : targets.filter((target) => target.promptFix.status === "available")
   const currentKey = promptTargets.length
     ? promptTargets.map((target) => target.actionId).join(":")
     : `fallback:${detector}`
@@ -220,12 +220,16 @@ export function CheckDetailActions({
 export function BurnCheckDetail({
   detector,
   targets,
+  samples,
+  failedSessionCount,
   refresh,
   contained = false,
   reportRow = false,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
+  samples: BurnCheckSamplePayload[]
+  failedSessionCount: number
   refresh: () => void
   contained?: boolean
   reportRow?: boolean
@@ -255,7 +259,12 @@ export function BurnCheckDetail({
           {statuses[0]}
         </p>
       )}
-      <Samples targets={targets} />
+      {reportRow && failedSessionCount > 0 && (
+        <p className="mt-1 type-callout tabular-nums text-label-secondary">
+          {`${failedSessionCount} ${failedSessionCount === 1 ? "session" : "sessions"} affected`}
+        </p>
+      )}
+      <FailedSessions samples={samples} total={failedSessionCount} />
     </article>
   )
 }

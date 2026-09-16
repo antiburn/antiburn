@@ -1,5 +1,5 @@
 use crate::analysis::SourceFormat;
-use crate::analysis::tool_catalog::comparable_tool_name;
+use crate::analysis::tool_catalog::optional_built_in_tool;
 use crate::insights::DetectorId;
 use crate::model::AgentKind;
 
@@ -53,12 +53,9 @@ pub fn remediation_prompt(
     )
 }
 
-/// Returns false for core tools that general coding tasks require.
-pub fn built_in_tool_remediation_supported(tool: &str) -> bool {
-    !matches!(
-        comparable_tool_name(tool).as_str(),
-        "bash" | "edit" | "read" | "write"
-    )
+/// Returns true only for built-in tools that are safe to disable.
+pub fn built_in_tool_remediation_supported(agent: AgentKind, tool: &str) -> bool {
+    optional_built_in_tool(agent.slug(), tool)
 }
 
 /// Builds a bounded check-level prompt when current evidence has no exact target.
@@ -128,7 +125,7 @@ fn build_prompt_with_mode(
     advisory_resource: bool,
 ) -> Result<RemediationPrompt, RemediationUnavailableReason> {
     if let FindingCause::UnusedBuiltInTool { tool, .. } = cause
-        && !built_in_tool_remediation_supported(tool)
+        && !built_in_tool_remediation_supported(agent, tool)
     {
         return Err(RemediationUnavailableReason::ProtectedBuiltInTool);
     }
@@ -167,7 +164,7 @@ fn advisory_resource_prompt_parts(
         )),
         FindingCause::UnusedBuiltInTool { .. } => Some((
             "The current or indexed resource inventory contains this built-in tool, and the report window has no matching use.".to_owned(),
-            "Audit only the named optional tool and preserve tools required for general coding work.",
+            "Audit only the named optional tool. Do not disable required tools.",
             "Recheck the effective configuration and direct use. The available evidence cannot prove removal.",
         )),
         FindingCause::UnusedSkill { .. } => Some((

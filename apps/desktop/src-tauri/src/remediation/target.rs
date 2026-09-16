@@ -407,7 +407,7 @@ pub(super) fn reviewed_config_operation(
             },
         }),
         FindingCause::UnusedBuiltInTool { tool, .. }
-            if built_in_tool_remediation_supported(tool) =>
+            if built_in_tool_remediation_supported(agent, tool) =>
         {
             Some(ConfigOperation {
                 setting: ConfigSetting::BuiltInTool,

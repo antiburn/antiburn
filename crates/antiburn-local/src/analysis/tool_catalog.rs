@@ -110,6 +110,20 @@ pub fn comparable_tool_name(name: &str) -> String {
         .collect()
 }
 
+/// True only for built-in tools that the product can safely suggest disabling.
+pub fn optional_built_in_tool(agent: &str, name: &str) -> bool {
+    let agent = comparable_tool_name(agent);
+    let tool = comparable_tool_name(name);
+    matches!(
+        (agent.as_str(), tool.as_str()),
+        (
+            "claude" | "claudecode",
+            "websearch" | "webfetch" | "workflow"
+        ) | ("codex", "websearch")
+            | ("opencode", "websearch" | "webfetch")
+    )
+}
+
 /// The parsed catalogue file. Immutable after construction.
 pub struct ToolCatalog {
     agents: HashMap<String, AgentCatalog>,
