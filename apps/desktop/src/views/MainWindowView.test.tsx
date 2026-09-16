@@ -176,9 +176,10 @@ describe("MainWindowView", () => {
   it("opens Overview by default and keeps Checks and Sessions in the sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
-    // Overview, Checks, Sessions, and Sessions' five fixed filter
+    // Overview, Quota, Checks, Sessions, and Sessions' five fixed filter
     // children (no harness rows yet, since no entries have loaded).
-    expect(screen.getAllByRole("tab")).toHaveLength(8)
+    expect(screen.getAllByRole("tab")).toHaveLength(9)
+    expect(screen.getByRole("tab", { name: "Quota" })).toBeVisible()
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -365,6 +366,21 @@ describe("MainWindowView", () => {
       })
       expect(activitySession().setFilter).not.toHaveBeenCalled()
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+    })
+
+    it("selects Quota, which has no cross-window target, and leaves it on a fresh cross-window request", async () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Quota"))
+      expect(tab("Quota")).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByRole("tabpanel", { name: "Quota" })).toBeVisible()
+      await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
+      act(() => {
+        ipcMocks.sectionTarget!({ revision: 1, section: "burnChecks" })
+      })
+      expect(screen.getByRole("tab", { name: "Checks" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      )
     })
   })
 })
