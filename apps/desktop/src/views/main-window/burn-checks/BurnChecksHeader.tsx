@@ -12,11 +12,9 @@ export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {
   const FailureIcon = BURN_CHECK_MARKS.finding.Icon
   const assessment = !report
     ? null
-    : report.pendingEvidence > 0
-      ? `${report.pendingEvidence} session${report.pendingEvidence === 1 ? "" : "s"} processing.`
-      : report.evidenceSettled
-        ? "Assessment complete for available evidence."
-        : "Assessment is updating."
+    : report.evidenceSettled
+      ? "Assessment complete for available evidence."
+      : "Assessment is updating."
   return (
     <header
       className="burn-checks-collection-header"

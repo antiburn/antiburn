@@ -56,16 +56,10 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
             _ => None,
         },
         physical_target_key: target.physical_target_key.clone(),
-        config_setting: target.physical_target_key.as_ref().and_then(|_| {
-            match target.findings[0].finding.cause() {
-                FindingCause::OldModelUsage { .. } => Some("model".to_owned()),
-                FindingCause::ModelOverthinking { .. } => Some("reasoning".to_owned()),
-                FindingCause::SessionsOverDepth { .. } => Some("compaction".to_owned()),
-                FindingCause::OveruseOfFastMode { .. } => Some("fastMode".to_owned()),
-                FindingCause::OverpoweredSubagents { .. } => Some("subagentModel".to_owned()),
-                _ => None,
-            }
-        }),
+        config_setting: target
+            .config
+            .as_ref()
+            .map(|config| config_setting_name(config.operation.setting).to_owned()),
         config_expected_value: target
             .config
             .as_ref()
@@ -439,7 +433,7 @@ pub(super) fn reviewed_config_operation(
                     _ => unreachable!(),
                 },
                 proposed_value: match agent {
-                    AgentKind::Claude => crate::agent_config::ConfigOperationValue::Delete,
+                    AgentKind::Claude => crate::agent_config::ConfigOperationValue::Boolean(false),
                     AgentKind::Codex => "standard".into(),
                     _ => unreachable!(),
                 },
@@ -503,8 +497,23 @@ pub(super) fn config_setting_from_name(value: &str) -> Option<ConfigSetting> {
         "compaction" => Some(ConfigSetting::Compaction),
         "fastMode" => Some(ConfigSetting::FastMode),
         "subagentModel" => Some(ConfigSetting::SubagentModel),
+        "mcpServer" => Some(ConfigSetting::McpServer),
+        "builtInTool" => Some(ConfigSetting::BuiltInTool),
         "skill" => Some(ConfigSetting::Skill),
         _ => None,
+    }
+}
+
+fn config_setting_name(setting: ConfigSetting) -> &'static str {
+    match setting {
+        ConfigSetting::Model => "model",
+        ConfigSetting::Reasoning => "reasoning",
+        ConfigSetting::Compaction => "compaction",
+        ConfigSetting::SubagentModel => "subagentModel",
+        ConfigSetting::McpServer => "mcpServer",
+        ConfigSetting::BuiltInTool => "builtInTool",
+        ConfigSetting::Skill => "skill",
+        ConfigSetting::FastMode => "fastMode",
     }
 }
 

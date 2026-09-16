@@ -36,7 +36,7 @@ impl VendorConfig for Claude {
         if setting == ConfigSetting::Reasoning {
             return self.resolve_reasoning(home, trusted_workspace_root);
         }
-        let mut operation = match setting {
+        let operation = match setting {
             ConfigSetting::Model => OperationSelector::JsonKey("model"),
             ConfigSetting::Compaction => OperationSelector::JsonKey("autoCompactEnabled"),
             ConfigSetting::FastMode => OperationSelector::JsonKey("fastMode"),
@@ -71,8 +71,12 @@ impl VendorConfig for Claude {
                     if path_entry_exists(&path)?
                         && let Some(value) = choose(&path, root)?
                     {
-                        operation = value;
-                        break;
+                        return Ok(Target {
+                            path,
+                            safety_root: root.to_owned(),
+                            scope: ConfigScope::Project,
+                            operation: value,
+                        });
                     }
                 }
             }
@@ -80,8 +84,14 @@ impl VendorConfig for Claude {
             if path_entry_exists(&path)?
                 && let Some(value) = choose(&path, home)?
             {
-                operation = value;
+                return Ok(Target {
+                    path,
+                    safety_root: home.to_owned(),
+                    scope: ConfigScope::Global,
+                    operation: value,
+                });
             }
+            return Err(ConfigUnavailableReason::MissingTarget);
         }
         if let Some(root) = trusted_workspace_root {
             for path in [
@@ -164,64 +174,6 @@ impl VendorConfig for Claude {
             &[home, trusted_workspace_root.unwrap_or(home)],
             expected,
         )
-    }
-
-    #[cfg(not(windows))]
-    fn resolve_targets(
-        &self,
-        setting: ConfigSetting,
-        home: &Path,
-        workspace_cwd: Option<&Path>,
-        trusted_workspace_root: Option<&Path>,
-    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
-        let primary = self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)?;
-        if setting == ConfigSetting::FastMode {
-            return Ok(vec![primary]);
-        }
-        let operation = match setting {
-            ConfigSetting::Model => OperationSelector::JsonKey("model"),
-            ConfigSetting::Compaction => OperationSelector::JsonKey("autoCompactEnabled"),
-            ConfigSetting::FastMode => OperationSelector::JsonKey("fastMode"),
-            ConfigSetting::Reasoning => primary.operation.clone(),
-            _ => return Ok(vec![primary]),
-        };
-        let mut targets = vec![primary];
-        for (path, safety_root, scope) in [
-            (
-                home.join(".claude/settings.json"),
-                home.to_owned(),
-                ConfigScope::Global,
-            ),
-            (
-                trusted_workspace_root
-                    .map(|root| root.join(".claude/settings.json"))
-                    .unwrap_or_default(),
-                trusted_workspace_root.unwrap_or(home).to_owned(),
-                ConfigScope::Project,
-            ),
-            (
-                trusted_workspace_root
-                    .map(|root| root.join(".claude/settings.local.json"))
-                    .unwrap_or_default(),
-                trusted_workspace_root.unwrap_or(home).to_owned(),
-                ConfigScope::Project,
-            ),
-        ] {
-            if path_entry_exists(&path)?
-                && !targets.iter().any(|target| target.path == path)
-                && self
-                    .read_value(&read_checked(&path, &safety_root)?.bytes, &operation)?
-                    .is_some()
-            {
-                targets.push(Target {
-                    path,
-                    safety_root,
-                    scope,
-                    operation: operation.clone(),
-                });
-            }
-        }
-        Ok(targets)
     }
 
     #[cfg(not(windows))]
@@ -514,6 +466,9 @@ impl Claude {
             }
             let document = parse_strict(&read_checked(&path, root)?.bytes)?;
             claude_deny_list(&document)?;
+            if root != home && !claude_has_bare_allow(&document, name)? {
+                continue;
+            }
             return Ok(Target {
                 path,
                 safety_root: root.to_owned(),
@@ -668,6 +623,23 @@ fn claude_deny_list(document: &Value) -> Result<Option<&Vec<Value>>, ConfigUnava
         return Err(ConfigUnavailableReason::MalformedConfig);
     }
     Ok(Some(deny))
+}
+
+fn claude_has_bare_allow(document: &Value, name: &str) -> Result<bool, ConfigUnavailableReason> {
+    let Some(allow) = document
+        .get("permissions")
+        .and_then(Value::as_object)
+        .and_then(|permissions| permissions.get("allow"))
+    else {
+        return Ok(false);
+    };
+    let allow = allow
+        .as_array()
+        .ok_or(ConfigUnavailableReason::MalformedConfig)?;
+    if allow.iter().any(|value| !value.is_string()) {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    Ok(allow.iter().any(|value| value.as_str() == Some(name)))
 }
 
 fn named_markdown_target(
@@ -1065,7 +1037,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_an_inherited_fast_mode_when_a_project_winner_is_removed() {
+    fn project_fast_mode_fix_overrides_an_inherited_global_true_value() {
         let temporary = tempfile::tempdir().unwrap();
         let home = temporary.path().join("home");
         let project = temporary.path().join("project");
@@ -1082,12 +1054,15 @@ mod tests {
                 &crate::agent_config::ConfigOperation {
                     setting: crate::agent_config::ConfigSetting::FastMode,
                     expected_value: crate::agent_config::ConfigOperationValue::Boolean(true),
-                    proposed_value: crate::agent_config::ConfigOperationValue::Delete,
+                    proposed_value: crate::agent_config::ConfigOperationValue::Boolean(false),
                 },
             )
             .unwrap();
         editor.apply(&prepared).unwrap();
-        assert_eq!(fs::read_to_string(path).unwrap(), "{}\n");
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "{\n  \"fastMode\": false\n}\n"
+        );
         assert_eq!(
             fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
             r#"{"fastMode":true}"#

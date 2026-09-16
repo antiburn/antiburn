@@ -863,12 +863,13 @@ and shadow. The panel uses `rounded-popover`, 16px padding, a 300px width constr
 its viewport, and a top-right transform origin. Keep the trigger’s 40px hit area.
 The title leads, followed by evidence status and period. A separated estimate section
 emphasizes the report-level value above its label and a footnote explaining coverage limits.
-Unknown estimates say “Unavailable”. Never sum category percentages. A separated footer
-contains “Coverage details”, which opens Insights settings. Outside press, focus leaving,
-and Escape dismiss the panel; Escape restores focus to its trigger.
+Unknown estimates say “Unavailable”. Never sum category percentages. Do not add coverage
+navigation to this panel. Outside press, focus leaving, and Escape dismiss the panel; Escape
+restores focus to its trigger.
 
 Do not show processing or not-assessed status in the collection header. Assessment
-details can describe current worker activity and incomplete coverage.
+details says “Assessment is updating.” while evidence is not settled. It does not show pending
+session counts.
 Settled reports without coverage gaps need no permanent assessment sentence.
 Keep savings, dollar estimates, verification state, retry paths, and report-backed actions.
 Verified savings appear below the check groups in the collection viewport.
@@ -943,13 +944,14 @@ Start each sample disclosure collapsed when it contains multiple samples. Expand
 exactly one sample. Preserve manual disclosure choices across selection and resize.
 Never sum target occurrences or bounded sample counts to derive affected sessions.
 Named findings retain provider marks, names, scopes, and resource-header actions.
-Generic copy actions appear beside the finding description with `aria-disabled` and a
-“Coming soon” tooltip on hover or focus. They have no activation handler and
-cannot prepare or copy prompts. Keep them focusable so the tooltip is accessible.
-Add a quiet “Snooze” action beside each finding’s Copy fix prompt, including single findings.
+Put each check description in a full-width row below the header metrics. Actions follow in a
+separate row, so they do not reduce the description width. Order check and resource actions as
+Snooze or Unsnooze, Fix when available, then Copy fix prompt. Batch exact prompt targets when
+available. Use the check-level fallback when no exact prompt target is available.
+Add a quiet “Snooze” action for each finding, including single findings.
 It opens the shared menu material with one week, one month, and forever choices.
-Its face stays transparent. A snoozed selected check shows the same `burn-check-action`
-Unsnooze control in the detail heading.
+Its face stays transparent. The same `RemindLaterAction` becomes Unsnooze for a snoozed check;
+do not add a separate Unsnooze control.
 Named-resource actions remain in their resource headers. Preserve their status and copy feedback.
 Loaded details use no enclosing card. Loading, retry, empty, and passed states keep
 contained cards. Named findings use quiet separators with no additional horizontal inset.
