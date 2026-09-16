@@ -249,6 +249,11 @@ export function BurnCheckDetail({
           {statuses[0]}
         </p>
       )}
+      {reportRow && failedSessionCount > 0 && (
+        <p className="mt-1 type-callout tabular-nums text-label-secondary">
+          {`${failedSessionCount} ${failedSessionCount === 1 ? "session" : "sessions"} affected`}
+        </p>
+      )}
       <FailedSessions samples={samples} total={failedSessionCount} />
     </article>
   )
