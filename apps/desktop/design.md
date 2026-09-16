@@ -682,7 +682,8 @@ Notes for what isn't expressible as a token:
   A 180px card floats at the top right, over the workspace, and holds the live provider
   meters. Every section shows the same meters, so they sit over the workspace instead of
   under the section rows. The card uses the popover corner, the opaque `surface-window`
-  fill, and `shadow-raised` over the `shadow-stats-card` outline. It insets 16px from the
+  fill under the `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card`
+  outline. The tint keeps the material the meters had in the sidebar. It insets 16px from the
   window edges, starts at the titlebar height on macOS, and keeps the full window height
   between those margins. It scrolls alone when the accounts outgrow it. The workspace holds a matching inset, so no section draws under it.
   The meters pack one dot every 9px of measured width, to a floor of 16 dots.

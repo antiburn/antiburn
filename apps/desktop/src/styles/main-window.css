@@ -50,7 +50,11 @@
   flex-direction: column;
   padding-block: var(--space-md);
   border-radius: var(--radius-popover);
+  /* The sidebar tint is a low-alpha layer for the window surface. The card
+     paints it over the opaque window fill, so the card keeps the material the
+     meters had in the sidebar and stays opaque over the page below. */
   background-color: var(--color-surface-window);
+  background-image: linear-gradient(var(--color-surface-sidebar), var(--color-surface-sidebar));
   box-shadow: var(--shadow-raised), var(--shadow-stats-card);
 }
 
