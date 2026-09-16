@@ -28,7 +28,7 @@ import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
 import { MainWindowLimitsSession } from "./main-window/MainWindowLimitsSession"
-import { SidebarProviderLimits } from "./main-window/SidebarProviderLimits"
+import { ProviderLimitsRail } from "./main-window/ProviderLimitsRail"
 import { OverviewView } from "./main-window/OverviewView"
 
 export interface MainWindowSection extends SidebarNavItem {
@@ -224,7 +224,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           className="main-window-sidebar min-h-0 flex-1"
           footer={
             <>
-              <SidebarProviderLimits live={limits.liveUsage} loading={limits.loading} />
               {settingsError && (
                 <p role="alert" className="px-2 pb-2 type-caption text-label-secondary">
                   Could not open Settings. Try again.
@@ -242,6 +241,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           }
         />
       }
+      rail={<ProviderLimitsRail live={limits.liveUsage} loading={limits.loading} />}
     >
       {availableSections.map((section) => (
         <div

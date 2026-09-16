@@ -1,6 +1,8 @@
 /* The retained window paints an opaque canvas over the native window surface. */
 .main-window {
   --main-window-titlebar-height: calc(var(--space-2xl) + var(--space-lg));
+  /* The right rail. It holds the provider meters, which stay 180px wide. */
+  --main-window-rail-width: 180px;
 
   position: relative;
   display: flex;
@@ -25,6 +27,27 @@
   inline-size: var(--sidebar-width);
   flex: 0 0 var(--sidebar-width);
   flex-direction: column;
+}
+
+/* The provider meters stand in a rail on the right, opposite the navigation.
+   Every section shows the same meters, so they keep a place of their own and
+   leave the workspace between the two rails. The rail scrolls alone when the
+   accounts outgrow its height. */
+.main-window-rail {
+  display: flex;
+  min-block-size: 0;
+  inline-size: var(--main-window-rail-width);
+  flex: 0 0 var(--main-window-rail-width);
+  flex-direction: column;
+  overflow-y: auto;
+  padding-block-start: var(--space-md);
+  border-inline-start: 1px solid var(--color-separator);
+  background-color: var(--color-surface-sidebar);
+}
+
+/* The first meter starts level with the page content beside it. */
+.main-window-macos .main-window-rail {
+  padding-block-start: var(--main-window-titlebar-height);
 }
 
 .main-window-macos .main-window-sidebar {

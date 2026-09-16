@@ -22,16 +22,16 @@ import { Skeleton } from "../../components/ui/Skeleton"
 import { useElementWidth } from "../../lib/useElementWidth"
 
 /** The popover's dot count, used until the group has a measured width. */
-const SIDEBAR_METER_SEGMENTS = 32
+const RAIL_METER_SEGMENTS = 32
 /** One dot and its gap, in pixels: the popover's packing at its row width. */
-const SIDEBAR_METER_PITCH = 9
+const RAIL_METER_PITCH = 9
 /** Below this count the meter reads as a row of beads, not an instrument. */
-const SIDEBAR_METER_MIN_SEGMENTS = 16
+const RAIL_METER_MIN_SEGMENTS = 16
 
 /** The dot count that packs a meter of `width` pixels like the popover's. */
 export function meterSegmentsForWidth(width: number): number {
-  if (width <= 0) return SIDEBAR_METER_SEGMENTS
-  return Math.max(SIDEBAR_METER_MIN_SEGMENTS, Math.floor(width / SIDEBAR_METER_PITCH))
+  if (width <= 0) return RAIL_METER_SEGMENTS
+  return Math.max(RAIL_METER_MIN_SEGMENTS, Math.floor(width / RAIL_METER_PITCH))
 }
 
 /**
@@ -58,16 +58,19 @@ function MeterGroup({ windows, now }: { windows: LiveUsageWindowPayload[]; now: 
 }
 
 /**
- * The main window sidebar's provider limits: one group per provider account,
- * stacked with a rule between, with a dot meter for each of its windows and
- * the reset time under each meter. The meters take the sidebar's width and
- * add dots as it grows. The stale tag floats in the top-right corner.
+ * The main window's provider limits: one group per provider account, stacked
+ * with a rule between, with a dot meter for each of its windows and the reset
+ * time under each meter. The meters take the rail's width and add dots as it
+ * grows. The stale tag floats in the top-right corner.
  *
- * The panel carries no card of its own. It is sidebar furniture under the
- * section rows, not a card on a page. It shows no local cost figure; those
- * belong to the Overview.
+ * The panel stands in the right rail, opposite the navigation. The meters
+ * report the live state of every account, which no one section owns, so they
+ * keep a place of their own beside the workspace.
+ *
+ * The panel carries no card of its own. It is window furniture, not a card on
+ * a page. It shows no local cost figure; those belong to the Overview.
  */
-export function SidebarProviderLimits({
+export function ProviderLimitsRail({
   live,
   loading = false,
 }: {

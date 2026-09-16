@@ -7,7 +7,7 @@ import type {
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "../../lib/ipc"
-import { SidebarProviderLimits, meterSegmentsForWidth } from "./SidebarProviderLimits"
+import { ProviderLimitsRail, meterSegmentsForWidth } from "./ProviderLimitsRail"
 
 const FORECAST = {
   unavailableReason: "sparseHistory",
@@ -81,11 +81,11 @@ function liveSummary(
   }
 }
 
-describe("SidebarProviderLimits", () => {
+describe("ProviderLimitsRail", () => {
   afterEach(() => vi.restoreAllMocks())
 
   it("draws a thirty-two-dot meter with the notch, the figure and the reset caption", () => {
-    render(<SidebarProviderLimits live={liveSummary()} />)
+    render(<ProviderLimitsRail live={liveSummary()} />)
     const card = screen.getByRole("group", { name: /Claude/ })
     expect(card).toHaveAccessibleName("Claude, Max plan")
     expect(within(card).getByText("42%")).toBeInTheDocument()
@@ -106,7 +106,7 @@ describe("SidebarProviderLimits", () => {
     expect(meterSegmentsForWidth(300)).toBe(33)
     expect(meterSegmentsForWidth(603)).toBe(67)
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(603)
-    render(<SidebarProviderLimits live={liveSummary()} />)
+    render(<ProviderLimitsRail live={liveSummary()} />)
     const card = screen.getByRole("group", { name: /Claude/ })
     const dots = card.querySelectorAll(".rounded-full")
     expect(dots).toHaveLength(67)
@@ -117,7 +117,7 @@ describe("SidebarProviderLimits", () => {
 
   it("dims a meter with no reading and turns the red zone on above 90%", () => {
     render(
-      <SidebarProviderLimits
+      <ProviderLimitsRail
         live={liveSummary({
           providers: [
             liveProvider({
@@ -143,7 +143,7 @@ describe("SidebarProviderLimits", () => {
 
   it("seats a failed provider with its action and marks stale readings", () => {
     render(
-      <SidebarProviderLimits
+      <ProviderLimitsRail
         live={liveSummary({
           providers: [liveProvider({ freshness: "stale" })],
           errors: [sourceError()],
@@ -157,13 +157,13 @@ describe("SidebarProviderLimits", () => {
   })
 
   it("shows one quiet line when no provider reports anything", () => {
-    render(<SidebarProviderLimits live={liveSummary({ providers: [] })} />)
+    render(<ProviderLimitsRail live={liveSummary({ providers: [] })} />)
     expect(screen.getByText(/No provider limits to show/)).toBeInTheDocument()
     expect(screen.queryByText("Live")).toBeNull()
   })
 
   it("holds placeholders while loading", () => {
-    render(<SidebarProviderLimits live={null} loading />)
+    render(<ProviderLimitsRail live={null} loading />)
     expect(screen.getByRole("region", { name: "Provider limits" })).toHaveAttribute(
       "aria-busy",
       "true",

@@ -679,6 +679,12 @@ Notes for what isn't expressible as a token:
   their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
+  A 180px rail stands on the right, opposite the navigation, and holds the live provider
+  meters. Every section shows the same meters, so they sit beside the workspace instead of
+  under the section rows. The rail carries the sidebar material and a hairline on its inner
+  edge, and scrolls alone when the accounts outgrow its height. On macOS its content starts
+  at the titlebar height, level with the page beside it. The meters pack one dot every 9px
+  of measured width, to a floor of 16 dots.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,
   and 12px icon gaps, which Settings keeps. A top-level item can nest child rows one level deep,
@@ -705,10 +711,10 @@ Notes for what isn't expressible as a token:
 
 ### Main window collection and detail architecture
 
-The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
-at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+The 220px navigation sidebar, 340px collection pane, flexible detail pane, and 180px provider
+rail remain visible at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
 the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
-the detail retains 440px; at the 1100px default width, it receives 540px.
+the detail retains 260px; at the 1100px default width, it receives 360px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;
