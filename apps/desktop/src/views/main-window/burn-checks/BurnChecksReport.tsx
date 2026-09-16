@@ -21,6 +21,7 @@ import {
 } from "../../../lib/snoozedBurnChecks"
 import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
+import { BurnCheckCategoryIcon } from "./BurnCheckCategoryIcon"
 import { BurnCheckDetail, CheckDetailActions, CHECK_SENTENCES } from "./BurnCheckDetail"
 import { BurnCheckTargetDetail } from "./BurnCheckTargetDetail"
 import { BurnChecksHeader } from "./BurnChecksHeader"
@@ -291,7 +292,6 @@ function CheckTrigger({
   snoozeLabel?: string
 }) {
   const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
-  const { Icon } = presentation
   const summary = `${check.finding} failed · ${check.clean} passed`
   const metric = presentation.metric?.replace("<", "Under ").replace(" token", "")
   const agents = [
@@ -331,9 +331,7 @@ function CheckTrigger({
           ))}
         </span>
       )}
-      <span className="relative z-10 grid h-8 w-8 place-items-center rounded-full bg-surface-card text-label-secondary">
-        <Icon size={15} strokeWidth={2} aria-hidden="true" />
-      </span>
+      <BurnCheckCategoryIcon detector={check.id} />
       <span className="relative z-10 min-w-0">
         <span className="block wrap-anywhere type-body font-medium! text-label">
           {presentation.label}
