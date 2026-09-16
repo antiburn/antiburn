@@ -752,6 +752,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     let saved = store
         .save_settings(&AppSettings {
             theme: ThemePreference::Dark,
+            interface_scale_percent: 125,
             activity_window_days: 14,
             session_data_retention_days: SESSION_DATA_RETENTION_DAYS_90,
             onboarding_completed: true,
@@ -784,6 +785,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
     assert_eq!(saved.theme, ThemePreference::Dark);
+    assert_eq!(saved.interface_scale_percent, 125);
     assert_eq!(saved.activity_window_days, 14);
     assert!(!saved.tray_icon_visible);
     assert!(saved.dock_icon_visible);
@@ -897,6 +899,51 @@ fn settings_snapshot_ignores_a_rolled_back_transition() {
 
     assert!(result.is_err());
     assert_eq!(store.settings_snapshot(), before);
+}
+
+#[test]
+fn settings_snapshot_tracks_scale_and_preserving_writes() {
+    let store = store();
+    let snapshot_store = store.clone();
+    let (_, scaled, ()) = store
+        .update_settings_with(|settings| {
+            settings.interface_scale_percent = 175;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(snapshot_store.settings_snapshot(), scaled);
+
+    let (_, saved, ()) = store
+        .replace_settings_preserving_interface_scale(
+            &AppSettings {
+                theme: ThemePreference::Dark,
+                interface_scale_percent: 100,
+                ..AppSettings::default()
+            },
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(saved.interface_scale_percent, 175);
+    assert_eq!(saved.theme, ThemePreference::Dark);
+    assert_eq!(snapshot_store.settings_snapshot(), saved);
+    assert_eq!(store.settings().unwrap(), saved);
+}
+
+#[test]
+fn settings_snapshot_ignores_failed_scale_preserving_write() {
+    let store = store();
+    let before = store.settings_snapshot();
+    let result: anyhow::Result<(AppSettings, AppSettings, ())> = store
+        .replace_settings_preserving_interface_scale(
+            &AppSettings {
+                theme: ThemePreference::Dark,
+                ..AppSettings::default()
+            },
+            |_, _, _| anyhow::bail!("rollback"),
+        );
+    assert!(result.is_err());
+    assert_eq!(store.settings_snapshot(), before);
+    assert_eq!(store.settings().unwrap(), before);
 }
 
 #[test]

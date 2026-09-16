@@ -249,6 +249,23 @@ describe("MainActivitySession", () => {
     consoleError.mockRestore()
   })
 
+  it("publishes every newer external target as a detail-reveal intent", async () => {
+    const { session } = start(false)
+    await vi.waitFor(() => expect(mocks.events.has("session-target")).toBe(true))
+
+    mocks.events.get("session-target")!({
+      revision: 3,
+      target: { agent: "codex", sessionId: "same", wslDistro: null },
+    })
+    expect(session.getSnapshot().detailRevealRevision).toBe(3)
+
+    mocks.events.get("session-target")!({
+      revision: 4,
+      target: { agent: "codex", sessionId: "same", wslDistro: null },
+    })
+    expect(session.getSnapshot().detailRevealRevision).toBe(4)
+  })
+
   it("keeps only the latest target across the listener and pending-target race", async () => {
     const pending = deferred<{
       revision: number

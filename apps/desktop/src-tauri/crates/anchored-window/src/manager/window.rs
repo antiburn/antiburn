@@ -1,6 +1,8 @@
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use crate::AnchorRegion;
 use crate::companion::CompanionWindow;
 use serde::Serialize;
 use tauri::{Manager, WebviewWindow};
@@ -11,7 +13,7 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::geometry::CursorProximity;
 #[cfg(not(target_os = "macos"))]
-use crate::geometry::{Point, Rect, classify_cursor, place_left_preferred};
+use crate::geometry::{Point, Rect, classify_cursor, fit_companion_frame};
 use crate::platform;
 
 use super::AnchoredWindowManager;
@@ -48,6 +50,7 @@ where
                 &self.inner.config,
                 renderer_generation,
                 initial_height,
+                self.interface_scale(),
                 handler,
                 move || {
                     if let Some(inner) = manager.upgrade() {
@@ -64,8 +67,10 @@ where
         };
         #[cfg(not(target_os = "macos"))]
         let window = {
+            let interface_scale = self.interface_scale();
             let script = format!(
-                "Object.defineProperty(globalThis, \"__ANTIBURN_WINDOW_GENERATION__\", {{ value: {renderer_generation}, writable: false, configurable: false }});"
+                "Object.defineProperty(globalThis, \"__ANTIBURN_WINDOW_GENERATION__\", {{ value: {renderer_generation}, writable: false, configurable: false }});globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale','{interface_scale}'),{{once:true}});",
+                (interface_scale * 100.0).round() as u16,
             );
             let builder = WebviewWindowBuilder::new(
                 app,
@@ -74,8 +79,12 @@ where
             )
             .initialization_script(script)
             .title(&self.inner.config.title)
-            .inner_size(self.inner.config.width, initial_height)
+            .inner_size(
+                self.inner.config.width * interface_scale,
+                initial_height * interface_scale,
+            )
             .resizable(false)
+            .zoom_hotkeys_enabled(false)
             .maximizable(false)
             .minimizable(false)
             .decorations(false)
@@ -86,6 +95,7 @@ where
             .focused(false)
             .focusable(false);
             let window = platform::configure(builder).build()?;
+            window.set_zoom(interface_scale)?;
             #[cfg(target_os = "linux")]
             crate::linux::install_pointer_tracking(
                 &window,
@@ -125,15 +135,19 @@ where
             let height = lifecycle.height;
             (height, lifecycle.anchor_region)
         };
+        let interface_scale = self.interface_scale();
         crate::macos::apply_frame(
             anchor,
             companion,
             crate::macos::FrameRequest {
-                width: self.inner.config.width,
-                height,
-                anchor_region,
-                gap,
-                screen_margin,
+                width: self.inner.config.width * interface_scale,
+                height: height * interface_scale,
+                anchor_region: AnchorRegion {
+                    top: anchor_region.top * interface_scale,
+                    height: anchor_region.height * interface_scale,
+                },
+                gap: gap * interface_scale,
+                screen_margin: screen_margin * interface_scale,
             },
             self.inner.native_frame.clone(),
         )
@@ -153,23 +167,22 @@ where
             return Ok(());
         };
         let scale = monitor.scale_factor();
+        let interface_scale = self.interface_scale();
         let area = monitor.work_area();
         let (height, anchor_region) = {
             let lifecycle = self.lock_lifecycle();
             let height = lifecycle.height;
             (height, lifecycle.anchor_region)
         };
-        companion.set_size(PhysicalSize::new(
-            (self.inner.config.width * scale).round().max(1.0) as u32,
-            (height * scale).round().max(1.0) as u32,
-        ))?;
-        let point = place_left_preferred(
+        let frame = fit_companion_frame(
             Rect {
                 x: f64::from(position.x),
                 y: f64::from(position.y)
-                    + anchor_region.top_within(f64::from(size.height) / scale) * scale,
+                    + anchor_region.top_within(f64::from(size.height) / scale / interface_scale)
+                        * interface_scale
+                        * scale,
                 width: f64::from(size.width),
-                height: anchor_region.height * scale,
+                height: anchor_region.height * interface_scale * scale,
             },
             Rect {
                 x: f64::from(area.position.x),
@@ -177,13 +190,15 @@ where
                 width: f64::from(area.size.width),
                 height: f64::from(area.size.height),
             },
-            self.inner.config.width,
-            height,
-            scale,
-            gap,
-            screen_margin,
+            (
+                self.inner.config.width * interface_scale * scale,
+                height * interface_scale * scale,
+            ),
+            gap * interface_scale * scale,
+            screen_margin * interface_scale * scale,
         );
-        companion.set_position(PhysicalPosition::new(point.x, point.y))?;
+        companion.set_size(PhysicalSize::new(frame.width as u32, frame.height as u32))?;
+        companion.set_position(PhysicalPosition::new(frame.x, frame.y))?;
         Ok(())
     }
 
@@ -221,7 +236,10 @@ where
 
         #[cfg(target_os = "macos")]
         {
-            crate::macos::cursor_location(&self.inner.native_frame, edge_tolerance)
+            crate::macos::cursor_location(
+                &self.inner.native_frame,
+                edge_tolerance * self.interface_scale(),
+            )
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -248,7 +266,7 @@ where
                     x: cursor.x,
                     y: cursor.y,
                 },
-                edge_tolerance,
+                edge_tolerance * self.interface_scale(),
                 scale,
             ))
         }

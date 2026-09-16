@@ -13,6 +13,7 @@ sources:
   - src/styles/hud.css
   - src/styles/main-window.css
   - src/styles/burn-checks-report.css
+  - src/styles/interface-scale.css
   - src/styles/session-analysis-colors.css
   - src/styles/session-rows.css
   - src/styles/session-detail.css
@@ -688,7 +689,8 @@ Notes for what isn't expressible as a token:
   without titlebar clearance. On macOS the list header and detail toolbar supply drag regions;
   their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
-  top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
+  top strip there. Multi-pane content uses the documented 220px sidebar when the CSS viewport
+  is at least 720px wide. Smaller viewports expose navigation in a modal drawer.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,
   and 12px icon gaps, which Settings keeps. A top-level item can nest child rows one level deep,
@@ -713,23 +715,73 @@ Notes for what isn't expressible as a token:
   documented type scale and keyboard-only focus treatment. Hidden or minimized main windows suspend
   presentation work; blur alone does not suspend it. Native close hides this renderer for reuse.
 
+### Interface scaling
+
+Interface size is a reader preference, not a display-resolution heuristic. The operating
+system owns display DPI; the shell applies one native webview zoom factor on top of it.
+The supported percentages live in `interface-scale.json`: 90, 100, 110, 125, 150, 175, and 200. The default and Actual Size action use 100%. Do not animate zoom or multiply the
+type, spacing, radius, or icon tokens by that factor in CSS.
+
+All app-owned web surfaces follow the same saved preference: main window, Settings,
+onboarding, popover, previews, HUD, HUD detail, and nudges. Native menus, traffic lights,
+and operating-system notifications retain native sizing. Before revealing a new surface,
+the native window owner applies zoom and supplies its geometry. Existing main-window
+bounds remain under user control. Preferred utility-window bounds grow with interface
+size but fit inside the current monitor's work area.
+Settings remains resizable, with a minimum content size of 721 × 480 CSS pixels
+multiplied by the interface scale. The extra pixel protects its 720px navigation
+breakpoint from native rounding. The minimum updates when scale or monitor changes
+and is capped by the available work area after native chrome. Compact Settings
+navigation remains a fallback only when the display cannot fit the scaled minimum.
+Onboarding also resizes around its current center during live scale changes,
+clamps to its current monitor's work area, and preserves its renderer and step.
+
+Layout responds to the resulting **CSS viewport**, not physical pixels, screen labels,
+or `devicePixelRatio`. Below 720px, main and Settings navigation use a modal drawer with
+Escape dismissal and focus restoration. Arrow keys select tabs without closing the
+drawer; activation closes it. Settings rows stack controls at a 360px container width.
+Onboarding source columns stack below 720px and retain scrolling. Constrained surfaces
+must reflow or scroll; reducing the chosen zoom to fit is not allowed.
+
+`styles/interface-scale.css` owns these adaptations. The shell supplies
+`--interface-scale` only to preserve native chrome clearance. On macOS,
+`--native-titlebar-clearance` is `40px / --interface-scale`, keeping at least 40 native
+logical pixels free of interactive content at every preset, including 90%.
+
+The Interface size control is a presentational primitive. Its Settings owner invokes
+the dedicated scale command; general settings updates cannot change this preference.
+The shell owns serialization, persistence, all-surface propagation, geometry conversion,
+and consent-gated change analytics. Reusable native window crates accept values and
+geometry only; they must not import app settings, commands, or analytics.
+
+Release validation and its native-platform gates are documented in the
+[interface-scale QA runbook](../../docs/runbooks/interface-scale-qa.md). Browser fixtures
+exercise layout and interactions; they do not prove native zoom, monitor transitions,
+traffic-light clearance, or native preview hit testing.
+
 ### Main window collection and detail architecture
 
 The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
-at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+when the CSS viewport is at least 900px wide. Below 900px, the collection and detail share
+one pane. Activating a row opens detail; Back restores the collection's focus and scroll.
+Each pane owns its scroll viewport. Generic pane labels are visually hidden;
 the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
 the detail retains 440px; at the 1100px default width, it receives 540px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;
 clearing or deleting a selection does not trigger another automatic selection.
+An explicit session target from another window reveals and focuses the compact detail pane.
+A newer target request can reopen the same session after Back. The session boundary passes
+only a reveal revision to the generic pane; ordinary selection and refresh do not create one.
 The default collection uses 40px minimum rows, semantic selected fills, and the shared
 keyboard-only focus treatment. Arrow keys, Home, and End select rows; Enter focuses the detail
 region. Visited sections retain their state and scroll position while hidden.
 
 `MainWindowLayout` owns chrome and columns. `CollectionDetailPane` owns selection and detail
 slots; a custom collection slot owns its own viewport, including any virtualization. These
-components do not load data or subscribe to events. Sessions supplies the existing virtualized
+components do not load feature data or subscribe to domain events. The window boundary observes
+the CSS viewport through a ref-counted resize subscription. Sessions supplies the existing virtualized
 `SessionList` and shared session detail in embedded mode. Selected session rows use `surface-selected/60` for a softer fill in both themes;
 hover and tooltip states retain that fill. This yields a 5.4% black tint in light mode and
 an 8.4% white tint in dark mode, without reducing text or badge opacity. Sidebar and generic

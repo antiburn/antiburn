@@ -101,6 +101,9 @@ const MENU_RANDOM_USAGE: &str = "random-usage";
 #[cfg(debug_assertions)]
 const MENU_BURN_CHECKS: &str = "burn-checks";
 const MENU_QUIT: &str = "quit";
+const MENU_ZOOM_IN: &str = "zoom-in";
+const MENU_ZOOM_OUT: &str = "zoom-out";
+const MENU_ACTUAL_SIZE: &str = "actual-size";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
 const PIN_LABEL: &str = "Pin Window";
@@ -209,6 +212,23 @@ fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let settings_item = MenuItem::with_id(app, MENU_SETTINGS, "Settings...", true, Some("Cmd+,"))?;
     // The tray handler receives application menu events with the same ID.
     app_menu.insert_items(&[&settings_item, &PredefinedMenuItem::separator(app)?], 2)?;
+    let zoom_in = MenuItem::with_id(app, MENU_ZOOM_IN, "Zoom In", true, Some("CmdOrCtrl+="))?;
+    let zoom_out = MenuItem::with_id(app, MENU_ZOOM_OUT, "Zoom Out", true, Some("CmdOrCtrl+-"))?;
+    let actual_size = MenuItem::with_id(
+        app,
+        MENU_ACTUAL_SIZE,
+        "Actual Size",
+        true,
+        Some("CmdOrCtrl+0"),
+    )?;
+    let view_menu = items
+        .iter()
+        .filter_map(|item| item.as_submenu())
+        .find(|submenu| submenu.text().ok().as_deref() == Some("View"))
+        .ok_or_else(|| anyhow::anyhow!("the default macOS menu has no View submenu"))?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let view_items: [&dyn IsMenuItem<Wry>; 4] = [&separator, &zoom_in, &zoom_out, &actual_size];
+    view_menu.append_items(&view_items)?;
     app.set_menu(menu)?;
     Ok(())
 }
@@ -615,6 +635,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         None::<&str>,
     )?;
     let settings_item = MenuItem::with_id(app, MENU_SETTINGS, "Settings…", true, None::<&str>)?;
+    let zoom_in_item = MenuItem::with_id(app, MENU_ZOOM_IN, "Zoom In", true, None::<&str>)?;
+    let zoom_out_item = MenuItem::with_id(app, MENU_ZOOM_OUT, "Zoom Out", true, None::<&str>)?;
+    let actual_size_item =
+        MenuItem::with_id(app, MENU_ACTUAL_SIZE, "Actual Size", true, None::<&str>)?;
     #[cfg(debug_assertions)]
     let reset_onboarding_item = MenuItem::with_id(
         app,
@@ -659,6 +683,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &open_popover_item,
         &pin_item,
         &settings_item,
+        &zoom_in_item,
+        &zoom_out_item,
+        &actual_size_item,
         #[cfg(debug_assertions)]
         &reset_onboarding_item,
         #[cfg(debug_assertions)]
@@ -732,6 +759,15 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 ::tracing::error!(event = "settings_window_open_failed", error = %error);
             }
         }
+        MENU_ZOOM_IN => {
+            change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Increase)
+        }
+        MENU_ZOOM_OUT => {
+            change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Decrease)
+        }
+        MENU_ACTUAL_SIZE => {
+            change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Reset)
+        }
         #[cfg(debug_assertions)]
         MENU_RESET_ONBOARDING => {
             let app = app.clone();
@@ -767,6 +803,21 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         _ => {}
     }
+}
+
+fn change_interface_scale(app: &AppHandle, change: crate::interface_scale::InterfaceScaleChange) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::commands::set_interface_scale(
+            app,
+            change,
+            crate::interface_scale::InterfaceScaleSource::Menu,
+        )
+        .await
+        {
+            ::tracing::error!(event = "interface_scale_menu_failed", %error);
+        }
+    });
 }
 
 /// Light the menu-bar item, or put it out.

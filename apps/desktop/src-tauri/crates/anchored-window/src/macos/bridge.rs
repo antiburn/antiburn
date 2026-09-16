@@ -395,6 +395,7 @@ mod tests {
         assert!(Request::parse(&body(4, "get_popover_peek_state"), 4).is_some());
         assert!(Request::parse(&body(3, "popover_peek_ready"), 4).is_none());
         assert!(Request::parse(&body(4, "open_main"), 4).is_none());
+        assert!(Request::parse(&body(4, "get_settings"), 4).is_none());
         assert!(Request::parse(&"x".repeat(16_385), 4).is_none());
     }
 }

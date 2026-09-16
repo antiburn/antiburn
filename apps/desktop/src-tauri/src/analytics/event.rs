@@ -112,6 +112,8 @@ pub enum EventName {
     /// incident within the last two hours that its previous published
     /// evidence did not carry.
     ProviderIncidentsIngested,
+    /// The reader saved a different application interface size preset.
+    InterfaceScaleChanged,
 }
 
 /// Every event this application may send.
@@ -153,6 +155,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
     EventName::ProviderIncidentsIngested,
+    EventName::InterfaceScaleChanged,
 ];
 
 #[cfg(feature = "analytics")]
@@ -188,6 +191,7 @@ impl EventName {
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
             EventName::ProviderIncidentsIngested => "antiburn.provider_incidents_ingested",
+            EventName::InterfaceScaleChanged => "antiburn.interface_scale_changed",
         }
     }
 }
@@ -1460,12 +1464,13 @@ mod tests {
                 | EventName::SessionFilterSelected
                 | EventName::QuotaIncidentsObserved
                 | EventName::ProviderIncidentsObserved
-                | EventName::ProviderIncidentsIngested => true,
+                | EventName::ProviderIncidentsIngested
+                | EventName::InterfaceScaleChanged => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            29,
+            30,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

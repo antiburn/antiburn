@@ -72,6 +72,7 @@ export function SidebarNav({
   value,
   onChange,
   ariaLabel,
+  onActivate,
   className = "",
   header,
   footer,
@@ -79,6 +80,7 @@ export function SidebarNav({
   items: ReadonlyArray<SidebarNavItem>
   value: string
   onChange: (next: string) => void
+  onActivate?: () => void
   ariaLabel: string
   className?: string
   /** Optional non-tab content above the row list. */
@@ -143,6 +145,7 @@ export function SidebarNav({
                 item={item}
                 selected={selected}
                 onChange={onChange}
+                {...(onActivate ? { onActivate } : {})}
                 rowRefs={rowRefs}
                 heightClass="h-9"
                 paddingClass="px-3"
@@ -162,6 +165,7 @@ export function SidebarNav({
                       item={child}
                       selected={childSelected}
                       onChange={onChange}
+                      {...(onActivate ? { onActivate } : {})}
                       rowRefs={rowRefs}
                       heightClass="h-8"
                       paddingClass="pl-8 pr-3"
@@ -189,6 +193,7 @@ function SidebarNavRow({
   item,
   selected,
   onChange,
+  onActivate,
   rowRefs,
   heightClass,
   paddingClass,
@@ -197,6 +202,7 @@ function SidebarNavRow({
   item: SidebarNavItem | SidebarNavChildItem
   selected: boolean
   onChange: (next: string) => void
+  onActivate?: () => void
   rowRefs: RefObject<Map<string, HTMLButtonElement>>
   heightClass: string
   paddingClass: string
@@ -222,7 +228,10 @@ function SidebarNavRow({
       // which the row already shows as visible text.
       aria-label={item.count !== undefined ? item.label : undefined}
       tabIndex={selected ? 0 : -1}
-      onClick={() => onChange(item.id)}
+      onClick={() => {
+        onChange(item.id)
+        onActivate?.()
+      }}
       className={cn(
         "type-body flex items-center gap-3 rounded-control transition-colors duration-[var(--duration-fast)] ease-out",
         heightClass,

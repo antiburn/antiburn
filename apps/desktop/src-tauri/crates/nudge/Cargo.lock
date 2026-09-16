@@ -59,6 +59,7 @@ dependencies = [
  "tauri",
  "tauri-nspanel",
  "tracing",
+ "window-vibrancy",
  "windows 0.62.2",
  "zbus",
 ]

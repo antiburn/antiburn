@@ -131,6 +131,25 @@ pub fn latest_session_activity(store: &Store) -> Option<i64> {
     store.latest_session_activity().ok().flatten()
 }
 
+/// Resize retained HUD windows for a saved application interface scale.
+#[cfg(target_os = "macos")]
+pub fn reconcile_interface_scale(app: &AppHandle, factor: f64) -> tauri::Result<()> {
+    if app
+        .get_webview_window(antiburn_hud::OVERLAY_LABEL)
+        .is_none()
+        && app.get_webview_window(antiburn_hud::DETAIL_LABEL).is_none()
+    {
+        return Ok(());
+    }
+    let entries = load_placements(&app.state::<Store>());
+    antiburn_hud::set_interface_scale(app, factor, &entries)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reconcile_interface_scale(_app: &AppHandle, _factor: f64) -> tauri::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

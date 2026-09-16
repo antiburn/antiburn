@@ -47,7 +47,17 @@ fn update_frame(
         return;
     };
     let work_frame = screen.visibleFrame();
-    let height = request.height;
+    let width = request
+        .width
+        .min((work_frame.size.width - 2.0 * request.screen_margin).max(1.0));
+    let height = request
+        .height
+        .min((work_frame.size.height - 2.0 * request.screen_margin).max(1.0));
+    let request = FrameRequest {
+        width,
+        height,
+        ..request
+    };
     let x = horizontal_origin(
         frame_rect(
             anchor_frame.origin.x,
@@ -73,7 +83,7 @@ fn update_frame(
     let mut frame = companion_window.frame();
     frame.origin.x = x;
     frame.origin.y = y;
-    frame.size.width = request.width;
+    frame.size.width = width;
     frame.size.height = height;
     companion_window.setFrame_display(frame, true);
     cache_frame(

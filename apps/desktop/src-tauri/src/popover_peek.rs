@@ -77,7 +77,7 @@ pub type PopoverPeekManager = AnchoredWindowManager<PopoverPeekTarget, PopoverPe
 /// Tallest the anchored Usage preview may get, in logical pixels.
 const MAX_CONTENT_HEIGHT: f64 = 780.0;
 
-pub fn manager() -> PopoverPeekManager {
+pub fn manager(interface_scale: f64) -> PopoverPeekManager {
     let manager = AnchoredWindowManager::new(AnchoredWindowConfig {
         label: LABEL.to_string(),
         anchor_label: crate::popover::LABEL.to_string(),
@@ -88,6 +88,7 @@ pub fn manager() -> PopoverPeekManager {
         }
         .to_string(),
         title: "antiburn".to_string(),
+        interface_scale,
         width: 380.0,
         corner_radius: crate::popover::CORNER_RADIUS,
         initial_height: 320.0,

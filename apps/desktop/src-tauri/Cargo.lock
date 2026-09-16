@@ -125,6 +125,7 @@ dependencies = [
  "tokio",
  "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
+ "window-vibrancy",
  "windows-sys 0.61.2",
  "winreg 0.56.0",
 ]
@@ -205,6 +206,7 @@ dependencies = [
  "tauri",
  "tauri-nspanel",
  "tracing",
+ "window-vibrancy",
  "windows 0.62.2",
  "zbus",
 ]

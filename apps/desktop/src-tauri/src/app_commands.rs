@@ -86,6 +86,7 @@ macro_rules! with_app_commands {
             commands::open_project_folder => "open_project_folder",
             commands::scan_now => "scan_now",
             commands::set_hud_detail_size => "set_hud_detail_size",
+            commands::set_interface_scale => "set_interface_scale",
             commands::set_popover_height => "set_popover_height",
             commands::set_repository_enabled => "set_repository_enabled",
             commands::set_settings => "set_settings",

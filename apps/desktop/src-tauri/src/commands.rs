@@ -235,11 +235,15 @@ pub async fn open_overlay_window(
     if needs_exposure {
         crate::analytics::prepare_hud_exposure(origin);
     }
-    if let Err(error) = antiburn_hud::open(&app, &entries) {
+    let interface_scale = crate::interface_scale::current(&app);
+    if let Err(error) = antiburn_hud::open(&app, &entries, interface_scale.factor()) {
         if needs_exposure {
             crate::analytics::cancel_hud_exposure();
         }
         return Err(fail(error));
+    }
+    if let Some(window) = app.get_webview_window(antiburn_hud::OVERLAY_LABEL) {
+        crate::interface_scale::apply_window(&window, interface_scale).map_err(fail)?;
     }
     Ok(())
 }
@@ -449,7 +453,7 @@ pub async fn set_settings(
         let (previous, saved, removed) = {
             let _analytics_transition = crate::analytics::lock_settings_transition();
             let result = store
-                .replace_settings_with_transition(&settings, |tx, previous, saved| {
+                .replace_settings_preserving_interface_scale(&settings, |tx, previous, saved| {
                     // The preference must still save when analytics serialization or
                     // queue storage fails. The withdrawal signal is best effort.
                     let _ = crate::analytics::prepare_opt_out_in_transaction(
@@ -482,6 +486,78 @@ pub async fn set_settings(
     })
     .await?;
     Ok(saved)
+}
+
+/// Change the application interface size against the latest stored preset.
+#[tauri::command]
+pub async fn set_interface_scale(
+    app: tauri::AppHandle,
+    change: crate::interface_scale::InterfaceScaleChange,
+    source: crate::interface_scale::InterfaceScaleSource,
+) -> CommandResult<AppSettings> {
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let store = app.state::<Store>().inner().clone();
+    let (previous, saved, target) = run_blocking(move || {
+        store
+            .update_settings_with(|settings| {
+                let percent = crate::interface_scale::resolve_change(
+                    settings.interface_scale_percent,
+                    change,
+                )
+                .map_err(anyhow::Error::msg)?;
+                settings.interface_scale_percent = percent;
+                Ok(percent)
+            })
+            .map_err(fail)
+    })
+    .await?;
+    let changed = saved.interface_scale_percent != previous.interface_scale_percent;
+    debug_assert_eq!(saved.interface_scale_percent, target);
+    let scale = crate::interface_scale::from_settings(&saved);
+    let hud_app = app.clone();
+    let hud_error = run_blocking(move || {
+        Ok(
+            crate::hud::reconcile_interface_scale(&hud_app, scale.factor())
+                .err()
+                .map(|error| format!("HUD: {error}")),
+        )
+    })
+    .await?;
+    let main_saved = saved.clone();
+    let errors = crate::main_window::on_main_value(&app, move |app| {
+        let mut errors: Vec<String> = hud_error.into_iter().collect();
+        if let Err(error) = crate::interface_scale::reconcile_existing(app, scale) {
+            ::tracing::error!(event = "interface_scale_reconcile_failed", percent = target, %error);
+            errors.push(error);
+        }
+        if let Err(error) = crate::interface_scale::emit_settings_changed(app, &main_saved) {
+            ::tracing::error!(event = "interface_scale_broadcast_failed", percent = target, %error);
+            errors.push(error);
+        }
+        errors
+    })
+    .await?;
+    if changed {
+        let analytics_app = app.clone();
+        run_blocking(move || {
+            crate::analytics::record(
+                &analytics_app,
+                crate::analytics::event::EventName::InterfaceScaleChanged,
+                crate::analytics::event::Facts {
+                    label: crate::interface_scale::analytics_preset(target),
+                    detail: Some(source.analytics_value()),
+                    ..Default::default()
+                },
+            );
+            Ok(())
+        })
+        .await?;
+    }
+    if errors.is_empty() {
+        Ok(saved)
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 /// Make setup pending, open it at Welcome, and keep all other local state.

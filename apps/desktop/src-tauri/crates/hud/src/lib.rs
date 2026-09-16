@@ -115,6 +115,7 @@ pub fn visibility_receiver() -> tokio::sync::watch::Receiver<VisibilityState> {
 #[cfg(any(target_os = "macos", test))]
 struct ResizeState {
     height_bits: AtomicU64,
+    target_height_bits: AtomicU64,
     generation: AtomicU64,
     measured: AtomicBool,
     wanted_visible: AtomicBool,
@@ -125,6 +126,7 @@ impl ResizeState {
     const fn new(height: f64) -> Self {
         Self {
             height_bits: AtomicU64::new(height.to_bits()),
+            target_height_bits: AtomicU64::new(height.to_bits()),
             generation: AtomicU64::new(0),
             measured: AtomicBool::new(false),
             wanted_visible: AtomicBool::new(true),
@@ -133,23 +135,30 @@ impl ResizeState {
 
     fn reset(&self, height: f64) {
         self.height_bits.store(height.to_bits(), Ordering::SeqCst);
+        self.target_height_bits
+            .store(height.to_bits(), Ordering::SeqCst);
         self.measured.store(false, Ordering::SeqCst);
         self.wanted_visible.store(true, Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
-    #[cfg(target_os = "macos")]
     fn height(&self) -> f64 {
         f64::from_bits(self.height_bits.load(Ordering::SeqCst))
     }
 
-    #[cfg(target_os = "macos")]
     fn set_height(&self, height: f64) {
         self.height_bits.store(height.to_bits(), Ordering::SeqCst);
     }
 
-    fn begin_resize(&self) -> u64 {
+    fn begin_resize(&self, target_height: f64) -> u64 {
+        self.target_height_bits
+            .store(target_height.to_bits(), Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn finish_resize(&self) -> f64 {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        f64::from_bits(self.target_height_bits.load(Ordering::SeqCst))
     }
 
     fn resize_is_current(&self, generation: u64) -> bool {
@@ -186,6 +195,25 @@ impl ResizeState {
 static RESIZE_STATE: ResizeState = ResizeState::new(OVERLAY_SEED_HEIGHT);
 #[cfg(target_os = "macos")]
 static RESIZE_APPLY_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(target_os = "macos")]
+static INTERFACE_SCALE_BITS: AtomicU64 = AtomicU64::new(1.0_f64.to_bits());
+
+#[cfg(target_os = "macos")]
+fn interface_scale() -> f64 {
+    f64::from_bits(INTERFACE_SCALE_BITS.load(Ordering::Acquire))
+}
+
+#[cfg(target_os = "macos")]
+fn set_interface_scale_value(value: f64) -> f64 {
+    let value = if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
+    };
+    INTERFACE_SCALE_BITS.store(value.to_bits(), Ordering::Release);
+    value
+}
 
 #[cfg(target_os = "macos")]
 fn resize_apply_guard() -> MutexGuard<'static, ()> {
@@ -327,20 +355,25 @@ pub fn apply_placement(_app: &AppHandle, _entries: &[Placement]) -> tauri::Resul
 /// it is, because a window at its old position beats a window at (0,0).
 #[cfg(target_os = "macos")]
 fn place(window: &WebviewWindow, entries: &[Placement]) -> tauri::Result<()> {
+    let _guard = resize_apply_guard();
+    place_guarded(window, entries)
+}
+
+#[cfg(target_os = "macos")]
+fn place_guarded(window: &WebviewWindow, entries: &[Placement]) -> tauri::Result<()> {
     let Ok(monitors) = window.available_monitors() else {
         return Ok(());
     };
-    // The same lock the animated resize holds: a placement and a resize frame
-    // must not write the window position at the same time.
-    let _guard = resize_apply_guard();
-    let height = RESIZE_STATE.height();
+    let scale = interface_scale();
+    let height = RESIZE_STATE.height() * scale;
+    let width = OVERLAY_WIDTH * scale;
     let keys: Vec<String> = monitors.iter().map(monitor_key).collect();
 
     if let Some(placement) = resolve(entries, &keys)
         && let Some(index) = keys.iter().position(|key| key == &placement.monitor)
         && let Some(frame) = logical_frame(&monitors[index])
     {
-        let (x, y) = clamp_into(placement.x, placement.y, OVERLAY_WIDTH, height, &frame);
+        let (x, y) = clamp_into(placement.x, placement.y, width, height, &frame);
         return set_on_monitor(window, &monitors[index], x, y);
     }
 
@@ -350,8 +383,8 @@ fn place(window: &WebviewWindow, entries: &[Placement]) -> tauri::Result<()> {
     let Some(frame) = logical_frame(&monitor) else {
         return Ok(());
     };
-    let x = (frame.width - OVERLAY_WIDTH) / 2.0;
-    set_on_monitor(window, &monitor, x, OVERLAY_TOP_INSET)
+    let x = (frame.width - width) / 2.0;
+    set_on_monitor(window, &monitor, x, OVERLAY_TOP_INSET * scale)
 }
 
 /// The display's own size in logical pixels. `None` for an unusable scale.
@@ -412,7 +445,12 @@ fn clamp_into(x: f64, y: f64, width: f64, height: f64, frame: &LogicalFrame) -> 
 /// reaches its position before the renderer reveals it, so a restored HUD
 /// never appears in one place and jumps to another.
 #[cfg(target_os = "macos")]
-pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
+pub fn open(
+    app: &AppHandle,
+    entries: &[Placement],
+    requested_interface_scale: f64,
+) -> tauri::Result<()> {
+    let interface_scale = set_interface_scale_value(requested_interface_scale);
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
         let measured = {
             let _guard = resize_apply_guard();
@@ -439,9 +477,14 @@ pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
         OVERLAY_LABEL,
         WebviewUrl::App("index.html#/overlay".into()),
     )
+    .initialization_script(interface_scale_initialization_script(interface_scale))
     .title("antiburn")
-    .inner_size(OVERLAY_WIDTH, OVERLAY_SEED_HEIGHT)
+    .inner_size(
+        OVERLAY_WIDTH * interface_scale,
+        OVERLAY_SEED_HEIGHT * interface_scale,
+    )
     .resizable(false)
+    .zoom_hotkeys_enabled(false)
     .visible(false)
     .focused(false)
     .focusable(false)
@@ -452,6 +495,8 @@ pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
     .decorations(false)
     .transparent(true)
     .build()?;
+
+    window.set_zoom(interface_scale)?;
 
     float_over_all_spaces(&window)?;
     spawn_hover_watcher(window.clone());
@@ -464,7 +509,7 @@ pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
 
 /// Keep the HUD unavailable on platforms whose behavior is not tuned.
 #[cfg(not(target_os = "macos"))]
-pub fn open(_app: &AppHandle, _entries: &[Placement]) -> tauri::Result<()> {
+pub fn open(_app: &AppHandle, _entries: &[Placement], _interface_scale: f64) -> tauri::Result<()> {
     Ok(())
 }
 
@@ -514,7 +559,7 @@ pub fn resize(
     let (from, generation, bottom_edge) = {
         let _guard = resize_apply_guard();
         let from = RESIZE_STATE.height();
-        let generation = RESIZE_STATE.begin_resize();
+        let generation = RESIZE_STATE.begin_resize(target);
         let first_measurement = !RESIZE_STATE.is_measured();
         let bottom_edge = bottom_anchor_edge(&window, from, anchor_bottom)?;
 
@@ -669,7 +714,9 @@ fn bottom_anchor_edge(
     }
     let scale = window.scale_factor()?;
     let position = window.outer_position()?;
-    Ok(Some(position.y as f64 / scale + current_height))
+    Ok(Some(
+        position.y as f64 / scale + current_height * interface_scale(),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -680,7 +727,7 @@ fn record_window_height(window: &WebviewWindow) {
     let Ok(size) = window.outer_size() else {
         return;
     };
-    RESIZE_STATE.set_height(size.height as f64 / scale);
+    RESIZE_STATE.set_height(size.height as f64 / scale / interface_scale());
 }
 
 /// Keep dynamic sizing unavailable on unsupported platforms.
@@ -706,14 +753,19 @@ fn apply_height(
             let current = window.outer_position()?;
             Some(LogicalPosition::new(
                 current.x as f64 / scale,
-                anchored_y(current.y as f64 / scale, target_height, Some(bottom_edge)),
+                anchored_y(
+                    current.y as f64 / scale,
+                    target_height * interface_scale(),
+                    Some(bottom_edge),
+                ),
             ))
         }
         None => None,
     };
 
     window.set_resizable(true)?;
-    let size_result = window.set_size(LogicalSize::new(OVERLAY_WIDTH, target_height));
+    let (width, height) = scaled_size_for_window(window, OVERLAY_WIDTH, target_height);
+    let size_result = window.set_size(LogicalSize::new(width, height));
     if size_result.is_ok() {
         RESIZE_STATE.set_height(target_height);
     } else {
@@ -728,6 +780,61 @@ fn apply_height(
     size_result?;
     position_result?;
     restore_result
+}
+
+#[cfg(target_os = "macos")]
+fn scaled_size_for_window(window: &WebviewWindow, width: f64, height: f64) -> (f64, f64) {
+    let interface_scale = interface_scale();
+    let mut width = width * interface_scale;
+    let mut height = height * interface_scale;
+    if let Ok(Some(monitor)) = window
+        .current_monitor()
+        .or_else(|_| window.primary_monitor())
+    {
+        let dpi = monitor.scale_factor();
+        if dpi.is_finite() && dpi > 0.0 {
+            let area = monitor.work_area();
+            width = width.min(f64::from(area.size.width) / dpi);
+            height = height.min(f64::from(area.size.height) / dpi);
+        }
+    }
+    (width.max(1.0), height.max(1.0))
+}
+
+/// Apply an explicit host scale to existing HUD windows without creating them.
+#[cfg(target_os = "macos")]
+pub fn set_interface_scale(
+    app: &AppHandle,
+    value: f64,
+    entries: &[Placement],
+) -> tauri::Result<()> {
+    let _guard = resize_apply_guard();
+    let target_height = RESIZE_STATE.finish_resize();
+    let value = set_interface_scale_value(value);
+    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
+        window.set_zoom(value)?;
+        apply_height(&window, target_height, None)?;
+        place_guarded(&window, entries)?;
+    }
+    if let Some(detail) = app.get_webview_window(DETAIL_LABEL) {
+        detail.set_zoom(value)?;
+        let height = f64::from_bits(DETAIL_HEIGHT_BITS.load(Ordering::Acquire));
+        let (width, height) = scaled_size_for_window(&detail, DETAIL_WIDTH, height);
+        detail.set_size(LogicalSize::new(width, height))?;
+        if let Some(hud) = app.get_webview_window(OVERLAY_LABEL) {
+            let _ = position_detail_window(&detail, &hud, height);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_interface_scale(
+    _app: &AppHandle,
+    _value: f64,
+    _entries: &[Placement],
+) -> tauri::Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -850,6 +957,9 @@ const DETAIL_MAX_HEIGHT: f64 = 600.0;
 #[cfg(target_os = "macos")]
 static DETAIL_SHOULD_SHOW: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "macos")]
+static DETAIL_HEIGHT_BITS: AtomicU64 = AtomicU64::new(DETAIL_MIN_HEIGHT.to_bits());
+
 /// The newest detail payload, kept for a detail webview that mounts late.
 ///
 /// The first show request creates the window, so the webview subscribes after
@@ -928,19 +1038,21 @@ fn show_detail_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
 pub fn apply_detail_size(app: &AppHandle, height: f64) {
     let _guard = resize_apply_guard();
     let height = clamp_detail_height(height);
+    DETAIL_HEIGHT_BITS.store(height.to_bits(), Ordering::Release);
     let Some(detail) = app.get_webview_window(DETAIL_LABEL) else {
         return;
     };
     let Some(hud) = app.get_webview_window(OVERLAY_LABEL) else {
         return;
     };
+    let (width, scaled_height) = scaled_size_for_window(&detail, DETAIL_WIDTH, height);
     if detail
-        .set_size(LogicalSize::new(DETAIL_WIDTH, height))
+        .set_size(LogicalSize::new(width, scaled_height))
         .is_err()
     {
         return;
     }
-    if position_detail_window(&detail, &hud, height).is_none() {
+    if position_detail_window(&detail, &hud, scaled_height).is_none() {
         return;
     }
     if RESIZE_STATE.wants_detail_visible(&DETAIL_SHOULD_SHOW) {
@@ -1004,14 +1116,20 @@ pub fn conceal_detail(_app: &AppHandle) {}
 /// with it, so every click passes through to whatever sits below.
 #[cfg(target_os = "macos")]
 fn build_detail(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let interface_scale = interface_scale();
     let window = WebviewWindowBuilder::new(
         app,
         DETAIL_LABEL,
         WebviewUrl::App("index.html#/hud-detail".into()),
     )
+    .initialization_script(interface_scale_initialization_script(interface_scale))
     .title("antiburn")
-    .inner_size(DETAIL_WIDTH, DETAIL_MIN_HEIGHT)
+    .inner_size(
+        DETAIL_WIDTH * interface_scale,
+        DETAIL_MIN_HEIGHT * interface_scale,
+    )
     .resizable(false)
+    .zoom_hotkeys_enabled(false)
     .visible(false)
     .focused(false)
     .focusable(false)
@@ -1021,9 +1139,18 @@ fn build_detail(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     .decorations(false)
     .transparent(true)
     .build()?;
+    window.set_zoom(interface_scale)?;
     float_over_all_spaces(&window)?;
     let _ = window.set_ignore_cursor_events(true);
     Ok(window)
+}
+
+#[cfg(target_os = "macos")]
+fn interface_scale_initialization_script(interface_scale: f64) -> String {
+    format!(
+        "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale','{interface_scale}'),{{once:true}});",
+        (interface_scale * 100.0).round() as u16,
+    )
 }
 
 /// The drawn HUD panel in logical screen coordinates.
@@ -1096,7 +1223,12 @@ fn reposition_detail_after_hud_frame(hud: &WebviewWindow) {
 fn position_detail_window(detail: &WebviewWindow, hud: &WebviewWindow, height: f64) -> Option<()> {
     let anchor = panel_anchor(hud)?;
     let frame = monitor_frame(hud);
-    let (x, y) = compute_detail_position(&anchor, frame.as_ref(), DETAIL_WIDTH, height);
+    let (x, y) = compute_detail_position(
+        &anchor,
+        frame.as_ref(),
+        DETAIL_WIDTH * interface_scale(),
+        height,
+    );
     detail.set_position(LogicalPosition::new(x, y)).ok()
 }
 
@@ -1179,11 +1311,28 @@ mod tests {
     #[test]
     fn a_new_resize_invalidates_the_previous_generation() {
         let state = ResizeState::new(30.0);
-        let first = state.begin_resize();
+        let first = state.begin_resize(60.0);
         assert!(state.resize_is_current(first));
-        let second = state.begin_resize();
+        let second = state.begin_resize(90.0);
         assert!(state.resize_is_current(second));
         assert!(!state.resize_is_current(first));
+    }
+
+    #[test]
+    fn scale_reconciliation_finishes_expansion_and_contraction_at_the_requested_height() {
+        for (from, target) in [(30.0, 160.0), (160.0, 30.0)] {
+            let state = ResizeState::new(from);
+            let animation = state.begin_resize(target);
+            state.set_height((from + target) / 2.0);
+            assert_ne!(state.height(), target);
+            let final_height = state.finish_resize();
+            assert_eq!(final_height, target);
+            assert!(!state.resize_is_current(animation));
+            state.set_height(final_height);
+            assert_eq!(state.height(), target);
+            state.reset(1.0);
+            assert_eq!(state.finish_resize(), 1.0);
+        }
     }
 
     #[test]

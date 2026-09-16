@@ -7,6 +7,11 @@ import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 import { nativePeekBridge } from "./nativePeekBridge"
+import {
+  DEFAULT_INTERFACE_SCALE_PERCENT,
+  type InterfaceScaleChange,
+  type InterfaceScaleSource,
+} from "./interfaceScale"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -44,6 +49,7 @@ export type Milestones = number[]
 /** Every persisted preference. Mirrors Rust `AppSettings`. */
 export interface AppSettings {
   theme: ThemePreference
+  interfaceScalePercent: number
   /** Calendar days of activity the popover list shows. */
   activityWindowDays: number
   /** Days to keep local session data. `-1` keeps it until explicit deletion. */
@@ -479,6 +485,7 @@ export function hasShell(): boolean {
 
 /** What settings look like before anything has been stored, or without a shell. */
 export const DEFAULT_SETTINGS: AppSettings = {
+  interfaceScalePercent: DEFAULT_INTERFACE_SCALE_PERCENT,
   theme: "system",
   activityWindowDays: 7,
   sessionDataRetentionDays: -1,
@@ -755,6 +762,15 @@ export async function getSettings(): Promise<AppSettings> {
 export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   if (!hasShell()) return settings
   return invoke<AppSettings>("set_settings", { settings })
+}
+
+/** Change only interface size using the shell's atomic preference update. */
+export async function setInterfaceScale(
+  change: InterfaceScaleChange,
+  source: InterfaceScaleSource,
+): Promise<AppSettings> {
+  if (!hasShell()) throw new Error("Interface size requires the desktop application.")
+  return invoke<AppSettings>("set_interface_scale", { change, source })
 }
 
 /** Make setup pending and open it at Welcome without clearing local data. */

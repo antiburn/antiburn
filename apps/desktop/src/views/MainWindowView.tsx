@@ -15,6 +15,7 @@ import {
   type SessionFilter,
 } from "../lib/sessionFilters"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
+import { useViewportWidth } from "../lib/viewport"
 import {
   sessionHygieneIdentities,
   useSessionHygiene,
@@ -89,6 +90,7 @@ function sessionFilterChildren(
 
 /** A section supplies its panes without changing the main window's native lifecycle. */
 export function MainWindowView({ sections }: { sections?: readonly MainWindowSection[] }) {
+  const compactNavigation = useViewportWidth() < 720
   const [settingsError, setSettingsError] = useState(false)
   async function openSettings(): Promise<void> {
     setSettingsError(false)
@@ -206,11 +208,12 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       : (selected?.id ?? "")
   return (
     <MainWindowLayout
-      sidebar={
+      sidebar={(closeNavigation) => (
         <SidebarNav
           items={availableSections}
           value={navValue}
           onChange={selectSection}
+          onActivate={closeNavigation}
           ariaLabel="Main sections"
           className="main-window-sidebar min-h-0 flex-1"
           footer={
@@ -222,7 +225,10 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
               )}
               <button
                 type="button"
-                onClick={() => void openSettings()}
+                onClick={() => {
+                  closeNavigation()
+                  void openSettings()
+                }}
                 className="flex h-7 w-full items-center gap-2 rounded-control px-2 type-body text-label hover:bg-surface-hover"
               >
                 <Settings size={14} strokeWidth={2} aria-hidden="true" />
@@ -231,14 +237,15 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
             </>
           }
         />
-      }
+      )}
     >
       {availableSections.map((section) => (
         <div
           key={section.id}
           id={`${section.id}-panel`}
           role="tabpanel"
-          aria-labelledby={`${section.id}-tab`}
+          aria-label={compactNavigation ? section.label : undefined}
+          aria-labelledby={compactNavigation ? undefined : `${section.id}-tab`}
           hidden={section.id !== selected?.id}
           className="main-window-section"
         >

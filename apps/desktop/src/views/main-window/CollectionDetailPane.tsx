@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type ReactNode, type KeyboardEvent } from "react"
 
 import { ScrollPane } from "../../components/ui/ScrollPane"
+import { useViewportWidth } from "../../lib/viewport"
 
 export interface CollectionItem {
   id: string
@@ -9,6 +10,7 @@ export interface CollectionItem {
 }
 
 interface CollectionSelection<T extends CollectionItem> {
+  compact: boolean
   selectedId: string | null
   select: (item: T) => void
   openDetail: (item: T) => void
@@ -24,6 +26,8 @@ interface CollectionDetailPaneProps<T extends CollectionItem> {
   renderDetail: (item: T) => ReactNode
   selection?: T | null
   onSelectionChange?: (item: T) => void
+  /** A shell request that must reveal the compact detail pane. */
+  externalDetailRevealRevision?: number
   detailOwnsViewport?: boolean
   /** Feature lists own their viewport when this slot is supplied. */
   renderCollection?: (selection: CollectionSelection<T>) => ReactNode
@@ -40,8 +44,16 @@ export function CollectionDetailPane<T extends CollectionItem>({
   renderCollection,
   selection: controlledSelection,
   onSelectionChange,
+  externalDetailRevealRevision,
   detailOwnsViewport = false,
 }: CollectionDetailPaneProps<T>) {
+  const compact = useViewportWidth() < 900
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [dismissedExternalRevealRevision, setDismissedExternalRevealRevision] = useState<
+    number | null
+  >(null)
+  const focusedExternalRevealRevision = useRef<number | null>(null)
+  const restoreCollectionFocus = useRef(false)
   const id = useId()
   const [localSelection, setSelection] = useState<T | null>(null)
   const selection = controlledSelection === undefined ? localSelection : controlledSelection
@@ -53,20 +65,67 @@ export function CollectionDetailPane<T extends CollectionItem>({
   }
   const openDetail = (item: T) => {
     select(item)
+    setDetailOpen(true)
     queueMicrotask(() => document.getElementById(`${id}-detail`)?.focus())
   }
 
+  const hasExternalDetailReveal =
+    (externalDetailRevealRevision ?? 0) > 0 &&
+    externalDetailRevealRevision !== dismissedExternalRevealRevision
+  const showDetail = !compact || (selected !== null && (detailOpen || hasExternalDetailReveal))
+  const backToCollection = () => {
+    restoreCollectionFocus.current = true
+    setDismissedExternalRevealRevision(externalDetailRevealRevision ?? null)
+    setDetailOpen(false)
+  }
+
   return (
-    <>
-      <section className="main-window-collection" aria-labelledby={`${id}-collection-title`}>
+    <div className="main-window-collection-detail" data-single-pane={compact || undefined}>
+      <section
+        ref={(node) => {
+          if (!node || (compact && showDetail) || !restoreCollectionFocus.current) return
+          node.focus()
+          const restore = () => {
+            if (document.activeElement !== node) {
+              restoreCollectionFocus.current = false
+              return true
+            }
+            const target = node.querySelector<HTMLElement>(
+              '[aria-selected="true"], [aria-current="true"]',
+            )
+            if (!target) return false
+            target.focus({ preventScroll: true })
+            restoreCollectionFocus.current = false
+            return true
+          }
+          if (restore()) return
+          const observer = new MutationObserver(() => {
+            if (restore()) observer.disconnect()
+          })
+          observer.observe(node, { childList: true, subtree: true })
+          return () => observer.disconnect()
+        }}
+        tabIndex={-1}
+        onBlur={(event) => {
+          if (
+            event.target === event.currentTarget ||
+            !event.currentTarget.contains(event.relatedTarget)
+          )
+            restoreCollectionFocus.current = false
+        }}
+        hidden={compact && showDetail}
+        className="main-window-collection"
+        aria-labelledby={`${id}-collection-title`}
+      >
         <h1 id={`${id}-collection-title`} className="sr-only">
           {title}
         </h1>
         {renderCollection ? (
-          renderCollection({ selectedId, select, openDetail })
+          renderCollection({ compact, selectedId, select, openDetail })
         ) : (
           <ScrollPane className="min-h-0" viewportClassName="main-window-collection-scroll">
             <CollectionList
+              compact={compact}
               items={items}
               selectedId={selectedId}
               select={select}
@@ -78,7 +137,20 @@ export function CollectionDetailPane<T extends CollectionItem>({
         )}
       </section>
       <section
+        hidden={!showDetail}
         data-detail-pane
+        ref={(node) => {
+          if (
+            !node ||
+            !hasExternalDetailReveal ||
+            focusedExternalRevealRevision.current === externalDetailRevealRevision
+          )
+            return
+          focusedExternalRevealRevision.current = externalDetailRevealRevision ?? null
+          queueMicrotask(() => {
+            if (node.isConnected && !node.hidden) node.focus()
+          })
+        }}
         onFocus={(event) => {
           if (event.target === event.currentTarget)
             event.currentTarget
@@ -90,6 +162,13 @@ export function CollectionDetailPane<T extends CollectionItem>({
         className="main-window-detail"
         aria-labelledby={`${id}-detail-title`}
       >
+        {compact && (
+          <div className="collection-back">
+            <button type="button" className="ui-push-button" onClick={backToCollection}>
+              Back to {title.toLowerCase()}
+            </button>
+          </div>
+        )}
         <h2 id={`${id}-detail-title`} tabIndex={-1} className="sr-only">
           {selected?.label ?? "Details"}
         </h2>
@@ -118,12 +197,13 @@ export function CollectionDetailPane<T extends CollectionItem>({
           </ScrollPane>
         )}
       </section>
-    </>
+    </div>
   )
 }
 
 /** The default collection has one focus target and no nested controls per row. */
 function CollectionList<T extends CollectionItem>({
+  compact,
   items,
   selectedId,
   select,
@@ -176,7 +256,8 @@ function CollectionList<T extends CollectionItem>({
           className="main-window-collection-row rounded-control text-label"
           onClick={(event) => {
             event.currentTarget.focus()
-            select(item)
+            if (compact) openDetail(item)
+            else select(item)
           }}
           onKeyDown={(event) => onKeyDown(event, index)}
         >

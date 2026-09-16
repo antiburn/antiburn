@@ -10,10 +10,12 @@ import {
 import { useState, useSyncExternalStore } from "react"
 
 import { ScrollPane } from "../components/ui/ScrollPane"
+import { ResponsiveNavigation } from "../components/ui/ResponsiveNavigation"
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
 import { closeCurrentWindow } from "../lib/ipc"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { isMacOS } from "../lib/platform"
+import { useViewportWidth } from "../lib/viewport"
 import { isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
 import { AboutPane } from "./settings/AboutPane"
 import { AppearancePane } from "./settings/AppearancePane"
@@ -60,6 +62,7 @@ const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
 ]
 
 export function SettingsView() {
+  const compact = useViewportWidth() < 720
   const [session] = useState(() => new SettingsWindowSession())
   const { info, pane } = useSyncExternalStore(
     session.subscribe,
@@ -87,7 +90,10 @@ export function SettingsView() {
   const contentPadding = isMacOS() ? "px-6 pb-5 pt-10" : "px-6 py-5"
 
   return (
-    <div className="relative flex h-full min-h-0">
+    <div
+      className="settings-window relative flex h-full min-h-0"
+      data-compact-navigation={compact || undefined}
+    >
       {isMacOS() && (
         // Custom title bar: the native one is hidden, so this transparent
         // strip is the window's drag handle. h-10 (40px) — taller than the
@@ -100,26 +106,31 @@ export function SettingsView() {
         // because the window is not resizable or maximizable.
         <div
           data-tauri-drag-region
-          className="absolute inset-x-0 top-0 z-10 h-10"
+          className="settings-titlebar absolute inset-x-0 top-0 z-10 h-10"
           aria-hidden="true"
         />
       )}
-      <SidebarNav
-        items={PANES}
-        value={pane}
-        onChange={(next) => {
-          if (isSettingsPane(next)) session.setPane(next)
-        }}
-        ariaLabel="Settings sections"
-        // The overlay title bar hides the native bar: pt-7 plus the tablist's
-        // own py-3 lands the first row at 40px — the bottom edge of the drag
-        // strip — while the sidebar material still fills to the window's top
-        // edge behind the traffic lights.
-        className={isMacOS() ? "pt-7" : ""}
-      />
+      <ResponsiveNavigation compact={compact} label="Settings navigation">
+        {(closeNavigation) => (
+          <SidebarNav
+            items={PANES}
+            value={pane}
+            onChange={(next) => {
+              if (isSettingsPane(next)) session.setPane(next)
+            }}
+            onActivate={closeNavigation}
+            ariaLabel="Settings sections"
+            // The overlay title bar hides the native bar: pt-7 plus the tablist's
+            // own py-3 lands the first row at 40px — the bottom edge of the drag
+            // strip — while the sidebar material still fills to the window's top
+            // edge behind the traffic lights.
+            className={`settings-sidebar ${isMacOS() ? "pt-7" : ""}`}
+          />
+        )}
+      </ResponsiveNavigation>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ScrollPane viewportClassName={contentPadding}>
+        <ScrollPane viewportClassName={`settings-content ${contentPadding}`}>
           {/* Keyed by pane so a section switch remounts the panel and plays
               the entrance once; the global reduced-motion clamp in
               styles/motion.css neutralizes it for readers who asked. The ref
@@ -140,7 +151,8 @@ export function SettingsView() {
             }}
             role="tabpanel"
             id={`${pane}-panel`}
-            aria-labelledby={`${pane}-tab`}
+            aria-label={compact ? PANES.find((item) => item.id === pane)?.label : undefined}
+            aria-labelledby={compact ? undefined : `${pane}-tab`}
             className="animate-step-in mx-auto w-full max-w-[600px]"
           >
             {pane === "general" && <GeneralPane {...controller} info={info} />}

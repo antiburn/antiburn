@@ -70,5 +70,6 @@ export default defineConfig(({ command, mode }) => ({
     env: { TZ: "UTC" },
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}", "tests/**/*.{test,spec}.ts"],
+    exclude: ["tests/visual/**"],
   },
 }))

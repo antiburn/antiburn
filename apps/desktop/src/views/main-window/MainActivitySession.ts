@@ -57,6 +57,8 @@ export interface MainActivitySnapshot {
   allocations: SessionLimitAllocationSummaryPayload
   /** The selected Sessions sidebar filter, parsed from `settings.sessionFilter`. */
   filter: SessionFilter
+  /** A newer shell target must reveal the compact detail pane, even for the same session. */
+  detailRevealRevision: number
 }
 
 export function subjectForEntry(entry: SessionListEntry): SessionSubject {
@@ -120,6 +122,7 @@ export class MainActivitySession {
     liveUsage: EMPTY_LIVE_USAGE,
     allocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     filter: parseSessionFilterId(DEFAULT_SETTINGS.sessionFilter),
+    detailRevealRevision: 0,
   }
   private listeners = new Set<() => void>()
   private activeListeners = new Set<() => void>()
@@ -315,7 +318,7 @@ export class MainActivitySession {
   private applySessionTarget(request: MainWindowSessionRequest): void {
     if (request.revision <= this.targetRevision) return
     this.targetRevision = request.revision
-    this.open(request.target, [], "user")
+    this.open(request.target, [], "user", request.revision)
   }
 
   private applyAndAcknowledgeSessionTarget(request: MainWindowSessionRequest): void {
@@ -469,13 +472,21 @@ export class MainActivitySession {
     subject: SessionSubject,
     history: SessionSubject[],
     origin: SurfaceOrigin,
+    detailRevealRevision = this.snapshot.detailRevealRevision,
   ): void {
     this.exposureOrigin = origin
     this.defaultSelectionPending = false
     this.analysisVersion += 1
     this.analysisRun += 1
     this.analysisTask = null
-    this.update({ subject, history, analysis: null, loading: true, refreshing: false })
+    this.update({
+      subject,
+      history,
+      analysis: null,
+      loading: true,
+      refreshing: false,
+      detailRevealRevision,
+    })
     this.refreshAnalysis()
   }
 

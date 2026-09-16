@@ -50,6 +50,7 @@
     "allow-request-main-window-recovery",
     "allow-reveal-source",
     "allow-open-project-folder",
+    "allow-set-interface-scale",
     "allow-set-settings"
   ]
 }

@@ -63,6 +63,7 @@ permissions = [
   "allow-open-project-folder",
   "allow-scan-now",
   "allow-set-hud-detail-size",
+  "allow-set-interface-scale",
   "allow-set-popover-height",
   "allow-set-repository-enabled",
   "allow-set-settings",
