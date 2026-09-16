@@ -29,9 +29,24 @@ export const QUOTA_METER_INTERPOLATION_GAP_SECS = 3 * 60 * 60
 
 export type QuotaRangePreset = "thisWeek" | "lastWeek" | "last30Days"
 
+/** An explicit range a caller picked, outside the fixed presets. */
+export interface QuotaCustomRange {
+  kind: "custom"
+  startEpoch: number
+  endEpoch: number
+}
+
+/** The range a Quota session shows: one of the fixed presets, or a custom range. */
+export type QuotaRangeSelection = QuotaRangePreset | QuotaCustomRange
+
 export interface QuotaRange {
   startEpoch: number
   endEpoch: number
+}
+
+/** True when `range` is a custom range rather than a named preset. */
+export function isCustomRange(range: QuotaRangeSelection): range is QuotaCustomRange {
+  return typeof range === "object"
 }
 
 /** True for the weekly lane and every model-scoped weekly lane, such as Claude's "Fable" window. */
@@ -81,6 +96,23 @@ export function rangeForPreset(
     startEpoch: thisWeek.startEpoch - WEEK_SECS,
     endEpoch: thisWeek.startEpoch,
   })
+}
+
+/**
+ * The wall-clock range a selection covers: a custom range applies its own
+ * bounds directly, capped the same way a preset is, so a session-detail
+ * deep link cannot request an unbounded query.
+ */
+export function resolveQuotaRange(
+  range: QuotaRangeSelection,
+  lane: QuotaLanePayload | null,
+  now: number,
+  weeklyLane?: QuotaLanePayload | null,
+): QuotaRange {
+  if (isCustomRange(range)) {
+    return capRange({ startEpoch: range.startEpoch, endEpoch: range.endEpoch })
+  }
+  return rangeForPreset(range, lane, now, weeklyLane)
 }
 
 /** Stable identity for one session inside the burnup series and the top-sessions list. */

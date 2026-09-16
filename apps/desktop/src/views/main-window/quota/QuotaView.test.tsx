@@ -131,6 +131,28 @@ describe("QuotaView", () => {
     expect(lastCall.rangeEndEpoch).toBe(NOW)
   })
 
+  it("shows Custom only while a custom range from open() is active, and drops it on a preset", async () => {
+    const { session } = setup()
+    sessions.push(session)
+    await screen.findByText("This week")
+    expect(screen.queryByRole("radio", { name: "Custom" })).toBeNull()
+
+    session.open(
+      { provider: "anthropic", accountKey: "acct-1", lane: "weekly" },
+      { startEpoch: NOW - WEEK, endEpoch: NOW },
+    )
+    await vi.waitFor(() =>
+      expect(screen.getByRole("radio", { name: "Custom" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      ),
+    )
+
+    fireEvent.click(screen.getByRole("radio", { name: "This week" }))
+    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("thisWeek"))
+    expect(screen.queryByRole("radio", { name: "Custom" })).toBeNull()
+  })
+
   it("clicking a top-sessions row calls onSelectSession with the session's subject", async () => {
     const { session, onSelectSession } = setup()
     sessions.push(session)

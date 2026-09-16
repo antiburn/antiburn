@@ -14,6 +14,7 @@ import type { SessionSubject } from "../../../lib/sessionSubject"
 import { formatQuotaPercent, QuotaBurnupChart } from "./QuotaBurnupChart"
 import type { QuotaSession } from "./QuotaSession"
 import {
+  isCustomRange,
   quotaLatestPeriod,
   quotaLatestSampleEpoch,
   quotaTopSessionRows,
@@ -23,11 +24,16 @@ import {
 
 import "./quota.css"
 
-const RANGE_OPTIONS: ReadonlyArray<{ value: QuotaRangePreset; label: string }> = [
+/** The range control's value while a custom range (from a session detail
+ *  link) is showing, alongside the fixed presets. */
+type RangeControlValue = QuotaRangePreset | "custom"
+
+const RANGE_OPTIONS: ReadonlyArray<{ value: RangeControlValue; label: string }> = [
   { value: "thisWeek", label: "This week" },
   { value: "lastWeek", label: "Last week" },
   { value: "last30Days", label: "30 days" },
 ]
+const CUSTOM_RANGE_OPTION = { value: "custom" as const, label: "Custom" }
 
 /** An account's own combined id: providers can reuse an opaque account key. */
 function accountId(account: Pick<QuotaAccountPayload, "provider" | "accountKey">): string {
@@ -224,9 +230,19 @@ export function QuotaView({
               )}
               <SegmentedControl
                 ariaLabel="Range"
-                options={RANGE_OPTIONS}
-                value={state.range}
-                onChange={session.selectRange}
+                // "Custom" only appears while a custom range from a session
+                // detail link is active, and drops away once the reader
+                // picks a preset of their own.
+                options={
+                  isCustomRange(state.range)
+                    ? [...RANGE_OPTIONS, CUSTOM_RANGE_OPTION]
+                    : RANGE_OPTIONS
+                }
+                value={isCustomRange(state.range) ? "custom" : state.range}
+                onChange={(value) => {
+                  if (value === "custom") return
+                  session.selectRange(value)
+                }}
               />
             </div>
 

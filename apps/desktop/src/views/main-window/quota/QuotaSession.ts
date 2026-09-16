@@ -14,7 +14,12 @@ import {
   type QuotaUsageRequest,
 } from "../../../lib/providerUsageIpc"
 import { SurfaceExposureTracker } from "../../../lib/surfaceExposure"
-import { rangeForPreset, type QuotaRangePreset } from "./quotaSeries"
+import {
+  resolveQuotaRange,
+  type QuotaRange,
+  type QuotaRangePreset,
+  type QuotaRangeSelection,
+} from "./quotaSeries"
 
 export interface QuotaSelection {
   provider: string
@@ -27,7 +32,7 @@ export interface QuotaSnapshot {
   accounts: QuotaAccountPayload[] | null
   accountsError: boolean
   selection: QuotaSelection | null
-  range: QuotaRangePreset
+  range: QuotaRangeSelection
   usage: QuotaUsagePayload | null
   usageError: boolean
   loading: boolean
@@ -257,6 +262,19 @@ export class QuotaSession {
     this.loadUsage()
   }
 
+  /**
+   * Open a specific account, lane, and explicit range, as a session detail's
+   * Quota row does. The range shows as "Custom" until the reader picks a
+   * preset of their own.
+   */
+  open = (selection: QuotaSelection, range: QuotaRange): void => {
+    this.update({
+      selection,
+      range: { kind: "custom", startEpoch: range.startEpoch, endEpoch: range.endEpoch },
+    })
+    this.loadUsage()
+  }
+
   /** Re-read accounts and usage. Exposed for a Retry button. */
   refresh = (): void => {
     this.loadAccounts()
@@ -331,7 +349,7 @@ export class QuotaSession {
     work: number,
     version: number,
     selection: QuotaSelection,
-    range: QuotaRangePreset,
+    range: QuotaRangeSelection,
   ): Promise<void> {
     if (!this.snapshot.usage) this.update({ loading: true })
     const now = this.adapter.now()
@@ -341,7 +359,7 @@ export class QuotaSession {
       selection.accountKey,
     )
     const lane = findLane(account, selection.lane)
-    const { startEpoch, endEpoch } = rangeForPreset(range, lane, now, weeklyLaneOf(account))
+    const { startEpoch, endEpoch } = resolveQuotaRange(range, lane, now, weeklyLaneOf(account))
     try {
       const usage = await this.adapter.getUsage({
         provider: selection.provider,

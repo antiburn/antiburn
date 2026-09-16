@@ -192,6 +192,33 @@ describe("QuotaSession", () => {
     stop()
   })
 
+  it("open sets a custom range and the selected account and lane", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-opened"))
+    session.open(
+      { provider: "anthropic", accountKey: "acct-1", lane: "fiveHour" },
+      { startEpoch: 1000, endEpoch: 2000 },
+    )
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-opened"))
+    expect(session.getSnapshot().selection).toEqual({
+      provider: "anthropic",
+      accountKey: "acct-1",
+      lane: "fiveHour",
+    })
+    expect(session.getSnapshot().range).toEqual({
+      kind: "custom",
+      startEpoch: 1000,
+      endEpoch: 2000,
+    })
+    const request = vi.mocked(adapter.getUsage).mock.calls.at(-1)![0]
+    expect(request.rangeStartEpoch).toBe(1000)
+    expect(request.rangeEndEpoch).toBe(2000)
+    stop()
+  })
+
   it("keeps the last good usage and flags usageError on a failed usage load", async () => {
     const { adapter, session } = setup()
     sessions.push(session)
