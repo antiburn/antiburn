@@ -202,6 +202,10 @@ function closeButton(): HTMLElement {
   return screen.getByRole("button", { name: "Close overlay" })
 }
 
+function dockButton(): HTMLElement | null {
+  return screen.queryByRole("button", { name: "Dock overlay off screen" })
+}
+
 function panelRect(element: HTMLElement): DOMRect {
   const barCount = Math.max(
     1,
@@ -704,6 +708,57 @@ describe("OverlayWindow", () => {
       fireEvent.mouseLeave(box)
       expect(showHudDetail).toHaveBeenCalledTimes(3)
       expect(showHudDetail.mock.calls[2][0]).toMatchObject({ target: "usage" })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("shows a dock control on hover once the shell says the dock is on", async () => {
+    invoke.mockImplementation(async (command: unknown) =>
+      command === "get_hud_dock" ? { enabled: true, edge: "top" } : undefined,
+    )
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      const button = dockButton()
+      expect(button).not.toBeNull()
+      expect(button).toHaveClass("opacity-0")
+
+      fireEvent.mouseEnter(frame(container))
+      expect(button).toHaveClass("opacity-100")
+
+      fireEvent.click(button!)
+      expect(invoke).toHaveBeenCalledWith("dock_overlay")
+
+      emitNative("overlay_dock_changed", { enabled: false, edge: "top" })
+      await advance(0)
+      expect(dockButton()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+      invoke.mockReset()
+      invoke.mockResolvedValue(undefined)
+    }
+  })
+
+  it("wakes the HUD after two polls of hot spend, then waits for a drop", async () => {
+    const hot = { usdPerMinute: 3, windowSecs: 300, pricedShare: 1 }
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: hot,
+      sessions: [],
+    })
+    vi.useFakeTimers()
+    try {
+      render(<OverlayWindow />)
+      await advance(0)
+      const wakes = () => invoke.mock.calls.filter(([command]) => command === "wake_overlay")
+      expect(wakes()).toHaveLength(0)
+      await advance(5_000)
+      expect(wakes()).toEqual([["wake_overlay", { reason: "burn" }]])
+      await advance(5_000)
+      expect(wakes()).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }

@@ -232,10 +232,13 @@ pub async fn open_overlay_window(
     origin: crate::analytics::event::Origin,
 ) -> CommandResult<()> {
     let store = app.state::<Store>().inner().clone();
-    let entries = run_blocking(move || {
+    let (entries, dock) = run_blocking(move || {
         // Every open means the reader wants the HUD back at the next launch.
         crate::hud::save_enabled(&store, true);
-        Ok(crate::hud::load_placements(&store))
+        Ok((
+            crate::hud::load_placements(&store),
+            crate::hud::load_dock(&store),
+        ))
     })
     .await?;
     let needs_exposure = hud_needs_exposure(&app);
@@ -248,7 +251,43 @@ pub async fn open_overlay_window(
         }
         return Err(fail(error));
     }
+    // The dock settings apply on every open, so a reopened HUD docks again.
+    antiburn_hud::configure_dock(&app, dock);
     Ok(())
+}
+
+/// Return the edge-dock settings.
+#[tauri::command]
+pub fn get_hud_dock(app: tauri::AppHandle) -> antiburn_hud::DockSettings {
+    crate::hud::load_dock(&app.state::<Store>())
+}
+
+/// Store the edge-dock settings and apply them to the HUD.
+#[tauri::command]
+pub async fn set_hud_dock(
+    app: tauri::AppHandle,
+    settings: antiburn_hud::DockSettings,
+) -> CommandResult<()> {
+    let store = app.state::<Store>().inner().clone();
+    run_blocking(move || {
+        crate::hud::save_dock(&store, settings);
+        Ok(())
+    })
+    .await?;
+    antiburn_hud::configure_dock(&app, settings);
+    Ok(())
+}
+
+/// Slide the HUD off its dock edge now.
+#[tauri::command]
+pub fn dock_overlay(app: tauri::AppHandle) {
+    antiburn_hud::dock_overlay(&app);
+}
+
+/// Bring a docked HUD back for a while. `reason` is logged for tuning.
+#[tauri::command]
+pub fn wake_overlay(app: tauri::AppHandle, reason: String) {
+    antiburn_hud::wake_overlay(&app, &reason);
 }
 
 #[cfg(target_os = "macos")]

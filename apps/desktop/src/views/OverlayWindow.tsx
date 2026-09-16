@@ -1,10 +1,25 @@
+import {
+  ArrowDownToLine,
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  ArrowUpToLine,
+  type LucideIcon,
+} from "lucide-react"
 import { useCallback, useState, useSyncExternalStore } from "react"
 
+import type { HudDockEdge } from "../lib/overlayWindow"
 import { LedBar } from "../components/ui/LedBar"
 import { TokenMap } from "../components/ui/TokenMap"
 import { OverlaySession } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
+
+const DOCK_ICONS: Record<HudDockEdge, LucideIcon> = {
+  left: ArrowLeftToLine,
+  right: ArrowRightToLine,
+  top: ArrowUpToLine,
+  bottom: ArrowDownToLine,
+}
 
 /** Render the content-sized usage HUD. The detail window owns the full stats. */
 export function OverlayWindow() {
@@ -18,6 +33,9 @@ export function OverlayWindow() {
     (node: HTMLDivElement | null) => session.registerPanel(node),
     [session],
   )
+
+  const DockIcon = state.dockEdge ? DOCK_ICONS[state.dockEdge] : null
+  const showDock = DockIcon != null && state.hovered && !state.dragging
 
   return (
     <div
@@ -42,7 +60,7 @@ export function OverlayWindow() {
             type="button"
             aria-label="Close overlay"
             onClick={() => session.close()}
-            className={`hud-close absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-hud-control-edge p-0.5 text-hud-control-ink hover:text-label transition-opacity duration-[var(--duration-fast)] ease-out ${
+            className={`hud-control absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-hud-control-edge p-0.5 text-hud-control-ink hover:text-label transition-opacity duration-[var(--duration-fast)] ease-out ${
               showClose ? "opacity-100" : "pointer-events-none opacity-0"
             }`}
             style={{ backgroundColor: "var(--color-bg-hud)" }}
@@ -50,6 +68,20 @@ export function OverlayWindow() {
             <X size={10} />
           </button>
         */}
+
+        {DockIcon && (
+          <button
+            type="button"
+            aria-label="Dock overlay off screen"
+            onClick={() => session.dock()}
+            className={`hud-control absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-hud-control-edge p-0.5 text-hud-control-ink hover:text-label transition-opacity duration-[var(--duration-fast)] ease-out ${
+              showDock ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+            style={{ backgroundColor: "var(--color-bg-hud)" }}
+          >
+            <DockIcon size={10} />
+          </button>
+        )}
 
         {state.showMap && (
           <div className="mb-2">

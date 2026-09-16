@@ -8,7 +8,7 @@
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
-use antiburn_hud::Placement;
+use antiburn_hud::{DockSettings, Placement};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 #[cfg(target_os = "macos")]
@@ -22,6 +22,9 @@ const PLACEMENTS_KEY: &str = "internal:hudPlacements";
 /// The internal scalar that says the reader wants the HUD on screen. The shell
 /// reads it at launch, so the HUD returns before any webview mounts.
 const ENABLED_KEY: &str = "internal:hudEnabled";
+
+/// The internal scalar holding the edge-dock settings as JSON.
+const DOCK_KEY: &str = "internal:hudDock";
 
 /// The shape of the stored value. A different number means a value this build
 /// cannot read, and the HUD starts again from its default position.
@@ -57,6 +60,20 @@ pub fn save_enabled(store: &Store, enabled: bool) {
     store.set_internal_value(ENABLED_KEY, if enabled { "true" } else { "false" });
 }
 
+/// The edge-dock settings. Anything unreadable means "dock off".
+pub fn load_dock(store: &Store) -> DockSettings {
+    store
+        .internal_value(DOCK_KEY)
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_dock(store: &Store, settings: DockSettings) {
+    if let Ok(raw) = serde_json::to_string(&settings) {
+        store.set_internal_value(DOCK_KEY, &raw);
+    }
+}
+
 /// Bring the HUD back at launch when the reader left it on. The popover used
 /// to do this, but the popover is lazy, so the HUD waited for the first click
 /// on the menu bar.
@@ -71,7 +88,9 @@ pub fn restore_at_launch(app: &AppHandle) {
     if let Err(error) = antiburn_hud::open(app, &entries) {
         crate::analytics::cancel_hud_exposure();
         ::tracing::warn!(event = "hud_launch_restore_failed", error = %error);
+        return;
     }
+    antiburn_hud::configure_dock(app, load_dock(&store));
 }
 
 /// Remember one position and make its display the preferred one.

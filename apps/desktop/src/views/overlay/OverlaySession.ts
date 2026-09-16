@@ -20,13 +20,19 @@ import {
   type HudSpendRate,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
+import { BurnWakeTracker, activityWake } from "../../lib/hudWake"
 import {
+  dockOverlayWindow,
+  getHudDock,
   hideOverlayWindow,
   isHudTokenMapEnabled,
+  onHudDockChanged,
   onOverlayWorkChanged,
   recordHudPosition,
   setFloatingHudEnabled,
   takeHudAnalyticsOrigin,
+  wakeOverlayWindow,
+  type HudDockEdge,
 } from "../../lib/overlayWindow"
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
@@ -58,6 +64,8 @@ export type OverlaySnapshot = {
   blinkPeriodMs: number
   /** The spend rate in words, or null when the window carried no tokens. */
   spend: string | null
+  /** The edge the HUD docks against, or null while the dock is off. */
+  dockEdge: HudDockEdge | null
 }
 
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
@@ -70,6 +78,7 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   showMap: false,
   blinkPeriodMs: blinkPeriod(null, null).periodMs,
   spend: null,
+  dockEdge: null,
 }
 
 type DragOrigin = {
@@ -129,6 +138,10 @@ export class OverlaySession {
   private stopInvalidationListening: (() => void) | null = null
   private stopVisibilityListening: (() => void) | null = null
   private stopDetailShownListening: (() => void) | null = null
+  private stopDockListening: (() => void) | null = null
+  /** The newest transcript write seen through events, for the quiet-spell wake. */
+  private lastEventActivity: number | null = null
+  private burnWake = new BurnWakeTracker()
   private dragOrigin: DragOrigin | null = null
   private pendingMove: MouseEvent | null = null
   private moveFrame = 0
@@ -200,6 +213,12 @@ export class OverlaySession {
     this.requestHover(false)
     setFloatingHudEnabled(false)
     void hideOverlayWindow().catch(() => {})
+  }
+
+  /** Slide the HUD off its dock edge. The dock setting stays on. */
+  dock = (): void => {
+    this.requestHover(false)
+    void dockOverlayWindow().catch(() => {})
   }
 
   private start(): void {
@@ -291,6 +310,7 @@ export class OverlaySession {
 
     this.listenForActivity(generation)
     this.refreshLatestActivity(generation)
+    this.followDock(generation)
 
     const refreshTokenMap = () => {
       if (!isHudTokenMapEnabled()) {
@@ -312,6 +332,9 @@ export class OverlaySession {
           const tokenMap = deriveTokenMap(payload, { minDotValue: this.dotValueFloor })
           this.holdDotValue(tokenMap.dotValue, payload?.windowSecs ?? TOKEN_MAP_WINDOW_SECS)
           this.latestSpend = payload?.spend ?? null
+          if (this.burnWake.observe(this.latestSpend?.usdPerMinute ?? null)) {
+            void wakeOverlayWindow("burn").catch(() => {})
+          }
           const hadMap = this.snapshot.showMap
           const showMap = mapVisible(this.previousShowMap, hadMap, tokenMap.blobs.length)
           this.previousShowMap = hadMap
@@ -404,6 +427,10 @@ export class OverlaySession {
     this.stopVisibilityListening = null
     this.stopDetailShownListening?.()
     this.stopDetailShownListening = null
+    this.stopDockListening?.()
+    this.stopDockListening = null
+    this.lastEventActivity = null
+    this.burnWake = new BurnWakeTracker()
     this.removeDragListeners()
     this.observer?.disconnect()
     this.observer = null
@@ -458,6 +485,10 @@ export class OverlaySession {
       if (!this.isCurrent(generation)) return
       const latest = Date.parse(entry.timestamp) / 1000
       if (!Number.isFinite(latest)) return
+      if (activityWake(this.lastEventActivity, latest)) {
+        void wakeOverlayWindow("activity").catch(() => {})
+      }
+      this.lastEventActivity = Math.max(this.lastEventActivity ?? latest, latest)
       this.livenessRevision += 1
       this.setLatestActivity(
         this.latestActivity == null ? latest : Math.max(this.latestActivity, latest),
@@ -484,6 +515,23 @@ export class OverlaySession {
     })
       .then((dispose) => {
         if (this.isCurrent(generation)) this.stopInvalidationListening = dispose
+        else dispose()
+      })
+      .catch(() => {})
+  }
+
+  /** Take the dock settings from the shell, now and on every change. */
+  private followDock(generation: number): void {
+    const apply = (settings: { enabled: boolean; edge: HudDockEdge }) => {
+      if (!this.isCurrent(generation)) return
+      this.update({ dockEdge: settings.enabled ? settings.edge : null })
+    }
+    void getHudDock()
+      .then(apply)
+      .catch(() => {})
+    void onHudDockChanged(apply)
+      .then((dispose) => {
+        if (this.isCurrent(generation)) this.stopDockListening = dispose
         else dispose()
       })
       .catch(() => {})
@@ -681,7 +729,8 @@ export class OverlaySession {
       this.snapshot.tokenMap === next.tokenMap &&
       this.snapshot.showMap === next.showMap &&
       this.snapshot.blinkPeriodMs === next.blinkPeriodMs &&
-      this.snapshot.spend === next.spend
+      this.snapshot.spend === next.spend &&
+      this.snapshot.dockEdge === next.dockEdge
     ) {
       return false
     }

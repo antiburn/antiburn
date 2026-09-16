@@ -24,6 +24,20 @@ vi.mock("../../lib/platform", async (importOriginal) => {
 const openOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
 const hideOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
 const setFloatingHudEnabled = vi.hoisted(() => vi.fn())
+const dockSettings = vi.hoisted(() => ({ enabled: false, edge: "right" as const }))
+const getHudDock = vi.hoisted(() => vi.fn(async () => dockSettings))
+const setHudDock = vi.hoisted(() => vi.fn(async () => {}))
+const onDockChange = vi.hoisted(() => ({
+  current: null as ((settings: { enabled: boolean; edge: "right" | "top" }) => void) | null,
+}))
+const onHudDockChanged = vi.hoisted(() =>
+  vi.fn(async (handler: (settings: { enabled: boolean; edge: "right" | "top" }) => void) => {
+    onDockChange.current = handler
+    return () => {
+      onDockChange.current = null
+    }
+  }),
+)
 const hudVisibility = vi.hoisted(() => ({
   visible: false,
   listeners: new Set<() => void>(),
@@ -48,6 +62,9 @@ vi.mock("../../lib/overlayWindow", async (importOriginal) => {
     openOverlayWindow,
     hideOverlayWindow,
     setFloatingHudEnabled,
+    getHudDock,
+    setHudDock,
+    onHudDockChanged,
   }
 })
 
@@ -618,5 +635,28 @@ describe("UsagePane — floating HUD", () => {
     act(() => emitHudVisibility(false))
 
     expect(toggle).not.toBeChecked()
+  })
+
+  it("stores the dock switch and edge through the shell", async () => {
+    dockSettings.enabled = false
+    dockSettings.edge = "right"
+    setHudDock.mockClear()
+    pane()
+    const dockToggle = await screen.findByRole("switch", { name: "Dock off-screen" })
+    await waitFor(() => expect(getHudDock).toHaveBeenCalled())
+    expect(dockToggle).not.toBeChecked()
+
+    const edge = screen.getByRole("radio", { name: "Top" })
+    expect(edge).toBeDisabled()
+
+    fireEvent.click(dockToggle)
+    expect(setHudDock).toHaveBeenCalledWith({ enabled: true, edge: "right" })
+
+    // The shell answers with the stored value; the pane follows it.
+    act(() => onDockChange.current?.({ enabled: true, edge: "right" }))
+    expect(dockToggle).toBeChecked()
+    expect(edge).toBeEnabled()
+    fireEvent.click(edge)
+    expect(setHudDock).toHaveBeenLastCalledWith({ enabled: true, edge: "top" })
   })
 })
