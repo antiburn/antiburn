@@ -107,6 +107,14 @@ export function UsageLimitsBar({
   const limited = orderedLiveAccounts(liveDisplayableProviders(live)).filter(
     ({ reading }) => liveWindows(reading).length > 0,
   )
+  const hasVisibleSweep = limited.some(({ reading }) => {
+    const providerLive = liveProviders.includes(reading.provider)
+    if (!providerLive) return false
+    if (!expanded) return maxLiveUsedPercent(reading) != null
+    return liveWindows(reading).some((window) =>
+      liveWindowSweeps(window, providerLive, liveModels[reading.provider] ?? []),
+    )
+  })
   const unavailable = liveUnavailableProviders(live)
   const providerCounts = new Map<string, number>()
   for (const { reading } of limited) {
@@ -137,7 +145,7 @@ export function UsageLimitsBar({
     // the rows stay in phase whenever each row joined.
     <div
       data-testid="usage-limits-bar"
-      className={cn("relative shrink-0", liveProviders.length > 0 && "led-clock")}
+      className={cn("relative shrink-0", hasVisibleSweep && "led-clock")}
     >
       {!expanded && (
         <div className="flex min-w-0 items-center gap-[var(--space-md)] pt-2.5 pr-3 pb-1.5 pl-[var(--space-lg)]">

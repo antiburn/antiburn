@@ -10,6 +10,7 @@ import {
 } from "../../lib/ipc"
 import { sessionKey } from "../../lib/sessionSubject"
 import { liveSessions } from "../../lib/sessionLifecycle"
+import { toActivityEntry } from "../../lib/activityEntries"
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -583,6 +584,122 @@ describe("MainActivitySession", () => {
     await Promise.resolve()
     expect(session.getSnapshot().entries).toBeNull()
   })
+})
+
+describe("MainActivitySession incremental cost classification", () => {
+  function cost(totalUsd: number): NonNullable<ActivityEntryPayload["cost"]> {
+    return {
+      totalUsd,
+      inputUsd: totalUsd / 4,
+      outputUsd: totalUsd / 4,
+      cacheReadUsd: totalUsd / 4,
+      cacheWriteUsd: totalUsd / 4,
+    }
+  }
+
+  it.each([
+    {
+      name: "clears changed and peer flags when the median rises",
+      costs: [1, 1, 1, 1, 10, 10, 10, 20],
+      nextCost: 20,
+      beforeFlags: [false, false, false, false, false, false, false, true],
+      afterFlags: [false, false, false, false, false, false, false, false],
+    },
+    {
+      name: "flags a peer again when the median falls",
+      costs: [20, 1, 1, 1, 10, 10, 10, 20],
+      nextCost: 1,
+      beforeFlags: [false, false, false, false, false, false, false, false],
+      afterFlags: [false, false, false, false, false, false, false, true],
+    },
+    {
+      name: "classifies the cohort when priced rows grow from seven to eight",
+      costs: [null, 1, 1, 1, 1, 1, 1, 20],
+      nextCost: 20,
+      beforeFlags: [null, false, false, false, false, false, false, false],
+      afterFlags: [true, false, false, false, false, false, false, true],
+    },
+    {
+      name: "clears peer flags when eight priced rows become seven",
+      costs: [20, 1, 1, 1, 1, 1, 1, 20],
+      nextCost: null,
+      beforeFlags: [true, false, false, false, false, false, false, true],
+      afterFlags: [null, false, false, false, false, false, false, false],
+    },
+  ])(
+    "$name without reloading the list",
+    async ({ costs, nextCost, beforeFlags, afterFlags }) => {
+      const rows = costs.map((usd, index) =>
+        entry(`row-${index}`, {
+          title: `Session ${index}`,
+          timestamp: `2026-01-01T00:00:0${index}.000Z`,
+          repo: "widgets",
+          wslDistro: "Ubuntu",
+          hasForkParent: true,
+          forkChildCount: 2,
+          models: ["claude-fable-5"],
+          modelRuns: [{ model: "claude-fable-5", thinkingMode: "low" }],
+          cost: usd === null ? null : cost(usd),
+        }),
+      )
+      rows.push(entry("unpriced"))
+      mocks.listRecentSessions.mockResolvedValue(rows)
+      mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "notable" })
+      const { session } = start()
+      await ready(session)
+      await vi.waitFor(() => expect(session.getSnapshot().analysis).not.toBeNull())
+      const before = session.getSnapshot()
+      expect(before.entries!.map((row) => row.cost?.isHighCost ?? null)).toEqual([
+        ...beforeFlags,
+        null,
+      ])
+      const analysisCalls = mocks.loadSessionAnalysis.mock.calls.length
+      const usageCalls = mocks.getLiveUsage.mock.calls.length
+      const changed = {
+        ...rows[0]!,
+        title: "Updated title",
+        cost: nextCost === null ? null : cost(nextCost),
+      }
+
+      mocks.events.get("update")!(update(changed, { title: true }))
+
+      const after = session.getSnapshot()
+      expect(after.entries!.map((row) => row.cost?.isHighCost ?? null)).toEqual([
+        ...afterFlags,
+        null,
+      ])
+      expect(after.entries!.map((row) => row.sessionId)).toEqual(
+        rows.map((row) => row.sessionId),
+      )
+      const expectedChanged = toActivityEntry(changed)
+      expect(after.entries![0]).toEqual({
+        ...expectedChanged,
+        cost: expectedChanged.cost
+          ? { ...expectedChanged.cost, isHighCost: afterFlags[0] }
+          : null,
+      })
+      for (let index = 1; index < before.entries!.length; index += 1) {
+        const previous = before.entries![index]!
+        if (previous.cost && beforeFlags[index] !== afterFlags[index]) {
+          expect(after.entries![index]).toEqual({
+            ...previous,
+            cost: { ...previous.cost, isHighCost: afterFlags[index] },
+          })
+          expect(after.entries![index]!.cost!.breakdownRows).toBe(previous.cost.breakdownRows)
+          expect(after.entries![index]!.cost!.models).toBe(previous.cost.models)
+          expect(after.entries![index]!.modelRuns).toBe(previous.modelRuns)
+        } else expect(after.entries![index]).toBe(previous)
+      }
+      expect(after.subject).toBe(before.subject)
+      expect(after.history).toBe(before.history)
+      expect(after.analysis).toBe(before.analysis)
+      expect(after.filter).toBe(before.filter)
+      expect(after.settings).toBe(before.settings)
+      expect(mocks.listRecentSessions).toHaveBeenCalledTimes(1)
+      expect(mocks.loadSessionAnalysis).toHaveBeenCalledTimes(analysisCalls)
+      expect(mocks.getLiveUsage).toHaveBeenCalledTimes(usageCalls)
+    },
+  )
 })
 
 describe("MainActivitySession event ordering", () => {

@@ -297,18 +297,22 @@ export class MainActivitySession {
         (item) => localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key,
       )
     ) {
-      const threshold = costOutlierThreshold(
-        entries.flatMap((item) => (item.cost ? [item.cost.totalUsd] : [])),
+      const replaced = entries.map((item) =>
+        localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key
+          ? toActivityEntry(entry)
+          : item,
       )
-      this.update({
-        entries: this.withRegistryActivity(
-          entries.map((item) =>
-            localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key
-              ? toActivityEntry(entry, threshold)
-              : item,
-          ),
-        ),
+      const threshold = costOutlierThreshold(
+        replaced.flatMap((item) => (item.cost ? [item.cost.totalUsd] : [])),
+      )
+      const classified = replaced.map((item) => {
+        if (!item.cost) return item
+        const isHighCost = threshold != null && item.cost.totalUsd > threshold
+        return item.cost.isHighCost === isHighCost
+          ? item
+          : { ...item, cost: { ...item.cost, isHighCost } }
       })
+      this.update({ entries: this.withRegistryActivity(classified) })
       this.selectDefaultEntry()
     } else this.refreshList()
     const subject = this.snapshot.subject
