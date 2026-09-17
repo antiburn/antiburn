@@ -21,6 +21,7 @@ Theme pass:
 - Dark: {path}
 - Reduced transparency: {path}
 - Reduced motion: {path, or "checked live, no capture"}
+- Untested surface/theme pairs: {pair and reason, or "None"}
 
 ## Summary
 
@@ -53,8 +54,9 @@ could not be reproduced live. Do not rank these as confirmed violations.}
 
 ## Checked scope and limits
 
-{List each captured surface and state that passed. Name relevant states that
-were not checked. Do not claim untested areas are clean.}
+{List each captured surface/theme pair and state that passed. List each
+untested surface/theme pair and its reason. Do not claim untested areas are
+clean.}
 
 ## Notes
 

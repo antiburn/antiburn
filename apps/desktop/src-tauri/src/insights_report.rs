@@ -467,6 +467,9 @@ fn reduce_with_state_on_snapshot(
             let project_root = cwd
                 .as_deref()
                 .and_then(|cwd| trusted_repository_for_cwd(Path::new(cwd), &repository_roots));
+            if project_root.is_none() {
+                resource_builder.mark_scan_failed(agent_kind);
+            }
             resource_builder.observe_positive_uses(
                 &request.environment_key,
                 agent_kind,

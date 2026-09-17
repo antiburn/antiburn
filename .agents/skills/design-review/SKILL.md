@@ -49,7 +49,8 @@ violations and design risks.
 
 Pick one window or one surface per invocation. For a window, capture each
 surface and repeat the worst surface in each theme. For one surface, capture
-that surface and its relevant themes.
+that surface in each relevant theme. List every untested surface/theme pair and
+its reason in Checked scope and limits.
 
 **The surface pass.** Capture every surface the chosen window can show:
 
@@ -67,6 +68,9 @@ these four conditions:
 2. Dark.
 3. Reduced transparency. Every window and popover surface turns solid.
 4. Reduced motion. The global clamp stops animation.
+
+The selected surface needs all four theme checks. If a check cannot run, record
+the surface, theme, and reason in Checked scope and limits.
 
 Switch light and dark from the app's own Appearance pane. Switch reduced
 transparency and reduced motion in the operating system's accessibility

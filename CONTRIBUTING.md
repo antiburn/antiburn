@@ -45,7 +45,7 @@ Always run the formatter and focused tests for the changed code. Run lint, type
 checks, and builds when the changed workspace has them. Run the full workspace
 checks when a change crosses workspace boundaries or changes a public interface.
 
-Engine checks:
+### Engine checks
 
 ```bash
 cd crates/antiburn-local
@@ -54,7 +54,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Desktop checks:
+### Desktop checks
 
 ```bash
 pnpm install
@@ -64,7 +64,7 @@ pnpm --filter @antiburn/desktop test
 pnpm --filter @antiburn/desktop build
 ```
 
-Desktop backend checks:
+### Desktop backend checks
 
 ```bash
 cd apps/desktop/src-tauri
