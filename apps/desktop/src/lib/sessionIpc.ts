@@ -18,7 +18,7 @@ import type {
  * ---------------------------------------------------------------------- */
 
 /** One row of the activity list, before it is shaped for presentation. */
-export interface ModelRunPayload {
+interface ModelRunPayload {
   model: string
   thinkingMode?: string
 }
@@ -50,21 +50,21 @@ export interface SessionIdentityPayload {
 }
 
 /** One end of a local fork relation. */
-export interface SessionRelationPayload {
+interface SessionRelationPayload {
   identity: SessionIdentityPayload
   title: string | null
   available: boolean
 }
 
 /** Direct fork relations for one session. */
-export interface SessionRelationsPayload {
+interface SessionRelationsPayload {
   title: string | null
   parent: SessionRelationPayload | null
   children: SessionRelationPayload[]
 }
 
 /** One sub-agent an orchestrator launched. */
-export interface SubagentMemberPayload {
+interface SubagentMemberPayload {
   agent: string
   subagentId: string
   label: string
@@ -79,7 +79,7 @@ export interface SubagentMemberPayload {
 }
 
 /** The sub-agent picture for one session. */
-export interface OrchestrationPayload {
+interface OrchestrationPayload {
   orchestrating: boolean
   orchestratorAgent: string
   orchestratorSessionId: string
@@ -223,10 +223,10 @@ export interface UpdateFacetsPayload {
  * This cause matches Rust `AnonymousClearCause` and identifies why anonymous activity
  * ends.
  */
-export type AnonymousClearCause = "resolved" | "expired"
+type AnonymousClearCause = "resolved" | "expired"
 
 /** The newest published modeled turn supplies execution metadata independently of the harness. */
-export interface ExecutionMetadataPayload {
+interface ExecutionMetadataPayload {
   model: string
   /** This field preserves the same turn's provider without alias rewriting. */
   recordedProvider: string | null
@@ -258,7 +258,7 @@ export interface AggregatePayload {
  * The last lifecycle event of an atomic batch carries exact counts. Readers retain the
  * counts with the highest sequence.
  */
-export interface LifecycleAggregateCarrier {
+interface LifecycleAggregateCarrier {
   aggregate?: AggregatePayload
 }
 
@@ -303,10 +303,10 @@ export interface SessionUpdatedPayload {
 }
 
 /** This removal reason matches Rust `RemovalReason`. */
-export type SessionRemovalReason = "deleted" | "purged" | "rejected" | "reconciled"
+type SessionRemovalReason = "deleted" | "purged" | "rejected" | "reconciled"
 
 /** This index change cause matches Rust `IndexChangeCause`. */
-export type SessionIndexChangeCause = "scan_pass" | "invalidated" | "removed" | "resync"
+type SessionIndexChangeCause = "scan_pass" | "invalidated" | "removed" | "resync"
 
 /** This index notification matches Rust `IndexChangedPayload`. */
 export interface SessionIndexChangedPayload {
@@ -388,7 +388,7 @@ export async function getLiveSessionsFor(
  * Only the projection bridge emits this lifecycle scope. Its name matches Rust
  * `SESSION_LIFECYCLE_EVENT`.
  */
-export const SESSION_LIFECYCLE_EVENT = "session:lifecycle"
+const SESSION_LIFECYCLE_EVENT = "session:lifecycle"
 
 /** Subscribe to lifecycle transitions and resync metadata. */
 export async function onSessionLifecycleEvent(
@@ -404,7 +404,7 @@ export async function onSessionLifecycleEvent(
  * Only the projection bridge emits enriched rows on this scope. Its name matches Rust
  * `SESSION_UPDATED_EVENT`.
  */
-export const SESSION_UPDATED_EVENT = "session:updated"
+const SESSION_UPDATED_EVENT = "session:updated"
 
 /** Subscribe to enriched row projections. The result unsubscribes. */
 export async function onSessionUpdated(
@@ -418,7 +418,7 @@ export async function onSessionUpdated(
  * Only the projection bridge emits index changes on this scope. Its name matches Rust
  * `SESSION_INDEX_CHANGED_EVENT`.
  */
-export const SESSION_INDEX_CHANGED_EVENT = "session:index-changed"
+const SESSION_INDEX_CHANGED_EVENT = "session:index-changed"
 
 /** Subscribe to list-membership changes. The result unsubscribes. */
 export async function onSessionIndexChanged(

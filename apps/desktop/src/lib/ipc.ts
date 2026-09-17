@@ -212,7 +212,7 @@ export interface RepositoryItemPayload {
 }
 
 /** What one agent's last pass saw. */
-export interface AgentScanState {
+interface AgentScanState {
   agent: string
   lastCompletedAt: string | null
   sessionsSeen: number
@@ -353,22 +353,10 @@ export async function takeMainWindowSectionTarget(): Promise<MainWindowSectionRe
   return invoke<MainWindowSectionRequest | null>("take_main_window_section_target")
 }
 
-/** Take the latest target that arrived before the main renderer could listen. */
-export async function takeMainWindowSessionTarget(): Promise<MainWindowSessionRequest | null> {
-  if (!hasShell()) return null
-  return invoke<MainWindowSessionRequest | null>("take_main_window_session_target")
-}
-
 /** Tell the shell that the popover's initial activity and usage state settled. */
 export async function popoverContentReady(generation: number): Promise<void> {
   if (!hasShell()) return
   await invoke("popover_content_ready", { generation })
-}
-
-/** Version stamp of the active runtime pricing catalog. */
-export async function engineCatalogVersion(): Promise<string | null> {
-  if (!hasShell()) return null
-  return invoke<string>("engine_catalog_version")
 }
 
 /**
@@ -410,18 +398,6 @@ export async function closeCurrentWindow(): Promise<void> {
   if (!hasShell()) return
   const { getCurrentWindow } = await import("@tauri-apps/api/window")
   await getCurrentWindow().close()
-}
-
-/**
- * Quit antiburn.
- *
- * Routed through the shell rather than closing windows, because a menu-bar app
- * outlives its windows: only `exit(0)` distinguishes a deliberate quit from the
- * window closes the shell suppresses.
- */
-export async function quitApp(): Promise<void> {
-  if (!hasShell()) return
-  await invoke("quit_app")
 }
 
 /**
@@ -477,19 +453,6 @@ export async function withPopoverHold<T>(action: () => Promise<T>): Promise<T> {
   } finally {
     await invoke("end_popover_hold").catch(() => undefined)
   }
-}
-
-/**
- * Resize the popover to the height the view now on screen needs.
- *
- * The shell clamps the value, so this is a request rather than an instruction.
- * `animate` is decided here because the reduced-motion preference is a
- * webview-side media query and a height change is motion. The result is true
- * only when this request reaches its target before a newer request replaces it.
- */
-export async function setPopoverHeight(height: number, animate: boolean): Promise<boolean> {
-  if (!hasShell()) return true
-  return invoke<boolean>("set_popover_height", { height, animate })
 }
 
 /** Resize the floating HUD around its measured panel. */
@@ -664,7 +627,7 @@ export type AutoFixAnalyticsOutcome =
 export type PromptPreparationAnalyticsOutcome =
   "ready" | "stale" | "expired" | "unavailable" | "failed"
 /** The closed vocabulary `sessionFilterSelected` reports its filter as. */
-export type SessionFilterAnalyticsKind =
+type SessionFilterAnalyticsKind =
   "notable" | "material" | "agent" | "failing" | "passing" | "all"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
@@ -847,7 +810,7 @@ export async function isOverlayWorkActive(): Promise<boolean> {
 }
 
 /** One usage bar as the hover detail window renders it. */
-export interface HudDetailBar {
+interface HudDetailBar {
   key: string
   label: string
   percent: number
@@ -1015,13 +978,13 @@ export async function revealSource(path: string): Promise<void> {
 const noShellUnlisten: UnlistenFn = () => undefined
 
 /** Event the shell emits when the main renderer can start or stop presenting work. */
-export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
+const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 
 /** Event carrying a revisioned session target to an existing main renderer. */
-export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
+const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
 
 /** Event carrying a revisioned section target to an existing main renderer. */
-export const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
+const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
 
 /** Subscribe to main-window presentation visibility. */
 export async function onMainWindowVisibilityChanged(
@@ -1086,7 +1049,7 @@ export async function onScanEvent(
  * but rendered in the popover too; this is what keeps a long-lived popover
  * webview current without a poll.
  */
-export const SETTINGS_CHANGED_EVENT = "settings:changed"
+const SETTINGS_CHANGED_EVENT = "settings:changed"
 
 /** Subscribe to settings writes from any window. The result unsubscribes. */
 export async function onSettingsChanged(
@@ -1097,7 +1060,7 @@ export async function onSettingsChanged(
 }
 
 /** Event emitted after the Settings window reaches the screen. */
-export const SETTINGS_SHOWN_EVENT = "settings:shown"
+const SETTINGS_SHOWN_EVENT = "settings:shown"
 
 /** Subscribe to the Settings window reaching the screen. */
 export async function onSettingsShown(handler: () => void): Promise<UnlistenFn> {
@@ -1115,7 +1078,7 @@ export async function onSettingsShown(handler: () => void): Promise<UnlistenFn> 
  * when what it wants is "the popover just opened," full stop — including
  * starting the visible-only usage poll (R6).
  */
-export const POPOVER_SHOWN_EVENT = "popover:shown"
+const POPOVER_SHOWN_EVENT = "popover:shown"
 
 /** Subscribe to the popover reaching the screen. The result unsubscribes. */
 export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
@@ -1129,7 +1092,7 @@ export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
  *
  * R6: this is what stops the visible-only usage poll `onPopoverShown` starts.
  */
-export const POPOVER_HIDDEN_EVENT = "popover:hidden"
+const POPOVER_HIDDEN_EVENT = "popover:hidden"
 
 /** Subscribe to the popover leaving the screen. The result unsubscribes. */
 export async function onPopoverHidden(handler: () => void): Promise<UnlistenFn> {
@@ -1138,7 +1101,7 @@ export async function onPopoverHidden(handler: () => void): Promise<UnlistenFn> 
 }
 
 /** Event the shell emits after it refreshes the cached live-usage snapshot. */
-export const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
+const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
 
 /** Subscribe to refreshed provider limit snapshots. The result unsubscribes. */
 export async function onLiveUsageChanged(
@@ -1151,7 +1114,7 @@ export async function onLiveUsageChanged(
 }
 
 /** Event the shell emits when storage health changes. Mirrors `src-tauri/src/storage_health.rs`. */
-export const STORAGE_HEALTH_EVENT = "storage:health"
+const STORAGE_HEALTH_EVENT = "storage:health"
 
 /**
  * Subscribe to storage-health changes. The returned function unsubscribes.
@@ -1170,7 +1133,7 @@ export async function onStorageHealth(
  * Event the shell emits to move an *already open* settings window to a pane.
  * Mirrors `src-tauri/src/settings.rs`.
  */
-export const SETTINGS_PANE_EVENT = "settings:pane"
+const SETTINGS_PANE_EVENT = "settings:pane"
 
 /** Subscribe to pane requests aimed at an open settings window. */
 export async function onSettingsPaneRequest(
@@ -1181,7 +1144,7 @@ export async function onSettingsPaneRequest(
 }
 
 /** Event the shell emits as the update lifecycle changes. */
-export const UPDATE_EVENT = "update:status"
+const UPDATE_EVENT = "update:status"
 
 /**
  * Subscribe to checks, download progress, installation, and failures. The
@@ -1225,12 +1188,6 @@ export async function requestFolderAccess(dir: string): Promise<FolderAccessOutc
 export async function openFolderAccessSettings(): Promise<void> {
   if (!hasShell()) return
   await invoke("open_folder_access_settings")
-}
-
-/** Open the antiburn GitHub repository in the system browser. */
-export async function openGithubRepo(): Promise<void> {
-  if (!hasShell()) return
-  await invoke("open_github_repo")
 }
 
 /** Probe outcomes from this run, for a bug report. */
