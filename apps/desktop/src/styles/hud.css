@@ -160,9 +160,18 @@
 /* Reduced transparency makes the frame solid. It follows the theme blocks above. */
 @media (prefers-reduced-transparency: reduce) {
   :root,
-  :root[data-theme="light"],
-  :root[data-theme="dark"] {
+  :root[data-theme="light"] {
     --color-bg-hud-frame-val: hsl(0 0% 100%);
+  }
+
+  :root[data-theme="dark"] {
+    --color-bg-hud-frame-val: hsl(0 0% 0%);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+  :root {
+    --color-bg-hud-frame-val: hsl(0 0% 0%);
   }
 }
 

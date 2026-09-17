@@ -58,10 +58,11 @@ hairline. New tokens in `hud.css` and `design.md`:
 
 | Token          | Light                  | Dark                   |
 | -------------- | ---------------------- | ---------------------- |
-| `bg-hud-frame` | `hsl(0 0% 100% / 0.6)` | `hsl(0 0% 100% / 0.6)` |
+| `bg-hud-frame` | `hsl(0 0% 100% / 0.7)` | `hsl(0 0% 0% / 0.7)` |
 
-White in both themes (Keith, 2026-09-16, after seeing a dark frame vanish on a
-dark desktop). The frame replaces the LED rings and the HUD's full-strength
+First white in both themes (Keith, 2026-09-16, after seeing a dark frame vanish
+on a dark desktop), then 70% black in dark once the frame went to 70% alpha
+(0d8a9b42). The frame replaces the LED rings and the HUD's full-strength
 off grey: with a constant backing they are noise.
 
 The frame is always on, not hover-only. The close ✕ is commented out for now
@@ -302,7 +303,7 @@ sampled from real transcripts.
 3. ~~Wake dwell.~~ Decided: 5 s.
 4. ~~Spend anchors.~~ Agreed: keep $0.05 and $2.00/min as the starting
    point and sample a few of Keith's days before B ships.
-5. ~~Frame alpha.~~ Decided: 60%.
+5. ~~Frame alpha.~~ Decided: 70%, white in light and black in dark.
 
 ## Decisions
 

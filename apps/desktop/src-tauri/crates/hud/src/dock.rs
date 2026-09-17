@@ -294,6 +294,14 @@ pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
         return;
     };
     let target = docked_position(edge, &frame, &window_rect, tab_depth(edge, scale));
+    // The height sets the flush position at the bottom edge. A HUD docked at
+    // launch, before the renderer reports its height, has a stale home.
+    {
+        let mut dock = state();
+        if dock.docked && dock.home.is_some() {
+            dock.home = Some(flush_position(edge, &frame, &window_rect));
+        }
+    }
     let _ = window.set_position(PhysicalPosition::new(target.0, target.1));
 }
 

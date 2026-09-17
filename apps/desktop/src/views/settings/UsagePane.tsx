@@ -92,8 +92,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
 
   const [tokenMapShown, setTokenMapShown] = useState(isHudTokenMapEnabled)
   function handleTokenMapChange(next: boolean) {
-    setHudTokenMapEnabled(next)
-    setTokenMapShown(next)
+    setTokenMapShown(setHudTokenMapEnabled(next))
   }
 
   function handleHudChange(next: boolean) {

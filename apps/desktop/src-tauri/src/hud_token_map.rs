@@ -425,7 +425,11 @@ pub async fn get_hud_token_map(
             }
             None => continue,
         };
-        if cached_fingerprint(key).as_deref() != Some(fingerprint.as_str()) {
+        // A provider database has no file fingerprint, so its samples are
+        // parsed on every poll instead of served from the cache.
+        let stale = fingerprint == analysis::MISSING_FINGERPRINT
+            || cached_fingerprint(key).as_deref() != Some(fingerprint.as_str());
+        if stale {
             let Some((_, entry)) =
                 parse_samples(kind, &record.key.session_id, wsl_distro, keep_after_ms).await
             else {

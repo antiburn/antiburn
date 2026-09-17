@@ -2,7 +2,7 @@
 
 _Plan + handoff. Designed on branch `claude/hud-led-spend-rate-d25667`, 2026-09-16,
 then moved here because the token-map work on this branch already owns most of
-the machinery. Not started._
+the machinery. Implemented in PR #565 (`feat/hud-v2`)._
 
 ## Handoff — read this first
 

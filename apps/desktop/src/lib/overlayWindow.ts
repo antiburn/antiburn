@@ -78,12 +78,14 @@ export function isHudTokenMapEnabled(): boolean {
   }
 }
 
-export function setHudTokenMapEnabled(enabled: boolean): void {
+/** Store the preference and return the value that is now in effect. */
+export function setHudTokenMapEnabled(enabled: boolean): boolean {
   try {
     localStorage.setItem(TOKEN_MAP_PREF_KEY, enabled ? "1" : "0")
   } catch {
     // The map still draws when preference storage is unavailable.
   }
+  return isHudTokenMapEnabled()
 }
 
 export async function isCurrentWindowVisible(): Promise<boolean> {

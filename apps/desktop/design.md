@@ -209,7 +209,7 @@ colors:
   bg-hud-hover: # the HUD surface on hover; the desktop stays visible through it
     light: "hsl(0 0% 96.4% / 0.9)"
     dark: "hsl(0 0% 12.5% / 0.9)"
-  hud-frame: # the HUD frame at rest and on hover, 70% white in light and 70% black in dark, used as `bg-hud-frame`; reduced-transparency: hsl(0 0% 100%)
+  hud-frame: # the HUD frame at rest and on hover, 70% white in light and 70% black in dark, used as `bg-hud-frame`; reduced-transparency: hsl(0 0% 100%) in light and hsl(0 0% 0%) in dark
     light: "hsl(0 0% 100% / 0.7)"
     dark: "hsl(0 0% 0% / 0.7)"
   hud-stroke-top: # top of the HUD frame's one-pixel gradient stroke; softer on the dark frame
