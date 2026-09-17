@@ -115,10 +115,16 @@ as stale. Exhaustion completes recovery; shutdown discards late read results.
 ## Store migration order
 
 V48 retains the typed remediation attribution fields in `session_evidence`.
-V49 adds the session `incarnation`, the increasing `session_incarnation_seq`
+V51 adds the session `incarnation`, the increasing `session_incarnation_seq`
 counter, and the `session_recency_keyset` index. Existing session rows receive
 incarnation zero. Updates keep the incarnation; deleting and recreating a
 session assigns a higher value. Clearing local session data keeps the counter.
+
+Main's V49 remediation migration and V50 forecast-cache removal retain their
+published positions. Earlier PR builds used V49 for incarnation. When opening
+that specific schema, the Store applies the missing main migrations and
+advances to V51 in one transaction, preserving existing incarnations and their
+counter. A failed repair rolls back and remains retryable at V49.
 
 ## Evidence, guards, and convergence
 
@@ -127,7 +133,7 @@ These numbers have different scopes and must not substitute for one another:
 | Evidence       | Scope and meaning                                                                                                                                                                                                                                                      |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Revision`     | Process-local `total_changes()` on the single writing connection, read under the Store mutex. Rows and their revision come from the same critical section. Rollbacks can leave gaps, never decreases. Read-only report/export connections cannot supply this evidence. |
-| `Incarnation`  | Persisted row identity from V49, stable on update and increasing across recreation of the same key. It remains internal; `SessionRef` is unchanged.                                                                                                                    |
+| `Incarnation`  | Persisted row identity from V51, stable on update and increasing across recreation of the same key. It remains internal; `SessionRef` is unchanged.                                                                                                                    |
 | `seq`          | Process-local canonical event order, assigned by the actor under the registry lock. Snapshot and presence reads include the completed batch at their sequence.                                                                                                         |
 | `AnonymousGen` | Scheduler-local causal order for anonymous reports and pass covers, independent of activity timestamps.                                                                                                                                                                |
 

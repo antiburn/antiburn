@@ -8,7 +8,8 @@ provider-route extraction. See [`check-coverage.md`](check-coverage.md) for the
 nine burn checks that can use those facts.
 
 This is a living contract. A discovered path does not prove that its contents
-are understood. A parsed field does not prove complete historical coverage.
+are understood. A parsed field can support a scoped result without proving full
+historical coverage.
 
 ## Status Rules
 
@@ -201,9 +202,10 @@ coverage and resume round trips within that ceiling.
 | Antigravity | History metadata and spawn-edge data                                   | History enriches discovery; spawn edges do not reach evidence                                      | Prove passive provenance, fingerprinting, delegation meaning, and both models before check use.                                                                                                                                               |
 | Cline       | Metadata and message transcript                                        | Not loaded as one complete analysis source                                                         | Pair and fingerprint both files before parsing claims change.                                                                                                                                                                                 |
 
-Mutable current configuration can support a reviewed model, compaction, or tool catalog. It
-cannot prove what a historical request exposed unless the session records the
-inputs needed to select that catalog entry.
+Current configuration can support a current-state assessment of a model,
+compaction setting, or resource inventory. It cannot prove what a historical
+request exposed unless the session records the inputs needed to select that
+catalog entry. Keep current-state and historical claims separate.
 
 The desktop also has a bounded read-only advisory resource inventory for native
 Claude Code, Codex, OpenCode, and Pi contexts. It returns logical MCP server,
@@ -423,7 +425,8 @@ parsing change affects a check's finding, clean, partial, or unavailable state.
 
 ## Coverage Promotion Rule
 
-A target source is complete only when:
+A source is `Characterized` when it can support its documented scope. A source
+is complete for clean results only when:
 
 - Its source path and accepted shape are explicit through a schema, header, or
   pinned producer commit plus synthetic fixtures; release ranges are recorded
@@ -436,7 +439,8 @@ A target source is complete only when:
 - Provider and model semantics are reviewed where parsing exposes controls or accounting.
 - The corresponding rows in `check-coverage.md` match tested behavior.
 
-Agent characterization, resume, replay, and desktop companion tests check
-behavior separately. The
-[dated confirmation ledger](check-coverage.md#confirmation-ledger) contains the
-pinned upstream research and approved source-scoped limits.
+Use `Partial` for a safe scoped result. Use `Uncharacterized` when the reader
+does not support a claim. Agent characterization, resume, replay, and desktop
+companion tests check behavior separately. The
+[confirmation ledger](check-coverage.md#confirmation-ledger) records reviewed
+source limits.

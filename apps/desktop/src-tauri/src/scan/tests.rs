@@ -2321,9 +2321,14 @@ fn a_quiet_only_burst_issues_no_generation_and_its_pass_covers_nothing() {
 /// through `run_pass`, which owns no ledger and covers nothing.
 #[test]
 fn only_scheduler_owned_passes_cover_and_only_after_their_indexed_reports() {
-    // A Windows checkout carries carriage returns. The searches below are
-    // written with line feeds alone.
     let source = include_str!("mod.rs").replace("\r\n", "\n");
+    for checkout in [source.clone(), source.replace('\n', "\r\n")] {
+        assert_scheduler_source_contract(&checkout);
+    }
+}
+
+fn assert_scheduler_source_contract(source: &str) {
+    let source = source.replace("\r\n", "\n");
     let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
 
     let covered = {

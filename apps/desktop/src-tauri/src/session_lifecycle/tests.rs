@@ -2006,18 +2006,25 @@ fn the_lifecycle_envelope_flattens_the_event_beside_the_sequence() {
 
 /// The body of one `fn name(` in `source`, up to its closing brace at
 /// column zero.
-fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
+fn function_body(source: &str, name: &str) -> String {
+    let source = source.replace("\r\n", "\n");
     let start = source
         .find(&format!("fn {name}("))
         .unwrap_or_else(|| panic!("{name} exists"));
     let body = &source[start..];
-    // A Windows checkout ends each line with a carriage return and a line
-    // feed. The search accepts both line endings.
-    let end = body
-        .find("\n}\n")
-        .or_else(|| body.find("\r\n}\r\n"))
-        .expect("the function closes");
-    &body[..end]
+    let end = body.find("\n}\n").expect("the function closes");
+    body[..end].to_owned()
+}
+
+#[test]
+fn source_contract_body_accepts_both_checkout_line_endings() {
+    let source = "fn sample() {\n    report();\n}\nfn other() {}\n";
+    let expected = "fn sample() {\n    report();";
+    assert_eq!(function_body(source, "sample"), expected);
+    assert_eq!(
+        function_body(&source.replace('\n', "\r\n"), "sample"),
+        expected
+    );
 }
 
 /// The producer seams cannot run without a Tauri app, which the crate's

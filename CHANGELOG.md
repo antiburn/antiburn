@@ -20,16 +20,17 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-17
+
 ### Added
 
 - The session detail Cost tab shows how the estimated cost grew over the
   session, split by input, output, cache read, and cache write, with
   compaction and cache rehydration marks.
-
-## [0.6.0] - 2026-09-16
-
-### Added
-
+- The Cost tab now groups unused skills, MCP servers, and built-in tools in a
+  collapsed card, with replay cost and share details for each resource.
+- Burn Check remediation status persists across launches and clearly shows
+  when a fix is awaiting verification, verified, or unverifiable.
 - Overview is now the default main-window view, bringing local spend totals,
   a 30-day spend chart, provider limits, Burn Checks, and recent sessions
   together.
@@ -53,6 +54,9 @@ CI changes, and documentation that no user acts on stay out — see
   the remaining allowance represented by the tray indicator.
 - Burn Checks now show priced cache-read waste for unused tools, MCP servers,
   and skills when the evidence supports an estimate.
+- Provider usage and learned limit history now follow the configured data
+  retention period, including forever retention, and power pace and runway
+  forecasts.
 
 ### Fixed
 
@@ -68,7 +72,6 @@ CI changes, and documentation that no user acts on stay out — see
   while Claude provider errors receive equivalent treatment.
 - Codex usage records no longer double count matching usage, and sub-agent
   launches are counted correctly.
-
 
 ## [0.5.2] - 2026-09-10
 

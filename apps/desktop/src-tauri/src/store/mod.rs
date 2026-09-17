@@ -438,7 +438,32 @@ impl Store {
     /// an already-current database free.
     fn migrate(&self) -> Result<()> {
         let mut guard = self.lock();
-        let current: i64 = guard.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let mut current: i64 = guard.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        // PR builds used v49 for incarnation before main assigned v49 to remediation.
+        if current == 49
+            && guard.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session') WHERE name = 'incarnation')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let tx = guard.transaction()?;
+            let complete: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_incarnation_seq WHERE id = 1 AND value >= 0)
+                    AND EXISTS(SELECT 1 FROM sqlite_master
+                        WHERE type = 'index' AND name = 'session_recency_keyset')",
+                [],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(complete, "incomplete prerelease lifecycle schema at version 49");
+            // Preserve incarnation values and apply the missing main migrations atomically.
+            for sql in &schema::MIGRATIONS[48..50] {
+                tx.execute_batch(sql)?;
+            }
+            tx.pragma_update(None, "user_version", 51)?;
+            tx.commit()?;
+            current = 51;
+        }
         for (index, sql) in schema::MIGRATIONS.iter().enumerate() {
             let version = index as i64 + 1;
             if version <= current {
