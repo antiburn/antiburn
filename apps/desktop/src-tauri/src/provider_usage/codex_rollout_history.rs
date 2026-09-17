@@ -136,11 +136,13 @@ struct SourceFingerprint {
 /// resumes there, and a file is complete only after every complete record
 /// it holds has been read. A reading older than the observation retention
 /// cutoff is never imported, since a later retention pass would only delete
-/// it again.
+/// it again. The forever setting has no cutoff, so every reading imports.
 pub(crate) fn import_rollout_batch(store: &Store, now_epoch: i64) -> Result<RolloutImportBatch> {
     let started = Instant::now();
     let mut result = RolloutImportBatch::default();
-    let cutoff = store.provider_usage_retention_cutoff_epoch(now_epoch)?;
+    let cutoff = store
+        .provider_usage_retention_cutoff_epoch(now_epoch)?
+        .unwrap_or(i64::MIN);
 
     let candidates =
         store.provider_usage_rollout_candidates(cutoff, now_epoch, MAX_CANDIDATES_PER_PASS + 1)?;

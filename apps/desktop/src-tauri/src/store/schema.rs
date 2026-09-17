@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1071,13 +1071,20 @@ BEGIN
 END;
 "#;
 
-/// v50 records a provider-stated refusal on the reading that carries it.
+/// v50 drops the forecast cache blob. The pace and runway forecast now reads
+/// [`super::Store::provider_usage_samples`], which queries the durable
+/// `provider_usage_observation` table directly.
+const V50: &str = r#"
+DELETE FROM setting WHERE key = 'internal:liveUsageHistoryV2';
+"#;
+
+/// v51 records a provider-stated refusal on the reading that carries it.
 ///
 /// A used figure of 100% is not a refusal. Only the provider saying it
 /// refused a request is one. Codex states this on the same `rate_limits`
 /// object the reading already comes from, so the observation row is where
 /// it belongs.
-const V50: &str = r#"
+const V51: &str = r#"
 ALTER TABLE provider_usage_observation ADD COLUMN refusal_kind TEXT;
 
 CREATE INDEX provider_usage_observation_refusal
@@ -1085,7 +1092,7 @@ CREATE INDEX provider_usage_observation_refusal
     WHERE refusal_kind IS NOT NULL;
 "#;
 
-/// v51 keeps one rollup row for each allowance period.
+/// v52 keeps one rollup row for each allowance period.
 ///
 /// Utilization is a per-period question: the peak the reader reached inside
 /// each window instance. Retention prunes the raw readings at 90 days, so
@@ -1095,7 +1102,7 @@ CREATE INDEX provider_usage_observation_refusal
 /// The rollup holds only the figures. The period row keeps the identity, the
 /// start, and the reset, so retention now also keeps a period that has a
 /// rollup.
-const V51: &str = r#"
+const V52: &str = r#"
 CREATE TABLE provider_usage_period_rollup (
     period_id         INTEGER PRIMARY KEY
                       REFERENCES provider_usage_period(id),

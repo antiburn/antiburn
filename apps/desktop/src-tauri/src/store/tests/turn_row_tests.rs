@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 51);
+    assert_eq!(super::schema::MIGRATIONS.len(), 52);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 51);
+    assert_eq!(store.schema_version().unwrap(), 52);
     let index_exists = store
         .lock()
         .query_row(
@@ -38,6 +38,37 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
         .unwrap();
     assert!(assistant_index_sql.contains("environment_key, agent, session_id, claim_fence"));
     assert!(assistant_index_sql.contains("WHERE role = 'assistant'"));
+}
+
+#[test]
+fn v50_removes_legacy_live_usage_history_but_preserves_snapshot() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..49] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 49).unwrap();
+    connection
+        .execute(
+            "INSERT INTO setting (key, value) VALUES
+                ('internal:liveUsageHistoryV2', 'legacy-history'),
+                ('internal:liveUsageSnapshotV2', 'current-snapshot')",
+            [],
+        )
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-v50-live-usage-migration").to_path_buf(),
+    )
+    .unwrap();
+
+    // Opening the store runs the whole ladder, not v50 alone.
+    assert_eq!(store.schema_version().unwrap(), 52);
+    assert_eq!(store.internal_value("internal:liveUsageHistoryV2"), None);
+    assert_eq!(
+        store.internal_value("internal:liveUsageSnapshotV2"),
+        Some("current-snapshot".to_string())
+    );
 }
 
 #[test]

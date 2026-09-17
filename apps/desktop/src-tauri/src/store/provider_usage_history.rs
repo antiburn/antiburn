@@ -1,8 +1,9 @@
 //! Durable provider usage readings and their stated allowance periods.
 //!
-//! This data is separate from the small forecast cache. It keeps the provider
-//! facts the limit factor learner needs without guessing a reset boundary
-//! when the provider did not state one.
+//! This is the one history store: the limit factor learner reads it without
+//! guessing a reset boundary when the provider did not state one, and the
+//! pace and runway forecast in [`crate::provider_usage::live`] reads it too,
+//! through [`Store::provider_usage_samples`].
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -15,7 +16,6 @@ use crate::provider_usage::live::model::{
 use super::Store;
 
 const RESET_JITTER_SECS: i64 = 5;
-const RETENTION_DAYS: i64 = 90;
 
 /// A provider-stated allowance period.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,13 +310,69 @@ impl Store {
         Ok(readings)
     }
 
+    /// Readings for one window, oldest first, at or after `since_epoch`.
+    ///
+    /// The forecast reads this instead of a separate cache, so a window's
+    /// history is exactly what the durable observation table holds for its
+    /// `(provider, account_key, window_id)`, filtered to the span the caller
+    /// needs.
+    pub fn provider_usage_samples(
+        &self,
+        provider: &str,
+        account_key: &str,
+        window_id: &str,
+        since_epoch: i64,
+    ) -> Result<Vec<crate::provider_usage::live::metrics::UsageSample>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT observed_at_epoch, used_percent, is_fresh
+               FROM provider_usage_observation
+              WHERE provider = ?1 AND account_key = ?2 AND window_id = ?3
+                AND observed_at_epoch >= ?4
+              ORDER BY observed_at_epoch",
+        )?;
+        let samples = statement
+            .query_map(
+                params![provider, account_key, window_id, since_epoch],
+                |row| {
+                    let observed_at_epoch: i64 = row.get(0)?;
+                    let used_percent: Option<f64> = row.get(1)?;
+                    let is_fresh: i64 = row.get(2)?;
+                    Ok((observed_at_epoch, used_percent, is_fresh != 0))
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(samples
+            .into_iter()
+            .filter_map(|(observed_at_epoch, used_percent, is_fresh)| {
+                Some(crate::provider_usage::live::metrics::UsageSample {
+                    observed_at: time::OffsetDateTime::from_unix_timestamp(observed_at_epoch)
+                        .ok()?,
+                    used_percent,
+                    freshness: if is_fresh {
+                        Freshness::Fresh
+                    } else {
+                        Freshness::Stale
+                    },
+                })
+            })
+            .collect())
+    }
+
     /// Remove expired readings and orphaned periods.
+    ///
+    /// [`RETAIN_SESSION_DATA_FOREVER`](super::RETAIN_SESSION_DATA_FOREVER)
+    /// keeps every observation, period, factor sample, and rollout
+    /// checkpoint: this returns early with 0 removed rather than deleting
+    /// anything.
     pub(crate) fn apply_provider_usage_retention_in(
         connection: &Connection,
         retention_days: i32,
         now_epoch: i64,
     ) -> Result<usize> {
-        let cutoff = bounded_retention_cutoff(retention_days, now_epoch);
+        let Some(cutoff) = retention_cutoff(retention_days, now_epoch) else {
+            return Ok(0);
+        };
         let removed = connection.execute(
             "DELETE FROM provider_usage_observation WHERE observed_at_epoch < ?1",
             [cutoff],
@@ -354,14 +410,18 @@ impl Store {
     }
 
     /// The oldest observation the durable retention keeps: the session-data
-    /// retention setting, capped at 90 days.
+    /// retention setting, with no cap. `None` means the reader chose to keep
+    /// every observation forever.
     ///
     /// Shared with [`crate::provider_usage::codex_rollout_history`], so a
     /// rollout reading older than what retention would keep is never
     /// imported only to be deleted on the next pass.
-    pub(crate) fn provider_usage_retention_cutoff_epoch(&self, now_epoch: i64) -> Result<i64> {
+    pub(crate) fn provider_usage_retention_cutoff_epoch(
+        &self,
+        now_epoch: i64,
+    ) -> Result<Option<i64>> {
         let retention_days = self.settings()?.session_data_retention_days;
-        Ok(bounded_retention_cutoff(retention_days, now_epoch))
+        Ok(retention_cutoff(retention_days, now_epoch))
     }
 }
 
@@ -449,14 +509,12 @@ fn row_to_rollup(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderUsagePerio
     })
 }
 
-/// The retention setting, capped at [`RETENTION_DAYS`], turned into a cutoff
-/// epoch: an observation strictly before it is out of scope for retention.
-fn bounded_retention_cutoff(retention_days: i32, now_epoch: i64) -> i64 {
-    let bounded_days = match retention_days {
-        days if days > 0 => i64::from(days).min(RETENTION_DAYS),
-        _ => RETENTION_DAYS,
-    };
-    now_epoch.saturating_sub(bounded_days.saturating_mul(86_400))
+/// The retention setting turned into a cutoff epoch, or `None` when the
+/// setting means forever: an observation strictly before the cutoff is out
+/// of scope for retention.
+fn retention_cutoff(retention_days: i32, now_epoch: i64) -> Option<i64> {
+    (retention_days > 0)
+        .then(|| now_epoch.saturating_sub(i64::from(retention_days).saturating_mul(86_400)))
 }
 
 impl<'a> Reading<'a> {

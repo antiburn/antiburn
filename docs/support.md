@@ -140,11 +140,12 @@ token totals, activity distributions, cost estimates, skill details, derived ses
 evidence — bounded facts about which models, tools, skills, and MCP servers a
 session used, and any quota limits it recorded hitting, never the transcript's
 text — session relations, the last successful plan-limit reading, and timestamped
-provider usage readings for an opaque account key. Provider usage readings stay
-for up to 90 days, or a shorter selected session-data retention period. Clearing
-local data removes them. antiburn retains compact per-session allowance estimates
-while their sessions remain, even after the raw provider readings expire. This data
-stays on the device and is never uploaded.
+provider usage readings for an opaque account key. Provider usage readings follow
+the selected session-data retention period, the same as other local data; a
+forever setting keeps them indefinitely. Clearing local data removes them.
+antiburn retains compact per-session allowance estimates while their sessions
+remain, even after the raw provider readings expire. This data stays on the
+device and is never uploaded.
 
 The coding agents' source transcripts remain their files. antiburn may copy data from
 them into its own local store, but it never modifies or deletes the source files.
