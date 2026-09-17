@@ -36,6 +36,10 @@ export default defineConfig(({ command, mode }) => ({
     strictPort: true,
     // Do not store a partial module graph for a later webview.
     headers: { "Cache-Control": "no-store" },
+    // The shell's build directory holds no renderer source. On Windows the
+    // watcher also fails with EBUSY on the DLLs cargo keeps locked while it
+    // compiles, which stops the dev server and with it `tauri dev`.
+    watch: { ignored: ["**/src-tauri/**"] },
   },
 
   // Only variables with these prefixes reach the renderer.

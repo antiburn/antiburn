@@ -833,9 +833,13 @@ pub fn open(app: &AppHandle, trigger: OpenTrigger) -> tauri::Result<()> {
 }
 
 /// Open the main window and route its renderer to one exact session.
+///
+/// `async` keeps the window build off the calling webview's IPC callback. See
+/// [`crate::commands::open_settings_window`] for what a synchronous command
+/// costs on Windows.
 #[tauri::command]
-pub fn open_main_window_session(app: AppHandle, target: SessionTarget) -> Result<(), String> {
-    route_session_target(&app, target)
+pub async fn open_main_window_session(app: AppHandle, target: SessionTarget) -> Result<(), String> {
+    on_main_value(&app, move |app| route_session_target(app, target)).await?
 }
 
 fn route_session_target(app: &AppHandle, target: SessionTarget) -> Result<(), String> {
@@ -1019,8 +1023,12 @@ fn resolve_sample_for_open(
 }
 
 /// Open the main window and route its renderer to a top-level section.
+///
+/// `async` keeps the window build off the calling webview's IPC callback. See
+/// [`crate::commands::open_settings_window`] for what a synchronous command
+/// costs on Windows.
 #[tauri::command]
-pub fn open_main_window_section(
+pub async fn open_main_window_section(
     window: WebviewWindow,
     app: AppHandle,
     section: MainWindowSection,
@@ -1028,9 +1036,13 @@ pub fn open_main_window_section(
     if window.label() != crate::popover::LABEL {
         return Err("main-window sections are unavailable to this window".to_owned());
     }
+    on_main_value(&app, move |app| route_section_target(app, section)).await?
+}
+
+fn route_section_target(app: &AppHandle, section: MainWindowSection) -> Result<(), String> {
     let state = app.state::<MainWindowState>();
     let request = state.request_section_target(section);
-    if let Err(error) = open(&app, OpenTrigger::Interaction) {
+    if let Err(error) = open(app, OpenTrigger::Interaction) {
         state.clear_section_target(request.revision);
         return Err(error.to_string());
     }
