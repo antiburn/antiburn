@@ -343,6 +343,52 @@ fn partial_positive_evidence_suppresses_but_blocks_clean() {
 }
 
 #[test]
+fn detector_ineligible_positive_use_suppresses_inventory_candidate() {
+    let mut builder = ResourceAssessmentBuilder::default();
+    builder.observe_inventory(
+        inventory(
+            AgentKind::Codex,
+            vec![candidate(
+                AgentKind::Codex,
+                ResourceKind::BuiltInTool,
+                "web_search",
+                ResourceScope::Global,
+            )],
+        ),
+        None,
+    );
+    let mut evidence = evidence(AgentKind::Codex, "unsupported");
+    evidence.tools = EvidenceValue::Partial {
+        observed: ToolEvidence {
+            by_name: BTreeMap::from([(
+                "functions.web_search".into(),
+                ToolUse {
+                    calls: 1,
+                    class: ToolClass::Unclassified,
+                },
+            )]),
+        },
+        reason: antiburn_local::analysis::CoverageReason::CapExceeded,
+    };
+    evidence.context_sources = EvidenceValue::Unsupported;
+    builder.observe_positive_uses(
+        "native",
+        AgentKind::Codex,
+        "unsupported",
+        None,
+        &evidence,
+        None,
+    );
+
+    let assessment = builder.finish(&report());
+    let detector = assessment.detector(DetectorId::UnusedBuiltInTools).unwrap();
+    assert_eq!(detector.used_count, 1);
+    assert!(detector.targets.is_empty());
+    assert!(!detector.clean);
+    assert!(detector.unavailable);
+}
+
+#[test]
 fn indexed_definitions_create_one_target_with_bounded_samples() {
     let mut builder = ResourceAssessmentBuilder::default();
     builder.observe_inventory(inventory(AgentKind::Claude, Vec::new()), None);

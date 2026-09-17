@@ -155,7 +155,8 @@ check and practical objective. It asks the coding agent to inspect
 representative session evidence and the effective project and user
 configuration before it proposes a change. It does not claim an exact model,
 setting, scope, config file, or replacement that current target evidence cannot
-prove.
+prove. The agent can list labeled hypotheses and the evidence needed to confirm
+them. It must not present a hypothesis as a fact or apply an unproved edit.
 
 Both prompt operations can add up to three absolute paths resolved from the
 local session index. The prompt quotes and labels them as representative session
@@ -452,7 +453,7 @@ To add a check operation:
 1. Add or update the typed `FindingCause` and its canonical identity.
 2. Add safe display facts and prompt text. Define explicit prompt support.
 3. Add one estimate method or map the check to an existing typed method.
-4. Define positive verification and recurrence proof. Do not use generic absence when the source is partial.
+4. Define verification and recurrence proof. Do not use generic absence when the source is partial.
 5. Add publication attribution only when evidence matches one effective physical control.
 6. Add the private config operation and semantic review fields.
 7. Add characterization, unavailable, correction, retention, privacy, and bound tests.
@@ -488,8 +489,9 @@ cargo test remediation
 cargo test agent_config
 ```
 
-Run the full repository checks from `CONTRIBUTING.md`. For documentation-only
-changes, also run:
+Run the checks that cover the changed behavior. Run the full repository checks
+from `CONTRIBUTING.md` before a broad remediation change. For documentation-only
+changes, run:
 
 ```bash
 pnpm --filter @antiburn/desktop exec prettier --check \

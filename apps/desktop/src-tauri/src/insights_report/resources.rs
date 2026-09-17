@@ -285,6 +285,37 @@ impl ResourceAssessmentBuilder {
         }
     }
 
+    /// Records direct use without creating a historical finding or target.
+    pub(crate) fn observe_positive_uses(
+        &mut self,
+        environment_key: &str,
+        agent: AgentKind,
+        session_id: &str,
+        project_root: Option<&Path>,
+        evidence: &SessionEvidence,
+        initial_context: Option<&InitialContextBreakdown>,
+    ) {
+        let observed_at_ms = match &evidence.time_range {
+            EvidenceValue::Complete(range)
+            | EvidenceValue::Partial {
+                observed: range, ..
+            } => range.last_ts_ms,
+            EvidenceValue::Unsupported => 0,
+        };
+        let context = SessionContext {
+            environment_key,
+            agent,
+            session_id,
+            project_root,
+            observed_at_ms,
+        };
+        self.observe_tool_uses(&context, evidence);
+        self.observe_context_source_uses(&context, evidence);
+        if let Some(initial_context) = initial_context {
+            self.observe_initial_context(&context, initial_context);
+        }
+    }
+
     pub(crate) fn observe_turn(
         &mut self,
         agent: AgentKind,
@@ -732,6 +763,52 @@ impl ResourceAssessmentBuilder {
                 ResourceAssessmentScope::Global,
                 Some(session_sample(context)),
             );
+            if definition.invoked {
+                self.add_use(
+                    context,
+                    ResourceKind::BuiltInTool,
+                    name,
+                    ObservedScope::Global,
+                    ObservedIdentityKind::ExactResource,
+                );
+            }
+        }
+    }
+
+    fn observe_context_source_uses(
+        &mut self,
+        context: &SessionContext<'_>,
+        evidence: &SessionEvidence,
+    ) {
+        let sources = match &evidence.context_sources {
+            EvidenceValue::Partial { observed, .. } | EvidenceValue::Complete(observed) => observed,
+            EvidenceValue::Unsupported => return,
+        };
+        for (kind, values) in [
+            (ResourceKind::Skill, &sources.skills),
+            (ResourceKind::McpServer, &sources.mcp_servers),
+        ] {
+            for (name, source) in values {
+                if !source.invoked {
+                    continue;
+                }
+                let Some(scope) = source_scope(&source.origin, context.project_root) else {
+                    continue;
+                };
+                self.add_use(
+                    context,
+                    kind,
+                    name,
+                    scope,
+                    ObservedIdentityKind::ExactResource,
+                );
+            }
+        }
+        let definitions = match &sources.tool_definitions {
+            EvidenceValue::Partial { observed, .. } | EvidenceValue::Complete(observed) => observed,
+            EvidenceValue::Unsupported => return,
+        };
+        for (name, definition) in definitions {
             if definition.invoked {
                 self.add_use(
                     context,
