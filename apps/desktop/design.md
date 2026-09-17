@@ -13,6 +13,7 @@ sources:
   - src/styles/hud.css
   - src/styles/main-window.css
   - src/styles/burn-checks-report.css
+  - src/styles/interface-scale.css
   - src/styles/session-analysis-colors.css
   - src/styles/session-rows.css
   - src/styles/session-detail.css
@@ -895,23 +896,73 @@ Features, Settings, and Checks, limited to five per category. Search is navigati
 Settings opens its separate window at a stable control ID, and a check opens its disclosure.
 Neither path executes an action or changes a setting. Queries stay local and are not persisted.
 
+### Interface scaling
+
+Interface size is a reader preference, not a display-resolution heuristic. The operating
+system owns display DPI; the shell applies one native webview zoom factor on top of it.
+The supported percentages live in `interface-scale.json`: 90, 100, 110, 125, 150, 175, and 200. The default and Actual Size action use 100%. Do not animate zoom or multiply the
+type, spacing, radius, or icon tokens by that factor in CSS.
+
+All app-owned web surfaces follow the same saved preference: main window, Settings,
+onboarding, popover, previews, HUD, HUD detail, and nudges. Native menus, traffic lights,
+and operating-system notifications retain native sizing. Before revealing a new surface,
+the native window owner applies zoom and supplies its geometry. Existing main-window
+bounds remain under user control. Preferred utility-window bounds grow with interface
+size but fit inside the current monitor's work area.
+Settings remains resizable, with a minimum content size of 721 × 480 CSS pixels
+multiplied by the interface scale. The extra pixel protects its 720px navigation
+breakpoint from native rounding. The minimum updates when scale or monitor changes
+and is capped by the available work area after native chrome. Compact Settings
+navigation remains a fallback only when the display cannot fit the scaled minimum.
+Onboarding also resizes around its current center during live scale changes,
+clamps to its current monitor's work area, and preserves its renderer and step.
+
+Layout responds to the resulting **CSS viewport**, not physical pixels, screen labels,
+or `devicePixelRatio`. Below 720px, main and Settings navigation use a modal drawer with
+Escape dismissal and focus restoration. Arrow keys select tabs without closing the
+drawer; activation closes it. Settings rows stack controls at a 360px container width.
+Onboarding source columns stack below 720px and retain scrolling. Constrained surfaces
+must reflow or scroll; reducing the chosen zoom to fit is not allowed.
+
+`styles/interface-scale.css` owns these adaptations. The shell supplies
+`--interface-scale` only to preserve native chrome clearance. On macOS,
+`--native-titlebar-clearance` is `40px / --interface-scale`, keeping at least 40 native
+logical pixels free of interactive content at every preset, including 90%.
+
+The Interface size control is a presentational primitive. Its Settings owner invokes
+the dedicated scale command; general settings updates cannot change this preference.
+The shell owns serialization, persistence, all-surface propagation, geometry conversion,
+and consent-gated change analytics. Reusable native window crates accept values and
+geometry only; they must not import app settings, commands, or analytics.
+
+Release validation and its native-platform gates are documented in the
+[interface-scale QA runbook](../../docs/runbooks/interface-scale-qa.md). Browser fixtures
+exercise layout and interactions; they do not prove native zoom, monitor transitions,
+traffic-light clearance, or native preview hit testing.
+
 ### Main window collection and detail architecture
 
-The fixed 220px navigation sidebar, 340px collection pane, and flexible detail pane fill
-the workspace. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
+when the CSS viewport is at least 900px wide. Below 900px, the collection and detail share
+one pane. Activating a row opens detail; Back restores the collection's focus and scroll.
+Each pane owns its scroll viewport. Generic pane labels are visually hidden;
 the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
 the detail retains 440px; at the 1100px default width, it receives 540px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;
 clearing or deleting a selection does not trigger another automatic selection.
+An explicit session target from another window reveals and focuses the compact detail pane.
+A newer target request can reopen the same session after Back. The session boundary passes
+only a reveal revision to the generic pane; ordinary selection and refresh do not create one.
 The default collection uses 40px minimum rows, semantic selected fills, and the shared
 keyboard-only focus treatment. Arrow keys, Home, and End select rows; Enter focuses the detail
 region. Visited sections retain their state and scroll position while hidden.
 
 `MainWindowLayout` owns chrome and columns. `CollectionDetailPane` owns selection and detail
 slots; a custom collection slot owns its own viewport, including any virtualization. These
-components do not load data or subscribe to events. Sessions supplies the existing virtualized
+components do not load feature data or subscribe to domain events. The window boundary observes
+the CSS viewport through a ref-counted resize subscription. Sessions supplies the existing virtualized
 `SessionList` and shared session detail in embedded mode. Selected session rows use `surface-selected/60` for a softer fill in both themes;
 hover and tooltip states retain that fill. This yields a 5.4% black tint in light mode and
 an 8.4% white tint in dark mode, without reducing text or badge opacity. Sidebar and generic
@@ -1261,10 +1312,32 @@ Reduced motion stops the loop; the detail window states the rate in words.
 
 ### Notch island
 
+The native HUD owner reports a revisioned layout in native logical points and
+its applied WebView scale. The renderer converts the hardware-bound header to
+CSS pixels once. The notch gap, header height and fillets stay fixed on
+the display. Each wing starts at 30 native points at 100% and grows with interface
+size, capped equally by the available space on both sides of the camera gap.
+When expanded, the header fills the native-resolved body width. Its wings extend
+to the body's side edges, inside the fixed fillet gutters. They can differ in
+width when the body is clamped to a display edge; the camera gap stays anchored.
+Body padding still uses half the compact wing width, not the expanded wings.
+Header marks scale uniformly, with their height capped to leave `space-xs` above
+and below them. Their shared size retains the existing 2.5-spacing-unit mark,
+1.4-times-wide and 0.4-times-high live LED; no horizontal stretching applies.
+The expanded body uses its own
+native-resolved width, grows with interface size below the header, and stays
+inside the notch display's usable bounds. Long body content scrolls below the
+fixed header. The transparent side gutters and header offset come from the same
+native layout, not a second renderer placement calculation. Drag preview retains
+the floating frame. Scale requests during a drag apply to the HUD after the drop;
+other app windows apply the saved preference immediately.
+
 On a display with a notch, the HUD can sit in it. The island is pure black
 (`hud-island`, as `bg-hud-island`) in both themes, so it merges with the
-notch, and its captions take one light ink (`hud-island-ink`). Collapsed, it
-is the notch row alone: a 30px wing either side of the notch, with its
+notch, and its captions take one light ink (`hud-island-ink`). Monochrome usage
+LEDs use that same ink on the island so they stay visible in both themes;
+provider accents and floating HUD colors stay unchanged. Collapsed, it
+is the notch row alone: a scale-aware wing either side of the notch, with its
 bottom corners at a 14px radius and 6px fillets curving out into the bezel
 (`.hud-island`, `.hud-island-fillets`). Expanded, the HUD content hangs
 below the row, the corners open to 24px and the fillets to 19px

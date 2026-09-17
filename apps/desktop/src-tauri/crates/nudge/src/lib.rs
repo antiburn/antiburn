@@ -136,6 +136,8 @@ pub struct NudgeManager {
     on_unexpected_key_lost: Option<KeyCallback>,
     expected_key_release: Arc<ExpectedKeyRelease>,
     placement: PlacementProvider,
+    interface_scale_bits: AtomicU64,
+    content_height_bits: AtomicU64,
     /// The nudge currently meant to be on screen, if any. Retained so it can be
     /// re-delivered when the notification webview signals it is ready (its
     /// `listen()` may not have been attached when [`Self::show`] first emitted).
@@ -156,6 +158,7 @@ impl NudgeManager {
         app: &AppHandle,
         on_action: impl Fn(NudgeActionEvent) + Send + Sync + 'static,
         placement: impl Fn() -> NudgePlacement + Send + Sync + 'static,
+        interface_scale: f64,
     ) -> tauri::Result<Self> {
         Ok(Self {
             app: app.clone(),
@@ -165,6 +168,10 @@ impl NudgeManager {
             on_unexpected_key_lost: None,
             expected_key_release: Arc::new(ExpectedKeyRelease::default()),
             placement: Arc::new(placement),
+            interface_scale_bits: AtomicU64::new(
+                normalize_interface_scale(interface_scale).to_bits(),
+            ),
+            content_height_bits: AtomicU64::new(168.0_f64.to_bits()),
             pending: Mutex::new(None),
             lifecycle: Mutex::new(()),
             teardown_generation: TeardownGeneration::default(),
@@ -214,7 +221,8 @@ impl NudgeManager {
         // Invalidate a dismiss task before it can retire the window this show
         // is about to reuse (or the new one it is about to create).
         self.teardown_generation.advance();
-        let Ok(window) = window::get_or_create_nudge_window(&self.app) else {
+        let Ok(window) = window::get_or_create_nudge_window(&self.app, self.interface_scale())
+        else {
             return;
         };
         // Hide first so the whole size/position/reveal cycle is invisible — even
@@ -257,6 +265,8 @@ impl NudgeManager {
     /// before it's shown, so it never resizes on screen. Called by the
     /// `nudge_reveal` command once the frontend has measured its content.
     pub fn reveal(&self, height: f64) {
+        self.content_height_bits
+            .store(height.to_bits(), Ordering::Release);
         let generation = self.teardown_generation.current();
         let _lifecycle = match self.lifecycle.try_lock() {
             Ok(lifecycle) => lifecycle,
@@ -286,7 +296,7 @@ impl NudgeManager {
             return;
         }
         if let Some(window) = self.app.get_webview_window(NUDGE_LABEL) {
-            window::reveal(&window, height, (self.placement)());
+            window::reveal(&window, height, (self.placement)(), self.interface_scale());
         }
     }
 
@@ -295,9 +305,30 @@ impl NudgeManager {
     /// elsewhere it snaps. Called by the `nudge_resize` command after the
     /// frontend remeasures its content.
     pub fn resize(&self, height: f64) {
+        self.content_height_bits
+            .store(height.to_bits(), Ordering::Release);
         if let Some(window) = self.app.get_webview_window(NUDGE_LABEL) {
-            window::resize(&window, height);
+            window::resize(&window, height, self.interface_scale());
         }
+    }
+
+    fn interface_scale(&self) -> f64 {
+        normalize_interface_scale(f64::from_bits(
+            self.interface_scale_bits.load(Ordering::Acquire),
+        ))
+    }
+
+    /// Apply a host-provided scale to a retained notification without creating one.
+    pub fn reconcile_interface_scale(&self, interface_scale: f64) -> tauri::Result<()> {
+        let interface_scale = normalize_interface_scale(interface_scale);
+        self.interface_scale_bits
+            .store(interface_scale.to_bits(), Ordering::Release);
+        let Some(window) = self.app.get_webview_window(NUDGE_LABEL) else {
+            return Ok(());
+        };
+        window::apply_interface_scale(&window, interface_scale)?;
+        let height = f64::from_bits(self.content_height_bits.load(Ordering::Acquire));
+        window::place_existing(&window, height, (self.placement)(), interface_scale)
     }
 
     /// Acquire or release key-window status in step with the frontend's own
@@ -455,6 +486,14 @@ impl NudgeManager {
         {
             false
         }
+    }
+}
+
+fn normalize_interface_scale(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
     }
 }
 

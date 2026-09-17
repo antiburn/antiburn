@@ -127,6 +127,15 @@ const WIDTH: f64 = 380.0;
 /// numbers differ.
 pub(crate) const CORNER_RADIUS: f64 = 10.0;
 
+#[cfg(target_os = "macos")]
+fn popover_effects(interface_scale: f64) -> tauri::utils::config::WindowEffectsConfig {
+    EffectsBuilder::new()
+        .effect(Effect::Popover)
+        .state(EffectState::Active)
+        .radius(CORNER_RADIUS * interface_scale)
+        .build()
+}
+
 /// Tallest the main popover may get, in logical pixels.
 pub const MAX_HEIGHT: f64 = 700.0;
 
@@ -262,7 +271,8 @@ fn linux_anchor(window: &WebviewWindow) -> Option<AnchorRect> {
         .primary_monitor()
         .ok()
         .flatten()
-        .or_else(|| window.current_monitor().ok().flatten())?;
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten())?;
 
     let area = monitor.work_area();
     let work = ScreenRect {
@@ -659,11 +669,19 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
         .try_state::<PopoverState>()
         .map(|state| state.height())
         .unwrap_or(DEFAULT_HEIGHT);
+    let interface_scale = crate::interface_scale::current(app);
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
-        .initialization_script(renderer_generation_script(generation))
+        .initialization_script(crate::interface_scale::append_initialization_script(
+            renderer_generation_script(generation),
+            interface_scale,
+        ))
         .title("antiburn")
-        .inner_size(WIDTH, height)
+        .inner_size(
+            WIDTH * interface_scale.factor(),
+            height * interface_scale.factor(),
+        )
         .resizable(false)
+        .zoom_hotkeys_enabled(false)
         .maximizable(false)
         .minimizable(false)
         .decorations(false)
@@ -691,16 +709,14 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
     // stylesheets already paint html, body, and #root transparent, so the
     // material is what the reader sees behind the content.
     #[cfg(target_os = "macos")]
-    let builder = builder.accept_first_mouse(true).transparent(true).effects(
-        EffectsBuilder::new()
-            .effect(Effect::Popover)
-            .state(EffectState::Active)
-            .radius(CORNER_RADIUS)
-            .build(),
-    );
+    let builder = builder
+        .accept_first_mouse(true)
+        .transparent(true)
+        .effects(popover_effects(interface_scale.factor()));
 
     match builder.build() {
         Ok(window) => {
+            crate::interface_scale::apply_window(&window, interface_scale)?;
             // Non-activating panel: opening the popover must not deactivate
             // the frontmost application. Applied here so a rebuild after a
             // destroy converts again.
@@ -1353,7 +1369,11 @@ pub async fn set_height(app: &AppHandle, requested: f64, animate: bool) -> bool 
 
 /// Size the window and put it back where its anchor says it belongs.
 fn apply_height(window: &WebviewWindow, height: f64) -> bool {
-    if window.set_size(LogicalSize::new(WIDTH, height)).is_err() {
+    let (width, scaled_height) = interface_dimensions(window, WIDTH, height);
+    if window
+        .set_size(LogicalSize::new(width, scaled_height))
+        .is_err()
+    {
         return false;
     }
     let Some(state) = window.app_handle().try_state::<PopoverState>() else {
@@ -1627,6 +1647,12 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     let app = window.app_handle();
     let state = app.state::<PopoverState>();
     let now = Instant::now();
+    if let Err(error) =
+        crate::interface_scale::apply_window(window, crate::interface_scale::current(app))
+    {
+        ::tracing::error!(event = "interface_scale_apply_failed", window = LABEL, error = %error);
+        return;
+    }
     if let Some(expired) = state.expired_prewarm(now)
         && expired.renderer_generation() == generation
     {
@@ -1856,8 +1882,9 @@ fn monitor_frame_for(window: &WebviewWindow, anchor: AnchorRect) -> Option<Monit
     if !scale.is_finite() || scale <= 0.0 {
         return None;
     }
-    let position = monitor.position();
-    let size = monitor.size();
+    let area = monitor.work_area();
+    let position = &area.position;
+    let size = &area.size;
     let left = f64::from(position.x) / scale;
     let top = f64::from(position.y) / scale;
     Some(MonitorFrame {
@@ -1919,8 +1946,59 @@ fn compute_position(
 /// size is still scaled for whichever display it was last shown on.
 fn place(window: &WebviewWindow, anchor: AnchorRect, width: f64, height: f64) -> tauri::Result<()> {
     let frame = monitor_frame_for(window, anchor);
+    let factor = crate::interface_scale::current(window.app_handle()).factor();
+    let (width, height) = fit_dimensions(width * factor, height * factor, frame.as_ref());
     let (x, y) = compute_position(anchor, frame.as_ref(), width, height);
+    window.set_size(LogicalSize::new(width, height))?;
     window.set_position(LogicalPosition::new(x, y))
+}
+
+fn fit_dimensions(width: f64, height: f64, frame: Option<&MonitorFrame>) -> (f64, f64) {
+    match frame {
+        Some(frame) => (
+            width.min((frame.right - frame.left - 2.0 * SCREEN_MARGIN).max(1.0)),
+            height.min((frame.bottom - frame.top - 2.0 * SCREEN_MARGIN).max(1.0)),
+        ),
+        None => (width, height),
+    }
+}
+
+fn interface_dimensions(window: &WebviewWindow, width: f64, height: f64) -> (f64, f64) {
+    let factor = crate::interface_scale::current(window.app_handle()).factor();
+    let mut width = width * factor;
+    let mut height = height * factor;
+    if let Some(monitor) = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+    {
+        let dpi = monitor.scale_factor();
+        if dpi.is_finite() && dpi > 0.0 {
+            let area = monitor.work_area();
+            width = width.min((f64::from(area.size.width) / dpi - 2.0 * SCREEN_MARGIN).max(1.0));
+            height = height.min((f64::from(area.size.height) / dpi - 2.0 * SCREEN_MARGIN).max(1.0));
+        }
+    }
+    (width, height)
+}
+
+pub fn reconcile_interface_scale(app: &AppHandle, _factor: f64) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return Ok(());
+    };
+    #[cfg(target_os = "macos")]
+    panel::replace_material(&window, popover_effects(_factor))?;
+    let requested_height = app
+        .try_state::<PopoverState>()
+        .map(|state| state.height())
+        .unwrap_or(DEFAULT_HEIGHT);
+    let (width, height) = interface_dimensions(&window, WIDTH, requested_height);
+    window.set_size(LogicalSize::new(width, height))?;
+    if let Some(anchor) = app.state::<PopoverState>().anchor() {
+        place(&window, anchor, WIDTH, requested_height)?;
+    }
+    Ok(())
 }
 
 /// `f64::clamp` panics when `max < min`, which happens on displays narrower
@@ -1935,6 +2013,41 @@ fn clamp(value: f64, min: f64, max: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn material_radius_matches_zoomed_css_at_every_preset_and_reset() {
+        for percent in [90, 100, 110, 125, 150, 175, 200, 90, 100] {
+            let effects = popover_effects(f64::from(percent) / 100.0);
+            let expected = f64::from(percent) / 10.0;
+            assert!((effects.radius.unwrap() - expected).abs() < f64::EPSILON * 16.0);
+            assert_eq!(effects.effects, vec![Effect::Popover]);
+            assert_eq!(effects.state, Some(EffectState::Active));
+        }
+    }
+
+    #[test]
+    fn anchor_monitor_limits_both_dimensions_before_placement() {
+        let frame = MonitorFrame {
+            left: -800.0,
+            top: 30.0,
+            right: 0.0,
+            bottom: 600.0,
+            scale: 2.0,
+        };
+        let (width, height) = fit_dimensions(760.0, 1400.0, Some(&frame));
+        assert_eq!(width, 760.0_f64.min(800.0 - 2.0 * SCREEN_MARGIN));
+        assert_eq!(height, 570.0 - 2.0 * SCREEN_MARGIN);
+        let anchor = AnchorRect {
+            x: -600.0,
+            y: 60.0,
+            width: 40.0,
+            height: 40.0,
+        };
+        let (x, y) = compute_position(anchor, Some(&frame), width, height);
+        assert!(x >= frame.left && x + width <= frame.right);
+        assert!(y >= frame.top && y + height <= frame.bottom);
+    }
 
     #[test]
     fn clamp_prefers_the_low_edge_on_undersized_displays() {

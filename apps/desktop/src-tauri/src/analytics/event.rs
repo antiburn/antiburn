@@ -121,6 +121,8 @@ pub enum EventName {
     AppSearchOpened,
     #[cfg(feature = "analytics")]
     AppSearchResultOpened,
+    /// The reader saved a different application interface size preset.
+    InterfaceScaleChanged,
 }
 
 /// Every event this application may send.
@@ -166,6 +168,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::NavigationHistoryMoved,
     EventName::AppSearchOpened,
     EventName::AppSearchResultOpened,
+    EventName::InterfaceScaleChanged,
 ];
 
 #[cfg(feature = "analytics")]
@@ -205,6 +208,7 @@ impl EventName {
             EventName::NavigationHistoryMoved => "antiburn.navigation_history_moved",
             EventName::AppSearchOpened => "antiburn.app_search_opened",
             EventName::AppSearchResultOpened => "antiburn.app_search_result_opened",
+            EventName::InterfaceScaleChanged => "antiburn.interface_scale_changed",
         }
     }
 }
@@ -1698,12 +1702,13 @@ mod tests {
                 | EventName::QuotaWindowClosed
                 | EventName::NavigationHistoryMoved
                 | EventName::AppSearchOpened
-                | EventName::AppSearchResultOpened => true,
+                | EventName::AppSearchResultOpened
+                | EventName::InterfaceScaleChanged => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            33,
+            34,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

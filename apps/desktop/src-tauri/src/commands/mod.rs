@@ -370,7 +370,7 @@ pub async fn set_settings(
         let (previous, saved, removed) = {
             let _analytics_transition = crate::analytics::lock_settings_transition();
             let result = store
-                .replace_settings_with_transition(&settings, |tx, previous, saved| {
+                .replace_settings_preserving_interface_scale(&settings, |tx, previous, saved| {
                     // The preference must still save when analytics serialization or
                     // queue storage fails. The withdrawal signal is best effort.
                     let _ = crate::analytics::prepare_opt_out_in_transaction(
@@ -406,6 +406,78 @@ pub async fn set_settings(
     })
     .await?;
     Ok(saved)
+}
+
+/// Change the application interface size against the latest stored preset.
+#[tauri::command]
+pub async fn set_interface_scale(
+    app: tauri::AppHandle,
+    change: crate::interface_scale::InterfaceScaleChange,
+    source: crate::interface_scale::InterfaceScaleSource,
+) -> CommandResult<AppSettings> {
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let store = app.state::<Store>().inner().clone();
+    let (previous, saved, target) = run_blocking(move || {
+        store
+            .update_settings_with(|settings| {
+                let percent = crate::interface_scale::resolve_change(
+                    settings.interface_scale_percent,
+                    change,
+                )
+                .map_err(anyhow::Error::msg)?;
+                settings.interface_scale_percent = percent;
+                Ok(percent)
+            })
+            .map_err(fail)
+    })
+    .await?;
+    let changed = saved.interface_scale_percent != previous.interface_scale_percent;
+    debug_assert_eq!(saved.interface_scale_percent, target);
+    let scale = crate::interface_scale::from_settings(&saved);
+    let hud_app = app.clone();
+    let hud_error = run_blocking(move || {
+        Ok(
+            crate::hud::reconcile_interface_scale(&hud_app, scale.factor())
+                .err()
+                .map(|error| format!("HUD: {error}")),
+        )
+    })
+    .await?;
+    let main_saved = saved.clone();
+    let errors = crate::main_window::on_main_value(&app, move |app| {
+        let mut errors: Vec<String> = hud_error.into_iter().collect();
+        if let Err(error) = crate::interface_scale::reconcile_existing(app, scale) {
+            ::tracing::error!(event = "interface_scale_reconcile_failed", percent = target, %error);
+            errors.push(error);
+        }
+        if let Err(error) = crate::interface_scale::emit_settings_changed(app, &main_saved) {
+            ::tracing::error!(event = "interface_scale_broadcast_failed", percent = target, %error);
+            errors.push(error);
+        }
+        errors
+    })
+    .await?;
+    if changed {
+        let analytics_app = app.clone();
+        run_blocking(move || {
+            crate::analytics::record(
+                &analytics_app,
+                crate::analytics::event::EventName::InterfaceScaleChanged,
+                crate::analytics::event::Facts {
+                    label: crate::interface_scale::analytics_preset(target),
+                    detail: Some(source.analytics_value()),
+                    ..Default::default()
+                },
+            );
+            Ok(())
+        })
+        .await?;
+    }
+    if errors.is_empty() {
+        Ok(saved)
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 /// Make setup pending, open it at Welcome, and keep all other local state.
@@ -2405,6 +2477,106 @@ mod tests {
     use antiburn_local::pricing::ModelTokens;
 
     use super::*;
+
+    #[test]
+    fn hud_locking_commands_dispatch_to_blocking_workers() {
+        let source = include_str!("hud_commands.rs");
+        for name in [
+            "hide_overlay_window",
+            "resize_overlay_window",
+            "set_hud_detail_size",
+            "tear_off_overlay",
+            "set_hud_island",
+        ] {
+            let signature = format!("pub async fn {name}(");
+            let body = source
+                .split_once(&signature)
+                .unwrap_or_else(|| panic!("{name} must not run on the UI thread"))
+                .1
+                .split_once("\n}")
+                .expect("the command has a body")
+                .0;
+            let dispatch = body
+                .find("run_blocking(move ||")
+                .expect("a blocking worker");
+            let hud_call = body[dispatch..]
+                .find("antiburn_hud::")
+                .expect("a HUD operation")
+                + dispatch;
+            assert!(dispatch < hud_call, "{name} dispatches before locking");
+            assert!(body.contains(".await"), "{name} awaits completion");
+        }
+    }
+
+    #[test]
+    fn hud_notch_reads_do_not_dispatch_mutations_to_the_main_thread() {
+        let source = include_str!("hud_commands.rs");
+        assert!(!source.contains("on_main_value(&app, antiburn_hud::settle_after_drag)"));
+        assert!(!source.contains("move |app| antiburn_hud::restore_dock(app, dock)"));
+        let restore = include_str!("hud.rs")
+            .split_once("pub fn restore_at_launch(")
+            .unwrap()
+            .1;
+        let restore = restore.split_once("\n}").unwrap().0;
+        let dispatch = restore
+            .find("spawn_blocking")
+            .expect("startup dispatches to a worker");
+        let open = restore
+            .find("antiburn_hud::open")
+            .expect("startup opens the HUD");
+        assert!(dispatch < open);
+    }
+
+    #[test]
+    fn hud_hover_intent_stays_synchronous_and_outside_the_resize_lock() {
+        let commands = include_str!("hud_commands.rs");
+        let hud = include_str!("../crates/hud/src/lib.rs");
+        for name in ["show_hud_detail", "hide_hud_detail"] {
+            assert!(commands.contains(&format!("pub fn {name}(")));
+        }
+        let show = hud.split_once("pub fn show_detail(").unwrap().1;
+        let show = show.split_once("\n}").unwrap().0;
+        assert!(!show.contains("resize_apply_guard"));
+        assert!(!show.contains("spawn"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hud_lock_contention_leaves_native_query_dispatch_responsive() {
+        let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let scale_lock = lock.clone();
+        let (query_tx, query_rx) = tokio::sync::oneshot::channel();
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let scale = tokio::spawn(run_blocking(move || {
+            let _guard = scale_lock.lock().expect("scale lock");
+            query_tx.send(()).expect("native query dispatch");
+            reply_rx.recv_timeout(Duration::from_secs(5)).map_err(fail)
+        }));
+        query_rx
+            .await
+            .expect("scale holds the lock and requests the UI");
+        let (resize_tx, resize_rx) = tokio::sync::oneshot::channel();
+        let resize = tokio::spawn(run_blocking(move || {
+            resize_tx.send(()).expect("resize starts");
+            let _guard = lock.lock().expect("resize lock");
+            Ok(())
+        }));
+        tokio::time::timeout(Duration::from_secs(2), resize_rx)
+            .await
+            .expect("resize dispatch does not block the UI")
+            .expect("resize starts while scale holds the lock");
+        assert!(!resize.is_finished());
+        reply_tx
+            .send(())
+            .expect("the UI can answer the native query");
+        scale
+            .await
+            .expect("scale joins")
+            .expect("native query succeeds");
+        resize
+            .await
+            .expect("resize joins")
+            .expect("resize completes");
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn blocking_command_work_keeps_the_current_thread_runtime_responsive() {

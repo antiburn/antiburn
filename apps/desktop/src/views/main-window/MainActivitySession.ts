@@ -58,6 +58,8 @@ export interface MainActivitySnapshot {
   sessionQuota: SessionQuotaPayload | null
   /** The selected Sessions sidebar filter, parsed from `settings.sessionFilter`. */
   filter: SessionFilter
+  /** A newer shell target must reveal the compact detail pane, even for the same session. */
+  detailRevealRevision: number
 }
 
 export function subjectForEntry(entry: SessionListEntry): SessionSubject {
@@ -150,6 +152,7 @@ export class MainActivitySession {
     allocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     sessionQuota: null,
     filter: parseSessionFilterId(DEFAULT_SETTINGS.sessionFilter),
+    detailRevealRevision: 0,
   }
   private listeners = new Set<() => void>()
   private activeListeners = new Set<() => void>()
@@ -521,6 +524,7 @@ export class MainActivitySession {
     subject: SessionSubject,
     history: SessionSubject[],
     origin: SurfaceOrigin,
+    detailRevealRevision = this.snapshot.detailRevealRevision,
   ): void {
     this.exposureOrigin = origin
     this.defaultSelectionPending = false
@@ -537,6 +541,7 @@ export class MainActivitySession {
       loading: true,
       refreshing: false,
       sessionQuota: null,
+      detailRevealRevision,
     })
     this.refreshAnalysis()
     this.refreshSessionQuota()

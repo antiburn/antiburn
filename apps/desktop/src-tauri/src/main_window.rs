@@ -1303,15 +1303,21 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
         elapsed_ms = elapsed.as_millis() as u64
     );
     window_lifecycle::arm_stale_warning::<MainWindowState>(app, generation, LABEL);
+    let interface_scale = crate::interface_scale::current(app);
     let built = antiburn_main_window::build(
         app,
-        renderer_generation_script(generation),
+        crate::interface_scale::append_initialization_script(
+            renderer_generation_script(generation),
+            interface_scale,
+        ),
         placement.as_ref(),
+        interface_scale.factor(),
         |window, payload| {
             window_lifecycle::trace_page_load::<MainWindowState>(window, payload, LABEL);
         },
     )?;
     crate::wayland_titlebar::repair(&built.window);
+    crate::interface_scale::apply_window(&built.window, interface_scale)?;
     let applied = built
         .placement
         .or_else(|| antiburn_main_window::capture(&built.window, None));
@@ -1353,6 +1359,15 @@ fn renderer_ready_on_main(app: &AppHandle, generation: u64) {
     };
     if !window_lifecycle::renderer_ready::<MainWindowState>(app, LABEL, generation, Instant::now())
     {
+        return;
+    }
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    if let Err(error) =
+        crate::interface_scale::apply_window(&window, crate::interface_scale::current(app))
+    {
+        ::tracing::error!(event = "interface_scale_apply_failed", window = LABEL, error = %error);
         return;
     }
     let (open_kind, elapsed) = state.request_details(Instant::now());

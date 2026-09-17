@@ -12,7 +12,7 @@
 //! async runtime never touch AppKit.
 
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
@@ -25,7 +25,7 @@ use super::dock::Rect;
 #[cfg(target_os = "macos")]
 use super::dock::{self, state};
 
-/// The drawable strip either side of the notch, in logical pixels.
+/// The drawable strip at 100%, in native logical points.
 ///
 /// The reference notch apps use `(notch height - 12) + 10`: 30 for a 32 px
 /// notch. Room for one 16 px element and its padding.
@@ -69,6 +69,9 @@ const ISLAND_STATE_EVENT: &str = "hud-island:state";
 #[cfg(target_os = "macos")]
 static FAKE_NOTCH_ON: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "macos")]
+static GEOMETRY_REVISION: AtomicU64 = AtomicU64::new(0);
+
 /// What the island is doing, as the webview renders it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -96,6 +99,16 @@ pub struct IslandState {
     pub notch: f64,
     /// The notch height: the collapsed row.
     pub height: f64,
+    /// The applied WebView scale, independent of the display backing factor.
+    pub scale: f64,
+    /// Reject measurements and events from an older native geometry.
+    pub revision: u64,
+    /// Expanded ink width, in native logical points.
+    pub body_width: f64,
+    /// Usable height below the fixed header, in native logical points.
+    pub body_max_height: f64,
+    /// Header offset from the native window's left edge, in logical points.
+    pub header_offset: f64,
 }
 
 impl IslandState {
@@ -107,6 +120,11 @@ impl IslandState {
             fillet: 0.0,
             notch: 0.0,
             height: 0.0,
+            scale: 1.0,
+            revision: 0,
+            body_width: 0.0,
+            body_max_height: 0.0,
+            header_offset: 0.0,
         }
     }
 }
@@ -117,24 +135,76 @@ impl IslandState {
 pub(crate) struct Notch {
     pub(crate) rect: Rect,
     pub(crate) scale: f64,
+    pub(crate) available: Rect,
+}
+
+#[cfg(any(target_os = "macos", test))]
+struct IslandLayout {
+    x: f64,
+    width: f64,
+    header_height: f64,
+    header_offset: f64,
+    body_max_height: f64,
 }
 
 #[cfg(any(target_os = "macos", test))]
 impl Notch {
     /// The state the webview renders for this notch in `phase`.
-    fn state(&self, phase: IslandPhase) -> IslandState {
+    fn state(&self, phase: IslandPhase, scale: f64, revision: u64) -> IslandState {
+        let layout = self.layout(phase, scale);
         IslandState {
             island: phase,
-            wing: WING,
+            wing: self.wing_width(scale),
             fillet: FILLET,
             notch: self.rect.width / self.scale,
             height: self.rect.height / self.scale,
+            scale,
+            revision,
+            body_width: layout.width - 2.0 * FILLET,
+            body_max_height: layout.body_max_height,
+            header_offset: layout.header_offset,
+        }
+    }
+
+    fn layout(&self, phase: IslandPhase, scale: f64) -> IslandLayout {
+        let wing = self.wing_width(scale);
+        let header_width = self.window_width(scale);
+        let desired = if phase == IslandPhase::Expanded {
+            ((self.rect.width / self.scale + 2.0 * WING) * scale + 2.0 * FILLET).max(header_width)
+        } else {
+            header_width
+        };
+        let width = desired.min(self.available.width / self.scale).max(1.0);
+        let center = self.rect.x + self.rect.width / 2.0;
+        let x = (center - width * self.scale / 2.0).clamp(
+            self.available.x,
+            (self.available.x + self.available.width - width * self.scale).max(self.available.x),
+        );
+        IslandLayout {
+            x,
+            width,
+            header_height: self.rect.height / self.scale,
+            header_offset: (self.rect.x - (wing + FILLET) * self.scale - x) / self.scale,
+            body_max_height: ((self.available.y + self.available.height
+                - self.rect.y
+                - self.rect.height)
+                / self.scale)
+                .max(0.0),
         }
     }
 
     /// The window width in logical pixels: the notch, two wings, two gutters.
-    fn window_width(&self) -> f64 {
-        self.rect.width / self.scale + 2.0 * (WING + FILLET)
+    fn window_width(&self, scale: f64) -> f64 {
+        self.rect.width / self.scale + 2.0 * (self.wing_width(scale) + FILLET)
+    }
+
+    /// Grow both wings equally without shifting the camera gap or clipping a side.
+    fn wing_width(&self, scale: f64) -> f64 {
+        let left = (self.rect.x - self.available.x) / self.scale - FILLET;
+        let right = (self.available.x + self.available.width - self.rect.x - self.rect.width)
+            / self.scale
+            - FILLET;
+        (WING * scale).min(left.min(right).max(0.0))
     }
 }
 
@@ -173,8 +243,8 @@ fn notch_rect(
 
 /// The collapsed window: the notch row with a wing and a gutter each side. Pure.
 #[cfg(any(target_os = "macos", test))]
-fn island_rect(notch: &Rect, scale: f64) -> Rect {
-    let margin = (WING + FILLET) * scale;
+fn island_rect(notch: &Rect, scale: f64, wing: f64) -> Rect {
+    let margin = (wing + FILLET) * scale;
     Rect {
         x: notch.x - margin,
         y: notch.y,
@@ -233,7 +303,12 @@ fn read_notch() -> Option<Notch> {
         let display = desktop_rect(screen.frame(), primary_height, scale);
         let left = screen.auxiliaryTopLeftArea().size.width;
         let right = screen.auxiliaryTopRightArea().size.width;
-        notch_rect(&display, scale, insets.top, left, right).map(|rect| Notch { rect, scale })
+        let available = desktop_rect(screen.visibleFrame(), primary_height, scale);
+        notch_rect(&display, scale, insets.top, left, right).map(|rect| Notch {
+            rect,
+            scale,
+            available,
+        })
     });
     if real.is_some() || !FAKE_NOTCH_ON.load(Ordering::Relaxed) {
         return real;
@@ -242,7 +317,12 @@ fn read_notch() -> Option<Notch> {
     let display = desktop_rect(primary.frame(), primary_height, scale);
     let (width, height) = FAKE_NOTCH;
     let side = ((display.width / scale - width) / 2.0).max(0.0);
-    notch_rect(&display, scale, height, side, side).map(|rect| Notch { rect, scale })
+    let available = desktop_rect(primary.visibleFrame(), primary_height, scale);
+    notch_rect(&display, scale, height, side, side).map(|rect| Notch {
+        rect,
+        scale,
+        available,
+    })
 }
 
 /// A Cocoa screen frame as a desktop rect in physical pixels.
@@ -355,12 +435,20 @@ pub fn set_fake_notch(_app: &tauri::AppHandle, _on: bool) -> bool {
 pub fn island_state() -> IslandState {
     let dock = state();
     match dock.notch {
-        Some(notch) if dock.island => notch.state(if dock.docked {
-            IslandPhase::Collapsed
-        } else {
-            IslandPhase::Expanded
-        }),
-        _ => IslandState::off(),
+        Some(notch) if dock.island => notch.state(
+            if dock.docked {
+                IslandPhase::Collapsed
+            } else {
+                IslandPhase::Expanded
+            },
+            super::interface_scale(),
+            revision(),
+        ),
+        _ => IslandState {
+            scale: super::interface_scale(),
+            revision: revision(),
+            ..IslandState::off()
+        },
     }
 }
 
@@ -370,13 +458,41 @@ pub fn island_state() -> IslandState {
     IslandState::off()
 }
 
-/// The window width in logical pixels while the island is on, or `None`.
 #[cfg(target_os = "macos")]
-pub(crate) fn frame_width() -> Option<f64> {
+pub(crate) fn revision() -> u64 {
+    GEOMETRY_REVISION.load(Ordering::Acquire)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn geometry_changed(app: &AppHandle) {
+    emit_state(app);
+}
+
+/// Keep native geometry anchored to the cutout, not the floating placement.
+#[cfg(target_os = "macos")]
+pub(crate) fn fit_height(window: &WebviewWindow, height: f64) -> Option<(f64, f64)> {
     let dock = state();
-    dock.notch
-        .filter(|_| dock.island)
-        .map(|notch| notch.window_width())
+    let notch = dock.notch.filter(|_| dock.island)?;
+    let collapsed = dock.docked;
+    drop(dock);
+    let layout = notch.layout(
+        if collapsed {
+            IslandPhase::Collapsed
+        } else {
+            IslandPhase::Expanded
+        },
+        super::interface_scale(),
+    );
+    let height = if collapsed {
+        layout.header_height
+    } else {
+        height.clamp(
+            layout.header_height,
+            layout.header_height + layout.body_max_height,
+        )
+    };
+    let _ = window.set_position(PhysicalPosition::new(layout.x, notch.rect.y));
+    Some((layout.width, height))
 }
 
 /// Send the current island state to the HUD webview.
@@ -386,7 +502,9 @@ fn emit_state(app: &AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
-fn emit(app: &AppHandle, state: IslandState) {
+fn emit(app: &AppHandle, mut state: IslandState) {
+    state.scale = super::interface_scale();
+    state.revision = GEOMETRY_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
     // Every window hears it: the HUD draws the shape, Settings shows the switch.
     if let Err(error) = app.emit(ISLAND_STATE_EVENT, state) {
         tracing::warn!(event = "hud_island_emit_failed", error = %error);
@@ -399,7 +517,7 @@ fn emit(app: &AppHandle, state: IslandState) {
 
 /// Put the HUD in the notch now. Settings and the development menu.
 ///
-/// Main thread only, because it reads the notch. Returns false when no
+/// Worker only, after the shell refreshes the notch on the main thread. Returns false when no
 /// display has a notch, and the HUD stays as it is.
 #[cfg(target_os = "macos")]
 pub fn island_overlay(app: &AppHandle) -> bool {
@@ -425,28 +543,27 @@ pub fn island_overlay(_app: &tauri::AppHandle) -> bool {
 /// island in place at once.
 #[cfg(target_os = "macos")]
 pub(crate) fn island_at(app: &AppHandle, window: &WebviewWindow) -> bool {
-    let Some(monitor) = dock::monitor_of(window) else {
-        return false;
-    };
-    let frame = dock::monitor_rect(&monitor);
+    let _guard = super::resize_apply_guard();
+    let scale = super::interface_scale();
     let (notch, generation) = {
         let mut dock = state();
         let Some(notch) = dock.notch else {
             return false;
         };
-        let rect = island_rect(&notch.rect, notch.scale);
+        let rect = island_rect(&notch.rect, notch.scale, notch.wing_width(scale));
         dock.island = true;
         dock.island_wanted = true;
         dock.docked = true;
+        dock.park_timing = None;
         dock.edge = dock::DockEdge::Top;
         dock.home = Some((rect.x, rect.y));
-        dock.frame = Some(frame);
+        dock.frame = Some(notch.available);
         dock.scale = notch.scale;
         dock.generation += 1;
         (notch, dock.generation)
     };
     super::hide_detail(app);
-    let rect = island_rect(&notch.rect, notch.scale);
+    let rect = island_rect(&notch.rect, notch.scale, notch.wing_width(scale));
     tracing::info!(
         event = "hud_island",
         x = rect.x,
@@ -456,7 +573,7 @@ pub(crate) fn island_at(app: &AppHandle, window: &WebviewWindow) -> bool {
     fit_window(
         window,
         &rect,
-        notch.window_width(),
+        notch.window_width(scale),
         notch.rect.height / notch.scale,
     );
     emit_state(app);
@@ -467,7 +584,6 @@ pub(crate) fn island_at(app: &AppHandle, window: &WebviewWindow) -> bool {
 /// Move the window to `rect` and give it the island's logical size.
 #[cfg(target_os = "macos")]
 fn fit_window(window: &WebviewWindow, rect: &Rect, width: f64, height: f64) {
-    let _guard = super::resize_apply_guard();
     let _ = window.set_resizable(true);
     let _ = window.set_size(LogicalSize::new(width, height));
     let _ = window.set_resizable(false);
@@ -483,6 +599,7 @@ fn fit_window(window: &WebviewWindow, rect: &Rect, width: f64, height: f64) {
 /// the pointer on the panel.
 #[cfg(target_os = "macos")]
 pub(crate) fn leave_window(app: &AppHandle) {
+    let _guard = super::resize_apply_guard();
     if let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) {
         let scale = window.scale_factor().unwrap_or(1.0);
         let height = window
@@ -495,12 +612,15 @@ pub(crate) fn leave_window(app: &AppHandle) {
             .ok()
             .zip(window.cursor_position().ok())
             .map(|(origin, cursor)| {
-                let half = (super::OVERLAY_WIDTH * scale / 2.0).round() as i32;
+                let half =
+                    (super::OVERLAY_WIDTH * super::interface_scale() * scale / 2.0).round() as i32;
                 PhysicalPosition::new((cursor.x.round() as i32) - half, origin.y)
             });
-        let _guard = super::resize_apply_guard();
         let _ = window.set_resizable(true);
-        let _ = window.set_size(LogicalSize::new(super::OVERLAY_WIDTH, height));
+        let _ = window.set_size(LogicalSize::new(
+            super::OVERLAY_WIDTH * super::interface_scale(),
+            height,
+        ));
         let _ = window.set_resizable(false);
         if let Some(position) = position {
             let _ = window.set_position(position);
@@ -515,12 +635,14 @@ pub(crate) fn leave_window(app: &AppHandle) {
 /// the pointer leaves the island and the hotspot.
 #[cfg(target_os = "macos")]
 pub(crate) fn expand(app: &AppHandle, window: &WebviewWindow, hold: Duration, linger: Duration) {
+    let _guard = super::resize_apply_guard();
     let generation = {
         let mut dock = state();
         if !dock.island || !dock.docked || dock.notch.is_none() {
             return;
         }
         dock.docked = false;
+        dock.park_timing = Some(dock::ParkTiming::new(Instant::now(), hold, linger));
         dock.generation += 1;
         dock.generation
     };
@@ -535,7 +657,7 @@ pub(crate) fn expand(app: &AppHandle, window: &WebviewWindow, hold: Duration, li
         cursor_in_hotspot,
         move |app, window| {
             tracing::info!(event = "hud_island_collapse", generation);
-            collapse(app, window);
+            collapse(app, window, generation);
         },
     );
 }
@@ -555,10 +677,11 @@ pub fn expand_island(_app: &tauri::AppHandle) {}
 
 /// Fold the island back to the notch row.
 #[cfg(target_os = "macos")]
-fn collapse(app: &AppHandle, window: &WebviewWindow) {
+fn collapse(app: &AppHandle, window: &WebviewWindow, expected_generation: u64) {
+    let _guard = super::resize_apply_guard();
     let generation = {
         let mut dock = state();
-        if !dock.island || dock.docked {
+        if !dock.island || dock.docked || dock.generation != expected_generation {
             return;
         }
         dock.docked = true;
@@ -568,6 +691,24 @@ fn collapse(app: &AppHandle, window: &WebviewWindow) {
     super::hide_detail(app);
     emit_state(app);
     spawn_hotspot_watcher(app.clone(), window.clone(), generation);
+}
+
+/// Restore the watcher after scale reconciliation cancels old motion.
+#[cfg(target_os = "macos")]
+pub(crate) fn resume_after_scale(app: &AppHandle, window: &WebviewWindow, generation: u64) {
+    if state().docked {
+        spawn_hotspot_watcher(app.clone(), window.clone(), generation);
+    } else {
+        dock::spawn_auto_park(
+            app.clone(),
+            window.clone(),
+            generation,
+            Duration::ZERO,
+            dock::PEEK_LINGER,
+            cursor_in_hotspot,
+            move |app, window| collapse(app, window, generation),
+        );
+    }
 }
 
 /// True when the pointer is in the cached notch's hotspot.
@@ -616,10 +757,12 @@ fn spawn_hotspot_watcher(app: AppHandle, window: WebviewWindow, generation: u64)
  * ---------------------------------------------------------------------- */
 
 /// Free the HUD for a drag and preview the island while the drop would make
-/// one. Main thread only. Returns true when the HUD was docked or islanded.
+/// one. Worker only, after a main-thread notch snapshot. Returns true when the HUD was docked or islanded.
 #[cfg(target_os = "macos")]
-pub fn begin_drag(app: &AppHandle) -> bool {
-    super::set_drag_in_progress(true);
+pub fn begin_drag(app: &AppHandle, revision: u64) -> bool {
+    if !super::drag_is_current(revision) {
+        return false;
+    }
     let was_parked = dock::tear_off(app);
     if !refresh_notch() {
         return was_parked;
@@ -633,8 +776,10 @@ pub fn begin_drag(app: &AppHandle) -> bool {
 
 /// Keep the drag inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
-pub fn begin_drag(app: &tauri::AppHandle) -> bool {
-    super::set_drag_in_progress(true);
+pub fn begin_drag(app: &tauri::AppHandle, revision: u64) -> bool {
+    if !super::drag_is_current(revision) {
+        return false;
+    }
     super::dock::tear_off(app)
 }
 
@@ -672,7 +817,10 @@ fn spawn_drag_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
                 } else {
                     IslandPhase::Off
                 };
-                emit(&app, notch.state(phase));
+                emit(
+                    &app,
+                    notch.state(phase, super::interface_scale(), revision()),
+                );
             }
         }
     });
@@ -734,7 +882,7 @@ mod tests {
     #[test]
     fn the_island_adds_a_wing_and_a_gutter_each_side() {
         let notch = notch();
-        let island = island_rect(&notch, SCALE);
+        let island = island_rect(&notch, SCALE, WING);
         assert_eq!(island.x, notch.x - (WING + FILLET) * SCALE);
         assert_eq!(island.y, 0.0);
         assert_eq!(island.width, notch.width + 2.0 * (WING + FILLET) * SCALE);
@@ -795,14 +943,15 @@ mod tests {
         let notch = Notch {
             rect: notch(),
             scale: SCALE,
+            available: DISPLAY,
         };
-        let state = notch.state(IslandPhase::Collapsed);
+        let state = notch.state(IslandPhase::Collapsed, 1.0, 0);
         assert_eq!(state.island, IslandPhase::Collapsed);
         assert_eq!(state.wing, WING);
         assert_eq!(state.fillet, FILLET);
         assert_eq!(state.notch, 204.0);
         assert_eq!(state.height, 32.0);
-        assert_eq!(notch.window_width(), 204.0 + 2.0 * (WING + FILLET));
+        assert_eq!(notch.window_width(1.0), 204.0 + 2.0 * (WING + FILLET));
         let json = serde_json::to_value(state).expect("serializable");
         assert_eq!(json["island"], "collapsed");
         assert_eq!(json["notch"], 204.0);
@@ -813,5 +962,103 @@ mod tests {
         let json = serde_json::to_value(IslandState::off()).expect("serializable");
         assert_eq!(json["island"], "off");
         assert_eq!(json["wing"], 0.0);
+    }
+
+    #[test]
+    fn scale_preserves_the_notch_and_caps_the_expanded_body() {
+        for backing in [1.0, 2.0] {
+            let notch = Notch {
+                rect: Rect {
+                    x: -600.0 * backing,
+                    y: 50.0 * backing,
+                    width: 204.0 * backing,
+                    height: 32.0 * backing,
+                },
+                scale: backing,
+                available: Rect {
+                    x: -800.0 * backing,
+                    y: 82.0 * backing,
+                    width: 650.0 * backing,
+                    height: 500.0 * backing,
+                },
+            };
+            for scale in [0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0] {
+                let collapsed = notch.layout(IslandPhase::Collapsed, scale);
+                let expanded = notch.layout(IslandPhase::Expanded, scale);
+                let initial = island_rect(&notch.rect, backing, notch.wing_width(scale));
+                assert_eq!(initial.x, collapsed.x);
+                assert_eq!(initial.width / backing, collapsed.width);
+                assert_eq!(collapsed.width, 204.0 + 2.0 * (WING * scale + FILLET));
+                let rendered = notch.state(IslandPhase::Expanded, scale, 1);
+                assert_eq!(rendered.wing, WING * scale);
+                assert_eq!(rendered.notch, 204.0);
+                assert_eq!(collapsed.header_height, 32.0);
+                assert_eq!(expanded.header_height, 32.0);
+                assert!(expanded.width >= collapsed.width);
+                assert!(expanded.width <= 650.0);
+                assert_eq!(expanded.body_max_height, 500.0);
+                let header_left = expanded.x / backing + expanded.header_offset;
+                assert_eq!(header_left, notch.rect.x / backing - WING * scale - FILLET);
+                assert!(expanded.x >= notch.available.x);
+                assert!(
+                    expanded.x + expanded.width * backing
+                        <= notch.available.x + notch.available.width
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn expanded_body_is_clamped_to_a_small_display_without_scaling_the_header() {
+        let notch = Notch {
+            rect: Rect {
+                x: 180.0,
+                y: 0.0,
+                width: 204.0,
+                height: 32.0,
+            },
+            scale: 1.0,
+            available: Rect {
+                x: 0.0,
+                y: 32.0,
+                width: 600.0,
+                height: 190.0,
+            },
+        };
+        let layout = notch.layout(IslandPhase::Expanded, 2.0);
+        assert_eq!(layout.width, 566.0);
+        assert_eq!(layout.body_max_height, 190.0);
+        assert_eq!(layout.header_height, 32.0);
+    }
+
+    #[test]
+    fn scaled_wings_fit_both_sides_without_moving_the_camera_gap() {
+        let notch = Notch {
+            rect: Rect {
+                x: -146.0,
+                y: -20.0,
+                width: 204.0,
+                height: 24.0,
+            },
+            scale: 1.0,
+            available: Rect {
+                x: -200.0,
+                y: 4.0,
+                width: 320.0,
+                height: 400.0,
+            },
+        };
+        for phase in [IslandPhase::Collapsed, IslandPhase::Expanded] {
+            let layout = notch.layout(phase, 2.0);
+            let state = notch.state(phase, 2.0, 1);
+            assert_eq!(state.wing, 35.0);
+            assert_eq!(
+                layout.x + state.header_offset + FILLET + state.wing,
+                notch.rect.x
+            );
+            assert_eq!(state.height, 24.0);
+            assert!(layout.x >= notch.available.x);
+            assert!(layout.x + layout.width <= notch.available.x + notch.available.width);
+        }
     }
 }

@@ -98,6 +98,7 @@ macro_rules! with_app_commands {
             hud_commands::expand_hud_island => "expand_hud_island",
             hud_commands::tear_off_overlay => "tear_off_overlay",
             hud_commands::wake_overlay => "wake_overlay",
+            commands::set_interface_scale => "set_interface_scale",
             commands::set_popover_height => "set_popover_height",
             commands::set_repository_enabled => "set_repository_enabled",
             commands::set_settings => "set_settings",

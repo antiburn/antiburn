@@ -747,6 +747,25 @@ impl Store {
         Ok((previous, saved, result))
     }
 
+    /// Replace ordinary preferences without accepting a stale interface scale snapshot.
+    pub fn replace_settings_preserving_interface_scale<T>(
+        &self,
+        settings: &AppSettings,
+        apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings, &AppSettings) -> Result<T>,
+    ) -> Result<(AppSettings, AppSettings, T)> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let previous = read_settings(&tx)?;
+        let mut saved = settings.clone();
+        saved.interface_scale_percent = previous.interface_scale_percent;
+        let saved = saved.normalized();
+        write_settings(&tx, &saved)?;
+        let result = apply(&tx, &previous, &saved)?;
+        tx.commit()?;
+        self.update_settings_snapshot(&saved);
+        Ok((previous, saved, result))
+    }
+
     /// Apply the stored session-data retention policy.
     ///
     /// Returns how many sessions it removed and the revision after the
@@ -766,16 +785,28 @@ impl Store {
         &self,
         update: impl FnOnce(&mut AppSettings),
     ) -> Result<(AppSettings, AppSettings)> {
+        self.update_settings_with(|settings| {
+            update(settings);
+            Ok(())
+        })
+        .map(|(previous, saved, ())| (previous, saved))
+    }
+
+    /// Change preferences and validate the request inside the same transaction.
+    pub fn update_settings_with<T>(
+        &self,
+        update: impl FnOnce(&mut AppSettings) -> Result<T>,
+    ) -> Result<(AppSettings, AppSettings, T)> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         let previous = read_settings(&tx)?;
         let mut saved = previous.clone();
-        update(&mut saved);
+        let result = update(&mut saved)?;
         let saved = saved.normalized();
         write_settings(&tx, &saved)?;
         tx.commit()?;
         self.update_settings_snapshot(&saved);
-        Ok((previous, saved))
+        Ok((previous, saved, result))
     }
 
     /// Make setup pending without changing the reader's data or choices.
@@ -3207,6 +3238,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("theme")
             .and_then(|value| ThemePreference::parse(value))
             .unwrap_or(defaults.theme),
+        interface_scale_percent: stored
+            .get("interfaceScalePercent")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(defaults.interface_scale_percent),
         activity_window_days: stored
             .get("activityWindowDays")
             .and_then(|value| value.parse().ok())
@@ -3346,6 +3381,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )?;
     put.execute(params!["theme", settings.theme.as_str()])?;
+    put.execute(params![
+        "interfaceScalePercent",
+        settings.interface_scale_percent.to_string()
+    ])?;
     put.execute(params![
         "activityWindowDays",
         settings.activity_window_days.to_string()

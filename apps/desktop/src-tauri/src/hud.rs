@@ -5,6 +5,7 @@
 //! owns where the HUD's remembered position is kept, and the watcher that
 //! reacts when a display connects or disconnects.
 
+use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
@@ -25,6 +26,41 @@ const ENABLED_KEY: &str = "internal:hudEnabled";
 
 /// The internal scalar that says whether the HUD was docked, and where.
 const DOCK_KEY: &str = "internal:hudDock";
+
+/// Serialize drag intent and storage writes. Never hold this gate for native work.
+static DRAG_PERSISTENCE: DragPersistence = DragPersistence(Mutex::new(()));
+
+struct DragPersistence(Mutex<()>);
+
+impl DragPersistence {
+    fn start(&self, begin: impl FnOnce() -> u64) -> u64 {
+        let _guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        begin()
+    }
+
+    fn save(
+        &self,
+        store: &Store,
+        placement: Option<Placement>,
+        dock: Option<DockSettings>,
+        revision: u64,
+        current_revision: impl FnOnce() -> u64,
+    ) {
+        let _guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if revision != current_revision() {
+            return;
+        }
+        let Some(dock) = dock else { return };
+        if let Some(placement) = placement {
+            save_placement(store, placement);
+        }
+        save_dock(store, dock);
+    }
+}
+
+pub(crate) fn request_drag() -> u64 {
+    DRAG_PERSISTENCE.start(antiburn_hud::request_drag)
+}
 
 /// The shape of the stored value. A different number means a value this build
 /// cannot read, and the HUD starts again from its default position.
@@ -75,6 +111,24 @@ pub fn save_dock(store: &Store, settings: DockSettings) {
     }
 }
 
+/// Persist only a completed drop that is still current after native settlement.
+/// An old command may resume after a newer drag starts; neither its placement
+/// nor its dock preference may replace the newer interaction's state.
+pub(crate) fn save_settled_drop(
+    store: &Store,
+    placement: Option<Placement>,
+    dock: Option<DockSettings>,
+    revision: u64,
+) {
+    DRAG_PERSISTENCE.save(
+        store,
+        placement,
+        dock,
+        revision,
+        antiburn_hud::drag_revision,
+    );
+}
+
 /// Bring the HUD back at launch when the reader left it on. The popover used
 /// to do this, but the popover is lazy, so the HUD waited for the first click
 /// on the menu bar.
@@ -85,13 +139,20 @@ pub fn restore_at_launch(app: &AppHandle) {
         return;
     }
     let entries = load_placements(&store);
+    let dock = load_dock(&store);
+    antiburn_hud::refresh_notch();
+    let request = antiburn_hud::request_visibility(true);
     crate::analytics::prepare_hud_exposure(crate::analytics::event::Origin::Automatic);
-    if let Err(error) = antiburn_hud::open(app, &entries) {
-        crate::analytics::cancel_hud_exposure();
-        ::tracing::warn!(event = "hud_launch_restore_failed", error = %error);
-        return;
-    }
-    antiburn_hud::restore_dock(app, load_dock(&store));
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let interface_scale = crate::interface_scale::current(&app);
+        if let Err(error) =
+            antiburn_hud::open(&app, &entries, interface_scale.factor(), dock, request)
+        {
+            crate::analytics::cancel_hud_exposure();
+            ::tracing::warn!(event = "hud_launch_restore_failed", error = %error);
+        }
+    });
 }
 
 /// Remember one position and make its display the preferred one.
@@ -185,9 +246,100 @@ fn promote(entries: Vec<Placement>, placement: Placement) -> Vec<Placement> {
     promoted
 }
 
+/// Resize retained HUD windows for a saved application interface scale.
+#[cfg(target_os = "macos")]
+pub fn reconcile_interface_scale(app: &AppHandle, factor: f64) -> tauri::Result<()> {
+    if app
+        .get_webview_window(antiburn_hud::OVERLAY_LABEL)
+        .is_none()
+        && app.get_webview_window(antiburn_hud::DETAIL_LABEL).is_none()
+    {
+        return Ok(());
+    }
+    let entries = load_placements(&app.state::<Store>());
+    antiburn_hud::set_interface_scale(app, factor, &entries)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reconcile_interface_scale(_app: &AppHandle, _factor: f64) -> tauri::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_delayed_drop_cannot_persist_after_a_new_drag_starts() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+            mpsc,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let persistence = Arc::new(DragPersistence(Mutex::new(())));
+        let current = Arc::new(AtomicU64::new(1));
+        let original = placement("original", 10.0, 20.0);
+        save_placement(&store, original.clone());
+        let parked = DockSettings {
+            docked: true,
+            edge: antiburn_hud::DockEdge::Left,
+            island: false,
+        };
+        // Pause A before storage. B advances and saves before A resumes.
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let delayed = {
+            let persistence = persistence.clone();
+            let current = current.clone();
+            let store = store.clone();
+            std::thread::spawn(move || {
+                let captured = current.load(Ordering::SeqCst);
+                ready_tx.send(()).unwrap();
+                resume_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                persistence.save(
+                    &store,
+                    Some(placement("stale", 30.0, 40.0)),
+                    Some(parked),
+                    captured,
+                    || current.load(Ordering::SeqCst),
+                );
+            })
+        };
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let revision = persistence.start(|| current.fetch_add(1, Ordering::SeqCst) + 1);
+        // Native cancellation must also suppress both writes at the same revision.
+        persistence.save(
+            &store,
+            Some(placement("cancelled", 30.0, 40.0)),
+            None,
+            revision,
+            || current.load(Ordering::SeqCst),
+        );
+        assert_eq!(load_placements(&store), vec![original]);
+        assert!(!load_dock(&store).docked);
+        let latest = placement("latest", 50.0, 60.0);
+        persistence.save(&store, Some(latest.clone()), Some(parked), revision, || {
+            // The revision check and writes share the gate with drag starts.
+            assert!(persistence.0.try_lock().is_err());
+            current.load(Ordering::SeqCst)
+        });
+        resume_tx.send(()).unwrap();
+        delayed.join().unwrap();
+        assert_eq!(load_placements(&store)[0], latest);
+        assert!(
+            !load_placements(&store)
+                .iter()
+                .any(|entry| entry.monitor == "stale")
+        );
+        assert!(load_dock(&store).docked);
+    }
 
     fn placement(monitor: &str, x: f64, y: f64) -> Placement {
         Placement {

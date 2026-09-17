@@ -5,6 +5,7 @@ import type * as Ipc from "../lib/ipc"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
 import type * as HudIpc from "../lib/hudIpc"
 import type { HudDetailState } from "../lib/hudIpc"
+import { HUD_ISLAND_OFF } from "../lib/hudIsland"
 import { OverlayWindow } from "./OverlayWindow"
 
 const REFRESH_TEST_MS = 60_000
@@ -856,7 +857,7 @@ describe("OverlayWindow", () => {
     // The empty track: one bar's worth of segments, none of them lit.
     expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
     // The window shrinks with it, rather than keeping the old bars' height.
-    await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(28, false, true))
+    await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(28, false, true, 0))
   })
 
   it("does not publish or resize for an equal pushed usage snapshot", async () => {
@@ -1121,13 +1122,13 @@ describe("OverlayWindow", () => {
 
   it("reveals at the measured collapsed height", async () => {
     render(<OverlayWindow />)
-    await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(28, false, false))
+    await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(28, false, false, 0))
   })
 
   it("resizes when refreshed data changes the bar count", async () => {
     getLiveUsage.mockResolvedValue(withSecondBar())
     render(<OverlayWindow />)
-    await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(44, false, true))
+    await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(44, false, true, 0))
   })
 
   it("paints the same translucent frame at rest and on hover", async () => {
@@ -1262,6 +1263,86 @@ describe("OverlayWindow", () => {
     }
   })
 
+  it("uses applied geometry and ignores a snapshot older than an already received event", async () => {
+    let resolveSnapshot!: (state: unknown) => void
+    invoke.mockImplementation(async (command) => {
+      if (command === "hud_island_state")
+        return new Promise((resolve) => {
+          resolveSnapshot = resolve
+        })
+      return undefined
+    })
+    try {
+      render(<OverlayWindow />)
+      await waitFor(() => expect(resolveSnapshot).toBeDefined())
+      const current = {
+        ...HUD_ISLAND_OFF,
+        island: "expanded" as const,
+        scale: 2,
+        revision: 12,
+        wing: 60,
+        fillet: 19,
+        notch: 200,
+        height: 32,
+        headerOffset: 130,
+        bodyWidth: 520,
+        bodyMaxHeight: 400,
+      }
+      act(() => emitNative("hud-island:state", current))
+      expect(screen.getByTestId("island-header").style.height).toBe("16px")
+      expect(screen.getByTestId("island-header").style.width).toBe("260px")
+      expect(screen.getByTestId("island-header").style.marginLeft).toBe("9.5px")
+      const wings = screen
+        .getByTestId("island-header")
+        .querySelectorAll<HTMLElement>(".hud-island-wing")
+      expect(wings[0]!.style.width).toBe("95px")
+      expect(wings[1]!.style.width).toBe("65px")
+      expect(screen.getByTestId("island-body").style.paddingLeft).toBe("15px")
+      expect(screen.getByTestId("island-body").style.maxHeight).toBe("200px")
+      expect(screen.getByTestId("island-body").style.width).toBe("260px")
+      await act(async () => resolveSnapshot({ ...HUD_ISLAND_OFF, revision: 11 }))
+      expect(screen.getByTestId("island-body")).toBeTruthy()
+      act(() => emitNative("hud-island:state", { ...HUD_ISLAND_OFF, revision: 10 }))
+      expect(screen.getByTestId("island-body")).toBeTruthy()
+      expect(resizeOverlayWindow).toHaveBeenLastCalledWith(expect.any(Number), false, false, 12)
+      act(() => emitNative("hud-island:state", { ...current, revision: 13 }))
+      expect(resizeOverlayWindow).toHaveBeenLastCalledWith(expect.any(Number), false, false, 13)
+    } finally {
+      invoke.mockImplementation(async () => undefined)
+    }
+  })
+
+  it("reads mounted island geometry even if the native listener is unavailable", async () => {
+    const listenNormally = listenNative.getMockImplementation()!
+    listenNative.mockImplementation((event, handler) => {
+      if (event === "hud-island:state") return Promise.reject(new Error("listener unavailable"))
+      return listenNormally(event, handler)
+    })
+    invoke.mockImplementation(async (command) =>
+      command === "hud_island_state"
+        ? {
+            ...HUD_ISLAND_OFF,
+            island: "expanded",
+            revision: 3,
+            scale: 2,
+            wing: 30,
+            fillet: 19,
+            notch: 200,
+            height: 32,
+            bodyWidth: 520,
+            bodyMaxHeight: 400,
+          }
+        : undefined,
+    )
+    try {
+      render(<OverlayWindow />)
+      await waitFor(() => expect(screen.getByTestId("island-body")).toBeTruthy())
+      expect(screen.getByTestId("island-header").style.height).toBe("16px")
+    } finally {
+      invoke.mockImplementation(async () => undefined)
+    }
+  })
+
   it("draws the collapsed island as the notch row alone and keeps the detail shut", async () => {
     vi.useFakeTimers()
     try {
@@ -1271,16 +1352,22 @@ describe("OverlayWindow", () => {
 
       act(() =>
         emitNative("hud-island:state", {
+          ...HUD_ISLAND_OFF,
           island: "collapsed",
           wing: 30,
-          fillet: 6,
+          fillet: 19,
           notch: 200,
           height: 32,
+          revision: 1,
+          bodyWidth: 260,
+          bodyMaxHeight: 500,
         }),
       )
       const island = container.querySelector("[data-island]")
       expect(island?.getAttribute("data-island")).toBe("collapsed")
-      expect(island?.classList.contains("hud-island-fillets")).toBe(true)
+      expect(screen.getByTestId("island-header").classList.contains("hud-island-fillets")).toBe(
+        true,
+      )
       expect(screen.getByTestId("island-live-led")).toBeTruthy()
       // The right wing holds the antiburn mark.
       expect(screen.getByTestId("island-mark")).toBeTruthy()
@@ -1292,16 +1379,18 @@ describe("OverlayWindow", () => {
 
       act(() =>
         emitNative("hud-island:state", {
+          ...HUD_ISLAND_OFF,
           island: "expanded",
           wing: 30,
           fillet: 19,
           notch: 200,
           height: 32,
+          revision: 2,
+          bodyWidth: 260,
+          bodyMaxHeight: 500,
         }),
       )
-      expect(
-        container.querySelector("[data-island]")?.classList.contains("hud-island-open"),
-      ).toBe(true)
+      expect(screen.getByTestId("island-body").classList.contains("hud-island-open")).toBe(true)
       expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
       // The island names and dates its bars; the floating frame leaves that to the detail.
       expect(screen.getByTestId("hud-bar-label").textContent).toBe("5-hour limit81%")
@@ -1313,11 +1402,8 @@ describe("OverlayWindow", () => {
 
       act(() =>
         emitNative("hud-island:state", {
-          island: "off",
-          wing: 0,
-          fillet: 0,
-          notch: 0,
-          height: 0,
+          ...HUD_ISLAND_OFF,
+          revision: 3,
         }),
       )
       expect(container.querySelector("[data-island]")).toBeNull()
@@ -1539,7 +1625,17 @@ describe("OverlayWindow", () => {
   })
 
   describe("island drag", () => {
-    const COLLAPSED = { island: "collapsed", wing: 30, fillet: 6, notch: 200, height: 32 }
+    const COLLAPSED = {
+      ...HUD_ISLAND_OFF,
+      island: "collapsed",
+      wing: 30,
+      fillet: 19,
+      notch: 200,
+      height: 32,
+      revision: 1,
+      bodyWidth: 260,
+      bodyMaxHeight: 500,
+    }
     const tearOffs = () =>
       invoke.mock.calls.filter(([command]) => command === "tear_off_overlay")
 

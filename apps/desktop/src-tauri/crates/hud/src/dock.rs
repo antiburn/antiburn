@@ -94,6 +94,9 @@ pub(crate) struct Rect {
 }
 
 pub(crate) struct DockState {
+    /// Retained across geometry changes, so scaling cannot shorten a wake.
+    #[cfg(target_os = "macos")]
+    pub(crate) park_timing: Option<ParkTiming>,
     pub(crate) edge: DockEdge,
     pub(crate) docked: bool,
     /// The HUD sits in the notch. `docked` then means collapsed.
@@ -117,6 +120,8 @@ pub(crate) struct DockState {
 }
 
 static DOCK: Mutex<DockState> = Mutex::new(DockState {
+    #[cfg(target_os = "macos")]
+    park_timing: None,
     edge: DockEdge::Right,
     docked: false,
     island: false,
@@ -130,6 +135,31 @@ static DOCK: Mutex<DockState> = Mutex::new(DockState {
     notch: None,
     generation: 0,
 });
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy)]
+pub(crate) struct ParkTiming {
+    start: Instant,
+    last_inside: Instant,
+    hold: Duration,
+    linger: Duration,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl ParkTiming {
+    pub(crate) fn new(now: Instant, hold: Duration, linger: Duration) -> Self {
+        Self {
+            start: now,
+            last_inside: now,
+            hold,
+            linger,
+        }
+    }
+
+    fn should_park(self, now: Instant) -> bool {
+        should_dock(now, self.start, self.hold, self.linger, self.last_inside)
+    }
+}
 
 /// Lock the dock state.
 ///
@@ -176,12 +206,15 @@ pub fn restore_dock(_app: &tauri::AppHandle, _settings: DockSettings) {}
 
 /// Dock the HUD when a drag dropped it against a display edge.
 ///
-/// Returns the dock state after the drop, for the shell to store.
+/// Returns the settled dock state, or `None` for a stale/cancelled drop.
 #[cfg(target_os = "macos")]
-pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
-    super::set_drag_in_progress(false);
+pub fn settle_after_drag(app: &AppHandle, revision: u64) -> Option<DockSettings> {
+    if !super::drag_is_current(revision) {
+        return None;
+    }
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
-        return dock_settings();
+        super::cancel_pending_drag(revision);
+        return None;
     };
     super::island::refresh_notch();
     if let Some(window_rect) = window_rect(&window)
@@ -190,9 +223,11 @@ pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
         let frame = monitor_rect(&monitor);
         if super::island::dropped_on_notch(&window_rect) {
             super::island::island_at(app, &window);
-        } else if let Some(edge) =
-            edge_dropped_on(&frame, &window_rect, SIDE_INSET * monitor.scale_factor())
-        {
+        } else if let Some(edge) = edge_dropped_on(
+            &frame,
+            &window_rect,
+            SIDE_INSET * super::interface_scale() * monitor.scale_factor(),
+        ) {
             let others: Vec<Rect> = window
                 .available_monitors()
                 .map(|all| {
@@ -221,14 +256,20 @@ pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
             dock.generation += 1;
         }
     }
-    dock_settings()
+    if !super::finish_drag(revision) {
+        return None;
+    }
+    if let Err(error) = super::flush_pending_scale(app) {
+        tracing::warn!(event = "hud_deferred_scale_failed", error = %error);
+    }
+    (super::drag_revision() == revision).then(dock_settings)
 }
 
 /// Keep the drop inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
-pub fn settle_after_drag(_app: &tauri::AppHandle) -> DockSettings {
-    super::set_drag_in_progress(false);
-    dock_settings()
+pub fn settle_after_drag(_app: &tauri::AppHandle, revision: u64) -> Option<DockSettings> {
+    super::finish_drag(revision);
+    None
 }
 
 /// Free the HUD: a drag started on a docked, peeked, or islanded HUD.
@@ -248,6 +289,10 @@ pub fn tear_off(app: &tauri::AppHandle) -> bool {
         dock.island = false;
         dock.island_wanted = false;
         dock.home = None;
+        #[cfg(target_os = "macos")]
+        {
+            dock.park_timing = None;
+        }
         dock.generation += 1;
         (was_docked, was_island)
     };
@@ -316,6 +361,7 @@ pub(crate) fn reset() {
     dock.docked = false;
     dock.island = false;
     dock.home = None;
+    dock.park_timing = None;
     dock.generation += 1;
 }
 
@@ -374,6 +420,67 @@ fn redock_choice(wants_island: bool, has_notch: bool) -> Redock {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn cancel_motion_for_scale() {
+    state().generation += 1;
+}
+
+/// Restore the current dock intent after a scale change. The caller owns resize.
+#[cfg(target_os = "macos")]
+pub(crate) fn reconcile_scale(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let (island, docked, edge, frame, scale, generation, has_home) = {
+        let dock = state();
+        (
+            dock.island,
+            dock.docked,
+            dock.edge,
+            dock.frame,
+            dock.scale,
+            dock.generation,
+            dock.home.is_some(),
+        )
+    };
+    if island {
+        super::island::resume_after_scale(app, window, generation);
+        return true;
+    }
+    let Some(frame) = frame.filter(|_| has_home) else {
+        return false;
+    };
+    let Some(rect) = window_rect(window) else {
+        return true;
+    };
+    let home = flush_position(edge, &frame, &rect);
+    state().home = Some(home);
+    let target = if docked {
+        docked_position(
+            edge,
+            &frame,
+            &Rect {
+                x: home.0,
+                y: home.1,
+                ..rect
+            },
+            tab_depth(edge, scale, super::interface_scale()),
+        )
+    } else {
+        home
+    };
+    let _ = window.set_position(PhysicalPosition::new(target.0, target.1));
+    if docked {
+        spawn_tab_watcher(app.clone(), window.clone(), generation);
+    } else {
+        spawn_auto_dock(
+            app.clone(),
+            window.clone(),
+            generation,
+            Duration::ZERO,
+            PEEK_LINGER,
+        );
+    }
+    true
+}
+
 /// Keep a docked window at its tab after its height changed.
 ///
 /// The caller holds the resize guard, so this writes the position directly.
@@ -384,10 +491,7 @@ pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
         let dock = state();
         if dock.island { Some(dock.home) } else { None }
     };
-    if let Some(home) = island_home {
-        if let Some((x, y)) = home {
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-        }
+    if island_home.is_some() {
         return;
     }
     let (edge, frame, scale) = {
@@ -400,7 +504,12 @@ pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
     let Some(window_rect) = window_rect(window) else {
         return;
     };
-    let target = docked_position(edge, &frame, &window_rect, tab_depth(edge, scale));
+    let target = docked_position(
+        edge,
+        &frame,
+        &window_rect,
+        tab_depth(edge, scale, super::interface_scale()),
+    );
     // The height sets the flush position at the bottom edge. A HUD docked at
     // launch, before the renderer reports its height, has a stale home.
     {
@@ -418,6 +527,20 @@ pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
 /// whole HUD on screen even after a drop that went past the edge.
 #[cfg(target_os = "macos")]
 fn dock_at(app: &AppHandle, window: &WebviewWindow, edge: DockEdge) {
+    dock_at_generation(app, window, edge, None);
+}
+
+#[cfg(target_os = "macos")]
+fn dock_at_generation(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    edge: DockEdge,
+    expected: Option<u64>,
+) {
+    let guard = super::resize_apply_guard();
+    if expected.is_some_and(|generation| state().generation != generation) {
+        return;
+    }
     if state().docked {
         return;
     }
@@ -442,13 +565,20 @@ fn dock_at(app: &AppHandle, window: &WebviewWindow, edge: DockEdge) {
         dock.frame = Some(frame);
         dock.scale = scale;
         dock.docked = true;
+        dock.park_timing = None;
         dock.generation += 1;
-        let target = docked_position(edge, &frame, &current, tab_depth(edge, scale));
+        let target = docked_position(
+            edge,
+            &frame,
+            &current,
+            tab_depth(edge, scale, super::interface_scale()),
+        );
         ((current.x, current.y), target, dock.generation)
     };
     super::hide_detail(app);
     tracing::info!(event = "hud_dock", edge = ?edge, x = target.0, y = target.1);
     let watcher = (app.clone(), window.clone());
+    drop(guard);
     slide(window.clone(), start, target, generation, move || {
         let parked = window_rect(&watcher.1).map(|rect| (rect.x, rect.y));
         tracing::info!(event = "hud_dock_parked", ?parked, generation);
@@ -462,11 +592,17 @@ fn dock_at(app: &AppHandle, window: &WebviewWindow, edge: DockEdge) {
 /// after the pointer leaves it.
 #[cfg(target_os = "macos")]
 fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration, linger: Duration) {
+    let guard = super::resize_apply_guard();
     if !state().docked {
         return;
     }
     let Some(window_rect) = window_rect(window) else {
         return;
+    };
+    let start_delay = if window.is_visible().unwrap_or(false) {
+        SLIDE_DURATION
+    } else {
+        Duration::ZERO
     };
     let (start, home, generation) = {
         let mut dock = state();
@@ -478,10 +614,12 @@ fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration, linger: Durat
             return;
         };
         dock.docked = false;
+        dock.park_timing = Some(ParkTiming::new(Instant::now() + start_delay, hold, linger));
         dock.generation += 1;
         ((window_rect.x, window_rect.y), home, dock.generation)
     };
     let after = (app.clone(), window.clone());
+    drop(guard);
     slide(window.clone(), start, home, generation, move || {
         spawn_auto_dock(after.0, after.1, generation, hold, linger);
     });
@@ -503,6 +641,9 @@ fn slide(
     if !window.is_visible().unwrap_or(false) {
         {
             let _guard = super::resize_apply_guard();
+            if state().generation != generation {
+                return;
+            }
             let _ = window.set_position(PhysicalPosition::new(to.0, to.1));
         }
         done();
@@ -547,9 +688,12 @@ fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
                 (dock.edge, dock.frame, dock.scale)
             };
             let on_strip = match (docked_frame, window.cursor_position().ok()) {
-                (Some(strip), Some(cursor)) => {
-                    on_tab_strip(edge, &strip, tab_depth(edge, scale), (cursor.x, cursor.y))
-                }
+                (Some(strip), Some(cursor)) => on_tab_strip(
+                    edge,
+                    &strip,
+                    tab_depth(edge, scale, super::interface_scale()),
+                    (cursor.x, cursor.y),
+                ),
                 _ => false,
             };
             if !on_strip {
@@ -588,9 +732,12 @@ fn spawn_auto_dock(
             (dock.edge, dock.frame, dock.scale)
         };
         match (docked_frame, window.cursor_position().ok()) {
-            (Some(strip), Some(cursor)) => {
-                on_tab_strip(edge, &strip, tab_depth(edge, scale), (cursor.x, cursor.y))
-            }
+            (Some(strip), Some(cursor)) => on_tab_strip(
+                edge,
+                &strip,
+                tab_depth(edge, scale, super::interface_scale()),
+                (cursor.x, cursor.y),
+            ),
             _ => false,
         }
     };
@@ -604,7 +751,7 @@ fn spawn_auto_dock(
         move |app, window| {
             let edge = state().edge;
             tracing::info!(event = "hud_auto_dock", generation);
-            dock_at(app, window, edge);
+            dock_at_generation(app, window, edge, Some(generation));
         },
     );
 }
@@ -624,9 +771,15 @@ pub(crate) fn spawn_auto_park(
     near: impl Fn(&WebviewWindow) -> bool + Send + 'static,
     park: impl FnOnce(&AppHandle, &WebviewWindow) + Send + 'static,
 ) {
+    {
+        let mut dock = state();
+        if dock.generation != generation || dock.docked || dock.home.is_none() {
+            return;
+        }
+        dock.park_timing
+            .get_or_insert_with(|| ParkTiming::new(Instant::now(), hold, linger));
+    }
     tauri::async_runtime::spawn(async move {
-        let start = Instant::now();
-        let mut last_inside = start;
         loop {
             tokio::time::sleep(AUTO_DOCK_POLL).await;
             {
@@ -639,11 +792,21 @@ pub(crate) fn spawn_auto_park(
                 return;
             }
             let now = Instant::now();
-            if near(&window) || super::cursor_inside(&window).unwrap_or(false) {
-                last_inside = now;
-                continue;
-            }
-            if should_dock(now, start, hold, linger, last_inside) {
+            let inside = near(&window) || super::cursor_inside(&window).unwrap_or(false);
+            let should_park = {
+                let mut dock = state();
+                if dock.generation != generation {
+                    return;
+                }
+                let Some(timing) = dock.park_timing.as_mut() else {
+                    return;
+                };
+                if inside {
+                    timing.last_inside = now;
+                }
+                !inside && timing.should_park(now)
+            };
+            if should_park {
                 park(&app, &window);
                 return;
             }
@@ -688,9 +851,9 @@ pub(crate) fn monitor_rect(monitor: &Monitor) -> Rect {
 ///
 /// A side tab adds the window's transparent side gap, so the frame shows.
 #[cfg(any(target_os = "macos", test))]
-fn tab_depth(edge: DockEdge, scale: f64) -> f64 {
+fn tab_depth(edge: DockEdge, scale: f64, interface_scale: f64) -> f64 {
     match edge {
-        DockEdge::Left | DockEdge::Right => (TAB + SIDE_INSET) * scale,
+        DockEdge::Left | DockEdge::Right => (TAB + SIDE_INSET * interface_scale) * scale,
         DockEdge::Top | DockEdge::Bottom => TAB * scale,
     }
 }
@@ -820,6 +983,16 @@ fn should_dock(
 mod tests {
     use super::*;
 
+    #[test]
+    fn retained_wake_timing_survives_scale_reconciliation() {
+        let start = Instant::now();
+        let timing = ParkTiming::new(start, Duration::from_millis(4800), Duration::from_secs(3));
+        let resumed = timing;
+        assert!(!resumed.should_park(start + Duration::from_millis(1500)));
+        assert!(!resumed.should_park(start + Duration::from_millis(4799)));
+        assert!(resumed.should_park(start + Duration::from_millis(4800)));
+    }
+
     const FRAME: Rect = Rect {
         x: 100.0,
         y: 50.0,
@@ -835,10 +1008,11 @@ mod tests {
 
     #[test]
     fn side_tabs_add_the_transparent_gap() {
-        assert_eq!(tab_depth(DockEdge::Left, 2.0), 28.0);
-        assert_eq!(tab_depth(DockEdge::Right, 1.0), 14.0);
-        assert_eq!(tab_depth(DockEdge::Top, 2.0), 12.0);
-        assert_eq!(tab_depth(DockEdge::Bottom, 1.0), 6.0);
+        assert_eq!(tab_depth(DockEdge::Left, 2.0, 1.0), 28.0);
+        assert_eq!(tab_depth(DockEdge::Right, 1.0, 1.0), 14.0);
+        assert_eq!(tab_depth(DockEdge::Top, 2.0, 1.0), 12.0);
+        assert_eq!(tab_depth(DockEdge::Bottom, 1.0, 1.0), 6.0);
+        assert_eq!(tab_depth(DockEdge::Left, 2.0, 2.0), 44.0);
     }
 
     #[test]

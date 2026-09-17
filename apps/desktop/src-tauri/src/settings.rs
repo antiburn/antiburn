@@ -2,7 +2,7 @@
 //!
 //! Unlike the popover this is an ordinary window with real decorations: a
 //! place to read and change configuration, not a transient surface. It is
-//! fixed at 960×680 and created on demand. Closing it destroys its webview, so
+//! resizable from a preferred 960×680 size and created on demand. Closing it destroys its webview, so
 //! the next request starts a new renderer from persisted settings.
 //!
 //! On macOS the title bar is an overlay: decorations (traffic lights, system
@@ -17,7 +17,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
-use crate::window_placement::center_on_active_monitor;
+use crate::window_placement::{center_on_active_monitor, resize_on_current_monitor};
 use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_script};
 
 /// Window label. Also listed in `capabilities/default.json`.
@@ -59,11 +59,14 @@ impl PendingPane {
 
 /// Renderer lifecycle for the Settings window.
 #[derive(Default)]
-pub struct SettingsWindowState(Mutex<WindowReadiness>);
+pub struct SettingsWindowState {
+    readiness: Mutex<WindowReadiness>,
+    minimum_size: Mutex<Option<tauri::LogicalSize<f64>>>,
+}
 
 impl ManagedWindowReadiness for SettingsWindowState {
     fn readiness(&self) -> std::sync::MutexGuard<'_, WindowReadiness> {
-        self.0
+        self.readiness
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -72,11 +75,71 @@ impl ManagedWindowReadiness for SettingsWindowState {
 /// Dedicated frontend entry for the settings window.
 const URL: &str = "settings.html";
 
-// Fixed geometry: a 220px sidebar leaves a ≥600px content column, and the
-// whole window still fits a 1280×800 display. Non-resizable — every pane is
-// designed for exactly this rectangle.
+// The preferred size leaves room for the sidebar and the content column.
 const WIDTH: f64 = 960.0;
 const HEIGHT: f64 = 680.0;
+
+// One CSS pixel protects the 720px navigation breakpoint from native rounding.
+const MIN_WIDTH: f64 = 721.0;
+const MIN_HEIGHT: f64 = 480.0;
+
+fn minimum_dimensions(factor: f64, available: (f64, f64)) -> tauri::LogicalSize<f64> {
+    tauri::LogicalSize::new(
+        (MIN_WIDTH * factor).ceil().min(available.0),
+        (MIN_HEIGHT * factor).ceil().min(available.1),
+    )
+}
+
+/// Keep Settings resizable above its scaled minimum, within the current work area.
+pub fn reconcile_interface_scale(
+    app: &AppHandle,
+    scale: crate::interface_scale::InterfaceScale,
+) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return Ok(());
+    };
+    let Some(monitor) = window.current_monitor()?.or(window.primary_monitor()?) else {
+        return Ok(());
+    };
+    let dpi = window.scale_factor()?;
+    let monitor_dpi = monitor.scale_factor();
+    if !dpi.is_finite() || dpi <= 0.0 || !monitor_dpi.is_finite() || monitor_dpi <= 0.0 {
+        return Ok(());
+    }
+    let inner = window.inner_size()?;
+    let outer = window.outer_size()?;
+    let area = monitor.work_area();
+    let available = (
+        f64::from(area.size.width) / monitor_dpi
+            - f64::from(outer.width.saturating_sub(inner.width)) / dpi,
+        f64::from(area.size.height) / monitor_dpi
+            - f64::from(outer.height.saturating_sub(inner.height)) / dpi,
+    );
+    if available.0 < 1.0 || available.1 < 1.0 {
+        return Ok(());
+    }
+    let minimum = minimum_dimensions(scale.factor(), available);
+    let state = app.state::<SettingsWindowState>();
+    let changed = {
+        let mut cached = state.minimum_size.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = *cached != Some(minimum);
+        *cached = Some(minimum);
+        changed
+    };
+    if changed && let Err(error) = window.set_min_size(Some(minimum)) {
+        *state.minimum_size.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        return Err(error);
+    }
+    let current = (f64::from(inner.width) / dpi, f64::from(inner.height) / dpi);
+    let target = (
+        current.0.clamp(minimum.width, available.0),
+        current.1.clamp(minimum.height, available.1),
+    );
+    if target != current {
+        resize_on_current_monitor(&window, target.0, target.1)?;
+    }
+    Ok(())
+}
 
 /// Shows the settings window, creating it if this is the first request.
 ///
@@ -152,6 +215,10 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
 
 /// Builds the hidden settings window and starts its renderer load.
 fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
+    *app.state::<SettingsWindowState>()
+        .minimum_size
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
     ::tracing::info!(
         event = "window_renderer_load_started",
         window = LABEL,
@@ -164,30 +231,36 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
     // `.center()`: the builder's centering computes against the primary
     // monitor before the window has a screen, which is exactly the "opens on
     // the wrong display" this function exists to avoid.
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
-        .initialization_script(renderer_generation_script(generation))
+    let interface_scale = crate::interface_scale::current(app);
+    let width = WIDTH * interface_scale.factor();
+    let height = HEIGHT * interface_scale.factor();
+    let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
+        .initialization_script(crate::interface_scale::append_initialization_script(
+            renderer_generation_script(generation),
+            interface_scale,
+        ))
         .title("antiburn Settings")
-        .inner_size(WIDTH, HEIGHT)
-        .resizable(false)
+        .inner_size(width, height)
+        .resizable(true)
         .maximizable(false)
+        .zoom_hotkeys_enabled(false)
         .visible(false)
         .on_page_load(|window, payload| {
             window_lifecycle::trace_page_load::<SettingsWindowState>(window, payload, LABEL);
         });
 
     #[cfg(target_os = "macos")]
-    {
+    let builder = {
         // Overlay keeps decorations while making the title bar transparent;
         // `hidden_title` drops the floating title text. `.title(...)` above
         // stays so Mission Control and accessibility still name the window.
         // The webview covers the bar's area, so the frontend supplies the drag
         // handle (`data-tauri-drag-region` in SettingsView) — the ACL already
         // grants `core:window:allow-start-dragging`.
-        builder = builder
+        builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true);
-    }
+            .hidden_title(true)
+    };
 
     let window = match builder.build() {
         Ok(window) => window,
@@ -197,13 +270,21 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
         }
     };
     crate::wayland_titlebar::repair(&window);
-    center_on_active_monitor(&window, WIDTH, HEIGHT);
+    crate::interface_scale::apply_window(&window, interface_scale)?;
+    center_on_active_monitor(&window, width, height);
+    reconcile_interface_scale(app, interface_scale)?;
     Ok(())
 }
 
 /// Reveal Settings after React commits its shell.
 pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
     let app = window.app_handle();
+    if let Err(error) =
+        crate::interface_scale::apply_window(window, crate::interface_scale::current(app))
+    {
+        ::tracing::error!(event = "interface_scale_apply_failed", window = LABEL, error = %error);
+        return;
+    }
     if window_lifecycle::renderer_ready::<SettingsWindowState>(
         app,
         LABEL,
@@ -218,7 +299,15 @@ pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
 fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let was_exposed =
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
-    center_on_active_monitor(window, WIDTH, HEIGHT);
+    let app = window.app_handle();
+    let scale = crate::interface_scale::current(app);
+    window.set_min_size(None::<tauri::LogicalSize<f64>>)?;
+    *app.state::<SettingsWindowState>()
+        .minimum_size
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    center_on_active_monitor(window, WIDTH * scale.factor(), HEIGHT * scale.factor());
+    reconcile_interface_scale(app, scale)?;
     window.show()?;
     window.unminimize()?;
     window.set_focus()?;
@@ -242,6 +331,37 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimum_size_keeps_the_sidebar_at_every_interface_scale() {
+        for percent in crate::interface_scale::presets() {
+            let scale = crate::interface_scale::InterfaceScale::new(*percent).unwrap();
+            let minimum = minimum_dimensions(scale.factor(), (3000.0, 2000.0));
+            assert!(minimum.width / scale.factor() > 720.0);
+            assert!(minimum.height >= MIN_HEIGHT * scale.factor());
+        }
+        assert!(
+            include_str!("../../src/views/SettingsView.tsx").contains("useViewportWidth() < 720")
+        );
+    }
+
+    #[test]
+    fn minimum_size_never_exceeds_the_available_content_area() {
+        let minimum = minimum_dimensions(2.0, (1272.0, 688.0));
+        assert_eq!(minimum, tauri::LogicalSize::new(1272.0, 688.0));
+    }
+
+    #[test]
+    fn minimum_size_decreases_when_the_interface_scale_decreases() {
+        assert_eq!(
+            minimum_dimensions(1.0, (3000.0, 2000.0)),
+            tauri::LogicalSize::new(721.0, 480.0)
+        );
+        assert_eq!(
+            minimum_dimensions(2.0, (3000.0, 2000.0)),
+            tauri::LogicalSize::new(1442.0, 960.0)
+        );
+    }
 
     #[test]
     fn the_url_uses_the_settings_entry() {

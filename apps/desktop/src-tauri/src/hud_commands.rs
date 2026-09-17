@@ -12,10 +12,13 @@ pub async fn open_overlay_window(
     app: tauri::AppHandle,
     origin: crate::analytics::event::Origin,
 ) -> CommandResult<()> {
+    let request = antiburn_hud::request_visibility(true);
     let store = app.state::<Store>().inner().clone();
     let (entries, dock) = run_blocking(move || {
         // Every open means the reader wants the HUD back at the next launch.
-        crate::hud::save_enabled(&store, true);
+        if antiburn_hud::visibility_request_is_current(request) {
+            crate::hud::save_enabled(&store, true);
+        }
         Ok((
             crate::hud::load_placements(&store),
             crate::hud::load_dock(&store),
@@ -26,16 +29,20 @@ pub async fn open_overlay_window(
     if needs_exposure {
         crate::analytics::prepare_hud_exposure(origin);
     }
-    if let Err(error) = antiburn_hud::open(&app, &entries) {
+    crate::main_window::on_main_value(&app, |_| antiburn_hud::refresh_notch()).await?;
+    let hud_app = app.clone();
+    let opened = run_blocking(move || {
+        let interface_scale = crate::interface_scale::current(&hud_app);
+        antiburn_hud::open(&hud_app, &entries, interface_scale.factor(), dock, request)
+            .map_err(fail)
+    })
+    .await;
+    if let Err(error) = opened {
         if needs_exposure {
             crate::analytics::cancel_hud_exposure();
         }
-        return Err(fail(error));
+        return Err(error);
     }
-    // A HUD the reader left docked comes back docked. The island reads the
-    // notch from AppKit, which is main-thread work.
-    crate::main_window::on_main_value(&app, move |app| antiburn_hud::restore_dock(app, dock))
-        .await?;
     Ok(())
 }
 
@@ -45,7 +52,6 @@ pub async fn open_overlay_window(
 /// false when the drag ended before the webview read the window position.
 #[tauri::command]
 pub fn hud_drag_ended(reason: String, origin_known: bool) {
-    antiburn_hud::end_drag();
     ::tracing::info!(event = "hud_drag_ended", reason, origin_known);
 }
 
@@ -54,10 +60,15 @@ pub fn hud_drag_ended(reason: String, origin_known: bool) {
 /// While the drag runs, the HUD previews the island when a drop would make
 /// one.
 #[tauri::command]
-pub fn tear_off_overlay(app: tauri::AppHandle) -> bool {
-    let was_docked = antiburn_hud::begin_drag(&app);
-    crate::hud::save_dock(&app.state::<Store>(), antiburn_hud::dock_settings());
-    was_docked
+pub async fn tear_off_overlay(app: tauri::AppHandle) -> CommandResult<bool> {
+    let revision = crate::hud::request_drag();
+    crate::main_window::on_main_value(&app, |_| antiburn_hud::refresh_notch()).await?;
+    run_blocking(move || {
+        let was_docked = antiburn_hud::begin_drag(&app, revision);
+        crate::hud::save_dock(&app.state::<Store>(), antiburn_hud::dock_settings());
+        Ok(was_docked)
+    })
+    .await
 }
 
 /// Whether a connected display has a notch for the HUD to sit in.
@@ -74,33 +85,48 @@ pub fn hud_island_state() -> antiburn_hud::IslandState {
 
 /// Open a collapsed island now: a mouse-down on it. It lingers as a peek does.
 #[tauri::command]
-pub fn expand_hud_island(app: tauri::AppHandle) {
-    antiburn_hud::expand_island(&app);
+pub async fn expand_hud_island(app: tauri::AppHandle) -> CommandResult<()> {
+    run_blocking(move || {
+        antiburn_hud::expand_island(&app);
+        Ok(())
+    })
+    .await
 }
 
 /// Put the HUD in the notch, or take it out and float it at its last place.
 ///
 /// Returns the dock state after the change, for the webview's toggle.
 #[tauri::command]
-pub fn set_hud_island(app: tauri::AppHandle, on: bool) -> antiburn_hud::DockSettings {
-    let store = app.state::<Store>();
-    if on {
-        antiburn_hud::island_overlay(&app);
-    } else if antiburn_hud::tear_off(&app) {
-        let entries = crate::hud::load_placements(&store);
-        if let Err(error) = antiburn_hud::apply_placement(&app, &entries) {
-            ::tracing::warn!(event = "hud_island_leave_move_failed", error = %error);
+pub async fn set_hud_island(
+    app: tauri::AppHandle,
+    on: bool,
+) -> CommandResult<antiburn_hud::DockSettings> {
+    crate::main_window::on_main_value(&app, |_| antiburn_hud::refresh_notch()).await?;
+    run_blocking(move || {
+        let store = app.state::<Store>();
+        if on {
+            antiburn_hud::island_overlay(&app);
+        } else if antiburn_hud::tear_off(&app) {
+            let entries = crate::hud::load_placements(&store);
+            if let Err(error) = antiburn_hud::apply_placement(&app, &entries) {
+                ::tracing::warn!(event = "hud_island_leave_move_failed", error = %error);
+            }
         }
-    }
-    let dock = antiburn_hud::dock_settings();
-    crate::hud::save_dock(&store, dock);
-    dock
+        let dock = antiburn_hud::dock_settings();
+        crate::hud::save_dock(&store, dock);
+        Ok(dock)
+    })
+    .await
 }
 
 /// Bring a docked HUD back for a while. `reason` is logged for tuning.
 #[tauri::command]
-pub fn wake_overlay(app: tauri::AppHandle, reason: String) {
-    antiburn_hud::wake_overlay(&app, &reason);
+pub async fn wake_overlay(app: tauri::AppHandle, reason: String) -> CommandResult<()> {
+    run_blocking(move || {
+        antiburn_hud::wake_overlay(&app, &reason);
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(target_os = "macos")]
@@ -136,17 +162,14 @@ pub fn take_hud_analytics_origin(app: tauri::AppHandle) -> Option<crate::analyti
 /// window is, and that split keeps geometry out of the IPC payload.
 #[tauri::command]
 pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
+    let revision = antiburn_hud::drag_revision();
     let placement =
         crate::main_window::on_main_value(&app, antiburn_hud::current_placement).await?;
-    // A drop against a display edge docks the HUD there. The placement
-    // saved first is the drop, which the dock's home clamps on screen.
-    let dock = crate::main_window::on_main_value(&app, antiburn_hud::settle_after_drag).await?;
+    crate::main_window::on_main_value(&app, |_| antiburn_hud::refresh_notch()).await?;
     let store = app.state::<Store>().inner().clone();
     run_blocking(move || {
-        if let Some(placement) = placement {
-            crate::hud::save_placement(&store, placement);
-        }
-        crate::hud::save_dock(&store, dock);
+        let dock = antiburn_hud::settle_after_drag(&app, revision);
+        crate::hud::save_settled_drop(&store, placement, dock, revision);
         Ok(())
     })
     .await
@@ -154,10 +177,11 @@ pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
 
 /// Hide the usage HUD and cancel any pending reveal.
 #[tauri::command]
-pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+pub async fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    let request = antiburn_hud::request_visibility(false);
     crate::analytics::cancel_hud_exposure();
     crate::hud::save_enabled(&app.state::<Store>(), false);
-    antiburn_hud::hide(&app).map_err(fail)
+    run_blocking(move || antiburn_hud::hide(&app, request).map_err(fail)).await
 }
 
 /// Return whether the HUD should run while its retained renderer mounts.
@@ -168,13 +192,17 @@ pub fn is_overlay_work_active() -> bool {
 
 /// Match the native HUD frame to the rendered panel.
 #[tauri::command]
-pub fn resize_overlay_window(
+pub async fn resize_overlay_window(
     app: tauri::AppHandle,
     height: f64,
     anchor_bottom: bool,
     animate: bool,
+    geometry_revision: Option<u64>,
 ) -> CommandResult<()> {
-    antiburn_hud::resize(&app, height, anchor_bottom, animate).map_err(fail)
+    run_blocking(move || {
+        antiburn_hud::resize(&app, height, anchor_bottom, animate, geometry_revision).map_err(fail)
+    })
+    .await
 }
 
 /// Request the hover detail window with the newest usage payload.
@@ -206,6 +234,10 @@ pub fn get_hud_detail_state() -> serde_json::Value {
 
 /// Size and place the detail window from its webview's measured height.
 #[tauri::command]
-pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
-    antiburn_hud::apply_detail_size(&app, height);
+pub async fn set_hud_detail_size(app: tauri::AppHandle, height: f64) -> CommandResult<()> {
+    run_blocking(move || {
+        antiburn_hud::apply_detail_size(&app, height);
+        Ok(())
+    })
+    .await
 }
