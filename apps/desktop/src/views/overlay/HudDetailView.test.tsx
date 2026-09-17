@@ -217,7 +217,8 @@ describe("HudDetailView", () => {
     expect(screen.getByLabelText("mostly looking")).toBeInTheDocument()
     expect(screen.getByLabelText("mostly talking")).toBeInTheDocument()
     expect(screen.getByText("● = 500 tokens/min")).toBeInTheDocument()
-    expect(screen.getByText("delegating")).toBeInTheDocument()
+    // The mode key is gone; each row carries its own top-mode dot.
+    expect(screen.queryByText("delegating")).toBeNull()
   })
 
   it("lights the sub-agent under the pointer and names its top mode", async () => {

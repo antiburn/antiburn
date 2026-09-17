@@ -56,8 +56,8 @@ The HUD panel (`OverlayWindow.tsx`, the `rounded-xl border-transparent` div)
 gets a visible material: `bg-hud-frame` at 60% alpha with a 1 px `separator`
 hairline. New tokens in `hud.css` and `design.md`:
 
-| Token          | Light                  | Dark                   |
-| -------------- | ---------------------- | ---------------------- |
+| Token          | Light                  | Dark                 |
+| -------------- | ---------------------- | -------------------- |
 | `bg-hud-frame` | `hsl(0 0% 100% / 0.7)` | `hsl(0 0% 0% / 0.7)` |
 
 First white in both themes (Keith, 2026-09-16, after seeing a dark frame vanish
@@ -377,3 +377,7 @@ sampled from real transcripts.
 17. **Wakes stay longer, peeks shorter.** A wake holds 4.8 s (was 2.8 s)
     and lingers 3 s after the pointer leaves. An edge peek lingers 1.5 s
     (was 3 s) once the pointer leaves the HUD and the edge.
+18. **No mode key on the detail card.** The card drops the list of mode
+    colours. Each session row already carries a dot in its top mode, so
+    the key repeated what the rows show. The nudge chime is commented
+    out in `NudgeSession`.

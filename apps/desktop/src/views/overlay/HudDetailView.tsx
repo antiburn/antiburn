@@ -172,7 +172,7 @@ class HudDetailSession {
   }
 }
 
-/** Spell out the token map: one row per session, then the mode colours. */
+/** Spell out the token map: one row for each session, with its top mode. */
 function MapLegend({ map }: { map: NonNullable<HudDetailState["map"]> }) {
   return (
     <div className="mb-2 border-b border-separator pb-2" data-testid="hud-detail-map">
@@ -193,21 +193,6 @@ function MapLegend({ map }: { map: NonNullable<HudDetailState["map"]> }) {
               className="inline-block size-2 shrink-0 self-center rounded-full"
               style={{ backgroundColor: `var(--color-mode-${session.topMode})` }}
             />
-          </li>
-        ))}
-      </ul>
-      <ul className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5">
-        {WORK_MODES.map((mode) => (
-          <li
-            key={mode}
-            className="flex items-center gap-1 led-caption type-footnote text-label"
-          >
-            <span
-              aria-hidden="true"
-              className="inline-block size-1.5 rounded-full"
-              style={{ backgroundColor: `var(--color-mode-${mode})` }}
-            />
-            {mode}
           </li>
         ))}
       </ul>

@@ -1,4 +1,3 @@
-import { playBwoop } from "../../lib/hudSounds"
 import { flushSync } from "react-dom"
 
 import {
@@ -333,7 +332,8 @@ export class NudgeSession {
     // was emitted before this listener attached; once shown, skip the repeat so
     // we don't reset the timer.
     if (payload.id === this.shownId) return
-    playBwoop()
+    // The nudge chime is off while Keith listens to the HUD without it.
+    // playBwoop()
 
     // A new nudge is replacing the current one. If we were mid-exit with a
     // deferred CTA/dismiss, run it now — the card is about to re-key, so its
