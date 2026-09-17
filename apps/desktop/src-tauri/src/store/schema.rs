@@ -1084,6 +1084,13 @@ DELETE FROM setting WHERE key = 'internal:liveUsageHistoryV2';
 /// tables are rebuilt: a new table with the widened check, a copy of every
 /// row, a drop, and a rename, the same pattern `v8` used. Every column, the
 /// `UNIQUE` constraint, and both lane indexes carry over unchanged.
+///
+/// The migration also deletes the learner's saved progress for
+/// model-scoped periods. A missing cursor row makes the learner walk the
+/// period again from its start, so a model-scoped period that the learner
+/// already finished under the old, narrower check gets a fresh pass under
+/// the widened one. Sample and point upserts are idempotent, so a re-walk
+/// cannot duplicate a row it already wrote.
 const V51: &str = r#"
 CREATE TABLE provider_limit_factor_sample_v51 (
     id                  INTEGER PRIMARY KEY,
@@ -1153,4 +1160,18 @@ ALTER TABLE provider_limit_factor_point_v51 RENAME TO provider_limit_factor_poin
 
 CREATE INDEX provider_limit_factor_point_lane_recent
     ON provider_limit_factor_point (provider, account_key, lane, effective_at_epoch DESC);
+
+-- Forget learning progress for a model-scoped period. The old, narrower
+-- check rejected every sample and point this app tried to write for such a
+-- period, so its cursor row (if any) marks a walk that produced nothing. A
+-- missing cursor row makes the next learning pass walk the period again
+-- from its start; the widened check above now admits the writes.
+DELETE FROM provider_limit_learn_cursor
+ WHERE period_id IN (
+    SELECT id
+      FROM provider_usage_period
+     WHERE window_role = 'supplemental'
+       AND window_kind = 'weekly'
+       AND scope_key LIKE 'model:%'
+);
 "#;

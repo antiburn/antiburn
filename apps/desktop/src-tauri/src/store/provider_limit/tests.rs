@@ -953,7 +953,7 @@ fn latest_observation_plan_for_a_model_lane_reads_the_supplemental_windows_own_r
 /// it may be deleted after merge, since the ladder test in `store::tests` is
 /// the durable coverage.
 #[test]
-fn v51_widens_the_lane_check_and_keeps_existing_sample_and_point_rows() {
+fn v51_widens_the_lane_check_and_resets_the_model_lane_cursor() {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     for &sql in &crate::store::schema::MIGRATIONS[..49] {
         connection.execute_batch(sql).unwrap();
@@ -979,6 +979,42 @@ fn v51_widens_the_lane_check_and_keeps_existing_sample_and_point_rows() {
             params![account('a')],
         )
         .expect("inserts a pre-migration point row");
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (1, 'anthropic', ?1, 'weekly-fable', 'weekly', 'supplemental',
+                       'model:fable', 'Fable', 604800, 0, 604800, 0, 100)",
+            params![account('a')],
+        )
+        .expect("inserts a model-scoped period");
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (2, 'anthropic', ?1, 'seven-day', 'weekly', 'primaryLong',
+                       'account', 'account', 604800, 0, 604800, 0, 100)",
+            params![account('a')],
+        )
+        .expect("inserts an account-wide weekly period");
+    connection
+        .execute(
+            "INSERT INTO provider_limit_learn_cursor (period_id, learned_through_epoch)
+             VALUES (1, 100)",
+            [],
+        )
+        .expect("inserts the model-lane period's cursor row");
+    connection
+        .execute(
+            "INSERT INTO provider_limit_learn_cursor (period_id, learned_through_epoch)
+             VALUES (2, 100)",
+            [],
+        )
+        .expect("inserts the weekly period's cursor row");
 
     let store = Store::from_connection(connection, Path::new("/tmp/antiburn-v51-test").into())
         .expect("migration reaches the head");
@@ -1026,5 +1062,28 @@ fn v51_widens_the_lane_check_and_keeps_existing_sample_and_point_rows() {
     assert!(
         rejected.is_err(),
         "an unrecognized lane still fails the check"
+    );
+
+    let model_lane_cursor: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM provider_limit_learn_cursor WHERE period_id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        model_lane_cursor, 0,
+        "the model-scoped period's cursor row is gone, so the learner walks it again"
+    );
+    let weekly_cursor: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM provider_limit_learn_cursor WHERE period_id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        weekly_cursor, 1,
+        "the account-wide period's cursor row is untouched"
     );
 }
