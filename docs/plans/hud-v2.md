@@ -382,3 +382,7 @@ sampled from real transcripts.
     colours. Each session row already carries a dot in its top mode, so
     the key repeated what the rows show. The nudge chime is commented
     out in `NudgeSession`.
+19. **No sweep on the HUD.** The restack on PR #489 brought the live
+    sweep onto the HUD bars. The HUD shows the spend-rate blink alone, so
+    the overlay drops the sweep clock and its props. The popover meters
+    and the session rows keep the sweep.

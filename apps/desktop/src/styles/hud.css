@@ -304,9 +304,8 @@ body[data-transparent-window] #root {
  * and three segments wide, so it snaps on. Equal centres therefore looked
  * early on the meter. The delay makes the two appear to start together.
  *
- * `--led-gleam-peak` caps the gleam. The popover keeps the default; the HUD
- * adds `led-clock-soft`, because it floats over the reader's work and must
- * stay quieter than a panel they opened.
+ * `--led-gleam-peak` caps the gleam. The floating HUD does not sweep. It
+ * shows the spend-rate blink alone, so the sweep runs on the popover meters.
  */
 @property --led-sweep {
   syntax: "<number>";
@@ -334,10 +333,6 @@ body[data-transparent-window] #root {
      animation from the wall clock, so it holds the phase of the title
      shimmer. Do not declare a delay here, because a delay moves the phase. */
   animation: led-sweep var(--led-sweep-cycle) linear infinite;
-}
-
-.led-clock-soft {
-  --led-gleam-peak: 0.245;
 }
 
 @keyframes led-sweep {
