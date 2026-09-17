@@ -671,6 +671,27 @@ describe("OverlayWindow", () => {
     expect(svg.compareDocumentPosition(bars!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it("pins the blink period to a spend rate from the HUD Dev menu", async () => {
+    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    const led = container.querySelector<HTMLElement>(".led-blink")!
+    expect(led.style.getPropertyValue("--led-period")).toBe("3000ms")
+    await act(async () => {
+      emitNative("hud_dev", { kind: "spend", usdPerMinute: 2 })
+    })
+    expect(led.style.getPropertyValue("--led-period")).toBe("300ms")
+  })
+
+  it("celebrates a reset on demand from the HUD Dev menu", async () => {
+    render(<OverlayWindow />)
+    await waitFor(() => expect(nativeEvents.get("hud_dev")?.size ?? 0).toBe(1))
+    await act(async () => {
+      emitNative("hud_dev", { kind: "celebrate" })
+    })
+    expect(screen.getByTestId("hud-celebration").textContent).toContain("usage reset")
+  })
+
   it("leaves the map off for one session and lets the live LED carry it", async () => {
     getHudTokenMap.mockResolvedValue({
       nowEpoch: 1_000,

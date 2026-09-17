@@ -21,6 +21,7 @@ import {
   type HudSpendRate,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
+import { devSpendRate, withDevBlock, type HudDevOverride } from "../../lib/hudDev"
 import { BurnWakeTracker, activityWake } from "../../lib/hudWake"
 import {
   hideOverlayWindow,
@@ -157,6 +158,11 @@ export class OverlaySession {
   private stopInvalidationListening: (() => void) | null = null
   private stopVisibilityListening: (() => void) | null = null
   private stopDetailShownListening: (() => void) | null = null
+  private stopDevListening: (() => void) | null = null
+  /** A spend rate the "HUD Dev" menu pinned, in place of the measured one. */
+  private devSpend: HudSpendRate | null = null
+  /** Until when the "HUD Dev" menu holds the first bar at its limit. */
+  private devBlockUntil = 0
   /** The newest transcript write seen through events, for the quiet-spell wake. */
   private lastEventActivity: number | null = null
   private burnWake = new BurnWakeTracker()
@@ -289,9 +295,9 @@ export class OverlaySession {
       if (!this.isCurrent(generation)) return
       this.latestUsage = response
       this.usageFailed = false
-      const bars = deriveUsageBars(response)
+      const bars = withDevBlock(deriveUsageBars(response), this.devBlockUntil, Date.now())
       const freed = limitsReset(this.snapshot.bars, bars)
-      if (freed.length > 0) this.celebrate(freed[0]!)
+      if (freed.length > 0) this.celebrate(freed[0]!.providerName)
       this.update({ now: Date.now() })
       const changed = this.commitLayout({
         bars,
@@ -351,7 +357,7 @@ export class OverlaySession {
           if (!this.isCurrent(generation)) return
           const tokenMap = deriveTokenMap(payload, { minDotValue: this.dotValueFloor })
           this.holdDotValue(tokenMap.dotValue, payload?.windowSecs ?? TOKEN_MAP_WINDOW_SECS)
-          this.latestSpend = payload?.spend ?? null
+          this.latestSpend = this.devSpend ?? payload?.spend ?? null
           if (this.burnWake.observe(this.latestSpend?.usdPerMinute ?? null)) {
             void wakeOverlayWindow("burn").catch(() => {})
           }
@@ -373,6 +379,17 @@ export class OverlaySession {
     }
     refreshTokenMap()
     this.tokenMapPoll = window.setInterval(refreshTokenMap, TOKEN_MAP_POLL_MS)
+
+    if (import.meta.env.DEV) {
+      void listen<HudDevOverride>("hud_dev", (event) => {
+        if (this.isCurrent(generation)) this.applyDevOverride(event.payload, applyUsage)
+      })
+        .then((dispose) => {
+          if (this.isCurrent(generation)) this.stopDevListening = dispose
+          else dispose()
+        })
+        .catch(() => {})
+    }
 
     void listen<boolean>("overlay_hover", (event) => {
       if (this.isCurrent(generation)) this.requestHover(Boolean(event.payload))
@@ -447,6 +464,8 @@ export class OverlaySession {
     this.stopVisibilityListening = null
     this.stopDetailShownListening?.()
     this.stopDetailShownListening = null
+    this.stopDevListening?.()
+    this.stopDevListening = null
     this.lastEventActivity = null
     this.burnWake = new BurnWakeTracker()
     window.clearTimeout(this.celebrationTimer)
@@ -748,10 +767,35 @@ export class OverlaySession {
       .catch(() => {})
   }
 
+  /** Apply one override from the tray's "HUD Dev" menu. Debug builds only. */
+  private applyDevOverride(
+    override: HudDevOverride,
+    apply: (response: LiveUsageSummaryPayload | null) => void,
+  ): void {
+    switch (override.kind) {
+      case "spend": {
+        this.devSpend = devSpendRate(override.usdPerMinute, TOKEN_MAP_WINDOW_SECS)
+        this.latestSpend = this.devSpend ?? this.latestSpend
+        this.commitLayout({
+          blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
+          spend: describeSpend(this.latestSpend),
+        })
+        return
+      }
+      case "block": {
+        this.devBlockUntil = Date.now() + override.secs * 1_000
+        apply(this.latestUsage)
+        return
+      }
+      case "celebrate":
+        this.celebrate(this.snapshot.bars[0]?.providerName ?? "claude")
+    }
+  }
+
   /** Show the reset message with confetti, and peek a docked HUD in. */
-  private celebrate(bar: UsageBarItem): void {
+  private celebrate(providerName: string): void {
     window.clearTimeout(this.celebrationTimer)
-    this.update({ celebration: `${bar.providerName.toLowerCase()} usage reset` })
+    this.update({ celebration: `${providerName.toLowerCase()} usage reset` })
     void wakeOverlayWindow("reset").catch(() => {})
     this.celebrationTimer = window.setTimeout(() => {
       this.celebrationTimer = 0

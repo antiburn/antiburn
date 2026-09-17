@@ -13,7 +13,8 @@ use std::sync::LazyLock;
 
 mod dock;
 pub use dock::{
-    DockEdge, DockSettings, dock_settings, restore_dock, settle_after_drag, tear_off, wake_overlay,
+    DockEdge, DockSettings, dock_overlay, dock_settings, restore_dock, settle_after_drag, tear_off,
+    wake_overlay,
 };
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]

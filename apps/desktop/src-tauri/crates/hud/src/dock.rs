@@ -205,6 +205,30 @@ pub fn tear_off() -> bool {
     was_docked
 }
 
+/// Dock the HUD at `edge` now. Development menu only.
+#[cfg(target_os = "macos")]
+pub fn dock_overlay(app: &AppHandle, edge: DockEdge) {
+    let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
+        return;
+    };
+    // A HUD parked at another edge jumps home first, so the new dock
+    // measures an on-screen frame.
+    let parked_home = {
+        let dock = state();
+        if dock.docked { dock.home } else { None }
+    };
+    if let Some((x, y)) = parked_home {
+        let _guard = super::resize_apply_guard();
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+    tear_off();
+    dock_at(app, &window, edge);
+}
+
+/// Keep the dock inert where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn dock_overlay(_app: &tauri::AppHandle, _edge: DockEdge) {}
+
 /// Bring a docked HUD in for a while. `reason` is for the log only.
 #[cfg(target_os = "macos")]
 pub fn wake_overlay(app: &AppHandle, reason: &str) {

@@ -364,3 +364,9 @@ sampled from real transcripts.
 14. **Holding the edge holds the HUD.** While the pointer rests on the tab
     strip that peeked the HUD in, the auto-dock treats it as on the HUD, so
     the HUD stays until the pointer leaves both.
+15. **Dev menu for the HUD.** Debug builds get a "HUD Dev" submenu in the
+    tray menu: dock at each edge, wake, a fixed spend rate (off, $0.05,
+    $0.50, $2.00 per minute), block the top limit for 20 s so the countdown,
+    the fresh read and the confetti all run, and celebrate now. Spend and
+    block overrides ride a `hud_dev` event to the overlay webview; dock and
+    wake call the hud crate directly. Nothing ships in release builds.
