@@ -123,6 +123,13 @@ vocabulary; behavior tests separately check finding and clean gates.
 
 ## Evidence Boundaries
 
+Lifecycle provider sweeps use same-turn published provider/model evidence and
+keep the harness and inferred model vendor separate from the recorded route.
+Missing or custom routes do not prove direct provider activity. These display
+signals do not authorize a finding, a clean result, remediation, or historical
+spend attribution; all check-specific route and API requirements below remain
+unchanged. See [`session-lifecycle-events.md`](session-lifecycle-events.md#scoped-sweep-evidence).
+
 Burn checks use only sessions admitted by the repository scan gate. A session
 needs a resolvable Git repository CWD. Disabled roots and their linked
 worktrees are excluded before evidence processing; missing or unresolved CWDs

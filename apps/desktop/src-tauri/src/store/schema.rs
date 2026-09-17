@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1076,4 +1076,34 @@ END;
 /// `provider_usage_observation` table directly.
 const V50: &str = r#"
 DELETE FROM setting WHERE key = 'internal:liveUsageHistoryV2';
+"#;
+
+/// v51 gives each session row a persisted incarnation and replaces the
+/// recency index with a four-column keyset index.
+///
+/// `incarnation` is assigned on insert from `session_incarnation_seq`, a
+/// counter that only increases. An update keeps the value. A row inserted
+/// after a delete of the same key gets a higher value. Rows that predate
+/// this migration hold `0`, and the counter starts at `0`, so the first
+/// allocation is `1`. Deletes and `clear_local_session_data` never touch the
+/// counter.
+///
+/// `session_recency_keyset` orders rows by the full active-page order:
+/// `COALESCE(updated_at_epoch, 0) DESC, session_id DESC, environment_key
+/// DESC, agent DESC`. Its first two columns are [`V23`]'s
+/// `session_recency_coalesced` prefix, so `recent_sessions` keeps its plan.
+/// The old index serves no query after this and is dropped.
+const V51: &str = r#"
+ALTER TABLE session ADD COLUMN incarnation INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE session_incarnation_seq (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    value INTEGER NOT NULL CHECK (value >= 0)
+) STRICT;
+INSERT INTO session_incarnation_seq (id, value) VALUES (1, 0);
+
+DROP INDEX session_recency_coalesced;
+CREATE INDEX session_recency_keyset
+    ON session (COALESCE(updated_at_epoch, 0) DESC, session_id DESC,
+                environment_key DESC, agent DESC);
 "#;

@@ -2271,6 +2271,7 @@ mod tests {
                 store
                     .delete_session(&SessionKey::new("native", "claude-code", session_id))
                     .unwrap()
+                    .is_some()
             );
         }
         store

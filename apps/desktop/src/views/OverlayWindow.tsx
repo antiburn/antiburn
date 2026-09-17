@@ -62,7 +62,15 @@ export function OverlayWindow() {
 
         {state.bars.length === 0 ? (
           <div className="hud-leds pointer-events-none">
-            <LedBar segments={HUD_SEGMENTS} split={[]} />
+            <LedBar
+              segments={HUD_SEGMENTS}
+              split={[]}
+              blinkLast={state.sessionLive}
+              blinkPeriodMs={state.blinkPeriodMs}
+              blinkColor={
+                state.tokenMap.liveMode ? `var(--color-mode-${state.tokenMap.liveMode})` : null
+              }
+            />
           </div>
         ) : (
           // The HUD shows the spend-rate blink alone. The live sweep stays on

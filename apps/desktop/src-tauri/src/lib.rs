@@ -85,6 +85,7 @@ mod runtime_pricing;
 mod runtime_pricing_config;
 mod scan;
 mod session_lifecycle;
+mod session_projection;
 mod settings;
 mod startup_registration;
 mod storage_health;
@@ -344,9 +345,11 @@ pub fn run() {
         if let Some(schedulers) = app.try_state::<Schedulers>() {
             analytics::install_schedulers(app.handle(), &schedulers);
             schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
-            schedulers.push(scan::spawn_scheduler(app.handle()));
+            // Seed the registry before starting the projection bridge and scan
+            // scheduler.
             schedulers.push(session_lifecycle::spawn(app.handle()));
-            schedulers.push(session_lifecycle::spawn_bridge(app.handle()));
+            schedulers.push(session_projection::spawn(app.handle()));
+            schedulers.push(scan::spawn_scheduler(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
             schedulers.push(updates::spawn_scheduler(app.handle()));
@@ -727,6 +730,8 @@ mod tests {
             "\"allow-get-session-analysis\"",
             "\"allow-get-subagent-analysis\"",
             "\"allow-get-live-usage\"",
+            "\"allow-get-live-sessions\"",
+            "\"allow-get-live-sessions-for\"",
             "\"allow-get-session-limit-allocations\"",
             "\"allow-get-session-hygiene\"",
             "\"allow-set-settings\"",
@@ -856,7 +861,7 @@ mod tests {
                 &task_handle,
                 &|| 100,
                 &runner,
-                &|entry| task_announced.lock().unwrap().push(entry),
+                &|key| task_announced.lock().unwrap().push(key.clone()),
                 &|| {},
                 &|_, _| {},
             )

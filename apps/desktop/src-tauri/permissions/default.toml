@@ -20,6 +20,7 @@ permissions = [
   "allow-get-hud-token-map",
   "allow-get-hygiene-summary",
   "allow-get-live-sessions",
+  "allow-get-live-sessions-for",
   "allow-get-live-usage",
   "allow-get-provider-usage",
   "allow-get-scan-status",

@@ -9,12 +9,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { nativePeekBridge } from "./nativePeekBridge"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
-import type {
-  ActiveSessionsSummary,
-  BillableTokens,
-  SessionCostComponents,
-  SessionEfficiency,
-} from "./types/session"
+import type { SessionIdentityPayload } from "./sessionIpc"
 import type {
   LiveUsageSummaryPayload,
   ProviderUsageSummaryPayload,
@@ -24,7 +19,7 @@ import type {
 export * from "./mainWindowIpc"
 export * from "./nudgeIpc"
 export * from "./providerUsageIpc"
-export * from "./sessionLifecycleIpc"
+export * from "./sessionIpc"
 export type { SettingsPane } from "./settingsPanes"
 
 /* -------------------------------------------------------------------------
@@ -188,38 +183,6 @@ export interface AppInfo {
   analyticsOperator: string | null
 }
 
-/** One row of the activity list, before it is shaped for presentation. */
-export interface ModelRunPayload {
-  model: string
-  thinkingMode?: string
-}
-
-export interface ActivityEntryPayload {
-  agent: string
-  sessionId: string
-  repo: string
-  timestamp: string
-  isActive: boolean
-  surface: string
-  wslDistro: string | null
-  title: string | null
-  hasForkParent: boolean
-  forkChildCount: number
-  /** Cost of the parent transcript plus every sub-agent the session launched. */
-  cost: SessionCostComponents | null
-  /** Every model that contributed billable tokens. */
-  models: string[]
-  /** Parent model runs followed by runs used only by sub-agents. */
-  modelRuns: ModelRunPayload[]
-}
-
-/** Identity of one local session, as the analysis view carries it. */
-export interface SessionIdentityPayload {
-  agent: string
-  sessionId: string
-  wslDistro: string | null
-}
-
 /** One revisioned request to show a session in the retained main window. */
 export interface MainWindowSessionRequest {
   revision: number
@@ -232,92 +195,6 @@ export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
 export interface MainWindowSectionRequest {
   revision: number
   section: MainWindowSectionId
-}
-
-/** One end of a local fork relation. */
-export interface SessionRelationPayload {
-  identity: SessionIdentityPayload
-  title: string | null
-  available: boolean
-}
-
-/** Direct fork relations for one session. */
-export interface SessionRelationsPayload {
-  title: string | null
-  parent: SessionRelationPayload | null
-  children: SessionRelationPayload[]
-}
-
-/** One sub-agent an orchestrator launched. */
-export interface SubagentMemberPayload {
-  agent: string
-  subagentId: string
-  label: string
-  /** The sub-agent's own priced cost, or null when it is not yet analyzed. */
-  cost: SessionCostComponents | null
-  /** Billable tokens that back `cost`. */
-  tokens: BillableTokens | null
-  /** Unix seconds of the sub-agent's first transcript event, or null when unknown. */
-  startedAtEpoch: number | null
-  /** Every model/thinking-mode pair the sub-agent used. */
-  modelRuns: ModelRunPayload[]
-}
-
-/** The sub-agent picture for one session. */
-export interface OrchestrationPayload {
-  orchestrating: boolean
-  orchestratorAgent: string
-  orchestratorSessionId: string
-  subagentCount: number
-  members: SubagentMemberPayload[]
-}
-
-/** Everything the session-analysis surface renders for one session. */
-export interface SessionAnalysisPayload {
-  summary: ActiveSessionsSummary | null
-  supportsAnalysis: boolean
-  title: string | null
-  wslDistro: string | null
-  isActive: boolean
-  /** Cost of the parent transcript plus every sub-agent it launched. */
-  cost: SessionCostComponents | null
-  /** Cost of the parent transcript, without any sub-agent. */
-  topLevelCost: SessionCostComponents | null
-  /** Cost of every sub-agent this session launched, combined. The value is
-   * `null` when the session has no sub-agent, or when no sub-agent could
-   * be priced. */
-  subagentsCost: SessionCostComponents | null
-  /** Billable tokens that back `cost`. The count sums the parent transcript
-   * and every sub-agent. */
-  inclusiveTokens: BillableTokens | null
-  /** Billable tokens that back `subagentsCost`. The count sums every
-   * sub-agent. The value is `null` when the session has no sub-agent. */
-  subagentsTokens: BillableTokens | null
-  /** Where the spend behind `cost` went. The same subject as `cost`. */
-  efficiency: SessionEfficiency | null
-  models: string[]
-  /** Parent model runs followed by runs used only by sub-agents. */
-  modelRuns: ModelRunPayload[]
-  orchestration: OrchestrationPayload | null
-  relations: SessionRelationsPayload | null
-  /** The provider's own transcript, for the reveal action. */
-  sourcePath: string | null
-  /** The stored absolute working directory. */
-  projectPath: string | null
-  /** Unix seconds of this session's own first transcript event, or null when
-   * unknown. The sub-agent roster uses it to show each member's start as
-   * elapsed time from the session start. */
-  startedAtEpoch: number | null
-  /** True when no published row set exists yet for this session, so every
-   * other field above is a placeholder rather than a real read. The worker
-   * fills the gap on its own; the view should show an indexing state, not
-   * an empty-transcript state. */
-  analysisPending: boolean
-  /** True when the fields above come from a published fence that a fresher
-   * pass is already queued or running behind, or whose transcript has since
-   * moved on. The data on screen is real, just not the latest — unlike
-   * `analysisPending`, which means there is nothing to show yet. */
-  analysisStale: boolean
 }
 
 /** One repository row. Mirrors Rust `RepositoryItem`. */
@@ -853,44 +730,6 @@ export async function finishOnboarding(
   })
 }
 
-/** The sessions to show in the popover, newest first. */
-export async function listRecentSessions(windowDays?: number): Promise<ActivityEntryPayload[]> {
-  if (!hasShell()) return []
-  return invoke<ActivityEntryPayload[]>("list_recent_sessions", {
-    windowDays: windowDays ?? null,
-  })
-}
-
-/** One session's analysis, sub-agent roster, and fork relations. */
-export async function getSessionAnalysis(
-  agent: string,
-  sessionId: string,
-  wslDistro?: string | null,
-): Promise<SessionAnalysisPayload | null> {
-  if (!hasShell()) return null
-  return invoke<SessionAnalysisPayload>("get_session_analysis", {
-    agent,
-    sessionId,
-    wslDistro: wslDistro ?? null,
-  })
-}
-
-/** One sub-agent's own analysis. */
-export async function getSubagentAnalysis(
-  agent: string,
-  parentSessionId: string,
-  subagentId: string,
-  wslDistro?: string | null,
-): Promise<SessionAnalysisPayload | null> {
-  if (!hasShell()) return null
-  return invoke<SessionAnalysisPayload>("get_subagent_analysis", {
-    agent,
-    parentSessionId,
-    subagentId,
-    wslDistro: wslDistro ?? null,
-  })
-}
-
 /**
  * Per-provider token and cost totals derived from the sessions on this machine.
  *
@@ -1161,24 +1000,6 @@ export async function removeScanRoot(path: string): Promise<string[]> {
   return invoke<string[]>("remove_scan_root", { path })
 }
 
-/**
- * Delete antiburn's own records for one session.
- *
- * Only antiburn's records. The agent's transcript is never touched.
- */
-export async function deleteSessionData(
-  agent: string,
-  sessionId: string,
-  wslDistro?: string | null,
-): Promise<boolean> {
-  if (!hasShell()) return false
-  return invoke<boolean>("delete_session_data", {
-    agent,
-    sessionId,
-    wslDistro: wslDistro ?? null,
-  })
-}
-
 /** Open the project directory through the native file manager. */
 export async function openProjectFolder(path: string): Promise<void> {
   if (!hasShell()) throw new Error("The native file manager is unavailable")
@@ -1282,36 +1103,6 @@ export const SETTINGS_SHOWN_EVENT = "settings:shown"
 export async function onSettingsShown(handler: () => void): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen(SETTINGS_SHOWN_EVENT, () => handler())
-}
-
-/**
- * Event the shell emits when stored sessions were removed outside a scan
- * (repository opt-out, index clearing, retention cleanup). Mirrors `SESSIONS_INVALIDATED_EVENT`
- * in `src-tauri/src/commands.rs`.
- */
-export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"
-
-/** Subscribe to out-of-band session-index changes. The result unsubscribes. */
-export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen(SESSIONS_INVALIDATED_EVENT, () => handler())
-}
-
-/**
- * Event the shell emits when one session's cached analysis changes outside a
- * scan. Mirrors `SESSION_ENTRY_CHANGED_EVENT` in `src-tauri/src/commands.rs`.
- * The payload is the fresh entry for that session.
- */
-export const SESSION_ENTRY_CHANGED_EVENT = "sessions:entry-changed"
-
-/** Subscribe to one session's entry changing. The result unsubscribes. */
-export async function onSessionEntryChanged(
-  handler: (entry: ActivityEntryPayload) => void,
-): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) =>
-    handler(event.payload),
-  )
 }
 
 /**

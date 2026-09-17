@@ -110,7 +110,7 @@ fn v43_adds_remediation_and_model_attribution() {
     connection.pragma_update(None, "user_version", 42).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v43").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 50);
+    assert_eq!(store.schema_version().unwrap(), 51);
     let connection = store.lock();
     let columns: i64 = connection
         .query_row(
@@ -167,7 +167,7 @@ fn v44_adds_nullable_snapshots_and_strict_contributions_without_backfill() {
 
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v44").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 50);
+    assert_eq!(store.schema_version().unwrap(), 51);
     assert!(store.remediation_display_snapshot("old").unwrap().is_none());
     let connection = store.lock();
     let strict: i64 = connection
@@ -189,7 +189,7 @@ fn v46_adds_reasoning_attribution_without_rewriting_model_columns() {
     connection.pragma_update(None, "user_version", 45).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v46").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 50);
+    assert_eq!(store.schema_version().unwrap(), 51);
     let columns: i64 = store
         .lock()
         .query_row(
@@ -1463,6 +1463,7 @@ fn session_deletion_and_retention_do_not_delete_a_watch() {
         store
             .delete_session(&SessionKey::new("native", "claude-code", "baseline"))
             .unwrap()
+            .is_some()
     );
     assert!(store.remediation(&watch.remediation_id).unwrap().is_some());
 }
@@ -1482,7 +1483,7 @@ fn clearing_local_data_removes_remediation_contributions() {
         .upsert_remediation_contribution(&contribution("owner", &watch.remediation_id, 20_000))
         .unwrap();
 
-    assert_eq!(store.clear_local_session_data().unwrap(), 1);
+    assert_eq!(store.clear_local_session_data().unwrap().0, 1);
     assert!(store.remediation_contributions(1_000).unwrap().is_empty());
 }
 

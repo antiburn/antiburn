@@ -5,18 +5,15 @@ import type { MouseEvent as ReactMouseEvent } from "react"
 import { flushSync } from "react-dom"
 
 import {
-  getLiveSessions,
   getLiveUsage,
   hideHudDetail,
   isOverlayWorkActive,
   onLiveUsageChanged,
   refreshLiveUsage,
-  onSessionLifecycle,
-  onSessionsInvalidated,
   resizeOverlayWindow,
-  SCAN_EVENTS,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
+import { hasWorkingActivity, liveSessions } from "../../lib/sessionLifecycle"
 import {
   getHudTokenMap,
   showHudDetail,
@@ -38,14 +35,10 @@ import {
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import {
-  applyLifecycleEvent,
-  IDLE_LIVENESS,
-  isLive,
-  livenessExpiry,
-  livenessFromSnapshot,
   liveModels,
   liveProviders,
-  type Liveness,
+  sameProviderModels,
+  type ProviderModels,
 } from "../../lib/sessionLiveness"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 import { blinkPeriod, describeSpend } from "../../lib/ledPeriod"
@@ -68,7 +61,6 @@ import {
 
 const REFRESH_MS = 60_000
 const SHOW_DELAY_MS = 400
-const MAX_TIMEOUT_MS = 2_147_483_647
 const TOKEN_MAP_WINDOW_SECS = 300
 const TOKEN_MAP_POLL_MS = 5_000
 /** How long the reset message and its confetti stay. */
@@ -85,7 +77,7 @@ export type OverlaySnapshot = {
   /** The providers a live session draws on, sorted. Their bars blink. */
   liveProviders: readonly string[]
   /** The models a live session runs, sorted. A model-scoped bar reads this. */
-  liveModels: readonly string[]
+  liveModels: ProviderModels
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
   tokenMap: TokenMapLayout
@@ -107,7 +99,7 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   dragging: false,
   sessionLive: false,
   liveProviders: [],
-  liveModels: [],
+  liveModels: {},
   noMeterSelected: false,
   tokenMap: EMPTY_TOKEN_MAP,
   showMap: false,
@@ -169,15 +161,10 @@ export class OverlaySession {
   /** The dot value the map last used, held for a window so a burst does not flicker the scale. */
   private dotValueFloor = 0
   private dotValueFloorSince = 0
-  private livenessExpiry: number | null = null
-  private liveness: Liveness = IDLE_LIVENESS
-  private livenessRevision = 0
   private stopWorkListening: (() => void) | null = null
   private stopHoverListening: (() => void) | null = null
   private stopUsageListening: (() => void) | null = null
   private stopLifecycleListening: (() => void) | null = null
-  private stopScanListening: (() => void) | null = null
-  private stopInvalidationListening: (() => void) | null = null
   private stopVisibilityListening: (() => void) | null = null
   private stopDetailShownListening: (() => void) | null = null
   private stopDevListening: (() => void) | null = null
@@ -185,7 +172,7 @@ export class OverlaySession {
   private devSpend: HudSpendRate | null = null
   /** Until when the "HUD Dev" menu holds the first bar at its limit. */
   private devBlockUntil = 0
-  /** The newest transcript write seen through events, for the quiet-spell wake. */
+  /** When work last ran, in epoch seconds, for the quiet-spell wake. */
   private lastEventActivity: number | null = null
   private burnWake = new BurnWakeTracker()
   private dragOrigin: DragOrigin | null = null
@@ -314,7 +301,7 @@ export class OverlaySession {
       dragging: false,
       sessionLive: false,
       liveProviders: [],
-      liveModels: [],
+      liveModels: {},
     })
     this.connectPanel(generation)
     this.resumeHudExposure()
@@ -362,8 +349,29 @@ export class OverlaySession {
       })
       .catch(() => {})
 
-    this.listenForActivity(generation)
-    this.refreshLiveness(generation)
+    // Liveness comes from the lifecycle registry alone: the tracker takes
+    // the versioned snapshot behind its own listener and applies only
+    // newer deltas, so this surface never derives windows from row
+    // timestamps or scan events.
+    const syncLiveness = () => {
+      if (!this.isCurrent(generation)) return
+      const live = liveSessions.getSnapshot()
+      const working = hasWorkingActivity(live)
+      // A write after a quiet spell wakes a docked HUD. The registry reports
+      // the work, so the wake reads the gap since work last ran.
+      const nowSecs = Date.now() / 1000
+      if (working && activityWake(this.lastEventActivity, nowSecs)) {
+        void wakeOverlayWindow("activity").catch(() => {})
+      }
+      if (working) this.lastEventActivity = nowSecs
+      this.update({
+        sessionLive: working,
+        liveProviders: liveProviders(live),
+        liveModels: liveModels(live),
+      })
+    }
+    this.stopLifecycleListening = liveSessions.subscribe(syncLiveness)
+    syncLiveness()
 
     const refreshTokenMap = () => {
       this.tickCountdown(applyUsage)
@@ -472,22 +480,16 @@ export class OverlaySession {
     if (!this.active) return
     this.active = false
     this.activityGeneration += 1
-    this.livenessRevision += 1
     this.clearShowTimer()
     this.hideDetail()
     this.clearUsagePoll()
     this.clearTokenMapPoll()
-    this.clearLivenessExpiry()
     this.stopHoverListening?.()
     this.stopHoverListening = null
     this.stopUsageListening?.()
     this.stopUsageListening = null
     this.stopLifecycleListening?.()
     this.stopLifecycleListening = null
-    this.stopScanListening?.()
-    this.stopScanListening = null
-    this.stopInvalidationListening?.()
-    this.stopInvalidationListening = null
     this.stopVisibilityListening?.()
     this.stopVisibilityListening = null
     this.stopDetailShownListening?.()
@@ -504,13 +506,12 @@ export class OverlaySession {
     this.observer = null
     this.dragOrigin = null
     this.pendingMove = null
-    this.liveness = IDLE_LIVENESS
     this.update({
       hovered: false,
       dragging: false,
       sessionLive: false,
       liveProviders: [],
-      liveModels: [],
+      liveModels: {},
     })
   }
 
@@ -547,90 +548,6 @@ export class OverlaySession {
       this.dotValueFloor = 0
       this.dotValueFloorSince = now
     }
-  }
-
-  private clearLivenessExpiry(): void {
-    if (this.livenessExpiry != null) window.clearTimeout(this.livenessExpiry)
-    this.livenessExpiry = null
-  }
-
-  // The bus is the one source of "live". A keyed session turns on at
-  // `started` or `activity` and off at `quiet` or `idle`. The local clock
-  // closes the same 30 s window for a snapshot, a missed event, and keyless
-  // activity, a write the store has not indexed yet.
-  private listenForActivity(generation: number): void {
-    void onSessionLifecycle((event) => {
-      if (!this.isCurrent(generation)) return
-      // A write after a quiet spell wakes a docked HUD. Only the two events
-      // that report a write carry a time to compare.
-      if (event.kind === "started" || event.kind === "activity") {
-        const latest = event.at
-        if (Number.isFinite(latest)) {
-          if (activityWake(this.lastEventActivity, latest)) {
-            void wakeOverlayWindow("activity").catch(() => {})
-          }
-          this.lastEventActivity = Math.max(this.lastEventActivity ?? latest, latest)
-        }
-      }
-      // A snapshot still in flight predates this event and must not replace it.
-      this.livenessRevision += 1
-      this.applyLiveness(applyLifecycleEvent(this.liveness, event), generation)
-    })
-      .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopLifecycleListening = dispose
-        else dispose()
-      })
-      .catch(() => {})
-
-    // A pass may have indexed or evicted sessions, and a lagged bus reader
-    // may have missed an event; the snapshot puts the set right either way.
-    void listen(SCAN_EVENTS.finished, () => {
-      if (this.isCurrent(generation)) this.refreshLiveness(generation)
-    })
-      .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopScanListening = dispose
-        else dispose()
-      })
-      .catch(() => {})
-
-    void onSessionsInvalidated(() => {
-      if (this.isCurrent(generation)) this.refreshLiveness(generation)
-    })
-      .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopInvalidationListening = dispose
-        else dispose()
-      })
-      .catch(() => {})
-  }
-
-  private refreshLiveness(generation: number): void {
-    const revision = ++this.livenessRevision
-    void getLiveSessions()
-      .then((sessions) => {
-        if (!this.isCurrent(generation) || revision !== this.livenessRevision) return
-        this.applyLiveness(livenessFromSnapshot(sessions, this.liveness), generation)
-      })
-      .catch(() => {})
-  }
-
-  private applyLiveness(next: Liveness, generation: number): void {
-    this.liveness = next
-    this.clearLivenessExpiry()
-    const now = Date.now()
-    this.update({
-      sessionLive: isLive(next, now),
-      liveProviders: liveProviders(next, now),
-      liveModels: liveModels(next, now),
-    })
-    const expiresAt = livenessExpiry(next, now)
-    if (expiresAt == null) return
-    this.livenessExpiry = window.setTimeout(
-      () => {
-        this.livenessExpiry = null
-        if (this.isCurrent(generation)) this.applyLiveness(this.liveness, generation)
-      },
-      Math.min(expiresAt - now + 1, MAX_TIMEOUT_MS),
-    )
   }
 
   private armShowTimer(): void {
@@ -846,7 +763,7 @@ export class OverlaySession {
       this.snapshot.dragging === next.dragging &&
       this.snapshot.sessionLive === next.sessionLive &&
       sameList(this.snapshot.liveProviders, next.liveProviders) &&
-      sameList(this.snapshot.liveModels, next.liveModels) &&
+      sameProviderModels(this.snapshot.liveModels, next.liveModels) &&
       this.snapshot.noMeterSelected === next.noMeterSelected &&
       this.snapshot.tokenMap === next.tokenMap &&
       this.snapshot.showMap === next.showMap &&

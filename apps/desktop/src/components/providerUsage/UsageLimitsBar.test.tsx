@@ -279,7 +279,7 @@ describe("UsageLimitsBar — the live sweep", () => {
       liveProviders: ["anthropic"],
       // The third window is scoped to Fable, so it needs the session to run
       // that model before it joins the other two.
-      liveModels: ["claude-fable-5"],
+      liveModels: { anthropic: ["claude-fable-5"] },
       expanded: true,
     })
     const region = screen.getByRole("region", { name: "Usage limits" })
@@ -301,7 +301,7 @@ describe("UsageLimitsBar — the live sweep", () => {
     bar({
       live: twoProviders(),
       liveProviders: ["anthropic"],
-      liveModels: ["claude-opus-4-6"],
+      liveModels: { anthropic: ["claude-opus-4-6"] },
       expanded: true,
     })
     const region = screen.getByRole("region", { name: "Usage limits" })

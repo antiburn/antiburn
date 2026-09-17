@@ -10,6 +10,7 @@ import type {
   LiveUsageWindowPayload,
 } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
+import type { ProviderModels } from "../../lib/sessionLiveness"
 import type {
   LiveProviderStatus,
   UnavailableLiveProvider,
@@ -73,7 +74,7 @@ export interface UsageLimitsBarProps {
    * while that model is in this list, so a limit the reader is not drawing
    * on stays still.
    */
-  liveModels?: readonly string[]
+  liveModels?: ProviderModels
 }
 
 /**
@@ -101,7 +102,7 @@ export function UsageLimitsBar({
   onHoverProvider,
   activeProvider,
   liveProviders = [],
-  liveModels = [],
+  liveModels = {},
 }: UsageLimitsBarProps) {
   const limited = orderedLiveAccounts(liveDisplayableProviders(live)).filter(
     ({ reading }) => liveWindows(reading).length > 0,
@@ -184,7 +185,7 @@ export function UsageLimitsBar({
               now={at}
               action={index === 0 ? disclosure(true) : undefined}
               live={liveProviders.includes(reading.provider)}
-              liveModels={liveModels}
+              liveModels={liveModels[reading.provider] ?? []}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }

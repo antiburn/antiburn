@@ -28,6 +28,7 @@ macro_rules! with_app_commands {
             commands::get_hygiene_summary => "get_hygiene_summary",
             hud_token_map::get_hud_token_map => "get_hud_token_map",
             commands::get_live_sessions => "get_live_sessions",
+            commands::get_live_sessions_for => "get_live_sessions_for",
             commands::get_live_usage => "get_live_usage",
             commands::get_provider_usage => "get_provider_usage",
             commands::get_scan_status => "get_scan_status",

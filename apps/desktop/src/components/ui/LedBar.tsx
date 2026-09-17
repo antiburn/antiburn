@@ -20,7 +20,8 @@ import type { CSSProperties } from "react"
  * motion the sweep stops, and the next segment to light holds the brand tint
  * instead; a full bar marks its last segment.
  *
- * `blinkLast` blinks the last lit segment, for the HUD's spend-rate LED. The
+ * `blinkLast` blinks the last lit segment, or the first segment when the bar
+ * has none lit, for the HUD's spend-rate LED. The
  * segment can take its own period and colour. The period follows the spend
  * rate; the colour is the mode of the newest live turn. Without them the
  * segment blinks at the stylesheet's period in the bar's own colour.
@@ -65,7 +66,9 @@ export function LedBar({
   )
   // A full bar has no next segment; the still mark then stays on the last one.
   const nextIndex = live ? Math.min(segments - 1, litCount) : -1
-  const blinkIndex = blinkLast && litCount > 0 ? litCount - 1 : -1
+  // A bar with nothing lit blinks its first segment, so a live session still
+  // shows when no meter is on.
+  const blinkIndex = blinkLast ? Math.max(0, litCount - 1) : -1
   const barStyle: CSSProperties | undefined = live
     ? ({ ...style, "--led-segments": segments, "--led-row": row } as CSSProperties)
     : style

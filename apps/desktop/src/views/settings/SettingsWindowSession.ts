@@ -4,7 +4,7 @@ import {
   appInfo,
   hasShell,
   noteInteraction,
-  onSessionsInvalidated,
+  onSessionIndexChanged,
   onSettingsPaneRequest,
   onSettingsShown,
   takeSettingsPane,
@@ -68,7 +68,7 @@ export class SettingsWindowSession {
 
     this.refreshInfo(generation)
 
-    void onSessionsInvalidated(() => {
+    void onSessionIndexChanged(() => {
       if (generation !== this.generation) return
       this.refreshInfo(generation)
     })

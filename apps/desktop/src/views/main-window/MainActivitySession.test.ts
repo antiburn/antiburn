@@ -6,8 +6,10 @@ import {
   DEFAULT_SETTINGS,
   type ActivityEntryPayload,
   type SessionAnalysisPayload,
+  type SessionUpdatedPayload,
 } from "../../lib/ipc"
 import { sessionKey } from "../../lib/sessionSubject"
+import { liveSessions } from "../../lib/sessionLifecycle"
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -37,9 +39,8 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     onMainWindowVisibilityChanged: subscribe("visibility"),
     onMainWindowSessionTarget: subscribe("session-target"),
     onSettingsChanged: subscribe("settings"),
-    onSessionsInvalidated: subscribe("invalidated"),
-    onScanEvent: subscribe("scan"),
-    onSessionEntryChanged: subscribe("entry"),
+    onSessionIndexChanged: subscribe("index"),
+    onSessionUpdated: subscribe("update"),
     onLiveUsageChanged: subscribe("usage"),
   }
 })
@@ -65,6 +66,27 @@ const entry = (id: string, extra = {}): ActivityEntryPayload =>
     ...extra,
   }) as ActivityEntryPayload
 const payload = (title: string) => ({ title }) as SessionAnalysisPayload
+const update = (
+  changed: ActivityEntryPayload,
+  facets: Partial<SessionUpdatedPayload["facets"]> = { metadata: true },
+): SessionUpdatedPayload => ({
+  seq: 1,
+  session: {
+    environmentKey: changed.wslDistro ? `wsl:${changed.wslDistro}` : "native",
+    agent: changed.agent,
+    sessionId: changed.sessionId,
+  },
+  facets: {
+    metadata: false,
+    title: false,
+    analysis: false,
+    usage: false,
+    checks: false,
+    limits: false,
+    ...facets,
+  },
+  entry: changed,
+})
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => {
@@ -342,8 +364,8 @@ describe("MainActivitySession", () => {
     await ready(session)
     mocks.events.get("visibility")!(false)
     const count = mocks.listRecentSessions.mock.calls.length
-    mocks.events.get("scan")!({}, "finished")
-    mocks.events.get("entry")!(entry("three"))
+    mocks.events.get("index")!({ seq: 3, cause: "scan_pass" })
+    mocks.events.get("update")!(update(entry("three")))
     expect(mocks.listRecentSessions).toHaveBeenCalledTimes(count)
     expect(session.getSnapshot().active).toBe(false)
     mocks.events.get("visibility")!(true)
@@ -414,7 +436,7 @@ describe("MainActivitySession", () => {
     mocks.events.get("settings")!({ ...DEFAULT_SETTINGS, activityWindowDays: 1 })
     await vi.waitFor(() => expect(session.getSnapshot().entries).toHaveLength(0))
     expect(session.getSnapshot().subject?.sessionId).toBe("one")
-    mocks.events.get("invalidated")!()
+    mocks.events.get("index")!({ seq: 4, cause: "removed", removal: "deleted" })
     await vi.waitFor(() => expect(session.getSnapshot().subject).toBeNull())
   })
 
@@ -570,7 +592,7 @@ describe("MainActivitySession event ordering", () => {
     const pending = deferred<ActivityEntryPayload[]>()
     mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
     session.refreshList()
-    mocks.events.get("entry")!(entry("one", { title: "New title" }))
+    mocks.events.get("update")!(update(entry("one", { title: "New title" }), { title: true }))
     pending.resolve([entry("one", { title: "Old title" })])
     await Promise.resolve()
     await Promise.resolve()
@@ -588,7 +610,7 @@ describe("MainActivitySession event ordering", () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise)
     session.selectEntry(session.getSnapshot().entries![0]!)
-    mocks.events.get("invalidated")!()
+    mocks.events.get("index")!({ seq: 9, cause: "invalidated" })
     first.resolve(payload("Old analysis"))
     await vi.waitFor(() => expect(mocks.loadSessionAnalysis).toHaveBeenCalledTimes(2))
     expect(session.getSnapshot().analysis).toBeNull()
@@ -614,3 +636,75 @@ describe("MainActivitySession event ordering", () => {
     first.resolve(payload("Old"))
   })
 })
+
+it.each(["hidden", "inactive"])(
+  "suspends Sessions lifecycle overlays while %s and reconciles on resume",
+  async (mode) => {
+    let changed: (() => void) | null = null
+    const subscribe = vi.spyOn(liveSessions, "subscribe").mockImplementation((listener) => {
+      changed = listener
+      return () => {
+        changed = null
+      }
+    })
+    const snapshot = vi.spyOn(liveSessions, "getSnapshot").mockReturnValue({
+      seq: 1,
+      ready: true,
+      complete: true,
+      sessions: new Map(),
+      absent: new Set(),
+      keylessAgents: new Set(),
+      working: 0,
+      total: 0,
+      anonymous: 0,
+      sweep: [],
+    })
+    const interests = new Set<object>()
+    const setInterest = vi.spyOn(liveSessions, "setInterest").mockImplementation((owner) => {
+      interests.add(owner)
+    })
+    const clearInterest = vi
+      .spyOn(liveSessions, "clearInterest")
+      .mockImplementation((owner) => {
+        interests.delete(owner)
+      })
+    try {
+      const { session, stop } = start()
+      const listener = vi.fn()
+      session.subscribeInactive(listener)
+      await ready(session)
+      expect(interests.has(session)).toBe(true)
+      if (mode === "hidden") mocks.events.get("visibility")!(false)
+      else stop()
+      expect(session.getSnapshot().active).toBe(false)
+      const before = session.getSnapshot()
+      listener.mockClear()
+      snapshot.mockReturnValue({
+        ...liveSessions.getSnapshot(),
+        seq: 2,
+        working: 1,
+        total: 1,
+        sessions: new Map([
+          ['["native","claude","one"]', { agent: "claude", lastActivityAt: 100, quiet: false }],
+        ]),
+      })
+      const publish = changed as (() => void) | null
+      publish?.()
+      expect(session.getSnapshot()).toBe(before)
+      expect(listener).not.toHaveBeenCalled()
+      expect(interests.has(session)).toBe(false)
+      if (mode === "hidden") mocks.events.get("visibility")!(true)
+      else session.subscribe(() => undefined)
+      expect(interests.has(session)).toBe(true)
+      expect(
+        session.getSnapshot().entries?.find((row) => row.sessionId === "one")?.isActive,
+      ).toBe(true)
+      session.dispose()
+    } finally {
+      subscribe.mockRestore()
+      snapshot.mockRestore()
+      setInterest.mockRestore()
+      clearInterest.mockRestore()
+    }
+  },
+)

@@ -14,15 +14,14 @@ use antiburn_local::discovery::{Explorers, SessionLog, SessionSource, WatchRoot}
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
 use antiburn_local::platform::environment::DiscoveryEnvironment;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::time::Instant;
 
 use crate::agents;
-use crate::dto::{ActivityEntry, ScanStatus};
 use crate::storage_health::checked;
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
-use super::{PassScope, ScanController, ScanTrigger};
+use super::ScanController;
 
 /// T2: a refreshed session is not refreshed again before this interval ends.
 pub const TARGETED_MIN_INTERVAL: Duration = Duration::from_secs(10);
@@ -487,10 +486,6 @@ async fn refresh_indexed_titles_locked(
 ) -> anyhow::Result<ScopedSummary> {
     let store = app.state::<Store>();
     let now = super::unix_now();
-    let announce_app = app.clone();
-    let announce = move |entry: ActivityEntry| {
-        let _ = announce_app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
-    };
     let mut session_count = 0;
     let mut changed_count = 0;
 
@@ -549,7 +544,9 @@ async fn refresh_indexed_titles_locked(
                     store.upsert_sessions(&changed_records, &agents::evidence_cohort()),
                 )?;
             }
-            super::announce_changed_rows(&store, &changed, &previous_map, now, &announce);
+            // A title-store refresh changes titles only, so the diff below
+            // reports `title` facets without a metadata reload.
+            super::report_row_changes(app, &records, &changed, &previous_map, now).await;
             changed_count += changed.len();
         }
     }
@@ -599,11 +596,6 @@ async fn refresh_sessions_locked(
         previous_map.insert(key.clone(), record);
     }
 
-    let announce_app = app.clone();
-    let announce = move |entry: ActivityEntry| {
-        let _ = announce_app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
-    };
-
     let described = super::describe_with_states(logs, &home, &ignored, &previous_map).await;
     let record_keys = described
         .records
@@ -621,42 +613,35 @@ async fn refresh_sessions_locked(
             |records| store.upsert_sessions(records, &agents::evidence_cohort()),
         ),
     )?;
-    if persisted {
+    if let Some((incarnations, revision)) = persisted {
         super::wake_session_workers(app);
-        super::report_indexed(
+        super::report_discovery(
             app,
             now,
             &described.records,
             &described.changed,
             &previous_map,
-        );
+            &incarnations,
+            revision,
+        )
+        .await;
     }
-    super::announce_changed_rows(&store, &described.changed, &previous_map, now, &announce);
     for key in &described.rejected {
         let removed = checked(app, "The session index", store.delete_session(key))?;
-        if removed {
+        if let Some((incarnation, revision)) = removed {
             super::wake_session_workers(app);
+            super::report_rejected(app, &described, key, incarnation, revision).await;
         }
     }
+    // A targeted refresh can still change list membership: a reused source
+    // label can carry a new session identity, and a rejection evicts a
+    // row. The full pass reports the same fact from `scan/mod.rs::pass`.
+    super::report_membership_changed(app, &described).await;
 
     Ok(ScopedSummary {
         sessions: described.records.len(),
         re_described: described.changed.len(),
     })
-}
-
-/// T3, T5: rediscover exactly `agents`, reusing [`super::run_pass`] scoped to
-/// them so `scan:started` / `scan:finished` and the log lines it already
-/// emits come for free.
-///
-/// Returns `None` when [`super::on_demand_start`] finds a pass already
-/// running — the caller keeps `agents` pending and retries (T7).
-pub(super) async fn rediscover_agents(
-    app: &AppHandle,
-    agents: &BTreeSet<AgentKind>,
-    trigger: ScanTrigger,
-) -> Option<ScanStatus> {
-    super::try_run_pass(app, None, trigger, PassScope::Agents(agents.clone())).await
 }
 
 #[cfg(test)]

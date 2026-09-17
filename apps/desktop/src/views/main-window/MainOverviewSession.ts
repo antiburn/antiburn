@@ -13,15 +13,22 @@ import {
   listRecentSessions,
   onLiveUsageChanged,
   onMainWindowVisibilityChanged,
-  onScanEvent,
-  onSessionEntryChanged,
-  onSessionsInvalidated,
+  onSessionIndexChanged,
+  onSessionUpdated,
   type ActivityEntryPayload,
+  type SessionIndexChangedPayload,
+  type SessionUpdatedPayload,
 } from "../../lib/ipc"
 import type {
   LiveUsageSummaryPayload,
   ProviderUsageSummaryPayload,
 } from "../../lib/providerUsageIpc"
+import {
+  listInterests,
+  liveSessions,
+  withRegistryActivity,
+  type LiveSessionsSource,
+} from "../../lib/sessionLifecycle"
 
 export interface MainOverviewAdapter {
   getUsage(): Promise<ProviderUsageSummaryPayload>
@@ -33,9 +40,12 @@ export interface MainOverviewAdapter {
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
   onLiveUsageChanged(handler: (usage: LiveUsageSummaryPayload) => void): Promise<() => void>
   onChecksReportChanged(handler: () => void): Promise<() => void>
-  onSessionsInvalidated(handler: () => void): Promise<() => void>
-  onSessionEntryChanged(handler: () => void): Promise<() => void>
-  onScanFinished(handler: () => void): Promise<() => void>
+  onSessionIndexChanged(
+    handler: (change: SessionIndexChangedPayload) => void,
+  ): Promise<() => void>
+  onSessionUpdated(handler: (update: SessionUpdatedPayload) => void): Promise<() => void>
+  /** The window's live registry tracker. Active pills come from it alone. */
+  liveSessions: LiveSessionsSource
 }
 
 const productionAdapter: MainOverviewAdapter = {
@@ -48,12 +58,22 @@ const productionAdapter: MainOverviewAdapter = {
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
   onLiveUsageChanged: (handler) => onLiveUsageChanged(handler),
   onChecksReportChanged: (handler) => onChecksReportChanged(handler),
-  onSessionsInvalidated: (handler) => onSessionsInvalidated(handler),
-  onSessionEntryChanged: (handler) => onSessionEntryChanged(() => handler()),
-  onScanFinished: (handler) =>
-    onScanEvent((_status, phase) => {
-      if (phase === "finished") handler()
-    }),
+  onSessionIndexChanged: (handler) => onSessionIndexChanged(handler),
+  onSessionUpdated: (handler) => onSessionUpdated(handler),
+  liveSessions,
+}
+
+/**
+ * Whether one row update can move the Overview's spend totals or report.
+ *
+ * A title-only change re-reads the recent rows alone. The `usage`, `checks`,
+ * and `limits` facets are reserved by the bus; the page already honours them.
+ */
+export function overviewUpdateTouchesTotals(update: SessionUpdatedPayload): boolean {
+  const facets = update.facets
+  return Boolean(
+    facets.metadata || facets.analysis || facets.usage || facets.checks || facets.limits,
+  )
 }
 
 /** How many recent sessions the Overview page shows. */
@@ -90,12 +110,17 @@ function overviewRecentSessions(payloads: readonly ActivityEntryPayload[]): Sess
  * Own the Overview section's reads: local provider usage, the live provider
  * limits, the Burn checks report, and the newest sessions. The section is
  * the main window's landing page, so the store loads only while the window
- * is visible and a viewer is active, and it refreshes after every scan and
- * every live usage update.
+ * is visible and a viewer is active. It refreshes the whole page on every
+ * `session:index-changed` event and on a row update that can move its
+ * totals; a row update re-reads the recent rows in every case.
  *
  * The checks report is read under a consumer id of its own. The backend
  * keeps that report warm until the store cancels the consumer, which it does
  * whenever the section goes inactive.
+ *
+ * The recent rows' active pills come from the lifecycle registry: the rows
+ * are registered as this section's interest after each load, so the
+ * registry names them even when the bounded snapshot omits them.
  */
 export class MainOverviewSession {
   private readonly adapter: MainOverviewAdapter
@@ -182,13 +207,26 @@ export class MainOverviewSession {
         generation,
         this.adapter.onChecksReportChanged(whenCurrent(this.refreshReport)),
       ),
-      this.listen(generation, this.adapter.onSessionsInvalidated(whenCurrent(this.refresh))),
+      this.listen(generation, this.adapter.onSessionIndexChanged(whenCurrent(this.refresh))),
       this.listen(
         generation,
-        this.adapter.onSessionEntryChanged(whenCurrent(this.refreshRecentSessions)),
+        this.adapter.onSessionUpdated((update) => {
+          if (generation !== this.generation) return
+          if (overviewUpdateTouchesTotals(update)) this.refresh()
+          else this.refreshRecentSessions()
+        }),
       ),
-      this.listen(generation, this.adapter.onScanFinished(whenCurrent(this.refresh))),
     ])
+    if (generation === this.generation) {
+      // The registry, not row data, decides which recent rows show as active.
+      this.stops.push(
+        this.adapter.liveSessions.subscribe(() => {
+          if (generation !== this.generation || !this.snapshot.active) return
+          const rows = this.snapshot.recentSessions
+          if (rows) this.update({ recentSessions: this.withRegistryActivity(rows) })
+        }),
+      )
+    }
     const revision = visibilityRevision
     const visible = await this.adapter.getVisible().catch(() => false)
     if (generation !== this.generation) return
@@ -203,8 +241,14 @@ export class MainOverviewSession {
     this.workVersion += 1
     this.update({ active, loading: active && !this.snapshot.usage, refreshing: false })
     if (!active) {
+      this.adapter.liveSessions.clearInterest(this)
       this.releaseConsumer()
       return
+    }
+    const rows = this.snapshot.recentSessions
+    if (rows) {
+      this.update({ recentSessions: this.withRegistryActivity(rows) })
+      this.adapter.liveSessions.setInterest(this, listInterests(rows))
     }
     this.consumerId = `main-home-${++nextConsumer}`
     this.refresh()
@@ -292,11 +336,18 @@ export class MainOverviewSession {
     try {
       const payloads = await this.adapter.listRecentSessions()
       if (work === this.workVersion && version === this.recentVersion) {
-        this.update({ recentSessions: overviewRecentSessions(payloads) })
+        const rows = overviewRecentSessions(payloads)
+        this.update({ recentSessions: this.withRegistryActivity(rows) })
+        this.adapter.liveSessions.setInterest(this, listInterests(rows))
       }
     } catch {
       // The sessions panel keeps its last rows.
     }
+  }
+
+  /** Active pills come from the lifecycle registry, never from row timestamps. */
+  private withRegistryActivity(rows: SessionListEntry[]): SessionListEntry[] {
+    return withRegistryActivity(this.adapter.liveSessions.getSnapshot(), rows)
   }
 
   dispose = (): void => {
@@ -307,6 +358,7 @@ export class MainOverviewSession {
     this.refreshTask = null
     this.releaseConsumer()
     for (const stop of this.stops.splice(0)) stop()
+    this.adapter.liveSessions.clearInterest(this)
     this.update({ active: false, loading: false, refreshing: false })
   }
 }

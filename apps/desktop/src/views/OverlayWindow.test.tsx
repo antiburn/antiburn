@@ -102,6 +102,27 @@ function emitNative(event: string, payload: unknown): void {
   for (const handler of nativeEvents.get(event) ?? []) handler({ payload })
 }
 
+const lifecycle = { seq: 0 }
+
+/**
+ * Push one sequenced lifecycle envelope at the mocked native listener, with
+ * the batch counts the registry stamps on its last lifecycle event.
+ */
+function emitLifecycle(
+  event: Record<string, unknown>,
+  aggregate: { working: number; total: number; anonymous: number },
+): void {
+  lifecycle.seq += 1
+  emitNative("session:lifecycle", {
+    seq: lifecycle.seq,
+    aggregate: {
+      ...aggregate,
+      sweep: sweep(aggregate.working, aggregate.anonymous, String(event.agent)),
+    },
+    ...event,
+  })
+}
+
 const setPosition = vi.hoisted(() => vi.fn(async () => {}))
 const outerPosition = vi.hoisted(() => vi.fn(async () => ({ x: 600, y: 40 })))
 vi.mock("@tauri-apps/api/window", () => ({
@@ -247,25 +268,58 @@ const SESSION_REF = { environmentKey: "native", agent: "claude-code", sessionId:
 function liveSession(
   sessionId = "session-1",
   agent = "claude-code",
-  model: string | null = null,
+  model: string | null = "claude-opus-4-6",
+  providerRoute: string | null = "anthropic",
 ) {
   return {
     session: { ...SESSION_REF, agent, sessionId },
+    providerRoute,
     agent,
     lastActivityAt: Math.floor(Date.now() / 1000),
     model,
   }
 }
 
-function lifecycle(
-  kind: "started" | "activity" | "quiet" | "idle",
-  sessionId: string | null = "session-1",
-): Record<string, unknown> {
+function sweep(
+  working: number,
+  anonymous = 0,
+  agent = "claude-code",
+  model: string | null = "claude-opus-4-6",
+  providerRoute: string | null = "anthropic",
+) {
+  return working + anonymous === 0
+    ? []
+    : [
+        {
+          agent,
+          working,
+          anonymous,
+          modelPendingWorking: model ? 0 : working,
+          modelFailedWorking: 0,
+          modelNoneWorking: 0,
+          models: model
+            ? [
+                {
+                  model,
+                  working,
+                  providerRoute,
+                  recordedProvider: providerRoute,
+                  modelVendor: null,
+                },
+              ]
+            : [],
+        },
+      ]
+}
+
+function liveSnapshot(row = liveSession()) {
   return {
-    kind,
-    session: sessionId == null ? null : { ...SESSION_REF, sessionId },
-    agent: "claude-code",
-    at: Math.floor(Date.now() / 1000),
+    seq: 0,
+    working: 1,
+    total: 1,
+    anonymous: [],
+    sessions: [{ ...row, quiet: false }],
+    sweep: sweep(1, 0, row.agent, row.model, row.providerRoute),
   }
 }
 
@@ -277,7 +331,14 @@ describe("OverlayWindow", () => {
     getLiveUsage.mockReset()
     getLiveUsage.mockResolvedValue(summary())
     getLiveSessions.mockReset()
-    getLiveSessions.mockResolvedValue([])
+    getLiveSessions.mockResolvedValue({
+      seq: 0,
+      working: 0,
+      total: 0,
+      sessions: [],
+      anonymous: [],
+    })
+    lifecycle.seq = 0
     isOverlayWorkActive.mockReset()
     isOverlayWorkActive.mockResolvedValue(true)
     getHudTokenMap.mockReset()
@@ -341,6 +402,7 @@ describe("OverlayWindow", () => {
       expect(getLiveUsage).not.toHaveBeenCalled()
       expect(getLiveSessions).not.toHaveBeenCalled()
       expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
+      expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
       await advance(5 * 60_000)
       expect(getLiveUsage).not.toHaveBeenCalled()
       unmount()
@@ -360,9 +422,11 @@ describe("OverlayWindow", () => {
       await advance(0)
       expect(getLiveUsage).toHaveBeenCalledTimes(1)
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
+      expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(1)
 
       act(() => emitNative("overlay_work_changed", false))
       expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
+      expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
       await advance(2 * REFRESH_TEST_MS)
       expect(getLiveUsage).toHaveBeenCalledTimes(1)
 
@@ -447,21 +511,43 @@ describe("OverlayWindow", () => {
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
   })
 
-  it("ends the blink at the bus's quiet event, and at its idle event", async () => {
+  it("lights working activity from the registry snapshot and clears it on quiet", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    getLiveSessions.mockResolvedValue([liveSession()])
+    getLiveSessions.mockResolvedValue({
+      seq: 1,
+      working: 1,
+      sweep: sweep(1),
+      total: 1,
+      sessions: [
+        {
+          session: { environmentKey: "native", agent: "claude-code", sessionId: "busy" },
+          agent: "claude-code",
+          lastActivityAt: Math.floor(Date.now() / 1000),
+          quiet: false,
+        },
+      ],
+      anonymous: [],
+    })
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
       expect(container.querySelector(".led-blink")).not.toBeNull()
 
-      act(() => emitNative("session:lifecycle", lifecycle("quiet")))
-      expect(container.querySelector(".led-blink")).toBeNull()
-
-      act(() => emitNative("session:lifecycle", lifecycle("activity")))
-      expect(container.querySelector(".led-blink")).not.toBeNull()
-      act(() => emitNative("session:lifecycle", lifecycle("idle")))
+      // The snapshot already carries sequence 1; the delta must be newer.
+      lifecycle.seq = 1
+      // The registry, not a local timer, ends the working state.
+      act(() =>
+        emitLifecycle(
+          {
+            kind: "quiet",
+            session: { environmentKey: "native", agent: "claude-code", sessionId: "busy" },
+            agent: "claude-code",
+            at: Math.floor(Date.now() / 1000) + 30,
+          },
+          { working: 0, total: 1, anonymous: 0 },
+        ),
+      )
       expect(container.querySelector(".led-blink")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
@@ -469,18 +555,61 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("ends the blink 30 seconds after a session's last write, without an event", async () => {
+  it("lights working activity from the exact counts when the snapshot rows are truncated", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    getLiveSessions.mockResolvedValue([liveSession()])
+    // The bounded rows hold nothing that works, but the registry's exact
+    // counts say two sessions do. The HUD trusts the counts, not the rows.
+    getLiveSessions.mockResolvedValue({
+      seq: 1,
+      working: 2,
+      sweep: sweep(2),
+      total: 300,
+      sessions: [
+        {
+          session: { environmentKey: "native", agent: "claude-code", sessionId: "quiet-row" },
+          agent: "claude-code",
+          lastActivityAt: Math.floor(Date.now() / 1000) - 60,
+          quiet: true,
+        },
+      ],
+      anonymous: [],
+    })
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
       expect(container.querySelector(".led-blink")).not.toBeNull()
 
-      await advance(29_000)
+      lifecycle.seq = 1
+      // A stamped delta about a session the rows never named still moves
+      // the HUD, because the counts are what it reads.
+      act(() =>
+        emitLifecycle(
+          {
+            kind: "quiet",
+            session: { environmentKey: "native", agent: "claude-code", sessionId: "unlisted" },
+            agent: "claude-code",
+            at: Math.floor(Date.now() / 1000),
+          },
+          { working: 1, total: 300, anonymous: 0 },
+        ),
+      )
       expect(container.querySelector(".led-blink")).not.toBeNull()
-      await advance(1_001)
+      act(() =>
+        emitLifecycle(
+          {
+            kind: "quiet",
+            session: {
+              environmentKey: "native",
+              agent: "claude-code",
+              sessionId: "unlisted-2",
+            },
+            agent: "claude-code",
+            at: Math.floor(Date.now() / 1000),
+          },
+          { working: 0, total: 300, anonymous: 0 },
+        ),
+      )
       expect(container.querySelector(".led-blink")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
@@ -488,45 +617,48 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("starts still when the snapshot's session wrote 45 seconds ago", async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    const older = liveSession()
-    older.lastActivityAt -= 45
-    getLiveSessions.mockResolvedValue([older])
-    try {
-      const { container } = render(<OverlayWindow />)
-      await advance(0)
-      expect(container.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
-      expect(container.querySelector(".led-blink")).toBeNull()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it("keeps the blink while another session is still live", async () => {
-    getLiveSessions.mockResolvedValue([liveSession("session-1"), liveSession("session-2")])
-    const { container } = render(<OverlayWindow />)
-    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
-
-    act(() => emitNative("session:lifecycle", lifecycle("quiet", "session-1")))
-    expect(container.querySelector(".led-blink")).not.toBeNull()
-    act(() => emitNative("session:lifecycle", lifecycle("quiet", "session-2")))
-    expect(container.querySelector(".led-blink")).toBeNull()
-  })
-
-  it("expires keyless agent activity after the live window", async () => {
+  it("clears anonymous agent activity only when the registry says so", async () => {
+    const empty = summary()
+    empty.providers = []
+    getLiveUsage.mockResolvedValue(empty)
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(1)
 
-      act(() => emitNative("session:lifecycle", lifecycle("activity", null)))
+      const at = Math.floor(Date.now() / 1000)
+      act(() =>
+        emitLifecycle(
+          {
+            kind: "activity",
+            session: null,
+            agent: "codex",
+            at,
+            resumed: false,
+          },
+          { working: 0, total: 0, anonymous: 1 },
+        ),
+      )
       expect(container.querySelector(".led-blink")).not.toBeNull()
 
-      await advance(30_001)
+      // No renderer timer ends anonymous activity: past the registry's
+      // window the bar still blinks until the canonical clear arrives.
+      await advance(30_000)
+      expect(container.querySelector(".led-blink")).not.toBeNull()
+
+      act(() =>
+        emitLifecycle(
+          {
+            kind: "anonymous_cleared",
+            agent: "codex",
+            at: at + 30,
+            cause: "expired",
+          },
+          { working: 0, total: 0, anonymous: 0 },
+        ),
+      )
       expect(container.querySelector(".led-blink")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
@@ -534,33 +666,34 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("re-reads the live set after a scan pass", async () => {
-    render(<OverlayWindow />)
-    await waitFor(() => expect(nativeEvents.get("scan:finished")?.size).toBe(1))
-    expect(getLiveSessions).toHaveBeenCalledTimes(1)
-
-    act(() => emitNative("scan:finished", {}))
-    expect(getLiveSessions).toHaveBeenCalledTimes(2)
-  })
-
-  it("uses pushed session activity and cleans its subscriptions on hide", async () => {
+  it("uses pushed lifecycle activity and cleans its subscriptions on hide", async () => {
     const { container, unmount } = render(<OverlayWindow />)
     await waitFor(() => expect(nativeEvents.get("session:lifecycle")?.size).toBe(1))
 
-    act(() => emitNative("session:lifecycle", lifecycle("activity")))
-    expect(container.querySelector(".led-blink")).not.toBeNull()
+    act(() =>
+      emitLifecycle(
+        {
+          kind: "activity",
+          session: { environmentKey: "native", agent: "claude-code", sessionId: "live" },
+          agent: "claude-code",
+          at: Math.floor(Date.now() / 1000),
+          resumed: false,
+        },
+        { working: 1, total: 1, anonymous: 0 },
+      ),
+    )
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
 
     act(() => emitNative("overlay_work_changed", false))
     expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("scan:finished")?.size ?? 0).toBe(0)
-    expect(nativeEvents.get("sessions:invalidated")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
 
     unmount()
     expect(nativeEvents.get("overlay_work_changed")?.size ?? 0).toBe(0)
   })
 
-  it("holds the blink off without a live session", async () => {
+  it("keeps a low-usage bar dark without a live session", async () => {
     const low = summary()
     low.providers[0]!.windows[0]!.usedPercent = 1
     getLiveUsage.mockResolvedValue(low)
@@ -770,7 +903,7 @@ describe("OverlayWindow", () => {
   })
 
   it("pins the blink period to a spend rate from the HUD Dev menu", async () => {
-    getLiveSessions.mockResolvedValue([liveSession()])
+    getLiveSessions.mockResolvedValue(liveSnapshot())
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
     const led = container.querySelector<HTMLElement>(".led-blink")!
@@ -880,7 +1013,7 @@ describe("OverlayWindow", () => {
   })
 
   it("blinks the live LED at the spend rate in the live session's mode colour", async () => {
-    getLiveSessions.mockResolvedValue([liveSession()])
+    getLiveSessions.mockResolvedValue(liveSnapshot())
     getHudTokenMap.mockResolvedValue({
       nowEpoch: 1_000,
       windowSecs: 300,
@@ -916,7 +1049,7 @@ describe("OverlayWindow", () => {
   })
 
   it("blinks at the quiet period with no spend and no forecast", async () => {
-    getLiveSessions.mockResolvedValue([liveSession()])
+    getLiveSessions.mockResolvedValue(liveSnapshot())
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
     const led = container.querySelector<HTMLElement>(".led-blink")!
