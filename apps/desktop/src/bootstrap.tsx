@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 
 import { WindowReadyBoundary, type WindowReadyReporter } from "./components/WindowReadyMarker"
 import { installFocusModality } from "./lib/focusModality"
+import { installLivePhase } from "./lib/livePhase"
 import { applyPlatformAttribute } from "./lib/platform"
 import { applyRouteAttribute, type Route } from "./lib/route"
 
@@ -16,10 +17,12 @@ export function mountWindow(
     throw new Error("The window entry is missing the #root mount point")
   }
 
-  // Set the attributes before React starts the first render.
+  // Set the attributes before React starts the first render. The installers
+  // run first as well, because they watch events the first render sends.
   applyPlatformAttribute()
   applyRouteAttribute(document.documentElement, route)
   installFocusModality()
+  installLivePhase()
 
   const content = reporter ? (
     <WindowReadyBoundary reporter={reporter}>{view}</WindowReadyBoundary>

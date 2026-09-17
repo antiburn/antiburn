@@ -6,8 +6,11 @@ import {
   DEFAULT_SETTINGS,
   type ActivityEntryPayload,
   type SessionAnalysisPayload,
+  type SessionUpdatedPayload,
 } from "../../lib/ipc"
 import { sessionKey } from "../../lib/sessionSubject"
+import { liveSessions } from "../../lib/sessionLifecycle"
+import { toActivityEntry } from "../../lib/activityEntries"
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -38,9 +41,8 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     onMainWindowVisibilityChanged: subscribe("visibility"),
     onMainWindowSessionTarget: subscribe("session-target"),
     onSettingsChanged: subscribe("settings"),
-    onSessionsInvalidated: subscribe("invalidated"),
-    onScanEvent: subscribe("scan"),
-    onSessionEntryChanged: subscribe("entry"),
+    onSessionIndexChanged: subscribe("index"),
+    onSessionUpdated: subscribe("update"),
     onLiveUsageChanged: subscribe("usage"),
   }
 })
@@ -66,6 +68,27 @@ const entry = (id: string, extra = {}): ActivityEntryPayload =>
     ...extra,
   }) as ActivityEntryPayload
 const payload = (title: string) => ({ title }) as SessionAnalysisPayload
+const update = (
+  changed: ActivityEntryPayload,
+  facets: Partial<SessionUpdatedPayload["facets"]> = { metadata: true },
+): SessionUpdatedPayload => ({
+  seq: 1,
+  session: {
+    environmentKey: changed.wslDistro ? `wsl:${changed.wslDistro}` : "native",
+    agent: changed.agent,
+    sessionId: changed.sessionId,
+  },
+  facets: {
+    metadata: false,
+    title: false,
+    analysis: false,
+    usage: false,
+    checks: false,
+    limits: false,
+    ...facets,
+  },
+  entry: changed,
+})
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => {
@@ -344,8 +367,8 @@ describe("MainActivitySession", () => {
     await ready(session)
     mocks.events.get("visibility")!(false)
     const count = mocks.listRecentSessions.mock.calls.length
-    mocks.events.get("scan")!({}, "finished")
-    mocks.events.get("entry")!(entry("three"))
+    mocks.events.get("index")!({ seq: 3, cause: "scan_pass" })
+    mocks.events.get("update")!(update(entry("three")))
     expect(mocks.listRecentSessions).toHaveBeenCalledTimes(count)
     expect(session.getSnapshot().active).toBe(false)
     mocks.events.get("visibility")!(true)
@@ -416,7 +439,7 @@ describe("MainActivitySession", () => {
     mocks.events.get("settings")!({ ...DEFAULT_SETTINGS, activityWindowDays: 1 })
     await vi.waitFor(() => expect(session.getSnapshot().entries).toHaveLength(0))
     expect(session.getSnapshot().subject?.sessionId).toBe("one")
-    mocks.events.get("invalidated")!()
+    mocks.events.get("index")!({ seq: 4, cause: "removed", removal: "deleted" })
     await vi.waitFor(() => expect(session.getSnapshot().subject).toBeNull())
   })
 
@@ -618,7 +641,7 @@ describe("MainActivitySession", () => {
     const { session } = start()
     await ready(session)
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(1))
-    mocks.events.get("entry")!(entry("one"))
+    mocks.events.get("update")!(update(entry("one")))
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(2))
     mocks.events.get("usage")!(null)
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(3))
@@ -637,6 +660,122 @@ describe("MainActivitySession", () => {
   })
 })
 
+describe("MainActivitySession incremental cost classification", () => {
+  function cost(totalUsd: number): NonNullable<ActivityEntryPayload["cost"]> {
+    return {
+      totalUsd,
+      inputUsd: totalUsd / 4,
+      outputUsd: totalUsd / 4,
+      cacheReadUsd: totalUsd / 4,
+      cacheWriteUsd: totalUsd / 4,
+    }
+  }
+
+  it.each([
+    {
+      name: "clears changed and peer flags when the median rises",
+      costs: [1, 1, 1, 1, 10, 10, 10, 20],
+      nextCost: 20,
+      beforeFlags: [false, false, false, false, false, false, false, true],
+      afterFlags: [false, false, false, false, false, false, false, false],
+    },
+    {
+      name: "flags a peer again when the median falls",
+      costs: [20, 1, 1, 1, 10, 10, 10, 20],
+      nextCost: 1,
+      beforeFlags: [false, false, false, false, false, false, false, false],
+      afterFlags: [false, false, false, false, false, false, false, true],
+    },
+    {
+      name: "classifies the cohort when priced rows grow from seven to eight",
+      costs: [null, 1, 1, 1, 1, 1, 1, 20],
+      nextCost: 20,
+      beforeFlags: [null, false, false, false, false, false, false, false],
+      afterFlags: [true, false, false, false, false, false, false, true],
+    },
+    {
+      name: "clears peer flags when eight priced rows become seven",
+      costs: [20, 1, 1, 1, 1, 1, 1, 20],
+      nextCost: null,
+      beforeFlags: [true, false, false, false, false, false, false, true],
+      afterFlags: [null, false, false, false, false, false, false, false],
+    },
+  ])(
+    "$name without reloading the list",
+    async ({ costs, nextCost, beforeFlags, afterFlags }) => {
+      const rows = costs.map((usd, index) =>
+        entry(`row-${index}`, {
+          title: `Session ${index}`,
+          timestamp: `2026-01-01T00:00:0${index}.000Z`,
+          repo: "widgets",
+          wslDistro: "Ubuntu",
+          hasForkParent: true,
+          forkChildCount: 2,
+          models: ["claude-fable-5"],
+          modelRuns: [{ model: "claude-fable-5", thinkingMode: "low" }],
+          cost: usd === null ? null : cost(usd),
+        }),
+      )
+      rows.push(entry("unpriced"))
+      mocks.listRecentSessions.mockResolvedValue(rows)
+      mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "notable" })
+      const { session } = start()
+      await ready(session)
+      await vi.waitFor(() => expect(session.getSnapshot().analysis).not.toBeNull())
+      const before = session.getSnapshot()
+      expect(before.entries!.map((row) => row.cost?.isHighCost ?? null)).toEqual([
+        ...beforeFlags,
+        null,
+      ])
+      const analysisCalls = mocks.loadSessionAnalysis.mock.calls.length
+      const usageCalls = mocks.getLiveUsage.mock.calls.length
+      const changed = {
+        ...rows[0]!,
+        title: "Updated title",
+        cost: nextCost === null ? null : cost(nextCost),
+      }
+
+      mocks.events.get("update")!(update(changed, { title: true }))
+
+      const after = session.getSnapshot()
+      expect(after.entries!.map((row) => row.cost?.isHighCost ?? null)).toEqual([
+        ...afterFlags,
+        null,
+      ])
+      expect(after.entries!.map((row) => row.sessionId)).toEqual(
+        rows.map((row) => row.sessionId),
+      )
+      const expectedChanged = toActivityEntry(changed)
+      expect(after.entries![0]).toEqual({
+        ...expectedChanged,
+        cost: expectedChanged.cost
+          ? { ...expectedChanged.cost, isHighCost: afterFlags[0] }
+          : null,
+      })
+      for (let index = 1; index < before.entries!.length; index += 1) {
+        const previous = before.entries![index]!
+        if (previous.cost && beforeFlags[index] !== afterFlags[index]) {
+          expect(after.entries![index]).toEqual({
+            ...previous,
+            cost: { ...previous.cost, isHighCost: afterFlags[index] },
+          })
+          expect(after.entries![index]!.cost!.breakdownRows).toBe(previous.cost.breakdownRows)
+          expect(after.entries![index]!.cost!.models).toBe(previous.cost.models)
+          expect(after.entries![index]!.modelRuns).toBe(previous.modelRuns)
+        } else expect(after.entries![index]).toBe(previous)
+      }
+      expect(after.subject).toBe(before.subject)
+      expect(after.history).toBe(before.history)
+      expect(after.analysis).toBe(before.analysis)
+      expect(after.filter).toBe(before.filter)
+      expect(after.settings).toBe(before.settings)
+      expect(mocks.listRecentSessions).toHaveBeenCalledTimes(1)
+      expect(mocks.loadSessionAnalysis).toHaveBeenCalledTimes(analysisCalls)
+      expect(mocks.getLiveUsage).toHaveBeenCalledTimes(usageCalls)
+    },
+  )
+})
+
 describe("MainActivitySession event ordering", () => {
   it("keeps a newer entry event when an older list response arrives", async () => {
     const { session } = start()
@@ -644,7 +783,7 @@ describe("MainActivitySession event ordering", () => {
     const pending = deferred<ActivityEntryPayload[]>()
     mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
     session.refreshList()
-    mocks.events.get("entry")!(entry("one", { title: "New title" }))
+    mocks.events.get("update")!(update(entry("one", { title: "New title" }), { title: true }))
     pending.resolve([entry("one", { title: "Old title" })])
     await Promise.resolve()
     await Promise.resolve()
@@ -662,7 +801,7 @@ describe("MainActivitySession event ordering", () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise)
     session.selectEntry(session.getSnapshot().entries![0]!)
-    mocks.events.get("invalidated")!()
+    mocks.events.get("index")!({ seq: 9, cause: "invalidated" })
     first.resolve(payload("Old analysis"))
     await vi.waitFor(() => expect(mocks.loadSessionAnalysis).toHaveBeenCalledTimes(2))
     expect(session.getSnapshot().analysis).toBeNull()
@@ -688,3 +827,75 @@ describe("MainActivitySession event ordering", () => {
     first.resolve(payload("Old"))
   })
 })
+
+it.each(["hidden", "inactive"])(
+  "suspends Sessions lifecycle overlays while %s and reconciles on resume",
+  async (mode) => {
+    let changed: (() => void) | null = null
+    const subscribe = vi.spyOn(liveSessions, "subscribe").mockImplementation((listener) => {
+      changed = listener
+      return () => {
+        changed = null
+      }
+    })
+    const snapshot = vi.spyOn(liveSessions, "getSnapshot").mockReturnValue({
+      seq: 1,
+      ready: true,
+      complete: true,
+      sessions: new Map(),
+      absent: new Set(),
+      keylessAgents: new Set(),
+      working: 0,
+      total: 0,
+      anonymous: 0,
+      sweep: [],
+    })
+    const interests = new Set<object>()
+    const setInterest = vi.spyOn(liveSessions, "setInterest").mockImplementation((owner) => {
+      interests.add(owner)
+    })
+    const clearInterest = vi
+      .spyOn(liveSessions, "clearInterest")
+      .mockImplementation((owner) => {
+        interests.delete(owner)
+      })
+    try {
+      const { session, stop } = start()
+      const listener = vi.fn()
+      session.subscribeInactive(listener)
+      await ready(session)
+      expect(interests.has(session)).toBe(true)
+      if (mode === "hidden") mocks.events.get("visibility")!(false)
+      else stop()
+      expect(session.getSnapshot().active).toBe(false)
+      const before = session.getSnapshot()
+      listener.mockClear()
+      snapshot.mockReturnValue({
+        ...liveSessions.getSnapshot(),
+        seq: 2,
+        working: 1,
+        total: 1,
+        sessions: new Map([
+          ['["native","claude","one"]', { agent: "claude", lastActivityAt: 100, quiet: false }],
+        ]),
+      })
+      const publish = changed as (() => void) | null
+      publish?.()
+      expect(session.getSnapshot()).toBe(before)
+      expect(listener).not.toHaveBeenCalled()
+      expect(interests.has(session)).toBe(false)
+      if (mode === "hidden") mocks.events.get("visibility")!(true)
+      else session.subscribe(() => undefined)
+      expect(interests.has(session)).toBe(true)
+      expect(
+        session.getSnapshot().entries?.find((row) => row.sessionId === "one")?.isActive,
+      ).toBe(true)
+      session.dispose()
+    } finally {
+      subscribe.mockRestore()
+      snapshot.mockRestore()
+      setInterest.mockRestore()
+      clearInterest.mockRestore()
+    }
+  },
+)

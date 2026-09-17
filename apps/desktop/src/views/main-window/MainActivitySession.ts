@@ -18,9 +18,8 @@ import {
   onMainWindowSessionTarget,
   onMainWindowVisibilityChanged,
   onSettingsChanged,
-  onSessionEntryChanged,
-  onSessionsInvalidated,
-  onScanEvent,
+  onSessionIndexChanged,
+  onSessionUpdated,
   onLiveUsageChanged,
   peekMainWindowSessionTarget,
   type AppSettings,
@@ -29,9 +28,11 @@ import {
   type SessionLimitAllocationSummaryPayload,
   type SessionQuotaPayload,
   type MainWindowSessionRequest,
+  type SessionUpdatedPayload,
   type SurfaceOrigin,
 } from "../../lib/ipc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { listInterests, liveSessions, withRegistryActivity } from "../../lib/sessionLifecycle"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import { AGENT_SLUGS } from "../../lib/presentation/agents"
 import {
@@ -235,20 +236,15 @@ export class MainActivitySession {
       ),
       this.listen(
         generation,
-        onSessionsInvalidated(() => {
+        onSessionIndexChanged((change) => {
           if (generation !== this.generation) return
-          this.invalidated = true
+          // A removal or broad invalidation can take the selected session
+          // with it; `loadList` clears the selection when the refetched
+          // list no longer holds it.
+          if (change.cause !== "scan_pass") this.invalidated = true
           this.refreshList()
           this.refreshUsage()
-          this.refreshAnalysis()
-        }),
-      ),
-      this.listen(
-        generation,
-        onScanEvent((_status, phase) => {
-          if (generation !== this.generation || phase !== "finished") return
-          this.refreshList()
-          this.refreshUsage()
+          if (change.cause !== "scan_pass") this.refreshAnalysis()
         }),
       ),
       this.listen(
@@ -263,45 +259,22 @@ export class MainActivitySession {
       ),
       this.listen(
         generation,
-        onSessionEntryChanged((entry) => {
+        onSessionUpdated((update) => {
           if (generation !== this.generation || !this.snapshot.active) return
-          this.listVersion += 1
-          const entries = this.snapshot.entries
-          const key = localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
-          if (
-            entries?.some(
-              (item) =>
-                localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key,
-            )
-          ) {
-            const threshold = costOutlierThreshold(
-              entries.flatMap((item) => (item.cost ? [item.cost.totalUsd] : [])),
-            )
-            this.update({
-              entries: entries.map((item) =>
-                localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key
-                  ? toActivityEntry(entry, threshold)
-                  : item,
-              ),
-            })
-            this.selectDefaultEntry()
-          } else this.refreshList()
-          const subject = this.snapshot.subject
-          if (
-            subject &&
-            localSessionKey(
-              subject.agent,
-              subject.subagent?.parentSessionId ?? subject.sessionId,
-              subject.wslDistro,
-            ) === key
-          ) {
-            this.refreshAnalysis()
-            this.refreshSessionQuota()
-          }
-          this.refreshUsage()
+          this.applySessionUpdate(update)
         }),
       ),
     ])
+    if (generation === this.generation) {
+      // The registry, not row data, decides which rows show as active.
+      this.stops.push(
+        liveSessions.subscribe(() => {
+          if (generation !== this.generation || !this.snapshot.active) return
+          const entries = this.snapshot.entries
+          if (entries) this.update({ entries: this.withRegistryActivity(entries) })
+        }),
+      )
+    }
     if (generation !== this.generation) return
     const settingsVersion = this.settingsVersion
     const revision = visibilityRevision
@@ -326,6 +299,61 @@ export class MainActivitySession {
     return typeof generation === "number" && Number.isSafeInteger(generation)
       ? generation
       : null
+  }
+
+  private applySessionUpdate(update: SessionUpdatedPayload): void {
+    const entry = update.entry
+    this.listVersion += 1
+    const entries = this.snapshot.entries
+    const key = localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
+    if (
+      entries?.some(
+        (item) => localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key,
+      )
+    ) {
+      const replaced = entries.map((item) =>
+        localSessionKey(item.agent, item.sessionId ?? "", item.wslDistro) === key
+          ? toActivityEntry(entry)
+          : item,
+      )
+      const threshold = costOutlierThreshold(
+        replaced.flatMap((item) => (item.cost ? [item.cost.totalUsd] : [])),
+      )
+      const classified = replaced.map((item) => {
+        if (!item.cost) return item
+        const isHighCost = threshold != null && item.cost.totalUsd > threshold
+        return item.cost.isHighCost === isHighCost
+          ? item
+          : { ...item, cost: { ...item.cost, isHighCost } }
+      })
+      this.update({ entries: this.withRegistryActivity(classified) })
+      this.selectDefaultEntry()
+    } else this.refreshList()
+    const subject = this.snapshot.subject
+    // The analysis surface reloads only when the change touched what it
+    // renders, and only for the session on screen.
+    if (
+      (update.facets.analysis || update.facets.checks || update.facets.metadata) &&
+      subject &&
+      localSessionKey(
+        subject.agent,
+        subject.subagent?.parentSessionId ?? subject.sessionId,
+        subject.wslDistro,
+      ) === key
+    ) {
+      // Session quota loads alongside analysis: same subject match, same
+      // trigger, per loadSessionQuota's contract.
+      this.refreshAnalysis()
+      this.refreshSessionQuota()
+    }
+    if (update.facets.usage || update.facets.limits || update.facets.analysis) {
+      this.refreshUsage()
+    }
+  }
+
+  /** Active pills come from the lifecycle registry, never from row timestamps. */
+  private withRegistryActivity(entries: SessionListEntry[]): SessionListEntry[] {
+    return withRegistryActivity(liveSessions.getSnapshot(), entries)
   }
 
   private applySessionTarget(request: MainWindowSessionRequest): void {
@@ -375,11 +403,17 @@ export class MainActivitySession {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     if (!active) {
+      liveSessions.clearInterest(this)
       this.analysisRun += 1
       this.analysisTask = null
       this.sessionQuotaRun += 1
       this.sessionQuotaTask = null
       return
+    }
+    const rows = this.snapshot.entries
+    if (rows) {
+      this.update({ entries: this.withRegistryActivity(rows) })
+      liveSessions.setInterest(this, listInterests(rows))
     }
     this.timer = setInterval(() => this.update({ now: Date.now() }), 30_000)
     this.refreshList()
@@ -400,6 +434,7 @@ export class MainActivitySession {
     this.initialized = false
     this.visible = false
     for (const stop of this.stops.splice(0)) stop()
+    liveSessions.clearInterest(this)
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     this.update({ active: false, refreshing: false })
@@ -425,7 +460,9 @@ export class MainActivitySession {
       const invalidated = this.invalidated
       this.invalidated = false
       try {
-        const entries = toActivityEntries(await listRecentSessions(days))
+        const entries = this.withRegistryActivity(
+          toActivityEntries(await listRecentSessions(days)),
+        )
         if (
           version !== this.workVersion ||
           settingsVersion !== this.settingsVersion ||
@@ -435,6 +472,9 @@ export class MainActivitySession {
           continue
         }
         this.update({ entries, listError: false, now: Date.now() })
+        // The listed rows are this surface's interest: the registry names
+        // any of them the bounded snapshot omitted.
+        liveSessions.setInterest(this, listInterests(entries))
         this.selectDefaultEntry()
         const subject = this.snapshot.subject
         if (

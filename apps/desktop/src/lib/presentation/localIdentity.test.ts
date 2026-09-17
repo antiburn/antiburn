@@ -25,6 +25,27 @@ describe("environmentKey", () => {
     expect(environmentKey("Ubuntu-24.04")).not.toBe(environmentKey("Ubuntu-22.04"))
   })
 
+  it.each([
+    ["UBUNTU", "wsl:ubuntu"],
+    ["ÜBUNTU", "wsl:Übuntu"],
+    ["İSTANBUL", "wsl:İstanbul"],
+    ["ΣLINUX", "wsl:Σlinux"],
+    ["ẞOS", "wsl:ẞos"],
+    ["  ÉCOLE  ", "wsl:École"],
+  ])("matches Rust ASCII casing for %s", (distro, expected) => {
+    expect(environmentKey(distro)).toBe(expected)
+  })
+
+  it("keeps non-ASCII uppercase distinct in session and repository identities", () => {
+    expect(sameEnvironment("ÜBUNTU", "übuntu")).toBe(false)
+    expect(localSessionKey("codex", "same", "ÜBUNTU")).not.toBe(
+      localSessionKey("codex", "same", "übuntu"),
+    )
+    expect(localRepositoryKey("widgets", "İSTANBUL")).not.toBe(
+      localRepositoryKey("widgets", "istanbul"),
+    )
+  })
+
   it("never collides a WSL distribution with the native environment", () => {
     expect(environmentKey("native")).not.toBe(NATIVE_ENVIRONMENT_KEY)
   })

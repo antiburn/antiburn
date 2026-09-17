@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  modelMatchesScope,
   modelRunName,
   modelRunNames,
   modelRunShortNames,
@@ -56,5 +57,29 @@ describe("modelRunNames", () => {
         { model: "claude-fable-5", thinkingMode: " " },
       ]),
     ).toEqual([{ model: "5.6-sol", thinkingMode: "xhigh" }, { model: "fable-5" }])
+  })
+})
+
+describe("modelMatchesScope", () => {
+  it("matches a scope name to the model ids of its family", () => {
+    expect(modelMatchesScope("claude-fable-5", "Fable")).toBe(true)
+    expect(modelMatchesScope("claude-fable-5-1", "Fable")).toBe(true)
+  })
+
+  it("leaves another model of the same vendor out", () => {
+    // The report this rule answers: a Claude Code session on Opus must not
+    // sweep the Fable meter.
+    expect(modelMatchesScope("claude-opus-4-6", "Fable")).toBe(false)
+    expect(modelMatchesScope("gpt-5.6-sol", "Fable")).toBe(false)
+  })
+
+  it("keeps the version apart from the family", () => {
+    expect(modelMatchesScope("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5")).toBe(true)
+    expect(modelMatchesScope("claude-sonnet-3-7", "Claude Sonnet 4.5")).toBe(false)
+  })
+
+  it("matches nothing for a scope name that states only a vendor", () => {
+    expect(modelMatchesScope("claude-fable-5", "Claude")).toBe(false)
+    expect(modelMatchesScope("claude-fable-5", "")).toBe(false)
   })
 })

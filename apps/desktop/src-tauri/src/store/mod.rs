@@ -19,6 +19,14 @@
 //! The connection lives behind a mutex and database methods are synchronous.
 //! Native callbacks read a separate last-committed settings snapshot. Callers
 //! run long work outside the connection lock and come here to write the result.
+//!
+//! # Write order evidence
+//!
+//! [`Store::open`] holds the one writing connection. [`open_read_only`]
+//! connections never write and supply no order evidence. A [`Revision`] is
+//! the writing connection's `total_changes()`, read under the mutex after a
+//! commit or together with the rows a read returns. An [`Incarnation`] is
+//! the persisted creation identity of one session row.
 
 pub(crate) mod codex_rollout_checkpoint;
 pub mod model;
@@ -49,9 +57,9 @@ use antiburn_local::analysis::{
     TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_source_resume,
     delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
     delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
-    insert_source_resume, insert_turn_rows, query_coverage_record, query_model_breakdown,
-    query_model_runs, query_pricing_breakdown, query_source_resume, query_turn_facts,
-    query_turn_rows,
+    insert_source_resume, insert_turn_rows, latest_turn_execution, query_coverage_record,
+    query_model_breakdown, query_model_runs, query_pricing_breakdown, query_source_resume,
+    query_turn_facts, query_turn_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
@@ -59,14 +67,15 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_ite
 use crate::dto::DeferredPermissionDir;
 
 pub use model::{
-    AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
-    EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
+    ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
+    EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters, Incarnation,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
-    OwningSession, ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER,
-    RelationKind, RelationRecord, Remediation, RemediationEvidenceGuard, RemediationRecord,
-    RemediationResult, RemediationState, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
-    SessionKey, SessionRecord, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
-    ThemePreference, UsageEvidenceRecord,
+    OwningSession, Presence, ProjectionRevisions, PublishedEvidence, PublishedModel,
+    RETAIN_SESSION_DATA_FOREVER, RelationKind, RelationRecord, Remediation,
+    RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
+    RepositoryRecord, Revision, SessionActivityKey, SessionBadgeMetric, SessionKey, SessionRecord,
+    SourcePublishMode, SourcePublishOutcome, SourceVersionState, ThemePreference,
+    UsageEvidenceRecord,
 };
 pub(crate) use remediation::{
     PassiveRemediation, RemediationContribution, RemediationDisplaySnapshot,
@@ -129,8 +138,8 @@ const ANALYTICS_QUEUE_LIMIT: u32 = 500;
 /// limit. A scan can issue more batches, but it never loads unrelated rows.
 const SCAN_HISTORY_KEY_BATCH_SIZE: usize = 256;
 
-fn session_records_for_activity_keys_sql(key_count: usize) -> String {
-    let predicates = (0..key_count)
+fn session_activity_key_predicates(key_count: usize) -> String {
+    (0..key_count)
         .map(|index| {
             let first = index * 3 + 1;
             format!(
@@ -140,8 +149,64 @@ fn session_records_for_activity_keys_sql(key_count: usize) -> String {
             )
         })
         .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+fn session_records_for_activity_keys_sql(key_count: usize) -> String {
+    format!(
+        "{SESSION_SELECT_SQL}\n WHERE {}",
+        session_activity_key_predicates(key_count)
+    )
+}
+
+fn session_keys_for_activity_keys_sql(key_count: usize) -> String {
+    format!(
+        "SELECT s.environment_key, s.agent, s.session_id, s.source_label, s.incarnation\n       FROM session s\n      WHERE {}",
+        session_activity_key_predicates(key_count)
+    )
+}
+
+/// The session identity and incarnation behind each activity key one
+/// watcher burst resolved.
+pub type ActivityIdentities = HashMap<SessionActivityKey, (SessionKey, Incarnation)>;
+
+/// Maximum session keys one [`Store::session_presence_for_keys`] call
+/// answers. Three values per key keep the one statement below SQLite's
+/// legacy 999-value limit. A caller pages larger sets itself.
+pub const PRESENCE_LOOKUP_CAP: usize = 256;
+
+/// The presence lookup: one primary-key search per requested identity.
+fn session_presence_for_keys_sql(key_count: usize) -> String {
+    let predicates = (0..key_count)
+        .map(|index| {
+            let first = index * 3 + 1;
+            format!(
+                "(environment_key = ?{first} AND agent = ?{} AND session_id = ?{})",
+                first + 1,
+                first + 2
+            )
+        })
+        .collect::<Vec<_>>()
         .join(" OR ");
-    format!("{SESSION_SELECT_SQL}\n WHERE {predicates}")
+    format!("{PRESENCE_SELECT_SQL}\n      WHERE {predicates}")
+}
+
+/// The column list every [`Presence`] reader uses, in [`presence_from_row`]'s
+/// order.
+const PRESENCE_SELECT_SQL: &str = "SELECT environment_key, agent, session_id, incarnation,
+            COALESCE(updated_at_epoch, 0)
+       FROM session";
+
+fn presence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Presence> {
+    Ok(Presence {
+        key: SessionKey::new(
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ),
+        incarnation: Incarnation(row.get::<_, u64>(3)?),
+        epoch: row.get::<_, i64>(4)?,
+    })
 }
 
 /// File name of the database inside the app data directory.
@@ -216,14 +281,42 @@ const RECENT_SESSIONS_SQL: &str = "SELECT environment_key, agent, session_id, so
       ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
       LIMIT ?2";
 
-/// [`Store::sessions_active_since`]'s query, pulled out for the same reason
-/// as [`RECENT_SESSIONS_SQL`]: a schema test can pin it to the coalesced
-/// recency index.
-const SESSIONS_ACTIVE_SINCE_SQL: &str = "SELECT environment_key, agent, session_id,
+/// [`Store::sessions_active_since_page`]'s first page, pulled out for the
+/// same reason as [`RECENT_SESSIONS_SQL`]: a schema test pins it to the
+/// keyset index. `?1` is the window start and `?2` the row limit. The order
+/// is a strict total order: its last three columns are the primary key.
+const SESSIONS_ACTIVE_PAGE_FIRST_SQL: &str =
+    "SELECT environment_key, agent, session_id, incarnation,
             COALESCE(updated_at_epoch, 0)
        FROM session
       WHERE COALESCE(updated_at_epoch, 0) >= ?1
-      ORDER BY COALESCE(updated_at_epoch, 0) ASC";
+      ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC,
+               environment_key DESC, agent DESC
+      LIMIT ?2";
+
+/// [`Store::sessions_active_since_page`]'s later pages. `?3` to `?6` are the
+/// previous page's last row in page order; the page starts strictly after
+/// it.
+///
+/// The nested predicate is the form the planner matches to the index as a
+/// range bounded on both sides, with no temporary sort. A row-value
+/// comparison seeks on the window bound only. The scan starts at the
+/// cursor's epoch, so rows that tie on that epoch and precede the cursor
+/// are read and filtered: one page costs at most `limit` returned rows plus
+/// the already visited rows at the cursor's epoch.
+const SESSIONS_ACTIVE_PAGE_NEXT_SQL: &str =
+    "SELECT environment_key, agent, session_id, incarnation,
+            COALESCE(updated_at_epoch, 0)
+       FROM session
+      WHERE COALESCE(updated_at_epoch, 0) >= ?1
+        AND COALESCE(updated_at_epoch, 0) <= ?3
+        AND (COALESCE(updated_at_epoch, 0) < ?3
+             OR session_id < ?4
+             OR (session_id = ?4 AND environment_key < ?5)
+             OR (session_id = ?4 AND environment_key = ?5 AND agent < ?6))
+      ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC,
+               environment_key DESC, agent DESC
+      LIMIT ?2";
 
 /// Ceiling on how many uuids [`Store::sessions_owning_turn_uuids`] matches
 /// in one call, applied to the `IN (...)` list it builds.
@@ -345,7 +438,32 @@ impl Store {
     /// an already-current database free.
     fn migrate(&self) -> Result<()> {
         let mut guard = self.lock();
-        let current: i64 = guard.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let mut current: i64 = guard.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        // PR builds used v49 for incarnation before main assigned v49 to remediation.
+        if current == 49
+            && guard.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session') WHERE name = 'incarnation')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let tx = guard.transaction()?;
+            let complete: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_incarnation_seq WHERE id = 1 AND value >= 0)
+                    AND EXISTS(SELECT 1 FROM sqlite_master
+                        WHERE type = 'index' AND name = 'session_recency_keyset')",
+                [],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(complete, "incomplete prerelease lifecycle schema at version 49");
+            // Preserve incarnation values and apply the missing main migrations atomically.
+            for sql in &schema::MIGRATIONS[48..50] {
+                tx.execute_batch(sql)?;
+            }
+            tx.pragma_update(None, "user_version", 51)?;
+            tx.commit()?;
+            current = 51;
+        }
         for (index, sql) in schema::MIGRATIONS.iter().enumerate() {
             let version = index as i64 + 1;
             if version <= current {
@@ -393,6 +511,12 @@ impl Store {
         Ok(self
             .lock()
             .pragma_query_value(None, "user_version", |row| row.get(0))?)
+    }
+
+    /// The current write order position. Every committed write that changed
+    /// a row ended above this value if it committed before this call.
+    pub fn revision(&self) -> Revision {
+        revision_of(&self.lock())
     }
 
     /// A poisoned lock still holds a usable connection: the panic that poisoned
@@ -552,14 +676,17 @@ impl Store {
     }
 
     /// Apply the stored session-data retention policy.
-    pub fn apply_session_retention(&self, now_epoch: i64) -> Result<usize> {
+    ///
+    /// Returns how many sessions it removed and the revision after the
+    /// commit. Every removed row is absent at that revision.
+    pub fn apply_session_retention(&self, now_epoch: i64) -> Result<(usize, Revision)> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         let settings = read_settings(&tx)?;
         let removed =
             apply_session_retention_in(&tx, settings.session_data_retention_days, now_epoch)?;
         tx.commit()?;
-        Ok(removed)
+        Ok((removed, revision_of(&connection)))
     }
 
     /// Change preferences against the latest stored value in one transaction.
@@ -882,18 +1009,16 @@ impl Store {
      * Sessions
      * ----------------------------------------------------------------- */
 
-    /// Insert or refresh a batch of sessions in one transaction.
-    ///
-    /// `first_seen_at` survives a rescan; everything else is replaced with what
-    /// the scan just observed, so a renamed session picks up its new title
-    /// without producing a second row.
+    /// Write the session batch in one transaction. Return each row’s incarnation and
+    /// the committed writer revision under the same lock.
     pub fn upsert_sessions(
         &self,
         records: &[SessionRecord],
         evidence_agents: &[&str],
-    ) -> Result<()> {
+    ) -> Result<(Vec<(SessionKey, Incarnation)>, Revision)> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
+        let mut incarnations = Vec::with_capacity(records.len());
         for record in records {
             let source_returned = tx.query_row(
                 "SELECT EXISTS (
@@ -908,18 +1033,19 @@ impl Store {
                 ],
                 |row| row.get::<_, i64>(0),
             )? != 0;
-            let (previous_generation, source_generation, activity_cursor_changed) =
-                upsert_session_in(&tx, record)?;
-            let generation_increased =
-                previous_generation.is_none_or(|previous| source_generation > previous);
+            let upserted = upsert_session_in(&tx, record)?;
+            let generation_increased = upserted
+                .previous_generation
+                .is_none_or(|previous| upserted.source_generation > previous);
             let evidence_marked_pending = evidence_agents.contains(&record.key.agent.as_str())
-                && (generation_increased || activity_cursor_changed || source_returned);
+                && (generation_increased || upserted.activity_cursor_changed || source_returned);
             if evidence_marked_pending {
                 mark_evidence_pending_in(&tx, &record.key)?;
             }
+            incarnations.push((record.key.clone(), upserted.incarnation));
         }
         tx.commit()?;
-        Ok(())
+        Ok((incarnations, revision_of(&connection)))
     }
 
     /// Sessions whose activity falls at or after `since_epoch`, newest first.
@@ -972,35 +1098,66 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Sessions whose activity falls at or after `since_epoch`, earliest
-    /// activity first — the order [`crate::scan::idle`]'s expiry task wants,
-    /// so its earliest deadline is always the first row.
-    pub fn sessions_active_since(&self, since_epoch: i64) -> Result<Vec<(SessionKey, i64)>> {
+    /// Read at most `limit` active rows in full cursor order. Read their revision under
+    /// the same writer lock. Cursor ties can require scanning earlier rows.
+    pub fn sessions_active_since_page(
+        &self,
+        since_epoch: i64,
+        after: Option<&ActiveCursor>,
+        limit: usize,
+    ) -> Result<(Vec<Presence>, Revision)> {
         let connection = self.lock();
-        let mut statement = connection.prepare(SESSIONS_ACTIVE_SINCE_SQL)?;
-        let rows = statement.query_map(params![since_epoch], |row| {
-            Ok((
-                SessionKey::new(
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ),
-                row.get::<_, i64>(3)?,
-            ))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = match after {
+            None => {
+                let mut statement = connection.prepare(SESSIONS_ACTIVE_PAGE_FIRST_SQL)?;
+                let rows = statement.query_map(params![since_epoch, limit], presence_from_row)?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            }
+            Some(cursor) => {
+                let mut statement = connection.prepare(SESSIONS_ACTIVE_PAGE_NEXT_SQL)?;
+                let rows = statement.query_map(
+                    params![
+                        since_epoch,
+                        limit,
+                        cursor.epoch,
+                        cursor.session_id,
+                        cursor.environment_key,
+                        cursor.agent
+                    ],
+                    presence_from_row,
+                )?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            }
+        };
+        Ok((rows, revision_of(&connection)))
     }
 
-    /// The newest recorded session activity, epoch seconds. `None` when no
-    /// session has one yet — an empty store, or every row still on its
-    /// filesystem-mtime fallback with a missing source.
-    pub fn latest_session_activity(&self) -> Result<Option<i64>> {
+    /// Read presence for at most [`PRESENCE_LOOKUP_CAP`] keys. One writer lock protects
+    /// the rows and their revision. Missing keys are absent at that revision.
+    pub fn session_presence_for_keys(
+        &self,
+        keys: &[SessionKey],
+    ) -> Result<(Vec<Presence>, Revision)> {
+        anyhow::ensure!(
+            keys.len() <= PRESENCE_LOOKUP_CAP,
+            "presence lookup of {} keys exceeds the cap of {PRESENCE_LOOKUP_CAP}",
+            keys.len()
+        );
         let connection = self.lock();
-        Ok(
-            connection.query_row("SELECT MAX(updated_at_epoch) FROM session", [], |row| {
-                row.get(0)
-            })?,
-        )
+        if keys.is_empty() {
+            return Ok((Vec::new(), revision_of(&connection)));
+        }
+        let mut values = Vec::with_capacity(keys.len() * 3);
+        for key in keys {
+            values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+            values.push(rusqlite::types::Value::Text(key.agent.clone()));
+            values.push(rusqlite::types::Value::Text(key.session_id.clone()));
+        }
+        let mut statement = connection.prepare(&session_presence_for_keys_sql(keys.len()))?;
+        let rows = statement.query_map(params_from_iter(values.iter()), presence_from_row)?;
+        let rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((rows, revision_of(&connection)))
     }
 
     /// The analysis state of every session in the activity window, for the
@@ -1118,6 +1275,47 @@ impl Store {
             }
         }
         Ok(records)
+    }
+
+    /// Return only session identities for the activity sources of one
+    /// watcher burst. The touch report needs keys, not full records, so
+    /// this query does not load a row's metadata columns. Each identity
+    /// carries its incarnation, and the revision is read with the rows.
+    pub fn session_keys_for_activity_keys(
+        &self,
+        keys: &[SessionActivityKey],
+    ) -> Result<(ActivityIdentities, Revision)> {
+        let connection = self.lock();
+        let mut identities = HashMap::with_capacity(keys.len());
+        for keys in keys.chunks(SCAN_HISTORY_KEY_BATCH_SIZE) {
+            let mut values = Vec::with_capacity(keys.len() * 3);
+            for key in keys {
+                values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::Text(key.agent.clone()));
+                values.push(rusqlite::types::Value::Text(key.source_label.clone()));
+            }
+            let mut statement =
+                connection.prepare(&session_keys_for_activity_keys_sql(keys.len()))?;
+            let rows = statement.query_map(params_from_iter(values.iter()), |row| {
+                let environment_key = row.get::<_, String>(0)?;
+                let agent = row.get::<_, String>(1)?;
+                let session_id = row.get::<_, String>(2)?;
+                let source_label = row.get::<_, String>(3)?;
+                let incarnation = Incarnation(row.get::<_, u64>(4)?);
+                Ok((
+                    SessionActivityKey::new(environment_key.clone(), agent.clone(), source_label),
+                    (
+                        SessionKey::new(environment_key, agent, session_id),
+                        incarnation,
+                    ),
+                ))
+            })?;
+            for row in rows {
+                let (activity_key, identity) = row?;
+                identities.insert(activity_key, identity);
+            }
+        }
+        Ok((identities, revision_of(&connection)))
     }
 
     /// Return native session identities for one agent title index.
@@ -1719,7 +1917,13 @@ impl Store {
     /// - `repository` — the include/ignore choices the reader made. Their
     ///   session counts *are* derived, so those are zeroed here and refilled by
     ///   the next pass.
-    pub fn clear_local_session_data(&self) -> Result<usize> {
+    ///
+    /// `session_incarnation_seq` is kept: a session discovered again after a
+    /// clear must get a higher incarnation than its cleared row.
+    ///
+    /// Returns how many sessions it removed and the revision after the
+    /// commit. Every session row is absent at that revision.
+    pub fn clear_local_session_data(&self) -> Result<(usize, Revision)> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
@@ -1750,19 +1954,22 @@ impl Store {
         tx.execute("UPDATE repository SET session_count = 0", [])?;
         tx.commit()?;
         crate::provider_accounts::clear_cache();
-        Ok(sessions)
+        Ok((sessions, revision_of(&connection)))
     }
 
     /// Delete every antiburn-owned record for one session.
     ///
     /// Local records only. The provider's transcript is never touched — see
     /// [`crate::commands::delete_session_data`].
-    pub fn delete_session(&self, key: &SessionKey) -> Result<bool> {
+    ///
+    /// Returns the deleted row's incarnation and the revision after the
+    /// commit when the row existed, and `None` when there was no row.
+    pub fn delete_session(&self, key: &SessionKey) -> Result<Option<(Incarnation, Revision)>> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         let removed = delete_session_in(&tx, key)?;
         tx.commit()?;
-        Ok(removed)
+        Ok(removed.map(|incarnation| (incarnation, revision_of(&connection))))
     }
 
     /* --------------------------------------------------------------------
@@ -2063,6 +2270,67 @@ impl Store {
             &turn_session_key(key),
             claim_fence,
         )?)
+    }
+
+    /// The model one session's newest published turn ran, or `None` when
+    /// this session has never published a turn with a model.
+    ///
+    /// This reads at `published_fence`, for the reason
+    /// [`Self::published_turn_rows`] gives: a claim in flight writes rows
+    /// under its own fence, and only a complete publish moves
+    /// `published_fence`. The evidence lookup and the turn query run under
+    /// one lock, so a concurrent claim cannot swap the fence in between.
+    #[cfg(test)]
+    pub fn latest_session_model(&self, key: &SessionKey) -> Result<Option<String>> {
+        Ok(self
+            .published_models_for_keys(std::slice::from_ref(key))?
+            .0
+            .into_iter()
+            .next()
+            .and_then(|row| row.model))
+    }
+
+    /// Read compact published model evidence and its revision under one writer lock.
+    pub(crate) fn published_models_for_keys(
+        &self,
+        keys: &[SessionKey],
+    ) -> Result<(Vec<PublishedModel>, Revision)> {
+        anyhow::ensure!(keys.len() <= 256, "model page exceeds 256 identities");
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT s.incarnation, e.published_fence FROM session s
+             LEFT JOIN session_evidence e USING (environment_key, agent, session_id)
+             WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3",
+        )?;
+        let mut rows = Vec::with_capacity(keys.len());
+        for key in keys {
+            let identity = statement
+                .query_row(
+                    params![key.environment_key, key.agent, key.session_id],
+                    |row| {
+                        Ok((
+                            Incarnation(row.get::<_, u64>(0)?),
+                            row.get::<_, Option<i64>>(1)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((incarnation, published_fence)) = identity else {
+                continue;
+            };
+            let execution = match published_fence {
+                Some(fence) => latest_turn_execution(&connection, &turn_session_key(key), fence)?,
+                None => None,
+            };
+            rows.push(PublishedModel {
+                key: key.clone(),
+                incarnation,
+                published_fence,
+                provider: execution.as_ref().and_then(|value| value.provider.clone()),
+                model: execution.map(|value| value.model),
+            });
+        }
+        Ok((rows, revision_of(&connection)))
     }
 
     /// One session's last published turn rows, or `None` when this session
@@ -3137,37 +3405,75 @@ fn insert_fork_parent_in(connection: &Connection, key: &SessionKey, parent: &str
     Ok(connection.changes() > 0)
 }
 
-fn upsert_session_in(
-    connection: &Connection,
-    record: &SessionRecord,
-) -> Result<(Option<i64>, i64, bool)> {
+/// Read the writer revision while the caller holds the Store mutex.
+fn revision_of(connection: &Connection) -> Revision {
+    Revision(connection.total_changes())
+}
+
+/// Allocate an incarnation inside the write transaction. Rollback also restores the
+/// counter.
+fn allocate_incarnation_in(connection: &Connection) -> Result<Incarnation> {
+    let value = connection.query_row(
+        "UPDATE session_incarnation_seq SET value = value + 1 WHERE id = 1 RETURNING value",
+        [],
+        |row| row.get::<_, u64>(0),
+    )?;
+    Ok(Incarnation(value))
+}
+
+/// What one [`upsert_session_in`] call found and wrote.
+struct UpsertedSession {
+    previous_generation: Option<i64>,
+    source_generation: i64,
+    activity_cursor_changed: bool,
+    /// The row's incarnation after the write: the existing one on an update,
+    /// a newly allocated one on an insert.
+    incarnation: Incarnation,
+}
+
+fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<UpsertedSession> {
     let previous_state = connection
         .query_row(
-            "SELECT source_generation, activity_cursor FROM session
+            "SELECT source_generation, activity_cursor, incarnation FROM session
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![
                 record.key.environment_key,
                 record.key.agent,
                 record.key.session_id
             ],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    Incarnation(row.get::<_, u64>(2)?),
+                ))
+            },
         )
         .optional()?;
-    let previous_generation = previous_state.as_ref().map(|(generation, _)| *generation);
+    let previous_generation = previous_state
+        .as_ref()
+        .map(|(generation, _, _)| *generation);
     let activity_cursor_changed = previous_state
         .as_ref()
-        .is_some_and(|(_, cursor)| cursor != &record.activity_cursor);
+        .is_some_and(|(_, cursor, _)| cursor != &record.activity_cursor);
+    // Conflict updates preserve the incarnation. Only new rows advance the counter.
+    let incarnation = match previous_state {
+        Some((_, _, incarnation)) => incarnation,
+        None => allocate_incarnation_in(connection)?,
+    };
     let now = now_rfc3339();
     connection.execute(
         "INSERT INTO session (
              environment_key, agent, session_id, source_kind, source_label, wsl_distro,
              title, title_source, cwd, surface, updated_at_epoch,
              activity_cursor, activity_source, subagent_count,
-             first_seen_at, last_seen_at, source_fingerprint, source_generation)
+             first_seen_at, last_seen_at, source_fingerprint, source_generation,
+             incarnation)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                  CASE WHEN ?7 IS NOT NULL THEN ?8 ELSE NULL END,
                  ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16,
-                 CASE WHEN ?16 IS NOT NULL THEN 1 ELSE 0 END)
+                 CASE WHEN ?16 IS NOT NULL THEN 1 ELSE 0 END,
+                 ?17)
          ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
              source_kind = excluded.source_kind,
              source_label = excluded.source_label,
@@ -3227,6 +3533,7 @@ fn upsert_session_in(
             record.subagent_count,
             now,
             record.source_fingerprint,
+            incarnation.0,
         ],
     )?;
 
@@ -3237,21 +3544,24 @@ fn upsert_session_in(
     if let Some(parent) = &record.fork_parent_session_id {
         insert_fork_parent_in(connection, &record.key, parent)?;
     }
-    let source_generation = connection.query_row(
-        "SELECT source_generation FROM session
+    // Read the row back inside the same transaction: the values are exact
+    // and the incarnation is the one the row holds, whichever branch ran.
+    let (source_generation, incarnation) = connection.query_row(
+        "SELECT source_generation, incarnation FROM session
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         params![
             record.key.environment_key,
             record.key.agent,
             record.key.session_id
         ],
-        |row| row.get(0),
+        |row| Ok((row.get::<_, i64>(0)?, Incarnation(row.get::<_, u64>(1)?))),
     )?;
-    Ok((
+    Ok(UpsertedSession {
         previous_generation,
         source_generation,
         activity_cursor_changed,
-    ))
+        incarnation,
+    })
 }
 
 fn replace_relations_in(
@@ -3301,7 +3611,9 @@ fn mark_evidence_pending_in(connection: &Connection, key: &SessionKey) -> Result
     Ok(())
 }
 
-fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> {
+/// Delete one session and its owned rows. Returns the deleted row's
+/// incarnation, or `None` when there was no row.
+fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<Option<Incarnation>> {
     let parameters = params![key.environment_key, key.agent, key.session_id];
     connection.execute(
         "DELETE FROM session_relation
@@ -3333,11 +3645,16 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         parameters,
     )?;
-    let removed = connection.execute(
-        "DELETE FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-        parameters,
-    )?;
-    Ok(removed > 0)
+    let removed = connection
+        .query_row(
+            "DELETE FROM session
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+          RETURNING incarnation",
+            parameters,
+            |row| row.get::<_, u64>(0),
+        )
+        .optional()?;
+    Ok(removed.map(Incarnation))
 }
 
 pub(crate) fn apply_session_retention_in(
@@ -3372,7 +3689,7 @@ pub(crate) fn apply_session_retention_in(
 
     let mut removed = 0;
     for key in keys {
-        if delete_session_in(connection, &key)? {
+        if delete_session_in(connection, &key)?.is_some() {
             removed += 1;
         }
     }

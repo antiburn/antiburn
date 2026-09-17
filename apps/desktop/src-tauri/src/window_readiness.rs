@@ -155,7 +155,16 @@ impl WindowReadiness {
             }
             Phase::Loading(load) => {
                 load.reveal_pending = true;
-                if load_is_stale(load, now) && !load.rebuild_used {
+                // The staleness clock, not `rebuild_used`, limits how often a
+                // request may replace a renderer here. A replacement starts its
+                // own load, so the next one is at least `STALE_LOAD_AFTER`
+                // away however hard a reader clicks. Spending the single
+                // `rebuild_used` allowance instead left every later request
+                // with `AwaitReady` and no way back: a renderer that never
+                // reported once made the window unopenable for the rest of the
+                // run. `rebuild_used` still bounds the toggle and retained
+                // paths, which replace a renderer on signals of their own.
+                if load_is_stale(load, now) {
                     let generation = self.replace_loading(now, true, true);
                     OpenAction::Rebuild { generation }
                 } else {
@@ -577,6 +586,29 @@ mod tests {
             ReadyAction::StayHidden { .. }
         ));
         generation
+    }
+
+    #[test]
+    fn every_stale_request_can_replace_a_renderer_that_never_reported() {
+        let started_at = Instant::now();
+        let mut readiness = WindowReadiness::default();
+        start_loading(&mut readiness, started_at);
+
+        // A renderer that never reports leaves each request to find the same
+        // load stale. Every one of them must be able to replace it: a reader
+        // who opens Settings again is asking for another attempt, not for the
+        // window to stay unopenable for the rest of the run.
+        let mut now = started_at;
+        for attempt in 1..=3 {
+            now += STALE_LOAD_AFTER;
+            assert!(
+                matches!(readiness.request_open(now), OpenAction::Rebuild { .. }),
+                "stale request {attempt} must replace the renderer"
+            );
+            // The replacement owns the clock, so a second request inside its
+            // own window waits instead of replacing it again.
+            assert_eq!(readiness.request_open(now), OpenAction::AwaitReady);
+        }
     }
 
     #[test]
