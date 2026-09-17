@@ -18,6 +18,7 @@ signals that item 8 needs and is planned separately.
 | B. LED blink follows spend, in mode colour (3, 7)     | built; on-screen tested by Keith 2026-09-16                                                                              |
 | C. Agent boxes at LED scale, per-box detail (4, 5, 6) | built; tested by Keith 2026-09-16 (LED scale shipped in A; this adds per-box detail and the single-session rule)         |
 | D. Edge dock: off-screen, wake on edge/activity/burn  | built; tested by Keith 2026-09-16 (gesture model: drop against an edge docks with a 6pt tab; drag tears off; no setting) |
+| E. Restack on PR #489 (session lifecycle bus)         | done 2026-09-17; PR #565 base is now `feat/session-lifecycle-bus`. The LED bar carries both the sweep (#489) and the spend blink (#565); the overlap needs Keith's eye. |
 
 ## What Keith asked for
 
