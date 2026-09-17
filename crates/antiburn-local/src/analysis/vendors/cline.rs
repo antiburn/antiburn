@@ -18,7 +18,7 @@ use crate::analysis::interface::{
     EvidenceObservation, NormalizedRecord, RawSource, RecordSink, RelationProvenance,
     SessionCollector, SessionInput, SessionReader, SessionSummary, VisitOutcome,
 };
-use crate::analysis::model::{NormalizedEvent, Role, ToolCall, Usage};
+use crate::analysis::model::{EventSource, NormalizedEvent, Role, ToolCall, Usage};
 use crate::analysis::records::parse_ts;
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 use crate::analysis::{SourceCapabilities, SourceFormat};
@@ -28,6 +28,7 @@ const SESSION_COLUMNS: &[&str] = &[
     "session_id",
     "status",
     "model",
+    "agent_id",
     "parent_session_id",
     "is_subagent",
     "messages_path",
@@ -136,14 +137,19 @@ fn visit_bundle(
     let root =
         session_row(&conn, session_id)?.ok_or_else(|| anyhow::anyhow!("missing root row"))?;
     validate_root(&root, session_id, messages_path, &manifest)?;
-    let mut summary = parse_messages(messages_path, session_id, sink)?;
+    let (mut summary, root_model, root_usage) =
+        parse_messages(messages_path, session_id, EventSource::Parent, None, sink)?;
+    if root_model.as_deref() != Some(root.model.as_str()) {
+        anyhow::bail!("root message model does not match the database row");
+    }
+    validate_aggregate(&manifest, root_usage)?;
     summary.model = Some(root.model.clone());
 
     let mut children = conn.prepare(
-        "SELECT session_id, status, model, parent_session_id, is_subagent, messages_path
-           FROM sessions WHERE parent_session_id = ?1",
+        "SELECT session_id, status, model, agent_id, parent_session_id, is_subagent, messages_path
+           FROM sessions WHERE is_subagent = 1",
     )?;
-    let rows = children.query_map(params![session_id], row_from_sql)?;
+    let rows = children.query_map([], row_from_sql)?;
     let mut child_ids = HashSet::new();
     for row in rows {
         let child = row?;
@@ -166,7 +172,16 @@ fn visit_bundle(
                 provenance: RelationProvenance::SessionParentLink,
             },
         )));
-        parse_messages(&child.messages_path, &child.session_id, sink)?;
+        let (_, child_model, _) = parse_messages(
+            &child.messages_path,
+            &child.session_id,
+            EventSource::Subagent,
+            Some(session_id),
+            sink,
+        )?;
+        if child_model.as_deref() != Some(child.model.as_str()) {
+            anyhow::bail!("child message model does not match the database row");
+        }
     }
     conn.execute_batch("COMMIT")?;
     Ok(summary)
@@ -177,6 +192,7 @@ struct SessionRow {
     session_id: String,
     status: String,
     model: String,
+    agent_id: String,
     parent_session_id: Option<String>,
     is_subagent: i64,
     messages_path: PathBuf,
@@ -187,15 +203,16 @@ fn row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         session_id: row.get(0)?,
         status: row.get(1)?,
         model: row.get(2)?,
-        parent_session_id: row.get(3)?,
-        is_subagent: row.get(4)?,
-        messages_path: PathBuf::from(row.get::<_, String>(5)?),
+        agent_id: row.get(3)?,
+        parent_session_id: row.get(4)?,
+        is_subagent: row.get(5)?,
+        messages_path: PathBuf::from(row.get::<_, String>(6)?),
     })
 }
 
 fn session_row(conn: &Connection, session_id: &str) -> anyhow::Result<Option<SessionRow>> {
     let mut statement = conn.prepare(
-        "SELECT session_id, status, model, parent_session_id, is_subagent, messages_path FROM sessions WHERE session_id = ?1",
+        "SELECT session_id, status, model, agent_id, parent_session_id, is_subagent, messages_path FROM sessions WHERE session_id = ?1",
     )?;
     let mut rows = statement.query(params![session_id])?;
     let Some(row) = rows.next()? else {
@@ -232,7 +249,7 @@ fn validate_root(
         || row.parent_session_id.is_some()
         || row.is_subagent != 0
         || !TERMINAL_STATUSES.contains(&row.status.as_str())
-        || row.messages_path != messages_path
+        || !same_path(&row.messages_path, messages_path)
         || manifest.get("status").and_then(Value::as_str) != Some(&row.status)
         || manifest.get("model").and_then(Value::as_str) != Some(&row.model)
     {
@@ -242,15 +259,25 @@ fn validate_root(
 }
 
 fn validate_child(row: &SessionRow, root_id: &str, directory: &Path) -> anyhow::Result<()> {
-    let expected = directory.join(format!("{}.messages.json", row.session_id));
-    if row.parent_session_id.as_deref() != Some(root_id)
+    let expected = directory.join(format!("{}.messages.json", row.agent_id));
+    if row.agent_id.is_empty()
+        || row.parent_session_id.as_deref() != Some(root_id)
         || row.is_subagent != 1
         || !TERMINAL_STATUSES.contains(&row.status.as_str())
-        || row.messages_path != expected
+        || !same_path(&row.messages_path, &expected)
     {
         anyhow::bail!("child row does not match the root artifact contract");
     }
     Ok(())
+}
+
+fn same_path(actual: &Path, expected: &Path) -> bool {
+    actual == expected
+        && actual
+            .canonicalize()
+            .ok()
+            .zip(expected.canonicalize().ok())
+            .is_some_and(|(actual, expected)| actual == expected)
 }
 
 fn validate_manifest(
@@ -264,7 +291,7 @@ fn validate_manifest(
             .get("messages_path")
             .and_then(Value::as_str)
             .map(Path::new)
-            != Some(messages_path)
+            .is_none_or(|path| !same_path(path, messages_path))
     {
         anyhow::bail!("invalid root manifest");
     }
@@ -274,19 +301,31 @@ fn validate_manifest(
 fn parse_messages(
     path: &Path,
     session_id: &str,
+    source: EventSource,
+    expected_parent: Option<&str>,
     sink: &mut dyn RecordSink,
-) -> anyhow::Result<SessionSummary> {
+) -> anyhow::Result<(SessionSummary, Option<String>, UsageTotals)> {
     let value = read_json(path)?;
     if value.get("version").and_then(Value::as_u64) != Some(1)
         || value.get("sessionId").and_then(Value::as_str) != Some(session_id)
     {
         anyhow::bail!("invalid messages artifact");
     }
+    if let Some(parent_id) = expected_parent
+        && value
+            .pointer("/origin/parentThreadId")
+            .and_then(Value::as_str)
+            != Some(parent_id)
+    {
+        anyhow::bail!("child message origin does not match the root");
+    }
     let messages = value
         .get("messages")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("missing messages"))?;
     let mut summary = SessionSummary::default();
+    let mut observed_model = None;
+    let mut usage_totals = UsageTotals::default();
     for message in messages {
         let role = message
             .get("role")
@@ -322,6 +361,13 @@ fn parse_messages(
             .and_then(Value::as_str)
             .filter(|model| !model.is_empty())
             .ok_or_else(|| anyhow::anyhow!("missing model identity"))?;
+        if observed_model
+            .as_deref()
+            .is_some_and(|observed| observed != model)
+        {
+            anyhow::bail!("message models disagree");
+        }
+        observed_model = Some(model.to_owned());
         if message
             .pointer("/modelInfo/provider")
             .and_then(Value::as_str)
@@ -335,13 +381,15 @@ fn parse_messages(
             .and_then(parse_ts)
             .ok_or_else(|| anyhow::anyhow!("missing assistant timestamp"))?;
         let usage = if let Some(metrics) = metrics {
-            Usage {
+            let usage = Usage {
                 input_tokens: metric(metrics, "inputTokens")?,
                 output_tokens: metric(metrics, "outputTokens")?,
                 cache_read_tokens: metric(metrics, "cacheReadTokens")?,
                 cache_creation_tokens: metric(metrics, "cacheWriteTokens")?,
                 cache_creation_1h_tokens: 0,
-            }
+            };
+            usage_totals += usage;
+            usage
         } else {
             Usage::default()
         };
@@ -350,7 +398,7 @@ fn parse_messages(
             ts_ms: Some(ts),
             usage_ts_ms: None,
             role: Role::Assistant,
-            source: Default::default(),
+            source,
             usage,
             tools,
             model: Some(model.to_owned()),
@@ -370,10 +418,43 @@ fn parse_messages(
             uuid: None,
             parent_uuid: None,
             logical_parent_uuid: None,
-            thread_id: None,
+            thread_id: (source == EventSource::Subagent).then(|| session_id.to_owned()),
         })));
     }
-    Ok(summary)
+    Ok((summary, observed_model, usage_totals))
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct UsageTotals {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+}
+
+impl std::ops::AddAssign<Usage> for UsageTotals {
+    fn add_assign(&mut self, usage: Usage) {
+        self.input_tokens += usage.input_tokens;
+        self.output_tokens += usage.output_tokens;
+        self.cache_read_tokens += usage.cache_read_tokens;
+        self.cache_write_tokens += usage.cache_creation_tokens;
+    }
+}
+
+fn validate_aggregate(manifest: &Value, actual: UsageTotals) -> anyhow::Result<()> {
+    let Some(usage) = manifest.get("usage") else {
+        return Ok(());
+    };
+    let expected = UsageTotals {
+        input_tokens: metric(usage, "inputTokens")?,
+        output_tokens: metric(usage, "outputTokens")?,
+        cache_read_tokens: metric(usage, "cacheReadTokens")?,
+        cache_write_tokens: metric(usage, "cacheWriteTokens")?,
+    };
+    if expected != actual {
+        anyhow::bail!("root aggregate does not match root messages");
+    }
+    Ok(())
 }
 
 fn metric(metrics: &Value, key: &str) -> anyhow::Result<u64> {
@@ -426,20 +507,20 @@ mod tests {
         )
         .unwrap();
         if include_child {
-            std::fs::write(directory.join("child_1.messages.json"), CHILD_MESSAGES).unwrap();
+            std::fs::write(directory.join("child_agent.messages.json"), CHILD_MESSAGES).unwrap();
         }
         let db_path = sessions.join("sessions.db");
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
-        conn.execute_batch("CREATE TABLE sessions (session_id TEXT, status TEXT, model TEXT, parent_session_id TEXT, is_subagent INTEGER, messages_path TEXT)").unwrap();
+        conn.execute_batch("CREATE TABLE sessions (session_id TEXT, status TEXT, model TEXT, agent_id TEXT, parent_session_id TEXT, is_subagent INTEGER, messages_path TEXT)").unwrap();
         conn.execute(
-            "INSERT INTO sessions VALUES (?1, 'completed', 'model-root', NULL, 0, ?2)",
+            "INSERT INTO sessions VALUES (?1, 'completed', 'model-root', 'lead', NULL, 0, ?2)",
             params!["root_1", messages_path.to_string_lossy()],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO sessions VALUES ('child_1', 'completed', 'model-child', 'root_1', 1, ?1)",
-            params![directory.join("child_1.messages.json").to_string_lossy()],
+            "INSERT INTO sessions VALUES ('child_1', 'completed', 'model-child', 'child_agent', 'root_1', 1, ?1)",
+            params![directory.join("child_agent.messages.json").to_string_lossy()],
         )
         .unwrap();
         (
@@ -467,6 +548,7 @@ mod tests {
         assert_eq!(session.events.len(), 3);
         assert_eq!(session.events[1].usage.input_tokens, 10);
         assert_eq!(session.events[0].tools[0].name, "Agent");
+        assert_eq!(session.events[2].source, EventSource::Subagent);
         assert!(session.events.iter().all(|event| event.provider.is_none()));
     }
 
@@ -538,13 +620,116 @@ mod tests {
         Connection::open(db_path)
             .unwrap()
             .execute(
-                "INSERT INTO sessions VALUES ('root_1', 'completed', 'model-root', NULL, 0, ?1)",
+                "INSERT INTO sessions VALUES ('root_1', 'completed', 'model-root', 'lead', NULL, 0, ?1)",
                 params![messages_path.to_string_lossy()],
             )
             .unwrap();
         let mut sink = SessionCollector::new("cline", "root_1");
         ClineSessionReader.visit(&input, &mut sink).unwrap();
         assert_eq!(sink.coverage(), RecordCoverage::Partial);
+    }
+
+    #[test]
+    fn child_contract_rejects_wrong_path_parent_model_and_origin() {
+        for mode in ["path", "session", "escape", "parent", "model", "origin"] {
+            let (_temp, input) = bundle(true);
+            let RawSource::ClineBundle {
+                db_path,
+                messages_path,
+                ..
+            } = &input.source
+            else {
+                unreachable!()
+            };
+            match mode {
+                "path" | "session" | "escape" => {
+                    let path = match mode {
+                        "session" => messages_path
+                            .parent()
+                            .unwrap()
+                            .join("child_1.messages.json"),
+                        "escape" => messages_path
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join("escape.messages.json"),
+                        _ => messages_path.clone(),
+                    };
+                    Connection::open(db_path)
+                        .unwrap()
+                        .execute(
+                            "UPDATE sessions SET messages_path = ?1 WHERE session_id = 'child_1'",
+                            params![path.to_string_lossy()],
+                        )
+                        .unwrap();
+                }
+                "parent" => {
+                    Connection::open(db_path)
+                        .unwrap()
+                        .execute(
+                            "UPDATE sessions SET parent_session_id = 'other' WHERE session_id = 'child_1'",
+                            [],
+                        )
+                        .unwrap();
+                }
+                "model" => {
+                    let child_path = messages_path
+                        .parent()
+                        .unwrap()
+                        .join("child_agent.messages.json");
+                    std::fs::write(
+                        &child_path,
+                        CHILD_MESSAGES.replace("model-child", "other-model"),
+                    )
+                    .unwrap();
+                }
+                "origin" => {
+                    let child_path = messages_path
+                        .parent()
+                        .unwrap()
+                        .join("child_agent.messages.json");
+                    std::fs::write(
+                        &child_path,
+                        CHILD_MESSAGES
+                            .replace("parentThreadId\":\"root_1", "parentThreadId\":\"other"),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let mut sink = SessionCollector::new("cline", "root_1");
+            ClineSessionReader.visit(&input, &mut sink).unwrap();
+            assert_eq!(sink.coverage(), RecordCoverage::Partial, "{mode}");
+        }
+    }
+
+    #[test]
+    fn root_aggregate_mismatch_fails_closed() {
+        let (_temp, input) = bundle(true);
+        let RawSource::ClineBundle { manifest_path, .. } = &input.source else {
+            unreachable!()
+        };
+        let manifest = MANIFEST
+            .replace(
+                "\"PLACEHOLDER\"",
+                &serde_json::to_string(&input_source_messages(&input).to_string_lossy()).unwrap(),
+            )
+            .replace(
+                "}",
+                ",\"usage\":{\"inputTokens\":999,\"outputTokens\":5,\"cacheReadTokens\":2,\"cacheWriteTokens\":1}}",
+            );
+        std::fs::write(manifest_path, manifest).unwrap();
+        let mut sink = SessionCollector::new("cline", "root_1");
+        ClineSessionReader.visit(&input, &mut sink).unwrap();
+        assert_eq!(sink.coverage(), RecordCoverage::Partial);
+    }
+
+    fn input_source_messages(input: &SessionInput) -> PathBuf {
+        let RawSource::ClineBundle { messages_path, .. } = &input.source else {
+            unreachable!()
+        };
+        messages_path.clone()
     }
 
     #[test]

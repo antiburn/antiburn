@@ -938,6 +938,8 @@ impl From<&RawSource> for SourceKind {
             RawSource::Sqlite(_) => Self::Sqlite,
             RawSource::ClineBundle { .. } => Self::Sqlite,
             RawSource::KiroCliV2Bundle { .. } => Self::Jsonl,
+            RawSource::KiroCliV3Bundle { .. } => Self::Jsonl,
+            RawSource::CopilotCliBundle { .. } => Self::Sqlite,
         }
     }
 }

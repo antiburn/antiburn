@@ -447,6 +447,13 @@ pub fn fingerprint_of(source: &SessionSource) -> String {
     let SessionSource::File(path) = source else {
         return MISSING_FINGERPRINT.to_string();
     };
+    if let Some(fingerprint) = bundle_fingerprint(path) {
+        return fingerprint;
+    }
+    fingerprint_of_path(path)
+}
+
+fn fingerprint_of_path(path: &std::path::Path) -> String {
     let Ok(metadata) = std::fs::metadata(path) else {
         return MISSING_FINGERPRINT.to_string();
     };
@@ -457,6 +464,66 @@ pub fn fingerprint_of(source: &SessionSource) -> String {
         .map(|since| since.as_secs())
         .unwrap_or(0);
     format!("{mtime}:{}", metadata.len())
+}
+
+fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
+    let file_name = path.file_name()?.to_str()?;
+    let mut paths = if path
+        .ancestors()
+        .any(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))
+    {
+        let root = path
+            .ancestors()
+            .find(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))?;
+        let directory = path.parent()?;
+        let mut paths = vec![path.to_path_buf(), root.join("data/db/sessions.db")];
+        let session_id = file_name.strip_suffix(".json").unwrap_or(file_name);
+        paths.push(directory.join(format!("{session_id}.messages.json")));
+        if let Ok(entries) = std::fs::read_dir(directory) {
+            paths.extend(entries.filter_map(Result::ok).filter_map(|entry| {
+                entry
+                    .file_type()
+                    .ok()
+                    .filter(|kind| kind.is_file())
+                    .map(|_| entry.path())
+            }));
+        }
+        paths
+    } else if file_name == "session.json" {
+        vec![path.to_path_buf(), path.parent()?.join("messages.jsonl")]
+    } else if file_name == "events.jsonl"
+        && path
+            .parent()?
+            .parent()?
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some("session-state")
+    {
+        vec![
+            path.to_path_buf(),
+            path.parent()?.parent()?.join("session-store.db"),
+        ]
+    } else if path.extension().and_then(|extension| extension.to_str()) == Some("json")
+        && path.parent()?.file_name().and_then(|name| name.to_str()) == Some("cli")
+    {
+        vec![path.to_path_buf(), path.with_extension("jsonl")]
+    } else {
+        return None;
+    };
+    paths.sort();
+    paths.dedup();
+    let parts: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            (
+                path.to_string_lossy().into_owned(),
+                fingerprint_of_path(path),
+            )
+        })
+        .collect();
+    serde_json::to_string(&parts)
+        .ok()
+        .map(|value| format!("bundle-v1:{value}"))
 }
 
 /// Build one stable fingerprint from a parent and its sorted child paths.
@@ -533,9 +600,8 @@ async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSourc
         };
         let session_id = manifest_path.file_stem()?.to_str()?;
         let directory = manifest_path.parent()?;
-        let sessions_dir = directory.parent()?;
         return Some(RawSource::ClineBundle {
-            db_path: sessions_dir.join("sessions.db"),
+            db_path: cline_database_path(manifest_path)?,
             manifest_path: manifest_path.clone(),
             messages_path: directory.join(format!("{session_id}.messages.json")),
         });
@@ -547,6 +613,26 @@ async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSourc
         return Some(RawSource::KiroCliV2Bundle {
             metadata_path: metadata_path.clone(),
             messages_path: metadata_path.with_extension("jsonl"),
+        });
+    }
+    if agent == AgentKind::Kiro && source_format(agent, source) == SourceFormat::KiroCliV3Bundle {
+        let SessionSource::File(metadata_path) = source else {
+            return None;
+        };
+        return Some(RawSource::KiroCliV3Bundle {
+            metadata_path: metadata_path.clone(),
+            messages_path: metadata_path.parent()?.join("messages.jsonl"),
+        });
+    }
+    if agent == AgentKind::Copilot && source_format(agent, source) == SourceFormat::CopilotCliJsonl
+    {
+        let SessionSource::File(events_path) = source else {
+            return None;
+        };
+        let state_root = events_path.parent()?.parent()?;
+        return Some(RawSource::CopilotCliBundle {
+            events_path: events_path.clone(),
+            db_path: state_root.join("session-store.db"),
         });
     }
     match source {
@@ -634,13 +720,42 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
             SourceFormat::CopilotCliJsonl
         }
         (AgentKind::Copilot, _) => SourceFormat::CopilotIdeChatJson,
+        (AgentKind::AmpCode, SessionSource::File(path)) if is_amp_file_changes_path(path) => {
+            SourceFormat::AmpFileChanges
+        }
+        (AgentKind::AmpCode, SessionSource::File(path)) if is_amp_thread_path(path) => {
+            SourceFormat::AmpThreadJson
+        }
+        (AgentKind::Windsurf, SessionSource::File(path)) => {
+            let path = path.to_string_lossy().to_ascii_lowercase();
+            if path.ends_with(".pb") && path.contains("/.codeium/windsurf/cascade/") {
+                SourceFormat::WindsurfCascadeProtobuf
+            } else if path.contains("/workspacestorage/") && path.contains("/chatsessions/") {
+                SourceFormat::WindsurfWorkspaceJson
+            } else if path.contains("/mirror/windsurf/") {
+                SourceFormat::WindsurfMirrorJson
+            } else {
+                SourceFormat::Uncharacterized
+            }
+        }
+        (AgentKind::Windsurf, SessionSource::Inline { label, .. })
+            if label.starts_with("windsurf-mirror:") =>
+        {
+            SourceFormat::WindsurfMirrorJson
+        }
         (AgentKind::Cline, SessionSource::File(path))
             if path
                 .parent()
                 .and_then(|parent| parent.parent())
                 .is_some_and(|sessions| {
-                    sessions.file_name().and_then(|name| name.to_str()) == Some("sessions")
+                    matches!(
+                        sessions.file_name().and_then(|name| name.to_str()),
+                        Some("sessions") | Some("tasks")
+                    )
                 })
+                && path
+                    .ancestors()
+                    .any(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))
                 && path
                     .file_stem()
                     .and_then(|name| name.to_str())
@@ -685,6 +800,26 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
         (AgentKind::Kiro, _) => SourceFormat::KiroSessionJson,
         _ => SourceFormat::Uncharacterized,
     }
+}
+
+fn cline_database_path(manifest_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    manifest_path
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == ".cline"))
+        .map(|root| root.join("data").join("db").join("sessions.db"))
+}
+
+fn is_amp_thread_path(path: &std::path::Path) -> bool {
+    let path = path.to_string_lossy().to_ascii_lowercase();
+    path.contains("/.local/share/amp/threads/")
+        || path.contains("/appdata/roaming/amp/threads/")
+        || path.contains("/.amp/threads/")
+}
+
+fn is_amp_file_changes_path(path: &std::path::Path) -> bool {
+    path.to_string_lossy()
+        .to_ascii_lowercase()
+        .contains("/.amp/file-changes/")
 }
 
 fn is_uuid(value: &str) -> bool {
@@ -1244,6 +1379,26 @@ fn stream_vendor_with_hooks(
                 outcome
             }
             RawSource::Sqlite(_) => continue,
+            RawSource::CopilotCliBundle { events_path, .. } if index == 0 => {
+                let bundle_source = SessionSource::File(events_path.clone());
+                let bundle_claim = fingerprint_of(&bundle_source);
+                parent_fingerprint = Some(bundle_claim.clone());
+                after_claim(index, events_path);
+                let outcome = match adapter.visit(input, &mut accumulator) {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
+                    }
+                };
+                if fingerprint_of(&bundle_source) != bundle_claim {
+                    Ok(VisitOutcome::SourceChanged(
+                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
+                    ))
+                } else {
+                    Ok(outcome)
+                }
+            }
+            RawSource::CopilotCliBundle { .. } => continue,
             RawSource::ClineBundle { manifest_path, .. } if index == 0 => {
                 let claim = match claim_file(manifest_path) {
                     Ok(claim) => claim,
@@ -1251,27 +1406,67 @@ fn stream_vendor_with_hooks(
                         return StreamOutcome::ParentUnreadable(UnreadableReason::ClaimFailed);
                     }
                 };
-                adapter.visit_claimed(
+                let bundle_source = SessionSource::File(manifest_path.clone());
+                let bundle_claim = fingerprint_of(&bundle_source);
+                let outcome = match adapter.visit_claimed(
                     input,
                     &claim,
                     AppendOnlyGuarantee::Absent,
                     cancelled,
                     &mut accumulator,
-                )
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
+                    }
+                };
+                if fingerprint_of(&bundle_source) != bundle_claim {
+                    Ok(VisitOutcome::SourceChanged(
+                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
+                    ))
+                } else {
+                    Ok(outcome)
+                }
             }
             RawSource::ClineBundle { .. } => continue,
-            RawSource::KiroCliV2Bundle {
-                metadata_path,
-                messages_path,
-            } if index == 0 => {
-                parent_fingerprint = Some(format!(
-                    "{}:{}",
-                    fingerprint_of(&SessionSource::File(metadata_path.clone())),
-                    fingerprint_of(&SessionSource::File(messages_path.clone()))
-                ));
-                adapter.visit(input, &mut accumulator)
+            RawSource::KiroCliV2Bundle { metadata_path, .. } if index == 0 => {
+                let bundle_source = SessionSource::File(metadata_path.clone());
+                let bundle_claim = fingerprint_of(&bundle_source);
+                parent_fingerprint = Some(bundle_claim.clone());
+                let outcome = match adapter.visit(input, &mut accumulator) {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
+                    }
+                };
+                if fingerprint_of(&bundle_source) != bundle_claim {
+                    Ok(VisitOutcome::SourceChanged(
+                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
+                    ))
+                } else {
+                    Ok(outcome)
+                }
             }
             RawSource::KiroCliV2Bundle { .. } => continue,
+            RawSource::KiroCliV3Bundle { metadata_path, .. } if index == 0 => {
+                let bundle_source = SessionSource::File(metadata_path.clone());
+                let bundle_claim = fingerprint_of(&bundle_source);
+                parent_fingerprint = Some(bundle_claim.clone());
+                let outcome = match adapter.visit(input, &mut accumulator) {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
+                    }
+                };
+                if fingerprint_of(&bundle_source) != bundle_claim {
+                    Ok(VisitOutcome::SourceChanged(
+                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
+                    ))
+                } else {
+                    Ok(outcome)
+                }
+            }
+            RawSource::KiroCliV3Bundle { .. } => continue,
         };
         match result {
             Ok(outcome @ VisitOutcome::SourceChanged(_)) => {

@@ -137,6 +137,12 @@ impl SessionReader for CodexSessionReader {
                 RawSource::KiroCliV2Bundle { .. } => {
                     anyhow::bail!("Kiro bundle is not a Codex source")
                 }
+                RawSource::KiroCliV3Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a Codex source")
+                }
+                RawSource::CopilotCliBundle { .. } => {
+                    anyhow::bail!("Copilot bundle is not a Codex source")
+                }
             };
             let summary = state.finish(sink);
             sink.finish(summary);

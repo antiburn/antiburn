@@ -1,0 +1,38 @@
+{
+  "copilot": {
+    "accepted_event_version": 1,
+    "required_cases": ["missing_parent", "duplicate_relation", "conflicting_shutdown", "oversized_record", "changed_source"],
+    "required_fields": ["id", "timestamp", "parentId", "type", "data"]
+  },
+  "cline": {
+    "accepted_messages_version": 1,
+    "required_cases": ["missing_child", "duplicate_root", "conflicting_model", "oversized_artifact", "changed_source", "agent_named_child", "origin_join", "root_aggregate"],
+    "required_fields": ["version", "sessionId", "messages", "agent_id", "origin.parentThreadId"]
+  },
+  "amp": {
+    "accepted_export_version": 39,
+    "required_cases": ["missing_usage", "duplicate_usage", "conflicting_thread", "oversized_export", "changed_source", "invalid_total", "file_changes"],
+    "required_fields": ["version", "threadId", "messages"]
+  },
+  "devin_local": {
+    "accepted_migration": 17,
+    "required_cases": ["missing_child", "duplicate_tool_call", "conflicting_model", "oversized_row", "changed_source"],
+    "required_tables": ["sessions", "message_nodes", "subagent_heads", "tool_call_state"]
+  },
+  "antigravity": {
+    "accepted_cli_version": "1.1.23",
+    "required_cases": ["missing_brain", "malformed_proto", "conflicting_identity", "oversized_field", "changed_source"],
+    "required_fields": ["conversation_id", "step_index", "usage"]
+  },
+  "kiro": {
+    "accepted_metadata_version": "v1",
+    "accepted_journal_version": "v1",
+    "required_cases": ["missing_metadata", "missing_journal", "conflicting_identity", "oversized_record", "changed_companion"],
+    "required_fields": ["session_id", "parent_session_id", "session_state"]
+  },
+  "cursor": {
+    "accepted_source": "interactive_cli",
+    "required_cases": ["task_without_usage", "task_without_child_model", "missing_turn_end", "oversized_record", "changed_source"],
+    "required_fields": ["sessionId", "type", "timestamp"]
+  }
+}

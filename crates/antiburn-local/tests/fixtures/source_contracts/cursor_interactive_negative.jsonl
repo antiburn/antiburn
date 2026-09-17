@@ -1,0 +1,3 @@
+{"sessionId":"synthetic-cursor-session","type":"session.start","timestamp":"2026-09-01T10:00:00Z","model":"synthetic-model"}
+{"sessionId":"synthetic-cursor-session","type":"tool_call","timestamp":"2026-09-01T10:00:01Z","name":"Task","childSessionId":"synthetic-child"}
+{"sessionId":"synthetic-cursor-session","type":"turn_ended","timestamp":"2026-09-01T10:00:02Z"}

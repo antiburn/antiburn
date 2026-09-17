@@ -4,11 +4,12 @@
 //! `session-state/<uuid>/events.jsonl`. The reader intentionally does not read
 //! message content, reasoning, tool arguments, or tool results.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor};
 use std::path::Path;
 
+use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 use super::generic_jsonl::GenericJsonlSessionReader;
@@ -59,16 +60,34 @@ impl SessionReader for CopilotSessionReader {
         if input.source_format_or(SourceFormat::CopilotCliJsonl) != SourceFormat::CopilotCliJsonl {
             return GenericJsonlSessionReader.visit(input, sink);
         }
+        if let RawSource::CopilotCliBundle {
+            events_path,
+            db_path,
+        } = &input.source
+        {
+            self.visit_bundle(events_path, db_path, input, sink)?;
+            return Ok(VisitOutcome::Unvalidated);
+        }
         let state = match &input.source {
-            RawSource::File(path) => {
-                self.visit_reader(BufReader::new(File::open(path)?), input, &|| false, sink)?
-            }
-            RawSource::Jsonl(content) => {
-                self.visit_reader(BufReader::new(Cursor::new(content)), input, &|| false, sink)?
-            }
+            RawSource::File(path) => self.visit_reader(
+                BufReader::new(File::open(path)?),
+                input,
+                &|| false,
+                sink,
+                true,
+            )?,
+            RawSource::Jsonl(content) => self.visit_reader(
+                BufReader::new(Cursor::new(content)),
+                input,
+                &|| false,
+                sink,
+                true,
+            )?,
             RawSource::Sqlite(_) => anyhow::bail!("Copilot CLI source must be JSONL"),
             RawSource::ClineBundle { .. } => anyhow::bail!("Copilot CLI source must be JSONL"),
             RawSource::KiroCliV2Bundle { .. } => anyhow::bail!("Copilot CLI source must be JSONL"),
+            RawSource::KiroCliV3Bundle { .. } => anyhow::bail!("Copilot CLI source must be JSONL"),
+            RawSource::CopilotCliBundle { .. } => unreachable!(),
         };
         sink.finish(state.finish());
         Ok(VisitOutcome::Unvalidated)
@@ -96,7 +115,13 @@ impl SessionReader for CopilotSessionReader {
             AppendOnlyGuarantee::Evidenced => claim.boundary,
             AppendOnlyGuarantee::Absent => u64::MAX,
         };
-        let state = self.visit_reader(BufReader::new(pinned.reader(limit)), input, cancel, sink)?;
+        let state = self.visit_reader(
+            BufReader::new(pinned.reader(limit)),
+            input,
+            cancel,
+            sink,
+            true,
+        )?;
         let outcome = match guarantee {
             AppendOnlyGuarantee::Evidenced => pinned.recheck_prefix()?.map_or(
                 VisitOutcome::AcceptedPrefix {
@@ -122,6 +147,7 @@ impl CopilotSessionReader {
         input: &SessionInput,
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
+        emit_shutdown_usage: bool,
     ) -> anyhow::Result<CopilotState> {
         if input.source_format_or(SourceFormat::CopilotCliJsonl) != SourceFormat::CopilotCliJsonl {
             anyhow::bail!("Copilot CLI reader requires CopilotCliJsonl admission");
@@ -132,8 +158,11 @@ impl CopilotSessionReader {
             RawSource::Sqlite(_) => None,
             RawSource::ClineBundle { .. } => None,
             RawSource::KiroCliV2Bundle { .. } => None,
+            RawSource::KiroCliV3Bundle { .. } => None,
+            RawSource::CopilotCliBundle { .. } => None,
         };
         let mut state = CopilotState {
+            emit_shutdown_usage,
             directory_id,
             ..CopilotState::default()
         };
@@ -155,18 +184,192 @@ impl CopilotSessionReader {
         }
         Ok(state)
     }
+
+    fn visit_bundle(
+        &self,
+        events_path: &Path,
+        db_path: &Path,
+        input: &SessionInput,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<SessionSummary> {
+        let mut state = self.visit_reader(
+            BufReader::new(File::open(events_path)?),
+            input,
+            &|| false,
+            sink,
+            false,
+        )?;
+        let connection = Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let transaction = connection.unchecked_transaction()?;
+        let session_rows: u64 = transaction.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE session_id = ?1",
+            [input.session_id.as_str()],
+            |row| row.get(0),
+        )?;
+        if session_rows != 1 {
+            state.invalid = true;
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+        }
+        validate_store_schema(&transaction)?;
+        let mut rows = transaction.prepare(
+            "SELECT request_id, agent_id, parent_tool_call_id, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+             FROM request_usage WHERE session_id = ?1 ORDER BY request_id",
+        )?;
+        let mut count = 0_u64;
+        let mut totals = UsageTotals::default();
+        let mut child_keys = HashSet::new();
+        let mut query = rows.query([input.session_id.as_str()])?;
+        while let Some(row) = query.next()? {
+            let request_id: String = row.get(0)?;
+            let agent_id: Option<String> = row.get(1)?;
+            let parent_tool_call_id: Option<String> = row.get(2)?;
+            let model: String = row.get(3)?;
+            let usage = UsageTotals {
+                input_tokens: row.get(4)?,
+                output_tokens: row.get(5)?,
+                cache_read_tokens: row.get(6)?,
+                cache_write_tokens: row.get(7)?,
+            };
+            let delegated = agent_id.is_some() && parent_tool_call_id.is_some();
+            if agent_id.is_some() != parent_tool_call_id.is_some() || model.is_empty() {
+                state.invalid = true;
+                sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+                continue;
+            }
+            if delegated {
+                let key = (
+                    agent_id.clone().unwrap(),
+                    parent_tool_call_id.clone().unwrap(),
+                );
+                let parent_call = parent_tool_call_id.as_deref().unwrap();
+                if !state.completed_calls.contains(parent_call) || !child_keys.insert(key) {
+                    state.invalid = true;
+                    sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+                    continue;
+                }
+            }
+            if !delegated {
+                count += 1;
+                totals += usage;
+            }
+            sink.record(NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent {
+                ts_ms: None,
+                usage_ts_ms: None,
+                role: Role::Assistant,
+                source: if delegated {
+                    crate::analysis::model::EventSource::Subagent
+                } else {
+                    crate::analysis::model::EventSource::Parent
+                },
+                usage: Usage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    cache_creation_tokens: usage.cache_write_tokens,
+                    cache_creation_1h_tokens: 0,
+                },
+                tools: Vec::new(),
+                model: Some(model),
+                provider: None,
+                api: None,
+                thinking_mode: None,
+                speed: None,
+                has_thinking: false,
+                message_id: Some(request_id),
+                is_compaction_boundary: false,
+                compaction_trigger: None,
+                compaction_pre_tokens: None,
+                compaction_post_tokens: None,
+                wrapper_tool: None,
+                may_resolve_late_tool: false,
+                late_tool_candidate_is_builtin: false,
+                uuid: None,
+                parent_uuid: None,
+                logical_parent_uuid: None,
+                thread_id: agent_id,
+            })));
+        }
+        if state.shutdown
+            && (state.shutdown_request_count != count || state.shutdown_totals != totals)
+        {
+            state.invalid = true;
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+        }
+        let summary = state.finish();
+        sink.finish(summary.clone());
+        Ok(summary)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct UsageTotals {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+}
+
+impl std::ops::AddAssign for UsageTotals {
+    fn add_assign(&mut self, rhs: Self) {
+        self.input_tokens += rhs.input_tokens;
+        self.output_tokens += rhs.output_tokens;
+        self.cache_read_tokens += rhs.cache_read_tokens;
+        self.cache_write_tokens += rhs.cache_write_tokens;
+    }
+}
+
+fn validate_store_schema(connection: &Connection) -> anyhow::Result<()> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version != 7 {
+        anyhow::bail!("unsupported Copilot session store schema version {version}");
+    }
+    for (table, columns) in [
+        ("sessions", &["session_id", "shutdown_model"][..]),
+        (
+            "request_usage",
+            &[
+                "session_id",
+                "request_id",
+                "agent_id",
+                "parent_tool_call_id",
+                "model",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            ][..],
+        ),
+    ] {
+        let mut found = HashSet::new();
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        for column in statement.query_map([], |row| row.get::<_, String>(1))? {
+            found.insert(column?);
+        }
+        if columns.iter().any(|column| !found.contains(*column)) {
+            anyhow::bail!("Copilot session store is missing required columns in {table}");
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
 struct CopilotState {
     directory_id: Option<String>,
-    previous_event_id: Option<String>,
     started: bool,
     shutdown: bool,
     invalid: bool,
     current_model: Option<String>,
     subagents: HashMap<String, Option<String>>,
+    completed_calls: HashSet<String>,
     started_at_ms: Option<i64>,
+    emit_shutdown_usage: bool,
+    shutdown_request_count: u64,
+    shutdown_totals: UsageTotals,
+    event_ids: HashSet<String>,
 }
 
 impl CopilotState {
@@ -185,13 +388,20 @@ impl CopilotState {
             return self.invalid(sink);
         };
         let parent = value.get("parentId");
-        if (!self.started && (kind != "session.start" || parent != Some(&Value::Null)))
-            || (self.started && parent.and_then(Value::as_str) != self.previous_event_id.as_deref())
+        let valid_parent = if !self.started {
+            kind == "session.start" && parent == Some(&Value::Null)
+        } else {
+            parent
+                .and_then(Value::as_str)
+                .is_some_and(|parent| self.event_ids.contains(parent))
+        };
+        if !valid_parent
             || self.shutdown
+            || (kind == "session.start" && self.started)
+            || !self.event_ids.insert(id.to_owned())
         {
             return self.invalid(sink);
         }
-        self.previous_event_id = Some(id.to_owned());
         match kind {
             "session.start" => {
                 let data = value.get("data");
@@ -276,6 +486,7 @@ impl CopilotState {
                 let Some(model) = model.filter(|model| !model.is_empty()) else {
                     return self.invalid(sink);
                 };
+                self.completed_calls.insert(call_id.to_owned());
                 sink.record(NormalizedRecord::Observation(Box::new(
                     EvidenceObservation::SubagentModel {
                         parent_call_id: call_id.to_owned(),
@@ -284,7 +495,8 @@ impl CopilotState {
                 )));
             }
             "session.shutdown" => self.shutdown(value.get("data"), timestamp, sink),
-            _ => {}
+            "telemetry" | "telemetry.event" | "telemetry.record" => {}
+            _ => self.invalid(sink),
         }
     }
 
@@ -320,6 +532,20 @@ impl CopilotState {
             else {
                 return self.invalid(sink);
             };
+            let totals = UsageTotals {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens: cache_creation_tokens,
+            };
+            self.shutdown_request_count += metric
+                .pointer("/requests/count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            self.shutdown_totals += totals;
+            if !self.emit_shutdown_usage {
+                continue;
+            }
             sink.record(NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent {
                 ts_ms: Some(timestamp),
                 usage_ts_ms: None,
@@ -425,6 +651,30 @@ mod tests {
     }
 
     #[test]
+    fn interleaved_known_lanes_use_typed_parent_links() {
+        let content =
+            include_str!("../../../tests/fixtures/source_contracts/copilot_interleaved.jsonl");
+        let reader = CopilotSessionReader;
+        let mut sink = SessionCollector::new("copilot", "session");
+        reader.visit(&input(content), &mut sink).unwrap();
+        assert!(sink.coverage() == crate::analysis::interface::RecordCoverage::Complete);
+    }
+
+    #[test]
+    fn unknown_lanes_degrade_coverage_without_dropping_known_records() {
+        let content =
+            include_str!("../../../tests/fixtures/source_contracts/copilot_interleaved.jsonl")
+                .replace("telemetry.event", "future.lane");
+        let reader = CopilotSessionReader;
+        let mut sink = SessionCollector::new("copilot", "session");
+        reader.visit(&input(&content), &mut sink).unwrap();
+        assert_eq!(
+            sink.coverage(),
+            crate::analysis::interface::RecordCoverage::Partial
+        );
+    }
+
+    #[test]
     fn malformed_or_unfinished_source_stays_partial() {
         let reader = CopilotSessionReader;
         let mut sink = SessionCollector::new("copilot", "session");
@@ -433,6 +683,163 @@ mod tests {
             sink.coverage(),
             crate::analysis::interface::RecordCoverage::Partial
         );
+    }
+
+    #[test]
+    fn unsupported_event_envelope_version_stays_partial() {
+        let content = LIFECYCLE.replacen("\"version\":1", "\"version\":2", 1);
+        let mut sink = SessionCollector::new("copilot", "session");
+        CopilotSessionReader
+            .visit(&input(&content), &mut sink)
+            .unwrap();
+        assert_eq!(
+            sink.coverage(),
+            crate::analysis::interface::RecordCoverage::Partial
+        );
+    }
+
+    #[test]
+    fn schema_seven_bundle_reconciles_usage_without_mixing_child_scope() {
+        let directory = TempDir::new().unwrap();
+        let events_path = directory.path().join("events.jsonl");
+        let db_path = directory.path().join("session-store.db");
+        std::fs::write(
+            &events_path,
+            include_str!("../../../tests/fixtures/source_contracts/copilot_multi_lane.jsonl"),
+        )
+        .unwrap();
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA user_version = 7;
+                 CREATE TABLE sessions (session_id TEXT, shutdown_model TEXT);
+                 CREATE TABLE request_usage (
+                     session_id TEXT, request_id TEXT, agent_id TEXT,
+                     parent_tool_call_id TEXT, model TEXT,
+                     input_tokens INTEGER, output_tokens INTEGER,
+                     cache_read_tokens INTEGER, cache_write_tokens INTEGER
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sessions VALUES (?1, ?2)",
+                ["11111111-1111-4111-8111-111111111111", "synthetic-main"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO request_usage VALUES (?1, ?2, NULL, NULL, ?3, 10, 5, 2, 1)",
+                [
+                    "11111111-1111-4111-8111-111111111111",
+                    "request-1",
+                    "synthetic-main",
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let input = SessionInput {
+            agent: "copilot".to_owned(),
+            session_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            source: RawSource::CopilotCliBundle {
+                events_path,
+                db_path,
+            },
+            source_format: SourceFormat::CopilotCliJsonl,
+            fork_parent_session_id: None,
+        };
+        let mut sink = SessionCollector::new("copilot", input.session_id.clone());
+        CopilotSessionReader.visit(&input, &mut sink).unwrap();
+        let session = sink.into_session().unwrap();
+        assert_eq!(session.events.len(), 1);
+        assert_eq!(session.events[0].usage.input_tokens, 10);
+        assert!(session.events[0].source == crate::analysis::model::EventSource::Parent);
+    }
+
+    #[test]
+    fn bundle_reconciliation_rejects_missing_extra_mismatched_and_orphan_rows() {
+        for mode in ["missing", "extra", "mismatch", "orphan", "duplicate"] {
+            let directory = TempDir::new().unwrap();
+            let events_path = directory.path().join("events.jsonl");
+            let db_path = directory.path().join("session-store.db");
+            std::fs::write(
+                &events_path,
+                include_str!("../../../tests/fixtures/source_contracts/copilot_multi_lane.jsonl"),
+            )
+            .unwrap();
+            let connection = Connection::open(&db_path).unwrap();
+            connection
+                .execute_batch(
+                    "PRAGMA user_version = 7;
+                     CREATE TABLE sessions (session_id TEXT, shutdown_model TEXT);
+                     CREATE TABLE request_usage (
+                         session_id TEXT, request_id TEXT, agent_id TEXT,
+                         parent_tool_call_id TEXT, model TEXT,
+                         input_tokens INTEGER, output_tokens INTEGER,
+                         cache_read_tokens INTEGER, cache_write_tokens INTEGER
+                     );",
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sessions VALUES (?1, ?2)",
+                    ["11111111-1111-4111-8111-111111111111", "synthetic-main"],
+                )
+                .unwrap();
+            if mode != "missing" {
+                let input_tokens = if mode == "mismatch" { 11 } else { 10 };
+                connection
+                    .execute(
+                        "INSERT INTO request_usage VALUES (?1, 'request-1', NULL, NULL, 'synthetic-main', ?2, 5, 2, 1)",
+                        rusqlite::params!["11111111-1111-4111-8111-111111111111", input_tokens],
+                    )
+                    .unwrap();
+            }
+            if mode == "extra" {
+                connection
+                    .execute(
+                        "INSERT INTO request_usage VALUES (?1, 'request-2', NULL, NULL, 'synthetic-main', 10, 5, 2, 1)",
+                        ["11111111-1111-4111-8111-111111111111"],
+                    )
+                    .unwrap();
+            }
+            if mode == "orphan" || mode == "duplicate" {
+                for request_id in if mode == "duplicate" {
+                    ["request-child-1", "request-child-2"]
+                } else {
+                    ["request-child-1", ""]
+                } {
+                    if request_id.is_empty() {
+                        continue;
+                    }
+                    connection
+                        .execute(
+                            "INSERT INTO request_usage VALUES (?1, ?2, 'synthetic-agent', 'call-missing', 'synthetic-child', 1, 1, 0, 0)",
+                            rusqlite::params!["11111111-1111-4111-8111-111111111111", request_id],
+                        )
+                        .unwrap();
+                }
+            }
+            drop(connection);
+            let input = SessionInput {
+                agent: "copilot".to_owned(),
+                session_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+                source: RawSource::CopilotCliBundle {
+                    events_path,
+                    db_path,
+                },
+                source_format: SourceFormat::CopilotCliJsonl,
+                fork_parent_session_id: None,
+            };
+            let mut sink = SessionCollector::new("copilot", input.session_id.clone());
+            CopilotSessionReader.visit(&input, &mut sink).unwrap();
+            assert_eq!(
+                sink.coverage(),
+                crate::analysis::interface::RecordCoverage::Partial,
+                "{mode}"
+            );
+        }
     }
 
     #[test]

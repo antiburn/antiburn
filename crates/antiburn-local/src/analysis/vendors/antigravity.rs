@@ -2710,6 +2710,8 @@ mod tests {
             RawSource::Jsonl(_) => crate::analysis::SourceFormat::AntigravityBrainJsonl,
             RawSource::ClineBundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
             RawSource::KiroCliV2Bundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
+            RawSource::KiroCliV3Bundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
+            RawSource::CopilotCliBundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
         };
         SessionInput {
             agent: "antigravity".to_owned(),

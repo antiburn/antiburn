@@ -82,11 +82,26 @@ impl super::Explorers {
                 let read = read?;
                 let stat = read.stat.clone()?;
                 let estimated_bytes = Some(stat.size);
-                let fingerprint = FingerprintInputs {
-                    stat,
-                    head_hash: read.head_hash,
-                }
-                .fingerprint();
+                let fingerprint = match descriptor.source_format {
+                    SourceFormat::ClineMessagesContractV1
+                    | SourceFormat::KiroCliV2Bundle
+                    | SourceFormat::KiroCliV3Bundle
+                    | SourceFormat::CopilotCliJsonl => {
+                        bundle_fingerprint(&descriptor.source, descriptor.source_format)
+                            .unwrap_or_else(|| {
+                                FingerprintInputs {
+                                    stat,
+                                    head_hash: read.head_hash,
+                                }
+                                .fingerprint()
+                            })
+                    }
+                    _ => FingerprintInputs {
+                        stat,
+                        head_hash: read.head_hash,
+                    }
+                    .fingerprint(),
+                };
                 let streamability = if matches!(
                     descriptor.agent,
                     AgentKind::Claude | AgentKind::Codex | AgentKind::Pi | AgentKind::Copilot
@@ -140,6 +155,64 @@ impl super::Explorers {
             }
         }
     }
+}
+
+fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<String> {
+    let SessionSource::File(path) = source else {
+        return None;
+    };
+    let mut paths = match format {
+        SourceFormat::ClineMessagesContractV1 => {
+            let root = path
+                .ancestors()
+                .find(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))?;
+            let directory = path.parent()?;
+            let session_id = path.file_stem()?.to_str()?;
+            let mut paths = vec![path.clone(), root.join("data/db/sessions.db")];
+            paths.push(directory.join(format!("{session_id}.messages.json")));
+            if let Ok(entries) = std::fs::read_dir(directory) {
+                paths.extend(entries.filter_map(Result::ok).filter_map(|entry| {
+                    entry
+                        .file_type()
+                        .ok()
+                        .filter(|kind| kind.is_file())
+                        .map(|_| entry.path())
+                }));
+            }
+            paths
+        }
+        SourceFormat::KiroCliV2Bundle => vec![path.clone(), path.with_extension("jsonl")],
+        SourceFormat::KiroCliV3Bundle => {
+            vec![path.clone(), path.parent()?.join("messages.jsonl")]
+        }
+        SourceFormat::CopilotCliJsonl if path.file_name()?.to_str()? == "events.jsonl" => vec![
+            path.clone(),
+            path.parent()?.parent()?.join("session-store.db"),
+        ],
+        _ => return None,
+    };
+    paths.sort();
+    paths.dedup();
+    let parts: Vec<_> = paths
+        .iter()
+        .map(|path| (path.to_string_lossy().into_owned(), file_fingerprint(path)))
+        .collect();
+    serde_json::to_string(&parts)
+        .ok()
+        .map(|value| format!("bundle-v1:{value}"))
+}
+
+fn file_fingerprint(path: &Path) -> String {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return "-".to_owned();
+    };
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|time| time.as_secs())
+        .unwrap_or_default();
+    format!("{mtime}:{}", metadata.len())
 }
 
 /// Identity and time inputs from an open handle or a path.
