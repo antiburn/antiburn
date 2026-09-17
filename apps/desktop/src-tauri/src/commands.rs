@@ -3674,7 +3674,14 @@ mod tests {
 
     #[test]
     fn get_live_sessions_keeps_its_signature() {
-        let source = include_str!("../src/commands.rs");
+        let source = include_str!("../src/commands.rs").replace("\r\n", "\n");
+        for checkout in [source.clone(), source.replace('\n', "\r\n")] {
+            assert_live_sessions_source_contract(&checkout);
+        }
+    }
+
+    fn assert_live_sessions_source_contract(source: &str) {
+        let source = source.replace("\r\n", "\n");
         let expected = "pub fn get_live_sessions(\n    app: tauri::AppHandle,\n    limit: Option<usize>,\n) -> crate::session_lifecycle::LiveSnapshot {\n    app.state::<crate::session_lifecycle::SessionEvents>()\n        .snapshot(limit.unwrap_or(crate::session_lifecycle::DEFAULT_SNAPSHOT_LIMIT))\n}";
         assert!(
             source.contains(expected),
