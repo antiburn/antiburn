@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { QuotaAccountPayload, QuotaUsagePayload } from "../../../lib/providerUsageIpc"
-import { QuotaSession, type QuotaAdapter } from "./QuotaSession"
+import { QUOTA_USAGE_CACHE_TTL_MS, QuotaSession, type QuotaAdapter } from "./QuotaSession"
+import { rangeForPreset } from "./quotaSeries"
 
 const NOW = 1_000_000
+const WEEK = 604800
 
 function account(over: Partial<QuotaAccountPayload> = {}): QuotaAccountPayload {
   return {
@@ -37,22 +39,12 @@ function usage(
 
 function setup(overrides: Partial<QuotaAdapter> = {}) {
   let visible: (value: boolean) => void = () => undefined
-  let liveChanged: () => void = () => undefined
-  let scanFinished: () => void = () => undefined
   const adapter: QuotaAdapter = {
     getAccounts: vi.fn().mockResolvedValue({ accounts: [account()], generatedAt: "g1" }),
     getUsage: vi.fn().mockResolvedValue(usage("u1")),
     getVisible: vi.fn().mockResolvedValue(true),
     onVisible: vi.fn(async (handler) => {
       visible = handler
-      return vi.fn()
-    }),
-    onLiveUsageChanged: vi.fn(async (handler) => {
-      liveChanged = handler
-      return vi.fn()
-    }),
-    onScanFinished: vi.fn(async (handler) => {
-      scanFinished = handler
       return vi.fn()
     }),
     now: vi.fn(() => NOW),
@@ -63,8 +55,6 @@ function setup(overrides: Partial<QuotaAdapter> = {}) {
     adapter,
     session,
     setVisible: (value: boolean) => visible(value),
-    liveChanged: () => liveChanged(),
-    scanFinished: () => scanFinished(),
   }
 }
 
@@ -139,48 +129,20 @@ describe("QuotaSession", () => {
     stop()
   })
 
-  it("coalesces a burst of live-usage events into one extra refresh while active", async () => {
-    const { adapter, session, liveChanged } = setup()
+  it("does not live-update: a fake adapter with no push channels never reloads on its own", async () => {
+    const { adapter, session } = setup()
     sessions.push(session)
     const stop = session.subscribe(() => undefined)
     await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
-    const pending = deferred<QuotaUsagePayload>()
-    vi.mocked(adapter.getUsage)
-      .mockReturnValueOnce(pending.promise)
-      .mockResolvedValueOnce(usage("u-coalesced"))
-    liveChanged()
-    liveChanged()
-    liveChanged()
-    expect(adapter.getUsage).toHaveBeenCalledTimes(2)
-    pending.resolve(usage("u-in-flight"))
-    // Three triggers while the first extra request was in flight coalesce
-    // into exactly one more request, not three.
-    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(3))
-    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-coalesced"))
-    stop()
-  })
-
-  it("refreshes usage after a finished scan while active", async () => {
-    const { adapter, session, scanFinished } = setup()
-    sessions.push(session)
-    const stop = session.subscribe(() => undefined)
-    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
-    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-scan"))
-    scanFinished()
-    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-scan"))
-    stop()
-  })
-
-  it("does not refresh on a live-usage event while inactive", async () => {
-    const { adapter, session, setVisible, liveChanged } = setup()
-    sessions.push(session)
-    const stop = session.subscribe(() => undefined)
-    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
-    setVisible(false)
     const callsBefore = vi.mocked(adapter.getUsage).mock.calls.length
-    liveChanged()
-    await Promise.resolve()
+    // Nothing pushes a refresh: the adapter exposes no live-usage or
+    // scan-finished channel, so only a selection change loads usage again.
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(vi.mocked(adapter.getUsage).mock.calls.length).toBe(callsBefore)
+    session.selectLane("fiveHour")
+    await vi.waitFor(() =>
+      expect(vi.mocked(adapter.getUsage).mock.calls.length).toBe(callsBefore + 1),
+    )
     stop()
   })
 
@@ -263,6 +225,169 @@ describe("QuotaSession", () => {
     session.selectRange("last30Days")
     await vi.waitFor(() => expect(session.getSnapshot().usageError).toBe(true))
     expect(session.getSnapshot().usage?.generatedAt).toBe("u1")
+    stop()
+  })
+
+  it("reloads with the range a window preset resolves to", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-window"))
+    session.selectRange("last3Windows")
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-window"))
+    expect(session.getSnapshot().range).toBe("last3Windows")
+    const request = vi.mocked(adapter.getUsage).mock.calls.at(-1)![0]
+    // The weekly lane carries no current period in this fixture, so the
+    // preset falls back to a trailing three weeks ending now — exactly what
+    // `rangeForPreset` itself computes for the same inputs.
+    const expected = rangeForPreset(
+      "last3Windows",
+      { lane: "weekly", label: "Weekly", hasFactor: true, currentPeriod: null },
+      NOW,
+    )
+    expect(request.rangeStartEpoch).toBe(expected.startEpoch)
+    expect(request.rangeEndEpoch).toBe(expected.endEpoch)
+    expect(request.rangeStartEpoch).toBe(NOW - 3 * WEEK)
+    expect(request.rangeEndEpoch).toBe(NOW)
+    stop()
+  })
+
+  it("marks loading true for a reload beside existing usage, then false once it settles", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(session.getSnapshot().loading).toBe(false)
+
+    const pending = deferred<QuotaUsagePayload>()
+    vi.mocked(adapter.getUsage).mockReturnValueOnce(pending.promise)
+    session.selectLane("fiveHour")
+    expect(session.getSnapshot().loading).toBe(true)
+
+    pending.resolve(usage("u-reload"))
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-reload"))
+    expect(session.getSnapshot().loading).toBe(false)
+    stop()
+  })
+
+  it("reuses a cached reading when the reader returns to a previously loaded range, without a loading flash", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    const callsBefore = vi.mocked(adapter.getUsage).mock.calls.length
+
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-A"))
+    session.selectRange("lastWeek")
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-A"))
+
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-B"))
+    session.selectRange("last30Days")
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-B"))
+    expect(vi.mocked(adapter.getUsage).mock.calls.length).toBe(callsBefore + 2)
+
+    const loadingSnapshots: boolean[] = []
+    const stopRecorder = session.subscribe(() =>
+      loadingSnapshots.push(session.getSnapshot().loading),
+    )
+    session.selectRange("lastWeek")
+    stopRecorder()
+
+    expect(session.getSnapshot().usage?.generatedAt).toBe("u-A")
+    // The third selection is a cache hit: no new call, and `loading` never
+    // reported true, so a reader flipping back sees no dimmed flash.
+    expect(vi.mocked(adapter.getUsage).mock.calls.length).toBe(callsBefore + 2)
+    expect(loadingSnapshots).not.toContain(true)
+    stop()
+  })
+
+  it("restores the now captured with the cached payload on a cache hit", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    vi.mocked(adapter.now).mockReturnValueOnce(NOW + 500)
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-A"))
+    session.selectRange("lastWeek")
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-A"))
+    expect(session.getSnapshot().now).toBe(NOW + 500)
+
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-B"))
+    session.selectRange("last30Days")
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-B"))
+
+    session.selectRange("lastWeek")
+    expect(session.getSnapshot().usage?.generatedAt).toBe("u-A")
+    expect(session.getSnapshot().now).toBe(NOW + 500)
+    stop()
+  })
+
+  it("queries again once a cached reading passes its TTL", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-A"))
+    session.selectRange("lastWeek")
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-A"))
+
+    session.selectRange("last30Days")
+    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last30Days"))
+
+    vi.mocked(adapter.now).mockReturnValue(NOW + QUOTA_USAGE_CACHE_TTL_MS / 1000 + 1)
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-A2"))
+    session.selectRange("lastWeek")
+    // A fresh call, not the stale cache entry, is the only way this resolves.
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-A2"))
+    stop()
+  })
+
+  it("refresh queries again even when the cached reading is still inside its TTL", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    const callsBefore = vi.mocked(adapter.getUsage).mock.calls.length
+
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-refreshed"))
+    session.refresh()
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-refreshed"))
+    expect(vi.mocked(adapter.getUsage).mock.calls.length).toBe(callsBefore + 1)
+    stop()
+  })
+
+  it("caches a custom range from open by its epochs, and misses for a different custom range", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-custom1"))
+    session.open(
+      { provider: "anthropic", accountKey: "acct-1", lane: "fiveHour" },
+      { startEpoch: 1000, endEpoch: 2000 },
+    )
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-custom1"))
+    const callsAfterFirstOpen = vi.mocked(adapter.getUsage).mock.calls.length
+
+    // The same selection and the same custom epochs: a cache hit, no new call.
+    session.open(
+      { provider: "anthropic", accountKey: "acct-1", lane: "fiveHour" },
+      { startEpoch: 1000, endEpoch: 2000 },
+    )
+    expect(session.getSnapshot().usage?.generatedAt).toBe("u-custom1")
+    expect(vi.mocked(adapter.getUsage).mock.calls.length).toBe(callsAfterFirstOpen)
+
+    // A different custom range misses.
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-custom2"))
+    session.open(
+      { provider: "anthropic", accountKey: "acct-1", lane: "fiveHour" },
+      { startEpoch: 3000, endEpoch: 4000 },
+    )
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-custom2"))
     stop()
   })
 })
