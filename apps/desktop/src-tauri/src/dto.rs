@@ -11,9 +11,11 @@
 //! never labels.
 
 use crate::provider_usage::live::{Detection, LoginCarrier, SourceErrorDetail};
+use antiburn_local::analysis::tool_catalog::{comparable_tool_name, situational_tools};
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, ModelRun,
-    RepeatedContextAccounting, SessionCost, SessionEvidence, SourceFormat,
+    ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, LoadedSource,
+    ModelEvidence, ModelRun, RepeatedContextAccounting, SessionCost, SessionEvidence, SourceFormat,
+    ToolDefinition, lookup_pricing,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, EfficiencyReport, NotAssessedReason, ReportCatalogs,
@@ -21,7 +23,7 @@ use antiburn_local::insights::{
 };
 use antiburn_local::pricing::canonical_model_key;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One row of the popover's activity list.
 ///
@@ -729,6 +731,7 @@ pub struct BurnCheckDisplayFactsPayload {
     pub last_observed_at_ms: i64,
     pub estimate_method: Option<BurnCheckEstimateMethod>,
     pub estimated_opportunity: Option<BurnCheckEstimatedValuePayload>,
+    pub estimated_token_burn_basis_points: Option<u16>,
     pub verification_limit: BurnCheckVerificationLimit,
 }
 
@@ -775,6 +778,7 @@ pub enum BurnCheckWatchLifecycle {
     Reserved,
     Writing,
     RecoveryNeeded,
+    WaitingForPromptUse,
     Watching,
     Fixed,
     Recurred,
@@ -886,11 +890,13 @@ pub struct BurnCheckTargetPayload {
     pub finding: BurnCheckFindingPayload,
     pub display: BurnCheckDisplayFactsPayload,
     pub occurrence_count: u64,
-    pub affected_session_count: u64,
+    pub affected_session_count: Option<u64>,
     pub project_name: Option<String>,
     pub project_location: Option<String>,
     /// Full local directory for explicit folder actions, excluded from analytics.
     pub project_path: Option<String>,
+    /// Local configuration file for a reviewed remediation target, excluded from analytics.
+    pub config_file: Option<String>,
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
@@ -943,6 +949,35 @@ pub struct BurnCheckTargetListPayload {
     pub targets: Vec<BurnCheckTargetPayload>,
     pub samples: Vec<BurnCheckSamplePayload>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckRemediationOutcomePayload {
+    Failed,
+    Passed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckRemediationAttemptPayload {
+    pub detector: BurnCheckDetectorId,
+    pub watch_id: String,
+    pub display: BurnCheckDisplayFactsPayload,
+    pub origin: AggregateWinOrigin,
+    pub lifecycle: BurnCheckWatchLifecycle,
+    pub outcome: BurnCheckRemediationOutcomePayload,
+    pub verification: BurnCheckVerificationPayload,
+    pub savings: BurnCheckSavingsPayload,
+    pub effective_boundary_ms: Option<i64>,
+    pub verified_boundary_ms: Option<i64>,
+    pub recurred_boundary_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckRemediationProgressPayload {
+    pub attempts: Vec<BurnCheckRemediationAttemptPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1023,6 +1058,7 @@ pub enum AutoFixSideEffect {
 )]
 pub enum ApplyPreparedBurnCheckOperationOutcome {
     AppliedAwaitingVerification { watch_id: String },
+    Applied,
     RecoveryNeeded { watch_id: String },
     Stale,
     Expired,
@@ -1085,7 +1121,7 @@ pub enum PromptFixUnavailableReason {
 pub enum CopyPromptFixBurnCheckTargetOutcome {
     PromptReady {
         prompt: String,
-        watch: BurnCheckWatchPayload,
+        watch: Option<BurnCheckWatchPayload>,
     },
     Stale,
     Expired,
@@ -1193,6 +1229,28 @@ pub struct SessionHygieneBadgePayload {
 pub struct SessionHygienePayload {
     pub badges: Vec<SessionHygieneBadgePayload>,
     pub evidence_state: &'static str,
+    /// Priced idle context for this one session, present only when
+    /// evidence backs it. Informational: it carries no verdict.
+    pub unused_resources: Option<SessionUnusedResourcesPayload>,
+}
+
+/// Resources that sat in every request's context this session and were
+/// never called, with what the session paid to replay each one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUnusedResourcesPayload {
+    pub mcp_servers: Vec<UnusedResourcePayload>,
+    pub built_in_tools: Vec<UnusedResourcePayload>,
+    pub skills: Vec<UnusedResourcePayload>,
+}
+
+/// One unused resource, with its priced replication cost. `cost_usd` is
+/// absent when no observed model resolves in the live pricing table.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnusedResourcePayload {
+    pub name: String,
+    pub cost_usd: Option<f64>,
 }
 
 /// The aggregate hygiene numbers for the sessions in the activity window.
@@ -1394,6 +1452,87 @@ fn finding_evidence(
     }
 }
 
+/// Sums one resource's replication cost across every observed model:
+/// `token_count * turns * cache_read_cost_per_token`, per model in
+/// `models.by_model`. `None` when no observed model resolves in the
+/// live pricing table, even though the resource still names itself.
+fn unused_resource_cost_usd(token_count: u64, models: Option<&ModelEvidence>) -> Option<f64> {
+    let models = models?;
+    let mut total_usd = 0.0;
+    let mut priced_any = false;
+    for (model, tokens) in &models.by_model {
+        let Some(pricing) = lookup_pricing(model) else {
+            continue;
+        };
+        total_usd += token_count as f64 * tokens.turns as f64 * pricing.cache_read_cost_per_token;
+        priced_any = true;
+    }
+    priced_any.then_some(total_usd)
+}
+
+/// Builds one payload entry per injected, never-invoked MCP server or
+/// skill, matching `unused_mcp_servers`/`unused_skills`'s own `evaluate`.
+fn unused_loaded_source_payloads(
+    sources: &BTreeMap<String, LoadedSource>,
+    models: Option<&ModelEvidence>,
+) -> Vec<UnusedResourcePayload> {
+    sources
+        .iter()
+        .filter(|(_, source)| source.injected && !source.invoked)
+        .map(|(name, source)| UnusedResourcePayload {
+            name: name.clone(),
+            cost_usd: source
+                .token_count
+                .and_then(|tokens| unused_resource_cost_usd(tokens, models)),
+        })
+        .collect()
+}
+
+/// Builds one payload entry per unused built-in tool definition, matching
+/// `unused_built_in_tools::has_unused_definition`: a real, non-deferred,
+/// never-invoked, non-situational definition.
+fn unused_built_in_tool_payloads(
+    agent: &str,
+    definitions: &BTreeMap<String, ToolDefinition>,
+    models: Option<&ModelEvidence>,
+) -> Vec<UnusedResourcePayload> {
+    let situational: Vec<String> = situational_tools(agent)
+        .iter()
+        .map(|name| comparable_tool_name(name))
+        .collect();
+    definitions
+        .iter()
+        .filter(|(name, definition)| {
+            definition.tokens > 0
+                && !definition.deferred
+                && !definition.invoked
+                && !situational.contains(&comparable_tool_name(name))
+        })
+        .map(|(name, definition)| UnusedResourcePayload {
+            name: name.clone(),
+            cost_usd: unused_resource_cost_usd(u64::from(definition.tokens), models),
+        })
+        .collect()
+}
+
+/// Builds the session's priced idle-context section from evidence: every
+/// injected-but-unused MCP server, built-in tool, and skill.
+fn session_unused_resources(evidence: &SessionEvidence) -> Option<SessionUnusedResourcesPayload> {
+    let sources = observed(&evidence.context_sources)?;
+    let models = observed(&evidence.models);
+    let built_in_tools = match observed(&sources.tool_definitions) {
+        Some(definitions) => {
+            unused_built_in_tool_payloads(&evidence.identity.agent, definitions, models)
+        }
+        None => Vec::new(),
+    };
+    Some(SessionUnusedResourcesPayload {
+        mcp_servers: unused_loaded_source_payloads(&sources.mcp_servers, models),
+        built_in_tools,
+        skills: unused_loaded_source_payloads(&sources.skills, models),
+    })
+}
+
 /// Reads the accounting `Cache Churn` used for this session's
 /// `repeated_context`, or `None` when neither cache-write nor
 /// uncached-input accounting applies.
@@ -1427,6 +1566,7 @@ impl SessionHygienePayload {
                 .map(|badge| SessionHygieneBadgePayload::from_badge(badge, accounting, None))
                 .collect(),
             evidence_state,
+            unused_resources: None,
         }
     }
 
@@ -1450,6 +1590,7 @@ impl SessionHygienePayload {
                 })
                 .collect(),
             evidence_state,
+            unused_resources: session_unused_resources(evidence),
         }
     }
 
@@ -1614,6 +1755,7 @@ impl From<crate::remediation::BurnCheckDisplayFacts> for BurnCheckDisplayFactsPa
                     },
                 }
             }),
+            estimated_token_burn_basis_points: value.estimated_token_burn_basis_points,
             verification_limit: match value.verification_limit {
                 Limit::FreshEvidenceFromSameSourceAndTarget => {
                     BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget
@@ -1635,6 +1777,7 @@ impl From<crate::store::RemediationState> for BurnCheckWatchLifecycle {
             crate::store::RemediationState::Reserved => Self::Reserved,
             crate::store::RemediationState::Writing => Self::Writing,
             crate::store::RemediationState::RecoveryNeeded => Self::RecoveryNeeded,
+            crate::store::RemediationState::WaitingForPromptUse => Self::WaitingForPromptUse,
             crate::store::RemediationState::Watching => Self::Watching,
             crate::store::RemediationState::Fixed => Self::Fixed,
             crate::store::RemediationState::Recurred => Self::Recurred,
@@ -1788,10 +1931,13 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             },
             display: value.display.into(),
             occurrence_count: u64::try_from(value.occurrences).unwrap_or(u64::MAX),
-            affected_session_count: u64::try_from(value.affected_sessions).unwrap_or(u64::MAX),
+            affected_session_count: value
+                .affected_sessions
+                .map(|count| u64::try_from(count).unwrap_or(u64::MAX)),
             project_name: value.project_name,
             project_location: value.project_location,
             project_path: value.project_path,
+            config_file: value.config_file,
             auto_fix: match value.auto_fix {
                 crate::remediation::AutoFixAvailability::Available => {
                     AutoFixAvailabilityPayload::Available
@@ -1945,6 +2091,44 @@ impl From<crate::remediation::BurnCheckTargetList> for BurnCheckTargetListPayloa
     }
 }
 
+impl From<crate::remediation::BurnCheckRemediationProgress>
+    for BurnCheckRemediationProgressPayload
+{
+    fn from(value: crate::remediation::BurnCheckRemediationProgress) -> Self {
+        Self {
+            attempts: value
+                .attempts
+                .into_iter()
+                .map(|attempt| BurnCheckRemediationAttemptPayload {
+                    detector: attempt.detector.into(),
+                    watch_id: attempt.watch_id,
+                    display: attempt.display.into(),
+                    origin: match attempt.origin {
+                        crate::remediation::RemediationOrigin::Passive => {
+                            AggregateWinOrigin::Passive
+                        }
+                        crate::remediation::RemediationOrigin::Action => AggregateWinOrigin::Action,
+                    },
+                    lifecycle: attempt.lifecycle.into(),
+                    outcome: match attempt.outcome {
+                        crate::remediation::BurnCheckRemediationOutcome::Failed => {
+                            BurnCheckRemediationOutcomePayload::Failed
+                        }
+                        crate::remediation::BurnCheckRemediationOutcome::Passed => {
+                            BurnCheckRemediationOutcomePayload::Passed
+                        }
+                    },
+                    verification: attempt.verification.into(),
+                    savings: attempt.savings.into(),
+                    effective_boundary_ms: attempt.effective_boundary_ms,
+                    verified_boundary_ms: attempt.verified_boundary_ms,
+                    recurred_boundary_ms: attempt.recurred_boundary_ms,
+                })
+                .collect(),
+        }
+    }
+}
+
 fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
     match reason {
         NotAssessedReason::NoSessionsInWindow => "noSessionsInWindow",
@@ -1956,6 +2140,42 @@ fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
 }
 
 impl ChecksReportPayload {
+    pub(crate) fn from_reduced_report(report: &crate::insights_report::ReducedReport) -> Self {
+        let mut payload = Self::from_report(
+            &report.report,
+            report.evidence_settled,
+            report.pending_evidence,
+        );
+        for detector in [
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::UnusedSkills,
+        ] {
+            let Some(assessment) = report.resources.detector(detector) else {
+                continue;
+            };
+            let category = &mut payload.categories[detector.index()];
+            category.finding = assessment.unused_count;
+            category.clean = u64::from(assessment.clean);
+            category.unavailable = u64::from(assessment.unavailable);
+            category.agents = if assessment.unused_count > 0 {
+                &assessment.finding_agents
+            } else {
+                &assessment.clean_agents
+            }
+            .iter()
+            .cloned()
+            .collect();
+            category.estimated_token_burn_basis_points =
+                assessment.estimated_token_burn_basis_points;
+        }
+        let resource_tokens = report.resources.measured_finding_tokens_by_session();
+        payload.estimated_token_burn_basis_points = report
+            .report
+            .estimated_token_burn_with_resource_tokens_by_session(resource_tokens.as_deref());
+        payload
+    }
+
     pub fn from_report(
         report: &EfficiencyReport,
         evidence_settled: bool,
@@ -2337,9 +2557,9 @@ mod tests {
 
     mod insights {
         use antiburn_local::analysis::{
-            ContextEvidence, EvidenceSource, ModelControlObservation, ModelTokens,
+            ContextEvidence, EvidenceSource, LoadedSource, ModelControlObservation, ModelTokens,
             RelationConfidence, RelationProvenance, RepeatedContext, SessionEvidenceAccumulator,
-            SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
+            SourceCapabilities, SourceKind, SubagentChild, ToolDefinition, TurnCounts, TurnFacts,
         };
         use antiburn_local::insights::{
             CoverageCounts, DetectorCounts, DetectorFindings, DetectorStatus,
@@ -2500,6 +2720,10 @@ mod tests {
                     "watchId": "opaque-watch"
                 })
             );
+            assert_eq!(
+                serde_json::to_value(ApplyPreparedBurnCheckOperationOutcome::Applied).unwrap(),
+                serde_json::json!({"outcome": "applied"})
+            );
         }
 
         #[test]
@@ -2520,6 +2744,7 @@ mod tests {
                     value: -1.25,
                     unit: BurnCheckSavingsUnit::ApiEquivalentUsd,
                 }),
+                estimated_token_burn_basis_points: Some(1_250),
                 verification_limit:
                     BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
             };
@@ -2536,6 +2761,7 @@ mod tests {
                     "currentValue",
                     "estimateMethod",
                     "estimatedOpportunity",
+                    "estimatedTokenBurnBasisPoints",
                     "firstObservedAtMs",
                     "lastObservedAtMs",
                     "observationCount",
@@ -2550,6 +2776,7 @@ mod tests {
             );
             assert_eq!(value["estimatedOpportunity"]["value"], -1.25);
             assert_eq!(value["estimatedOpportunity"]["unit"], "apiEquivalentUsd");
+            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_250);
             let serialized = value.to_string();
             for private_name in [
                 "path",
@@ -2700,7 +2927,8 @@ mod tests {
                         {"id": "fastModeOveruse", "status": "clean", "notAssessedReason": null},
                         {"id": "excessCacheRehydration", "status": "clean", "notAssessedReason": null}
                     ],
-                    "evidenceState": "ready"
+                    "evidenceState": "ready",
+                    "unusedResources": null
                 })
             );
         }
@@ -2847,6 +3075,134 @@ mod tests {
                 })
             );
         }
+
+        /// One unused MCP server, built-in tool, and skill each report a
+        /// name and a cost summed across every priced observed model; a
+        /// used resource of each kind is absent from the payload.
+        #[test]
+        fn for_evidence_prices_unused_resources_and_omits_used_ones() {
+            let mut evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: "claude-code".to_owned(),
+                session_id: "unused-resources".to_owned(),
+                kind: SourceKind::File,
+                capabilities: SourceCapabilities::claude(),
+            })
+            .evidence(&TurnFacts::default());
+            let catalogs = ReportCatalogs::default();
+
+            let EvidenceValue::Complete(models) = &mut evidence.models else {
+                panic!("synthetic model evidence must be complete");
+            };
+            models.by_model.insert(
+                "claude-sonnet-5".to_owned(),
+                ModelTokens {
+                    turns: 2,
+                    ..ModelTokens::default()
+                },
+            );
+            models.by_model.insert(
+                "claude-opus-5".to_owned(),
+                ModelTokens {
+                    turns: 3,
+                    ..ModelTokens::default()
+                },
+            );
+
+            let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+                panic!("synthetic context source evidence must be complete");
+            };
+            sources.mcp_servers.insert(
+                "unused-server".to_owned(),
+                LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: false,
+                    token_count: Some(100),
+                    origin: EvidenceValue::Unsupported,
+                },
+            );
+            sources.mcp_servers.insert(
+                "used-server".to_owned(),
+                LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: true,
+                    token_count: Some(100),
+                    origin: EvidenceValue::Unsupported,
+                },
+            );
+            sources.skills.insert(
+                "unused-skill".to_owned(),
+                LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: false,
+                    token_count: Some(80),
+                    origin: EvidenceValue::Unsupported,
+                },
+            );
+            sources.skills.insert(
+                "used-skill".to_owned(),
+                LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: true,
+                    token_count: Some(80),
+                    origin: EvidenceValue::Unsupported,
+                },
+            );
+            let mut definitions = BTreeMap::new();
+            definitions.insert(
+                "unused-tool".to_owned(),
+                ToolDefinition {
+                    tokens: 50,
+                    invoked: false,
+                    deferred: false,
+                },
+            );
+            definitions.insert(
+                "used-tool".to_owned(),
+                ToolDefinition {
+                    tokens: 50,
+                    invoked: true,
+                    deferred: false,
+                },
+            );
+            sources.tool_definitions = EvidenceValue::Complete(definitions);
+
+            let payload = SessionHygienePayload::for_evidence(
+                session_badges(&evidence, &catalogs),
+                &evidence,
+                &catalogs,
+                "ready",
+            );
+            let expected_cost = |tokens: f64| tokens * (2.0 * 0.3e-6 + 3.0 * 0.4e-6);
+            assert_eq!(
+                payload.unused_resources,
+                Some(SessionUnusedResourcesPayload {
+                    mcp_servers: vec![UnusedResourcePayload {
+                        name: "unused-server".to_owned(),
+                        cost_usd: Some(expected_cost(100.0)),
+                    }],
+                    built_in_tools: vec![UnusedResourcePayload {
+                        name: "unused-tool".to_owned(),
+                        cost_usd: Some(expected_cost(50.0)),
+                    }],
+                    skills: vec![UnusedResourcePayload {
+                        name: "unused-skill".to_owned(),
+                        cost_usd: Some(expected_cost(80.0)),
+                    }],
+                })
+            );
+        }
     }
 
     /// The webview's `SubagentMemberPayload` contract names these exact
@@ -2910,6 +3266,50 @@ mod tests {
     }
 
     #[test]
+    fn remediation_progress_preserves_outcome_origin_and_boundaries() {
+        let payload = BurnCheckRemediationProgressPayload::from(
+            crate::remediation::BurnCheckRemediationProgress {
+                attempts: vec![crate::remediation::BurnCheckRemediationAttempt {
+                    detector: DetectorId::OldModelUsage,
+                    watch_id: "attempt".into(),
+                    display: crate::remediation::BurnCheckDisplayFacts {
+                        resource_kind: crate::remediation::BurnCheckResourceKind::Model,
+                        resource_identity: Some("old".into()),
+                        current_value: Some("old".into()),
+                        replacement_value: Some("new".into()),
+                        scope_kind: crate::remediation::BurnCheckScopeKind::Project,
+                        quantity: None,
+                        quantity_unit: None,
+                        observation_count: 1,
+                        first_observed_at_ms: 10,
+                        last_observed_at_ms: 20,
+                        estimate_method: None,
+                        estimated_opportunity: None,
+                        estimated_token_burn_basis_points: None,
+                        verification_limit: crate::remediation::BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
+                    },
+                    origin: crate::remediation::RemediationOrigin::Action,
+                    lifecycle: crate::store::RemediationState::WaitingForPromptUse,
+                    outcome: crate::remediation::BurnCheckRemediationOutcome::Failed,
+                    verification: crate::remediation::VerificationStatus::Reserved,
+                    savings: crate::remediation::SavingsStatus::Pending {
+                        method_revision: None,
+                    },
+                    effective_boundary_ms: None,
+                    verified_boundary_ms: None,
+                    recurred_boundary_ms: None,
+                }],
+            },
+        );
+
+        let value = serde_json::to_value(payload).unwrap();
+        assert_eq!(value["attempts"][0]["lifecycle"], "waitingForPromptUse");
+        assert_eq!(value["attempts"][0]["outcome"], "failed");
+        assert_eq!(value["attempts"][0]["origin"], "action");
+        assert!(value["attempts"][0]["effectiveBoundaryMs"].is_null());
+    }
+
+    #[test]
     fn burn_check_sample_payload_exposes_no_session_identity() {
         let value = serde_json::to_value(BurnCheckSamplePayload {
             navigation_handle: "opaque-handle".to_owned(),
@@ -2928,6 +3328,7 @@ mod tests {
             hygiene: SessionHygienePayload {
                 evidence_state: "pending",
                 badges: Vec::new(),
+                unused_resources: None,
             },
         })
         .expect("serialize");

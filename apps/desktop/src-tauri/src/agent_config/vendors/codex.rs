@@ -427,7 +427,7 @@ fn skill_value(
         .transpose()
 }
 
-fn project_hierarchy(
+pub(in crate::agent_config) fn project_hierarchy(
     cwd: &Path,
     root: &Path,
 ) -> Result<Vec<std::path::PathBuf>, ConfigUnavailableReason> {
@@ -460,7 +460,7 @@ fn selector(setting: ConfigSetting) -> OperationSelector {
     }
 }
 
-fn project_is_trusted(
+pub(in crate::agent_config) fn project_is_trusted(
     global: &Path,
     home: &Path,
     workspace: &Path,
@@ -495,7 +495,9 @@ fn reject_active_profile(document: &DocumentMut) -> Result<(), ConfigUnavailable
     }
 }
 
-fn parse_document(bytes: &[u8]) -> Result<DocumentMut, ConfigUnavailableReason> {
+pub(in crate::agent_config) fn parse_document(
+    bytes: &[u8],
+) -> Result<DocumentMut, ConfigUnavailableReason> {
     let text = std::str::from_utf8(bytes).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
     text.parse::<DocumentMut>().map_err(|error| {
         let message = error.to_string().to_ascii_lowercase();

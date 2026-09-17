@@ -11,6 +11,7 @@ const MAX_AGGREGATE_WINS: usize = 1_000;
 const MAX_PASSIVE_ENROLLMENTS_PER_PUBLICATION: usize = 100;
 const MAX_DURABLE_REMEDIATIONS: usize = 1_000;
 const MAX_DURABLE_CONTRIBUTIONS: usize = 1_000;
+const PROMPT_REFERENCE_PREFIX: &str = "Remediation reference: ABR-";
 const REMEDIATION_COLUMNS: &str = "remediation_id, target_key, environment_key, agent,
     scope_kind, scope_key, state, dirty_revision, evaluated_revision, definition_json,
     result_json, created_at_epoch, updated_at_epoch, effective_boundary_ms,
@@ -40,6 +41,57 @@ pub struct RemediationDisplaySnapshot {
     pub recurred_boundary_ms: Option<i64>,
 }
 
+fn is_exact_resource_write(remediation: &Remediation) -> bool {
+    if remediation.environment_key != "native" || remediation.state != RemediationState::Reserved {
+        return false;
+    }
+    let Ok(definition) = serde_json::from_str::<serde_json::Value>(&remediation.definition_json)
+    else {
+        return false;
+    };
+    let Some(object) = definition.as_object() else {
+        return false;
+    };
+    let detector = object
+        .get("detector")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let setting = object
+        .get("configSetting")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let valid_resource_operation = matches!(
+        (detector, setting),
+        ("unused_mcp_servers", "mcpServer")
+            | ("unused_built_in_tools", "builtInTool")
+            | ("unused_skills", "skill")
+    );
+    valid_resource_operation
+        && object
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && object
+            .get("physicalTargetKey")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && object
+            .get("configExpectedValue")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.contains('='))
+        && object
+            .get("configProposedValue")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.contains('='))
+}
+
+/// A retained remediation with its safe display snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationWithDisplaySnapshot {
+    pub record: RemediationRecord,
+    pub snapshot: RemediationDisplaySnapshot,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemediationContribution {
     pub owner_key: String,
@@ -54,6 +106,7 @@ pub struct RemediationContribution {
 }
 
 impl Store {
+    #[cfg(test)]
     pub(crate) fn mark_remediation_action_joined(
         &self,
         remediation_id: &str,
@@ -66,6 +119,7 @@ impl Store {
             params![remediation_id, action_at_ms],
         )? == 1)
     }
+
     /// Stores the bounded presentation facts and exact evidence boundaries for one watch.
     pub fn upsert_remediation_display_snapshot(
         &self,
@@ -82,7 +136,7 @@ impl Store {
             "UPDATE remediation
                 SET origin = ?2, display_snapshot_json = ?3,
                     effective_boundary_ms = CASE
-                        WHEN state IN ('reserved', 'writing', 'recoveryNeeded')
+                        WHEN state IN ('reserved', 'writing', 'recoveryNeeded', 'waitingForPromptUse')
                         THEN effective_boundary_ms ELSE ?4 END,
                     verified_boundary_ms = ?5, recurred_boundary_ms = ?6
               WHERE remediation_id = ?1",
@@ -103,11 +157,12 @@ impl Store {
     ) -> Result<Option<RemediationDisplaySnapshot>> {
         self.lock()
             .query_row(
-                "SELECT remediation_id, origin, display_snapshot_json, effective_boundary_ms,
+                "SELECT remediation_id, origin, display_snapshot_json,
+                        COALESCE(effective_boundary_ms, 0),
                         verified_boundary_ms, recurred_boundary_ms
                    FROM remediation
-                  WHERE remediation_id = ?1 AND origin IS NOT NULL
-                    AND display_snapshot_json IS NOT NULL AND effective_boundary_ms IS NOT NULL",
+                   WHERE remediation_id = ?1 AND origin IS NOT NULL
+                     AND display_snapshot_json IS NOT NULL",
                 [remediation_id],
                 display_snapshot_from_row,
             )
@@ -151,34 +206,78 @@ impl Store {
         remediation: &Remediation,
         guards: &[RemediationEvidenceGuard],
     ) -> Result<Option<RemediationRecord>> {
-        validate_json("definition_json", &remediation.definition_json)?;
-        validate_json("result_json", &remediation.result_json)?;
+        let remediations =
+            self.create_or_reuse_remediations(&[(remediation.clone(), guards.to_vec())])?;
+        Ok(remediations.and_then(|mut remediations| remediations.pop()))
+    }
+
+    /// Creates or reuses all exact watches only if every guard remains current.
+    pub fn create_or_reuse_remediations(
+        &self,
+        remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
+    ) -> Result<Option<Vec<RemediationRecord>>> {
         ensure!(
-            !guards.is_empty(),
-            "a remediation requires current evidence"
+            !remediations.is_empty(),
+            "a remediation batch requires watches"
         );
+        for (remediation, guards) in remediations {
+            validate_json("definition_json", &remediation.definition_json)?;
+            validate_json("result_json", &remediation.result_json)?;
+            ensure!(
+                !guards.is_empty() || is_exact_resource_write(remediation),
+                "a remediation requires current evidence"
+            );
+        }
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
-        for guard in guards {
-            let current: bool = transaction.query_row(
-                "SELECT EXISTS (
-                    SELECT 1 FROM session s JOIN session_evidence e USING (environment_key, agent, session_id)
-                     WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                       AND s.source_generation = ?4 AND e.published_fence = ?5
-                       AND s.source_fingerprint IS ?6 AND e.processed_fingerprint IS ?7
-                       AND e.parser_revision = ?8 AND e.analyzer_revision = ?9
-                       AND e.evidence_schema_revision = ?10 AND e.status = 'ready'
-                       AND e.analyzed_generation = s.source_generation)",
-                params![guard.environment_key, guard.agent, guard.session_id,
-                    guard.source_generation, guard.published_fence, guard.source_fingerprint,
-                    guard.processed_fingerprint, guard.parser_revision, guard.analyzer_revision,
-                    guard.evidence_schema_revision],
-                |row| row.get(0),
-            )?;
-            if !current {
-                return Ok(None);
+        for (_, guards) in remediations {
+            for guard in guards {
+                if !Self::remediation_guard_is_current(&transaction, guard)? {
+                    return Ok(None);
+                }
             }
         }
+        let remediation_ids = remediations
+            .iter()
+            .map(|(remediation, _)| Self::create_or_reuse_remediation_in(&transaction, remediation))
+            .collect::<Result<Vec<_>>>()?;
+        transaction.commit()?;
+        drop(connection);
+        remediation_ids
+            .iter()
+            .map(|remediation_id| {
+                self.remediation(remediation_id)?
+                    .ok_or_else(|| anyhow::anyhow!("the committed remediation is missing"))
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Some)
+    }
+    fn remediation_guard_is_current(
+        transaction: &rusqlite::Transaction<'_>,
+        guard: &RemediationEvidenceGuard,
+    ) -> Result<bool> {
+        transaction.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM session s JOIN session_evidence e USING (environment_key, agent, session_id)
+             WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
+                AND s.source_generation = ?4 AND e.published_fence = ?5
+                AND s.source_fingerprint IS ?6 AND e.processed_fingerprint IS ?7
+                AND e.parser_revision = ?8 AND e.analyzer_revision = ?9
+                AND e.evidence_schema_revision = ?10 AND e.status = 'ready'
+                AND e.analyzed_generation = s.source_generation)",
+        params![guard.environment_key, guard.agent, guard.session_id,
+            guard.source_generation, guard.published_fence, guard.source_fingerprint,
+            guard.processed_fingerprint, guard.parser_revision, guard.analyzer_revision,
+            guard.evidence_schema_revision],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+    }
+
+    fn create_or_reuse_remediation_in(
+        transaction: &rusqlite::Transaction<'_>,
+        remediation: &Remediation,
+    ) -> Result<String> {
         let existing = transaction.query_row(
             &format!("SELECT {REMEDIATION_COLUMNS} FROM remediation
                 WHERE environment_key = ?1 AND agent = ?2 AND target_key = ?3 AND state != 'recurred'"),
@@ -187,8 +286,9 @@ impl Store {
         ).optional()?;
         if let Some(existing) = existing {
             if remediation.state == RemediationState::Reserved
-                && existing.state == RemediationState::Watching
-                && transaction.query_row(
+                && (existing.state == RemediationState::WaitingForPromptUse
+                    || (existing.state == RemediationState::Watching
+                        && transaction.query_row(
                     "SELECT COALESCE(
                             origin = 'passive'
                             OR json_extract(result_json, '$.verification.status') = 'verificationUnavailable',
@@ -196,7 +296,7 @@ impl Store {
                        FROM remediation WHERE remediation_id = ?1",
                     [&existing.remediation_id],
                     |row| row.get::<_, bool>(0),
-                )?
+                )?))
             {
                 let prior_pins = transaction.query_row(
                     "SELECT origin, display_snapshot_json, verified_boundary_ms,
@@ -220,6 +320,7 @@ impl Store {
                     "reservationKind": "upgraded",
                     "priorDefinition": existing.definition_json,
                     "priorResult": existing.result_json,
+                    "priorState": existing.state.as_str(),
                     "priorBoundaryMs": existing.effective_boundary_ms,
                     "priorOrigin": prior_pins.0,
                     "priorDisplaySnapshot": prior_pins.1,
@@ -236,7 +337,7 @@ impl Store {
                         action_joined_at_ms = COALESCE(action_joined_at_ms, ?5),
                         joined_boundary_ms = COALESCE(joined_boundary_ms, ?6),
                         updated_at_epoch = MAX(updated_at_epoch, ?4)
-                      WHERE remediation_id = ?1 AND state = 'watching'",
+                       WHERE remediation_id = ?1 AND state IN ('waitingForPromptUse', 'watching')",
                     params![
                         existing.remediation_id,
                         reserved_result,
@@ -247,11 +348,9 @@ impl Store {
                     ],
                 )?;
             }
-            transaction.commit()?;
-            drop(connection);
-            return self.remediation(&existing.remediation_id);
+            return Ok(existing.remediation_id);
         }
-        prune_archivable_fixed_in(&transaction)?;
+        prune_archivable_fixed_in(transaction)?;
         let result_json = if remediation.state == RemediationState::Reserved {
             serde_json::json!({
                 "version": 1,
@@ -263,30 +362,32 @@ impl Store {
         } else {
             remediation.result_json.clone()
         };
-        transaction.execute(
-            "INSERT INTO remediation (remediation_id, target_key, environment_key, agent,
+        ensure!(
+            transaction.execute(
+                "INSERT INTO remediation (remediation_id, target_key, environment_key, agent,
                 scope_kind, scope_key, state, definition_json, result_json, created_at_epoch,
                 updated_at_epoch, effective_boundary_ms)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11
               WHERE (SELECT COUNT(*) FROM remediation WHERE state != 'recurred') < ?12",
-            params![
-                remediation.remediation_id,
-                remediation.target_key,
-                remediation.environment_key,
-                remediation.agent,
-                remediation.scope_kind,
-                remediation.scope_key,
-                remediation.state.as_str(),
-                remediation.definition_json,
-                result_json,
-                remediation.created_at_epoch,
-                remediation.effective_boundary_ms,
-                i64::try_from(MAX_DURABLE_REMEDIATIONS).expect("the remediation bound fits i64"),
-            ],
-        )?;
-        transaction.commit()?;
-        drop(connection);
-        self.remediation(&remediation.remediation_id)
+                params![
+                    remediation.remediation_id,
+                    remediation.target_key,
+                    remediation.environment_key,
+                    remediation.agent,
+                    remediation.scope_kind,
+                    remediation.scope_key,
+                    remediation.state.as_str(),
+                    remediation.definition_json,
+                    result_json,
+                    remediation.created_at_epoch,
+                    remediation.effective_boundary_ms,
+                    i64::try_from(MAX_DURABLE_REMEDIATIONS)
+                        .expect("the remediation bound fits i64"),
+                ],
+            )? == 1,
+            "the remediation capacity is full"
+        );
+        Ok(remediation.remediation_id.clone())
     }
 
     pub fn begin_remediation_write(&self, remediation_id: &str, now: i64) -> Result<bool> {
@@ -302,14 +403,20 @@ impl Store {
         remediation_id: &str,
         boundary_ms: i64,
         now: i64,
+        verification_available: bool,
     ) -> Result<bool> {
+        let result = if verification_available {
+            r#"{"version":1,"verification":{"status":"watching"},"savings":{"status":"pending"}}"#
+        } else {
+            r#"{"version":1,"verification":{"status":"verificationUnavailable"},"savings":{"status":"unavailable"}}"#
+        };
         Ok(self.lock().execute(
             "UPDATE remediation SET state = 'watching',
                 effective_boundary_ms = COALESCE(joined_boundary_ms, ?2),
-                result_json = '{\"version\":1,\"verification\":{\"status\":\"watching\"},\"savings\":{\"status\":\"pending\"}}',
+                result_json = ?4,
                 dirty_revision = dirty_revision + 1, updated_at_epoch = MAX(updated_at_epoch, ?3)
               WHERE remediation_id = ?1 AND state IN ('writing', 'recoveryNeeded')",
-            params![remediation_id, boundary_ms, now],
+            params![remediation_id, boundary_ms, now, result],
         )? == 1)
     }
 
@@ -407,6 +514,30 @@ impl Store {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    /// Reads a fixed upper bound of retained remediations with safe display snapshots.
+    pub fn remediations_with_display_snapshots(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<RemediationWithDisplaySnapshot>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit.min(MAX_DURABLE_REMEDIATIONS))
+            .expect("the remediation snapshot limit fits i64");
+        let connection = self.lock();
+        let mut statement = connection.prepare(&format!(
+            "SELECT {REMEDIATION_COLUMNS}, origin, display_snapshot_json,
+                    COALESCE(effective_boundary_ms, 0), verified_boundary_ms, recurred_boundary_ms
+               FROM remediation
+              WHERE origin IS NOT NULL AND display_snapshot_json IS NOT NULL
+              ORDER BY updated_at_epoch DESC, remediation_id DESC
+              LIMIT ?1"
+        ))?;
+        Ok(statement
+            .query_map([limit], remediation_with_display_snapshot_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn next_remediation_write_recovery(&self, now: i64) -> Result<Option<RemediationRecord>> {
@@ -565,7 +696,11 @@ impl Store {
               WHERE state = 'reserved' AND json_extract(result_json, '$.reservationKind') = 'upgraded'",
             [],
         )?;
-        connection.execute("DELETE FROM remediation WHERE state = 'reserved'", [])?;
+        connection.execute(
+            "DELETE FROM remediation WHERE state = 'reserved'
+              AND json_extract(result_json, '$.reservationKind') = 'new'",
+            [],
+        )?;
         connection.execute(
             "UPDATE remediation SET state = 'recoveryNeeded',
                 result_json = json_set(result_json, '$.verification',
@@ -590,7 +725,7 @@ impl Store {
     fn restore_or_delete_reservation(&self, remediation_id: &str, state: &str) -> Result<bool> {
         let connection = self.lock();
         let restored = connection.execute(
-            "UPDATE remediation SET state = 'watching',
+            "UPDATE remediation SET state = COALESCE(json_extract(result_json, '$.priorState'), 'watching'),
                 definition_json = json_extract(result_json, '$.priorDefinition'),
                 result_json = json_extract(result_json, '$.priorResult'),
                 effective_boundary_ms = json_extract(result_json, '$.priorBoundaryMs'),
@@ -676,6 +811,72 @@ pub(super) fn mark_remediations_dirty_in(
             AND (state IN ('watching', 'fixed') OR (?4 AND state = 'recurred'))",
         params![environment, agent, now, correction_replay],
     )?)
+}
+
+/// Activates copied prompts only when their full marker appears in this pass's new user text.
+pub(super) fn activate_waiting_prompt_remediations_in(
+    connection: &rusqlite::Connection,
+    environment: &str,
+    agent: &str,
+    session_id: &str,
+    claim_fence: i64,
+    boundary_ms: i64,
+    updated_at_epoch: i64,
+) -> Result<usize> {
+    let mut statement = connection
+        .prepare("SELECT remediation_id FROM remediation WHERE state = 'waitingForPromptUse'")?;
+    let waiting = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    if waiting.is_empty() {
+        return Ok(0);
+    }
+    let mut statement = connection.prepare(
+        "SELECT CAST(content.content AS TEXT) FROM turn
+          JOIN turn_content AS content ON content.turn_rowid = turn.rowid
+         WHERE turn.environment_key = ?1 AND turn.agent = ?2 AND turn.session_id = ?3
+            AND turn.claim_fence = ?4 AND turn.role = 'user' AND content.kind = 'user'",
+    )?;
+    let content = statement
+        .query_map(
+            params![environment, agent, session_id, claim_fence],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    let activated = waiting
+        .iter()
+        .filter(|id| {
+            content
+                .iter()
+                .any(|text| contains_exact_prompt_reference(text, id))
+        })
+        .collect::<Vec<_>>();
+    if activated.is_empty() {
+        return Ok(0);
+    }
+    let activated = serde_json::to_string(&activated)?;
+    Ok(connection.execute(
+        "UPDATE remediation SET state = 'watching', effective_boundary_ms = ?2,
+                dirty_revision = dirty_revision + 1,
+                updated_at_epoch = MAX(updated_at_epoch, ?3)
+          WHERE state = 'waitingForPromptUse'
+            AND remediation_id IN (SELECT value FROM json_each(?1))",
+        params![activated, boundary_ms, updated_at_epoch],
+    )?)
+}
+
+fn contains_exact_prompt_reference(text: &str, remediation_id: &str) -> bool {
+    let marker = format!("{PROMPT_REFERENCE_PREFIX}{remediation_id}");
+    text.match_indices(&marker).any(|(index, _)| {
+        let remainder = &text[index + marker.len()..];
+        !remainder
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+            && !remainder.starts_with(['_', '-'])
+    })
 }
 
 pub(super) fn enroll_passive_remediations_in(
@@ -947,6 +1148,24 @@ fn remediation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Remediation
         verified_at_epoch: row.get(14)?,
         recurred_at_epoch: row.get(15)?,
         action_joined_at_ms: row.get(16)?,
+    })
+}
+
+fn remediation_with_display_snapshot_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RemediationWithDisplaySnapshot> {
+    let snapshot = RemediationDisplaySnapshot {
+        remediation_id: row.get(0)?,
+        origin: row.get(17)?,
+        display_snapshot_json: row.get(18)?,
+        effective_boundary_ms: row.get(19)?,
+        verified_boundary_ms: row.get(20)?,
+        recurred_boundary_ms: row.get(21)?,
+    };
+    validate_envelope_from_row("display_snapshot_json", &snapshot.display_snapshot_json, 18)?;
+    Ok(RemediationWithDisplaySnapshot {
+        record: remediation_from_row(row)?,
+        snapshot,
     })
 }
 

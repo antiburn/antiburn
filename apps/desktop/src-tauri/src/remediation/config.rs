@@ -278,7 +278,7 @@ pub(super) fn workspace_precedence_supported(
     })
 }
 
-pub(super) fn config_context(
+pub(crate) fn config_context(
     agent: AgentKind,
     home: &Path,
     workspace_cwd: Option<&Path>,

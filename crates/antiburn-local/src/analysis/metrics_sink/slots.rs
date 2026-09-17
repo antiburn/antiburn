@@ -47,6 +47,73 @@ pub(crate) struct CacheRehydrationMark {
     pub(crate) user_inactive_secs: Option<u64>,
 }
 
+/// Which pricing key a slot's tokens belong to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum PricedModel {
+    /// The event names no usable model. The tokens price under the summary fallback model.
+    #[default]
+    Fallback,
+    /// The event names a model that strips to an empty string. The tokens are not priced.
+    Excluded,
+    /// The event names an interned model in the pricing interner.
+    Named(NameId),
+}
+
+/// The token counts one pricing key contributes to per-bucket cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PricedTokens {
+    pub(crate) model: PricedModel,
+    pub(crate) fast: bool,
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) cache_read_tokens: u64,
+    pub(crate) cache_write_tokens: u64,
+    pub(crate) cache_write_1h_tokens: u64,
+}
+
+impl PricedTokens {
+    pub(crate) fn has_tokens(&self) -> bool {
+        self.input_tokens != 0
+            || self.output_tokens != 0
+            || self.cache_read_tokens != 0
+            || self.cache_write_tokens != 0
+            || self.cache_write_1h_tokens != 0
+    }
+
+    fn add(&mut self, other: &PricedTokens) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(other.cache_write_tokens);
+        self.cache_write_1h_tokens = self
+            .cache_write_1h_tokens
+            .saturating_add(other.cache_write_1h_tokens);
+    }
+}
+
+/// Add `incoming` to the entry in `target` with the same model and speed.
+/// Push a new entry when no entry matches. Skip an entry with no tokens.
+pub(crate) fn fold_priced_tokens(target: &mut Vec<PricedTokens>, incoming: &PricedTokens) {
+    if !incoming.has_tokens() {
+        return;
+    }
+    match target
+        .iter_mut()
+        .find(|entry| entry.model == incoming.model && entry.fast == incoming.fast)
+    {
+        Some(entry) => entry.add(incoming),
+        None => {
+            // Most slots hold one entry, so grow by exactly one.
+            target.reserve_exact(1);
+            target.push(*incoming);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SlotAggregate {
     pub(crate) first_ordinal: u64,
@@ -61,6 +128,9 @@ pub(crate) struct SlotAggregate {
     pub(crate) cache_write_tokens: u64,
     pub(crate) subagent_tokens: u64,
     pub(crate) context_tokens: u64,
+    /// One entry per pricing key. A slot holds at most one entry until slots
+    /// merge on a very large session.
+    pub(crate) priced: Vec<PricedTokens>,
     pub(crate) user_prompts: u32,
     pub(crate) subagent_launches: u32,
     pub(crate) has_thinking: bool,
@@ -90,6 +160,7 @@ impl SlotAggregate {
             cache_write_tokens: 0,
             subagent_tokens: 0,
             context_tokens: 0,
+            priced: Vec::new(),
             user_prompts: 0,
             subagent_launches: 0,
             has_thinking: false,
@@ -105,6 +176,10 @@ impl SlotAggregate {
         }
     }
 
+    /// Merge another slot's counts into this one.
+    ///
+    /// A merged run keeps one `priced` entry per pricing key, so a run that
+    /// changes model or speed still prices each turn at its own rate.
     pub(crate) fn merge(&mut self, other: Self) {
         self.first_ordinal = self.first_ordinal.min(other.first_ordinal);
         self.last_ordinal = self.last_ordinal.max(other.last_ordinal);
@@ -125,6 +200,9 @@ impl SlotAggregate {
             .saturating_add(other.cache_write_tokens);
         self.subagent_tokens = self.subagent_tokens.saturating_add(other.subagent_tokens);
         self.context_tokens = self.context_tokens.max(other.context_tokens);
+        for priced in &other.priced {
+            fold_priced_tokens(&mut self.priced, priced);
+        }
         self.user_prompts = self.user_prompts.saturating_add(other.user_prompts);
         self.subagent_launches = self
             .subagent_launches
@@ -311,7 +389,19 @@ impl ReorderWindow {
         self.entries
             .capacity()
             .saturating_mul(size_of::<SlotAggregate>())
+            .saturating_add(priced_heap_bytes(self.entries.iter()))
     }
+}
+
+/// The heap bytes the `priced` entries of these slots hold.
+fn priced_heap_bytes<'a>(slots: impl Iterator<Item = &'a SlotAggregate>) -> usize {
+    slots.fold(0usize, |total, slot| {
+        total.saturating_add(
+            slot.priced
+                .capacity()
+                .saturating_mul(size_of::<PricedTokens>()),
+        )
+    })
 }
 
 fn clamp_timestamp(slot: &mut SlotAggregate, timestamp: i64) {
@@ -445,6 +535,9 @@ impl ProgressSlots {
         self.slots
             .capacity()
             .saturating_mul(size_of::<PositionedSlot>())
+            .saturating_add(priced_heap_bytes(
+                self.slots.iter().map(|slot| &slot.aggregate),
+            ))
     }
 
     #[cfg(test)]

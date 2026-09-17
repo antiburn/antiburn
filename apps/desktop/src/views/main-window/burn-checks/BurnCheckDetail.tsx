@@ -28,6 +28,14 @@ export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   cacheChurn: "Some sessions kept paying to reload the same context.",
 }
 
+function isUnusedResourceDetector(detector: BurnCheckDetectorId) {
+  return (
+    detector === "unusedMcpServers" ||
+    detector === "unusedBuiltInTools" ||
+    detector === "unusedSkills"
+  )
+}
+
 export function CheckPromptAction({
   detector,
   targets,
@@ -41,7 +49,9 @@ export function CheckPromptAction({
   const [copied, setCopied] = useState(false)
   const [prompt, setPrompt] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
-  const promptTargets = targets.filter((target) => target.promptFix.status === "available")
+  const promptTargets = isUnusedResourceDetector(detector)
+    ? targets
+    : targets.filter((target) => target.promptFix.status === "available")
   const currentKey = promptTargets.length
     ? promptTargets.map((target) => target.actionId).join(":")
     : `fallback:${detector}`
@@ -247,6 +257,11 @@ export function BurnCheckDetail({
       {statuses.length === 1 && (
         <p role="status" className="mt-3 type-callout text-label-secondary">
           {statuses[0]}
+        </p>
+      )}
+      {reportRow && failedSessionCount > 0 && (
+        <p className="mt-1 type-callout tabular-nums text-label-secondary">
+          {`${failedSessionCount} ${failedSessionCount === 1 ? "session" : "sessions"} affected`}
         </p>
       )}
       <FailedSessions samples={samples} total={failedSessionCount} />

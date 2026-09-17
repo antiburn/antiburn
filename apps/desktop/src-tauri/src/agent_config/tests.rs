@@ -613,6 +613,7 @@ fn claude_built_in_tool_creates_an_exact_global_deny_rule() {
         fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
         "{\n  \"permissions\": {\n    \"deny\": [\n      \"WebSearch\"\n    ]\n  }\n}"
     );
+    assert!(!home.join(".claude/settings.json.bak").exists());
 }
 
 #[cfg(not(windows))]
@@ -1667,6 +1668,85 @@ fn apply_rejects_a_content_conflict() {
     );
 }
 
+#[cfg(not(windows))]
+#[test]
+fn apply_leaves_the_exact_previous_config_in_a_backup() {
+    let (_temporary, home, project) = roots();
+    let path = home.join(".claude/settings.json");
+    let backup = home.join(".claude/settings.json.bak");
+    let original = b"{\n  \"model\": \"old\",\n  \"theme\": \"dark\"\n}\n";
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, original).unwrap();
+    let editor = AgentConfigEditor::new();
+    let context = ConfigContext::native(AgentKind::Claude, &home, Some(project));
+
+    let prepared = editor
+        .prepare(
+            &context,
+            &ConfigChange {
+                expected_value: "old".into(),
+                proposed_value: "new".into(),
+            },
+        )
+        .unwrap();
+    editor.apply(&prepared).unwrap();
+    assert_eq!(fs::read(&backup).unwrap(), original);
+
+    let first_update = fs::read(&path).unwrap();
+    fs::write(&backup, b"stale backup").unwrap();
+    let prepared = editor
+        .prepare(
+            &context,
+            &ConfigChange {
+                expected_value: "new".into(),
+                proposed_value: "newest".into(),
+            },
+        )
+        .unwrap();
+    editor.apply(&prepared).unwrap();
+    assert_eq!(fs::read(backup).unwrap(), first_update);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_rejects_an_unsafe_backup_without_changing_the_config() {
+    use std::os::unix::fs::symlink;
+
+    let (_temporary, home, project) = roots();
+    let path = home.join(".claude/settings.json");
+    let backup = home.join(".claude/settings.json.bak");
+    let external = home.join("external-backup");
+    let original = b"{\"model\":\"old\"}";
+    write(&path, std::str::from_utf8(original).unwrap());
+    fs::write(&external, b"keep this").unwrap();
+    symlink(&external, &backup).unwrap();
+    let editor = AgentConfigEditor::new();
+    let prepared = editor
+        .prepare(
+            &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+            &ConfigChange {
+                expected_value: "old".into(),
+                proposed_value: "new".into(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        editor.apply(&prepared),
+        Err(ApplyError::Unavailable(
+            ConfigUnavailableReason::SymlinkTarget
+        ))
+    );
+    assert_eq!(fs::read(path).unwrap(), original);
+    assert_eq!(fs::read(external).unwrap(), b"keep this");
+    assert!(
+        fs::symlink_metadata(backup)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn apply_preserves_mode_owner_and_group() {
@@ -1686,9 +1766,12 @@ fn apply_preserves_mode_owner_and_group() {
         )
         .unwrap();
     editor.apply(&prepared).unwrap();
-    let metadata = fs::metadata(path).unwrap();
+    let metadata = fs::metadata(&path).unwrap();
     assert_eq!(metadata.permissions().mode() & 0o777, 0o764);
     assert_eq!(file_ownership(&metadata), ownership);
+    let backup_metadata = fs::metadata(path.with_file_name("settings.json.bak")).unwrap();
+    assert_eq!(backup_metadata.permissions().mode() & 0o777, 0o764);
+    assert_eq!(file_ownership(&backup_metadata), ownership);
 }
 
 #[cfg(unix)]

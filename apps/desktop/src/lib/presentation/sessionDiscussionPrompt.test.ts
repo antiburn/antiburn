@@ -78,7 +78,7 @@ function prompt(over: Partial<SessionDiscussionInput> = {}) {
 }
 
 describe("sessionDiscussionPrompt", () => {
-  it("reports neutral session context and leaves the analysis question to the user", () => {
+  it("reports session context and provides a default analysis task", () => {
     const result = prompt()
     for (const expected of [
       "Title: Stored title",
@@ -112,13 +112,11 @@ describe("sessionDiscussionPrompt", () => {
       "## Question / requirement for analysis",
     ])
     expect(result).not.toContain("List title")
-    expect(result).not.toContain("Investigate the findings")
-    expect(result).not.toContain("Prioritize supported findings")
     expect(result).not.toContain("Do not modify files")
     expect(
       result.endsWith(
         "## Question / requirement for analysis\n\n" +
-          "Answer the question or address the requirement below as directly as possible, using the session details where relevant.\n\n" +
+          "Answer the question or address the requirement below as directly as possible, using the session details where relevant. If no question is supplied, summarize confirmed findings and clearly labeled scoped or advisory observations, then label important unknowns, hypotheses, and next investigations.\n\n" +
           "[Add your question or requirement here.]",
       ),
     ).toBe(true)
@@ -193,6 +191,7 @@ describe("sessionDiscussionPrompt", () => {
   it("separates actual findings, confirmed clean, not-assessed reasons, and absent badges", () => {
     const hygiene: SessionHygienePayload = {
       evidenceState: "ready",
+      unusedResources: null,
       badges: [
         {
           id: "sessionOverdepth",
@@ -260,6 +259,7 @@ describe("sessionDiscussionPrompt", () => {
     const result = prompt({
       hygiene: {
         evidenceState: "ready",
+        unusedResources: null,
         badges: [
           {
             id: findingEvidence.kind,
@@ -293,7 +293,7 @@ describe("sessionDiscussionPrompt", () => {
     "unsupported",
     "ready",
   ] as const)("retains evidence state %s without inventing passes", (evidenceState) => {
-    const result = prompt({ hygiene: { evidenceState, badges: [] } })
+    const result = prompt({ hygiene: { evidenceState, unusedResources: null, badges: [] } })
     expect(result).toContain(`Burn-check evidence: ${evidenceState}`)
     expect(result).not.toContain("- Passed —")
     expect(result.match(/no result available/g)).toHaveLength(6)
@@ -305,6 +305,7 @@ describe("sessionDiscussionPrompt", () => {
       const result = prompt({
         hygiene: {
           evidenceState,
+          unusedResources: null,
           badges: [
             { id: "modelOverthinking", status: "clean", notAssessedReason: null },
             {
@@ -332,6 +333,7 @@ describe("sessionDiscussionPrompt", () => {
       const result = prompt({
         hygiene: {
           evidenceState: "ready",
+          unusedResources: null,
           badges: [
             {
               id: "excessCacheRehydration",
@@ -359,7 +361,9 @@ describe("sessionDiscussionPrompt", () => {
   )
 
   it("omits irrelevant freshness caveats for completed ready evidence", () => {
-    const result = prompt({ hygiene: { evidenceState: "ready", badges: [] } })
+    const result = prompt({
+      hygiene: { evidenceState: "ready", unusedResources: null, badges: [] },
+    })
     expect(result).not.toContain("Pending analysis metrics")
     expect(result).not.toContain("Pending or processing evidence")
     expect(result).not.toContain("Stale or growing evidence")

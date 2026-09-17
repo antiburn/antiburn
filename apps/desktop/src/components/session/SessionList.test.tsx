@@ -756,6 +756,7 @@ describe("SessionList — rows", () => {
           session,
           {
             evidenceState: "ready",
+            unusedResources: null,
             badges: [
               { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
               { id: "modelOverthinking", status: "clean", notAssessedReason: null },
@@ -783,6 +784,7 @@ describe("SessionList — rows", () => {
           session,
           {
             evidenceState: "ready",
+            unusedResources: null,
             badges: [
               "sessionOverdepth",
               "modelOverthinking",
@@ -817,6 +819,7 @@ describe("SessionList — rows", () => {
           session,
           {
             evidenceState: "stale",
+            unusedResources: null,
             badges: [
               { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
               { id: "modelOverthinking", status: "clean", notAssessedReason: null },
@@ -1128,6 +1131,7 @@ describe("SessionList — shared tooltips", () => {
           session,
           {
             evidenceState: "ready",
+            unusedResources: null,
             badges: [
               { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
               { id: "modelOverthinking", status: "clean", notAssessedReason: null },

@@ -949,11 +949,11 @@ fn latest_observation_plan_for_a_model_lane_reads_the_supplemental_windows_own_r
     );
 }
 
-/// A per-step migration test for v50, kept for review; per repo convention
+/// A per-step migration test for v51, kept for review; per repo convention
 /// it may be deleted after merge, since the ladder test in `store::tests` is
 /// the durable coverage.
 #[test]
-fn v50_widens_the_lane_check_and_keeps_existing_sample_and_point_rows() {
+fn v51_widens_the_lane_check_and_keeps_existing_sample_and_point_rows() {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     for &sql in &crate::store::schema::MIGRATIONS[..49] {
         connection.execute_batch(sql).unwrap();
@@ -980,9 +980,9 @@ fn v50_widens_the_lane_check_and_keeps_existing_sample_and_point_rows() {
         )
         .expect("inserts a pre-migration point row");
 
-    let store = Store::from_connection(connection, Path::new("/tmp/antiburn-v50-test").into())
+    let store = Store::from_connection(connection, Path::new("/tmp/antiburn-v51-test").into())
         .expect("migration reaches the head");
-    assert_eq!(store.schema_version().unwrap(), 50);
+    assert_eq!(store.schema_version().unwrap(), 51);
 
     let connection = store.lock();
     let samples: i64 = connection
