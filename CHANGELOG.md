@@ -20,6 +20,14 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Fixed
+
+- On Linux Wayland sessions whose environment carries `GDK_BACKEND=wayland`
+  (or a wayland-first list such as `wayland,x11`), the popover opened in the
+  middle of the screen instead of under the tray icon. antiburn now runs
+  through XWayland there and anchors correctly; set
+  `ANTIBURN_GDK_BACKEND=wayland` to keep a native Wayland run instead.
+
 ## [0.6.2] - 2026-09-17
 
 ### Added
