@@ -373,3 +373,6 @@ sampled from real transcripts.
 16. **Countdown leads with the time.** The blocked line reads "resets in
     1h 30m · 5-hour limit": the HUD clips the tail, and the limit's name
     was hiding the time.
+17. **Wakes stay longer, peeks shorter.** A wake holds 4.8 s (was 2.8 s)
+    and lingers 3 s after the pointer leaves. An edge peek lingers 1.5 s
+    (was 3 s) once the pointer leaves the HUD and the edge.

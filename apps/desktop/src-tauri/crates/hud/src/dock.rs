@@ -46,13 +46,17 @@ const TAB_HOLD: Duration = Duration::from_millis(150);
 #[cfg(target_os = "macos")]
 const AUTO_DOCK_POLL: Duration = Duration::from_millis(200);
 
-/// How long the HUD stays after the pointer leaves it.
-#[cfg(any(target_os = "macos", test))]
-const LINGER: Duration = Duration::from_secs(3);
+/// How long a peeked HUD stays after the pointer leaves it and the edge.
+#[cfg(target_os = "macos")]
+const PEEK_LINGER: Duration = Duration::from_millis(1_500);
+
+/// How long a woken HUD stays after the pointer leaves it.
+#[cfg(target_os = "macos")]
+const WAKE_LINGER: Duration = Duration::from_secs(3);
 
 /// How long a woken HUD stays, at least.
 #[cfg(target_os = "macos")]
-const WAKE_HOLD: Duration = Duration::from_millis(2_800);
+const WAKE_HOLD: Duration = Duration::from_millis(4_800);
 
 /// The display edge the HUD docks against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -240,7 +244,7 @@ pub fn wake_overlay(app: &AppHandle, reason: &str) {
         return;
     }
     tracing::info!(event = "hud_wake", reason);
-    undock(app, &window, WAKE_HOLD);
+    undock(app, &window, WAKE_HOLD, WAKE_LINGER);
 }
 
 /// Keep waking inert where the HUD is unavailable.
@@ -337,9 +341,10 @@ fn dock_at(app: &AppHandle, window: &WebviewWindow, edge: DockEdge) {
 
 /// Slide a docked HUD in, then park it again after a quiet spell.
 ///
-/// `hold` is the least time the HUD stays.
+/// `hold` is the least time the HUD stays. `linger` is how long it stays
+/// after the pointer leaves it.
 #[cfg(target_os = "macos")]
-fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration) {
+fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration, linger: Duration) {
     if !state().docked {
         return;
     }
@@ -361,7 +366,7 @@ fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration) {
     };
     let after = (app.clone(), window.clone());
     slide(window.clone(), start, home, generation, move || {
-        spawn_auto_dock(after.0, after.1, generation, hold);
+        spawn_auto_dock(after.0, after.1, generation, hold, linger);
     });
 }
 
@@ -442,7 +447,7 @@ fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
                 continue;
             }
             tracing::info!(event = "hud_peek");
-            undock(&app, &window, Duration::ZERO);
+            undock(&app, &window, Duration::ZERO, PEEK_LINGER);
             return;
         }
     });
@@ -453,7 +458,13 @@ fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
 /// A pointer held on the tab strip counts as on the HUD. The strip is what
 /// woke the HUD, so resting there keeps it open.
 #[cfg(target_os = "macos")]
-fn spawn_auto_dock(app: AppHandle, window: WebviewWindow, generation: u64, hold: Duration) {
+fn spawn_auto_dock(
+    app: AppHandle,
+    window: WebviewWindow,
+    generation: u64,
+    hold: Duration,
+    linger: Duration,
+) {
     tauri::async_runtime::spawn(async move {
         let start = Instant::now();
         let mut last_inside = start;
@@ -480,7 +491,7 @@ fn spawn_auto_dock(app: AppHandle, window: WebviewWindow, generation: u64, hold:
                 last_inside = now;
                 continue;
             }
-            if should_dock(now, start, hold, last_inside) {
+            if should_dock(now, start, hold, linger, last_inside) {
                 tracing::info!(event = "hud_auto_dock", generation);
                 dock_at(&app, &window, edge);
                 return;
@@ -644,8 +655,14 @@ fn edge_dropped_on(frame: &Rect, window: &Rect, side_inset: f64) -> Option<DockE
 /// Whether the peeked HUD should park: the hold passed, and the pointer has
 /// been off it for the linger. Pure.
 #[cfg(any(target_os = "macos", test))]
-fn should_dock(now: Instant, start: Instant, hold: Duration, last_inside: Instant) -> bool {
-    now.duration_since(start) >= hold && now.duration_since(last_inside) >= LINGER
+fn should_dock(
+    now: Instant,
+    start: Instant,
+    hold: Duration,
+    linger: Duration,
+    last_inside: Instant,
+) -> bool {
+    now.duration_since(start) >= hold && now.duration_since(last_inside) >= linger
 }
 
 #[cfg(test)]
@@ -806,16 +823,19 @@ mod tests {
     fn auto_dock_waits_for_the_hold_and_the_linger() {
         let start = Instant::now();
         let hold = Duration::from_secs(5);
+        let linger = Duration::from_secs(3);
         assert!(!should_dock(
             start + Duration::from_secs(4),
             start,
             hold,
+            linger,
             start
         ));
         assert!(should_dock(
             start + Duration::from_secs(5),
             start,
             hold,
+            linger,
             start
         ));
         let hovered = start + Duration::from_secs(4);
@@ -823,15 +843,23 @@ mod tests {
             start + Duration::from_secs(6),
             start,
             hold,
+            linger,
             hovered
         ));
         assert!(should_dock(
             start + Duration::from_secs(7),
             start,
             hold,
+            linger,
             hovered
         ));
-        assert!(should_dock(start + LINGER, start, Duration::ZERO, start));
+        assert!(should_dock(
+            start + linger,
+            start,
+            Duration::ZERO,
+            linger,
+            start
+        ));
     }
 
     #[test]
