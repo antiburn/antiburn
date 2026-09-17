@@ -96,7 +96,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
         (win.savings.apiEquivalentCostAvoidedUsd == null),
     )
   return (
-    <section aria-labelledby="burn-checks-savings" className="mt-4">
+    <section aria-label="Your savings" className="mt-4">
       <div className="overflow-hidden rounded-control bg-surface-card/50">
         <button
           type="button"
@@ -110,7 +110,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
           </span>
           <div className="min-w-0 flex-1">
             <h2 id="burn-checks-savings" className="type-headline text-label">
-              Your savings
+              Verified savings
             </h2>
             <p className="type-callout text-label-tertiary">
               {improvementWins > 0

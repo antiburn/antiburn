@@ -418,6 +418,7 @@ export type AutoFixReviewAnalyticsOutcome =
   "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
 export type AutoFixAnalyticsOutcome =
   | "applied_awaiting_verification"
+  | "applied_verification_unavailable"
   | "recovery_needed"
   | "stale"
   | "expired"

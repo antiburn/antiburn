@@ -60,6 +60,7 @@ impl AgentExplorer for PiExplorer {
                 agent_dir_in(
                     home,
                     env_path_when_real_home(home, "PI_AGENT_DIR").as_deref(),
+                    env_path_when_real_home(home, "PI_CODING_AGENT_DIR").as_deref(),
                 )
                 .join("sessions"),
             ],
@@ -116,8 +117,13 @@ async fn all_log_dirs() -> Vec<PathBuf> {
     log_dirs_in(&home).await
 }
 
-fn agent_dir_in(home: &Path, override_dir: Option<&Path>) -> PathBuf {
-    override_dir
+fn agent_dir_in(
+    home: &Path,
+    legacy_override: Option<&Path>,
+    current_override: Option<&Path>,
+) -> PathBuf {
+    current_override
+        .or(legacy_override)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| home.join(".pi").join("agent"))
 }
@@ -126,6 +132,7 @@ async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
     let sessions_dir = agent_dir_in(
         home,
         env_path_when_real_home(home, "PI_AGENT_DIR").as_deref(),
+        env_path_when_real_home(home, "PI_CODING_AGENT_DIR").as_deref(),
     )
     .join("sessions");
     let mut entries = match tokio::fs::read_dir(&sessions_dir).await {

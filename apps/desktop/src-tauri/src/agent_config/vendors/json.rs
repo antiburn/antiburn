@@ -8,11 +8,13 @@ use serde_json::{Map, Value};
 
 use crate::agent_config::ConfigUnavailableReason;
 
-pub(super) fn parse(bytes: &[u8]) -> Result<Value, ConfigUnavailableReason> {
+pub(in crate::agent_config) fn parse(bytes: &[u8]) -> Result<Value, ConfigUnavailableReason> {
     parse_json(&strip_comments(bytes)?)
 }
 
-pub(super) fn parse_strict(bytes: &[u8]) -> Result<Value, ConfigUnavailableReason> {
+pub(in crate::agent_config) fn parse_strict(
+    bytes: &[u8],
+) -> Result<Value, ConfigUnavailableReason> {
     parse_json(bytes)
 }
 

@@ -581,15 +581,31 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
         }
         (AgentKind::Cursor, SessionSource::ProviderDb { .. }) => SourceFormat::CursorCliStoreDb,
         (AgentKind::Cursor, SessionSource::File(path))
-            if path.extension().and_then(|value| value.to_str()) == Some("json") =>
+            if path.extension().and_then(|value| value.to_str()) == Some("json")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "chatSessions") =>
         {
             SourceFormat::CursorLegacyChatJson
         }
         (AgentKind::Cursor, SessionSource::File(_)) => SourceFormat::CursorCliAgentJsonl,
         (AgentKind::Cursor, SessionSource::Inline { label, .. })
-            if label.contains("state.vscdb") =>
+            if label.starts_with("cursor-desktop:") =>
         {
             SourceFormat::CursorIdeComposer
+        }
+        (AgentKind::Cursor, SessionSource::Inline { label, .. })
+            if label.starts_with("cursor-store:")
+                && std::path::Path::new(label.trim_start_matches("cursor-store:"))
+                    .components()
+                    .any(|component| component.as_os_str() == "chats") =>
+        {
+            SourceFormat::CursorChatStoreDb
+        }
+        (AgentKind::Cursor, SessionSource::Inline { label, .. })
+            if label.starts_with("cursor-store:") =>
+        {
+            SourceFormat::CursorCliStoreDb
         }
         (AgentKind::Cursor, SessionSource::Inline { .. }) => SourceFormat::CursorCliAgentJsonl,
         (AgentKind::Antigravity, SessionSource::ProviderDb { .. }) => {

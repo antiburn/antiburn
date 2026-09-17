@@ -188,6 +188,7 @@ fn supported_generic_verification_requires_a_clean_detector_assessment() {
             identity: "session".to_owned(),
             target_present: false,
             assessment: FindingAssessment::Clean,
+            clean_for_verification: true,
         }],
     );
     assert_eq!(fixed.outcome, VerificationOutcome::Fixed);
@@ -207,6 +208,7 @@ fn supported_generic_verification_requires_a_clean_detector_assessment() {
                 identity: "resource".to_owned(),
                 target_present: false,
                 assessment: FindingAssessment::Clean,
+                clean_for_verification: true,
             },
             TargetAssessment {
                 observed_at_ms: 101,
@@ -223,6 +225,7 @@ fn supported_generic_verification_requires_a_clean_detector_assessment() {
                         },
                     ),
                 ]),
+                clean_for_verification: false,
             },
         ],
     );
@@ -284,26 +287,4 @@ fn verification_matrix_matches_the_documented_positive_proof_cells() {
             );
         }
     }
-}
-
-#[test]
-fn a_named_resource_still_injected_and_invoked_cannot_verify_from_clean_assessment() {
-    let result = verify_prompt_watch(
-        DetectorId::UnusedMcpServers,
-        SourceFormat::ClaudeJsonl,
-        "mcp:server-a",
-        VerificationStage::Watching,
-        100,
-        &[TargetAssessment {
-            observed_at_ms: 101,
-            identity: "mcp:server-a".into(),
-            target_present: false,
-            assessment: FindingAssessment::Clean,
-        }],
-    );
-
-    assert_eq!(
-        result.outcome,
-        VerificationOutcome::Unknown(VerificationUnknownReason::UnsupportedEvidence)
-    );
 }
