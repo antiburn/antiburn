@@ -247,22 +247,23 @@ fn trim(samples: Vec<ModeSample>, keep_after_ms: i64) -> Vec<ModeSample> {
 }
 
 /// Normalize the parent and its sub-agents and attribute every turn.
+/// The caller locates the session and fingerprints it, so this function takes
+/// both instead of repeating that disk work.
 async fn parse_samples(
     kind: AgentKind,
     session_id: &str,
     wsl_distro: Option<&str>,
+    source: &SessionSource,
+    fingerprint: String,
     keep_after_ms: i64,
 ) -> Option<(String, CachedSamples)> {
-    let source = analysis::locate(kind, session_id, wsl_distro).await?;
-    let raw = analysis::raw_source(kind, &source).await?;
-    let fingerprint =
-        analysis::fingerprint_with_subagents(kind, session_id, wsl_distro, &source).await;
+    let raw = analysis::raw_source(kind, source).await?;
     let label = vendor_label(kind).to_string();
     let parent_input = SessionInput {
         agent: label.clone(),
         session_id: session_id.to_string(),
         source: raw,
-        source_format: analysis::source_format(kind, &source),
+        source_format: analysis::source_format(kind, source),
         fork_parent_session_id: None,
     };
     let mut subagent_paths = Explorers::DISK
@@ -430,8 +431,18 @@ pub async fn get_hud_token_map(
         let stale = fingerprint == analysis::MISSING_FINGERPRINT
             || cached_fingerprint(key).as_deref() != Some(fingerprint.as_str());
         if stale {
-            let Some((_, entry)) =
-                parse_samples(kind, &record.key.session_id, wsl_distro, keep_after_ms).await
+            let Some(source) = source.as_ref() else {
+                continue;
+            };
+            let Some((_, entry)) = parse_samples(
+                kind,
+                &record.key.session_id,
+                wsl_distro,
+                source,
+                fingerprint,
+                keep_after_ms,
+            )
+            .await
             else {
                 continue;
             };

@@ -4,21 +4,21 @@ _Plan. Branch `feat/hud-v2` (off `origin/main`, token-map commits replayed on to
 
 Eight asks from Keith, grouped into four PRs that each stand alone. The token
 map (`hud-token-map.md`, shipped on this branch) and the LED spend-rate design
-(`hud-led-spend-rate.md`, designed, not built) are the two inputs. The observer
+(`hud-led-spend-rate.md`, which step B below builds) are the two inputs. The observer
 loop handoff (`token-usage-breakdown-implementation-handoff.md`) supplies the
 signals that item 8 needs and is planned separately.
 
 ## Status
 
-| Step                                                  | State                                                                                                                    |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 0. Plan reviewed, open questions decided              | done                                                                                                                     |
-| 0b. Token-map commits replayed onto `feat/hud-v2`     | done                                                                                                                     |
-| A. Frame + round dots + mode palette retune (1, 2, 7) | built; Keith round 2 fixes applied (40% frame, no hover swap, close ✕ off, launch restore, click guard)                  |
-| B. LED blink follows spend, in mode colour (3, 7)     | built; on-screen tested by Keith 2026-09-16                                                                              |
-| C. Agent boxes at LED scale, per-box detail (4, 5, 6) | built; tested by Keith 2026-09-16 (LED scale shipped in A; this adds per-box detail and the single-session rule)         |
-| D. Edge dock: off-screen, wake on edge/activity/burn  | built; tested by Keith 2026-09-16 (gesture model: drop against an edge docks with a 6pt tab; drag tears off; no setting) |
-| E. Restack on PR #489 (session lifecycle bus)         | done 2026-09-17; PR #565 base is now `feat/session-lifecycle-bus`. The LED bar carries both the sweep (#489) and the spend blink (#565); the overlap needs Keith's eye. |
+| Step                                                  | State                                                                                                                                             |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0. Plan reviewed, open questions decided              | done                                                                                                                                              |
+| 0b. Token-map commits replayed onto `feat/hud-v2`     | done                                                                                                                                              |
+| A. Frame + round dots + mode palette retune (1, 2, 7) | built; Keith round 2 fixes applied (70% frame, no hover swap, close ✕ off, launch restore, click guard)                                           |
+| B. LED blink follows spend, in mode colour (3, 7)     | built; on-screen tested by Keith 2026-09-16                                                                                                       |
+| C. Agent boxes at LED scale, per-box detail (4, 5, 6) | built; tested by Keith 2026-09-16 (LED scale shipped in A; this adds per-box detail and the single-session rule)                                  |
+| D. Edge dock: off-screen, wake on edge/activity/burn  | built; tested by Keith 2026-09-16 (gesture model: drop against an edge docks with a 6pt tab; drag tears off; no setting)                          |
+| E. Restack on PR #489 (session lifecycle bus)         | done 2026-09-17; #489 merged, so PR #565 is back on `main`. The HUD shows the spend blink alone; the sweep from #489 stays on the popover meters. |
 
 ## What Keith asked for
 
@@ -54,7 +54,7 @@ signals that item 8 needs and is planned separately.
 ### The frame
 
 The HUD panel (`OverlayWindow.tsx`, the `rounded-xl border-transparent` div)
-gets a visible material: `bg-hud-frame` at 60% alpha with a 1 px `separator`
+gets a visible material: `bg-hud-frame` at 70% alpha with a 1 px `separator`
 hairline. New tokens in `hud.css` and `design.md`:
 
 | Token          | Light                  | Dark                 |
@@ -318,7 +318,7 @@ sampled from real transcripts.
 3. **Wake dwell is 5 s** (Keith, 2026-09-16), extended while hovered.
 4. **Spend anchors start at $0.05 / $2.00 per minute** (Keith, 2026-09-16),
    to be checked against real transcripts before PR B ships.
-5. **Frame alpha is 60%** (Keith, 2026-09-16), after 30%, 50% and 40% on screen; the hover surface swap is gone and the stroke is a vertical gradient.
+5. **Frame alpha is 70%** (Keith, 2026-09-16), after 30%, 50%, 40% and 60% on screen; the hover surface swap is gone and the stroke is a vertical gradient.
 
 ## Tweaks after the first on-screen test (Keith, 2026-09-16)
 
@@ -348,8 +348,8 @@ sampled from real transcripts.
 7. **Reset seen without the menubar.** Once a blocked bar's reset time passes,
    the HUD asks the shell for a fresh read instead of waiting on the cached
    summary.
-8. **Dark frame is black.** `hud-frame` dark is 60% black, with a softer top
-   stroke.
+8. **Dark frame is black.** `hud-frame` dark is black at the same alpha as
+   light, with a softer top stroke. It reached 70% later, in the round above.
 9. **Model limits show at 0%.** The HUD draws a supplemental per-model limit
    even before it moves. The popover and main window keep hiding idle ones
    (`liveWindows` takes `includeIdleModelLimits`).

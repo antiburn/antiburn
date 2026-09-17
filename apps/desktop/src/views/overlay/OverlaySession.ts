@@ -302,6 +302,7 @@ export class OverlaySession {
       sessionLive: false,
       liveProviders: [],
       liveModels: {},
+      celebration: null,
     })
     this.connectPanel(generation)
     this.resumeHudExposure()
@@ -512,6 +513,7 @@ export class OverlaySession {
       sessionLive: false,
       liveProviders: [],
       liveModels: {},
+      celebration: null,
     })
   }
 

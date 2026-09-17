@@ -15,7 +15,7 @@ hover shows the detail in a second window, like a large tooltip.
 stateDiagram-v2
     [*] --> Hidden
     Hidden --> Collapsed: Settings toggle
-    Collapsed --> Hidden: ✕ on the HUD<br/>or Settings toggle
+    Collapsed --> Hidden: Settings toggle
 
     Collapsed --> DetailShown: pointer rests on it 400ms
     DetailShown --> Collapsed: pointer leaves
@@ -31,9 +31,7 @@ stateDiagram-v2
         Bars only, plus the token map
         above them while a session
         writes. No panel, no
-        background, no chrome. A small
-        ✕ fades in while the pointer
-        rests on the bars.
+        background, no chrome.
     end note
     note right of DetailShown
         A separate display-only window
@@ -93,14 +91,14 @@ are doing" turns the map off. Reduced motion stops the pulse.
 
 - The detail window waits for a 400ms hover intent. It hides at once when the
   pointer leaves the HUD frame.
-- The ✕ sits at the HUD's top right. It fades in as soon as the pointer enters
-  the frame and adds no height.
+- The close control is off. The code that puts a ✕ at the HUD's top right stays
+  in place, but it is commented out. The menu bar toggle hides the HUD.
 - DOM mouse edges provide the focused path. The Rust crate polls the global
   cursor every 100ms for the background path and emits `overlay_hover`.
 - A mouse down clears the pending show timer and hides a visible detail window.
   The timer stays suppressed until mouse up. After mouse up, a fresh 400ms count
   starts only when the pointer still rests on the HUD.
-- Dragging starts on the panel except on the ✕. Only mouse release or window
+- Dragging starts anywhere on the panel. Only mouse release or window
   blur ends the drag. The drag moves the window manually at most once per
   animation frame.
 - The detail window fades in over 100ms (`--duration-quick`). It hides with no
@@ -400,9 +398,9 @@ Usage writes it. The popover session restores the HUD at startup when it reads
 
 Each webview can hold a different localStorage copy. The native window therefore
 broadcasts each visibility change. Settings uses that live state, refreshes it
-when it receives focus, and updates its cached preference. Closing the HUD with
-its ✕ turns the Settings control off. The cached value only restores the HUD at
-startup.
+when it receives focus, and updates its cached preference. The close control,
+when it comes back, turns the Settings control off in the same way. The cached
+value only restores the HUD at startup.
 
 The dock state (`internal:hudDock`: docked, and the edge) lives in the shell
 store. `record_hud_position` writes it after every drag, and `tear_off_overlay`

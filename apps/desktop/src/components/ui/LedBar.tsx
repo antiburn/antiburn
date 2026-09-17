@@ -92,10 +92,12 @@ export function LedBar({
         // The stylesheet derives the gleam from the segment's own colour, so a
         // provider whose bar is near white still shows the sweep.
         if (sweeping && hit) Object.assign(style, { "--led-color": hit.color })
-        if (hit && blinking) {
+        // An unlit segment blinks in the brand tint. It takes the same period
+        // and colour as a lit one, so an empty bar still shows the spend rate.
+        if (blinking) {
           Object.assign(style, {
-            backgroundColor: blinkColor ?? hit.color,
-            "--led-on": blinkColor ?? hit.color,
+            backgroundColor: blinkColor ?? hit?.color ?? "var(--color-brand-tint)",
+            "--led-on": blinkColor ?? hit?.color ?? "var(--color-brand-tint)",
             ...(blinkPeriodMs != null ? { "--led-period": `${blinkPeriodMs}ms` } : {}),
           })
         }
@@ -111,7 +113,7 @@ export function LedBar({
             data-led-lit={live && hit != null ? true : undefined}
             data-led-next={index === nextIndex || undefined}
             className={classes.filter(Boolean).join(" ")}
-            style={hit || sweeping ? style : undefined}
+            style={hit || sweeping || blinking ? style : undefined}
           />
         )
       })}

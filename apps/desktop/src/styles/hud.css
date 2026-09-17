@@ -445,6 +445,7 @@ body[data-transparent-window] #root {
 @media (prefers-reduced-motion: reduce) {
   .led-blink,
   .token-map-live,
+  .hud-confetti,
   .led-clock {
     animation: none;
   }

@@ -145,7 +145,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
             />
             <ToggleRow
               label="Show what live sessions are doing"
-              description="A small map above the bars: one blob per session that wrote in the last five minutes, one dot per unit of tokens a minute, coloured by the kind of work (looking, running, changing, delegating, thinking, talking)."
+              description="A small map above the bars: one blob per session that wrote in the last 90 seconds. Each dot stands for a set number of tokens a minute, from 250 up, and takes the colour of the kind of work (looking, running, changing, delegating, thinking, talking)."
               checked={tokenMapShown}
               onChange={handleTokenMapChange}
             />
