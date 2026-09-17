@@ -56,6 +56,7 @@ function applyAnalytics(
   if (outcome.outcome === "appliedAwaitingVerification") {
     return "applied_awaiting_verification"
   }
+  if (outcome.outcome === "applied") return "applied_verification_unavailable"
   return outcome.outcome === "recoveryNeeded" ? "recovery_needed" : outcome.outcome
 }
 
@@ -143,6 +144,7 @@ function applyMessage(
   if (!outcome) return `${progress}The next change could not be applied.`
   switch (outcome.outcome) {
     case "appliedAwaitingVerification":
+    case "applied":
       return ""
     case "recoveryNeeded":
       return `${progress}The last write has an uncertain result. Review the config before another change.`
@@ -229,6 +231,7 @@ export function BurnCheckTargetChooserDialog({
     setStep("applying")
     setStatus(null)
     let applied = 0
+    let verificationUnavailable = false
     let failed: ApplyPreparedBurnCheckOperationOutcome | null = null
     try {
       for (const item of prepared) {
@@ -245,10 +248,14 @@ export function BurnCheckTargetChooserDialog({
         const outcome = await applyPreparedBurnCheckOperation(
           refreshed.review.preparedOperationId,
         )
-        if (!outcome || outcome.outcome !== "appliedAwaitingVerification") {
+        if (
+          !outcome ||
+          (outcome.outcome !== "appliedAwaitingVerification" && outcome.outcome !== "applied")
+        ) {
           failed = outcome
           break
         }
+        verificationUnavailable ||= outcome.outcome === "applied"
         applied += 1
         setAppliedCount(applied)
       }
@@ -260,14 +267,16 @@ export function BurnCheckTargetChooserDialog({
       outcome: failed
         ? applyAnalytics(failed)
         : applied === prepared.length
-          ? "applied_awaiting_verification"
+          ? verificationUnavailable
+            ? "applied_verification_unavailable"
+            : "applied_awaiting_verification"
           : "failed",
     })
     setAppliedCount(applied)
     setStatus(
       failed
         ? applyMessage(failed, applied, prepared.length)
-        : `${applied} ${applied === 1 ? "change" : "changes"} applied.`,
+        : `${applied} ${applied === 1 ? "change" : "changes"} applied.${verificationUnavailable ? " Current evidence cannot verify one or more fixes." : ""}`,
     )
     setStep("result")
     refresh()
@@ -396,6 +405,9 @@ export function BurnCheckTargetChooserDialog({
           <>
             <p className="mt-2 type-body text-label-secondary">
               These config changes affect future requests.
+            </p>
+            <p className="mt-1 type-callout text-label-secondary">
+              Existing files keep their previous content in sibling .bak files.
             </p>
             <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
               {preparedGroups.map((group) => (

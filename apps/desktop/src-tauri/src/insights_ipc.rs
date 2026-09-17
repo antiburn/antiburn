@@ -214,6 +214,7 @@ mod tests {
             }),
             evidence_settled: true,
             pending_evidence: 0,
+            resources: crate::insights_report::ResourceAssessment::default(),
         }
     }
 

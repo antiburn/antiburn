@@ -110,6 +110,20 @@ pub fn comparable_tool_name(name: &str) -> String {
         .collect()
 }
 
+/// True only for built-in tools that the product can safely suggest disabling.
+pub fn optional_built_in_tool(agent: &str, name: &str) -> bool {
+    let agent = comparable_tool_name(agent);
+    let tool = comparable_tool_name(name);
+    matches!(
+        (agent.as_str(), tool.as_str()),
+        (
+            "claude" | "claudecode",
+            "websearch" | "webfetch" | "workflow" | "reportfindings" | "schedulewakeup"
+        ) | ("codex", "websearch")
+            | ("opencode", "websearch" | "webfetch")
+    )
+}
+
 /// The parsed catalogue file. Immutable after construction.
 pub struct ToolCatalog {
     agents: HashMap<String, AgentCatalog>,
@@ -389,5 +403,15 @@ mod tests {
                 .lookup("cursor", "1.0.0", "claude-fable-5")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn only_specialized_built_in_tools_are_remediation_candidates() {
+        assert!(optional_built_in_tool("claude", "ReportFindings"));
+        assert!(optional_built_in_tool("claude-code", "ScheduleWakeup"));
+        assert!(optional_built_in_tool("claude", "Workflow"));
+        assert!(!optional_built_in_tool("claude", "Bash"));
+        assert!(!optional_built_in_tool("opencode", "Read"));
+        assert!(!optional_built_in_tool("pi", "Task"));
     }
 }

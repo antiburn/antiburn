@@ -1147,9 +1147,13 @@ fn section_bounds(text: &str, heading: &str) -> Option<(usize, usize)> {
 /// Rough token estimate (chars / 4). Deliberately tokenizer-free: the breakdown
 /// is a proportional attribution, not an exact count, and every source is
 /// estimated the same way so the slices stay comparable to one another.
+pub fn estimate_proportional_tokens(text: &str) -> u64 {
+    let chars = text.chars().count() as u64;
+    chars.div_ceil(4)
+}
+
 fn estimate_tokens(text: &str) -> i64 {
-    let chars = text.chars().count() as i64;
-    if chars == 0 { 0 } else { (chars + 3) / 4 }
+    i64::try_from(estimate_proportional_tokens(text)).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
