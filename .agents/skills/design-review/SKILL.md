@@ -42,13 +42,14 @@ and the themes. Do NOT grade data-dependent states from it, and never report
 
 ## Step 1: load the rulebook
 
-Read `design-principles.md` in this skill folder. It numbers every rule. Each
-finding must cite a rule number plus the token, class, or file it breaks.
+Read `design-principles.md` in this skill folder. It defines confirmed
+violations and design risks.
 
 ## Step 2: capture the window, per surface and per theme
 
-Pick ONE window per invocation. Capture each surface of it, then repeat the
-worst surface in each theme.
+Pick one window or one surface per invocation. For a window, capture each
+surface and repeat the worst surface in each theme. For one surface, capture
+that surface and its relevant themes.
 
 **The surface pass.** Capture every surface the chosen window can show:
 
@@ -101,14 +102,12 @@ Walk these dimensions. Check each one against `design-principles.md`.
 12. Console and robustness. Errors and warnings in the webview console.
 
 Grade the rendered window first. Then open the source to confirm a violation —
-a raw hex value, an arbitrary duration, a hand-rolled row. A guess from code
-alone is not a finding.
+a raw hex value, an arbitrary duration, or a hand-rolled row. Do not report a
+code guess as a confirmed violation.
 
 ## Step 4: write the report
 
-Use `report-template.md`. Give each finding a severity, a dimension, what is
-wrong, the rule and token it breaks, a suggested fix, and evidence. Evidence is
-a screenshot or a quoted class or value. Rank the most severe first.
+Use `report-template.md`. Rank confirmed violations first.
 
 Save the report to `.agent-artifacts/reviews/<surface>-<date>.md`. Create the
 folder if it does not exist. Keep review captures alongside the report in this

@@ -78,7 +78,7 @@ function prompt(over: Partial<SessionDiscussionInput> = {}) {
 }
 
 describe("sessionDiscussionPrompt", () => {
-  it("reports neutral session context and leaves the analysis question to the user", () => {
+  it("reports session context and provides a default analysis task", () => {
     const result = prompt()
     for (const expected of [
       "Title: Stored title",
@@ -112,13 +112,11 @@ describe("sessionDiscussionPrompt", () => {
       "## Question / requirement for analysis",
     ])
     expect(result).not.toContain("List title")
-    expect(result).not.toContain("Investigate the findings")
-    expect(result).not.toContain("Prioritize supported findings")
     expect(result).not.toContain("Do not modify files")
     expect(
       result.endsWith(
         "## Question / requirement for analysis\n\n" +
-          "Answer the question or address the requirement below as directly as possible, using the session details where relevant.\n\n" +
+          "Answer the question or address the requirement below as directly as possible, using the session details where relevant. If no question is supplied, summarize confirmed findings and clearly labeled scoped or advisory observations, then label important unknowns, hypotheses, and next investigations.\n\n" +
           "[Add your question or requirement here.]",
       ),
     ).toBe(true)

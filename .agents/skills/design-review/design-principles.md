@@ -26,8 +26,10 @@ Paths in this file are relative to `apps/desktop/`.
 - `scripts/check-design-drift.mjs` keeps the contract and those stylesheets
   equal. So a value in `design.md` that disagrees with the CSS is a CI failure,
   not a design finding. Report it, and stop there.
-- Cite a rule number from this file, plus the token, class, or file it breaks.
-  A finding with no citation is an opinion.
+- A confirmed violation cites a rule number and the token, class, or file it
+  breaks.
+- A design risk can identify a rulebook gap. State the observed problem, the
+  affected user task, and how to confirm it. Do not report preference alone.
 
 ## 1. North star (what an antiburn window should feel like)
 

@@ -203,7 +203,7 @@ export function sessionDiscussionPrompt({
     "",
     "## Question / requirement for analysis",
     "",
-    "Answer the question or address the requirement below as directly as possible, using the session details where relevant.",
+    "Answer the question or address the requirement below as directly as possible, using the session details where relevant. If no question is supplied, summarize confirmed findings and clearly labeled scoped or advisory observations, then label important unknowns, hypotheses, and next investigations.",
     "",
     "[Add your question or requirement here.]",
   ].join("\n")

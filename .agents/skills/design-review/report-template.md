@@ -42,10 +42,19 @@ Ranked most severe first.
 | 2 | High | State | {what is wrong} | 7.1 empty state | {fix} | `LocalActivityList.tsx:265` |
 | 3 | Medium | Motion | {what is wrong} | 10.1 token durations | {fix} | `duration-[120ms]` |
 
-## Checked and clean
+## Design risks
 
-{The dimensions that passed. This keeps the next review from re-testing them
-blind, and it stops a short findings table from reading as a shallow pass.}
+{Observed problems that no current rule covers, or source-backed risks that
+could not be reproduced live. Do not rank these as confirmed violations.}
+
+| # | User impact | Risk | Evidence | How to confirm | Suggested direction |
+|---|-------------|------|----------|----------------|---------------------|
+| 1 | {affected task} | {observed problem} | {source or capture} | {steps} | {option} |
+
+## Checked scope and limits
+
+{List each captured surface and state that passed. Name relevant states that
+were not checked. Do not claim untested areas are clean.}
 
 ## Notes
 
