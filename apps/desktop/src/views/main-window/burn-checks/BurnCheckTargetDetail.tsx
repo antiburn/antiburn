@@ -1,14 +1,12 @@
 import { ProjectFolderActions } from "../../../components/session/ProjectFolderActions"
 import { performProjectFolderAction } from "../../../lib/projectFolder"
 import "../../../styles/session-detail.css"
-import type { BurnCheckDetectorId, BurnCheckTargetPayload } from "../../../lib/insightsIpc"
+import type { BurnCheckTargetPayload } from "../../../lib/insightsIpc"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { formatApiEquivalentUsd } from "../../../lib/presentation/checks"
 import { CHECK_UI } from "../../checks/checkUi"
-import { RemindLaterAction } from "./RemindLaterAction"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
 import {
-  ActionLimit,
   FailedSessions,
   scopeLabel,
   targetTitle,
@@ -29,12 +27,10 @@ export function targetCostLine(target: BurnCheckTargetPayload): string | null {
 
 export function BurnCheckTargetDetail({
   target,
-  detector,
   refresh,
   reportRow = false,
 }: {
   target: BurnCheckTargetPayload
-  detector?: BurnCheckDetectorId
   refresh: () => void
   reportRow?: boolean
 }) {
@@ -59,19 +55,12 @@ export function BurnCheckTargetDetail({
             <span className="min-w-0 wrap-anywhere">{targetTitle(target)}</span>
           </h3>
         </div>
-        {reportRow && (
-          <div className="flex flex-wrap items-start justify-end gap-2">
-            {detector && <RemindLaterAction detector={detector} />}
-            <BurnCheckTargetActions target={target} refresh={refresh} compact embedded />
-          </div>
-        )}
       </div>
       <div className="burn-check-resource-metadata min-w-0">
         <div className="flex items-center gap-1.5 type-callout text-label-tertiary">
-          <span className="min-w-0 truncate">
-            {reportRow && target.display.scopeKind === "project"
-              ? "Project"
-              : scopeLabel(target.display.scopeKind)}
+          <span className="min-w-0 wrap-anywhere">
+            {scopeLabel(target.display.scopeKind)}
+            {target.configFile && ` (${target.configFile})`}
             {reportRow && target.projectName && (
               <span className="text-label"> · {target.projectName}</span>
             )}
@@ -87,22 +76,19 @@ export function BurnCheckTargetDetail({
         </div>
       </div>
       <div className={reportRow ? "burn-check-resource-body" : undefined}>
-        {reportRow ? (
+        {reportRow && target.affectedSessionCount != null ? (
           <p className="mt-1 type-callout tabular-nums text-label-secondary">
-            {target.affectedSessionCount != null
-              ? `${target.affectedSessionCount} ${target.affectedSessionCount === 1 ? "session" : "sessions"} affected`
-              : "Affected-session count unavailable"}
+            {`${target.affectedSessionCount} ${target.affectedSessionCount === 1 ? "session" : "sessions"} affected`}
           </p>
-        ) : (
+        ) : !reportRow ? (
           <p className="mt-2 type-body text-pretty text-label-secondary">
             {guidance.recommendation}
           </p>
-        )}
+        ) : null}
         {costLine && (
           <p className="mt-1 type-callout tabular-nums text-label-secondary">{costLine}</p>
         )}
         {!reportRow && <BurnCheckTargetActions target={target} refresh={refresh} />}
-        <ActionLimit target={target} />
         {status && (
           <p role="status" className="mt-2 type-callout text-label-secondary">
             {status}

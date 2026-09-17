@@ -36,6 +36,7 @@ function target(overrides: Partial<BurnCheckTargetPayload> = {}): BurnCheckTarge
       lastObservedAtMs: 2,
       estimateMethod: "builtInDefinitionReplication",
       estimatedOpportunity: null,
+      estimatedTokenBurnBasisPoints: null,
       verificationLimit: "freshEvidenceFromSameSourceAndTarget",
     },
     occurrenceCount: 2,
@@ -142,7 +143,7 @@ describe("BurnCheckTargetDetail", () => {
               cost: null,
               models: [],
               modelRuns: [],
-              hygiene: { evidenceState: "pending", badges: [] },
+              hygiene: { evidenceState: "pending", unusedResources: null, badges: [] },
             },
           ],
         })}

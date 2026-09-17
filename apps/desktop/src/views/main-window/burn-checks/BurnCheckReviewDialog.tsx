@@ -83,6 +83,9 @@ export function BurnCheckReviewDialog({
         <p className="mt-1 type-body text-label-secondary">
           {sideEffectDescriptions[review.sideEffect]}
         </p>
+        <p className="mt-2 type-callout text-label-secondary">
+          Existing files keep their previous content in a sibling .bak file.
+        </p>
         <div className="mt-5 rounded-control bg-surface-secondary px-3 py-3">
           <p className="type-callout text-label-secondary">
             {agentDisplayName(review.agent)} · {settingLabels[review.setting]} ·{" "}

@@ -81,7 +81,9 @@ pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,
 };
-pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, SourceOrigin};
+pub use initial_context::{
+    InitialContextBreakdown, InitialContextSourceCount, SourceOrigin, estimate_proportional_tokens,
+};
 pub use interface::{
     ContentKind, ContentPart, ContextSourceKind, ContextWindowSource, EvidenceObservation,
     MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource,
@@ -260,7 +262,8 @@ pub const ANALYZER_REVISION: i64 = 24;
 // +1 for `context_window_source`: `context_available` is now always true,
 // and the new field says whether the window is reported, tagged,
 // catalogued, or inferred. Stored analyses must rerun to populate it.
-pub const METRICS_SCHEMA_REVISION: i64 = 8;
+// +1 for per-bucket estimated cost (Bucket::cost). Stored analyses must rerun to populate it.
+pub const METRICS_SCHEMA_REVISION: i64 = 9;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.
@@ -304,7 +307,9 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 5;
 // +1 for the bounded Codex cross-format usage matcher in adapter snapshots.
 // Reject snapshots that can retain duplicate usage totals.
 // +1 because the evidence sink now carries Codex quota and provider incidents.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 9;
+// +1 because SlotAggregate gained priced tokens for per-bucket cost.
+// +1 because a merged slot keeps one priced entry per pricing key.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 11;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

@@ -1,10 +1,10 @@
 mod antigravity;
 mod claude;
-mod codex;
+pub(in crate::agent_config) mod codex;
 mod cursor;
-mod json;
-mod opencode;
-mod pi;
+pub(in crate::agent_config) mod json;
+pub(in crate::agent_config) mod opencode;
+pub(in crate::agent_config) mod pi;
 
 use std::path::{Path, PathBuf};
 

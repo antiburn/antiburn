@@ -1,4 +1,4 @@
-use super::recovery::recovery_target_matches;
+use super::recovery::{recovery_target_matches, resource_replacement_value};
 use super::watch::{
     positive_control_resolution, scope_identity_matches, session_starts_after_boundary,
 };
@@ -8,6 +8,7 @@ use antiburn_local::analysis::{
     EvidenceSource, EvidenceValue, ModelControlObservation, SessionEvidenceAccumulator,
     SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
 };
+use antiburn_local::insights::ReportWindow;
 
 const SOURCE_FORMATS: [SourceFormat; 31] = [
     SourceFormat::ClaudeJsonl,
@@ -302,6 +303,125 @@ fn current_platform_matches_the_compile_target() {
 
 #[cfg(not(windows))]
 #[test]
+fn indexed_resource_target_enables_auto_fix_for_the_exact_effective_entry() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers":{"docs":{"command":"docs"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir(home.join(".claude")).unwrap();
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"permissions":{"deny":[]}}"#,
+    )
+    .unwrap();
+    let store = Store::open(&temporary.path().join("store")).unwrap();
+    let controller = RemediationController::new(temporary.path().join("data"));
+    let target = insights_report::UnusedResourceTarget {
+        agent: AgentKind::Claude,
+        kind: crate::agent_config::ResourceKind::McpServer,
+        canonical_name: "docs".into(),
+        scope: insights_report::ResourceAssessmentScope::Global,
+        observations: 1,
+        indexed: true,
+        replicated_tokens: Some(40),
+        estimated_token_burn_basis_points: Some(400),
+        supporting_sessions: Vec::new(),
+    };
+
+    let resolved = controller
+        .resolve_resource_target(
+            &store,
+            &target,
+            BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 1,
+                },
+            },
+            Some(&home),
+        )
+        .unwrap();
+
+    assert!(resolved.config.is_some());
+    assert!(resolved.physical_target_key.is_some());
+    let watch = controller
+        .start_watch(&store, &resolved, RemediationState::Reserved, None, 1)
+        .unwrap();
+    assert_eq!(watch.state, RemediationState::Reserved);
+}
+
+#[test]
+fn advisory_resource_target_stays_prompt_only() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers":{"docs":{"command":"docs"}}}"#,
+    )
+    .unwrap();
+    let store = Store::open(&temporary.path().join("store")).unwrap();
+    let controller = RemediationController::new(temporary.path().join("data"));
+    let target = insights_report::UnusedResourceTarget {
+        agent: AgentKind::Claude,
+        kind: crate::agent_config::ResourceKind::McpServer,
+        canonical_name: "docs".into(),
+        scope: insights_report::ResourceAssessmentScope::Global,
+        observations: 1,
+        indexed: false,
+        replicated_tokens: None,
+        estimated_token_burn_basis_points: None,
+        supporting_sessions: Vec::new(),
+    };
+
+    let resolved = controller
+        .resolve_resource_target(
+            &store,
+            &target,
+            BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 1,
+                },
+            },
+            Some(&home),
+        )
+        .unwrap();
+
+    assert!(resolved.config.is_none());
+    assert!(resolved.physical_target_key.is_none());
+}
+
+#[test]
+fn resource_revalidation_keeps_the_indexed_provenance_requirement() {
+    let indexed = insights_report::UnusedResourceTarget {
+        agent: AgentKind::OpenCode,
+        kind: crate::agent_config::ResourceKind::Skill,
+        canonical_name: "review".into(),
+        scope: insights_report::ResourceAssessmentScope::Global,
+        observations: 1,
+        indexed: true,
+        replicated_tokens: Some(10),
+        estimated_token_burn_basis_points: Some(100),
+        supporting_sessions: Vec::new(),
+    };
+    let advisory = insights_report::UnusedResourceTarget {
+        indexed: false,
+        ..indexed.clone()
+    };
+
+    assert!(!resource_target_matches(&indexed, &advisory));
+    assert!(resource_target_matches(&advisory, &indexed));
+}
+
+#[cfg(not(windows))]
+#[test]
 fn missing_global_creation_revalidates_each_project_context() {
     let temporary = tempfile::tempdir().unwrap();
     let home = temporary.path().join("home");
@@ -343,6 +463,7 @@ fn missing_global_creation_revalidates_each_project_context() {
         additional_contexts: vec![second_context.clone()],
         operation,
         physical_key,
+        display_path: "~/.claude/settings.json".to_owned(),
     };
 
     assert!(
@@ -640,6 +761,19 @@ fn recovery_rejects_a_changed_physical_target_or_scope() {
 }
 
 #[test]
+fn resource_recovery_compares_the_selected_entry_value() {
+    assert_eq!(
+        resource_replacement_value("docs=false", Some("docs")),
+        Some("false")
+    );
+    assert_eq!(
+        resource_replacement_value("other=false", Some("docs")),
+        None
+    );
+    assert_eq!(resource_replacement_value("false", Some("docs")), None);
+}
+
+#[test]
 fn nested_workspace_context_round_trips_for_recovery() {
     let directory = tempfile::tempdir().unwrap();
     let home = directory.path().join("home");
@@ -732,7 +866,13 @@ fn verification_availability_matches_all_documented_source_cells() {
         api: Some("api".into()),
         old_model: (detector == DetectorId::OldModelUsage).then(|| "old".into()),
         replacement: (detector == DetectorId::OldModelUsage).then(|| "new".into()),
-        resource: None,
+        resource: matches!(
+            detector,
+            DetectorId::UnusedMcpServers
+                | DetectorId::UnusedBuiltInTools
+                | DetectorId::UnusedSkills
+        )
+        .then(|| "resource".into()),
         physical_target_key: (detector == DetectorId::OldModelUsage).then(|| "physical".into()),
         config_setting: (detector == DetectorId::OldModelUsage).then(|| "model".into()),
         config_expected_value: None,
@@ -896,6 +1036,7 @@ fn a_truncated_assessment_cannot_prove_a_fix() {
             assessment: FindingAssessment::Unavailable(
                 FindingUnavailableReason::IncompleteEvidence,
             ),
+            clean_for_verification: false,
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
@@ -914,6 +1055,7 @@ fn an_observed_resource_subset_cannot_prove_an_absent_target_fixed() {
             identity: "target".into(),
             target_present: false,
             assessment: FindingAssessment::Unavailable(FindingUnavailableReason::SignalMissing),
+            clean_for_verification: false,
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
@@ -1244,6 +1386,7 @@ fn only_explicit_same_route_controls_prove_generic_transitions() {
     };
     let assessment = insights_report::CurrentDetectorAssessment {
         assessment: FindingAssessment::Clean,
+        clean_for_verification: true,
         observed_at_ms: 200,
         finding_observed_at_ms: Vec::new(),
         started_at_ms: 150,
@@ -1310,6 +1453,7 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
         last_observed_at_ms: 1_000,
         estimate_method: Some(BurnCheckEstimateMethod::OldModelPriceDifference),
         estimated_opportunity: None,
+        estimated_token_burn_basis_points: None,
         verification_limit: BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
     };
     let legacy = store.remediation("attempt").unwrap().unwrap();

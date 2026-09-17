@@ -29,7 +29,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::analysis::tool_catalog::{comparable_tool_name, situational_tools};
+use crate::analysis::tool_catalog::{
+    comparable_tool_name, optional_built_in_tool, situational_tools,
+};
 use crate::analysis::{EvidenceCoverage, EvidenceValue, SessionEvidence, ToolDefinition};
 use crate::insights::SessionTokenBurnEvidence;
 use crate::insights::report::{Fact, FactState};
@@ -96,7 +98,7 @@ pub(super) fn evaluate_with_source_evidence(
 
 /// True when `definitions` names at least one built-in tool that costs
 /// real context, was not deferred, was never invoked, and is not on
-/// `agent`'s situational list.
+/// `agent`'s situational list or required tool set.
 fn has_unused_definition(agent: &str, definitions: &BTreeMap<String, ToolDefinition>) -> bool {
     let situational: Vec<String> = situational_tools(agent)
         .iter()
@@ -106,6 +108,7 @@ fn has_unused_definition(agent: &str, definitions: &BTreeMap<String, ToolDefinit
         definition.tokens > 0
             && !definition.deferred
             && !definition.invoked
+            && optional_built_in_tool(agent, name)
             && !situational.contains(&comparable_tool_name(name))
     })
 }
@@ -127,6 +130,7 @@ pub(super) fn finding_causes(evidence: &SessionEvidence) -> Vec<FindingCause> {
             definition.tokens > 0
                 && !definition.deferred
                 && !definition.invoked
+                && optional_built_in_tool(&evidence.identity.agent, name)
                 && !situational.contains(&comparable_tool_name(name))
         })
         .map(|(tool, definition)| FindingCause::UnusedBuiltInTool {
@@ -176,6 +180,7 @@ fn unused_sources<'a>(
         .filter(move |source| {
             source.replicated_tokens > 0
                 && !source.invoked
+                && optional_built_in_tool(&evidence.identity.agent, &source.name)
                 && !situational
                     .iter()
                     .any(|name| comparable_tool_name(name) == comparable_tool_name(&source.name))
@@ -215,16 +220,27 @@ mod tests {
     }
 
     #[test]
-    fn an_unused_definition_is_a_finding() {
+    fn an_unused_optional_definition_is_a_finding() {
         assert_eq!(
-            evaluate(&with_definition("bash", unused(100))),
+            evaluate(&with_definition("web_search", unused(100))),
             Observation::Finding
         );
     }
 
     #[test]
+    fn required_tools_are_never_findings() {
+        for tool in ["bash", "edit", "read", "write", "agent", "task", "search"] {
+            assert_eq!(
+                evaluate(&with_definition(tool, unused(100))),
+                Observation::NoFinding,
+                "{tool}"
+            );
+        }
+    }
+
+    #[test]
     fn incomplete_resource_inventory_does_not_block_built_in_tools() {
-        let mut evidence = with_definition("bash", unused(100));
+        let mut evidence = with_definition("web_search", unused(100));
         let EvidenceValue::Complete(sources) = evidence.context_sources else {
             unreachable!()
         };
@@ -277,7 +293,7 @@ mod tests {
 
     #[test]
     fn partial_tools_coverage_never_claims_the_absence_finding() {
-        let mut evidence = with_definition("bash", unused(100));
+        let mut evidence = with_definition("web_search", unused(100));
         evidence.tools = match evidence.tools {
             EvidenceValue::Complete(observed) => EvidenceValue::Partial {
                 observed,
@@ -290,7 +306,7 @@ mod tests {
 
     #[test]
     fn unsupported_definitions_report_the_signal_gap() {
-        let mut evidence = with_definition("bash", unused(100));
+        let mut evidence = with_definition("web_search", unused(100));
         let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
             unreachable!()
         };
@@ -300,7 +316,7 @@ mod tests {
 
     #[test]
     fn session_without_assistant_work_is_no_finding() {
-        let mut evidence = with_definition("bash", unused(100));
+        let mut evidence = with_definition("web_search", unused(100));
         let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
             unreachable!()
         };
@@ -318,7 +334,7 @@ mod tests {
         let mut source_evidence = SessionTokenBurnEvidence::default();
         source_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
             scope: "agent:bundled".to_owned(),
-            name: "Write".to_owned(),
+            name: "WebSearch".to_owned(),
             replicated_tokens: u128::from(u64::MAX) + 9,
             invoked: false,
             replicated_cost_usd: None,
@@ -331,7 +347,7 @@ mod tests {
         assert_eq!(
             finding_causes_with_source_evidence(&evidence, Some(&source_evidence)),
             vec![FindingCause::UnusedBuiltInTool {
-                tool: "Write".to_owned(),
+                tool: "WebSearch".to_owned(),
                 tokens: BuiltInToolTokens::Replicated(u128::from(u64::MAX) + 9),
                 cost_usd: None,
                 pricing_revision: None,
@@ -341,7 +357,7 @@ mod tests {
 
     #[test]
     fn source_attribution_carries_the_priced_cost_and_pricing_revision() {
-        let mut evidence = with_definition("bash", unused(100));
+        let mut evidence = with_definition("web_search", unused(100));
         let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
             unreachable!()
         };
@@ -349,7 +365,7 @@ mod tests {
         let mut source_evidence = SessionTokenBurnEvidence::default();
         source_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
             scope: "agent:bundled".to_owned(),
-            name: "Write".to_owned(),
+            name: "WebSearch".to_owned(),
             replicated_tokens: 200,
             invoked: false,
             replicated_cost_usd: Some(0.02),
@@ -359,7 +375,7 @@ mod tests {
         assert_eq!(
             finding_causes_with_source_evidence(&evidence, Some(&source_evidence)),
             vec![FindingCause::UnusedBuiltInTool {
-                tool: "Write".to_owned(),
+                tool: "WebSearch".to_owned(),
                 tokens: BuiltInToolTokens::Replicated(200),
                 cost_usd: Some(0.02),
                 pricing_revision: Some("pricing-generation-3".to_owned()),
