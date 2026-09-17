@@ -2011,7 +2011,12 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
         .find(&format!("fn {name}("))
         .unwrap_or_else(|| panic!("{name} exists"));
     let body = &source[start..];
-    let end = body.find("\n}\n").expect("the function closes");
+    // A Windows checkout ends each line with a carriage return and a line
+    // feed. The search accepts both line endings.
+    let end = body
+        .find("\n}\n")
+        .or_else(|| body.find("\r\n}\r\n"))
+        .expect("the function closes");
     &body[..end]
 }
 

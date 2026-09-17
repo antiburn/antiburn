@@ -2321,8 +2321,10 @@ fn a_quiet_only_burst_issues_no_generation_and_its_pass_covers_nothing() {
 /// through `run_pass`, which owns no ledger and covers nothing.
 #[test]
 fn only_scheduler_owned_passes_cover_and_only_after_their_indexed_reports() {
-    let source = include_str!("mod.rs");
-    let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+    // A Windows checkout carries carriage returns. The searches below are
+    // written with line feeds alone.
+    let source = include_str!("mod.rs").replace("\r\n", "\n");
+    let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
 
     let covered = {
         let start = production.find("async fn run_covered_pass(").unwrap();
