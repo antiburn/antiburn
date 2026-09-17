@@ -1,10 +1,10 @@
 mod antigravity;
 mod claude;
-mod codex;
+pub(in crate::agent_config) mod codex;
 mod cursor;
-mod json;
-mod opencode;
-mod pi;
+pub(in crate::agent_config) mod json;
+pub(in crate::agent_config) mod opencode;
+pub(in crate::agent_config) mod pi;
 
 use std::path::{Path, PathBuf};
 
@@ -112,22 +112,6 @@ pub(super) trait VendorConfig: Sync {
     ) -> Result<Target, ConfigUnavailableReason> {
         let _ = expected;
         self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)
-    }
-
-    #[cfg(not(windows))]
-    fn resolve_targets(
-        &self,
-        setting: ConfigSetting,
-        home: &Path,
-        workspace_cwd: Option<&Path>,
-        trusted_workspace_root: Option<&Path>,
-    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
-        Ok(vec![self.resolve_target(
-            setting,
-            home,
-            workspace_cwd,
-            trusted_workspace_root,
-        )?])
     }
 
     #[cfg(not(windows))]

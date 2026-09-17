@@ -1,6 +1,5 @@
 //! Assembly check between `query_turn_facts` (the row-derived read side)
 //! and `SessionEvidenceAccumulator::evidence` (the published projection).
-//! See Phase 3 in `docs/plans/session-evidence-harness-parity.md`.
 //!
 //! `SessionEvidence` is now built directly from `TurnFacts`, so this is a
 //! cheap check that the assembly carries every row-derived field through

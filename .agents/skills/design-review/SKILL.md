@@ -110,9 +110,11 @@ Use `report-template.md`. Give each finding a severity, a dimension, what is
 wrong, the rule and token it breaks, a suggested fix, and evidence. Evidence is
 a screenshot or a quoted class or value. Rank the most severe first.
 
-Save the report to `docs/design-reviews/<surface>-<date>.md`. Create the folder
-if it does not exist. `<surface>` names what you reviewed, such as
-`popover-activity` or `settings-privacy`. Give the user the top fixes in chat.
+Save the report to `.agent-artifacts/reviews/<surface>-<date>.md`. Create the
+folder if it does not exist. Keep review captures alongside the report in this
+ignored folder. Never commit reports or captures, or force-add them to Git.
+`<surface>` names what you reviewed, such as `popover-activity` or
+`settings-privacy`. Give the user the top fixes in chat.
 
 Review only by default. Propose the fixes. Do not apply them unless the user
 asks.

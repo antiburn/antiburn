@@ -110,7 +110,7 @@ fn v43_adds_remediation_and_model_attribution() {
     connection.pragma_update(None, "user_version", 42).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v43").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 48);
+    assert_eq!(store.schema_version().unwrap(), 50);
     let connection = store.lock();
     let columns: i64 = connection
         .query_row(
@@ -167,7 +167,7 @@ fn v44_adds_nullable_snapshots_and_strict_contributions_without_backfill() {
 
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v44").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 48);
+    assert_eq!(store.schema_version().unwrap(), 50);
     assert!(store.remediation_display_snapshot("old").unwrap().is_none());
     let connection = store.lock();
     let strict: i64 = connection
@@ -189,7 +189,7 @@ fn v46_adds_reasoning_attribution_without_rewriting_model_columns() {
     connection.pragma_update(None, "user_version", 45).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v46").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 48);
+    assert_eq!(store.schema_version().unwrap(), 50);
     let columns: i64 = store
         .lock()
         .query_row(
@@ -234,6 +234,102 @@ fn display_snapshot_round_trips_exact_millisecond_boundaries() {
     assert!(store.upsert_remediation_display_snapshot(&invalid).is_err());
     invalid.origin = "external".into();
     assert!(store.upsert_remediation_display_snapshot(&invalid).is_err());
+}
+
+#[test]
+fn remediation_batch_rolls_back_when_a_later_insert_fails() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    let batch = [
+        (
+            remediation("duplicate", "first-target", RemediationState::Watching, 10),
+            vec![guard.clone()],
+        ),
+        (
+            remediation("duplicate", "second-target", RemediationState::Watching, 10),
+            vec![guard],
+        ),
+    ];
+
+    assert!(store.create_or_reuse_remediations(&batch).is_err());
+    let count: i64 = store
+        .lock()
+        .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn only_exact_reserved_resource_writes_can_start_without_session_guards() {
+    let store = store();
+    let ordinary = remediation(
+        "ordinary",
+        "ordinary-target",
+        RemediationState::Reserved,
+        10,
+    );
+    assert!(store.create_or_reuse_remediation(&ordinary, &[]).is_err());
+
+    let mut resource = remediation(
+        "resource",
+        "resource-target",
+        RemediationState::Reserved,
+        10,
+    );
+    resource.definition_json = serde_json::json!({
+        "version": 1,
+        "detector": "unused_mcp_servers",
+        "resource": "docs",
+        "physicalTargetKey": "opaque-target",
+        "configSetting": "mcpServer",
+        "configExpectedValue": "docs=true",
+        "configProposedValue": "docs=false"
+    })
+    .to_string();
+
+    assert!(
+        store
+            .create_or_reuse_remediation(&resource, &[])
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn remediation_snapshot_reads_are_bounded_and_ordered() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    for (id, updated_at_epoch) in [("older", 1), ("newer", 2), ("legacy", 3)] {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, definition_json, result_json, created_at_epoch, updated_at_epoch)
+                 VALUES (?1, ?1, 'native', 'claude-code', 'project', 'scope',
+                         'waitingForPromptUse', ?2, ?2, 1, ?3)",
+                params![id, JSON_V1, updated_at_epoch],
+            )
+            .unwrap();
+    }
+    for id in ["older", "newer"] {
+        let mut snapshot = display_snapshot(id);
+        snapshot.verified_boundary_ms = None;
+        store
+            .upsert_remediation_display_snapshot(&snapshot)
+            .unwrap();
+    }
+
+    let latest = store.remediations_with_display_snapshots(1).unwrap();
+    assert_eq!(latest.len(), 1);
+    assert_eq!(latest[0].record.remediation_id, "newer");
+    assert_eq!(latest[0].snapshot.effective_boundary_ms, 0);
+    assert!(
+        store
+            .remediations_with_display_snapshots(0)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -670,7 +766,7 @@ fn prompt_watch_upgrades_to_a_crash_safe_auto_write() {
     );
     assert!(
         store
-            .finalize_remediation_write(&reserved.remediation_id, 23_000, 23)
+            .finalize_remediation_write(&reserved.remediation_id, 23_000, 23, true)
             .unwrap()
     );
     let watching = store
@@ -716,7 +812,7 @@ fn a_new_auto_write_starts_its_boundary_at_successful_readback() {
     );
     assert!(
         store
-            .finalize_remediation_write(&reserved.remediation_id, 23_456, 24)
+            .finalize_remediation_write(&reserved.remediation_id, 23_456, 24, true)
             .unwrap()
     );
     let watching = store
@@ -816,6 +912,121 @@ fn auto_write_upgrades_an_unverifiable_action_watch() {
             .remediation_display_snapshot(&restored.remediation_id)
             .unwrap(),
         Some(snapshot)
+    );
+}
+
+#[test]
+fn auto_write_replaces_a_waiting_prompt_attempt_and_restores_it_when_cancelled() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    let waiting = store
+        .create_or_reuse_remediation(
+            &remediation(
+                "prompt",
+                "target",
+                RemediationState::WaitingForPromptUse,
+                10,
+            ),
+            std::slice::from_ref(&guard),
+        )
+        .unwrap()
+        .unwrap();
+
+    let reserved = store
+        .create_or_reuse_remediation(
+            &remediation("auto", "target", RemediationState::Reserved, 20),
+            &[guard],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(reserved.remediation_id, waiting.remediation_id);
+    assert_eq!(reserved.state, RemediationState::Reserved);
+
+    assert!(
+        store
+            .cancel_remediation_reservation(&reserved.remediation_id)
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .remediation(&reserved.remediation_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        RemediationState::WaitingForPromptUse
+    );
+}
+
+#[test]
+fn copied_prompt_does_not_replace_an_active_passive_watch() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    let passive = store
+        .create_or_reuse_remediation(
+            &remediation("passive", "target", RemediationState::Watching, 10),
+            std::slice::from_ref(&guard),
+        )
+        .unwrap()
+        .unwrap();
+    let snapshot = display_snapshot(&passive.remediation_id);
+    store
+        .upsert_remediation_display_snapshot(&snapshot)
+        .unwrap();
+
+    let copied = store
+        .create_or_reuse_remediation(
+            &remediation(
+                "copied",
+                "target",
+                RemediationState::WaitingForPromptUse,
+                20,
+            ),
+            &[guard],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(copied.remediation_id, passive.remediation_id);
+    assert_eq!(copied.state, RemediationState::Watching);
+    assert_eq!(
+        copied.effective_boundary_ms,
+        Some(snapshot.effective_boundary_ms)
+    );
+    assert_eq!(copied.definition_json, passive.definition_json);
+    assert_eq!(copied.result_json, passive.result_json);
+    assert_eq!(
+        store
+            .remediation_display_snapshot(&passive.remediation_id)
+            .unwrap(),
+        Some(snapshot)
+    );
+}
+
+#[test]
+fn startup_retains_waiting_prompt_attempts() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    let waiting = store
+        .create_or_reuse_remediation(
+            &remediation(
+                "prompt",
+                "target",
+                RemediationState::WaitingForPromptUse,
+                10,
+            ),
+            &[guard],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(store.reconcile_remediations(30).unwrap(), 0);
+    assert_eq!(
+        store
+            .remediation(&waiting.remediation_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        RemediationState::WaitingForPromptUse
     );
 }
 

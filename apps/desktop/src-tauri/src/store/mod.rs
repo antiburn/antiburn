@@ -1497,9 +1497,7 @@ impl Store {
     /// stale rows a build with the old revisions left behind are decided at
     /// read time, so a bumped build simply never resumes from them; this
     /// sweeps them out so they do not sit unused. Call this from the same
-    /// startup path that calls [`Self::reconcile_evidence_revisions`]. See
-    /// "R6. Invalidation" in the phase 3b design rules in
-    /// `docs/plans/continuous-session-ingest.md`.
+    /// startup path that calls [`Self::reconcile_evidence_revisions`].
     pub fn purge_stale_source_resume(&self, current: ResumeRevisions) -> Result<usize> {
         let connection = self.lock();
         Ok(delete_stale_source_resume(&connection, &current)?)
@@ -1745,7 +1743,7 @@ impl Store {
         tx.execute("DELETE FROM provider_account_seen", [])?;
         tx.execute(
             "DELETE FROM setting
-              WHERE key IN (?1, 'internal:liveUsageHistoryV2', 'internal:liveUsageSnapshotV2')",
+              WHERE key IN (?1, 'internal:liveUsageSnapshotV2')",
             params![PROVIDER_ACCOUNT_SECRET_KEY],
         )?;
         tx.execute("DELETE FROM scan_state", [])?;
@@ -1778,9 +1776,7 @@ impl Store {
     /// next pass. A source with no entry is treated as
     /// [`SourcePublishMode::Full`] with no resume bookkeeping; a caller
     /// that never claims resume support for any source passes an empty
-    /// slice and gets a plain full publish. See "R4. Fence semantics" and
-    /// "R5. Snapshot storage" in the phase 3b design rules in
-    /// `docs/plans/continuous-session-ingest.md`.
+    /// slice and gets a plain full publish.
     pub fn publish_projections(
         &self,
         record: &AnalysisRecord,
@@ -1963,6 +1959,20 @@ impl Store {
             )?;
             return Ok(false);
         }
+        if completion.status == PublishedEvidence::Ready {
+            let publication_epoch = time::OffsetDateTime::now_utc();
+            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
+            remediation::activate_waiting_prompt_remediations_in(
+                &transaction,
+                &record.key.environment_key,
+                &record.key.agent,
+                &record.key.session_id,
+                completion.claim_fence,
+                boundary_ms,
+                publication_epoch.unix_timestamp(),
+            )?;
+        }
         let key = turn_session_key(&record.key);
         publication::publish_turn_rows(
             &transaction,
@@ -2000,6 +2010,8 @@ impl Store {
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
         if completion.status == PublishedEvidence::Ready {
             let publication_epoch = time::OffsetDateTime::now_utc();
+            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
             remediation::mark_remediations_dirty_in(
                 &transaction,
                 &record.key.environment_key,
@@ -2009,8 +2021,6 @@ impl Store {
             )?;
             let findings =
                 crate::insights_report::publication_findings_in(&transaction, &record.key)?;
-            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
-                .unwrap_or(i64::MAX);
             let candidates = crate::remediation::passive_remediations(
                 &transaction,
                 remediation_secret

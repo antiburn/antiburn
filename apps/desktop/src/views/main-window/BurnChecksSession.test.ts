@@ -34,7 +34,7 @@ function setup(visibleInitially = true, overrides: Partial<BurnChecksAdapter> = 
   const adapter: BurnChecksAdapter = {
     getReport: vi.fn().mockResolvedValue(report(100)),
     getAggregateWins: vi.fn().mockResolvedValue({ wins: [] }),
-    getTargets: vi.fn().mockResolvedValue({ targets: [], truncated: false }),
+    getTargets: vi.fn().mockResolvedValue({ targets: [], samples: [], truncated: false }),
     cancelReport: vi.fn().mockResolvedValue(undefined),
     getVisible: vi.fn().mockResolvedValue(visibleInitially),
     onVisible: vi.fn(async (handler) => {
@@ -181,7 +181,7 @@ describe("BurnChecksSession", () => {
     session.setTargetsVisible("oldModelUsage", true)
     await vi.waitFor(() => expect(adapter.getTargets).toHaveBeenCalledOnce())
     session.setTargetsVisible("oldModelUsage", false)
-    pending.resolve({ targets: [], truncated: false })
+    pending.resolve({ targets: [], samples: [], truncated: false })
     await pending.promise
     await Promise.resolve()
 
@@ -219,6 +219,7 @@ describe("BurnChecksSession", () => {
             lastObservedAtMs: 2,
             estimateMethod: "oldModelPriceDifference",
             estimatedOpportunity: null,
+            estimatedTokenBurnBasisPoints: null,
             verificationLimit: "freshEvidenceFromSameSourceAndTarget",
           },
           occurrenceCount: 1,
@@ -236,6 +237,7 @@ describe("BurnChecksSession", () => {
           expiresAtEpoch: 100,
         },
       ],
+      samples: [],
       truncated: false,
     })
     await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
@@ -280,6 +282,7 @@ describe("BurnChecksSession", () => {
             lastObservedAtMs: 2,
             estimateMethod: null,
             estimatedOpportunity: null,
+            estimatedTokenBurnBasisPoints: null,
             verificationLimit: "freshEvidenceFromSameSourceAndTarget",
           },
           savings: {

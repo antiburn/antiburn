@@ -136,3 +136,54 @@
   grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
 }
+
+/* The project folder uses bare icons and a portal above adjacent panes. */
+.project-folder-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--space-xl);
+  height: var(--space-xl);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  transition: color var(--duration-fast);
+}
+.project-folder-icon:active {
+  transform: none;
+}
+.project-folder-panel {
+  position: fixed;
+  z-index: 100;
+  width: min(390px, calc(100vw - var(--space-lg)));
+  max-height: calc(100vh - var(--space-lg));
+  overflow: auto;
+  min-width: 0;
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  background: var(--color-surface-window);
+  border: 0;
+  border-radius: var(--radius-popover);
+  animation: none;
+}
+.project-folder-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+.project-folder-tools {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-sm);
+}
+.project-folder-path {
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.project-folder-path > span {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}

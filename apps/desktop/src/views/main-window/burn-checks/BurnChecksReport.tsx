@@ -1,6 +1,6 @@
 import "../../../styles/burn-checks-report.css"
 
-import { BellRing, ChevronRight, Clock } from "lucide-react"
+import { ChevronRight, Clock } from "lucide-react"
 import { useCallback, useRef, useState, type KeyboardEvent } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
@@ -16,22 +16,27 @@ import { checksPresentation, formatTokenBurnPercent } from "../../../lib/present
 import {
   formatSnoozeUntil,
   snoozedDetectorIds,
-  unsnoozeBurnCheck,
   useSnoozedBurnChecks,
 } from "../../../lib/snoozedBurnChecks"
 import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
+import { BurnCheckCategoryIcon } from "./BurnCheckCategoryIcon"
 import { BurnCheckDetail, CheckDetailActions, CHECK_SENTENCES } from "./BurnCheckDetail"
 import { BurnCheckTargetDetail } from "./BurnCheckTargetDetail"
 import { BurnChecksHeader } from "./BurnChecksHeader"
 import { BurnChecksSavings } from "./BurnChecksSavings"
 import { BurnCheckDetailBody } from "./BurnCheckDetailBody"
+import { RemindLaterAction } from "./RemindLaterAction"
 
 type ReportUiState = {
   reportKey: string
   selectedId: ChecksCategoryPayload["id"] | null
   deliberateIds: ReadonlySet<ChecksCategoryPayload["id"]>
   passedPreference: boolean | null
+}
+
+function isUnusedResourceDetector(id: ChecksCategoryPayload["id"]) {
+  return id === "unusedMcpServers" || id === "unusedBuiltInTools" || id === "unusedSkills"
 }
 
 function LoadingCheckDetail() {
@@ -78,6 +83,9 @@ function CheckDetailContent({
   state: BurnChecksSnapshot
 }) {
   const targets = state.targets[check.id]
+  const remediation = state.remediationProgress?.attempts.find(
+    (attempt) => attempt.detector === check.id,
+  )
   if (check.finding === 0) {
     const PassIcon = BURN_CHECK_MARKS.clean.Icon
     return (
@@ -91,6 +99,11 @@ function CheckDetailContent({
         <p className="type-callout text-label-secondary">
           {`No finding in ${check.clean} complete sessions.`}
         </p>
+        {remediation?.outcome === "passed" && remediation.origin === "action" && (
+          <p className="mt-1 type-footnote text-burn-check-pass-fill">
+            Verified after your fix.
+          </p>
+        )}
       </div>
     )
   }
@@ -101,12 +114,14 @@ function CheckDetailContent({
       <LoadingCheckDetail />
     )
   }
-  if (check.id === "unusedSkills" || check.id === "unusedMcpServers") {
+  if (isUnusedResourceDetector(check.id)) {
     if (targets.data.targets.length === 0) {
       return (
         <BurnCheckDetail
           detector={check.id}
           targets={[]}
+          samples={targets.data.samples}
+          failedSessionCount={check.finding}
           refresh={session.refresh}
           contained
           reportRow
@@ -119,7 +134,6 @@ function CheckDetailContent({
           <BurnCheckTargetDetail
             key={target.findingId}
             target={target}
-            detector={check.id}
             refresh={session.refresh}
             reportRow
           />
@@ -131,6 +145,8 @@ function CheckDetailContent({
     <BurnCheckDetail
       detector={check.id}
       targets={targets.data.targets}
+      samples={targets.data.samples}
+      failedSessionCount={check.finding}
       refresh={session.refresh}
       contained={targets.data.targets.length === 0}
       reportRow
@@ -155,12 +171,19 @@ function CheckDetail({
 }) {
   const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
   const targetList = state.targets[check.id]?.data
-  const named = check.id === "unusedSkills" || check.id === "unusedMcpServers"
-  const resourceName = "affected resource"
+  const named = isUnusedResourceDetector(check.id)
+  const resourceNames =
+    check.id === "unusedSkills"
+      ? ["skill", "skills"]
+      : check.id === "unusedMcpServers"
+        ? ["MCP server", "MCP servers"]
+        : ["tool", "tools"]
   const resourceCount =
     named && targetList
-      ? `${targetList.targets.length} ${resourceName}${targetList.targets.length === 1 ? "" : "s"}${targetList.truncated ? " shown" : ""}`
+      ? `${targetList.truncated ? "At least " : ""}${targetList.targets.length} affected ${resourceNames[targetList.targets.length === 1 ? 0 : 1]}`
       : null
+  const showFindingActions = check.finding > 0 && targetList
+  const showSnoozedAction = snoozed && check.finding === 0
   const trackVisibility = useCallback(
     (node: HTMLDivElement | null) =>
       session.setTargetsVisible(check.id, node !== null, deliberate),
@@ -179,46 +202,52 @@ function CheckDetail({
         data-tauri-drag-region={isMacOS() ? "deep" : undefined}
       >
         <div className="burn-check-detail-heading-content">
-          <div className="min-w-0 flex-1 basis-56">
-            <h2 className="type-title-2 text-label text-balance">{presentation.label}</h2>
-            <p className="mt-1 type-footnote tabular-nums text-label-secondary">
-              {check.finding} {check.finding === 1 ? "session" : "sessions"} affected
-              {resourceCount && <span className="text-label-tertiary"> · {resourceCount}</span>}
-            </p>
-            <CheckMetadata check={check} presentation={presentation} inline />
-            {check.finding > 0 && (
-              <p className="mt-3 type-body text-pretty text-label-secondary">
-                {check.id === "unusedMcpServers"
-                  ? "These servers loaded tools that weren’t used. Disable each server where you don’t need it."
-                  : check.id === "unusedSkills"
-                    ? "These skills added context that wasn’t used. Load each skill only where the work needs it."
-                    : CHECK_SENTENCES[check.id]}
-              </p>
-            )}
-          </div>
-          {check.finding > 0 && targetList && (!named || targetList.targets.length === 0) && (
-            <CheckDetailActions
-              detector={check.id}
-              targets={targetList.targets}
-              refresh={session.refresh}
-              reportRow
-              snoozed={snoozed}
+          <div className="w-full min-w-0">
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <h2 className="min-w-0 flex-1 type-title-2 text-label text-balance">
+                {presentation.label}
+              </h2>
+              {showFindingActions && (
+                <div className="max-w-full shrink-0">
+                  <CheckDetailActions
+                    detector={check.id}
+                    targets={targetList.targets}
+                    refresh={session.refresh}
+                    reportRow
+                  />
+                </div>
+              )}
+              {showSnoozedAction && (
+                <div className="max-w-full shrink-0">
+                  <RemindLaterAction detector={check.id} />
+                </div>
+              )}
+            </div>
+            <CheckMetadata
+              check={check}
+              presentation={presentation}
+              resourceCount={resourceCount}
+              inline
             />
-          )}
-          {snoozed && (
-            <button
-              type="button"
-              onClick={() => void unsnoozeBurnCheck(check.id)}
-              className="burn-check-action type-callout gap-1"
-            >
-              <BellRing size={12} aria-hidden="true" />
-              Unsnooze
-            </button>
+          </div>
+          {check.finding > 0 && (
+            <p className="w-full type-body text-pretty text-label-secondary">
+              {check.id === "unusedMcpServers"
+                ? "These servers loaded tools that weren’t used. Disable each server where you don’t need it."
+                : check.id === "unusedSkills"
+                  ? "These skills added context that wasn’t used. Load each skill only where the work needs it."
+                  : CHECK_SENTENCES[check.id]}
+            </p>
           )}
         </div>
       </header>
       <BurnCheckDetailBody visible={visible}>
-        <div className="burn-checks-detail-content">
+        <div
+          className={cn(
+            "burn-checks-detail-content",
+            check.finding > 0 && "pt-[var(--space-lg)]",
+          )}
+        >
           <CheckDetailContent check={check} session={session} state={state} />
         </div>
       </BurnCheckDetailBody>
@@ -229,14 +258,23 @@ function CheckDetail({
 function CheckMetadata({
   check,
   presentation,
+  resourceCount,
   inline = false,
+  className,
 }: {
   check: ChecksCategoryPayload
   presentation: ReturnType<typeof checkRowPresentation>
+  resourceCount?: string | null
   inline?: boolean
+  className?: string
 }) {
   return (
-    <span className={cn(inline ? "flex flex-wrap items-center gap-x-3 gap-y-1" : "block")}>
+    <span
+      className={cn(
+        inline ? "flex flex-wrap items-center gap-x-3 gap-y-1" : "block",
+        className,
+      )}
+    >
       <span className="mt-0.5 block font-mono type-footnote tabular-nums">
         <span
           className={cn(
@@ -247,12 +285,22 @@ function CheckMetadata({
         >
           {check.finding} failed
         </span>
-        <span className="text-label-tertiary"> · </span>
+        <span className="mx-0.5 inline-block text-label-tertiary" aria-hidden="true">
+          ·
+        </span>
         <span
           className={check.finding > 0 ? "text-label-secondary" : "text-burn-check-pass-fill"}
         >
           {check.clean} passed
         </span>
+        {resourceCount && (
+          <>
+            <span className="mx-0.5 inline-block text-label-tertiary" aria-hidden="true">
+              ·
+            </span>
+            <span className="text-label-tertiary">{resourceCount}</span>
+          </>
+        )}
       </span>
       {(check.estimatedTokenBurnBasisPoints != null || presentation.costLine) && (
         <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -291,7 +339,6 @@ function CheckTrigger({
   snoozeLabel?: string
 }) {
   const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
-  const { Icon } = presentation
   const summary = `${check.finding} failed · ${check.clean} passed`
   const metric = presentation.metric?.replace("<", "Under ").replace(" token", "")
   const agents = [
@@ -331,9 +378,7 @@ function CheckTrigger({
           ))}
         </span>
       )}
-      <span className="relative z-10 grid h-8 w-8 place-items-center rounded-full bg-surface-card text-label-secondary">
-        <Icon size={15} strokeWidth={2} aria-hidden="true" />
-      </span>
+      <BurnCheckCategoryIcon detector={check.id} />
       <span className="relative z-10 min-w-0">
         <span className="block wrap-anywhere type-body font-medium! text-label">
           {presentation.label}
@@ -363,14 +408,40 @@ export function BurnChecksReport({
   const snoozed = useSnoozedBurnChecks()
   const snoozedIds = snoozedDetectorIds(snoozed)
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
-  const activeFailures = presentation.failures.filter((check) => !snoozedIds.has(check.id))
+  const awaitingIds = new Set(
+    presentation.failures
+      .filter((check) => {
+        const targets = state.targets[check.id]?.data?.targets
+        return (
+          targets !== undefined &&
+          targets.length > 0 &&
+          targets.every(
+            (target) =>
+              target.watch?.lifecycle === "watching" &&
+              target.watch.verification.status === "watching",
+          )
+        )
+      })
+      .map((check) => check.id),
+  )
+  const activeAwaiting = presentation.failures.filter(
+    (check) => !snoozedIds.has(check.id) && awaitingIds.has(check.id),
+  )
+  const activeFailures = presentation.failures.filter(
+    (check) => !snoozedIds.has(check.id) && !awaitingIds.has(check.id),
+  )
   const activeWins = presentation.wins.filter((check) => !snoozedIds.has(check.id))
   const snoozedChecks = [...presentation.failures, ...presentation.wins].filter((check) =>
     snoozedIds.has(check.id),
   )
-  const checks = [...activeFailures, ...activeWins, ...snoozedChecks]
+  const checks = [...activeFailures, ...activeAwaiting, ...activeWins, ...snoozedChecks]
   const reportKey = checks.map((check) => check.id).join(":")
-  const initialId = activeFailures[0]?.id ?? activeWins[0]?.id ?? snoozedChecks[0]?.id ?? null
+  const initialId =
+    activeFailures[0]?.id ??
+    activeAwaiting[0]?.id ??
+    activeWins[0]?.id ??
+    snoozedChecks[0]?.id ??
+    null
   const [ui, setUi] = useState<ReportUiState>(() => ({
     reportKey,
     selectedId: initialId,
@@ -393,12 +464,14 @@ export function BurnChecksReport({
     : initialId
   const visibleChecks = [
     ...activeFailures,
+    ...activeAwaiting,
     ...(passedOpen ? activeWins : []),
     ...(snoozedOpen ? snoozedChecks : []),
   ]
   const selectedVisibleId = visibleChecks.some((check) => check.id === selectedId)
     ? selectedId
     : (activeFailures[0]?.id ??
+      activeAwaiting[0]?.id ??
       (passedOpen ? activeWins[0]?.id : null) ??
       (snoozedOpen ? snoozedChecks[0]?.id : null) ??
       null)
@@ -472,6 +545,28 @@ export function BurnChecksReport({
                 <section className="burn-checks-group" aria-labelledby="burn-checks-failed">
                   <div className="burn-checks-group-body">
                     {activeFailures.map((check) => renderCheck(check))}
+                  </div>
+                </section>
+              )}
+              {activeAwaiting.length > 0 && (
+                <section className="burn-checks-group" aria-labelledby="burn-checks-awaiting">
+                  <h2 id="burn-checks-awaiting" className="flex items-center gap-2 px-1">
+                    <span
+                      className="h-2 w-2 rounded-full bg-system-orange"
+                      aria-hidden="true"
+                    />
+                    <span className="type-footnote font-medium! text-label-tertiary">
+                      Awaiting verification
+                    </span>
+                    <span className="burn-check-group-count type-footnote tabular-nums text-label-tertiary">
+                      {activeAwaiting.length}
+                    </span>
+                  </h2>
+                  <p className="px-1 pt-1 type-footnote text-label-tertiary">
+                    A later complete session confirms each change.
+                  </p>
+                  <div className="burn-checks-group-body mt-2">
+                    {activeAwaiting.map((check) => renderCheck(check))}
                   </div>
                 </section>
               )}

@@ -9,12 +9,11 @@
  */
 const SETTINGS_PANE_IDS = [
   "general",
-  "appearance",
   "sources",
-  "privacy",
   "notifications",
   "usage",
-  "insights",
+  "appearance",
+  "privacy",
   "about",
 ] as const
 

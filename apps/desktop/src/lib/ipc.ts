@@ -300,6 +300,8 @@ export interface SessionAnalysisPayload {
   relations: SessionRelationsPayload | null
   /** The provider's own transcript, for the reveal action. */
   sourcePath: string | null
+  /** The stored absolute working directory. */
+  projectPath: string | null
   /** Unix seconds of this session's own first transcript event, or null when
    * unknown. The sub-agent roster uses it to show each member's start as
    * elapsed time from the session start. */
@@ -788,11 +790,12 @@ export type Interaction =
       kind: "onboardingStepViewed"
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
+  | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
       kind: "surfaceStateObserved"
-      surface: StateSurface
+      surface: Surface
       state: SurfaceState
       origin: SurfaceOrigin
     }
@@ -835,7 +838,6 @@ export type Surface =
   | "settings"
   | "burn_checks"
 
-export type StateSurface = Surface | "insights"
 export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
@@ -845,6 +847,7 @@ export type AutoFixReviewAnalyticsOutcome =
   "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
 export type AutoFixAnalyticsOutcome =
   | "applied_awaiting_verification"
+  | "applied_verification_unavailable"
   | "recovery_needed"
   | "stale"
   | "expired"
@@ -1335,6 +1338,12 @@ export async function deleteSessionData(
     sessionId,
     wslDistro: wslDistro ?? null,
   })
+}
+
+/** Open the project directory through the native file manager. */
+export async function openProjectFolder(path: string): Promise<void> {
+  if (!hasShell()) throw new Error("The native file manager is unavailable")
+  await invoke("open_project_folder", { path })
 }
 
 /** Reveal a transcript in the platform's file manager. */

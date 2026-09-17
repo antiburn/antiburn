@@ -85,30 +85,56 @@ impl VendorConfig for Pi {
                 Ok(target(&path, &global_root, ConfigScope::Global, operation))
             }
             ConfigSetting::Compaction => {
-                for (path, document, root, scope) in project
-                    .iter()
-                    .map(|(path, document)| {
-                        (
-                            path,
-                            document,
-                            trusted_workspace_root.unwrap() as &Path,
-                            ConfigScope::Project,
-                        )
-                    })
-                    .chain(global.iter().map(|(path, document)| {
-                        (path, document, &global_root as &Path, ConfigScope::Global)
-                    }))
+                let project_layer = project.as_ref().map(|(path, document)| {
+                    (
+                        path,
+                        document,
+                        trusted_workspace_root.expect("a project document has a trusted root"),
+                        ConfigScope::Project,
+                    )
+                });
+                let global_layer = global.as_ref().map(|(path, document)| {
+                    (path, document, &global_root as &Path, ConfigScope::Global)
+                });
+                let project_enabled = project_layer.and_then(|(_, document, _, _)| {
+                    document
+                        .get("compaction")
+                        .and_then(Value::as_object)
+                        .and_then(|value| value.get("enabled"))
+                });
+                if project_enabled == Some(&Value::Bool(false)) {
+                    let (path, _, root, scope) = project_layer.expect("the value came from here");
+                    return Ok(target(
+                        path,
+                        root,
+                        scope,
+                        OperationSelector::JsonPath(vec!["compaction", "enabled"]),
+                    ));
+                }
+                if project_enabled != Some(&Value::Bool(true))
+                    && let Some((path, document, root, scope)) = global_layer
+                    && document
+                        .get("compaction")
+                        .and_then(Value::as_object)
+                        .and_then(|value| value.get("enabled"))
+                        == Some(&Value::Bool(false))
                 {
-                    for key in ["enabled", "reserveTokens", "keepRecentTokens"] {
-                        let Some(value) = document
+                    return Ok(target(
+                        path,
+                        root,
+                        scope,
+                        OperationSelector::JsonPath(vec!["compaction", "enabled"]),
+                    ));
+                }
+                for key in ["reserveTokens", "keepRecentTokens"] {
+                    for (path, document, root, scope) in
+                        project_layer.into_iter().chain(global_layer)
+                    {
+                        if document
                             .get("compaction")
                             .and_then(Value::as_object)
                             .and_then(|value| value.get(key))
-                        else {
-                            continue;
-                        };
-                        if (key == "enabled" && value == &Value::Bool(false))
-                            || (key != "enabled" && value.is_number())
+                            .is_some_and(Value::is_number)
                         {
                             return Ok(target(
                                 path,
@@ -146,7 +172,9 @@ impl VendorConfig for Pi {
         let project_path = workspace_cwd.map(|cwd| cwd.join(".pi/settings.json"));
         if let (Some(path), Some(root)) = (project_path.as_ref(), trusted_workspace_root)
             && path_entry_exists(path)?
-            && default_tool_value(&parse_strict(&read_checked(path, root)?.bytes)?, name)?.is_some()
+            && default_tool_value(&parse_strict(&read_checked(path, root)?.bytes)?, name)?
+                .as_deref()
+                == Some(format!("{name}=true").as_str())
         {
             return Ok(target(
                 path,
@@ -170,53 +198,6 @@ impl VendorConfig for Pi {
             ));
         }
         Err(ConfigUnavailableReason::MissingTarget)
-    }
-
-    #[cfg(not(windows))]
-    fn resolve_targets(
-        &self,
-        setting: ConfigSetting,
-        home: &Path,
-        workspace_cwd: Option<&Path>,
-        trusted_workspace_root: Option<&Path>,
-    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
-        let primary = self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)?;
-        let mut targets = vec![primary];
-        let global_root = global_root(home)?;
-        let global = global_root.join("settings.json");
-        if path_entry_exists(&global)?
-            && !targets.iter().any(|target| target.path == global)
-            && self
-                .read_value(
-                    &read_checked(&global, &global_root)?.bytes,
-                    &targets[0].operation,
-                )?
-                .is_some()
-        {
-            targets.push(target(
-                &global,
-                &global_root,
-                ConfigScope::Global,
-                targets[0].operation.clone(),
-            ));
-        }
-        if let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root) {
-            let project = cwd.join(".pi/settings.json");
-            if path_entry_exists(&project)?
-                && !targets.iter().any(|target| target.path == project)
-                && self
-                    .read_value(&read_checked(&project, root)?.bytes, &targets[0].operation)?
-                    .is_some()
-            {
-                targets.push(target(
-                    &project,
-                    root,
-                    ConfigScope::Project,
-                    targets[0].operation.clone(),
-                ));
-            }
-        }
-        Ok(targets)
     }
 
     #[cfg(not(windows))]
@@ -533,7 +514,9 @@ fn split_route(route: &str) -> Result<(&str, &str), ConfigUnavailableReason> {
     }
 }
 
-fn global_root(home: &Path) -> Result<std::path::PathBuf, ConfigUnavailableReason> {
+pub(in crate::agent_config) fn global_root(
+    home: &Path,
+) -> Result<std::path::PathBuf, ConfigUnavailableReason> {
     global_root_for(
         home,
         std::env::var_os("PI_AGENT_DIR").as_deref(),

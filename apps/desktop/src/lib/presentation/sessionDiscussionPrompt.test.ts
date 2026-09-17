@@ -54,6 +54,7 @@ const payload: SessionAnalysisPayload = {
   orchestration: null,
   relations: null,
   sourcePath: "/tmp/synthetic/session.jsonl",
+  projectPath: null,
   startedAtEpoch: null,
   analysisPending: false,
   analysisStale: false,
@@ -192,6 +193,7 @@ describe("sessionDiscussionPrompt", () => {
   it("separates actual findings, confirmed clean, not-assessed reasons, and absent badges", () => {
     const hygiene: SessionHygienePayload = {
       evidenceState: "ready",
+      unusedResources: null,
       badges: [
         {
           id: "sessionOverdepth",
@@ -259,6 +261,7 @@ describe("sessionDiscussionPrompt", () => {
     const result = prompt({
       hygiene: {
         evidenceState: "ready",
+        unusedResources: null,
         badges: [
           {
             id: findingEvidence.kind,
@@ -292,7 +295,7 @@ describe("sessionDiscussionPrompt", () => {
     "unsupported",
     "ready",
   ] as const)("retains evidence state %s without inventing passes", (evidenceState) => {
-    const result = prompt({ hygiene: { evidenceState, badges: [] } })
+    const result = prompt({ hygiene: { evidenceState, unusedResources: null, badges: [] } })
     expect(result).toContain(`Burn-check evidence: ${evidenceState}`)
     expect(result).not.toContain("- Passed —")
     expect(result.match(/no result available/g)).toHaveLength(6)
@@ -304,6 +307,7 @@ describe("sessionDiscussionPrompt", () => {
       const result = prompt({
         hygiene: {
           evidenceState,
+          unusedResources: null,
           badges: [
             { id: "modelOverthinking", status: "clean", notAssessedReason: null },
             {
@@ -331,6 +335,7 @@ describe("sessionDiscussionPrompt", () => {
       const result = prompt({
         hygiene: {
           evidenceState: "ready",
+          unusedResources: null,
           badges: [
             {
               id: "excessCacheRehydration",
@@ -358,7 +363,9 @@ describe("sessionDiscussionPrompt", () => {
   )
 
   it("omits irrelevant freshness caveats for completed ready evidence", () => {
-    const result = prompt({ hygiene: { evidenceState: "ready", badges: [] } })
+    const result = prompt({
+      hygiene: { evidenceState: "ready", unusedResources: null, badges: [] },
+    })
     expect(result).not.toContain("Pending analysis metrics")
     expect(result).not.toContain("Pending or processing evidence")
     expect(result).not.toContain("Stale or growing evidence")

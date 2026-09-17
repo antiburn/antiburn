@@ -3,6 +3,8 @@ use std::fs;
 #[cfg(not(windows))]
 use std::io::Write;
 #[cfg(not(windows))]
+use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(windows))]
@@ -96,43 +98,24 @@ impl AgentConfigEditor {
         }
         let home = canonical_root(&context.home_root)?;
         let (workspace_cwd, trusted_workspace_root) = canonical_workspace(context)?;
-        let targets = if matches!(
+        let target = vendor.resolve_target_for_value(
             operation.setting,
-            ConfigSetting::SubagentModel
-                | ConfigSetting::McpServer
-                | ConfigSetting::BuiltInTool
-                | ConfigSetting::Skill
-        ) {
-            vendor
-                .resolve_target_for_value(
-                    operation.setting,
-                    operation
-                        .expected_value
-                        .scalar()
-                        .or_else(|| operation.expected_value.key()),
-                    &home,
-                    workspace_cwd.as_deref(),
-                    trusted_workspace_root.as_deref(),
-                )
-                .map(|target| vec![target])
-        } else {
-            vendor.resolve_targets(
-                operation.setting,
-                &home,
-                workspace_cwd.as_deref(),
-                trusted_workspace_root.as_deref(),
-            )
-        };
+            operation
+                .expected_value
+                .scalar()
+                .or_else(|| operation.expected_value.key()),
+            &home,
+            workspace_cwd.as_deref(),
+            trusted_workspace_root.as_deref(),
+        );
         let mut changes = Vec::new();
         let mut creations = Vec::new();
-        let targets = match targets {
-            Ok(targets) => targets,
+        let target = match target {
+            Ok(target) => Some(target),
             Err(
                 ConfigUnavailableReason::MissingConfig | ConfigUnavailableReason::MissingTarget,
-            ) if !matches!(
-                operation.setting,
-                ConfigSetting::SubagentModel | ConfigSetting::McpServer | ConfigSetting::Skill
-            ) =>
+            ) if context.agent == antiburn_local::model::AgentKind::Claude
+                && operation.setting == ConfigSetting::BuiltInTool =>
             {
                 let (path, bytes) =
                     vendor.standalone_global(operation.setting, &home, &proposed)?;
@@ -144,18 +127,15 @@ impl AgentConfigEditor {
                     path,
                     bytes,
                 });
-                Vec::new()
+                None
             }
             Err(error) => return Err(error),
         };
-        for (index, target) in targets.into_iter().enumerate() {
+        if let Some(target) = target {
             let file = read_checked(&target.path, &target.safety_root)?;
             let current = vendor.read_value(&file.bytes, &target.operation)?;
-            if index == 0 && current.as_deref() != Some(expected.as_str()) {
+            if current.as_deref() != Some(expected.as_str()) {
                 return Err(ConfigUnavailableReason::CurrentValueMismatch);
-            }
-            if current.as_deref() == Some(proposed.as_str()) {
-                continue;
             }
             let proposed_bytes = vendor.edit_value(&file.bytes, &target.operation, &proposed)?;
             changes.push(PreparedChange {
@@ -243,19 +223,12 @@ impl AgentConfigEditor {
 
     #[cfg(not(windows))]
     fn apply_creation(&self, creation: &super::config::PreparedCreation) -> Result<(), ApplyError> {
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         let parent = creation
             .path
             .parent()
             .ok_or(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
-        if !parent.starts_with(&creation.safety_root) {
-            return Err(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath));
-        }
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)
-            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        create_safe_parent_directories(parent, &creation.safety_root)?;
         if std::fs::symlink_metadata(&creation.path).is_ok() {
             return Err(ApplyError::Conflict(ApplyConflict::ChangedIdentity));
         }
@@ -268,7 +241,16 @@ impl AgentConfigEditor {
         output
             .write_all(&creation.bytes)
             .and_then(|()| output.sync_all())
-            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        drop(output);
+        let readback = read_checked(&creation.path, &creation.safety_root)
+            .map_err(|_| ApplyError::Readback(ApplyReadbackError::ReadFailed))?;
+        if readback.bytes != creation.bytes {
+            return Err(ApplyError::Readback(ApplyReadbackError::ChangedContent));
+        }
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| ApplyError::Readback(ApplyReadbackError::DirectorySync))
     }
 
     #[cfg(not(windows))]
@@ -353,6 +335,15 @@ impl AgentConfigEditor {
                 &fs::symlink_metadata(&temporary)
                     .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::WriteFailed))?,
             );
+            let current = read_checked(&prepared.path, &prepared.safety_root)
+                .map_err(ApplyError::Unavailable)?;
+            if current.identity != prepared.identity {
+                return Err(ApplyError::Conflict(ApplyConflict::ChangedIdentity));
+            }
+            if current.bytes != prepared.original_bytes {
+                return Err(ApplyError::Conflict(ApplyConflict::ChangedContent));
+            }
+            write_backup(prepared, parent, file_name, nonce)?;
             let current = read_checked(&prepared.path, &prepared.safety_root)
                 .map_err(ApplyError::Unavailable)?;
             if current.identity != prepared.identity {
@@ -460,6 +451,108 @@ impl AgentConfigEditor {
         }
         result
     }
+}
+
+#[cfg(not(windows))]
+fn backup_path(path: &Path) -> Result<PathBuf, ApplyError> {
+    let file_name = path
+        .file_name()
+        .ok_or(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+    let mut backup_name = file_name.to_os_string();
+    backup_name.push(".bak");
+    Ok(path.with_file_name(backup_name))
+}
+
+#[cfg(not(windows))]
+fn write_backup(
+    prepared: &PreparedChange,
+    parent: &Path,
+    file_name: &str,
+    nonce: u128,
+) -> Result<(), ApplyError> {
+    let backup = backup_path(&prepared.path)?;
+    match fs::symlink_metadata(&backup) {
+        Ok(_) => {
+            read_checked(&backup, &prepared.safety_root).map_err(ApplyError::Unavailable)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(ApplyError::Unavailable(map_write_error(error))),
+    }
+    let temporary = parent.join(format!(".{file_name}.antiburn-backup-{nonce}.tmp"));
+    let result = (|| {
+        let mut output = create_temporary(&temporary, &prepared.permissions)
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        #[cfg(unix)]
+        if file_ownership(
+            &output
+                .metadata()
+                .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::WriteFailed))?,
+        ) != prepared.ownership
+        {
+            return Err(ApplyError::Unavailable(
+                ConfigUnavailableReason::UnsupportedOwner,
+            ));
+        }
+        output
+            .write_all(&prepared.original_bytes)
+            .and_then(|()| output.sync_all())
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        drop(output);
+        fs::rename(&temporary, &backup)
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::WriteFailed))?;
+        let readback =
+            read_checked(&backup, &prepared.safety_root).map_err(ApplyError::Unavailable)?;
+        if readback.bytes != prepared.original_bytes {
+            return Err(ApplyError::Unavailable(
+                ConfigUnavailableReason::WriteFailed,
+            ));
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn create_safe_parent_directories(
+    parent: &std::path::Path,
+    safety_root: &std::path::Path,
+) -> Result<(), ApplyError> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let relative = parent
+        .strip_prefix(safety_root)
+        .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+    let mut current = safety_root.to_owned();
+    for component in relative.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&current)
+                    .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+                let metadata = fs::symlink_metadata(&current)
+                    .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath));
+                }
+            }
+            Err(error) => {
+                return Err(ApplyError::Unavailable(map_write_error(error)));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_read_context(

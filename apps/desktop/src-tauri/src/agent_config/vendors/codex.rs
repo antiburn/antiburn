@@ -160,47 +160,6 @@ impl VendorConfig for Codex {
     }
 
     #[cfg(not(windows))]
-    fn resolve_targets(
-        &self,
-        setting: ConfigSetting,
-        home: &Path,
-        workspace_cwd: Option<&Path>,
-        trusted_workspace_root: Option<&Path>,
-    ) -> Result<Vec<Target>, ConfigUnavailableReason> {
-        let primary = self.resolve_target(setting, home, workspace_cwd, trusted_workspace_root)?;
-        if setting == ConfigSetting::FastMode {
-            return Ok(vec![primary]);
-        }
-        let operation = selector(setting);
-        let mut targets = vec![primary];
-        let global = home.join(".codex/config.toml");
-        if path_entry_exists(&global)? && !targets.iter().any(|target| target.path == global) {
-            targets.push(Target {
-                path: global,
-                safety_root: home.to_owned(),
-                scope: ConfigScope::Global,
-                operation: operation.clone(),
-            });
-        }
-        if let (Some(cwd), Some(root)) = (workspace_cwd, trusted_workspace_root)
-            && project_is_trusted(&home.join(".codex/config.toml"), home, root)?
-        {
-            for directory in project_hierarchy(cwd, root)? {
-                let path = directory.join(".codex/config.toml");
-                if path_entry_exists(&path)? && !targets.iter().any(|target| target.path == path) {
-                    targets.push(Target {
-                        path,
-                        safety_root: root.to_owned(),
-                        scope: ConfigScope::Project,
-                        operation: operation.clone(),
-                    });
-                }
-            }
-        }
-        Ok(targets)
-    }
-
-    #[cfg(not(windows))]
     fn standalone_global(
         &self,
         setting: ConfigSetting,
@@ -468,7 +427,7 @@ fn skill_value(
         .transpose()
 }
 
-fn project_hierarchy(
+pub(in crate::agent_config) fn project_hierarchy(
     cwd: &Path,
     root: &Path,
 ) -> Result<Vec<std::path::PathBuf>, ConfigUnavailableReason> {
@@ -501,7 +460,7 @@ fn selector(setting: ConfigSetting) -> OperationSelector {
     }
 }
 
-fn project_is_trusted(
+pub(in crate::agent_config) fn project_is_trusted(
     global: &Path,
     home: &Path,
     workspace: &Path,
@@ -536,7 +495,9 @@ fn reject_active_profile(document: &DocumentMut) -> Result<(), ConfigUnavailable
     }
 }
 
-fn parse_document(bytes: &[u8]) -> Result<DocumentMut, ConfigUnavailableReason> {
+pub(in crate::agent_config) fn parse_document(
+    bytes: &[u8],
+) -> Result<DocumentMut, ConfigUnavailableReason> {
     let text = std::str::from_utf8(bytes).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
     text.parse::<DocumentMut>().map_err(|error| {
         let message = error.to_string().to_ascii_lowercase();

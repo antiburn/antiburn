@@ -6,12 +6,12 @@
 //! remove every turn row an earlier, superseded pass left behind. This module
 //! pins both halves directly against turn rows and a zero-baseline session,
 //! a case the existing suite in `store/tests.rs` does not cover on its own.
-//! See `docs/plans/local-insights-followups.md` for the wider publish
-//! contract this backs.
 
 use std::path::Path;
 
-use antiburn_local::analysis::{TurnRow, TurnScope, count_turn_rows, insert_turn_rows};
+use antiburn_local::analysis::{
+    ContentKind, ContentPart, TurnRow, TurnScope, count_turn_rows, insert_turn_rows,
+};
 
 use super::model::PublishedEvidence;
 use super::*;
@@ -126,6 +126,28 @@ fn turn_row(turn_index: u64) -> TurnRow {
         subagent_launches: 0,
         content: Vec::new(),
     }
+}
+
+fn user_turn_with_content(turn_index: u64, content: &str) -> TurnRow {
+    TurnRow {
+        role: "user",
+        content: vec![ContentPart::new(ContentKind::UserText, content)],
+        ..turn_row(turn_index)
+    }
+}
+
+fn insert_waiting_prompt(store: &Store, remediation_id: &str, target_key: &str) {
+    store
+        .lock()
+        .execute(
+            "INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch)
+             VALUES (?1, ?2, 'native', 'claude-code', 'project', 'scope',
+                'waitingForPromptUse', '{\"version\":1}', '{\"version\":1}', 1, 1)",
+            params![remediation_id, target_key],
+        )
+        .unwrap();
 }
 
 /// Advances the session's source generation past the given claim, the same
@@ -513,6 +535,76 @@ fn a_second_publish_supersedes_the_first_in_published_turn_rows() {
         vec![turn_row(0), turn_row(1)],
         "only the new pass's rows must come back, none of the superseded fence's"
     );
+}
+
+#[test]
+fn a_winning_ready_publication_activates_only_exact_markers_from_new_user_content() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "prompt-marker", 100, 60);
+    let key = record.key.clone();
+    insert_waiting_prompt(&store, "exact", "exact-target");
+    insert_waiting_prompt(&store, "extended", "extended-target");
+    insert_waiting_prompt(&store, "assistant", "assistant-target");
+    insert_waiting_prompt(&store, "thinking", "thinking-target");
+    insert_waiting_prompt(&store, "tool-input", "tool-input-target");
+    let writer = FencedTurnRowStore::new(store.clone(), key, claim.claim_fence);
+    writer
+        .write_turn_rows(&[
+            user_turn_with_content(0, "Remediation reference: ABR-exact"),
+            user_turn_with_content(1, "Remediation reference: ABR-extended-more"),
+            TurnRow {
+                content: vec![ContentPart::new(
+                    ContentKind::AssistantText,
+                    "Remediation reference: ABR-assistant",
+                )],
+                ..turn_row(2)
+            },
+            TurnRow {
+                role: "user",
+                content: vec![ContentPart::new(
+                    ContentKind::Thinking,
+                    "Remediation reference: ABR-thinking",
+                )],
+                ..turn_row(3)
+            },
+            TurnRow {
+                role: "user",
+                content: vec![ContentPart::new(
+                    ContentKind::ToolInput,
+                    "Remediation reference: ABR-tool-input",
+                )],
+                ..turn_row(4)
+            },
+        ])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    let exact = store.remediation("exact").unwrap().unwrap();
+    assert_eq!(exact.state, RemediationState::Watching);
+    assert!(exact.effective_boundary_ms.is_some());
+    assert_eq!(
+        store.remediation("extended").unwrap().unwrap().state,
+        RemediationState::WaitingForPromptUse
+    );
+    assert_eq!(
+        store.remediation("assistant").unwrap().unwrap().state,
+        RemediationState::WaitingForPromptUse
+    );
+    for remediation_id in ["thinking", "tool-input"] {
+        assert_eq!(
+            store.remediation(remediation_id).unwrap().unwrap().state,
+            RemediationState::WaitingForPromptUse
+        );
+    }
 }
 
 /* R6: `published_fence` itself — a winning publish stamps it, a lost race

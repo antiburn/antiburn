@@ -19,7 +19,7 @@ The engine and desktop shell have separate responsibilities.
 | `crates/antiburn-local/src/remediation/estimates.rs`    | Calculate all nine typed estimate methods.                                                             |
 | `apps/desktop/src-tauri/src/remediation/`               | Group current findings, issue IDs, join actions, run watches, recover writes, and expose safe results. |
 | `apps/desktop/src-tauri/src/remediation/vendors/`       | Define each agent's source, attribution, override, and action policy.                                  |
-| `apps/desktop/src-tauri/src/agent_config/`              | Resolve effective settings and prepare or apply one safe batch of file edits.                          |
+| `apps/desktop/src-tauri/src/agent_config/`              | Resolve effective settings and prepare or apply one safe file edit.                                    |
 | `apps/desktop/src-tauri/src/agent_config/vendors/`      | Define each agent's files, precedence, selectors, parsing, and edits.                                  |
 | `apps/desktop/src-tauri/src/store/remediation.rs`       | Store durable attempts, snapshots, action joins, and contributions.                                    |
 | `apps/desktop/src/views/main-window/`                   | Load reports and targets only while the Burn checks section is active and visible.                     |
@@ -37,15 +37,15 @@ The flow is check to finding to target to action:
 3. The desktop reads current findings and groups equal canonical targets.
 4. The desktop returns safe display facts for every visible target.
 5. The target reports prompt and Auto Fix availability separately.
-6. A target prompt action starts or joins a durable attempt. Non-named checks can prepare one bounded prompt for their selected current targets.
+6. A target prompt action starts or joins a durable attempt. Non-named checks can prepare one bounded prompt for their selected current targets. A check-level Copy fallback remains available when no exact prompt target is available.
 7. An Auto Fix action prepares one edit, waits for confirmation, and then starts or joins an attempt.
 8. Later winning evidence dirties matching attempts.
 9. The evidence worker verifies each dirty attempt and stores one contribution when proof exists.
 
-When the report still has failed evidence but the bounded current-finding query
-returns no exact targets, a separate check-level action re-runs both queries. It
-returns a generic inspection prompt only while that mismatch remains. It does
-not create a target, action ID, Auto Fix operation, or verification watch.
+When exact prompts are unavailable, a separate check-level Copy action re-runs
+the failed-check query and returns a generic inspection prompt while the check
+still has findings. It does not create a target, action ID, Auto Fix operation,
+or verification watch.
 
 Target listing does not require prompt support. A finding stays visible when no
 safe action exists. The UI explains the unavailable action.
@@ -67,9 +67,18 @@ never enters analytics.
 
 ## Scope And Precedence
 
-The editor batches existing active supported model and reasoning layers. It never
-creates a project file. It can create a missing global model file only when the
-vendor has a tested standalone JSON entry.
+Each Auto Fix edits one winning control. It selects the global or user control
+when a project inherits that value. It selects a project control only when the
+project has the exact explicit setting or resource needed for the edit. Scalar
+model, reasoning, compaction, and speed controls are not batched across layers.
+The editor never creates a project config file. The only approved missing-global
+creation path is `~/.claude/settings.json` for an eligible optional Claude Code
+built-in tool; it creates only the exact bare deny rule.
+
+Findings from different projects group into one target when they resolve to the
+same global control. Prepare and apply revalidate every grouped project context
+against that same scope, physical target, selector, and expected value. A stale
+or diverged context blocks the edit instead of being dropped or retargeted.
 
 For D only, the editor can enable an existing automatic-compaction control or
 lower an existing numeric compaction limit to the finding depth cap. It does not
@@ -85,7 +94,10 @@ ordinary session growth or fixed instructions have a configurable cause.
 | Cursor      | `<root>/.cursor/cli.json`                                                                                                                              | `~/.cursor/cli-config.json`                                                                                          |
 | Antigravity | No project model target is registered                                                                                                                  | `~/.gemini/antigravity-cli/settings.json`                                                                            |
 
-OpenCode uses the last matching model value in its reviewed merge order. Pi
+For Claude built-in tools, a project settings file is an exact project target
+only when its `permissions.allow` array contains the bare canonical tool name.
+An inherited tool uses the global settings target. OpenCode uses the last
+matching model value in its reviewed merge order. Pi
 rejects a split provider and model route. Codex rejects an active profile and a
 nested cwd. Claude reasoning prefers a per-model `modelSettings` value, then a
 top-level `effortLevel`.
@@ -132,9 +144,10 @@ gets a new durable ID and prompt reference.
 ## Prompt Fallback
 
 Prompt support is independent from Auto Fix support. The UI offers `Copy fix
-prompt` when the engine can build a safe prompt. This action remains available
-when Auto Fix lacks an attributed setting, supported editor, safe platform, or
-trusted target.
+prompt` when the engine can build a safe exact prompt. When no exact prompt is
+available, the check-level Copy action can return the bounded generic fallback.
+Copy remains available when Auto Fix lacks an attributed setting, supported
+editor, safe platform, or trusted target.
 
 An exact-target prompt includes the finding, safe facts, source limits,
 requested result, and required evidence. A check-level fallback names the failed
@@ -161,12 +174,26 @@ Clipboard success is separate from prompt preparation. A failed native write can
 retry the same prepared text without a second backend operation. The UI reports
 prompt preparation and clipboard write failures separately.
 
+Each exact-target prompt also contains one opaque `Remediation reference:
+ABR-<id>` marker. The durable attempt stays in the Failed checks group until a
+later captured user message contains that exact marker. The winning publication
+that captures the marker starts verification at its publication time. The
+marker-bearing session cannot verify the change. A copied prompt that never
+appears in captured user content does not start verification.
+
 ## Auto Fix Safety
 
 Auto Fix uses two explicit steps.
 
 1. `prepare_auto_fix_burn_check_target` revalidates the evidence and effective setting. It prepares exact replacement bytes and returns a bounded semantic review.
 2. `apply_prepared_burn_check_operation` accepts only the prepared-operation ID. It revalidates evidence, scope, precedence, selector, file identity, and original bytes before replacement.
+
+Before Auto Fix replaces an existing config file, it atomically writes the exact
+pre-update bytes to a sibling `<config-file>.bak` and syncs that backup. A safe
+existing backup is replaced, and the new backup remains after success. Auto Fix
+does not create a backup when it creates a new config file because no prior
+content exists. A backup failure leaves the config unchanged. Recovery never
+restores a backup without a user action.
 
 The review names the agent, scope, setting, current value, proposed value,
 effect, and side effect. It does not expose a path or raw config.
@@ -176,25 +203,28 @@ files above 256 KiB, non-regular files, symlinks in the target path, unsafe
 roots, and unsupported Unix ownership. It preserves unrelated values. TOML
 keeps formatting where `toml_edit` can preserve it. JSON uses formatted output.
 
-The editor can prepare when the controller reports a runtime or managed override.
+Model and reasoning targets remain pinned to their publication-time physical
+attribution. Current resolution must match that scope and physical target; Auto
+Fix does not move the edit to a different layer. The editor can prepare when the
+controller reports a runtime or managed override.
 The review warns that the effective behavior might not change. Vendor-detected
 environment, remote, organization, and profile overrides remain unavailable.
 
-Apply stages an exclusive temporary file in every affected directory. It preserves
+Apply stages an exclusive temporary file in the affected directory. It preserves
 permissions and Unix owner and group. It syncs the file, checks the original
 identity and bytes, atomically replaces the target, syncs the directory, reads
 the file again, and verifies the typed setting. A conflict never retargets or
-rebuilds the edit.
+rebuilds the edit. Approved global creation uses an exclusive new file, safe
+parent directories, directory sync, and exact-byte readback.
 
-A batch rechecks each original before its replacement and attempts to roll back
-completed replacements if a later replacement fails. A rollback failure changes
-the result to uncertain and enters durable `recoveryNeeded`. A failure before
-replacement cancels the reservation. A result that can follow replacement enters
-durable `recoveryNeeded`. Recovery resolves the same agent,
+A failure before replacement cancels the reservation. A result that can follow
+replacement enters durable `recoveryNeeded`. Recovery resolves the same agent,
 source, setting, scope, trusted root, relative cwd, physical selector, and
 replacement value. It starts verification only when readback proves the change.
-An old value cancels the uncertain write. A changed or unprovable target remains
-blocked and cannot start a second write.
+For an unverifiable operation, successful readback records
+`verificationUnavailable` and returns an applied result without promising later
+verification. An old value cancels the uncertain write. A changed or unprovable
+target remains blocked and cannot start a second write.
 
 Repeated confirmation returns the saved result only for the same completed
 prepared operation. Expired, evicted, or failed operations cannot be reused.
@@ -214,8 +244,8 @@ agents. Source coverage can still block a finding for one session.
 | --------------------------------------------------------------------------------------------------------- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | No  | No  | Yes | Yes | No  | Yes |
-| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | No  | No  | No  | Yes | No  | Yes |
+| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
+| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No  | Yes |
 | Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
 
 `AntigravityWorkspaceChatJson` is uncharacterized and has no prompt support.
@@ -233,24 +263,44 @@ Cursor and the other source formats have no remediation prompt support.
 
 Model Auto Fix applies only to a reviewed obsolete model and its reviewed
 replacement. Reasoning Auto Fix applies only to a reviewed above-cap level when
-`medium` is a valid below-cap value. M can disable one exact observed, enabled
-MCP server for Claude Code or Codex. Claude appends only
+`medium` is a valid below-cap value. Resource Auto Fix requires indexed
+provenance plus one exact current enabled resource, effective scope, value, and
+physical key. M can disable one such MCP server for Claude Code or Codex. Claude appends only
 `mcp__<name>__*` to an existing same-scope deny list. Codex sets only
 `mcp_servers.<name>.enabled = false`. OpenCode has a safe exact `mcp.<name>.enabled`
 editor, but its accepted sources do not yet provide M evidence. Antigravity
 remains unavailable until public source and precedence evidence identify one
 winning persisted field. Cursor never edits its private store or invokes its CLI.
-B can disable one exact optional Claude Code built-in tool from a standard settings file.
-It can add a missing deny list or create a missing global settings file. It adds
-the canonical tool name only, never a wildcard or a
-general permission rule. `Bash`, `Edit`, `Read`, and `Write` remain measured but
-never receive an Auto Fix or a targeted disable prompt because general coding
-tasks require them. OpenCode has an exact V2 action deny editor and Pi can
+B can disable one exact optional specialized Claude Code built-in tool from a standard
+settings file. A project target requires the exact bare tool name in
+`permissions.allow`; inherited tools use the global target. It can add a missing
+deny list or create a missing global settings file. It adds the canonical tool
+name only, never a wildcard or a
+general permission rule. Shell, read, write, edit, search, and subagent tools
+remain measured but never receive an Auto Fix or a targeted disable prompt.
+OpenCode has an exact V2 action deny editor and Pi can
 remove one unique `defaultTools` member from the winning settings file, but both
 remain source-gated until their accepted sources prove a complete tool inventory.
 Codex B Auto Fix is unavailable because its documented app-tool controls do not
-identify one built-in tool. Skill, worker, depth, speed, and cache edits remain
+identify one built-in tool. OpenCode skill targets can receive Auto Fix when
+indexed provenance and one exact standard skill winner resolve to the V2
+permission control. Other skill, worker, depth, speed, and cache edits remain
 prompt-only or unavailable.
+
+The B detector and prompt policy has a stricter scope than vendor controls:
+Claude Code `WebSearch`, `WebFetch`, `Workflow`, `ReportFindings`, and `ScheduleWakeup`, Codex `web_search`, and OpenCode
+`websearch` and `webfetch` are the only eligible suggestion targets. A vendor
+may permit configuration of other tools, but antiburn never suggests disabling
+shell, file, search, task, agent, or subagent tools.
+
+A whole-check resource prompt lists every selected target. Target selection is
+limited to 100 and each resource label is limited to 256 bytes before JSON
+escaping. The 64 KiB prompt limit covers this maximum list and the fixed prompt
+text without omitting a selected resource.
+
+Claude fast-mode Auto Fix writes `fastMode: false` to the one winning control.
+It does not remove the key, because removal could expose an inherited global
+`true` value.
 
 macOS and Linux can read, attribute, prepare, and apply. Native Windows can read
 and attribute the setting, but it cannot prepare or apply an edit. Windows apply
@@ -290,10 +340,15 @@ The durable lifecycle is:
 
 ```text
 reserved -> writing -> recoveryNeeded -> watching -> fixed -> recurred
+waitingForPromptUse -> watching
 ```
 
-Prompt actions enter `watching`. Auto Fix uses the write states first. A
-successful file readback means `watching`, not `fixed`.
+Verifiable prompt actions enter `waitingForPromptUse`. They enter `watching`
+only after their exact marker is captured in user content. An M/B/K prompt with
+no exact verification route returns no watch or remediation reference. Auto Fix
+uses the write states first. A successful file readback starts `watching` only
+when positive verification exists. Otherwise the applied result and retained
+write record state that verification is unavailable.
 
 Only sessions that start after the effective boundary can prove a transition.
 The source format and exact scope must match. Truncated pages, partial evidence,
@@ -301,7 +356,7 @@ missing controls, stale projections, and changed policy or catalog revisions do
 not prove a fix.
 
 T and F use positive control proof. O uses actual model-use proof. Generic clean
-absence is not enough for resource targets. After a fixed transition, the first
+absence never verifies resource targets. After a fixed transition, the first
 later exact positive finding marks recurrence. Recurrence stops new savings at
 its evidence time. It does not erase the earlier verified contribution.
 
@@ -311,11 +366,13 @@ deletion, report age, or leaving the report window never proves a fix.
 ## Opportunity And Savings
 
 `Estimated opportunity` describes the current finding before proof. It uses
-only available bounded finding facts. The current UI can show a numeric
-opportunity for D and for replicated B definitions. Other methods stay unknown
-when their inputs are absent.
+only available bounded finding facts. M/B/K target rows can show replicated
+tokens and a burn percentage when their definition or listing tokens and the
+report denominator are available. Skill estimates include listing frontmatter,
+not the skill body. MCP estimates require measured indexed definitions. Other
+methods stay unknown when their inputs are absent.
 
-`Your savings` describes a verified later transition. Every verified transition
+`Verified savings` describes a verified later transition. Every verified transition
 can store one improvement count. O can also store cumulative API-equivalent USD
 for eligible replacement activity. A rate is not a cumulative saving.
 
@@ -439,7 +496,6 @@ pnpm --filter @antiburn/desktop exec prettier --check \
   ../../docs/remediation.md \
   ../../docs/check-coverage.md \
   ../../docs/session-coverage.md \
-  ../../docs/plans/burn-check-remediation.md \
   README.md design.md
 node scripts/check-design-drift.mjs
 git diff --check

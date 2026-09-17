@@ -132,6 +132,8 @@ pub struct TargetAssessment {
     pub identity: String,
     pub target_present: bool,
     pub assessment: FindingAssessment,
+    /// True only when complete evidence can verify this scoped target clean.
+    pub clean_for_verification: bool,
 }
 
 /// Verifies a prompt watch from complete, fresh detector assessments.
@@ -177,7 +179,7 @@ pub fn verify_prompt_watch(
             VerificationOutcome::StillUnresolved,
             Some(assessment.observed_at_ms),
         ),
-        Some(assessment) if assessment.assessment == FindingAssessment::Clean => {
+        Some(assessment) if assessment.clean_for_verification => {
             (VerificationOutcome::Fixed, Some(assessment.observed_at_ms))
         }
         _ => (
@@ -219,10 +221,8 @@ pub const fn verification_evidence_supported(
 }
 
 const fn generic_verification_supported(detector: DetectorId, source_format: SourceFormat) -> bool {
-    matches!(
-        detector,
-        DetectorId::ModelOverthinking | DetectorId::OveruseOfFastMode
-    ) && verification_evidence_supported(detector, source_format)
+    verification_evidence_supported(detector, source_format)
+        && !matches!(detector, DetectorId::OldModelUsage)
 }
 
 #[cfg(test)]

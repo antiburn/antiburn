@@ -26,6 +26,7 @@ pub enum RemediationState {
     Reserved,
     Writing,
     RecoveryNeeded,
+    WaitingForPromptUse,
     Watching,
     Fixed,
     Recurred,
@@ -37,6 +38,7 @@ impl RemediationState {
             Self::Reserved => "reserved",
             Self::Writing => "writing",
             Self::RecoveryNeeded => "recoveryNeeded",
+            Self::WaitingForPromptUse => "waitingForPromptUse",
             Self::Watching => "watching",
             Self::Fixed => "fixed",
             Self::Recurred => "recurred",
@@ -52,6 +54,7 @@ impl std::str::FromStr for RemediationState {
             "reserved" => Ok(Self::Reserved),
             "writing" => Ok(Self::Writing),
             "recoveryNeeded" => Ok(Self::RecoveryNeeded),
+            "waitingForPromptUse" => Ok(Self::WaitingForPromptUse),
             "watching" => Ok(Self::Watching),
             "fixed" => Ok(Self::Fixed),
             "recurred" => Ok(Self::Recurred),
@@ -380,8 +383,7 @@ pub struct EvidenceCompletion {
 }
 
 /// Whether one source in a completed pass resumed from a snapshot or read
-/// fully. See "R4. Fence semantics" in the phase 3b design rules in
-/// `docs/plans/continuous-session-ingest.md`.
+/// fully.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourcePublishMode {
     /// The pass appended only new rows for this source, under the claim

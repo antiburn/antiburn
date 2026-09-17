@@ -1,3 +1,6 @@
+use antiburn_local::insights::EfficiencyReport;
+use antiburn_local::remediation::BuiltInToolTokens;
+
 use super::*;
 pub(super) use antiburn_local::remediation::sanitize_display_value as safe_display_value;
 
@@ -15,9 +18,22 @@ pub(super) fn scope_display(scope: &str) -> BurnCheckScopeKind {
 }
 
 pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampleSession> {
+    let mut findings = findings.iter().collect::<Vec<_>>();
+    findings.sort_by(|left, right| {
+        right
+            .observed_at_ms
+            .cmp(&left.observed_at_ms)
+            .then_with(|| {
+                (&left.environment_key, &left.agent, &left.session_id).cmp(&(
+                    &right.environment_key,
+                    &right.agent,
+                    &right.session_id,
+                ))
+            })
+    });
     let mut seen = BTreeSet::new();
     findings
-        .iter()
+        .into_iter()
         .filter(|finding| {
             seen.insert((
                 finding.environment_key.clone(),
@@ -25,7 +41,6 @@ pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampl
                 finding.session_id.clone(),
             ))
         })
-        .take(3)
         .map(|finding| BurnCheckSampleSession {
             environment_key: finding.environment_key.clone(),
             agent: finding.agent.clone(),
@@ -35,7 +50,45 @@ pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampl
         .collect()
 }
 
-pub(super) fn burn_check_display_facts(target: &CachedTarget) -> BurnCheckDisplayFacts {
+pub(super) fn burn_check_display_facts(
+    target: &CachedTarget,
+    report: Option<&EfficiencyReport>,
+) -> BurnCheckDisplayFacts {
+    if let Some(resource) = &target.resource {
+        let observed_at = resource
+            .target
+            .supporting_sessions
+            .iter()
+            .map(|sample| sample.observed_at_ms)
+            .filter(|value| *value > 0);
+        let first_observed_at_ms = observed_at.clone().min().unwrap_or(0);
+        let last_observed_at_ms = observed_at.max().unwrap_or(0);
+        let resource_kind = match resource.target.kind {
+            crate::agent_config::ResourceKind::McpServer => BurnCheckResourceKind::McpServer,
+            crate::agent_config::ResourceKind::BuiltInTool => BurnCheckResourceKind::BuiltInTool,
+            crate::agent_config::ResourceKind::Skill => BurnCheckResourceKind::Skill,
+        };
+        return BurnCheckDisplayFacts {
+            resource_kind,
+            resource_identity: safe_display_value(&resource.target.canonical_name),
+            current_value: None,
+            replacement_value: None,
+            scope_kind: scope_display(&target.scope_kind),
+            quantity: Some(1),
+            quantity_unit: Some(BurnCheckQuantityUnit::Resources),
+            observation_count: resource.target.observations,
+            first_observed_at_ms,
+            last_observed_at_ms,
+            estimate_method: Some(
+                SavingsEstimateMethod::for_detector(resource.finding.detector).into(),
+            ),
+            estimated_opportunity: resource.target.replicated_tokens.and_then(|_| {
+                display_cause_opportunity(resource.finding.cause(), last_observed_at_ms)
+            }),
+            estimated_token_burn_basis_points: resource.target.estimated_token_burn_basis_points,
+            verification_limit: verification_limit(resource.finding.detector),
+        };
+    }
     let finding = &target.findings[0].finding;
     let observed_at_ms = target.findings[0].observed_at_ms;
     let (resource_kind, resource_identity, current_value, replacement_value) = match finding.cause()
@@ -139,8 +192,33 @@ pub(super) fn burn_check_display_facts(target: &CachedTarget) -> BurnCheckDispla
             .unwrap_or(observed_at_ms),
         estimate_method: Some(SavingsEstimateMethod::for_detector(finding.detector).into()),
         estimated_opportunity: display_opportunity(&target.findings),
+        estimated_token_burn_basis_points: report.and_then(|report| {
+            resource_target_replicated_tokens(&target.findings)
+                .and_then(|tokens| report.estimated_token_burn_for_attributed_tokens(tokens))
+        }),
         verification_limit: verification_limit(finding.detector),
     }
+}
+
+fn resource_target_replicated_tokens(findings: &[CurrentFinding]) -> Option<u128> {
+    findings.iter().try_fold(0_u128, |total, finding| {
+        let tokens = match finding.finding.cause() {
+            FindingCause::UnusedMcpServer {
+                tokens: Some(tokens),
+                ..
+            }
+            | FindingCause::UnusedSkill {
+                tokens: Some(tokens),
+                ..
+            } => *tokens,
+            FindingCause::UnusedBuiltInTool {
+                tokens: BuiltInToolTokens::Replicated(tokens),
+                ..
+            } => *tokens,
+            _ => return None,
+        };
+        total.checked_add(tokens)
+    })
 }
 
 impl From<SavingsEstimateMethod> for BurnCheckEstimateMethod {
@@ -406,9 +484,23 @@ pub(super) fn project_location(path: &Path) -> Option<String> {
     Some(format!("…/{parent}/{name}"))
 }
 
+pub(super) fn project_path(path: &Path) -> Option<String> {
+    path.is_absolute()
+        .then(|| path.to_str().map(str::to_owned))
+        .flatten()
+}
+
 #[cfg(test)]
 mod project_name_tests {
     use super::*;
+
+    #[test]
+    fn folder_actions_keep_the_full_local_path_even_after_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing project");
+        assert_eq!(project_path(&path), path.to_str().map(str::to_owned));
+        assert_eq!(project_path(Path::new("relative/project")), None);
+    }
 
     #[test]
     fn shows_only_a_sanitized_project_name() {

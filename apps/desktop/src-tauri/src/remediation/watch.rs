@@ -334,6 +334,7 @@ fn evaluate_generic_remediation(
                     identity,
                     target_present: present,
                     assessment: assessment.assessment.clone(),
+                    clean_for_verification: assessment.clean_for_verification,
                 });
             }
         }
@@ -357,6 +358,9 @@ fn evaluate_generic_remediation(
                 } else {
                     assessment.assessment
                 },
+                clean_for_verification: !page.truncated
+                    && (!positive_control_only || positive_resolution.is_some())
+                    && assessment.clean_for_verification,
             });
         }
     }

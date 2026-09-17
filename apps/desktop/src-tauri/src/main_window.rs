@@ -1,6 +1,6 @@
 //! Shell policy for the ordinary main window.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 use crate::dto::{BurnCheckSamplePayload, BurnCheckSampleSurface, OpenBurnCheckSampleOutcome};
 use crate::remediation::BurnCheckSampleSession;
-use crate::store::{SessionKey, Store};
+use crate::store::{RepositoryRecord, SessionKey, Store};
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_readiness::{
     HealthAckAction, RetainedOpenAction, TerminalRetry, WindowReadiness, renderer_generation_script,
@@ -30,7 +30,7 @@ pub const SESSION_TARGET_EVENT: &str = "main:session-target";
 pub const SECTION_TARGET_EVENT: &str = "main:section-target";
 
 const SAMPLE_HANDLE_TTL: Duration = Duration::from_secs(10 * 60);
-const SAMPLE_HANDLE_LIMIT: usize = 100;
+const SAMPLE_HANDLE_LIMIT: usize = 512;
 const MISSING_SAMPLE_TITLE: &str = "Untitled session";
 
 /// A destination in the retained main window.
@@ -403,12 +403,23 @@ impl MainWindowState {
         wsl_distro: Option<String>,
         now: Instant,
     ) -> Result<String, String> {
-        let mut bytes = [0_u8; 16];
-        getrandom::fill(&mut bytes).map_err(|_| "unable to create sample handle".to_owned())?;
-        let handle: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         let mut targets = lock(&self.sample_targets);
         targets
             .retain(|entry| now.saturating_duration_since(entry.created_at) <= SAMPLE_HANDLE_TTL);
+        if let Some(index) = targets.iter().position(|entry| {
+            entry.target.agent == agent
+                && entry.target.session_id == session_id
+                && entry.target.wsl_distro == wsl_distro
+        }) {
+            let mut entry = targets.remove(index).expect("the matched sample exists");
+            entry.created_at = now;
+            let handle = entry.handle.clone();
+            targets.push_back(entry);
+            return Ok(handle);
+        }
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| "unable to create sample handle".to_owned())?;
+        let handle: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         while targets.len() >= SAMPLE_HANDLE_LIMIT {
             targets.pop_front();
         }
@@ -846,44 +857,95 @@ fn route_session_target(app: &AppHandle, target: SessionTarget) -> Result<(), St
 }
 
 /// Mint bounded renderer samples while retaining exact identities in Rust.
-pub fn sample_payloads(
-    app: &AppHandle,
+pub(crate) fn sample_payloads_from_store(
+    state: &MainWindowState,
+    store: &Store,
+    repositories: &[RepositoryRecord],
     samples: &[BurnCheckSampleSession],
+    now_epoch: i64,
 ) -> Result<Vec<BurnCheckSamplePayload>, String> {
-    let state = app.state::<MainWindowState>();
-    let store = app.state::<Store>();
-    let now = Instant::now();
-    samples
+    let keys = samples.iter().map(sample_key).collect::<Vec<_>>();
+    let mut records = store
+        .session_records_for_session_keys(&keys)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|record| (record.key.clone(), record))
+        .collect::<HashMap<_, _>>();
+    let available = samples
         .iter()
-        .filter_map(|sample| {
-            let key = SessionKey::new(
-                sample.environment_key.clone(),
+        .filter(|sample| records.contains_key(&sample_key(sample)))
+        .collect::<Vec<_>>();
+    let selected = select_sample_sessions(available);
+    let keys = selected
+        .iter()
+        .map(|sample| sample_key(sample))
+        .collect::<Vec<_>>();
+    let evidence = store
+        .evidence_batch(&keys)
+        .map_err(|error| error.to_string())?;
+    let generations = store
+        .source_generation_batch(&keys)
+        .map_err(|error| error.to_string())?;
+    let now = Instant::now();
+    selected
+        .into_iter()
+        .zip(evidence)
+        .zip(generations)
+        .map(|((sample, evidence), generation)| {
+            let record = records
+                .remove(&sample_key(sample))
+                .ok_or("session metadata is unavailable")?;
+            let activity = crate::commands::activity_entry(store, repositories, record, now_epoch)
+                .map_err(|error| error.to_string())?;
+            let navigation_handle = state.issue_sample_handle(
                 sample.agent.clone(),
                 sample.session_id.clone(),
-            );
-            let record = match store.session(&key) {
-                Ok(Some(record)) => record,
-                Ok(None) => return None,
-                Err(error) => return Some(Err(error.to_string())),
-            };
-            Some(
-                state
-                    .issue_sample_handle(
-                        sample.agent.clone(),
-                        sample.session_id.clone(),
-                        record.wsl_distro,
-                        now,
-                    )
-                    .map(|navigation_handle| BurnCheckSamplePayload {
-                        navigation_handle,
-                        title: sample_title(record.title.as_deref()),
-                        agent: sample.agent.clone(),
-                        surface: sample_surface(&record.surface),
-                        observed_at_ms: sample.observed_at_ms,
-                    }),
-            )
+                activity.wsl_distro.clone(),
+                now,
+            )?;
+            Ok(BurnCheckSamplePayload {
+                navigation_handle,
+                title: sample_title(activity.title.as_deref()),
+                agent: activity.agent,
+                surface: sample_surface(&activity.surface),
+                observed_at_ms: sample.observed_at_ms,
+                repo: activity.repo,
+                timestamp: activity.timestamp,
+                is_active: activity.is_active,
+                has_fork_parent: activity.has_fork_parent,
+                fork_child_count: activity.fork_child_count,
+                cost: activity.cost,
+                models: activity.models,
+                model_runs: activity.model_runs,
+                hygiene: crate::commands::session_hygiene_payload(evidence, generation),
+            })
         })
         .collect()
+}
+
+fn sample_key(sample: &BurnCheckSampleSession) -> SessionKey {
+    SessionKey::new(
+        sample.environment_key.clone(),
+        sample.agent.clone(),
+        sample.session_id.clone(),
+    )
+}
+
+fn select_sample_sessions(
+    mut samples: Vec<&BurnCheckSampleSession>,
+) -> Vec<&BurnCheckSampleSession> {
+    samples.sort_by_key(|sample| {
+        (
+            std::cmp::Reverse(sample.observed_at_ms),
+            &sample.environment_key,
+            &sample.agent,
+            &sample.session_id,
+        )
+    });
+    let mut seen = BTreeSet::new();
+    samples
+        .retain(|sample| seen.insert((&sample.environment_key, &sample.agent, &sample.session_id)));
+    samples
 }
 
 fn sample_title(title: Option<&str>) -> String {
@@ -2245,6 +2307,185 @@ mod tests {
                 section
             );
         }
+    }
+
+    fn failed_sample(agent: &str, id: &str, observed_at_ms: i64) -> BurnCheckSampleSession {
+        BurnCheckSampleSession {
+            environment_key: "native".to_owned(),
+            agent: agent.to_owned(),
+            session_id: id.to_owned(),
+            observed_at_ms,
+        }
+    }
+
+    #[test]
+    fn failed_sessions_include_all_agents_in_recency_order() {
+        let samples = [
+            failed_sample("claude-code", "claude-old", 1),
+            failed_sample("claude-code", "claude-middle", 4),
+            failed_sample("claude-code", "claude-new", 5),
+            failed_sample("codex", "codex-old", 2),
+            failed_sample("codex", "codex-new", 3),
+        ];
+        let selected = select_sample_sessions(samples.iter().collect());
+        assert_eq!(
+            selected
+                .iter()
+                .map(|sample| sample.session_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "claude-new",
+                "claude-middle",
+                "codex-new",
+                "codex-old",
+                "claude-old"
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_sessions_keep_all_available_agents() {
+        let samples = [
+            failed_sample("claude-code", "one", 4),
+            failed_sample("claude-code", "two", 5),
+            failed_sample("codex", "three", 3),
+            failed_sample("cursor", "four", 2),
+            failed_sample("pi", "five", 1),
+        ];
+        let selected = select_sample_sessions(samples.iter().collect());
+        assert_eq!(
+            selected
+                .iter()
+                .map(|sample| sample.agent.as_str())
+                .collect::<Vec<_>>(),
+            ["claude-code", "claude-code", "codex", "cursor", "pi"]
+        );
+    }
+
+    #[test]
+    fn failed_sessions_deduplicate_exact_identities_and_order_ties_stably() {
+        let mut wsl = failed_sample("codex", "shared", 1);
+        wsl.environment_key = "wsl:ubuntu".to_owned();
+        let samples = [
+            wsl,
+            failed_sample("codex", "shared", 1),
+            failed_sample("codex", "shared", 2),
+            failed_sample("claude-code", "shared", 1),
+        ];
+        let selected = select_sample_sessions(samples.iter().collect());
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0].observed_at_ms, 2);
+        assert_eq!(selected[1].agent, "claude-code");
+        assert_eq!(selected[2].environment_key, "wsl:ubuntu");
+        let reversed = select_sample_sessions(samples.iter().rev().collect());
+        assert_eq!(selected, reversed);
+        assert!(select_sample_sessions(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn sample_payloads_skip_deleted_sessions_and_keep_each_target_independent() {
+        let state = state();
+        let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-sample-test"))
+            .expect("open store");
+        let samples = [
+            failed_sample("claude-code", "deleted", 10),
+            failed_sample("claude-code", "claude", 9),
+            failed_sample("codex", "codex", 8),
+        ];
+        let records = samples[1..]
+            .iter()
+            .map(|sample| crate::store::SessionRecord {
+                key: sample_key(sample),
+                source_kind: "file".to_owned(),
+                source_label: format!("/synthetic/{}.jsonl", sample.session_id),
+                wsl_distro: None,
+                title: Some(format!("{} review", sample.agent)),
+                title_source: Some("explicit".to_owned()),
+                cwd: Some("/synthetic/demo".to_owned()),
+                surface: "cli".to_owned(),
+                updated_at_epoch: Some(10),
+                activity_cursor: String::new(),
+                activity_source: "event".to_owned(),
+                subagent_count: 0,
+                fork_parent_session_id: None,
+                source_fingerprint: None,
+            })
+            .collect::<Vec<_>>();
+        store.upsert_sessions(&records, &[]).unwrap();
+        let first = sample_payloads_from_store(&state, &store, &[], &samples, 1000).unwrap();
+        let second = sample_payloads_from_store(&state, &store, &[], &samples, 1000).unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        assert_eq!(first[0].agent, "claude-code");
+        assert_eq!(first[1].agent, "codex");
+        assert_eq!(first[0].navigation_handle, second[0].navigation_handle);
+        assert_eq!(first[0].repo, "demo");
+        assert_eq!(first[0].hygiene.evidence_state, "pending");
+        assert!(first[0].cost.is_none());
+        let encoded = serde_json::to_string(&first).unwrap();
+        assert!(!encoded.contains("sessionId"));
+        assert!(!encoded.contains("environmentKey"));
+        assert!(!encoded.contains("wslDistro"));
+        assert!(!encoded.contains("/synthetic/"));
+    }
+
+    #[test]
+    fn reused_sample_handles_receive_a_fresh_lifetime() {
+        let state = state();
+        let now = Instant::now();
+        let handle = state
+            .issue_sample_handle("codex".into(), "session".into(), None, now)
+            .unwrap();
+        let refreshed_at = now + SAMPLE_HANDLE_TTL - Duration::from_secs(1);
+        let reused = state
+            .issue_sample_handle("codex".into(), "session".into(), None, refreshed_at)
+            .unwrap();
+        assert_eq!(handle, reused);
+        assert!(
+            state
+                .resolve_sample_handle(&handle, refreshed_at + SAMPLE_HANDLE_TTL)
+                .is_ok()
+        );
+        assert_eq!(
+            state.resolve_sample_handle(
+                &handle,
+                refreshed_at + SAMPLE_HANDLE_TTL + Duration::from_secs(1)
+            ),
+            Err(SampleTargetError::Expired)
+        );
+    }
+
+    #[test]
+    fn reused_sample_handles_survive_new_samples_in_a_full_cache() {
+        let state = state();
+        let now = Instant::now();
+        let handle = state
+            .issue_sample_handle("codex".into(), "selected".into(), None, now)
+            .unwrap();
+        let mut oldest_unused = String::new();
+        for index in 1..SAMPLE_HANDLE_LIMIT {
+            let issued = state
+                .issue_sample_handle("codex".into(), format!("old-{index}"), None, now)
+                .unwrap();
+            if index == 1 {
+                oldest_unused = issued;
+            }
+        }
+        let reused = state
+            .issue_sample_handle("codex".into(), "selected".into(), None, now)
+            .unwrap();
+        assert_eq!(handle, reused);
+        for index in 0..303 {
+            state
+                .issue_sample_handle("claude-code".into(), format!("new-{index}"), None, now)
+                .unwrap();
+        }
+        assert!(state.resolve_sample_handle(&handle, now).is_ok());
+        assert_eq!(
+            state.resolve_sample_handle(&oldest_unused, now),
+            Err(SampleTargetError::Unavailable)
+        );
+        assert_eq!(lock(&state.sample_targets).len(), SAMPLE_HANDLE_LIMIT);
     }
 
     #[test]

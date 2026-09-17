@@ -17,6 +17,62 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-17
+
+### Added
+
+- `Bucket` carries the estimated USD cost of its events, by component
+  (`Bucket::cost`), inclusive of sub-agent events in merged metrics. Advance
+  metrics schema revision to 9 so stored analyses rerun to populate it.
+
+- Unused MCP servers, built-in tools, and skills can produce scoped advisory
+  findings from complete resource evidence. Advisory findings support bounded
+  remediation prompts and verification without claiming a whole session is
+  clean. Built-in tool findings now exclude required and situational tools.
+
+### Changed
+
+- **Breaking:** `Bucket` has a new `cost` field, and
+  `built_in_tool_remediation_supported` now requires an `AgentKind` argument
+  so support is checked against the agent's tool catalog.
+- **Breaking:** `EfficiencyReport` gains private report-time resource-token
+  attribution fields. Code that constructs this public struct directly must
+  update its construction path.
+- **Breaking:** per-bucket pricing state is included in resume snapshots;
+  advance the resume snapshot revision to 11. The metrics schema revision is 9.
+- Remediation prompts can contain up to 64 KiB. Resource findings identify
+  advisory targets with an empty session ID and expose scoped clean verification.
+- Export `estimate_proportional_tokens` for consumers that need the engine's
+  bounded initial-context token estimate.
+
+## [0.8.0] - 2026-09-16
+
+### Added
+
+- Session inputs now carry an explicit `SourceFormat`, with bounded bundle
+  inputs and dedicated readers for supported Cline, Copilot CLI, and Kiro
+  sources. Discovery metadata also exposes each source's format and surface.
+- Claude and Codex readers expose bounded quota and provider-incident evidence.
+  Aggregate reports separate user allocation limits from capacity, server, and
+  connection failures, with affected sessions, models, and observation times.
+- Remediation APIs now estimate and aggregate savings across all Burn Check
+  detectors, provide safe fallback prompts for supported fixes, and expose
+  stable detector keys and verification support.
+
+### Changed
+
+- **Breaking:** `SessionInput` requires `source_format`, and
+  `SessionReader::capabilities` now receives the full `SessionInput` instead of
+  only `RawSource`. Readers reject a discovered format that does not match the
+  selected parser rather than inferring a parser from paths or content.
+- **Breaking:** evidence, report, turn, and remediation structures include new
+  source-format, provider-incident, pricing-revision, one-hour cache-write, and
+  per-detector attribution fields. `TargetAssessment::complete` is replaced by
+  its typed `assessment` field.
+- Advance parser revision to 38, analyzer revision to 24, evidence schema
+  revision to 19, coverage schema revision to 5, and resume snapshot revision
+  to 9 so persisted results refresh under the new contracts.
+
 ### Fixed
 
 - `Usage` gains `cache_creation_1h_tokens`, the subset of cache-creation
@@ -26,9 +82,13 @@ version and refuses the release if there is none.
   otherwise Claude Code's cache-creation total counts as one-hour writes,
   since it has run with one-hour caching configured throughout. The
   efficiency reducer and turn rows now price that subset at 2x the input
-  rate instead of the default cache-write rate. Advance parser revision to
-  35 so prior sessions reparse and reprice. `TokenBurnTurnEvidence`'s
+  rate instead of the default cache-write rate. `TokenBurnTurnEvidence`'s
   report-time token estimates price the same subset at the same rate.
+- Codex usage variants no longer double count matching records, and
+  `spawn_agent` calls count as sub-agent launches.
+- Pi usage samples use request-start timestamps while retaining response event
+  metadata, and cache-rehydration and repeated-context accounting now use the
+  correct request boundaries and denominators.
 
 ## [0.7.1] - 2026-09-10
 

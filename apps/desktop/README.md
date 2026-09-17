@@ -124,8 +124,17 @@ and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
 
-Burn Check remediation stays local. It can change one reviewed existing agent
-setting only after a separate review and confirmation. See the
+Burn Check remediation stays local. After a separate review and confirmation,
+each Auto Fix changes one winning control. It uses the global or user control
+for inherited values and a project control only for an exact explicit project
+setting or resource. It never creates project config or batches scalar layers.
+The approved missing-file exception creates global Claude Code settings only
+for an eligible optional built-in tool. Findings that share one global target
+across projects are grouped, and every project context is revalidated. Model and
+reasoning targets remain pinned to publication attribution. Claude fast mode
+writes `false`. Before replacing an existing config file, Auto Fix leaves its
+exact prior content in a sibling `.bak` file. Copy provides a bounded fallback
+when an exact prompt is not available. See the
 [remediation guide](../../docs/remediation.md) for supported agents, safety
 checks, recovery, bounds, and privacy.
 

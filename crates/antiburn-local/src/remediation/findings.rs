@@ -174,6 +174,27 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// Builds one advisory resource finding without inventing session evidence.
+    pub fn advisory_resource(
+        agent: AgentKind,
+        source_format: SourceFormat,
+        cause: FindingCause,
+    ) -> Option<Self> {
+        matches!(
+            cause,
+            FindingCause::UnusedMcpServer { .. }
+                | FindingCause::UnusedBuiltInTool { .. }
+                | FindingCause::UnusedSkill { .. }
+        )
+        .then(|| Self {
+            detector: cause.detector(),
+            source_format,
+            agent: agent.slug().to_owned(),
+            session_id: String::new(),
+            cause,
+        })
+    }
+
     /// Returns the exact agent identity for trusted backend selector binding.
     pub fn agent(&self) -> &str {
         &self.agent
@@ -182,6 +203,17 @@ impl Finding {
     /// Returns the exact session identity for trusted backend selector binding.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Returns true when the finding comes from the target-based resource assessment.
+    pub fn is_advisory_resource(&self) -> bool {
+        self.session_id.is_empty()
+            && matches!(
+                self.cause,
+                FindingCause::UnusedMcpServer { .. }
+                    | FindingCause::UnusedBuiltInTool { .. }
+                    | FindingCause::UnusedSkill { .. }
+            )
     }
 
     /// Returns the exact detector cause for trusted backend selector binding.
@@ -341,11 +373,7 @@ pub fn assess_detector_with_source_evidence(
         return FindingAssessment::NotApplicable;
     }
     if !eligible(detector, evidence)
-        && !crate::insights::detectors::built_in_source_assessable(
-            detector,
-            evidence,
-            source_evidence,
-        )
+        && !crate::insights::detectors::source_assessable(detector, evidence, source_evidence)
     {
         return FindingAssessment::Unavailable(FindingUnavailableReason::CapabilityMissing);
     }
@@ -394,6 +422,42 @@ pub fn assess_detector_with_source_evidence(
             FindingAssessment::Unavailable(FindingUnavailableReason::SignalMissing)
         }
     }
+}
+
+/// Returns true when complete scoped resource evidence has no finding.
+///
+/// This does not make the session report clean. M/B/K lack a complete
+/// historical resource inventory, but a later complete observed scope can
+/// verify one already-scoped remediation target.
+pub fn scoped_resource_no_finding(
+    detector: DetectorId,
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+    source_evidence: Option<&SessionTokenBurnEvidence>,
+) -> bool {
+    if !matches!(
+        detector,
+        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools | DetectorId::UnusedSkills
+    ) || !crate::insights::detectors::in_denominator(detector, evidence)
+        || (detector == DetectorId::UnusedBuiltInTools
+            && complete_assistant_turns(evidence) == Some(0))
+        || {
+            let source_assessable =
+                crate::insights::detectors::source_assessable(detector, evidence, source_evidence);
+            !source_assessable
+                && (!eligible(detector, evidence) || !clean_facts_complete(detector, evidence))
+        }
+    {
+        return false;
+    }
+    crate::insights::detectors::evaluate_with_source_evidence(
+        detector,
+        evidence,
+        catalogs,
+        source_evidence,
+    )
+    .observation
+        == crate::insights::detectors::Observation::NoFinding
 }
 
 fn complete_assistant_turns(evidence: &SessionEvidence) -> Option<u64> {

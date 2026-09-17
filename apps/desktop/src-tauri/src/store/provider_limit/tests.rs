@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::params;
 
 use super::*;
-use crate::store::SessionRecord;
+use crate::store::{RETAIN_SESSION_DATA_FOREVER, SessionRecord};
 
 const PROVIDER: &str = "anthropic";
 const AGENT: &str = "claude-code";
@@ -346,10 +346,10 @@ fn sample_retention_deletes_old_samples_but_never_points() {
         })
         .unwrap();
 
-    // 200 days elapsed, 400-day retention capped at 365: the sample's
-    // to_epoch (100) is far short of the cutoff, so nothing is removed yet.
-    let now = 200 * 86_400;
-    apply_sample_retention_in(&store.lock(), 400, now).unwrap();
+    // 20 days elapsed, 30-day retention: the cutoff has not yet reached the
+    // sample's to_epoch (100), so nothing is removed yet.
+    let now = 20 * 86_400;
+    apply_sample_retention_in(&store.lock(), 30, now).unwrap();
     assert_eq!(
         store
             .all_delta_factor_samples(PROVIDER, &account('a'), lane)
@@ -358,9 +358,10 @@ fn sample_retention_deletes_old_samples_but_never_points() {
         1
     );
 
-    // Past the (capped) 365-day cutoff, the sample goes; the point does not.
-    let now = 400 * 86_400;
-    apply_sample_retention_in(&store.lock(), 400, now).unwrap();
+    // 40 days elapsed, the same 30-day retention: the cutoff has moved past
+    // the sample's to_epoch, so the sample goes; the point does not.
+    let now = 40 * 86_400;
+    apply_sample_retention_in(&store.lock(), 30, now).unwrap();
     assert!(
         store
             .all_delta_factor_samples(PROVIDER, &account('a'), lane)
@@ -489,6 +490,7 @@ fn a_sample_s_period_reference_is_nulled_before_its_period_is_deleted() {
             .unwrap();
         period_id
     };
+    let recent = 190 * 86_400;
     store
         .upsert_factor_sample(&FactorSample {
             provider: PROVIDER.to_string(),
@@ -497,7 +499,7 @@ fn a_sample_s_period_reference_is_nulled_before_its_period_is_deleted() {
             kind: "delta".to_string(),
             period_id: Some(period_id),
             from_epoch: 0,
-            to_epoch: 10,
+            to_epoch: recent,
             from_percent: 0.0,
             to_percent: 5.0,
             input_usd: 1.0,
@@ -508,15 +510,15 @@ fn a_sample_s_period_reference_is_nulled_before_its_period_is_deleted() {
             plan: None,
             plan_tier: None,
             source_id: "test".to_string(),
-            computed_at_epoch: 10,
+            computed_at_epoch: recent,
         })
         .unwrap();
 
-    // 90-day observation retention removes the period; the (uncapped-by-this
-    // call) 365-day sample cutoff sits before epoch zero, so the sample
-    // itself survives and must not keep a dangling period id.
+    // A 30-day cutoff removes the old observation and, with it, the now
+    // orphaned period. The sample's own `to_epoch` is recent enough to
+    // survive that same cutoff, so it must not keep a dangling period id.
     let now = 200 * 86_400;
-    Store::apply_provider_usage_retention_in(&store.lock(), 400, now).unwrap();
+    Store::apply_provider_usage_retention_in(&store.lock(), 30, now).unwrap();
 
     let samples = store
         .all_delta_factor_samples(PROVIDER, &account_key, LANE_FIVE_HOUR)
@@ -619,5 +621,142 @@ fn a_period_s_learn_cursor_is_deleted_before_its_period_is_deleted() {
     assert_eq!(
         remaining, 0,
         "the cursor is deleted, not left pointing at a removed period"
+    );
+}
+
+#[test]
+fn forever_retention_keeps_every_provider_usage_row() {
+    let store = memory_store();
+    let account_key = account('a');
+    let period_id = insert_period(&store, &account_key, 0, 18_000, 10);
+    store
+        .lock()
+        .execute(
+            "INSERT INTO provider_usage_observation (
+                 period_id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                 is_authoritative, confidence, source_id
+             ) VALUES (?1, ?2, ?3, 'five-hour', 'rolling', 'primaryShort',
+                       'account', 'account', 10, 5.0, 1, 1, 'high', 'test')",
+            params![period_id, PROVIDER, account_key],
+        )
+        .unwrap();
+    store
+        .upsert_factor_sample(&FactorSample {
+            provider: PROVIDER.to_string(),
+            account_key: account_key.clone(),
+            lane: LANE_FIVE_HOUR.to_string(),
+            kind: "delta".to_string(),
+            period_id: Some(period_id),
+            from_epoch: 0,
+            to_epoch: 10,
+            from_percent: 0.0,
+            to_percent: 5.0,
+            input_usd: 1.0,
+            output_usd: 0.0,
+            cache_read_usd: 0.0,
+            cache_write_usd: 0.0,
+            turn_count: 1,
+            plan: None,
+            plan_tier: None,
+            source_id: "test".to_string(),
+            computed_at_epoch: 10,
+        })
+        .unwrap();
+    store
+        .upsert_limit_residual(period_id, 10, 5.0, 4.0)
+        .unwrap();
+
+    // 200 days old, well past any of the caps this rule used to enforce.
+    let now = 200 * 86_400;
+    let removed =
+        Store::apply_provider_usage_retention_in(&store.lock(), RETAIN_SESSION_DATA_FOREVER, now)
+            .unwrap();
+    assert_eq!(removed, 0, "forever prunes nothing");
+
+    let connection = store.lock();
+    let count = |table: &str| -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        count("provider_usage_observation"),
+        1,
+        "forever keeps the observation"
+    );
+    assert_eq!(
+        count("provider_usage_period"),
+        1,
+        "forever keeps the period"
+    );
+    assert_eq!(
+        count("provider_limit_factor_sample"),
+        1,
+        "forever keeps the sample"
+    );
+    assert_eq!(
+        count("provider_limit_residual"),
+        1,
+        "forever keeps the residual"
+    );
+}
+
+#[test]
+fn finite_retention_prunes_the_residual_and_learn_cursor_with_their_period() {
+    let store = memory_store();
+    let account_key = account('a');
+    let now = 45 * 86_400;
+    let old = now - 40 * 86_400;
+    let period_id = insert_period(&store, &account_key, old - 18_000, old, old);
+    store
+        .lock()
+        .execute(
+            "INSERT INTO provider_usage_observation (
+                 period_id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                 is_authoritative, confidence, source_id
+             ) VALUES (?1, ?2, ?3, 'five-hour', 'rolling', 'primaryShort',
+                       'account', 'account', ?4, 5.0, 1, 1, 'high', 'test')",
+            params![period_id, PROVIDER, account_key, old],
+        )
+        .unwrap();
+    store
+        .advance_learn_cursor(period_id, old)
+        .expect("advances the cursor");
+    store
+        .upsert_limit_residual(period_id, old, 5.0, 4.0)
+        .expect("stores the residual");
+
+    // PRAGMA foreign_keys is on for the store; a residual or cursor row left
+    // dangling on a deleted period would raise an error here, not just a
+    // stale row, so `.unwrap()` below is itself the no-error assertion.
+    let removed = Store::apply_provider_usage_retention_in(&store.lock(), 30, now).unwrap();
+    assert_eq!(removed, 1, "the 40-day-old observation is removed");
+
+    let connection = store.lock();
+    let count = |table: &str| -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        count("provider_usage_period"),
+        0,
+        "the orphaned period is removed"
+    );
+    assert_eq!(
+        count("provider_limit_residual"),
+        0,
+        "the residual is pruned with its period, not left dangling"
+    );
+    assert_eq!(
+        count("provider_limit_learn_cursor"),
+        0,
+        "the cursor is pruned with its period"
     );
 }

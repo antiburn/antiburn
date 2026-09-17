@@ -330,7 +330,7 @@ fn built_in_tool_edits_are_exact_and_preserve_unrelated_permissions() {
         (
             AgentKind::OpenCode,
             "opencode.json",
-            r#"{"permissions":[{"action":"read","resource":"*.env","effect":"deny"}]}"#,
+            r#"{"permissions":[{"action":"read","resource":"*.env","effect":"deny"},{"action":"websearch","resource":"*","effect":"allow"}]}"#,
             "WebSearch",
             r#""action":"websearch""#,
         ),
@@ -374,6 +374,178 @@ fn built_in_tool_edits_are_exact_and_preserve_unrelated_permissions() {
             updated.replace([' ', '\n'], "").contains(expected_fragment),
             "{agent:?}"
         );
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn built_in_tool_edits_follow_explicit_project_provenance() {
+    struct Case {
+        agent: AgentKind,
+        global_path: &'static str,
+        global: &'static str,
+        project_path: &'static str,
+        unrelated_project: &'static str,
+        explicit_project: &'static str,
+        tool: &'static str,
+    }
+    let cases = [
+        Case {
+            agent: AgentKind::Claude,
+            global_path: ".claude/settings.json",
+            global: r#"{"permissions":{"deny":[]}}"#,
+            project_path: ".claude/settings.local.json",
+            unrelated_project: r#"{"permissions":{"allow":["Read"]}}"#,
+            explicit_project: r#"{"permissions":{"allow":["WebSearch"]}}"#,
+            tool: "WebSearch",
+        },
+        Case {
+            agent: AgentKind::OpenCode,
+            global_path: ".config/opencode/opencode.json",
+            global: r#"{"permissions":[{"action":"websearch","resource":"*","effect":"allow"}]}"#,
+            project_path: "opencode.json",
+            unrelated_project: r#"{"permissions":[{"action":"read","resource":"*","effect":"allow"}]}"#,
+            explicit_project: r#"{"permissions":[{"action":"websearch","resource":"*","effect":"allow"}]}"#,
+            tool: "WebSearch",
+        },
+        Case {
+            agent: AgentKind::Pi,
+            global_path: ".pi/agent/settings.json",
+            global: r#"{"defaultTools":["bash","read"]}"#,
+            project_path: ".pi/settings.json",
+            unrelated_project: r#"{"defaultTools":["read"]}"#,
+            explicit_project: r#"{"defaultTools":["bash","read"]}"#,
+            tool: "bash",
+        },
+    ];
+    for case in cases {
+        for explicit_project in [false, true] {
+            let (_temporary, home, project) = roots();
+            let global_path = home.join(case.global_path);
+            let project_path = project.join(case.project_path);
+            write(&global_path, case.global);
+            write(
+                &project_path,
+                if explicit_project {
+                    case.explicit_project
+                } else {
+                    case.unrelated_project
+                },
+            );
+            let original_global = fs::read(&global_path).unwrap();
+            let original_project = fs::read(&project_path).unwrap();
+            let operation = ConfigOperation {
+                setting: ConfigSetting::BuiltInTool,
+                expected_value: ConfigOperationValue::MapEntry {
+                    key: case.tool.into(),
+                    value: "true".into(),
+                },
+                proposed_value: ConfigOperationValue::MapEntry {
+                    key: case.tool.into(),
+                    value: "false".into(),
+                },
+            };
+            let editor = AgentConfigEditor::new();
+            let prepared = editor
+                .prepare_operation(
+                    &ConfigContext::native(case.agent, &home, Some(project)),
+                    &operation,
+                )
+                .unwrap_or_else(|error| panic!("{:?}: {error:?}", case.agent));
+            assert_eq!(prepared.changes.len(), 1, "{:?}", case.agent);
+            assert_eq!(
+                prepared.primary().scope,
+                if explicit_project {
+                    ConfigScope::Project
+                } else {
+                    ConfigScope::Global
+                },
+                "{:?}",
+                case.agent
+            );
+            editor.apply(&prepared).unwrap();
+            if explicit_project {
+                assert_eq!(fs::read(&global_path).unwrap(), original_global);
+                assert_ne!(fs::read(&project_path).unwrap(), original_project);
+            } else {
+                assert_ne!(fs::read(&global_path).unwrap(), original_global);
+                assert_eq!(fs::read(&project_path).unwrap(), original_project);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn claude_compaction_selector_comes_from_the_winning_file() {
+    let (_temporary, home, project) = roots();
+    write(
+        &home.join(".claude/settings.json"),
+        r#"{"autoCompactEnabled":false}"#,
+    );
+    write(
+        &project.join(".claude/settings.local.json"),
+        r#"{"autoCompactEnabled":true,"autoCompactWindow":120000}"#,
+    );
+    let context = ConfigContext::native(AgentKind::Claude, &home, Some(project));
+    let editor = AgentConfigEditor::new();
+    let effective = editor
+        .effective(&context, ConfigSetting::Compaction)
+        .unwrap();
+    assert_eq!(effective.scope, ConfigScope::Project);
+    assert_eq!(effective.value, "120000");
+    assert_eq!(effective.selector, "json-key");
+    assert!(effective.path.ends_with(".claude/settings.local.json"));
+    let prepared = editor
+        .prepare_operation(
+            &context,
+            &operation(ConfigSetting::Compaction, "120000", "100000"),
+        )
+        .unwrap();
+    assert_eq!(prepared.changes.len(), 1);
+    editor.apply(&prepared).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &fs::read(home.join(".claude/settings.json")).unwrap()
+        )
+        .unwrap()["autoCompactEnabled"],
+        false
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(effective.path).unwrap()).unwrap()["autoCompactWindow"],
+        100000
+    );
+}
+
+#[test]
+fn project_compaction_enablement_blocks_an_inherited_global_disabled_control() {
+    let cases = [
+        (
+            AgentKind::OpenCode,
+            ".config/opencode/opencode.json",
+            r#"{"compaction":{"auto":false}}"#,
+            "opencode.json",
+            r#"{"compaction":{"auto":true}}"#,
+        ),
+        (
+            AgentKind::Pi,
+            ".pi/agent/settings.json",
+            r#"{"compaction":{"enabled":false}}"#,
+            ".pi/settings.json",
+            r#"{"compaction":{"enabled":true}}"#,
+        ),
+    ];
+    for (agent, global_path, global, project_path, project) in cases {
+        let (_temporary, home, workspace) = roots();
+        write(&home.join(global_path), global);
+        write(&workspace.join(project_path), project);
+        assert!(matches!(
+            AgentConfigEditor::new().effective(
+                &ConfigContext::native(agent, &home, Some(workspace)),
+                ConfigSetting::Compaction,
+            ),
+            Err(ConfigUnavailableReason::MissingTarget)
+        ));
     }
 }
 
@@ -441,6 +613,7 @@ fn claude_built_in_tool_creates_an_exact_global_deny_rule() {
         fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
         "{\n  \"permissions\": {\n    \"deny\": [\n      \"WebSearch\"\n    ]\n  }\n}"
     );
+    assert!(!home.join(".claude/settings.json.bak").exists());
 }
 
 #[cfg(not(windows))]
@@ -650,27 +823,123 @@ fn inherited_settings_use_global_scope() {
 
 #[cfg(not(windows))]
 #[test]
-fn batch_updates_existing_global_and_project_model_layers() {
-    let (_temporary, home, project) = roots();
-    let global = home.join(".claude/settings.json");
-    let project_file = project.join(".claude/settings.local.json");
-    write(&global, r#"{"model":"old"}"#);
-    write(&project_file, r#"{"model":"old"}"#);
-    let editor = AgentConfigEditor::new();
-    let prepared = editor
-        .prepare(
-            &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
-            &ConfigChange {
-                expected_value: "old".into(),
-                proposed_value: "new".into(),
-            },
-        )
-        .unwrap();
-    assert_eq!(prepared.changes.len(), 2);
-    editor.apply(&prepared).unwrap();
-    for path in [global, project_file] {
-        let document: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(document["model"], "new");
+fn model_edits_mutate_only_the_winning_target() {
+    struct Case {
+        agent: AgentKind,
+        global_path: &'static str,
+        global: &'static str,
+        unrelated_project: &'static str,
+        project_path: &'static str,
+        project_override: &'static str,
+        expected: &'static str,
+        proposed: &'static str,
+    }
+    let cases = [
+        Case {
+            agent: AgentKind::Claude,
+            global_path: ".claude/settings.json",
+            global: r#"{"model":"old"}"#,
+            unrelated_project: r#"{"theme":"dark"}"#,
+            project_path: ".claude/settings.local.json",
+            project_override: r#"{"model":"old"}"#,
+            expected: "old",
+            proposed: "new",
+        },
+        Case {
+            agent: AgentKind::Codex,
+            global_path: ".codex/config.toml",
+            global: "model = \"old\"\n",
+            unrelated_project: "approval_policy = \"never\"\n",
+            project_path: ".codex/config.toml",
+            project_override: "model = \"old\"\n",
+            expected: "old",
+            proposed: "new",
+        },
+        Case {
+            agent: AgentKind::OpenCode,
+            global_path: ".config/opencode/opencode.json",
+            global: r#"{"model":"a/old"}"#,
+            unrelated_project: r#"{"theme":"dark"}"#,
+            project_path: "opencode.json",
+            project_override: r#"{"model":"a/old"}"#,
+            expected: "a/old",
+            proposed: "a/new",
+        },
+        Case {
+            agent: AgentKind::Pi,
+            global_path: ".pi/agent/settings.json",
+            global: r#"{"defaultProvider":"a","defaultModel":"old"}"#,
+            unrelated_project: r#"{"theme":"dark"}"#,
+            project_path: ".pi/settings.json",
+            project_override: r#"{"defaultProvider":"a","defaultModel":"old"}"#,
+            expected: "a/old",
+            proposed: "a/new",
+        },
+        Case {
+            agent: AgentKind::Cursor,
+            global_path: ".cursor/cli-config.json",
+            global: r#"{"model":"old"}"#,
+            unrelated_project: r#"{"theme":"dark"}"#,
+            project_path: ".cursor/cli.json",
+            project_override: r#"{"model":"old"}"#,
+            expected: "old",
+            proposed: "new",
+        },
+    ];
+    for case in cases {
+        for project_override in [false, true] {
+            let (_temporary, home, project) = roots();
+            let global_path = home.join(case.global_path);
+            let project_path = project.join(case.project_path);
+            let mut global = case.global.to_owned();
+            if case.agent == AgentKind::Codex {
+                let project_key = project.canonicalize().unwrap();
+                global.push_str(&format!(
+                    "[projects.{}]\ntrust_level = \"trusted\"\n",
+                    toml_edit::Value::from(project_key.to_string_lossy().as_ref())
+                ));
+            }
+            write(&global_path, &global);
+            write(
+                &project_path,
+                if project_override {
+                    case.project_override
+                } else {
+                    case.unrelated_project
+                },
+            );
+            let original_global = fs::read(&global_path).unwrap();
+            let original_project = fs::read(&project_path).unwrap();
+            let editor = AgentConfigEditor::new();
+            let prepared = editor
+                .prepare(
+                    &ConfigContext::native(case.agent, &home, Some(project)),
+                    &ConfigChange {
+                        expected_value: case.expected.into(),
+                        proposed_value: case.proposed.into(),
+                    },
+                )
+                .unwrap_or_else(|error| panic!("{:?}: {error:?}", case.agent));
+            assert_eq!(prepared.changes.len(), 1, "{:?}", case.agent);
+            assert_eq!(
+                prepared.primary().scope,
+                if project_override {
+                    ConfigScope::Project
+                } else {
+                    ConfigScope::Global
+                },
+                "{:?}",
+                case.agent
+            );
+            editor.apply(&prepared).unwrap();
+            if project_override {
+                assert_eq!(fs::read(&global_path).unwrap(), original_global);
+                assert_ne!(fs::read(&project_path).unwrap(), original_project);
+            } else {
+                assert_ne!(fs::read(&global_path).unwrap(), original_global);
+                assert_eq!(fs::read(&project_path).unwrap(), original_project);
+            }
+        }
     }
 }
 
@@ -696,179 +965,64 @@ fn batch_prepares_when_context_reports_an_override() {
 
 #[cfg(not(windows))]
 #[test]
-fn missing_global_model_configs_are_created_for_each_supported_vendor() {
-    let cases = [
+fn missing_global_model_configs_are_not_created() {
+    for (agent, proposed) in [
         (AgentKind::Claude, "new"),
         (AgentKind::Codex, "new"),
         (AgentKind::OpenCode, "provider/new"),
         (AgentKind::Pi, "provider/new"),
         (AgentKind::Cursor, "new"),
         (AgentKind::Antigravity, "new"),
-    ];
-    for (agent, proposed) in cases {
+    ] {
         let (_temporary, home, project) = roots();
-        let editor = AgentConfigEditor::new();
-        let prepared = editor
-            .prepare(
-                &ConfigContext::native(agent, &home, Some(project)),
-                &ConfigChange {
-                    expected_value: "old".into(),
-                    proposed_value: proposed.into(),
-                },
-            )
-            .unwrap();
-        assert!(prepared.changes.is_empty(), "{agent:?}");
-        editor.apply(&prepared).unwrap();
-        assert_eq!(
-            editor
-                .effective_model(&ConfigContext::native(agent, &home, None))
-                .unwrap()
-                .value,
-            proposed
+        let result = AgentConfigEditor::new().prepare(
+            &ConfigContext::native(agent, &home, Some(project)),
+            &ConfigChange {
+                expected_value: "old".into(),
+                proposed_value: proposed.into(),
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ConfigUnavailableReason::MissingConfig)
+                    | Err(ConfigUnavailableReason::MissingTarget)
+            ),
+            "{agent:?}: {result:?}"
         );
     }
 }
 
 #[cfg(not(windows))]
 #[test]
-fn missing_global_configs_are_created_for_each_supported_auto_fix() {
-    struct Case {
-        agent: AgentKind,
-        setting: ConfigSetting,
-        expected: ConfigOperationValue,
-        proposed: ConfigOperationValue,
-        relative_path: &'static str,
-        expected_content: &'static str,
-    }
-
-    let cases = [
-        Case {
-            agent: AgentKind::Claude,
-            setting: ConfigSetting::Model,
-            expected: "old".into(),
-            proposed: "new".into(),
-            relative_path: ".claude/settings.json",
-            expected_content: "\"model\": \"new\"",
-        },
-        Case {
-            agent: AgentKind::Claude,
-            setting: ConfigSetting::Reasoning,
-            expected: "high".into(),
-            proposed: "medium".into(),
-            relative_path: ".claude/settings.json",
-            expected_content: "\"effortLevel\": \"medium\"",
-        },
-        Case {
-            agent: AgentKind::Claude,
-            setting: ConfigSetting::FastMode,
-            expected: "fast".into(),
-            proposed: "standard".into(),
-            relative_path: ".claude/settings.json",
-            expected_content: "\"fastMode\": false",
-        },
-        Case {
-            agent: AgentKind::Claude,
-            setting: ConfigSetting::BuiltInTool,
-            expected: ConfigOperationValue::MapEntry {
-                key: "WebSearch".into(),
-                value: "true".into(),
-            },
-            proposed: ConfigOperationValue::MapEntry {
-                key: "WebSearch".into(),
-                value: "false".into(),
-            },
-            relative_path: ".claude/settings.json",
-            expected_content: "\"WebSearch\"",
-        },
-        Case {
-            agent: AgentKind::Codex,
-            setting: ConfigSetting::Model,
-            expected: "old".into(),
-            proposed: "new".into(),
-            relative_path: ".codex/config.toml",
-            expected_content: "model = \"new\"",
-        },
-        Case {
-            agent: AgentKind::Codex,
-            setting: ConfigSetting::Reasoning,
-            expected: "high".into(),
-            proposed: "medium".into(),
-            relative_path: ".codex/config.toml",
-            expected_content: "model_reasoning_effort = \"medium\"",
-        },
-        Case {
-            agent: AgentKind::Codex,
-            setting: ConfigSetting::Compaction,
-            expected: ConfigOperationValue::Number(300_000),
-            proposed: ConfigOperationValue::Number(200_000),
-            relative_path: ".codex/config.toml",
-            expected_content: "model_auto_compact_token_limit = \"200000\"",
-        },
-        Case {
-            agent: AgentKind::Codex,
-            setting: ConfigSetting::FastMode,
-            expected: "fast".into(),
-            proposed: "standard".into(),
-            relative_path: ".codex/config.toml",
-            expected_content: "service_tier = \"standard\"",
-        },
-        Case {
-            agent: AgentKind::OpenCode,
-            setting: ConfigSetting::Model,
-            expected: "provider/old".into(),
-            proposed: "provider/new".into(),
-            relative_path: ".config/opencode/opencode.json",
-            expected_content: "\"model\": \"provider/new\"",
-        },
-        Case {
-            agent: AgentKind::Pi,
-            setting: ConfigSetting::Model,
-            expected: "provider/old".into(),
-            proposed: "provider/new".into(),
-            relative_path: ".pi/agent/settings.json",
-            expected_content: "\"defaultModel\": \"new\"",
-        },
-        Case {
-            agent: AgentKind::Pi,
-            setting: ConfigSetting::Reasoning,
-            expected: "high".into(),
-            proposed: "medium".into(),
-            relative_path: ".pi/agent/settings.json",
-            expected_content: "\"defaultThinkingLevel\": \"medium\"",
-        },
-    ];
-
-    for case in cases {
-        let (_temporary, home, project) = roots();
-        let editor = AgentConfigEditor::new();
-        let prepared = editor
-            .prepare_operation(
-                &ConfigContext::native(case.agent, &home, Some(project)),
-                &ConfigOperation {
-                    setting: case.setting,
-                    expected_value: case.expected,
-                    proposed_value: case.proposed,
+fn missing_global_config_is_created_only_for_a_claude_built_in_tool() {
+    let (_temporary, home, project) = roots();
+    let editor = AgentConfigEditor::new();
+    let prepared = editor
+        .prepare_operation(
+            &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+            &ConfigOperation {
+                setting: ConfigSetting::BuiltInTool,
+                expected_value: ConfigOperationValue::MapEntry {
+                    key: "WebSearch".into(),
+                    value: "true".into(),
                 },
-            )
-            .unwrap_or_else(|error| panic!("{:?} {:?}: {error:?}", case.agent, case.setting));
-        assert!(
-            prepared.changes.is_empty(),
-            "{:?} {:?}",
-            case.agent,
-            case.setting
-        );
+                proposed_value: ConfigOperationValue::MapEntry {
+                    key: "WebSearch".into(),
+                    value: "false".into(),
+                },
+            },
+        )
+        .unwrap();
+    assert!(prepared.changes.is_empty());
 
-        editor.apply(&prepared).unwrap();
+    editor.apply(&prepared).unwrap();
 
-        assert!(
-            fs::read_to_string(home.join(case.relative_path))
-                .unwrap()
-                .contains(case.expected_content),
-            "{:?} {:?}",
-            case.agent,
-            case.setting
-        );
-    }
+    assert!(
+        fs::read_to_string(home.join(".claude/settings.json"))
+            .unwrap()
+            .contains("\"WebSearch\"")
+    );
 }
 
 #[cfg(not(windows))]
@@ -1514,6 +1668,85 @@ fn apply_rejects_a_content_conflict() {
     );
 }
 
+#[cfg(not(windows))]
+#[test]
+fn apply_leaves_the_exact_previous_config_in_a_backup() {
+    let (_temporary, home, project) = roots();
+    let path = home.join(".claude/settings.json");
+    let backup = home.join(".claude/settings.json.bak");
+    let original = b"{\n  \"model\": \"old\",\n  \"theme\": \"dark\"\n}\n";
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, original).unwrap();
+    let editor = AgentConfigEditor::new();
+    let context = ConfigContext::native(AgentKind::Claude, &home, Some(project));
+
+    let prepared = editor
+        .prepare(
+            &context,
+            &ConfigChange {
+                expected_value: "old".into(),
+                proposed_value: "new".into(),
+            },
+        )
+        .unwrap();
+    editor.apply(&prepared).unwrap();
+    assert_eq!(fs::read(&backup).unwrap(), original);
+
+    let first_update = fs::read(&path).unwrap();
+    fs::write(&backup, b"stale backup").unwrap();
+    let prepared = editor
+        .prepare(
+            &context,
+            &ConfigChange {
+                expected_value: "new".into(),
+                proposed_value: "newest".into(),
+            },
+        )
+        .unwrap();
+    editor.apply(&prepared).unwrap();
+    assert_eq!(fs::read(backup).unwrap(), first_update);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_rejects_an_unsafe_backup_without_changing_the_config() {
+    use std::os::unix::fs::symlink;
+
+    let (_temporary, home, project) = roots();
+    let path = home.join(".claude/settings.json");
+    let backup = home.join(".claude/settings.json.bak");
+    let external = home.join("external-backup");
+    let original = b"{\"model\":\"old\"}";
+    write(&path, std::str::from_utf8(original).unwrap());
+    fs::write(&external, b"keep this").unwrap();
+    symlink(&external, &backup).unwrap();
+    let editor = AgentConfigEditor::new();
+    let prepared = editor
+        .prepare(
+            &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+            &ConfigChange {
+                expected_value: "old".into(),
+                proposed_value: "new".into(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        editor.apply(&prepared),
+        Err(ApplyError::Unavailable(
+            ConfigUnavailableReason::SymlinkTarget
+        ))
+    );
+    assert_eq!(fs::read(path).unwrap(), original);
+    assert_eq!(fs::read(external).unwrap(), b"keep this");
+    assert!(
+        fs::symlink_metadata(backup)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn apply_preserves_mode_owner_and_group() {
@@ -1533,9 +1766,12 @@ fn apply_preserves_mode_owner_and_group() {
         )
         .unwrap();
     editor.apply(&prepared).unwrap();
-    let metadata = fs::metadata(path).unwrap();
+    let metadata = fs::metadata(&path).unwrap();
     assert_eq!(metadata.permissions().mode() & 0o777, 0o764);
     assert_eq!(file_ownership(&metadata), ownership);
+    let backup_metadata = fs::metadata(path.with_file_name("settings.json.bak")).unwrap();
+    assert_eq!(backup_metadata.permissions().mode() & 0o777, 0o764);
+    assert_eq!(file_ownership(&backup_metadata), ownership);
 }
 
 #[cfg(unix)]

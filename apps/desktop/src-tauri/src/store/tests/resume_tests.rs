@@ -1,9 +1,7 @@
 //! Store-level pinning tests for `source_resume` (continuous ingest, phase
 //! 3b): the snapshot write inside a winning publish, the fence restamp and
 //! replace `Store::publish_projections` runs per source, and the startup
-//! purge of stale revisions. See "R4. Fence semantics", "R5. Snapshot
-//! storage", and "R6. Invalidation" in the phase 3b design rules in
-//! `docs/plans/continuous-session-ingest.md`.
+//! purge of stale revisions.
 
 use super::*;
 use antiburn_local::analysis::{ContentKind, ContentPart, count_turn_content_rows};
@@ -692,10 +690,10 @@ fn conflicting_duplicate_source_outcomes_are_rejected_without_publishing() {
 #[test]
 fn current_resume_revisions_reject_each_prior_batch_revision() {
     let current = crate::analysis::resume_revisions();
-    assert_eq!(current.snapshot_revision, 9);
+    assert_eq!(current.snapshot_revision, 11);
     assert_eq!(current.parser_revision, 38);
     assert_eq!(current.analyzer_revision, 24);
-    assert_eq!(current.metrics_schema_revision, 8);
+    assert_eq!(current.metrics_schema_revision, 9);
     assert_eq!(current.evidence_schema_revision, 19);
     assert_eq!(current.coverage_schema_revision, 5);
     let mut stored = sample_resume("current");

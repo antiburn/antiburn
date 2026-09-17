@@ -765,6 +765,9 @@ pub(crate) fn finalize_metrics(
     let mut previous_turn_ts: Option<i64> = None;
     let mut cache_rehydration_count = 0u64;
     let mut provider_cache_miss_count = 0u64;
+    // Each turn's usage bucket index, recorded here so the pricing loop below
+    // reuses the exact value instead of recomputing the stateful progress walk.
+    let mut usage_bucket_indices = Vec::with_capacity(turns.len());
 
     for (index, (source, turn)) in turns.iter().enumerate() {
         if active_ms > 0
@@ -791,6 +794,7 @@ pub(crate) fn finalize_metrics(
         }
         .clamp(0.0, 1.0);
         let usage_bucket_index = ((usage_progress * BUCKETS as f32) as usize).min(BUCKETS - 1);
+        usage_bucket_indices.push(usage_bucket_index);
 
         if *source == EventSource::Subagent {
             let bucket = &mut buckets[usage_bucket_index];
@@ -919,9 +923,10 @@ pub(crate) fn finalize_metrics(
 
     let mut model_breakdown: HashMap<String, ModelTokens> = HashMap::new();
     let mut pricing_breakdown: HashMap<String, ModelTokens> = HashMap::new();
+    let mut bucket_pricing: Vec<HashMap<String, ModelTokens>> = vec![HashMap::new(); BUCKETS];
     let mut model_runs = Vec::new();
     let mut seen_model_runs = HashSet::new();
-    for (_, turn) in turns {
+    for (index, (_, turn)) in turns.iter().enumerate() {
         let usage = turn.usage;
         let has_tokens = usage.input_tokens != 0
             || usage.output_tokens != 0
@@ -957,7 +962,7 @@ pub(crate) fn finalize_metrics(
                     .cache_creation_1h_tokens
                     .saturating_add(usage.cache_creation_1h_tokens);
                 let pricing_key = turn_pricing_key(&model, turn.speed.as_deref());
-                let pricing_entry = pricing_breakdown.entry(pricing_key).or_default();
+                let pricing_entry = pricing_breakdown.entry(pricing_key.clone()).or_default();
                 pricing_entry.input_tokens = pricing_entry
                     .input_tokens
                     .saturating_add(usage.input_tokens);
@@ -973,6 +978,23 @@ pub(crate) fn finalize_metrics(
                 pricing_entry.cache_creation_1h_tokens = pricing_entry
                     .cache_creation_1h_tokens
                     .saturating_add(usage.cache_creation_1h_tokens);
+                let bucket_entry = bucket_pricing[usage_bucket_indices[index]]
+                    .entry(pricing_key)
+                    .or_default();
+                bucket_entry.input_tokens =
+                    bucket_entry.input_tokens.saturating_add(usage.input_tokens);
+                bucket_entry.output_tokens = bucket_entry
+                    .output_tokens
+                    .saturating_add(usage.output_tokens);
+                bucket_entry.cache_read_tokens = bucket_entry
+                    .cache_read_tokens
+                    .saturating_add(usage.cache_read_tokens);
+                bucket_entry.cache_creation_tokens = bucket_entry
+                    .cache_creation_tokens
+                    .saturating_add(usage.cache_creation_tokens);
+                bucket_entry.cache_creation_1h_tokens = bucket_entry
+                    .cache_creation_1h_tokens
+                    .saturating_add(usage.cache_creation_1h_tokens);
             }
         }
     }
@@ -982,6 +1004,19 @@ pub(crate) fn finalize_metrics(
         tallies.peak_context_tokens,
     );
     let cost = crate::analysis::pricing::price_breakdown(&pricing_breakdown);
+    for (bucket, pricing) in buckets.iter_mut().zip(&bucket_pricing) {
+        bucket.cost = if pricing.is_empty() {
+            None
+        } else {
+            crate::analysis::pricing::price_breakdown(pricing)
+        };
+    }
+    if cost.is_none() {
+        // A partially priced series would mislead: clear every bucket cost too.
+        for bucket in &mut buckets {
+            bucket.cost = None;
+        }
+    }
     let (efficiency, rewrites) = reference_efficiency(turns, summary.model.as_deref());
     for rewrite in rewrites {
         let progress = if active_ms > 0 {

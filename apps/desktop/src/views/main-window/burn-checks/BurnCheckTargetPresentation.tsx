@@ -1,5 +1,5 @@
-import { ChevronDown, ChevronRight } from "lucide-react"
-import { useId, useState } from "react"
+import { ChevronDown } from "lucide-react"
+import { useRef, useState } from "react"
 
 import { cn } from "../../../lib/cn"
 import {
@@ -8,7 +8,11 @@ import {
   type BurnCheckTargetPayload,
 } from "../../../lib/insightsIpc"
 import { CHECK_LABELS } from "../../../lib/presentation/checks"
-import { SessionSampleRow } from "../../../components/session/SessionSampleRow"
+import { ScrollPane } from "../../../components/ui/ScrollPane"
+import { SessionRow } from "../../../components/session/SessionList"
+import { toActivityEntry } from "../../../lib/activityEntries"
+import { renderAgentIcon } from "../../../lib/agentIcon"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
 
 export function DisclosureChevron({ open }: { open: boolean }) {
   return (
@@ -46,130 +50,127 @@ export function targetTitle(target: BurnCheckTargetPayload): string {
 }
 
 export function watchStatus(target: BurnCheckTargetPayload): string | null {
-  const verification = target.watch?.verification
+  const watch = target.watch
+  if (watch?.lifecycle === "waitingForPromptUse") {
+    return "The prompt is ready. Verification starts after you use it."
+  }
+  const verification = watch?.verification
   if (!verification) return null
   switch (verification.status) {
     case "reserved":
-      return "The change is reserved. Verification has not started."
+      return "Verification has not started."
     case "watching":
-      return null
+      return "Waiting for a later complete session."
     case "fixed":
-      return null
+      return watch.origin === "passive" ? "Verified improvement." : "Verified after your fix."
     case "stillUnresolved":
-      return "Fresh evidence still shows this finding."
+      return "A later session still has this finding."
     case "recurred":
-      return "This finding returned after it was verified."
+      return "This finding returned."
     case "recoveryNeeded":
-      return "The write result is uncertain. Review the setting before another change."
+      return null
     case "verificationUnavailable":
       return null
   }
 }
 
-function noActionReason(target: BurnCheckTargetPayload): string | null {
-  if (target.autoFix.status === "available" || target.promptFix.status === "available")
-    return null
-  switch (target.autoFix.reason) {
-    case "activeWatch":
-      return "An existing change is still being checked."
-    case "safetyCheckFailed":
-      return "The current setting did not pass the write safety check."
-    case "targetNotFound":
-      return "This exact setting is no longer available."
-    case "unsupportedOrUnprovenTarget":
-      return "This target does not support a safe automatic change or prepared prompt."
+function sizeSessionList(viewport: HTMLDivElement | null) {
+  const list = viewport?.querySelector("[data-failed-session-cards]")
+  if (!viewport || !list) return
+  const measure = () => {
+    const first = list.children.item(0)
+    const fifth = list.children.item(4)
+    if (!first || !fifth) return
+    const height = fifth.getBoundingClientRect().bottom - first.getBoundingClientRect().top
+    if (height > 0) viewport.style.maxHeight = `${height}px`
+  }
+  measure()
+  const observer = new ResizeObserver(measure)
+  observer.observe(list)
+  for (const card of Array.from(list.children).slice(0, 5)) observer.observe(card)
+  return () => {
+    observer.disconnect()
+    viewport.style.removeProperty("max-height")
   }
 }
 
-export function ActionLimit({ target }: { target: BurnCheckTargetPayload }) {
-  const reason = noActionReason(target)
-  if (!reason) return null
-  return <p className="mt-2 type-callout text-label-tertiary">{reason}</p>
-}
-
-export function SampleSessions({
+export function FailedSessions({
   samples,
-  affectedSessionCount,
-  insetRows = false,
+  total,
 }: {
   samples: BurnCheckSamplePayload[]
-  affectedSessionCount?: number
-  insetRows?: boolean
+  total?: number
 }) {
-  const [manualOpen, setManualOpen] = useState<boolean | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [busyHandle, setBusyHandle] = useState<string | null>(null)
-  const id = useId()
-  const displayedSamples = samples.slice(0, 3)
-  if (displayedSamples.length === 0) return null
-  const open = manualOpen ?? displayedSamples.length === 1
+  const opening = useRef(false)
+  const scrollable = samples.length > 5
+  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
+  if (total === 0) return null
+  const cards = (
+    <div data-failed-session-cards className="flex flex-col gap-2">
+      {samples.length === 0 && (
+        <p className="type-callout text-label-secondary">
+          No failed sessions are available to open.
+        </p>
+      )}
+      {samples.map((sample) => (
+        <SessionRow
+          key={sample.navigationHandle}
+          entry={toActivityEntry(sample)}
+          hygiene={sample.hygiene}
+          snoozedDetectors={snoozedDetectors}
+          renderAgentIcon={renderAgentIcon}
+          showAgentLabel
+          busy={busyHandle !== null}
+          onOpen={async () => {
+            if (opening.current) return
+            opening.current = true
+            setBusyHandle(sample.navigationHandle)
+            setStatus(null)
+            try {
+              const result = await openBurnCheckSample(sample.navigationHandle)
+              if (result?.outcome === "opened") return
+              setStatus(
+                result?.outcome === "deleted"
+                  ? "This session was deleted."
+                  : result?.outcome === "expired"
+                    ? "This session is no longer available."
+                    : "This session is unavailable.",
+              )
+            } catch {
+              setStatus("Could not open this session. Try again.")
+            } finally {
+              opening.current = false
+              setBusyHandle(null)
+            }
+          }}
+        />
+      ))}
+    </div>
+  )
   return (
     <div className="burn-check-samples">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={id}
-        aria-describedby={
-          affectedSessionCount != null && affectedSessionCount >= displayedSamples.length
-            ? `${id}-summary`
-            : undefined
-        }
-        onClick={() => setManualOpen(!open)}
-        className="-mx-2 inline-flex min-h-10 items-center gap-1.5 rounded-control px-2 py-1 text-left type-callout font-semibold! text-label-secondary transition-colors duration-[var(--duration-fast)] ease-out-quart hover:text-label active:transform-none active:opacity-100"
+      <div
+        role={scrollable ? undefined : "region"}
+        aria-label={scrollable ? undefined : "Failed sessions"}
+        className="mt-1"
       >
-        <ChevronRight
-          size={12}
-          className={cn(
-            "transition-transform duration-[var(--duration-fast)] ease-out-quart",
-            open && "rotate-90",
-          )}
-          aria-hidden="true"
-        />
-        <span>{displayedSamples.length === 1 ? "Sample session" : "Sample sessions"}</span>{" "}
-        <span className="burn-check-group-count type-footnote tabular-nums text-label-tertiary">
-          {displayedSamples.length}
-        </span>
-      </button>
-      {affectedSessionCount != null && affectedSessionCount >= displayedSamples.length && (
-        <span id={`${id}-summary`} className="sr-only">
-          {displayedSamples.length} sample{" "}
-          {displayedSamples.length === 1 ? "session" : "sessions"} out of {affectedSessionCount}{" "}
-          affected.
-        </span>
-      )}
-      <div id={id} hidden={!open} className="mt-1 flex flex-col gap-1">
-        {displayedSamples.map((sample) => (
-          <SessionSampleRow
-            key={sample.navigationHandle}
-            title={sample.title}
-            agent={sample.agent}
-            surface={sample.surface}
-            observedAtMs={sample.observedAtMs}
-            busy={busyHandle !== null}
-            trailing="up-right"
-            appearance={insetRows ? "inset" : "card"}
-            onOpen={async () => {
-              if (busyHandle) return
-              setBusyHandle(sample.navigationHandle)
-              setStatus(null)
-              try {
-                const result = await openBurnCheckSample(sample.navigationHandle)
-                if (result?.outcome === "opened") return
-                setStatus(
-                  result?.outcome === "deleted"
-                    ? "This sample session was deleted."
-                    : result?.outcome === "expired"
-                      ? "This sample session is no longer available."
-                      : "This sample session is unavailable.",
-                )
-              } catch {
-                setStatus("Could not open this sample session. Try again.")
-              } finally {
-                setBusyHandle(null)
-              }
-            }}
-          />
-        ))}
+        {scrollable ? (
+          <ScrollPane
+            topEdgeFade
+            bottomEdgeFade
+            className="flex-none"
+            viewportRef={sizeSessionList}
+            viewportTabIndex={0}
+            viewportLabel="Failed sessions"
+            viewportClassName="pr-3 overscroll-y-contain"
+          >
+            {cards}
+          </ScrollPane>
+        ) : (
+          cards
+        )}
       </div>
       {status && (
         <p role="status" className="mt-2 type-callout text-label-secondary">

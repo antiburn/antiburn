@@ -115,6 +115,15 @@
   --color-burn-check-failure-text: var(--color-burn-check-failure-text-val);
   --color-burn-check-pass-fill: var(--color-burn-check-pass-fill-val);
   --color-burn-check-neutral: var(--color-burn-check-neutral-val);
+  --color-check-tools: var(--color-check-tools-val);
+  --color-check-mcp: var(--color-check-mcp-val);
+  --color-check-overthinking: var(--color-check-overthinking-val);
+  --color-check-skills: var(--color-check-skills-val);
+  --color-check-subagents: var(--color-check-subagents-val);
+  --color-check-old-model: var(--color-check-old-model-val);
+  --color-check-fast-mode: var(--color-check-fast-mode-val);
+  --color-check-cache: var(--color-check-cache-val);
+  --color-check-depth: var(--color-check-depth-val);
 
   /* Session-analysis chart tokens are theme-adaptive too and live in
    * ./session-analysis-colors.css. */
@@ -210,6 +219,16 @@
   --color-burn-check-failure-text-val: hsl(18 100% 36.4%);
   --color-burn-check-pass-fill-val: hsl(191.5 83% 36.8%);
   --color-burn-check-neutral-val: hsl(209 6% 73.7%);
+  --color-check-tools-val: hsl(27.5 89.4% 51.7%);
+  --color-check-mcp-val: hsl(196.2 100% 42.7%);
+  --color-check-overthinking-val: hsl(263 88% 64.4%);
+  --color-check-skills-val: hsl(47 100% 44.9%);
+  --color-check-subagents-val: hsl(341 88% 59.4%);
+  --color-check-old-model-val: hsl(40 100% 47%);
+  --color-check-fast-mode-val: hsl(47 100% 30.5%);
+  --color-check-cache-val: hsl(175.3 100% 35.5%);
+  --color-check-depth-val: hsl(158 89% 39.6%);
+  --burn-check-category-tint: 10%;
 
   /* Spacing rhythm (multiples of 4) */
   --space-xs: 4px;
@@ -318,6 +337,16 @@
     --color-burn-check-failure-text-val: hsl(18 100% 68%);
     --color-burn-check-pass-fill-val: hsl(192 63% 47.6%);
     --color-burn-check-neutral-val: hsl(210 3% 50.5%);
+    --color-check-tools-val: hsl(28.7 100% 59%);
+    --color-check-mcp-val: hsl(196 86.4% 53.5%);
+    --color-check-overthinking-val: hsl(260 100% 73.3%);
+    --color-check-skills-val: hsl(47.6 100% 58.2%);
+    --color-check-subagents-val: hsl(342.8 100% 65%);
+    --color-check-old-model-val: hsl(38.3 100% 58.6%);
+    --color-check-fast-mode-val: hsl(57.6 91% 55.5%);
+    --color-check-cache-val: hsl(174.3 74% 47.6%);
+    --color-check-depth-val: hsl(156 75% 47.2%);
+    --burn-check-category-tint: 14%;
     /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
        where small text reaches 4.5:1 on a card (same rationale as light
        mode). The hard case is again the popover: the surface is translucent,
@@ -387,6 +416,16 @@
   --color-burn-check-failure-text-val: hsl(18 100% 36.4%);
   --color-burn-check-pass-fill-val: hsl(191.5 83% 36.8%);
   --color-burn-check-neutral-val: hsl(209 6% 73.7%);
+  --color-check-tools-val: hsl(27.5 89.4% 51.7%);
+  --color-check-mcp-val: hsl(196.2 100% 42.7%);
+  --color-check-overthinking-val: hsl(263 88% 64.4%);
+  --color-check-skills-val: hsl(47 100% 44.9%);
+  --color-check-subagents-val: hsl(341 88% 59.4%);
+  --color-check-old-model-val: hsl(40 100% 47%);
+  --color-check-fast-mode-val: hsl(47 100% 30.5%);
+  --color-check-cache-val: hsl(175.3 100% 35.5%);
+  --color-check-depth-val: hsl(158 89% 39.6%);
+  --burn-check-category-tint: 10%;
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: light) {
@@ -456,6 +495,16 @@
   --color-burn-check-failure-text-val: hsl(18 100% 68%);
   --color-burn-check-pass-fill-val: hsl(192 63% 47.6%);
   --color-burn-check-neutral-val: hsl(210 3% 50.5%);
+  --color-check-tools-val: hsl(28.7 100% 59%);
+  --color-check-mcp-val: hsl(196 86.4% 53.5%);
+  --color-check-overthinking-val: hsl(260 100% 73.3%);
+  --color-check-skills-val: hsl(47.6 100% 58.2%);
+  --color-check-subagents-val: hsl(342.8 100% 65%);
+  --color-check-old-model-val: hsl(38.3 100% 58.6%);
+  --color-check-fast-mode-val: hsl(57.6 91% 55.5%);
+  --color-check-cache-val: hsl(174.3 74% 47.6%);
+  --color-check-depth-val: hsl(156 75% 47.2%);
+  --burn-check-category-tint: 14%;
 }
 
 /* Must follow the :root[data-theme="dark"] block above — media queries add no
