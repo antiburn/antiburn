@@ -277,38 +277,83 @@ impl Store {
     /// that order, because what a day consumed is the rise from the reading
     /// before it.
     ///
+    /// The read pages through every matching row. `page` bounds one query and
+    /// not the answer. A cap on the answer drops the readings that sort last,
+    /// which takes whole accounts off the series, and the caller cannot see
+    /// that it happened.
+    ///
+    /// The pages run in time order, because the observation table indexes
+    /// that order. The rows are then put in account and period order for the
+    /// caller.
+    ///
     /// A reading with no figure and a reading outside a period are both left
     /// out. Neither states how much the reader consumed.
     pub fn provider_usage_readings(
         &self,
         since_epoch: i64,
         window_role: &str,
-        limit: usize,
+        page: usize,
     ) -> Result<Vec<ProviderUsageReading>> {
         let connection = self.lock();
-        let limit = i64::try_from(limit.clamp(1, 200_000)).expect("bounded page fits i64");
+        let page = i64::try_from(page.clamp(1, 200_000)).expect("bounded page fits i64");
         let mut statement = connection.prepare(
-            "SELECT provider, account_key, period_id, observed_at_epoch, used_percent
+            "SELECT id, provider, account_key, period_id, observed_at_epoch, used_percent
                FROM provider_usage_observation
               WHERE observed_at_epoch >= ?1
                 AND window_role = ?2
                 AND scope_key = 'account'
                 AND period_id IS NOT NULL
                 AND used_percent IS NOT NULL
-              ORDER BY provider, account_key, period_id, observed_at_epoch
-              LIMIT ?3",
+                AND (?3 IS NULL OR (observed_at_epoch, id) > (?3, ?4))
+              ORDER BY observed_at_epoch, id
+              LIMIT ?5",
         )?;
-        let readings = statement
-            .query_map(params![since_epoch, window_role, limit], |row| {
-                Ok(ProviderUsageReading {
-                    provider: row.get(0)?,
-                    account_key: row.get(1)?,
-                    period_id: row.get(2)?,
-                    observed_at_epoch: row.get(3)?,
-                    used_percent: row.get(4)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut readings: Vec<ProviderUsageReading> = Vec::new();
+        // The row the last page ended on, as the observation time and the row
+        // id. Two observations can share a time, so the id breaks the tie and
+        // keeps a page from reading the same row twice.
+        let mut cursor: Option<(i64, i64)> = None;
+        loop {
+            let rows = statement.query_map(
+                params![
+                    since_epoch,
+                    window_role,
+                    cursor.map(|(at_epoch, _)| at_epoch),
+                    cursor.map(|(_, id)| id),
+                    page
+                ],
+                |row| {
+                    let id: i64 = row.get(0)?;
+                    Ok((
+                        id,
+                        ProviderUsageReading {
+                            provider: row.get(1)?,
+                            account_key: row.get(2)?,
+                            period_id: row.get(3)?,
+                            observed_at_epoch: row.get(4)?,
+                            used_percent: row.get(5)?,
+                        },
+                    ))
+                },
+            )?;
+            let mut count: i64 = 0;
+            for row in rows {
+                let (id, reading) = row?;
+                cursor = Some((reading.observed_at_epoch, id));
+                readings.push(reading);
+                count += 1;
+            }
+            if count < page {
+                break;
+            }
+        }
+        readings.sort_by(|left, right| {
+            left.provider
+                .cmp(&right.provider)
+                .then_with(|| left.account_key.cmp(&right.account_key))
+                .then_with(|| left.period_id.cmp(&right.period_id))
+                .then_with(|| left.observed_at_epoch.cmp(&right.observed_at_epoch))
+        });
         Ok(readings)
     }
 

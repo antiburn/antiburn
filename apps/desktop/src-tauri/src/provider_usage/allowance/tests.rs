@@ -18,6 +18,11 @@ fn incident(ts_ms: i64, limit_kind: QuotaLimitKind) -> QuotaIncident {
     }
 }
 
+/// Every block the refusals make, with no span to bound them.
+fn blocks(incidents: &[QuotaIncident]) -> Vec<Block> {
+    blocks_since(incidents, i64::MIN)
+}
+
 fn with_clock(mut incident: QuotaIncident, hour: u8, minute: u8) -> QuotaIncident {
     incident.reset_clock = Some(QuotaResetClock {
         hour,
@@ -156,6 +161,23 @@ fn the_overage_counts_blocks_inside_the_span_and_sums_their_waits() {
         overage.last_block_at_ms,
         Some(REFUSED_AT_MS + STORM_GAP_MS + 1_000)
     );
+}
+
+/// A refusal before the span must not take a refusal inside it away.
+#[test]
+fn a_refusal_before_the_span_leaves_the_one_inside_it_counted() {
+    // The two refusals sit inside one storm gap, so they merge into one
+    // block and the block keeps the earlier start. A span test on the block
+    // then drops it, and the refusal the reader met inside the span counts
+    // for nothing.
+    let hour_ms = 60 * 60 * 1000;
+    let before = incident(REFUSED_AT_MS - hour_ms, QuotaLimitKind::RollingWindow);
+    let inside = incident(REFUSED_AT_MS + hour_ms, QuotaLimitKind::RollingWindow);
+
+    let overage = overage(&[before, inside], REFUSED_AT_MS);
+
+    assert_eq!(overage.block_count, 1);
+    assert_eq!(overage.last_block_at_ms, Some(REFUSED_AT_MS + hour_ms));
 }
 
 fn rollup(last_observed_epoch: i64, peak_used_percent: Option<f64>) -> ProviderUsagePeriodRollup {
@@ -363,6 +385,30 @@ fn readings_speak_for_the_days_between_them_and_for_no_others() {
     assert!(consumed.covers(11 * day, 12 * day - 1));
     assert!(!consumed.covers(14 * day, 15 * day - 1));
     assert!(!consumed.covers(8 * day, 9 * day - 1));
+}
+
+/// The chart marks a day the reader met a refusal on, even when a refusal
+/// before the span falls inside the same storm gap.
+#[test]
+fn account_blocks_keep_a_refusal_a_block_before_the_span_would_hide() {
+    let hour_ms = 60 * 60 * 1000;
+    let record = QuotaIncidentRecord {
+        agent: "claude".to_string(),
+        incidents_json: serde_json::to_string(&vec![
+            incident(REFUSED_AT_MS - hour_ms, QuotaLimitKind::RollingWindow),
+            incident(REFUSED_AT_MS + hour_ms, QuotaLimitKind::RollingWindow),
+        ])
+        .expect("the incidents serialize"),
+        provider_accounts_json: r#"[{"provider":"anthropic","accountKey":"account"}]"#.to_string(),
+    };
+
+    let blocks = account_blocks(&[record], REFUSED_AT_MS);
+
+    let account = blocks
+        .get(&("anthropic".to_string(), "account".to_string()))
+        .expect("the record names one account");
+    assert_eq!(account.len(), 1);
+    assert_eq!(account[0].started_at_ms, REFUSED_AT_MS + hour_ms);
 }
 
 /// A block outside the span is not one of the blocks the chart marks.

@@ -125,13 +125,27 @@ fn reset_at_ms(incident: &QuotaIncident) -> Option<i64> {
     (waited > 0 && waited <= window_ms(incident.limit_kind)).then_some(reset_ms)
 }
 
+/// The blocks the refusals at or after `since_ms` make.
+///
+/// The span drops the refusals before it, not the blocks that start before
+/// it. A refusal up to the storm gap before the span merges with the first
+/// refusal inside it, and the merged block keeps the earlier start. Dropping
+/// that block loses a refusal the reader met inside the span.
+fn blocks_since(incidents: &[QuotaIncident], since_ms: i64) -> Vec<Block> {
+    blocks_from(
+        incidents
+            .iter()
+            .filter(|incident| incident.ts_ms >= since_ms)
+            .collect(),
+    )
+}
+
 /// Collapse a retry storm into the blocks behind it.
 ///
 /// Incidents arrive from every session, so one block can appear in two
 /// transcripts that ran at once. Grouping by time rather than by session is
 /// what makes the count a count of blocks.
-pub fn blocks(incidents: &[QuotaIncident]) -> Vec<Block> {
-    let mut sorted: Vec<&QuotaIncident> = incidents.iter().collect();
+fn blocks_from(mut sorted: Vec<&QuotaIncident>) -> Vec<Block> {
     sorted.sort_by_key(|incident| (incident.ts_ms, incident.limit_kind));
     // One open block for each limit kind, and the last refusal that kind saw.
     //
@@ -182,12 +196,8 @@ pub fn blocks(incidents: &[QuotaIncident]) -> Vec<Block> {
 
 /// Reduce every refusal at or after `since_ms` to one overage figure.
 pub fn overage(incidents: &[QuotaIncident], since_ms: i64) -> Overage {
-    let blocks = blocks(incidents);
     let mut overage = Overage::default();
-    for block in blocks
-        .iter()
-        .filter(|block| block.started_at_ms >= since_ms)
-    {
+    for block in blocks_since(incidents, since_ms) {
         overage.block_count += 1;
         match block.waited_ms() {
             Some(waited) => overage.waited_ms += waited,
@@ -457,13 +467,7 @@ pub fn account_blocks(
 ) -> BTreeMap<AccountId, Vec<Block>> {
     incidents_by_account(incidents)
         .into_iter()
-        .map(|(id, incidents)| {
-            let blocks = blocks(&incidents)
-                .into_iter()
-                .filter(|block| block.started_at_ms >= since_ms)
-                .collect();
-            (id, blocks)
-        })
+        .map(|(id, incidents)| (id, blocks_since(&incidents, since_ms)))
         .collect()
 }
 

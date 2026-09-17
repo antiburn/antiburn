@@ -864,6 +864,61 @@ mod history_tests {
         assert_eq!(readings[0].period_id, readings[1].period_id);
     }
 
+    /// The series reads every account, however many readings come before it.
+    #[test]
+    fn readings_page_past_one_query_and_keep_every_account() {
+        // A single capped query answers in account order, so the accounts
+        // that sort last fall off the end and get no series at all.
+        let store = store();
+        let start = NOW - 3 * 86_400;
+        let snapshots: Vec<_> = (0i32..4)
+            .flat_map(|step| {
+                let observed_at = start + i64::from(step) * 3_600;
+                [
+                    weekly_snapshot(
+                        ACCOUNT_A,
+                        observed_at,
+                        Some(start),
+                        Some(NOW),
+                        Some(f64::from(step) * 10.0),
+                    ),
+                    weekly_snapshot(
+                        ACCOUNT_B,
+                        observed_at,
+                        Some(start),
+                        Some(NOW),
+                        Some(f64::from(step) * 5.0),
+                    ),
+                ]
+            })
+            .collect();
+        store.record_provider_usage_snapshots(&snapshots).unwrap();
+
+        let readings = store.provider_usage_readings(0, "primaryLong", 3).unwrap();
+
+        assert_eq!(readings.len(), 8);
+        let accounts: Vec<&str> = readings
+            .iter()
+            .map(|row| row.account_key.as_str())
+            .collect();
+        assert_eq!(
+            accounts,
+            vec![ACCOUNT_A; 4]
+                .into_iter()
+                .chain([ACCOUNT_B; 4])
+                .collect::<Vec<_>>()
+        );
+        let times: Vec<i64> = readings
+            .iter()
+            .take(4)
+            .map(|row| row.observed_at_epoch)
+            .collect();
+        assert_eq!(
+            times,
+            vec![start, start + 3_600, start + 7_200, start + 10_800]
+        );
+    }
+
     /// A reading older than the bound is not one the series asks for.
     #[test]
     fn readings_start_at_the_bound_the_caller_states() {

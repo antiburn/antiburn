@@ -144,7 +144,7 @@ pub async fn get_allowance_usage(
                     .previous_30_days_start
                     .saturating_sub(ALLOWANCE_SERIES_LEAD_SECS),
                 PRIMARY_LONG_ROLE,
-                MAX_ALLOWANCE_READINGS,
+                ALLOWANCE_READING_PAGE,
             )
             .map_err(fail)?;
         let consumption = provider_usage::allowance::consumption(&readings);
@@ -208,8 +208,11 @@ const PRIMARY_LONG_ROLE: &str = "primaryLong";
 /// the longest window any provider states.
 const ALLOWANCE_SERIES_LEAD_SECS: i64 = 7 * 86_400;
 
-/// How many readings the daily series reads at most.
-const MAX_ALLOWANCE_READINGS: usize = 200_000;
+/// How many readings one query of the daily series reads.
+///
+/// The read pages through every reading in the span, so this bounds a query
+/// and not the series. A cap on the series drops whole accounts from it.
+const ALLOWANCE_READING_PAGE: usize = 5_000;
 
 /// Both daily series for one account: the trailing thirty days, and the
 /// thirty days before them.

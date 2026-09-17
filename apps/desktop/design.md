@@ -762,8 +762,9 @@ Notes for what isn't expressible as a token:
 
 The 220px navigation sidebar, 340px collection pane, flexible detail pane, and fluid provider
 card remain visible at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
-the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
-the detail retains 284px; at the 1100px default width, it receives 364px.
+the session detail owns its toolbar and scroll area. The workspace reserves the provider
+card and the 16px margin on each side of it. At the 1000px minimum window width, the
+detail retains 252px; at the 1100px default width, it receives 332px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;
