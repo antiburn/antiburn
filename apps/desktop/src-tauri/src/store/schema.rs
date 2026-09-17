@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1024,6 +1024,36 @@ ALTER TABLE session_evidence ADD COLUMN effective_config_value_json TEXT CHECK (
     effective_config_value_json IS NULL OR json_valid(effective_config_value_json));
 "#;
 
+/// v51 gives each session row a persisted incarnation and replaces the
+/// recency index with a four-column keyset index.
+///
+/// `incarnation` is assigned on insert from `session_incarnation_seq`, a
+/// counter that only increases. An update keeps the value. A row inserted
+/// after a delete of the same key gets a higher value. Rows that predate
+/// this migration hold `0`, and the counter starts at `0`, so the first
+/// allocation is `1`. Deletes and `clear_local_session_data` never touch the
+/// counter.
+///
+/// `session_recency_keyset` orders rows by the full active-page order:
+/// `COALESCE(updated_at_epoch, 0) DESC, session_id DESC, environment_key
+/// DESC, agent DESC`. Its first two columns are [`V23`]'s
+/// `session_recency_coalesced` prefix, so `recent_sessions` keeps its plan.
+/// The old index serves no query after this and is dropped.
+const V51: &str = r#"
+ALTER TABLE session ADD COLUMN incarnation INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE session_incarnation_seq (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    value INTEGER NOT NULL CHECK (value >= 0)
+) STRICT;
+INSERT INTO session_incarnation_seq (id, value) VALUES (1, 0);
+
+DROP INDEX session_recency_coalesced;
+CREATE INDEX session_recency_keyset
+    ON session (COALESCE(updated_at_epoch, 0) DESC, session_id DESC,
+                environment_key DESC, agent DESC);
+"#;
+
 /// v49 retains copied prompts until their exact marker appears in a later user turn.
 const V49: &str = r#"
 DROP TRIGGER remediation_state_transition;
@@ -1078,7 +1108,7 @@ const V50: &str = r#"
 DELETE FROM setting WHERE key = 'internal:liveUsageHistoryV2';
 "#;
 
-/// v51 widens the factor sample and point lanes to admit a model-scoped
+/// v52 widens the factor sample and point lanes to admit a model-scoped
 /// weekly lane, such as Anthropic's supplemental "Fable" window, spelled
 /// `model:<slug>`. SQLite cannot alter a `CHECK` constraint in place, so both
 /// tables are rebuilt: a new table with the widened check, a copy of every
@@ -1091,8 +1121,8 @@ DELETE FROM setting WHERE key = 'internal:liveUsageHistoryV2';
 /// already finished under the old, narrower check gets a fresh pass under
 /// the widened one. Sample and point upserts are idempotent, so a re-walk
 /// cannot duplicate a row it already wrote.
-const V51: &str = r#"
-CREATE TABLE provider_limit_factor_sample_v51 (
+const V52: &str = r#"
+CREATE TABLE provider_limit_factor_sample_v52 (
     id                  INTEGER PRIMARY KEY,
     provider            TEXT NOT NULL,
     account_key         TEXT NOT NULL,
@@ -1115,7 +1145,7 @@ CREATE TABLE provider_limit_factor_sample_v51 (
     UNIQUE (provider, account_key, lane, from_epoch, to_epoch)
 ) STRICT;
 
-INSERT INTO provider_limit_factor_sample_v51 (
+INSERT INTO provider_limit_factor_sample_v52 (
     id, provider, account_key, lane, kind, period_id, from_epoch, to_epoch,
     from_percent, to_percent, input_usd, output_usd, cache_read_usd,
     cache_write_usd, turn_count, plan, plan_tier, source_id, computed_at_epoch
@@ -1126,14 +1156,14 @@ SELECT id, provider, account_key, lane, kind, period_id, from_epoch, to_epoch,
   FROM provider_limit_factor_sample;
 
 DROP TABLE provider_limit_factor_sample;
-ALTER TABLE provider_limit_factor_sample_v51 RENAME TO provider_limit_factor_sample;
+ALTER TABLE provider_limit_factor_sample_v52 RENAME TO provider_limit_factor_sample;
 
 CREATE INDEX provider_limit_factor_sample_lane_recent
     ON provider_limit_factor_sample (provider, account_key, lane, to_epoch DESC);
 CREATE INDEX provider_limit_factor_sample_period
     ON provider_limit_factor_sample (period_id);
 
-CREATE TABLE provider_limit_factor_point_v51 (
+CREATE TABLE provider_limit_factor_point_v52 (
     id                  INTEGER PRIMARY KEY,
     provider            TEXT NOT NULL,
     account_key         TEXT NOT NULL,
@@ -1147,7 +1177,7 @@ CREATE TABLE provider_limit_factor_point_v51 (
     UNIQUE (provider, account_key, lane, effective_at_epoch)
 ) STRICT;
 
-INSERT INTO provider_limit_factor_point_v51 (
+INSERT INTO provider_limit_factor_point_v52 (
     id, provider, account_key, lane, effective_at_epoch, usd_per_percent,
     method, sample_count, plan, plan_tier
 )
@@ -1156,7 +1186,7 @@ SELECT id, provider, account_key, lane, effective_at_epoch, usd_per_percent,
   FROM provider_limit_factor_point;
 
 DROP TABLE provider_limit_factor_point;
-ALTER TABLE provider_limit_factor_point_v51 RENAME TO provider_limit_factor_point;
+ALTER TABLE provider_limit_factor_point_v52 RENAME TO provider_limit_factor_point;
 
 CREATE INDEX provider_limit_factor_point_lane_recent
     ON provider_limit_factor_point (provider, account_key, lane, effective_at_epoch DESC);

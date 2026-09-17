@@ -363,7 +363,12 @@ fn delete_session_removes_the_sentinel_from_every_table() {
     );
     let key = SessionKey::new("native", AgentKind::Claude.slug(), "privacy-desktop-delete");
 
-    assert!(store.delete_session(&key).expect("delete session"));
+    assert!(
+        store
+            .delete_session(&key)
+            .expect("delete session")
+            .is_some()
+    );
 
     let connection = store.lock();
     assert_absent_everywhere(&connection, CLAUDE_SENTINEL);
@@ -403,7 +408,12 @@ fn deleting_a_session_removes_its_rollout_checkpoint() {
         )
         .expect("stores a checkpoint");
 
-    assert!(store.delete_session(&key).expect("delete session"));
+    assert!(
+        store
+            .delete_session(&key)
+            .expect("delete session")
+            .is_some()
+    );
 
     let remaining: i64 = store
         .lock()
@@ -432,7 +442,7 @@ fn clear_local_session_data_removes_the_sentinel_from_every_table() {
         RawSource::Jsonl(codex_fixture()),
     );
 
-    assert_eq!(store.clear_local_session_data().expect("clear"), 2);
+    assert_eq!(store.clear_local_session_data().expect("clear").0, 2);
 
     let connection = store.lock();
     assert_absent_everywhere(&connection, CLAUDE_SENTINEL);

@@ -141,6 +141,13 @@ impl AgentExplorer for ClaudeExplorer {
         ]
     }
 
+    /// The desktop app rewrites a session's manifest under
+    /// `claude-code-sessions` every 30 seconds while its tab is open, working
+    /// or not. The transcript under `~/.claude/projects` carries the activity.
+    fn is_quiet_path(&self, path: &Path, home: &Path) -> bool {
+        path.starts_with(app_config_dir_in("Claude", home).join("claude-code-sessions"))
+    }
+
     // ---- Orchestration: Claude writes each spawned sub-agent as its own
     // transcript under `<dir>/<sessionId>/subagents/agent-*.jsonl`. These hooks
     // expose that tree to the vendor-agnostic orchestration layer; the

@@ -4,7 +4,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core"
 export type ProviderUsageState = "live" | "estimated" | "observed" | "detected" | "unknown"
 
 /** Whether a provider's newest local evidence still describes now. */
-export type ProviderUsageStaleness = "fresh" | "stale" | "unknown"
+type ProviderUsageStaleness = "fresh" | "stale" | "unknown"
 
 /** One provider's totals over one window. */
 export interface ProviderUsageWindowPayload {
@@ -29,7 +29,7 @@ export interface ProviderUsageWindowsPayload {
   last30Days: ProviderUsageWindowPayload
 }
 
-export interface ProviderAgentUsagePayload {
+interface ProviderAgentUsagePayload {
   agent: string
   windows: ProviderUsageWindowsPayload
 }
@@ -67,7 +67,7 @@ export interface ProviderUsageSummaryPayload {
   generatedAt: string
 }
 
-export type SessionLimitMetricPayload = "weekly" | "fiveHour"
+type SessionLimitMetricPayload = "weekly" | "fiveHour"
 
 /** One session's estimated share of a provider account's learned
  * dollars-per-percent limit factor. Mirrors Rust `SessionLimitAllocation`. */
@@ -329,7 +329,7 @@ export const EMPTY_SESSION_QUOTA: SessionQuotaPayload = {
 }
 
 /** Marks figures stated directly by a provider. Mirrors Rust `LiveUsageSupport`. */
-export type LiveUsageSupport = "live"
+type LiveUsageSupport = "live"
 
 /** Whether a live reading still describes now. */
 export type LiveUsageFreshness = "fresh" | "stale"
@@ -372,7 +372,7 @@ export interface LiveUsageForecastPayload {
 }
 
 /** Metered spend alongside the allowance. */
-export interface LiveExtraUsagePayload {
+interface LiveExtraUsagePayload {
   /** Whether the account permits this path. */
   enabled: boolean
   usedPercent: number | null
@@ -383,7 +383,7 @@ export interface LiveExtraUsagePayload {
 }
 
 /** Provider credits that manually reset rate limits. */
-export interface LiveUsageResetCreditsPayload {
+interface LiveUsageResetCreditsPayload {
   availableCount: number
 }
 
@@ -457,7 +457,7 @@ export interface LiveUsageMeterPayload {
   carrierLabel?: string
 }
 
-export type LiveLoginCarrier =
+type LiveLoginCarrier =
   | "claudeCredentialsFile"
   | "claudeKeychain"
   | "pi"
