@@ -20,7 +20,7 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
-## [0.6.1] - 2026-09-17
+## [0.6.2] - 2026-09-17
 
 ### Added
 
@@ -44,6 +44,8 @@ CI changes, and documentation that no user acts on stay out — see
   with strict handling for incomplete or unsupported source data.
 - Session project folders can be opened or copied directly from session
   details.
+- Unsupported sessions with partial evidence can still prevent incorrect
+  unused-resource advisories while remaining clearly excluded from historical findings.
 
 ### Changed
 
@@ -72,6 +74,9 @@ CI changes, and documentation that no user acts on stay out — see
   while Claude provider errors receive equivalent treatment.
 - Codex usage records no longer double count matching usage, and sub-agent
   launches are counted correctly.
+- On Windows, Settings, the main window, and the menu-bar popover can open
+  reliably after an interaction, including repeated attempts after a stalled
+  window load.
 
 ## [0.5.2] - 2026-09-10
 
