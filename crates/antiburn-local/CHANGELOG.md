@@ -17,11 +17,33 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-17
+
 ### Added
 
 - `Bucket` carries the estimated USD cost of its events, by component
   (`Bucket::cost`), inclusive of sub-agent events in merged metrics. Advance
   metrics schema revision to 9 so stored analyses rerun to populate it.
+
+- Unused MCP servers, built-in tools, and skills can produce scoped advisory
+  findings from complete resource evidence. Advisory findings support bounded
+  remediation prompts and verification without claiming a whole session is
+  clean. Built-in tool findings now exclude required and situational tools.
+
+### Changed
+
+- **Breaking:** `Bucket` has a new `cost` field, and
+  `built_in_tool_remediation_supported` now requires an `AgentKind` argument
+  so support is checked against the agent's tool catalog.
+- **Breaking:** `EfficiencyReport` gains private report-time resource-token
+  attribution fields. Code that constructs this public struct directly must
+  update its construction path.
+- **Breaking:** per-bucket pricing state is included in resume snapshots;
+  advance the resume snapshot revision to 11. The metrics schema revision is 9.
+- Remediation prompts can contain up to 64 KiB. Resource findings identify
+  advisory targets with an empty session ID and expose scoped clean verification.
+- Export `estimate_proportional_tokens` for consumers that need the engine's
+  bounded initial-context token estimate.
 
 ## [0.8.0] - 2026-09-16
 
