@@ -219,6 +219,7 @@ describe("BurnChecksSession", () => {
             lastObservedAtMs: 2,
             estimateMethod: "oldModelPriceDifference",
             estimatedOpportunity: null,
+            estimatedTokenBurnBasisPoints: null,
             verificationLimit: "freshEvidenceFromSameSourceAndTarget",
           },
           occurrenceCount: 1,
@@ -281,6 +282,7 @@ describe("BurnChecksSession", () => {
             lastObservedAtMs: 2,
             estimateMethod: null,
             estimatedOpportunity: null,
+            estimatedTokenBurnBasisPoints: null,
             verificationLimit: "freshEvidenceFromSameSourceAndTarget",
           },
           savings: {

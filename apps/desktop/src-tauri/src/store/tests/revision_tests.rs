@@ -4,6 +4,8 @@
 
 use super::*;
 
+mod migration_collision;
+
 /// The incarnation one session row holds, read straight from the table.
 fn stored_incarnation(store: &Store, key: &SessionKey) -> Option<u64> {
     store
@@ -29,7 +31,7 @@ fn counter(store: &Store) -> u64 {
         .unwrap()
 }
 
-/// The database contains one session row at v48 before the v49 incarnation migration.
+/// The database contains one session row at v48 before the v51 incarnation migration.
 fn v48_store_with_row(session_id: &str) -> Store {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     for &sql in &super::schema::MIGRATIONS[..48] {
@@ -50,7 +52,7 @@ fn v48_store_with_row(session_id: &str) -> Store {
         connection,
         Path::new("/tmp/antiburn-incarnation-migration-test").to_path_buf(),
     )
-    .expect("v49 migrates the v48 schema")
+    .expect("v51 migrates the v48 schema")
 }
 
 #[test]
@@ -304,7 +306,7 @@ fn a_clear_keeps_the_incarnation_counter() {
 fn pre_migration_rows_have_incarnation_zero_and_a_recreate_exceeds_it() {
     let store = v48_store_with_row("upgraded");
     let key = SessionKey::new("native", "claude-code", "upgraded");
-    assert_eq!(store.schema_version().unwrap(), 49);
+    assert_eq!(store.schema_version().unwrap(), 51);
     assert_eq!(stored_incarnation(&store, &key), Some(0));
     assert_eq!(counter(&store), 0);
 

@@ -4,6 +4,7 @@ import {
   costBreakdownRows,
   costFigureLabel,
   formatCost,
+  formatSharePct,
   formatTime,
   formatTokensShort,
 } from "../../../lib/presentation/sessionAnalysis"
@@ -53,20 +54,6 @@ const COST_ROW_HELP: Record<string, string> = {
   "Cache write":
     "Tokens stored into the provider's cache, at about 25% over the fresh-input price.",
   "Parent agent": "What the orchestrating session itself spent.",
-}
-
-/**
- * Percent of `totalUsd` that `usd` accounts for, as a whole percent. A
- * positive share under half a percent reads `"<1%"` rather than rounding away
- * to `"0%"`. `"—"` stands in when the total itself is zero, where a percent
- * is undefined.
- */
-function formatSharePct(usd: number, totalUsd: number): string {
-  if (!(totalUsd > 0)) return "—"
-  const pct = (usd / totalUsd) * 100
-  if (pct <= 0) return "0%"
-  if (pct < 0.5) return "<1%"
-  return `${Math.round(pct)}%`
 }
 
 /** The compact row keeps the component table beside the total at the minimum window width. */

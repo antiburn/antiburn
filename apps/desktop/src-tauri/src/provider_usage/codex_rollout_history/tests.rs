@@ -5,7 +5,7 @@ use rusqlite::params;
 use serde_json::json;
 
 use super::*;
-use crate::store::{SessionKey, SessionRecord};
+use crate::store::{AppSettings, RETAIN_SESSION_DATA_FOREVER, SessionKey, SessionRecord};
 
 const AGENT: &str = "codex";
 
@@ -374,11 +374,47 @@ fn readings_older_than_the_retention_cutoff_are_not_imported() {
     );
     fs::write(&source, format!("{old}\n{recent}\n")).expect("rollout");
     let store = candidate_store(&store_dir, &source, "aged", &account);
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: 90,
+            ..AppSettings::default()
+        })
+        .expect("saves a finite retention setting");
 
     let batch = import_rollout_batch(&store, 1_800_000_001).expect("import");
     assert_eq!(
         batch.imported_observations, 1,
         "only the reading inside the retention window is imported"
+    );
+}
+
+#[test]
+fn the_forever_setting_imports_a_reading_older_than_90_days() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store_dir = directory.path().join("store");
+    let source = directory.path().join("aged.jsonl");
+    let account = "a".repeat(64);
+    let old = line(
+        at(1_000),
+        json!({"primary": window(10.0, 300, Some(1_017_000))}),
+    );
+    let recent = line(
+        at(1_800_000_000),
+        json!({"primary": window(15.0, 300, Some(1_800_017_000))}),
+    );
+    fs::write(&source, format!("{old}\n{recent}\n")).expect("rollout");
+    let store = candidate_store(&store_dir, &source, "aged", &account);
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: RETAIN_SESSION_DATA_FOREVER,
+            ..AppSettings::default()
+        })
+        .expect("saves the forever setting");
+
+    let batch = import_rollout_batch(&store, 1_800_000_001).expect("import");
+    assert_eq!(
+        batch.imported_observations, 2,
+        "forever has no cutoff, so both readings import"
     );
 }
 

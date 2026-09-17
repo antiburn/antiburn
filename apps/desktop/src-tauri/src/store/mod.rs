@@ -438,7 +438,32 @@ impl Store {
     /// an already-current database free.
     fn migrate(&self) -> Result<()> {
         let mut guard = self.lock();
-        let current: i64 = guard.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let mut current: i64 = guard.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        // PR builds used v49 for incarnation before main assigned v49 to remediation.
+        if current == 49
+            && guard.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session') WHERE name = 'incarnation')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let tx = guard.transaction()?;
+            let complete: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_incarnation_seq WHERE id = 1 AND value >= 0)
+                    AND EXISTS(SELECT 1 FROM sqlite_master
+                        WHERE type = 'index' AND name = 'session_recency_keyset')",
+                [],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(complete, "incomplete prerelease lifecycle schema at version 49");
+            // Preserve incarnation values and apply the missing main migrations atomically.
+            for sql in &schema::MIGRATIONS[48..50] {
+                tx.execute_batch(sql)?;
+            }
+            tx.pragma_update(None, "user_version", 51)?;
+            tx.commit()?;
+            current = 51;
+        }
         for (index, sql) in schema::MIGRATIONS.iter().enumerate() {
             let version = index as i64 + 1;
             if version <= current {
@@ -1922,7 +1947,7 @@ impl Store {
         tx.execute("DELETE FROM provider_account_seen", [])?;
         tx.execute(
             "DELETE FROM setting
-              WHERE key IN (?1, 'internal:liveUsageHistoryV2', 'internal:liveUsageSnapshotV2')",
+              WHERE key IN (?1, 'internal:liveUsageSnapshotV2')",
             params![PROVIDER_ACCOUNT_SECRET_KEY],
         )?;
         tx.execute("DELETE FROM scan_state", [])?;
@@ -2141,6 +2166,20 @@ impl Store {
             )?;
             return Ok(false);
         }
+        if completion.status == PublishedEvidence::Ready {
+            let publication_epoch = time::OffsetDateTime::now_utc();
+            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
+            remediation::activate_waiting_prompt_remediations_in(
+                &transaction,
+                &record.key.environment_key,
+                &record.key.agent,
+                &record.key.session_id,
+                completion.claim_fence,
+                boundary_ms,
+                publication_epoch.unix_timestamp(),
+            )?;
+        }
         let key = turn_session_key(&record.key);
         publication::publish_turn_rows(
             &transaction,
@@ -2178,6 +2217,8 @@ impl Store {
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
         if completion.status == PublishedEvidence::Ready {
             let publication_epoch = time::OffsetDateTime::now_utc();
+            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
             remediation::mark_remediations_dirty_in(
                 &transaction,
                 &record.key.environment_key,
@@ -2187,8 +2228,6 @@ impl Store {
             )?;
             let findings =
                 crate::insights_report::publication_findings_in(&transaction, &record.key)?;
-            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
-                .unwrap_or(i64::MAX);
             let candidates = crate::remediation::passive_remediations(
                 &transaction,
                 remediation_secret

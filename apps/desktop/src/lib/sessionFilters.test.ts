@@ -39,7 +39,7 @@ function hygienePayload(clean: number, finding: number): SessionHygienePayload {
     status: index < finding ? ("finding" as const) : ("clean" as const),
     notAssessedReason: null,
   }))
-  return { badges, evidenceState: "ready" }
+  return { badges, evidenceState: "ready", unusedResources: null }
 }
 
 /** A hygiene snapshot with one entry's payload keyed by its identity. */

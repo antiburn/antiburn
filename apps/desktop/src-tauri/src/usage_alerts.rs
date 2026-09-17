@@ -268,15 +268,13 @@ impl LiveUsage {
 
     /// Hold this for one whole summarization, and no two can overlap.
     ///
-    /// `provider_usage::live::history::record` appends a pass's readings by
-    /// loading the stored series, adding to it, and writing the whole thing
-    /// back. That is safe while only one caller is ever mid-pass. The old
-    /// synchronous command guaranteed this because it ran on the IPC thread.
-    /// Now that the refresh command hands its work to a blocking thread,
-    /// they can — the popover and Settings → Usage each ask on their own
-    /// schedule — and an interleaved read-modify-write silently drops one
-    /// pass's samples. This restores the guarantee explicitly, and spares the
-    /// providers a second identical request while it is at it.
+    /// The old synchronous command guaranteed only one pass ran at a time
+    /// because it ran on the IPC thread. Now that the refresh command hands
+    /// its work to a blocking thread, two passes can run at once — the
+    /// popover and Settings → Usage each ask on their own schedule — and an
+    /// interleaved pass would ask a provider for the same reading twice.
+    /// This restores the one-pass-at-a-time guarantee explicitly, and spares
+    /// the providers a second identical request while it is at it.
     pub fn summarizing(&self) -> std::sync::MutexGuard<'_, ()> {
         self.summarizing
             .lock()

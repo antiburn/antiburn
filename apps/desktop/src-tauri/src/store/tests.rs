@@ -1307,7 +1307,6 @@ fn clearing_local_data_forgets_account_pseudonyms_and_rotates_the_install_key() 
     store
         .observe_provider_account("pi", "anthropic", &"a".repeat(64), 2_000, "tool_oauth")
         .unwrap();
-    store.set_internal_value("internal:liveUsageHistoryV2", "old-account-key");
     store.set_internal_value("internal:liveUsageSnapshotV2", "old-account-key");
 
     assert_eq!(
@@ -1342,19 +1341,17 @@ fn clearing_local_data_forgets_account_pseudonyms_and_rotates_the_install_key() 
             .unwrap()
             .is_none()
     );
-    for key in [
-        "internal:liveUsageHistoryV2",
-        "internal:liveUsageSnapshotV2",
-    ] {
-        assert!(
-            connection
-                .query_row("SELECT value FROM setting WHERE key = ?1", [key], |row| row
-                    .get::<_, String>(0),)
-                .optional()
-                .unwrap()
-                .is_none()
-        );
-    }
+    assert!(
+        connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = 'internal:liveUsageSnapshotV2'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_none()
+    );
     drop(connection);
     assert_ne!(store.provider_account_secret().unwrap(), old_secret);
 }

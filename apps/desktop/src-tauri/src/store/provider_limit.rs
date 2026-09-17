@@ -38,9 +38,6 @@ const MAX_ATTRIBUTION_GROUPS: usize = 20_000;
 /// Provider periods one candidate scan may return.
 const MAX_CANDIDATE_PERIODS: usize = 64;
 
-/// Ceiling on sample retention, independent of the session-data setting.
-const SAMPLE_RETENTION_DAYS_CAP: i64 = 365;
-
 /// How far back the diagnostics export counts recent delta and unattributed
 /// samples, matching the factor's own weighted-median lookback.
 const RECENT_SAMPLE_WINDOW_SECS: i64 = 14 * 86_400;
@@ -888,12 +885,14 @@ fn latest_residuals_by_lane(
     Ok(result)
 }
 
-/// Null a sample's `period_id`, and delete its learn cursor, before its
-/// period is deleted by retention.
+/// Null a sample's `period_id`, delete its learn cursor, and delete its
+/// residual, before its period is deleted by retention.
 ///
 /// The period-deletion query in [`super::provider_usage_history`] stays
 /// exactly as it was before samples existed: this runs first, in the same
 /// transaction, against the identical set of about-to-be-removed periods.
+/// `provider_limit_residual` keys its row on `period_id` alone, so a pending
+/// period never leaves one behind: it is deleted here, not nulled.
 pub(crate) fn detach_samples_pending_period_deletion_in(connection: &Connection) -> Result<()> {
     const PENDING_DELETION: &str = "
               SELECT id FROM provider_usage_period p
@@ -912,21 +911,24 @@ pub(crate) fn detach_samples_pending_period_deletion_in(connection: &Connection)
         &format!("DELETE FROM provider_limit_learn_cursor WHERE period_id IN ({PENDING_DELETION})"),
         [],
     )?;
+    connection.execute(
+        &format!("DELETE FROM provider_limit_residual WHERE period_id IN ({PENDING_DELETION})"),
+        [],
+    )?;
     Ok(())
 }
 
-/// Delete factor samples older than the session-data retention setting,
-/// capped at 365 days. Points are never deleted.
+/// Delete factor samples older than the session-data retention setting, with
+/// no cap. Points are never deleted.
+///
+/// The caller already turned a forever setting into an early return, so
+/// `retention_days` here is always positive.
 pub(crate) fn apply_sample_retention_in(
     connection: &Connection,
     retention_days: i32,
     now_epoch: i64,
 ) -> Result<()> {
-    let bounded_days = match retention_days {
-        days if days > 0 => i64::from(days).min(SAMPLE_RETENTION_DAYS_CAP),
-        _ => SAMPLE_RETENTION_DAYS_CAP,
-    };
-    let cutoff = now_epoch.saturating_sub(bounded_days.saturating_mul(86_400));
+    let cutoff = now_epoch.saturating_sub(i64::from(retention_days).saturating_mul(86_400));
     connection.execute(
         "DELETE FROM provider_limit_factor_sample WHERE to_epoch < ?1",
         [cutoff],

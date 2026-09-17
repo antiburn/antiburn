@@ -6,7 +6,7 @@ import type {
   ApplyPreparedBurnCheckOperationOutcome,
   BurnCheckTargetPayload,
   ChecksReportPayload,
-  CopyPromptFixBurnCheckTargetOutcome,
+  CopyPromptFixBurnCheckOutcome,
   PrepareAutoFixBurnCheckTargetOutcome,
 } from "../../lib/insightsIpc"
 import type * as ClipboardModule from "../../lib/clipboard"
@@ -115,6 +115,7 @@ const target: BurnCheckTargetPayload = {
     lastObservedAtMs: 2,
     estimateMethod: "oldModelPriceDifference",
     estimatedOpportunity: null,
+    estimatedTokenBurnBasisPoints: null,
     verificationLimit: "freshEvidenceFromSameSourceAndTarget",
   },
   occurrenceCount: 1,
@@ -138,7 +139,7 @@ const target: BurnCheckTargetPayload = {
       cost: null,
       models: [],
       modelRuns: [],
-      hygiene: { evidenceState: "pending", badges: [] },
+      hygiene: { evidenceState: "pending", unusedResources: null, badges: [] },
     },
   ],
   expiresAtEpoch: 100,
@@ -493,7 +494,7 @@ describe("BurnChecksView", () => {
     expect(description).toHaveClass("w-full")
     expect(titleRow).toContainElement(action)
     expect(titleRow).not.toContainElement(description)
-    expect(failedCount.parentElement?.parentElement).toHaveClass("-mt-2")
+    expect(failedCount.parentElement?.parentElement).not.toHaveClass("-mt-2")
     expect(
       action.closest(".burn-check-detail")?.querySelector(".burn-checks-detail-content"),
     ).toHaveClass("pt-[var(--space-lg)]")
@@ -669,15 +670,15 @@ describe("BurnChecksView", () => {
     expect(selected.closest(".burn-checks-group-body")).toBeInTheDocument()
   })
 
-  it("shows named target counts and truncated result wording", async () => {
+  it("shows the named resource count in the outcome line", async () => {
     setWindowWidth(1400)
     const first = setup(target, true)
 
-    expect(await screen.findByText(/1 affected resource shown$/)).toBeVisible()
+    expect(await screen.findByText(/At least 1 affected MCP server$/)).toBeVisible()
     first.view.unmount()
 
     setup(target)
-    expect(await screen.findByText(/1 affected resource$/)).toBeVisible()
+    expect(await screen.findByText(/1 affected MCP server$/)).toBeVisible()
   })
 
   it("uses report session totals when named targets share bounded samples", async () => {
@@ -691,8 +692,8 @@ describe("BurnChecksView", () => {
       },
     )
 
-    const resources = await screen.findByText(/2 affected resources shown$/)
-    expect(resources).toHaveTextContent("2 affected resources shown")
+    const resources = await screen.findByText(/At least 2 affected MCP servers$/)
+    expect(resources).toHaveTextContent("At least 2 affected MCP servers")
     expect(screen.queryByText("23 sessions affected")).not.toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Burn check details" })).toHaveTextContent(
       "23 failed",
@@ -935,6 +936,7 @@ describe("BurnChecksView", () => {
     expect(dialog).toHaveTextContent("~/.claude/settings.json · model")
     expect(dialog).toHaveTextContent("claude-opus-4-6 → claude-sonnet-5")
     expect(dialog).toHaveTextContent("Responses can change")
+    expect(dialog).toHaveTextContent("previous content in a sibling .bak file")
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled(),
@@ -944,9 +946,10 @@ describe("BurnChecksView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
     await waitFor(() =>
-      expect(commands.writeClipboardText).toHaveBeenCalledWith("Backend prompt"),
+      expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt"),
     )
-    expect(commands.copy).toHaveBeenCalledWith("action-fresh")
+    expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"])
+    expect(commands.copy).not.toHaveBeenCalled()
     const copied = screen.getByRole("button", { name: "Copied" })
     const applied = screen.getByRole("button", { name: "Change applied" })
     expect(copied).toBeDisabled()
@@ -979,8 +982,10 @@ describe("BurnChecksView", () => {
     await waitFor(() =>
       expect(vi.mocked(adapter.getTargets).mock.calls.length).toBeGreaterThan(refreshCount),
     )
-    await waitFor(() => expect(screen.getByRole("button", { name: "Copied" })).toBeDisabled())
-    expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled()
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
+    )
+    expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
 
     vi.mocked(adapter.getTargets).mockResolvedValueOnce({
       targets: [
@@ -1004,6 +1009,21 @@ describe("BurnChecksView", () => {
       expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
     )
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
+  })
+
+  it("confirms an applied change", async () => {
+    commands.apply.mockResolvedValueOnce({ outcome: "applied" })
+    setup()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Change applied.")
+    expect(commands.noteInteraction).toHaveBeenCalledWith({
+      kind: "burnCheckAutoFixCompleted",
+      outcome: "applied_verification_unavailable",
+    })
   })
 
   it("reviews and applies all selected automatic fixes", async () => {
@@ -1097,7 +1117,7 @@ describe("BurnChecksView", () => {
     expect(within(chooser).getAllByText(/built-in tools to disable/i)).toHaveLength(1)
   })
 
-  it("restores named target actions after their brief success state", async () => {
+  it("restores whole-check actions after their brief success state", async () => {
     setup()
 
     const copy = await screen.findByRole("button", { name: "Copy fix prompt" })
@@ -1115,7 +1135,8 @@ describe("BurnChecksView", () => {
     await act(async () => vi.advanceTimersByTime(3_000))
     expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
-    expect(commands.copy).toHaveBeenCalledOnce()
+    expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"])
+    expect(commands.copy).not.toHaveBeenCalled()
     expect(commands.apply).toHaveBeenCalledOnce()
   })
 
@@ -1231,8 +1252,8 @@ describe("BurnChecksView", () => {
   })
 
   it("ignores a deferred prompt from an attempt that recurred", async () => {
-    const pending = deferred<CopyPromptFixBurnCheckTargetOutcome | null>()
-    commands.copy.mockReturnValueOnce(pending.promise)
+    const pending = deferred<CopyPromptFixBurnCheckOutcome | null>()
+    commands.copyBatch.mockReturnValueOnce(pending.promise)
     const { adapter, session } = setup()
     fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
     vi.mocked(adapter.getTargets).mockResolvedValueOnce({
@@ -1249,13 +1270,6 @@ describe("BurnChecksView", () => {
       pending.resolve({
         outcome: "promptReady",
         prompt: "Stale backend prompt",
-        watch: {
-          watchId: "watch-1",
-          origin: "action",
-          lifecycle: "watching",
-          verification: { status: "watching" },
-          savings: { status: "pending" },
-        },
       })
     })
 
@@ -1335,23 +1349,6 @@ describe("BurnChecksView", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
     )
-  })
-
-  it.each([
-    ["conflict", { outcome: "conflict" }, "Another prepared change conflicts"],
-    [
-      "unavailable",
-      { outcome: "unavailable", reason: "unsupportedOrUnprovenTarget" },
-      "can no longer prove a safe write target",
-    ],
-  ] as const)("distinguishes the typed %s review outcome", async (_name, outcome, text) => {
-    commands.prepare.mockResolvedValueOnce(outcome)
-    setup()
-
-    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(text)
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
   it("renders reasoning operation effects", async () => {
@@ -1518,14 +1515,18 @@ describe("BurnChecksView", () => {
     const dialog = await screen.findByRole("dialog", { name: "Review change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "Could not confirm the result. Check the setting before you try again.",
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        "Could not confirm the result. Check the setting before you try again.",
+      ),
     )
     expect(screen.getByRole("dialog", { name: "Review change" })).toBeVisible()
-    expect(commands.noteInteraction).toHaveBeenCalledWith({
-      kind: "burnCheckAutoFixCompleted",
-      outcome: "failed",
-    })
+    await waitFor(() =>
+      expect(commands.noteInteraction).toHaveBeenCalledWith({
+        kind: "burnCheckAutoFixCompleted",
+        outcome: "failed",
+      }),
+    )
     expect(commands.noteInteraction).not.toHaveBeenCalledWith({
       kind: "burnCheckAutoFixCompleted",
       outcome: "applied_awaiting_verification",
@@ -1566,12 +1567,7 @@ describe("BurnChecksView", () => {
     [
       "recurred",
       { status: "recurred", methodRevision: 1, evidenceRevision: "e2" },
-      "This finding returned after it was verified.",
-    ],
-    [
-      "recovery",
-      { status: "recoveryNeeded", reason: "writeOutcomeUnknown" },
-      "The write result is uncertain. Review the setting before another change.",
+      "This finding returned.",
     ],
   ] as const)("renders the typed %s state", async (_name, verification, expected) => {
     setup(
@@ -1810,7 +1806,7 @@ describe("BurnChecksView", () => {
     expect(screen.queryByText(/write safety check/)).not.toBeInTheDocument()
   })
 
-  it("uses the check-level prompt fallback when target actions are unavailable", async () => {
+  it("keeps one whole-check prompt when target actions are unavailable", async () => {
     setup(
       {
         ...target,
@@ -1819,40 +1815,46 @@ describe("BurnChecksView", () => {
       },
       false,
       aggregate,
-      report,
+      namedTargetReport,
     )
 
-    expect(await screen.findByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+    const prompt = await screen.findByRole("button", { name: "Copy fix prompt" })
+    expect(prompt).toBeEnabled()
+    expect(screen.getAllByRole("button", { name: "Copy fix prompt" })).toHaveLength(1)
+    expect(screen.getAllByRole("button", { name: "Snooze" })).toHaveLength(1)
     expect(screen.queryByText(/write safety check/)).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/does not support a safe automatic change/),
+    ).not.toBeInTheDocument()
     expect(screen.queryByText(/^Automatic fix:/)).not.toBeInTheDocument()
     expect(screen.queryByText(/^Prompt fix:/)).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
+
+    fireEvent.click(prompt)
+    await waitFor(() => expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"]))
   })
 
   it.each([
-    ["conflict", { outcome: "conflict" }, "Another change now conflicts"],
-    [
-      "unavailable",
-      { outcome: "unavailable", reason: "safetyCheckFailed" },
-      "no longer passes the write safety check",
-    ],
-    [
-      "recovery",
-      { outcome: "recoveryNeeded", watchId: "watch-recovery" },
-      "The write result is uncertain",
-    ],
+    ["conflict", { outcome: "conflict" }],
+    ["unavailable", { outcome: "unavailable", reason: "safetyCheckFailed" }],
   ] as const)(
-    "keeps the typed %s apply outcome in the review",
-    async (_name, outcome, text) => {
+    "keeps the %s apply outcome in the review with feedback",
+    async (name, outcome) => {
       commands.apply.mockResolvedValueOnce(outcome)
       setup()
       fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
       const dialog = await screen.findByRole("dialog", { name: "Review change" })
       fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
-      expect(await within(dialog).findByRole("alert")).toHaveTextContent(text)
+      await waitFor(() =>
+        expect(within(dialog).getByRole("button", { name: "Close" })).toBeEnabled(),
+      )
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        name === "conflict"
+          ? "Another change now conflicts with this operation. Close this review and check the setting."
+          : "The current setting no longer passes the write safety check.",
+      )
       expect(within(dialog).getByRole("button", { name: "Apply change" })).toBeDisabled()
-      expect(within(dialog).getByRole("button", { name: "Close" })).toBeEnabled()
     },
   )
 

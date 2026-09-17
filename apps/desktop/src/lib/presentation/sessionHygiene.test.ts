@@ -23,6 +23,7 @@ const PAYLOAD: SessionHygienePayload = {
     { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
   ],
   evidenceState: "ready",
+  unusedResources: null,
 }
 
 describe("sessionHygieneChecks", () => {

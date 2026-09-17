@@ -28,6 +28,7 @@ function sample(overrides: Partial<BurnCheckSamplePayload> = {}): BurnCheckSampl
     modelRuns: [{ model: "claude-sonnet-4-6", thinkingMode: "high" }],
     hygiene: {
       evidenceState: "ready",
+      unusedResources: null,
       badges: [
         { id: "modelOverthinking", status: "finding", notAssessedReason: null },
         { id: "obsoleteModel", status: "clean", notAssessedReason: null },
@@ -172,7 +173,7 @@ describe("FailedSessions", () => {
             cost: null,
             modelRuns: [],
             models: [],
-            hygiene: { evidenceState: "pending", badges: [] },
+            hygiene: { evidenceState: "pending", unusedResources: null, badges: [] },
           }),
         ]}
         total={1}

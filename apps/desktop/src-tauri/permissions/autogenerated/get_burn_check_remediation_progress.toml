@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-burn-check-remediation-progress"
+description = "Enables the get_burn_check_remediation_progress command without any pre-configured scope."
+commands.allow = ["get_burn_check_remediation_progress"]
+
+[[permission]]
+identifier = "deny-get-burn-check-remediation-progress"
+description = "Denies the get_burn_check_remediation_progress command without any pre-configured scope."
+commands.deny = ["get_burn_check_remediation_progress"]

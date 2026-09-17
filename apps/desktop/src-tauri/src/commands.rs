@@ -35,9 +35,9 @@ use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
-    BurnCheckSnoozePayload, BurnCheckTargetListPayload, ChecksReportPayload,
-    CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir,
-    HygieneSummaryPayload, LiveUsageSummary, OrchestrationStatus,
+    BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
+    ChecksReportPayload, CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome,
+    DeferredPermissionDir, HygieneSummaryPayload, LiveUsageSummary, OrchestrationStatus,
     PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
     RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
     SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
@@ -1647,11 +1647,7 @@ pub async fn get_checks_report(
     crate::analytics::record_unrecognized_records(app, &reduced.report.unrecognized_records);
     crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
     crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
-    let payload = ChecksReportPayload::from_report(
-        &reduced.report,
-        reduced.evidence_settled,
-        reduced.pending_evidence,
-    );
+    let payload = ChecksReportPayload::from_reduced_report(&reduced);
     #[cfg(debug_assertions)]
     let payload = {
         let mut payload = payload;
@@ -1763,6 +1759,22 @@ pub async fn list_burn_check_targets(
     .map_err(|_| "unable to list burn check targets".to_owned())?
 }
 
+#[tauri::command]
+pub async fn get_burn_check_remediation_progress(
+    window: tauri::WebviewWindow,
+) -> CommandResult<BurnCheckRemediationProgressPayload> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<RemediationController>()
+            .burn_check_remediation_progress(&app.state::<Store>())
+            .map(Into::into)
+            .map_err(|_| "unable to read burn check remediation progress".to_owned())
+    })
+    .await
+    .map_err(|_| "unable to read burn check remediation progress".to_owned())?
+}
+
 fn burn_check_target_list_payload(
     state: &crate::main_window::MainWindowState,
     store: &Store,
@@ -1822,11 +1834,13 @@ fn apply_prepared_outcome(
     use crate::agent_config::ApplyError;
 
     match result {
-        Ok(result) => Ok(
+        Ok(result) => Ok(if result.verification_available {
             ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification {
                 watch_id: result.watch_id,
-            },
-        ),
+            }
+        } else {
+            ApplyPreparedBurnCheckOperationOutcome::Applied
+        }),
         Err(ControllerError::RecoveryNeeded { watch_id }) => {
             Ok(ApplyPreparedBurnCheckOperationOutcome::RecoveryNeeded { watch_id })
         }
@@ -1916,7 +1930,7 @@ fn prompt_fix_outcome(
     match result {
         Ok(result) => Ok(CopyPromptFixBurnCheckTargetOutcome::PromptReady {
             prompt: result.prompt,
-            watch: result.watch.into(),
+            watch: result.watch.map(Into::into),
         }),
         Err(ControllerError::TargetExpired) => Ok(CopyPromptFixBurnCheckTargetOutcome::Expired),
         Err(ControllerError::TargetChanged) => Ok(CopyPromptFixBurnCheckTargetOutcome::Stale),
@@ -2980,13 +2994,15 @@ mod tests {
                 last_observed_at_ms: 990_000,
                 estimate_method: None,
                 estimated_opportunity: None,
+                estimated_token_burn_basis_points: None,
                 verification_limit: BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix,
             },
             occurrences: 3,
-            affected_sessions: 3,
+            affected_sessions: Some(3),
             project_name: None,
             project_location: None,
             project_path: None,
+            config_file: None,
             auto_fix: AutoFixAvailability::Unavailable(
                 crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
             ),
@@ -3086,6 +3102,26 @@ mod tests {
         assert!(matches!(
             prepare_auto_fix_outcome(Err(ControllerError::TargetExpired)).unwrap(),
             PrepareAutoFixBurnCheckTargetOutcome::Expired
+        ));
+    }
+
+    #[test]
+    fn auto_fix_success_distinguishes_verifiable_changes() {
+        assert!(matches!(
+            apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+                watch_id: "watch".into(),
+                verification_available: true,
+            }))
+            .unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
+        ));
+        assert!(matches!(
+            apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+                watch_id: "watch".into(),
+                verification_available: false,
+            }))
+            .unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::Applied
         ));
     }
 

@@ -74,6 +74,7 @@ function updateFor(
 function payload(status: "finding" | "clean" | "notAssessed"): SessionHygienePayload {
   return {
     evidenceState: status === "notAssessed" ? "processing" : "ready",
+    unusedResources: null,
     badges: [
       {
         id: "sessionOverdepth",

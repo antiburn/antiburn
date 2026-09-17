@@ -1,11 +1,13 @@
 import {
   cancelChecksReport,
   getBurnCheckAggregateWins,
+  getBurnCheckRemediationProgress,
   getChecksReport,
   listBurnCheckTargets,
   onChecksReportChanged,
   type AggregateWinsPayload,
   type BurnCheckDetectorId,
+  type BurnCheckRemediationProgressPayload,
   type BurnCheckTargetListPayload,
   type ChecksReportPayload,
 } from "../../lib/insightsIpc"
@@ -19,6 +21,7 @@ import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 export interface BurnChecksAdapter {
   getReport(consumerId: string): Promise<ChecksReportPayload | null>
   getAggregateWins(): Promise<AggregateWinsPayload | null>
+  getRemediationProgress?(): Promise<BurnCheckRemediationProgressPayload | null>
   getTargets(detector: BurnCheckDetectorId): Promise<BurnCheckTargetListPayload | null>
   cancelReport(consumerId: string): Promise<void>
   getVisible(): Promise<boolean>
@@ -29,6 +32,7 @@ export interface BurnChecksAdapter {
 const productionAdapter: BurnChecksAdapter = {
   getReport: (consumerId) => getChecksReport(consumerId),
   getAggregateWins: () => getBurnCheckAggregateWins(),
+  getRemediationProgress: () => getBurnCheckRemediationProgress(),
   getTargets: (detector) => listBurnCheckTargets(detector),
   cancelReport: (consumerId) => cancelChecksReport(consumerId),
   getVisible: () => getMainWindowVisible(),
@@ -46,6 +50,7 @@ export interface BurnChecksSnapshot {
   active: boolean
   report: ChecksReportPayload | null
   aggregate: AggregateWinsPayload | null
+  remediationProgress: BurnCheckRemediationProgressPayload | null
   loading: boolean
   refreshing: boolean
   error: boolean
@@ -61,6 +66,7 @@ export class BurnChecksSession {
     active: false,
     report: null,
     aggregate: null,
+    remediationProgress: null,
     loading: false,
     refreshing: false,
     error: false,
@@ -196,6 +202,7 @@ export class BurnChecksSession {
         refreshing: !!this.snapshot.report,
       })
       void this.loadAggregate(work, version)
+      void this.loadRemediationProgress(work, version)
       try {
         const report = await this.adapter.getReport(consumerId)
         if (work !== this.workVersion || version !== this.refreshVersion) continue
@@ -232,6 +239,22 @@ export class BurnChecksSession {
       }
     } catch {
       // Aggregate savings are optional and must not hide the checks report.
+    }
+  }
+
+  private async loadRemediationProgress(work: number, version: number): Promise<void> {
+    try {
+      const remediationProgress = await this.adapter.getRemediationProgress?.()
+      if (
+        remediationProgress &&
+        work === this.workVersion &&
+        version === this.refreshVersion &&
+        this.snapshot.active
+      ) {
+        this.update({ remediationProgress })
+      }
+    } catch {
+      // Remediation progress is optional and must not hide the checks report.
     }
   }
 

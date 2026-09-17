@@ -132,9 +132,11 @@ The approved missing-file exception creates global Claude Code settings only
 for an eligible optional built-in tool. Findings that share one global target
 across projects are grouped, and every project context is revalidated. Model and
 reasoning targets remain pinned to publication attribution. Claude fast mode
-writes `false`. Copy provides a bounded fallback when an exact prompt is not
-available. See the [remediation guide](../../docs/remediation.md) for supported
-agents, safety checks, recovery, bounds, and privacy.
+writes `false`. Before replacing an existing config file, Auto Fix leaves its
+exact prior content in a sibling `.bak` file. Copy provides a bounded fallback
+when an exact prompt is not available. See the
+[remediation guide](../../docs/remediation.md) for supported agents, safety
+checks, recovery, bounds, and privacy.
 
 ## Shell behavior
 
