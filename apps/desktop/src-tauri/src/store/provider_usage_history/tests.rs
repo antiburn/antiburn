@@ -646,6 +646,14 @@ mod history_tests {
     #[test]
     fn a_later_reading_never_lowers_a_recorded_peak() {
         let store = store();
+        // The default keeps every reading, so a prune against it removes
+        // nothing and the test never reaches the state it is about.
+        store
+            .save_settings(&AppSettings {
+                session_data_retention_days: RETENTION_DAYS,
+                ..AppSettings::default()
+            })
+            .unwrap();
         let start = NOW - 91 * 86_400 - 18_000;
         let reset = NOW - 91 * 86_400;
         let peak = snapshot(
@@ -658,6 +666,15 @@ mod history_tests {
         );
         let period_id = store.record_provider_usage_snapshots(&[peak]).unwrap()[0];
         store.apply_session_retention(NOW).unwrap();
+        assert!(
+            store
+                .provider_usage_period_history(period_id)
+                .unwrap()
+                .expect("the period keeps its rollup")
+                .observations
+                .is_empty(),
+            "the prune must remove the reading the peak came from"
+        );
 
         let late = snapshot(
             ACCOUNT_A,
