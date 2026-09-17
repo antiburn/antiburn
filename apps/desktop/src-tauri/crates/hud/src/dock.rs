@@ -425,6 +425,9 @@ fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
 }
 
 /// Park the peeked HUD once the hold passed and the pointer left it.
+///
+/// A pointer held on the tab strip counts as on the HUD. The strip is what
+/// woke the HUD, so resting there keeps it open.
 #[cfg(target_os = "macos")]
 fn spawn_auto_dock(app: AppHandle, window: WebviewWindow, generation: u64, hold: Duration) {
     tauri::async_runtime::spawn(async move {
@@ -432,18 +435,24 @@ fn spawn_auto_dock(app: AppHandle, window: WebviewWindow, generation: u64, hold:
         let mut last_inside = start;
         loop {
             tokio::time::sleep(AUTO_DOCK_POLL).await;
-            let edge = {
+            let (edge, docked_frame, scale) = {
                 let dock = state();
                 if dock.generation != generation || dock.docked || dock.home.is_none() {
                     return;
                 }
-                dock.edge
+                (dock.edge, dock.frame, dock.scale)
             };
             if app.get_webview_window(super::OVERLAY_LABEL).is_none() {
                 return;
             }
             let now = Instant::now();
-            if super::cursor_inside(&window).unwrap_or(false) {
+            let on_strip = match (docked_frame, window.cursor_position().ok()) {
+                (Some(strip), Some(cursor)) => {
+                    on_tab_strip(edge, &strip, tab_depth(edge, scale), (cursor.x, cursor.y))
+                }
+                _ => false,
+            };
+            if on_strip || super::cursor_inside(&window).unwrap_or(false) {
                 last_inside = now;
                 continue;
             }

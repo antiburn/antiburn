@@ -361,3 +361,6 @@ sampled from real transcripts.
     fully opaque hues (blue, green, purple, indigo, yellow, hot pink, cyan).
     `talking` loses its 60% alpha and becomes pink so it no longer reads as a
     dim teal next to `other`.
+14. **Holding the edge holds the HUD.** While the pointer rests on the tab
+    strip that peeked the HUD in, the auto-dock treats it as on the HUD, so
+    the HUD stays until the pointer leaves both.
