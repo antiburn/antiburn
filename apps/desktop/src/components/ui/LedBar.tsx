@@ -7,20 +7,36 @@ import type { CSSProperties } from "react"
  * the popover: a tick at how far through the window's period the clock has
  * travelled. It separates 60% used at 30% elapsed from 60% used at 90%
  * elapsed. With no fraction there is no notch.
+ *
+ * `live` runs the session sweep: a gleam that crosses the lit segments from
+ * the left, on the clock of the nearest `led-clock` ancestor. An unlit
+ * segment does not move. Each lit segment carries its index and the bar's
+ * segment count, and `hud.css` paints the gleam on the segment from its
+ * distance to the sweep position. `row` is the bar's row within its
+ * provider: each row runs 100 ms after the one above it.
+ *
+ * A bar with no lit segment flashes its first segment in the brand tint as
+ * the sweep passes, so a session at zero usage still shows. Under reduced
+ * motion the sweep stops, and the next segment to light holds the brand tint
+ * instead; a full bar marks its last segment.
  */
 export function LedBar({
   split,
   segments = 40,
   className = "",
   style,
-  blinkLast = false,
+  live = false,
+  row = 0,
   expectedFraction = null,
 }: {
   split: Array<{ fraction: number; color: string }>
   segments?: number
   className?: string
   style?: CSSProperties | undefined
-  blinkLast?: boolean
+  /** Run the sweep across the bar, for a live session. */
+  live?: boolean
+  /** The bar's row within its provider, for the sweep stagger. */
+  row?: number
   /** Elapsed share of the window's period, 0-1, or null when unknown. */
   expectedFraction?: number | null
 }) {
@@ -34,31 +50,37 @@ export function LedBar({
     segments,
     Math.round(Math.min(1, Math.max(0, accumulated)) * segments),
   )
-  const blinkIndex = blinkLast && litCount > 0 ? litCount - 1 : -1
+  // A full bar has no next segment; the still mark then stays on the last one.
+  const nextIndex = live ? Math.min(segments - 1, litCount) : -1
+  const barStyle: CSSProperties | undefined = live
+    ? ({ ...style, "--led-segments": segments, "--led-row": row } as CSSProperties)
+    : style
 
   return (
     <div
       className={`relative flex w-full items-center justify-between ${className}`.trimEnd()}
-      style={style}
+      style={barStyle}
       aria-hidden="true"
     >
       {Array.from({ length: segments }, (_, index) => {
         const midpoint = (index + 0.5) / segments
         const hit = cutoffs.find((cutoff) => midpoint <= cutoff.upTo)
+        // The gleam runs over the lit segments. With none lit, the first
+        // segment takes the sweep alone, in the brand tint.
+        const sweeping = live && (hit != null || (litCount === 0 && index === 0))
+        const style: CSSProperties = {}
+        if (hit) style.backgroundColor = hit.color
+        if (sweeping) Object.assign(style, { "--led-index": index })
+        // The stylesheet derives the gleam from the segment's own colour, so a
+        // provider whose bar is near white still shows the sweep.
+        if (sweeping && hit) Object.assign(style, { "--led-color": hit.color })
         return (
           <span
             key={index}
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "led-lit" : "led-off bg-led-off"} ${index === blinkIndex ? "led-blink" : ""}`.trimEnd()}
-            style={
-              hit
-                ? index === blinkIndex
-                  ? ({
-                      backgroundColor: hit.color,
-                      "--led-on": hit.color,
-                    } as CSSProperties)
-                  : { backgroundColor: hit.color }
-                : undefined
-            }
+            data-led-lit={live && hit != null ? true : undefined}
+            data-led-next={index === nextIndex || undefined}
+            className={`relative h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "led-lit" : "led-off bg-led-off"} ${sweeping ? "led-sweep-dot" : ""}`.trimEnd()}
+            style={hit || sweeping ? style : undefined}
           />
         )
       })}

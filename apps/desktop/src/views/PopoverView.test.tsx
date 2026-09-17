@@ -86,6 +86,31 @@ const SCAN_STATUS = {
   agents: [],
 }
 
+/** Wrap one row as the projection bridge's `session:updated` payload. */
+function sessionUpdate(
+  entry: Record<string, unknown>,
+  facets: Record<string, boolean> = { metadata: true },
+) {
+  return {
+    seq: 1,
+    session: {
+      environmentKey: entry.wslDistro ? `wsl:${String(entry.wslDistro)}` : "native",
+      agent: entry.agent,
+      sessionId: entry.sessionId,
+    },
+    facets: {
+      metadata: false,
+      title: false,
+      analysis: false,
+      usage: false,
+      checks: false,
+      limits: false,
+      ...facets,
+    },
+    entry,
+  }
+}
+
 function activityEntry(overrides: Record<string, unknown> = {}) {
   return {
     agent: "claude-code",
@@ -557,7 +582,7 @@ describe("PopoverView", () => {
     )
   })
 
-  it("updates the one row a sessions:entry-changed event names, without re-listing", async () => {
+  it("updates the one row a session:updated event names, without re-listing", async () => {
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
 
@@ -568,10 +593,13 @@ describe("PopoverView", () => {
       ([command]) => command === "get_session_limit_allocations",
     ).length
 
-    emit("sessions:entry-changed", {
-      ...activityEntry(),
-      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
-    })
+    emit(
+      "session:updated",
+      sessionUpdate({
+        ...activityEntry(),
+        modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
+      }),
+    )
 
     expect(await screen.findByLabelText(/Models: claude-fable-5\/high\./)).toBeInTheDocument()
     expect(
@@ -583,7 +611,7 @@ describe("PopoverView", () => {
     ).toHaveLength(allocationCallsBefore)
   })
 
-  it("keeps a row's high-cost flag after a sessions:entry-changed event replaces it", async () => {
+  it("keeps a row's high-cost flag after a session:updated event replaces it", async () => {
     const cheapEntries = Array.from({ length: 7 }, (_, i) =>
       activityEntry({
         sessionId: `session-cheap-${i}`,
@@ -606,10 +634,13 @@ describe("PopoverView", () => {
     await screen.findByText("Wire the tray popover")
     expect(await screen.findByLabelText(/higher than usual/i)).toBeInTheDocument()
 
-    emit("sessions:entry-changed", {
-      ...expensiveEntry,
-      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
-    })
+    emit(
+      "session:updated",
+      sessionUpdate({
+        ...expensiveEntry,
+        modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
+      }),
+    )
 
     expect(await screen.findByLabelText(/Models: claude-fable-5\/high\./)).toBeInTheDocument()
     // The row is rebuilt from the pushed payload alone, so its high-cost flag
@@ -617,14 +648,17 @@ describe("PopoverView", () => {
     expect(screen.getByLabelText(/higher than usual/i)).toBeInTheDocument()
   })
 
-  it("leaves the list unchanged when a sessions:entry-changed event names an unknown session", async () => {
+  it("leaves the list unchanged when a session:updated event names an unknown session", async () => {
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
 
-    emit("sessions:entry-changed", {
-      ...activityEntry({ sessionId: "session-unknown" }),
-      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
-    })
+    emit(
+      "session:updated",
+      sessionUpdate({
+        ...activityEntry({ sessionId: "session-unknown" }),
+        modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
+      }),
+    )
 
     expect(screen.queryByText("fable-5/high")).not.toBeInTheDocument()
     expect(screen.getByText("Wire the tray popover")).toBeInTheDocument()
@@ -868,7 +902,7 @@ describe("PopoverView", () => {
     )
     expect(await screen.findByText("1 failed")).toBeInTheDocument()
 
-    emit("scan:finished", SCAN_STATUS)
+    emit("session:index-changed", { seq: 2, cause: "scan_pass" })
     await waitFor(() => expect(screen.getByText("1 failed")).toBeInTheDocument())
 
     settled = true
@@ -889,7 +923,8 @@ describe("PopoverView", () => {
     await screen.findByText("1 failed")
 
     settled = false
-    emit("scan:finished", SCAN_STATUS)
+    // Membership changes, not scan progress, refresh the Checks report.
+    emit("session:index-changed", { seq: 2, cause: "scan_pass" })
 
     expect(await screen.findByText("1 failed")).toBeInTheDocument()
     expect(screen.getByText("Running")).toBeInTheDocument()
@@ -916,14 +951,14 @@ describe("PopoverView", () => {
     expect(screen.queryByText(/refreshing/i)).not.toBeInTheDocument()
   })
 
-  it("refreshes after a settled scan that queues no evidence work", async () => {
+  it("refreshes the report when list membership changes", async () => {
     render(<PopoverView />)
     await screen.findByText("1 failed")
     const callsBefore = invoke.mock.calls.filter(
       ([command]) => command === "get_checks_report",
     ).length
 
-    emit("scan:finished", SCAN_STATUS)
+    emit("session:index-changed", { seq: 2, cause: "scan_pass" })
 
     await waitFor(() => {
       const calls = invoke.mock.calls.filter(
@@ -1267,9 +1302,9 @@ describe("PopoverView — attention banners", () => {
 
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
 
-    // A scan finishing re-reads the repository list; the banner must not come
-    // back from the dead because of it.
-    emit("scan:finished", SCAN_STATUS)
+    // A membership change re-reads the repository list; the banner must not
+    // come back from the dead because of it.
+    emit("session:index-changed", { seq: 2, cause: "scan_pass" })
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_repositories"))
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
   })

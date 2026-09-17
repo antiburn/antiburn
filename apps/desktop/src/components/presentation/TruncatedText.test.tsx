@@ -19,6 +19,11 @@ describe("TruncatedText", () => {
     expect(el.getAttribute("data-text")).toBe("Running session")
     expect(el.getAttribute("aria-label")).toBe("Running session")
     expect(el.className).toContain("activity-row-title-shimmer")
+    // The component writes no phase, because `installLivePhase` owns it. A
+    // delay from a render would move the shimmer away from the meter sweep on
+    // every later render. See src/lib/livePhase.ts.
+    expect(el.style.getPropertyValue("--activity-row-shimmer-delay")).toBe("")
+    expect(el.style.animationDelay).toBe("")
   })
 
   it("reveals the full value once the text is actually cut off", () => {

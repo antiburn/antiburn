@@ -17,6 +17,14 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-17
+
+### Fixed
+
+- Remediation prompts now require the cause and target setting to be proved
+  before an edit is applied, and ask agents to label hypotheses when evidence
+  is incomplete.
+
 ## [0.9.0] - 2026-09-17
 
 ### Added
