@@ -57,7 +57,7 @@ use antiburn_local::analysis::{
     TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_source_resume,
     delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
     delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
-    insert_source_resume, insert_turn_rows, latest_turn_model, query_coverage_record,
+    insert_source_resume, insert_turn_rows, latest_turn_execution, query_coverage_record,
     query_model_breakdown, query_model_runs, query_pricing_breakdown, query_source_resume,
     query_turn_facts, query_turn_rows,
 };
@@ -2279,15 +2279,16 @@ impl Store {
             let Some((incarnation, published_fence)) = identity else {
                 continue;
             };
-            let model = match published_fence {
-                Some(fence) => latest_turn_model(&connection, &turn_session_key(key), fence)?,
+            let execution = match published_fence {
+                Some(fence) => latest_turn_execution(&connection, &turn_session_key(key), fence)?,
                 None => None,
             };
             rows.push(PublishedModel {
                 key: key.clone(),
                 incarnation,
                 published_fence,
-                model,
+                provider: execution.as_ref().and_then(|value| value.provider.clone()),
+                model: execution.map(|value| value.model),
             });
         }
         Ok((rows, revision_of(&connection)))

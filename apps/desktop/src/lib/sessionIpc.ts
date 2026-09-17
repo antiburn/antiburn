@@ -225,12 +225,18 @@ export interface UpdateFacetsPayload {
  */
 export type AnonymousClearCause = "resolved" | "expired"
 
-/**
- * These exact counts match Rust `Aggregate` after an atomic batch. Working sessions
- * remain inside the quiet window. Total includes working and quiet sessions. Anonymous
- * counts agents with unresolved activity. Snapshot row limits do not affect these
- * counts.
- */
+/** The newest published modeled turn supplies execution metadata independently of the harness. */
+export interface ExecutionMetadataPayload {
+  model: string
+  /** This field preserves the same turn's provider without alias rewriting. */
+  recordedProvider: string | null
+  /** Only recorded route normalization supplies this field; missing and custom routes remain null. */
+  providerRoute: string | null
+  /** A recognized model family identifies the vendor, not the billing route. */
+  modelVendor: string | null
+}
+
+/** These exact harness counts cover all working identities, independently of snapshot row limits. */
 export interface SweepCountsPayload {
   agent: string
   working: number
@@ -238,7 +244,7 @@ export interface SweepCountsPayload {
   modelPendingWorking: number
   modelFailedWorking: number
   modelNoneWorking: number
-  models: { model: string; working: number }[]
+  models: (ExecutionMetadataPayload & { working: number })[]
 }
 
 export interface AggregatePayload {
@@ -312,6 +318,7 @@ export interface SessionIndexChangedPayload {
 
 /** This snapshot row matches Rust `LiveSession`. */
 export interface LiveSessionPayload {
+  execution?: ExecutionMetadataPayload | null
   session: SessionRefPayload
   agent: string
   /** The timestamp records session activity in Unix seconds. */

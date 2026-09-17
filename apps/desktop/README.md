@@ -208,7 +208,7 @@ Settings teardown, and the memory rules behind those policies.
 - **Popover lifetime.** Finishing onboarding starts one hidden renderer before
   the onboarding window retires. After it becomes ready, the handoff renderer
   stays warm for up to 60 seconds. The first reveal consumes that lease; later
-  dismissals use the normal 15-second grace period before renderer destruction.
+  dismissals hide the resident renderer without scheduling destruction.
 - **Local store.** One SQLite database under the app data directory
   (`ai.antiburn.desktop`, or `ai.antiburn.desktop.debug` for a development
   build — see above) holds preferences, scan roots, and the local session data
@@ -311,8 +311,10 @@ cached usage, and selected analysis. This adds no scanner or provider polling.
 `SessionList` accepts opt-in `selectedKey`, `onSelect`, `onOpenDetail`, and `active` props.
 `SessionPane` accepts `embedded` and `active`; embedded confirmation does not hold the popover.
 Shared subject identity and analysis loading live in `lib/sessionSubject.ts`. Existing
-menu-bar callers retain their defaults. Session removal broadcasts the existing invalidation
-event so both windows refresh their local views.
+menu-bar callers retain their defaults. Session removal reports a typed lifecycle
+observation; the projection bridge emits `session:index-changed` with cause
+`removed` so both windows refresh their local views. See the
+[session lifecycle contract](../../docs/session-lifecycle-events.md).
 
 Burn checks uses `BurnChecksSession`, a second independent external store. It owns a distinct
 Checks report consumer, combines section activity with main-window visibility, and loads target

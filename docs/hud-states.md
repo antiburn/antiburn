@@ -188,21 +188,21 @@ live macOS validation after changes to the native window mechanism.
 ## Data and timing
 
 - Each LED bar has 20 segments.
-- Every bar of a provider a live session draws on sweeps: a live Claude Code
-  session sweeps each Anthropic bar. The renderer maps the agent to its
-  provider (Claude Code to Anthropic, Codex to OpenAI, Antigravity to
-  Google); a live agent with no provider on screen sweeps nothing. The
-  detail window does not sweep. The popover sweeps the same providers from
-  the same events: every usage meter of the provider on the open bar, and
-  its ring on the closed bar.
-- A bar that holds one model sweeps only while a live session runs that
-  model. The Anthropic weekly Fable limit is such a bar: a session on Opus
+- Unscoped bars sweep only for positive canonical provider-route counts.
+  The harness does not determine the provider: Pi's recorded `openai-codex`
+  route becomes OpenAI, while Pi's `anthropic` route activates Claude.
+  The shell keeps the model vendor separate. Claude through OpenRouter,
+  AWS, or Azure does not activate direct Anthropic bars. Unknown or missing
+  routes and anonymous harness activity activate no provider bar.
+  The detail window does not sweep. The popover uses the same route counts
+  for its open usage meters and closed provider ring.
+- A bar that holds one model sweeps only while a working session has published
+  evidence for that model on the bar's canonical provider route. The Anthropic weekly Fable limit is such a bar: a session on Opus
   leaves it still, and a session on Fable sweeps it. The shell reports the
-  model of each live session's newest analyzed turn, and the renderer
-  matches that model against the bar's model name. A session reports no
-  model until an analysis pass publishes its first turn, so a new session
-  sweeps the unscoped bars of its provider one pass before its model-scoped
-  bar. The ring on the closed popover bar keeps the provider rule, because
+  model and recorded provider from the same newest published modeled turn,
+  and the renderer matches that model only within its canonical route.
+  Until publication supplies that evidence, the session activates neither
+  provider nor model-scoped bars. The ring on the closed popover bar keeps the provider rule, because
   it shows the provider's highest meter rather than one window.
 - The sweep is a gleam about three segments wide that crosses the lit
   segments from the left. An unlit segment does not move. A segment takes
@@ -239,7 +239,8 @@ live macOS validation after changes to the native window mechanism.
   segments wide, so it snaps on: equal centres look early on the meter. The band crosses the bar
   in about 2 seconds, half the cycle, and the bar rests for the remainder.
   A provider's rows run 100 milliseconds apart from the top. With no bars at
-  all, the one empty bar sweeps for any live session.
+  all, the one empty bar sweeps for named working or anonymous activity, not
+  quiet sessions.
 - One animation drives every live meter on a surface, and each segment
   reads the sweep position from it. A CSS animation starts when the browser
   applies it, so a meter with its own animation keeps its own clock. The
@@ -271,10 +272,11 @@ live macOS validation after changes to the native window mechanism.
   V49 persists incarnations internally; V48 remains attribution data.
   See `docs/session-lifecycle-events.md` for evidence guards, permissions,
   named presence, convergence, and resource limits.
-- Exact per-agent working and anonymous counts cover every canonical identity,
-  independently of the snapshot row limit. Positive current-model counts stay
-  within that agent's provider. Pending, failed, and anonymous evidence never
-  proves a model. Other unknown identities do not suppress a known matching model.
+- Exact per-harness working and anonymous counts cover every canonical identity,
+  independently of the snapshot row limit. Execution counts group by route and
+  model within each harness. Missing routes have no model-derived fallback.
+  Pending, failed, unmodeled, and anonymous evidence proves no provider or model
+  sweep. Other unknown identities do not suppress a known matching model.
 - The existing projection worker reads compact published models in pages of at
   most 256, outside the actor. Incarnation, metadata epoch, ticket, and writer
   revision guard each answer. Publication fences identify row provenance, not

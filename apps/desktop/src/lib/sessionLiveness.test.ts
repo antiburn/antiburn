@@ -16,6 +16,9 @@ function count(agent: string, values: Partial<SweepCountsPayload> = {}): SweepCo
     ...values,
   }
 }
+function model(model: string, providerRoute: string | null, working = 1) {
+  return { model, providerRoute, recordedProvider: providerRoute, modelVendor: null, working }
+}
 function state(sweep: SweepCountsPayload[], total?: number): LiveSessionsSnapshot {
   const working = sweep.reduce((sum, value) => sum + value.working, 0)
   return {
@@ -33,11 +36,14 @@ function state(sweep: SweepCountsPayload[], total?: number): LiveSessionsSnapsho
 }
 
 describe("canonical sweep selectors", () => {
-  it("routes agents independently of bounded snapshot rows", () => {
-    const live = state([count("codex", { working: 128 }), count("claude-code", { working: 1 })])
+  it("uses exact routes beyond bounded snapshot rows, independently of harness", () => {
+    const live = state([
+      count("pi", { working: 128, models: [model("gpt-6-astra", "openai", 128)] }),
+      count("pi", { working: 1, models: [model("claude-fable-5", "anthropic")] }),
+    ])
     expect(isLive(live)).toBe(true)
     expect(liveProviders(live)).toEqual(["anthropic", "openai"])
-    expect(liveModels(live)).toEqual({})
+    expect(liveModels(live)).toEqual({ anthropic: ["claude-fable-5"], openai: ["gpt-6-astra"] })
   })
   it("keeps quiet sessions active but out of sweeps", () => {
     const live = state([], 12)
@@ -45,68 +51,77 @@ describe("canonical sweep selectors", () => {
     expect(liveProviders(live)).toEqual([])
     expect(liveModels(live)).toEqual({})
   })
-  it("counts unknown agents globally only", () => {
-    const live = state([
-      count("cursor", { working: 1, models: [{ model: "claude-fable-5", working: 1 }] }),
-    ])
-    expect(isLive(live)).toBe(true)
-    expect(liveProviders(live)).toEqual([])
-    expect(liveModels(live)).toEqual({})
-  })
-  it("routes Antigravity to Google and canonical removal drops its scope", () => {
-    expect(liveProviders(state([count("antigravity", { working: 1 })]))).toEqual(["google"])
-    expect(isLive(state([]))).toBe(false)
+  it.each(["openrouter", "aws", "azure", "google-vertex", "cursor", null])(
+    "does not turn route %s into direct Anthropic limits",
+    (route) => {
+      const live = state([
+        count("claude-code", {
+          working: 1,
+          models: [{ ...model("claude-fable-5", route), modelVendor: "anthropic" }],
+        }),
+      ])
+      expect(isLive(live)).toBe(true)
+      expect(liveProviders(live)).toEqual([])
+      expect(liveModels(live)).toEqual({})
+      expect(
+        liveWindowSweeps({ scopeModel: "fable" }, false, liveModels(live).anthropic ?? []),
+      ).toBe(false)
+    },
+  )
+  it("uses Google route evidence without inferring it from Antigravity", () => {
+    expect(liveProviders(state([count("antigravity", { working: 1 })]))).toEqual([])
+    expect(
+      liveProviders(
+        state([
+          count("pi", {
+            working: 1,
+            models: [model("gemini-pro", "google")],
+          }),
+        ]),
+      ),
+    ).toEqual(["google"])
   })
   it("never applies a local expiry clock", () => {
-    const live = state([count("claude-code", { working: 1 })])
-    live.sessions = new Map([["old", { agent: "claude-code", lastActivityAt: 1, quiet: true }]])
+    const live = state([count("pi", { working: 1, models: [model("gpt-6-astra", "openai")] })])
+    live.sessions = new Map([["old", { agent: "pi", lastActivityAt: 1, quiet: true }]])
     expect(isLive(live)).toBe(true)
-    expect(liveProviders(live)).toEqual(["anthropic"])
+    expect(liveProviders(live)).toEqual(["openai"])
   })
-  it("keeps anonymous activity provider-scoped with no model", () => {
+  it("keeps anonymous harness activity global only", () => {
     const live = state([
       count("claude-code", { anonymous: 1 }),
       count("codex", { anonymous: 1 }),
     ])
     expect(isLive(live)).toBe(true)
-    expect(liveProviders(live)).toEqual(["anthropic", "openai"])
+    expect(liveProviders(live)).toEqual([])
     expect(liveModels(live)).toEqual({})
-    expect(liveProviders(state([count("codex", { anonymous: 1 })]))).toEqual(["openai"])
   })
-  it("sorts and deduplicates positive models within their provider", () => {
+  it("sorts and deduplicates positive models within their recorded route", () => {
     const live = state([
-      count("claude-code", {
-        working: 3,
+      count("pi", {
+        working: 4,
         models: [
-          { model: "claude-opus-4-6", working: 1 },
-          { model: "claude-fable-5", working: 2 },
+          model("claude-opus-4-6", "anthropic"),
+          model("claude-fable-5", "anthropic", 2),
+          model("claude-fable-5", "openrouter"),
         ],
       }),
     ])
     expect(liveModels(live)).toEqual({ anthropic: ["claude-fable-5", "claude-opus-4-6"] })
   })
-  it("does not let a model on another provider prove the matching scope", () => {
+  it("keeps positive evidence despite other pending and failed identities", () => {
     const live = state([
-      count("claude-code", { anonymous: 1 }),
-      count("codex", { working: 1, models: [{ model: "claude-fable-5", working: 1 }] }),
-    ])
-    expect(
-      liveWindowSweeps({ scopeModel: "fable" }, true, liveModels(live).anthropic ?? []),
-    ).toBe(false)
-  })
-  it("keeps positive model evidence despite other pending and failed identities", () => {
-    const live = state([
-      count("claude-code", {
+      count("pi", {
         working: 4,
         modelPendingWorking: 1,
         modelFailedWorking: 1,
         modelNoneWorking: 1,
-        models: [{ model: "claude-fable-5", working: 1 }],
+        models: [model("claude-fable-5", "anthropic")],
       }),
     ])
     expect(liveModels(live)).toEqual({ anthropic: ["claude-fable-5"] })
   })
-  it("does not guess models for pending, failed, or unmodeled publications", () => {
+  it("does not guess routes for pending, failed, or unmodeled publications", () => {
     const live = state([
       count("claude-code", {
         working: 3,
@@ -115,14 +130,13 @@ describe("canonical sweep selectors", () => {
         modelNoneWorking: 1,
       }),
     ])
-    expect(liveProviders(live)).toEqual(["anthropic"])
+    expect(isLive(live)).toBe(true)
+    expect(liveProviders(live)).toEqual([])
     expect(liveModels(live)).toEqual({})
   })
   it("drops zero model counts", () => {
-    expect(
-      liveModels(
-        state([count("claude-code", { models: [{ model: "claude-fable-5", working: 0 }] })]),
-      ),
-    ).toEqual({})
+    const live = state([count("pi", { models: [model("claude-fable-5", "anthropic", 0)] })])
+    expect(liveProviders(live)).toEqual([])
+    expect(liveModels(live)).toEqual({})
   })
 })

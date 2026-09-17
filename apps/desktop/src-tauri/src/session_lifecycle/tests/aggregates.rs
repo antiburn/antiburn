@@ -410,6 +410,7 @@ fn counts_and_presence_serialize_in_camel_case() {
             agent: AgentKind::Claude,
             last_activity_at: 10,
             quiet: true,
+            execution: None,
         }],
         absent: vec![session_ref("gone")],
     };

@@ -29,6 +29,7 @@ fn answer(
             incarnation: Incarnation(incarnation),
             published_fence: Some(7),
             model: model.map(str::to_owned),
+            provider: Some("anthropic".into()),
         })
         .collect();
     let (ack, _) = oneshot::channel();
@@ -119,7 +120,7 @@ fn reused_publication_fence_requires_a_current_ticket_and_revision() {
     assert_eq!(positive(&events), 0);
     let (current, _) = events.model_page();
     answer(&events, current, Some("new"), 9, 1);
-    assert_eq!(events.snapshot(0).sweep[0].models[0].model, "new");
+    assert_eq!(events.snapshot(0).sweep[0].models[0].execution.model, "new");
     observe(&events, touched("one", 1, BASE + 1, 10), BASE + 1);
     observe(&events, changed(), BASE + 1);
     let (stale, _) = events.model_page();
@@ -308,6 +309,7 @@ async fn actor_acknowledges_models_while_admission_carry_is_blocked() {
         incarnation: Incarnation(0),
         published_fence: Some(7),
         model: Some("sonnet".into()),
+        provider: Some("anthropic".into()),
     }];
     events
         .submit_models(requests, Ok((rows, Revision(200))))

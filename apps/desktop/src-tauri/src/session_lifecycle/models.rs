@@ -1,6 +1,7 @@
 //! Compact model evidence belongs to the registry, independently of rich row projection.
 
 use super::*;
+use crate::provider_usage::providers::{HintResolution, model_vendor, provider_for_hint};
 use crate::store::PublishedModel;
 use tokio::sync::oneshot;
 
@@ -22,8 +23,44 @@ pub struct SweepCounts {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCount {
-    pub model: String,
+    #[serde(flatten)]
+    pub execution: ExecutionMetadata,
     pub working: usize,
+}
+
+/// One published turn supplies the model and recorded route. The model family identifies its vendor.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionMetadata {
+    pub model: String,
+    pub recorded_provider: Option<String>,
+    pub provider_route: Option<String>,
+    pub model_vendor: Option<String>,
+}
+
+impl ExecutionMetadata {
+    fn resolve(model: String, recorded_provider: Option<String>) -> Self {
+        let provider_route = recorded_provider.as_deref().and_then(execution_route);
+        Self {
+            model_vendor: model_vendor(&model).map(str::to_owned),
+            model,
+            recorded_provider,
+            provider_route,
+        }
+    }
+}
+
+fn execution_route(provider: &str) -> Option<String> {
+    let normalized = provider.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "aws" => Some("aws".into()),
+        // Vertex is a cloud route, not the direct Google meter.
+        "google-vertex" | "vertex" => Some("google-vertex".into()),
+        _ => match provider_for_hint(provider) {
+            HintResolution::Known(route) => Some(route.to_owned()),
+            HintResolution::UnknownExplicit => None,
+        },
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -47,7 +84,7 @@ enum Status {
     Failed,
     Ready {
         published_fence: Option<i64>,
-        model: Option<String>,
+        execution: Option<ExecutionMetadata>,
     },
 }
 
@@ -65,6 +102,8 @@ struct Slot {
 pub(super) struct Models {
     epoch: u64,
     ticket: u64,
+    pub(super) version: u64,
+    resolved: usize,
     slots: BTreeMap<SessionKey, Slot>,
     queue: BTreeSet<(Instant, u64, SessionKey)>,
     broad: Option<Option<SessionKey>>,
@@ -72,6 +111,9 @@ pub(super) struct Models {
 
 impl Models {
     pub(super) fn invalidate(&mut self, key: &SessionKey) {
+        if self.execution(key).is_some() {
+            self.changed();
+        }
         let accepted = self
             .slots
             .get(key)
@@ -94,6 +136,9 @@ impl Models {
     }
 
     pub(super) fn remove(&mut self, key: &SessionKey) {
+        if self.execution(key).is_some() {
+            self.resolved -= 1;
+        }
         if let Some(slot) = self.slots.remove(key)
             && let Some(due) = slot.due
         {
@@ -101,7 +146,32 @@ impl Models {
         }
     }
 
+    fn changed(&mut self) {
+        self.version = self
+            .version
+            .checked_add(1)
+            .expect("execution version exhausted");
+    }
+
+    pub(super) fn execution(&self, key: &SessionKey) -> Option<ExecutionMetadata> {
+        let slot = self.slots.get(key)?;
+        if slot.epoch != self.epoch {
+            return None;
+        }
+        match &slot.status {
+            Status::Ready {
+                published_fence: Some(_),
+                execution,
+            } => execution.clone(),
+            _ => None,
+        }
+    }
+
     pub(super) fn invalidate_all(&mut self) {
+        if self.resolved > 0 {
+            self.changed();
+        }
+        self.resolved = 0;
         self.epoch = self.epoch.checked_add(1).expect("model epoch exhausted");
         self.broad = Some(None);
     }
@@ -131,7 +201,7 @@ impl Models {
 impl Registry {
     pub(super) fn sweep_counts(&self) -> Vec<SweepCounts> {
         let mut agents: BTreeMap<String, SweepCounts> = BTreeMap::new();
-        let mut models: BTreeMap<(String, String), usize> = BTreeMap::new();
+        let mut models: BTreeMap<(String, ExecutionMetadata), usize> = BTreeMap::new();
         for (key, entry) in &self.live {
             if entry.quiet_published {
                 continue;
@@ -152,10 +222,10 @@ impl Registry {
                 Some(Status::Failed) => count.model_failed_working += 1,
                 Some(Status::Ready {
                     published_fence: Some(_),
-                    model: Some(model),
+                    execution: Some(execution),
                 }) => {
                     *models
-                        .entry((key.agent.clone(), model.clone()))
+                        .entry((key.agent.clone(), execution.clone()))
                         .or_default() += 1;
                 }
                 Some(Status::Ready { .. }) => count.model_none_working += 1,
@@ -171,12 +241,12 @@ impl Registry {
                 })
                 .anonymous += 1;
         }
-        for ((agent, model), working) in models {
+        for ((agent, execution), working) in models {
             agents
                 .get_mut(&agent)
                 .expect("working agent exists")
                 .models
-                .push(ModelCount { model, working });
+                .push(ModelCount { execution, working });
         }
         agents.into_values().collect()
     }
@@ -226,6 +296,7 @@ impl Registry {
             let Some(entry) = self.live.get(&request.key) else {
                 continue;
             };
+            let previous = self.models.execution(&request.key);
             let Some(slot) = self.models.slots.get_mut(&request.key) else {
                 continue;
             };
@@ -252,7 +323,9 @@ impl Registry {
                 slot.accepted = revision.expect("valid revision exists");
                 slot.status = Status::Ready {
                     published_fence: row.published_fence,
-                    model: row.model,
+                    execution: row
+                        .model
+                        .map(|model| ExecutionMetadata::resolve(model, row.provider)),
                 };
                 slot.backoff = RECONCILE_BACKOFF_MIN;
             } else {
@@ -260,7 +333,15 @@ impl Registry {
                 let due = received_at + slot.backoff;
                 slot.backoff = (slot.backoff * 2).min(RECONCILE_BACKOFF_MAX);
                 slot.due = Some(due);
-                self.models.queue.insert((due, slot.ticket, request.key));
+                self.models
+                    .queue
+                    .insert((due, slot.ticket, request.key.clone()));
+            }
+            let current = self.models.execution(&request.key);
+            if previous != current {
+                self.models.resolved = self.models.resolved - usize::from(previous.is_some())
+                    + usize::from(current.is_some());
+                self.models.changed();
             }
         }
     }
@@ -297,14 +378,8 @@ impl SessionEvents {
 
 pub(super) fn apply_reply(events: &SessionEvents, reply: ModelReply) {
     apply(events, |registry| {
-        let before = registry.sweep_counts();
         registry.apply_models(reply.requests, reply.result);
-        let out = if before != registry.sweep_counts() {
-            vec![SessionEvent::SweepChanged]
-        } else {
-            Vec::new()
-        };
-        (out, ())
+        (Vec::new(), ())
     });
     let _ = reply.ack.send(());
 }

@@ -741,7 +741,7 @@ describe("PopoverSession live sessions", () => {
     const at = Math.floor(Date.now() / 1000)
     emitLifecycleActivity(at)
     expect(session.getSnapshot().sessionLive).toBe(true)
-    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
+    expect(session.getSnapshot().liveProviders).toEqual([])
 
     for (const handler of lifecycleHandlers)
       handler({
@@ -789,7 +789,7 @@ describe("PopoverSession live sessions", () => {
     const unsubscribe = session.subscribe(() => undefined)
 
     await vi.waitFor(() => expect(session.getSnapshot().sessionLive).toBe(true))
-    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
+    expect(session.getSnapshot().liveProviders).toEqual([])
     unsubscribe()
   })
 
@@ -808,7 +808,15 @@ describe("PopoverSession live sessions", () => {
           modelPendingWorking: 0,
           modelFailedWorking: 0,
           modelNoneWorking: 0,
-          models: [{ model: "sonnet", working: 1 }],
+          models: [
+            {
+              model: "sonnet",
+              working: 1,
+              providerRoute: "anthropic",
+              recordedProvider: "anthropic",
+              modelVendor: null,
+            },
+          ],
         },
       ],
     })

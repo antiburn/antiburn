@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar};
 use tokio::sync::broadcast::error::TryRecvError;
 
 mod aggregates;
+mod execution;
 mod model_worker;
 mod reconcile;
 mod schedules;
@@ -405,6 +406,7 @@ async fn touched_publishes_activity_with_the_same_key_and_time() {
             agent: AgentKind::Claude,
             last_activity_at: BASE + 3,
             quiet: false,
+            execution: None,
         }]
     );
 }
@@ -1143,6 +1145,7 @@ async fn a_late_subscriber_reads_the_seeded_set_from_the_snapshot_not_a_replay()
                 agent: AgentKind::Claude,
                 last_activity_at: BASE - 5,
                 quiet: false,
+                execution: None,
             },
             LiveSession {
                 session: session_ref("first"),
@@ -1150,6 +1153,7 @@ async fn a_late_subscriber_reads_the_seeded_set_from_the_snapshot_not_a_replay()
                 last_activity_at: BASE - 30,
                 // Seeded past the quiet window: the snapshot says so.
                 quiet: true,
+                execution: None,
             },
         ]
     );

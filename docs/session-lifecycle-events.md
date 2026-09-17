@@ -31,7 +31,38 @@ Tauri events -> webviews
   order, and the versioned live snapshot.
 - The projection worker owns enriched `ActivityEntry` reads (on the
   blocking pool, coalesced and bounded) and is the only Tauri emitter for
-  session events.
+  session events. Its separate compact model loader returns execution evidence
+  to the registry through a capacity-one result mailbox and acknowledgement;
+  the registry, not the loader or bridge, derives scoped counts.
+
+## Scan and publication boundaries
+
+Discovery and evidence analysis are separate paths, not one serial scan pass.
+The watcher feeds debounced, bounded bursts to the scan scheduler. Classification
+reports keyed or anonymous activity before scoped refresh floors. Full and
+agent-scoped passes discover and describe sources; targeted passes refresh known
+sources. Store upserts queue changed evidence and return incarnation/revision
+facts for `Indexed` reports. Scan does not wait for transcript analysis.
+
+Four `insights_worker` tasks drain the durable evidence queue. Shell `analysis.rs`
+locates each source and companions, supplies `SessionInput.source_format`, and
+runs the engine reader on the blocking pool. `reader_for` selects by agent label;
+readers consume the source-format contract. `CompositeSink` feeds metrics,
+evidence, and fenced turn rows. Analysis rebuilds published evidence from stored
+turn facts and coverage, rather than publishing the in-memory evidence fold alone.
+
+A winning `Store::publish_projections` transaction publishes analysis, evidence,
+turn rows, coverage, relations, and supported resume state. The worker then
+reports `RowChanged` with the `analysis` facet; processing and failed passes do
+not send that success report. The registry invalidates compact execution evidence
+for a live identity and the projection worker reloads it. The same observation
+also requests an enriched row projection. Neither completion changes activity
+timestamps. Global Checks notifications remain a separate worker output.
+
+The published fence identifies the visible row set, not a monotonically changing
+publication version: a later publication can reuse it. The compact read therefore
+returns writer revision and incarnation with the same-turn provider/model pair.
+Snapshots and named presence read registry memory, not SQL.
 
 ## Delivery and reporter classes
 
@@ -48,7 +79,8 @@ Tauri events -> webviews
 - Producers release Store guards before either report call. The actor holds
   no lock across an await and never waits for projection. Four analysis
   workers retain their incident-ingestion analytics and global Checks output.
-- Each actor round services expiry, one completed page (or retained recovery suffix), the spill,
+- Each actor round services a compact model reply when available, expiry,
+  one completed page (or retained recovery suffix), the spill,
   and a bounded inbox batch, then yields. A blocked admission retains its
   fact while pages, expiry, and spill continue. Failed pages retain their
   requirements and cursor, with a 2–30 second exponential retry interval.
@@ -165,13 +197,14 @@ transcript writes do. Title-only work changes row metadata, not liveness.
 
 ## Frontend events
 
-Every payload carries `seq`, the registry sequence. Sequences are global
-across all three scopes, so gaps between events on one scope are normal;
+Each of the three `session:*` payloads carries `seq`, the registry sequence.
+Scan status and global Checks notifications do not. Sequences are global
+across all three session scopes, so gaps between events on one scope are normal;
 a lifecycle `resync` requests recovery from transport lag or an unsafe backlog.
 
 | Event                                  | Payload                                                                                 | Meaning                                                                                                                                                                                                                                                                                                                                                                                        |
 | -------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session:lifecycle`                    | `{seq, kind: started\|activity\|quiet\|idle\|anonymous_cleared\|resync, aggregate?, …}` | Lifecycle transitions and resync metadata. `activity` carries `resumed`; a null `session` is anonymous agent-level activity the store has not indexed yet. `anonymous_cleared` carries `agent` and `cause: resolved\|expired`. The last lifecycle event of each atomic registry batch carries `aggregate: {working, total, anonymous}`, the exact counts after the batch; `resync` never does. |
+| `session:lifecycle`                    | `{seq, kind: started\|activity\|quiet\|idle\|anonymous_cleared\|sweep_changed\|resync, aggregate?, …}` | Lifecycle transitions, execution-evidence changes (`sweep_changed`), and resync metadata. `activity` carries `resumed`; a null `session` is anonymous agent-level activity the store has not indexed yet. `anonymous_cleared` carries `agent` and `cause: resolved\|expired`. The last lifecycle event of each atomic registry batch carries `aggregate: {working, total, anonymous, sweep}`, the exact counts after the batch; `resync` never does. |
 | `session:updated`                      | `{seq, session, facets, entry}`                                                         | One enriched row per coalesced registry update. `facets` name what changed (metadata, title, analysis, usage, checks, limits).                                                                                                                                                                                                                                                                 |
 | `session:index-changed`                | `{seq, cause: scan_pass\|invalidated\|removed\|resync, session?, removal?}`             | List membership changed: refetch list data.                                                                                                                                                                                                                                                                                                                                                    |
 | `scan:finished` (and started/progress) | `ScanStatus`                                                                            | Scan progress and status only. Not a freshness or liveness signal.                                                                                                                                                                                                                                                                                                                             |
@@ -191,16 +224,18 @@ checks workers can adopt them without a listener change.
 
 ## Snapshot, counts, and named presence
 
-`get_live_sessions(limit?)` returns `{seq, working, total, sessions,
+`get_live_sessions(limit?)` returns `{seq, working, total, sweep, sessions,
 anonymous}`. `sessions` holds at most `limit` (default 128) of the most
-recent live sessions, each with `agent`, `lastActivityAt`, and the
-registry's own `quiet` flag, so no reader derives lifecycle windows from
-timestamps. `working` and `total` are exact and independent of the row
+recent live sessions, each with `agent`, `lastActivityAt`, the registry's own
+`quiet` flag, and nullable `execution` metadata. Named presence returns the
+same row shape. No reader derives lifecycle windows from timestamps. `working` and `total` are exact and independent of the row
 limit: `sessions.length < total` means the rows are truncated, and an
 identity the rows omit is unknown, not absent. `anonymous` is complete; it
-is bounded by the number of agent kinds. The registry keeps the counts as
-it applies each batch, so count reads are constant-time. A snapshot read sees
-only completed batches. Row selection still clones the live map and sorts outside the lock;
+is bounded by the number of agent kinds. The registry maintains the global working count and reads total and anonymous
+map lengths directly. Scoped `sweep` counts instead walk live identities and
+group execution metadata under the registry lock. Each atomic mutation compares
+scoped counts before and after; a snapshot also computes them. These aggregate
+operations are not constant-time. A snapshot read sees only completed batches. Row selection still clones the live map and sorts outside the lock;
 the payload limit does not bound that temporary allocation or sorting work.
 
 `get_live_sessions_for(sessions)` answers named identities: `{seq,
@@ -229,8 +264,10 @@ The reader protocol (implemented by `lib/sessionLifecycle.ts`):
 5. On lifecycle `resync`, repeat from 2. The bridge requests this for bus
    lag or a completion backlog that makes row emission unsafe. It does not
    allocate a canonical sequence or reconstruct lost facts.
-6. Each visible list registers its rows as an interest after every load
-   and removes them when it stops or becomes inactive. After every accepted truncated
+6. Each list registers its rows as an interest after every load and removes
+   them when it stops. Main-window lists also clear interests while hidden or
+   section-inactive; the retained popover keeps its interests while hidden.
+   After every accepted truncated
    snapshot, and on every interest change, the tracker asks the registry
    by name for the interests the base did not answer, one read in flight,
    the union chunked to the command's limit; a change during a read runs
@@ -347,8 +384,12 @@ canonical sequence numbers nor aggregate counts.
 | Watcher burst           | `MAX_BURST_PATHS = 64`; overflow requests a full pass               |
 
 The live map has no arbitrary cap. The deadline index is proportional to live
-sessions and anonymous agents. Snapshot cloning/sorting and filtering the live
-map for a purge page are proportional work, not constant-time operations.
+sessions and anonymous agents; compact metadata slots and their work queue also
+scale with live identities. Scoped aggregate construction, snapshot cloning/sorting,
+and filtering the live map for a purge page are proportional work, not
+constant-time operations. Model reads contain at most `MODEL_PAGE = 256`
+identities, with one model load and a capacity-one result mailbox; these bounds
+do not cap the registry's metadata map.
 Seed queries use the keyset index with `LIMIT` and no temporary sort. The
 nested cursor predicate can scan already-visited ties at the cursor epoch;
 a page limits returned rows, not necessarily examined index entries.
@@ -381,8 +422,10 @@ No token or cost aggregation moves into this lifecycle pipeline.
 
 ## Consumers (current)
 
-- HUD (`OverlaySession`): working indicator from the tracker's exact
-  counts only, including anonymous activity until the registry clears it.
+- HUD (`OverlaySession`): global working indicator from exact working and
+  anonymous counts; provider/model sweeps from positive canonical-route counts
+  in `sweep`. Neither uses bounded snapshot rows. Anonymous activity remains
+  global only until the registry clears it.
 - Popover (`PopoverSession`): rows patch from `session:updated`; list and
   repositories refetch on `session:index-changed`; usage refreshes on
   lifecycle `activity` under a 30-second floor plus a visible-only poll;
@@ -420,12 +463,40 @@ not equality of bounded tombstone memory or order-dependent narration.
 
 ## Scoped sweep evidence
 
-`Aggregate` and `LiveSnapshot` carry deterministic `sweep` counts by agent.
-Each agent has named working, anonymous, pending-model, failed-model, unmodeled,
-and model/working counts. The model categories sum to named working. These counts
-cover all canonical identities, not the bounded snapshot rows or list interests.
-Only Claude Code, Codex, and Antigravity route to displayed provider meters.
-Anonymous evidence permits provider sweeps, never model sweeps.
+`Aggregate` and `LiveSnapshot` carry deterministic `sweep` counts by harness.
+`SessionRef.agent`, live-row `agent`, and `sweep.agent` always identify the
+harness, never the model vendor or provider route. Each harness has named
+working, anonymous, pending-model, failed-model, unmodeled, and execution/working
+counts in `models`. The model categories sum to named working. Counts cover all
+canonical identities, not bounded snapshot rows or list interests.
+
+Each `models` item contains `working` and these execution fields. Live snapshot
+and named-presence rows expose the same fields under nullable `execution`:
+
+| Field | Provenance |
+| ----- | ---------- |
+| `model` | Nonempty model from the newest modeled turn in the published fence. |
+| `recordedProvider` | Nullable provider from that exact turn, preserved without alias rewriting. |
+| `providerRoute` | Nullable canonical normalization of the recorded provider, never inferred from the harness or model. |
+| `modelVendor` | Nullable vendor inferred only from a recognized model family, independently of the route. |
+
+Counts group by harness and all execution fields, including both route and model;
+different recorded aliases remain distinguishable. `openai-codex` normalizes to
+`openai`, so Pi can activate the OpenAI meter. Pi with `anthropic` can activate
+Claude meters. Claude through OpenRouter, AWS, or Azure retains that route and
+an Anthropic model vendor without activating direct Anthropic meters. Vertex
+aliases retain the `google-vertex` cloud route rather than a direct Google meter.
+Explicit
+custom routes remain identifiable in `recordedProvider`, with null
+`providerRoute`. An absent or empty provider has no route fallback, even when
+its model vendor is known. These signals identify recorded execution, not proof
+of a particular paid subscription or account. Historical spend attribution is
+unchanged.
+
+The selectors use positive canonical route counts for displayed meters, never
+harness mappings or model vendors. Pending, failed, unmodeled, missing-route,
+and anonymous harness activity remains global only. Anonymous activity proves
+neither a provider nor a model.
 
 The registry retains compact metadata per live identity. Checked tickets never
 reset after idle or re-admission. Broad invalidation advances an epoch and removes
@@ -437,12 +508,21 @@ The existing projection worker runs at most one blocking model read alongside on
 rich-row read. It continues relaying lifecycle events during reads and acknowledgements.
 A capacity-one result mailbox remains independent of blocked admission carry.
 Store reads each page's incarnation, nullable published fence, newest nonempty
-model, and connection revision under one writer lock. Answers require matching
+model and its same-turn provider, and connection revision under one writer lock.
+The query preserves `ts_ms DESC, turn_index DESC` order and skips unmodeled
+turns; it does not join historical provider hints or model runs. Answers require matching
 incarnation, epoch, and ticket and a sufficient revision. A reused publication
 fence alone cannot authorize an answer. Missing rows never establish presence.
 
-`SweepChanged` emits as `sweep_changed` with batch-final counts. Metadata does not
-change session timestamps. The shared frontend tracker accepts sequenced counts,
+`SweepChanged` emits as `sweep_changed` with batch-final counts. Resolved metadata
+changes also advance the sequence for quiet rows, even when working counts do
+not change. Invalidation removes execution immediately; a failed reload cannot
+retain it. A constant-size resolved counter detects broad metadata invalidation
+without walking slots in the actor. Metadata does not change session timestamps.
+The current shared frontend tracker retains liveness and aggregate counts, not
+per-row execution. A future per-row execution consumer must reconcile the bounded
+snapshot or named presence on lifecycle events, including `sweep_changed`, using
+the existing sequence, quiet, and interest guards. Neither command reads SQL. The shared frontend tracker accepts sequenced counts,
 clears scoped positives on explicit resync, and rejects scoped evidence before
 that recovery watermark. Presentation selectors use counts without expiry timers.
 

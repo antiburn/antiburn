@@ -48,6 +48,7 @@ impl ModelLoader for Loader {
                     incarnation: Incarnation(0),
                     published_fence: Some(7),
                     model: Some("sonnet".into()),
+                    provider: Some("anthropic".into()),
                 })
                 .collect(),
             Revision(1000),

@@ -46,6 +46,7 @@ pub struct PublishedModel {
     pub incarnation: Incarnation,
     pub published_fence: Option<i64>,
     pub model: Option<String>,
+    pub provider: Option<String>,
 }
 
 /// The next active-window page starts strictly after this full cursor.

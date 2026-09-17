@@ -1,36 +1,35 @@
 import type { LiveUsageProvider } from "./ipc"
 import { hasWorkingActivity, type LiveSessionsSnapshot } from "./sessionLifecycle"
 
-const AGENT_PROVIDERS: Readonly<Record<string, LiveUsageProvider>> = {
-  "claude-code": "anthropic",
-  codex: "openai",
-  antigravity: "google",
+function displayedProvider(route: string | null): LiveUsageProvider | null {
+  return route === "anthropic" || route === "openai" || route === "google" ? route : null
 }
 
 export type ProviderModels = Readonly<Partial<Record<string, readonly string[]>>>
 
 export const isLive = hasWorkingActivity
 
-/** Provider counts include anonymous activity but never infer models. */
+/** Only recorded canonical routes activate provider meters. */
 export function liveProviders(state: LiveSessionsSnapshot): LiveUsageProvider[] {
   return [
     ...new Set(
-      state.sweep.flatMap((count) => {
-        const provider = AGENT_PROVIDERS[count.agent]
-        return provider && count.working + count.anonymous > 0 ? [provider] : []
-      }),
+      state.sweep.flatMap((count) =>
+        count.models.flatMap((model) => {
+          const provider = displayedProvider(model.providerRoute)
+          return provider && model.working > 0 ? [provider] : []
+        }),
+      ),
     ),
   ].sort()
 }
 
-/** Positive model evidence remains inside its agent's provider. */
+/** Model vendors do not override recorded provider routes. */
 export function liveModels(state: LiveSessionsSnapshot): ProviderModels {
   const models = new Map<LiveUsageProvider, Set<string>>()
   for (const count of state.sweep) {
-    const provider = AGENT_PROVIDERS[count.agent]
-    if (!provider) continue
     for (const model of count.models) {
-      if (model.working <= 0) continue
+      const provider = displayedProvider(model.providerRoute)
+      if (!provider || model.working <= 0) continue
       let set = models.get(provider)
       if (!set) models.set(provider, (set = new Set()))
       set.add(model.model)

@@ -38,7 +38,7 @@ use tokio::time::Instant;
 use crate::store::{ActiveCursor, Incarnation, Presence, Revision, SessionKey, Store};
 
 mod models;
-pub use models::SweepCounts;
+pub use models::{ExecutionMetadata, SweepCounts};
 pub(crate) use models::{ModelRequest, ModelResult};
 
 /// The broadcast ring holds this many events. A lagging projection worker requests
@@ -432,6 +432,7 @@ pub struct LiveSession {
     pub agent: AgentKind,
     pub last_activity_at: i64,
     pub quiet: bool,
+    pub execution: Option<ExecutionMetadata>,
 }
 
 /// The snapshot returns this agent while its anonymous activity remains inside the
@@ -1708,7 +1709,7 @@ impl SessionEvents {
             let sessions = registry
                 .live
                 .iter()
-                .map(|(key, entry)| live_session(key, entry))
+                .map(|(key, entry)| live_session(key, entry, &registry.models))
                 .collect::<Vec<_>>();
             let anonymous = registry
                 .anonymous
@@ -1755,7 +1756,7 @@ impl SessionEvents {
                 continue;
             }
             match registry.live.get(&key) {
-                Some(entry) => present.push(live_session(&key, entry)),
+                Some(entry) => present.push(live_session(&key, entry, &registry.models)),
                 None => absent.push(session.clone()),
             }
         }
@@ -1824,12 +1825,13 @@ impl SessionEvents {
     }
 }
 
-fn live_session(key: &SessionKey, entry: &LiveEntry) -> LiveSession {
+fn live_session(key: &SessionKey, entry: &LiveEntry, models: &models::Models) -> LiveSession {
     LiveSession {
         session: SessionRef::from(key),
         agent: entry.agent,
         last_activity_at: entry.last_activity_at,
         quiet: entry.quiet_published,
+        execution: models.execution(key),
     }
 }
 
@@ -2229,9 +2231,12 @@ fn apply<T>(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let before = registry.sweep_counts();
+        let metadata_version = registry.models.version;
         let (mut out, value) = mutate(&mut registry);
         let aggregate = registry.aggregate();
-        if before != aggregate.sweep && !out.iter().any(SessionEvent::is_lifecycle) {
+        if (before != aggregate.sweep || metadata_version != registry.models.version)
+            && !out.iter().any(SessionEvent::is_lifecycle)
+        {
             out.push(SessionEvent::SweepChanged);
         }
         let last_lifecycle = out.iter().rposition(SessionEvent::is_lifecycle);

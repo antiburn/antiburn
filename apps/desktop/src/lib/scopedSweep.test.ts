@@ -13,15 +13,17 @@ vi.mock("./ipc", () => ({
 let receive: (event: SessionLifecycleEventPayload) => void
 let stop: () => void
 let tracker: LiveSessionsTracker
-const scope = (model = "sonnet") => [
+const scope = (model = "sonnet", providerRoute = "anthropic") => [
   {
-    agent: "claude-code",
+    agent: "pi",
     working: 1,
     anonymous: 0,
     modelPendingWorking: 0,
     modelFailedWorking: 0,
     modelNoneWorking: 0,
-    models: [{ model, working: 1 }],
+    models: [
+      { model, providerRoute, recordedProvider: providerRoute, modelVendor: null, working: 1 },
+    ],
   },
 ]
 const snapshot = (seq = 0): LiveSnapshotPayload => ({
@@ -65,7 +67,12 @@ it("applies sequenced metadata without changing activity timestamps or accepting
   receive({
     seq: 3,
     kind: "sweep_changed",
-    aggregate: { working: 129, total: 129, anonymous: 0, sweep: scope("opus") },
+    aggregate: {
+      working: 129,
+      total: 129,
+      anonymous: 0,
+      sweep: scope("gpt-6-astra", "openai"),
+    },
   })
   receive({
     seq: 2,
@@ -74,7 +81,8 @@ it("applies sequenced metadata without changing activity timestamps or accepting
   })
   expect(tracker.getSnapshot().sessions).toBe(sessions)
   expect([...sessions.values()][0]?.lastActivityAt).toBe(123)
-  expect(liveModels(tracker.getSnapshot())).toEqual({ anthropic: ["opus"] })
+  expect(liveModels(tracker.getSnapshot())).toEqual({ openai: ["gpt-6-astra"] })
+  expect(liveProviders(tracker.getSnapshot())).toEqual(["openai"])
 })
 it("clears positive scoped evidence immediately on failed resync", async () => {
   await vi.waitFor(() => expect(tracker.getSnapshot().ready).toBe(true))

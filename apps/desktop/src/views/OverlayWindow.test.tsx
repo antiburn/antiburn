@@ -260,10 +260,12 @@ const SESSION_REF = { environmentKey: "native", agent: "claude-code", sessionId:
 function liveSession(
   sessionId = "session-1",
   agent = "claude-code",
-  model: string | null = null,
+  model: string | null = "claude-opus-4-6",
+  providerRoute: string | null = "anthropic",
 ) {
   return {
     session: { ...SESSION_REF, agent, sessionId },
+    providerRoute,
     agent,
     lastActivityAt: Math.floor(Date.now() / 1000),
     model,
@@ -274,7 +276,8 @@ function sweep(
   working: number,
   anonymous = 0,
   agent = "claude-code",
-  model: string | null = null,
+  model: string | null = "claude-opus-4-6",
+  providerRoute: string | null = "anthropic",
 ) {
   return working + anonymous === 0
     ? []
@@ -286,7 +289,17 @@ function sweep(
           modelPendingWorking: model ? 0 : working,
           modelFailedWorking: 0,
           modelNoneWorking: 0,
-          models: model ? [{ model, working }] : [],
+          models: model
+            ? [
+                {
+                  model,
+                  working,
+                  providerRoute,
+                  recordedProvider: providerRoute,
+                  modelVendor: null,
+                },
+              ]
+            : [],
         },
       ]
 }
@@ -298,7 +311,7 @@ function liveSnapshot(row = liveSession()) {
     total: 1,
     anonymous: [],
     sessions: [{ ...row, quiet: false }],
-    sweep: sweep(1, 0, row.agent, row.model),
+    sweep: sweep(1, 0, row.agent, row.model, row.providerRoute),
   }
 }
 
@@ -714,6 +727,34 @@ describe("OverlayWindow", () => {
     expect(bars[0]?.style.getPropertyValue("--led-segments")).toBe("20")
   })
 
+  it("follows Pi route switches without new activity and rejects stale provider counts", async () => {
+    getLiveUsage.mockResolvedValue(withScopedBar())
+    getLiveSessions.mockResolvedValue(
+      liveSnapshot(liveSession("pi-live", "pi", "gpt-6-astra", "openai")),
+    )
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveSessions).toHaveBeenCalledTimes(1))
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+    const metadata = (seq: number, route: string) =>
+      emitNative("session:lifecycle", {
+        seq,
+        kind: "sweep_changed",
+        aggregate: {
+          working: 1,
+          total: 1,
+          anonymous: 0,
+          sweep: sweep(1, 0, "pi", "claude-fable-5", route),
+        },
+      })
+    act(() => metadata(2, "anthropic"))
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
+    act(() => metadata(3, "openrouter"))
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+    act(() => metadata(1, "anthropic"))
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+    expect(getLiveSessions).toHaveBeenCalledTimes(1)
+  })
+
   it("holds a model-scoped bar still while the session runs another model", async () => {
     getLiveUsage.mockResolvedValue(withScopedBar())
     getLiveSessions.mockResolvedValue(
@@ -761,7 +802,9 @@ describe("OverlayWindow", () => {
   })
 
   it("keeps the bars dark while the live session draws on another provider", async () => {
-    getLiveSessions.mockResolvedValue(liveSnapshot(liveSession("session-1", "cursor")))
+    getLiveSessions.mockResolvedValue(
+      liveSnapshot(liveSession("session-1", "cursor", "claude-opus-4-6", "cursor")),
+    )
     const { container } = render(<OverlayWindow />)
 
     await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
