@@ -3,6 +3,8 @@ use std::fs;
 #[cfg(not(windows))]
 use std::io::Write;
 #[cfg(not(windows))]
+use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(windows))]
@@ -341,6 +343,15 @@ impl AgentConfigEditor {
             if current.bytes != prepared.original_bytes {
                 return Err(ApplyError::Conflict(ApplyConflict::ChangedContent));
             }
+            write_backup(prepared, parent, file_name, nonce)?;
+            let current = read_checked(&prepared.path, &prepared.safety_root)
+                .map_err(ApplyError::Unavailable)?;
+            if current.identity != prepared.identity {
+                return Err(ApplyError::Conflict(ApplyConflict::ChangedIdentity));
+            }
+            if current.bytes != prepared.original_bytes {
+                return Err(ApplyError::Conflict(ApplyConflict::ChangedContent));
+            }
             fs::rename(&temporary, &prepared.path)
                 .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
             Ok(replacement_identity)
@@ -440,6 +451,71 @@ impl AgentConfigEditor {
         }
         result
     }
+}
+
+#[cfg(not(windows))]
+fn backup_path(path: &Path) -> Result<PathBuf, ApplyError> {
+    let file_name = path
+        .file_name()
+        .ok_or(ApplyError::Unavailable(ConfigUnavailableReason::UnsafePath))?;
+    let mut backup_name = file_name.to_os_string();
+    backup_name.push(".bak");
+    Ok(path.with_file_name(backup_name))
+}
+
+#[cfg(not(windows))]
+fn write_backup(
+    prepared: &PreparedChange,
+    parent: &Path,
+    file_name: &str,
+    nonce: u128,
+) -> Result<(), ApplyError> {
+    let backup = backup_path(&prepared.path)?;
+    match fs::symlink_metadata(&backup) {
+        Ok(_) => {
+            read_checked(&backup, &prepared.safety_root).map_err(ApplyError::Unavailable)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(ApplyError::Unavailable(map_write_error(error))),
+    }
+    let temporary = parent.join(format!(".{file_name}.antiburn-backup-{nonce}.tmp"));
+    let result = (|| {
+        let mut output = create_temporary(&temporary, &prepared.permissions)
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        #[cfg(unix)]
+        if file_ownership(
+            &output
+                .metadata()
+                .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::WriteFailed))?,
+        ) != prepared.ownership
+        {
+            return Err(ApplyError::Unavailable(
+                ConfigUnavailableReason::UnsupportedOwner,
+            ));
+        }
+        output
+            .write_all(&prepared.original_bytes)
+            .and_then(|()| output.sync_all())
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        drop(output);
+        fs::rename(&temporary, &backup)
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::WriteFailed))?;
+        let readback =
+            read_checked(&backup, &prepared.safety_root).map_err(ApplyError::Unavailable)?;
+        if readback.bytes != prepared.original_bytes {
+            return Err(ApplyError::Unavailable(
+                ConfigUnavailableReason::WriteFailed,
+            ));
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 #[cfg(not(windows))]

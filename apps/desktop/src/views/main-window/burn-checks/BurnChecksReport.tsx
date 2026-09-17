@@ -35,6 +35,10 @@ type ReportUiState = {
   passedPreference: boolean | null
 }
 
+function isUnusedResourceDetector(id: ChecksCategoryPayload["id"]) {
+  return id === "unusedMcpServers" || id === "unusedBuiltInTools" || id === "unusedSkills"
+}
+
 function LoadingCheckDetail() {
   return (
     <article
@@ -79,6 +83,9 @@ function CheckDetailContent({
   state: BurnChecksSnapshot
 }) {
   const targets = state.targets[check.id]
+  const remediation = state.remediationProgress?.attempts.find(
+    (attempt) => attempt.detector === check.id,
+  )
   if (check.finding === 0) {
     const PassIcon = BURN_CHECK_MARKS.clean.Icon
     return (
@@ -92,6 +99,11 @@ function CheckDetailContent({
         <p className="type-callout text-label-secondary">
           {`No finding in ${check.clean} complete sessions.`}
         </p>
+        {remediation?.outcome === "passed" && remediation.origin === "action" && (
+          <p className="mt-1 type-footnote text-burn-check-pass-fill">
+            Verified after your fix.
+          </p>
+        )}
       </div>
     )
   }
@@ -102,7 +114,7 @@ function CheckDetailContent({
       <LoadingCheckDetail />
     )
   }
-  if (check.id === "unusedSkills" || check.id === "unusedMcpServers") {
+  if (isUnusedResourceDetector(check.id)) {
     if (targets.data.targets.length === 0) {
       return (
         <BurnCheckDetail
@@ -122,7 +134,6 @@ function CheckDetailContent({
           <BurnCheckTargetDetail
             key={target.findingId}
             target={target}
-            detector={check.id}
             refresh={session.refresh}
             reportRow
           />
@@ -160,14 +171,18 @@ function CheckDetail({
 }) {
   const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
   const targetList = state.targets[check.id]?.data
-  const named = check.id === "unusedSkills" || check.id === "unusedMcpServers"
-  const resourceName = "affected resource"
+  const named = isUnusedResourceDetector(check.id)
+  const resourceNames =
+    check.id === "unusedSkills"
+      ? ["skill", "skills"]
+      : check.id === "unusedMcpServers"
+        ? ["MCP server", "MCP servers"]
+        : ["tool", "tools"]
   const resourceCount =
     named && targetList
-      ? `${targetList.targets.length} ${resourceName}${targetList.targets.length === 1 ? "" : "s"}${targetList.truncated ? " shown" : ""}`
+      ? `${targetList.truncated ? "At least " : ""}${targetList.targets.length} affected ${resourceNames[targetList.targets.length === 1 ? 0 : 1]}`
       : null
-  const showFindingActions =
-    check.finding > 0 && targetList && (!named || targetList.targets.length === 0)
+  const showFindingActions = check.finding > 0 && targetList
   const showSnoozedAction = snoozed && check.finding === 0
   const trackVisibility = useCallback(
     (node: HTMLDivElement | null) =>
@@ -208,16 +223,11 @@ function CheckDetail({
                 </div>
               )}
             </div>
-            {resourceCount && (
-              <p className="mt-1 type-footnote tabular-nums text-label-tertiary">
-                {resourceCount}
-              </p>
-            )}
             <CheckMetadata
               check={check}
               presentation={presentation}
+              resourceCount={resourceCount}
               inline
-              {...(showFindingActions || showSnoozedAction ? { className: "-mt-2" } : {})}
             />
           </div>
           {check.finding > 0 && (
@@ -248,11 +258,13 @@ function CheckDetail({
 function CheckMetadata({
   check,
   presentation,
+  resourceCount,
   inline = false,
   className,
 }: {
   check: ChecksCategoryPayload
   presentation: ReturnType<typeof checkRowPresentation>
+  resourceCount?: string | null
   inline?: boolean
   className?: string
 }) {
@@ -273,12 +285,22 @@ function CheckMetadata({
         >
           {check.finding} failed
         </span>
-        <span className="text-label-tertiary"> · </span>
+        <span className="mx-0.5 inline-block text-label-tertiary" aria-hidden="true">
+          ·
+        </span>
         <span
           className={check.finding > 0 ? "text-label-secondary" : "text-burn-check-pass-fill"}
         >
           {check.clean} passed
         </span>
+        {resourceCount && (
+          <>
+            <span className="mx-0.5 inline-block text-label-tertiary" aria-hidden="true">
+              ·
+            </span>
+            <span className="text-label-tertiary">{resourceCount}</span>
+          </>
+        )}
       </span>
       {(check.estimatedTokenBurnBasisPoints != null || presentation.costLine) && (
         <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -386,14 +408,40 @@ export function BurnChecksReport({
   const snoozed = useSnoozedBurnChecks()
   const snoozedIds = snoozedDetectorIds(snoozed)
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
-  const activeFailures = presentation.failures.filter((check) => !snoozedIds.has(check.id))
+  const awaitingIds = new Set(
+    presentation.failures
+      .filter((check) => {
+        const targets = state.targets[check.id]?.data?.targets
+        return (
+          targets !== undefined &&
+          targets.length > 0 &&
+          targets.every(
+            (target) =>
+              target.watch?.lifecycle === "watching" &&
+              target.watch.verification.status === "watching",
+          )
+        )
+      })
+      .map((check) => check.id),
+  )
+  const activeAwaiting = presentation.failures.filter(
+    (check) => !snoozedIds.has(check.id) && awaitingIds.has(check.id),
+  )
+  const activeFailures = presentation.failures.filter(
+    (check) => !snoozedIds.has(check.id) && !awaitingIds.has(check.id),
+  )
   const activeWins = presentation.wins.filter((check) => !snoozedIds.has(check.id))
   const snoozedChecks = [...presentation.failures, ...presentation.wins].filter((check) =>
     snoozedIds.has(check.id),
   )
-  const checks = [...activeFailures, ...activeWins, ...snoozedChecks]
+  const checks = [...activeFailures, ...activeAwaiting, ...activeWins, ...snoozedChecks]
   const reportKey = checks.map((check) => check.id).join(":")
-  const initialId = activeFailures[0]?.id ?? activeWins[0]?.id ?? snoozedChecks[0]?.id ?? null
+  const initialId =
+    activeFailures[0]?.id ??
+    activeAwaiting[0]?.id ??
+    activeWins[0]?.id ??
+    snoozedChecks[0]?.id ??
+    null
   const [ui, setUi] = useState<ReportUiState>(() => ({
     reportKey,
     selectedId: initialId,
@@ -416,12 +464,14 @@ export function BurnChecksReport({
     : initialId
   const visibleChecks = [
     ...activeFailures,
+    ...activeAwaiting,
     ...(passedOpen ? activeWins : []),
     ...(snoozedOpen ? snoozedChecks : []),
   ]
   const selectedVisibleId = visibleChecks.some((check) => check.id === selectedId)
     ? selectedId
     : (activeFailures[0]?.id ??
+      activeAwaiting[0]?.id ??
       (passedOpen ? activeWins[0]?.id : null) ??
       (snoozedOpen ? snoozedChecks[0]?.id : null) ??
       null)
@@ -495,6 +545,28 @@ export function BurnChecksReport({
                 <section className="burn-checks-group" aria-labelledby="burn-checks-failed">
                   <div className="burn-checks-group-body">
                     {activeFailures.map((check) => renderCheck(check))}
+                  </div>
+                </section>
+              )}
+              {activeAwaiting.length > 0 && (
+                <section className="burn-checks-group" aria-labelledby="burn-checks-awaiting">
+                  <h2 id="burn-checks-awaiting" className="flex items-center gap-2 px-1">
+                    <span
+                      className="h-2 w-2 rounded-full bg-system-orange"
+                      aria-hidden="true"
+                    />
+                    <span className="type-footnote font-medium! text-label-tertiary">
+                      Awaiting verification
+                    </span>
+                    <span className="burn-check-group-count type-footnote tabular-nums text-label-tertiary">
+                      {activeAwaiting.length}
+                    </span>
+                  </h2>
+                  <p className="px-1 pt-1 type-footnote text-label-tertiary">
+                    A later complete session confirms each change.
+                  </p>
+                  <div className="burn-checks-group-body mt-2">
+                    {activeAwaiting.map((check) => renderCheck(check))}
                   </div>
                 </section>
               )}

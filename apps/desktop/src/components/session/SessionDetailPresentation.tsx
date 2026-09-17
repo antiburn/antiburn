@@ -31,6 +31,7 @@ import { agentDisplayName } from "../../lib/presentation/agents"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { localSessionKey, sessionIdentityKey } from "../../lib/presentation/localIdentity"
 import { sessionHygieneChecks } from "../../lib/presentation/sessionHygiene"
+import { unusedContextRows as unusedContextRowsFor } from "../../lib/presentation/unusedContext"
 import {
   modelRunNames,
   modelRunShortPairs,
@@ -39,8 +40,10 @@ import {
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import {
   costBreakdownRows,
+  costBurnupSeries,
   costFigureLabel,
   formatCompact,
+  formatCost,
   formatDuration,
   isEmptySummary,
   skillMcpUsage,
@@ -63,11 +66,14 @@ import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { SegmentedControl } from "../ui/SegmentedControl"
 import { Skeleton } from "../ui/Skeleton"
+import { ChartKey } from "./analysis/ChartKey"
 import { CostBreakdown } from "./analysis/CostBreakdown"
+import { CostBurnupChart, type CostSeries } from "./analysis/CostBurnupChart"
 import { ContextTokensChart, type ChartSeries } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
 import { HygieneBreakdown } from "./analysis/HygieneBreakdown"
 import { SkillsMcpChart } from "./analysis/SkillsMcpChart"
+import { UnusedContext } from "./analysis/UnusedContext"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
 import { SubagentBadge } from "./orchestration/SubagentBadge"
@@ -501,9 +507,15 @@ const SERIES_SWATCH_CLASS: Record<ChartSeries, string> = {
   compaction: "bg-mark-compaction",
 }
 
-/** A shorter caption for a stat whose full name does not fit one cell. */
-const KEY_CAPTIONS: Record<string, string> = {
-  "Provider cache misses": "Cache misses",
+/** The swatch each Cost-tab key entry carries, in the burnup chart's own colors. */
+const COST_SERIES_SWATCH_CLASS: Record<CostSeries, string> = {
+  input: "bg-token-in",
+  output: "bg-token-out",
+  cacheRead: "bg-cost-cache-read",
+  cacheWrite: "bg-cost-cache-write",
+  rehydration: "bg-mark-rehydration",
+  compaction: "bg-mark-compaction",
+  subagentLaunch: "bg-token-subagent",
 }
 
 /* The wasted-token figure turns red only when the waste is a large share of
@@ -518,78 +530,6 @@ function wastedTokensInk({ wastedTokens, totalTokens }: SkillMcpUsage): string {
   const share = totalTokens > 0 ? wastedTokens / totalTokens : 0
   const severe = share >= WASTED_RED_SHARE && wastedTokens >= WASTED_RED_TOKENS
   return severe ? "text-system-red-text" : "text-waste-warn"
-}
-
-/**
- * The chart's key, drawn under the plot it explains.
- *
- * Each figure is a stat cell: a swatch in the color its chart layer takes
- * when it lights, the value in the label ink, and a caption under them.
- * The cells wrap into columns that share the available width.
- * The swatch carries the color. The text keeps its contrast on both surfaces.
- *
- * Pointing at a cell lights its layer in the plot above, and the cell takes
- * the hover wash. Clicking a cell pins that layer, so it stays lit when the
- * pointer leaves; clicking it again unpins it. An entry whose `series` is
- * absent counts something the chart draws no mark for, so it neither lights
- * nor pins.
- */
-function ChartKey({
-  stats,
-  pinned,
-  onHighlight,
-  onPin,
-}: {
-  stats: ReadonlyArray<{
-    label: string
-    value: string
-    series?: ChartSeries
-  }>
-  /** The layer held lit by a click, or null. */
-  pinned: ChartSeries | null
-  /** Names the layer under the pointer, or null when the pointer leaves. */
-  onHighlight: (series: ChartSeries | null) => void
-  /** Toggles the pinned layer. */
-  onPin: (series: ChartSeries) => void
-}) {
-  return (
-    <div data-testid="chart-key" className="session-detail-key grid">
-      {stats.map((stat) => {
-        const series = stat.series ?? null
-        const isPinned = series != null && series === pinned
-        return (
-          <button
-            key={stat.label}
-            type="button"
-            aria-pressed={series != null ? isPinned : undefined}
-            disabled={series == null}
-            data-series={series ?? undefined}
-            className={cn(
-              "chart-key-stat flex min-w-0 flex-col items-start rounded-control text-left disabled:opacity-100",
-              isPinned && "bg-surface-secondary",
-            )}
-            onMouseEnter={() => onHighlight(series)}
-            onMouseLeave={() => onHighlight(null)}
-            onClick={() => series != null && onPin(series)}
-          >
-            <span className="flex items-center gap-x-1.5 type-body font-medium text-label tabular-nums">
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "size-2 shrink-0 rounded-full",
-                  series != null ? SERIES_SWATCH_CLASS[series] : "bg-surface-tertiary",
-                )}
-              />
-              {stat.value}
-            </span>
-            <span className="max-w-full truncate text-label-secondary type-callout">
-              {KEY_CAPTIONS[stat.label] ?? stat.label}
-            </span>
-          </button>
-        )
-      })}
-    </div>
-  )
 }
 
 /** Placeholder block matching a tab panel's content spacing. */
@@ -779,12 +719,22 @@ export function SessionDetailPresentation({
     (series: ChartSeries) => setPinned((current) => (current === series ? null : series)),
     [],
   )
+  // The Cost tab's burnup chart keeps its own hover/pin state, so pinning a
+  // layer there cannot leak onto the Context tab's chart, or back.
+  const [costHovered, setCostHovered] = useState<CostSeries | null>(null)
+  const [costPinned, setCostPinned] = useState<CostSeries | null>(null)
+  const costHighlight = costHovered ?? costPinned
+  const toggleCostPin = useCallback(
+    (series: CostSeries) => setCostPinned((current) => (current === series ? null : series)),
+    [],
+  )
   const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneChecks = visibleSessionHygieneChecks(
     sessionHygieneChecks(hygiene),
     snoozedDetectorIds(useSnoozedBurnChecks()),
   )
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
+  const unusedContextRows = unusedContextRowsFor(hygiene)
 
   const handleAdjacentKey = (event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>) => {
     if (!active || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey)
@@ -867,6 +817,53 @@ export function SessionDetailPresentation({
             series: "context" as const,
           },
           ...tokensCard.stats,
+        ]
+      : []
+
+  const costBurnupTotal = summary ? costBurnupSeries(summary.buckets) : []
+  // The four dollar figures reuse the cost card's own rows so the two can
+  // never disagree by a cent after rounding. "—" shows only when the card
+  // itself has no priced figure to show.
+  const [costInputRow, costOutputRow, costCacheReadRow, costCacheWriteRow] =
+    costBadge?.breakdownRows ?? []
+  const costMoney = (row: { usd: number } | undefined) =>
+    costBadge ? formatCost(row?.usd ?? 0) : "—"
+  const costKeyStats: ReadonlyArray<{ label: string; value: string; series?: CostSeries }> =
+    summary
+      ? [
+          { label: "Input", value: costMoney(costInputRow), series: "input" },
+          {
+            label: "Output",
+            value: costMoney(costOutputRow),
+            series: "output",
+          },
+          {
+            label: "Cache write",
+            value: costMoney(costCacheWriteRow),
+            series: "cacheWrite",
+          },
+          {
+            label: "Cache read",
+            value: costMoney(costCacheReadRow),
+            series: "cacheRead",
+          },
+          {
+            label: "Compactions",
+            value: String(costBurnupTotal.filter((point) => point.isCompactionBoundary).length),
+            series: "compaction",
+          },
+          {
+            label: "Rehydrations",
+            value: String(costBurnupTotal.filter((point) => point.isCacheRehydration).length),
+            series: "rehydration",
+          },
+          {
+            label: "Sub-agents launched",
+            value: String(
+              costBurnupTotal.reduce((sum, point) => sum + point.subagentLaunches, 0),
+            ),
+            series: "subagentLaunch",
+          },
         ]
       : []
 
@@ -1105,6 +1102,7 @@ export function SessionDetailPresentation({
                     pinned={pinned}
                     onHighlight={setHovered}
                     onPin={togglePin}
+                    swatchClass={SERIES_SWATCH_CLASS}
                   />
                   {compositionSection}
                 </div>
@@ -1113,6 +1111,30 @@ export function SessionDetailPresentation({
               {tab === "cost" && (
                 <div className="session-detail-cost flex min-h-full flex-col gap-6">
                   {costSection}
+                  <section className="flex min-h-48 flex-1 flex-col gap-y-5">
+                    <TabSectionHeading>Cost over time</TabSectionHeading>
+                    {/* The column has a minimum height, not a fixed one, so the
+                        chart's percentage height cannot resolve against the
+                        wrapper. The absolute inner box gives it a definite
+                        height and keeps the key tight under the time axis. */}
+                    <div className="relative min-h-48 flex-1">
+                      <div className="absolute inset-0">
+                        <CostBurnupChart
+                          buckets={summary.buckets}
+                          activeSecs={summary.avgActiveSecs}
+                          highlight={costHighlight}
+                        />
+                      </div>
+                    </div>
+                    <ChartKey
+                      stats={costKeyStats}
+                      pinned={costPinned}
+                      onHighlight={setCostHovered}
+                      onPin={toggleCostPin}
+                      swatchClass={COST_SERIES_SWATCH_CLASS}
+                    />
+                  </section>
+
                   {hasAssessedHygieneChecks && (
                     <section className="shrink-0">
                       <TabSectionHeading>Checks</TabSectionHeading>
@@ -1120,6 +1142,18 @@ export function SessionDetailPresentation({
                         checks={hygieneChecks}
                         collapsePassing={false}
                         inlineGuidance
+                      />
+                    </section>
+                  )}
+
+                  {unusedContextRows.length > 0 && (
+                    <section className="shrink-0">
+                      <TabSectionHeading>
+                        Unused skills, MCP servers, and built-in tools
+                      </TabSectionHeading>
+                      <UnusedContext
+                        rows={unusedContextRows}
+                        sessionTotalUsd={cost?.totalCostUsd ?? null}
                       />
                     </section>
                   )}

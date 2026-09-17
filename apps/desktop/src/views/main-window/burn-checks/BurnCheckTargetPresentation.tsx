@@ -50,45 +50,28 @@ export function targetTitle(target: BurnCheckTargetPayload): string {
 }
 
 export function watchStatus(target: BurnCheckTargetPayload): string | null {
-  const verification = target.watch?.verification
+  const watch = target.watch
+  if (watch?.lifecycle === "waitingForPromptUse") {
+    return "The prompt is ready. Verification starts after you use it."
+  }
+  const verification = watch?.verification
   if (!verification) return null
   switch (verification.status) {
     case "reserved":
-      return "The change is reserved. Verification has not started."
+      return "Verification has not started."
     case "watching":
-      return null
+      return "Waiting for a later complete session."
     case "fixed":
-      return null
+      return watch.origin === "passive" ? "Verified improvement." : "Verified after your fix."
     case "stillUnresolved":
-      return "Fresh evidence still shows this finding."
+      return "A later session still has this finding."
     case "recurred":
-      return "This finding returned after it was verified."
+      return "This finding returned."
     case "recoveryNeeded":
-      return "The write result is uncertain. Review the setting before another change."
+      return null
     case "verificationUnavailable":
       return null
   }
-}
-
-function noActionReason(target: BurnCheckTargetPayload): string | null {
-  if (target.autoFix.status === "available" || target.promptFix.status === "available")
-    return null
-  switch (target.autoFix.reason) {
-    case "activeWatch":
-      return "An existing change is still being checked."
-    case "safetyCheckFailed":
-      return "The current setting did not pass the write safety check."
-    case "targetNotFound":
-      return "This exact setting is no longer available."
-    case "unsupportedOrUnprovenTarget":
-      return "This target does not support a safe automatic change or prepared prompt."
-  }
-}
-
-export function ActionLimit({ target }: { target: BurnCheckTargetPayload }) {
-  const reason = noActionReason(target)
-  if (!reason) return null
-  return <p className="mt-2 type-callout text-label-tertiary">{reason}</p>
 }
 
 function sizeSessionList(viewport: HTMLDivElement | null) {

@@ -41,7 +41,11 @@ retained data, CPU work, and disk I/O bounded by the visible feature's needs.
 
 ## Development checks
 
-Run the engine checks from its standalone workspace:
+Always run the formatter and focused tests for the changed code. Run lint, type
+checks, and builds when the changed workspace has them. Run the full workspace
+checks when a change crosses workspace boundaries or changes a public interface.
+
+### Engine checks
 
 ```bash
 cd crates/antiburn-local
@@ -50,7 +54,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Run desktop checks from the repository root:
+### Desktop checks
 
 ```bash
 pnpm install
@@ -60,7 +64,7 @@ pnpm --filter @antiburn/desktop test
 pnpm --filter @antiburn/desktop build
 ```
 
-Run shell checks from its standalone workspace:
+### Desktop backend checks
 
 ```bash
 cd apps/desktop/src-tauri
