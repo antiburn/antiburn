@@ -145,6 +145,48 @@ describe("UsageRing", () => {
     )
   })
 
+  it("sweeps an eighth of the ring while a session is live, with its rest past the arc's end", () => {
+    const { container } = render(<UsageRing percent={50} live />)
+    const arc = container.querySelector<SVGElement>('[data-testid="usage-ring-sweep"]')
+    expect(arc).toHaveClass("led-sweep-ring")
+    // The stylesheet owns the rotation, so the arc carries no transform of
+    // its own. Half gone: the reading's arc ends at six o'clock, and the
+    // reduced-motion rest starts there.
+    expect(arc).not.toHaveAttribute("transform")
+    expect(arc?.style.getPropertyValue("--led-ring-rest")).toBe("90deg")
+    // The gleam's start may travel three eighths, so its end stays inside
+    // the half that is lit.
+    expect(arc?.style.getPropertyValue("--led-ring-span")).toBe("0.375")
+    expect(arc).toHaveAttribute("data-led-lit", "true")
+    expect(arc?.getAttribute("stroke-dasharray")?.split(" ").map(Number)[0]).toBeCloseTo(
+      CIRCUMFERENCE / 8,
+      5,
+    )
+  })
+
+  it("rests at twelve o'clock at zero, and on the last eighth of a full ring", () => {
+    const zero = render(<UsageRing percent={0} live />)
+    const arc = zero.container.querySelector<SVGElement>('[data-testid="usage-ring-sweep"]')
+    expect(arc?.style.getPropertyValue("--led-ring-rest")).toBe("-90deg")
+    // Nothing lit: the gleam has no arc to run on, so it flashes at twelve
+    // in the brand tint instead.
+    expect(arc?.style.getPropertyValue("--led-ring-span")).toBe("0")
+    expect(arc).not.toHaveAttribute("data-led-lit")
+    const full = render(<UsageRing percent={100} live />)
+    expect(
+      full.container
+        .querySelector<SVGElement>('[data-testid="usage-ring-sweep"]')
+        ?.style.getPropertyValue("--led-ring-rest"),
+    ).toBe("225deg")
+  })
+
+  it("draws no sweep without a live session, or on the indeterminate ring", () => {
+    const still = render(<UsageRing percent={50} />)
+    expect(still.container.querySelector('[data-testid="usage-ring-sweep"]')).toBeNull()
+    const indeterminate = render(<UsageRing percent={null} live />)
+    expect(indeterminate.container.querySelector('[data-testid="usage-ring-sweep"]')).toBeNull()
+  })
+
   it("is invisible to a screen reader, because its caller names it", () => {
     // The ring is a shape with no text. Every call site puts the figure into
     // the accessible name of the control around it instead.

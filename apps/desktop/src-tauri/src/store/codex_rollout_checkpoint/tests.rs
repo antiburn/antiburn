@@ -321,7 +321,12 @@ fn deleting_a_session_removes_its_checkpoint() {
         )
         .expect("stores checkpoint");
 
-    assert!(store.delete_session(&key).expect("delete session"));
+    assert!(
+        store
+            .delete_session(&key)
+            .expect("delete session")
+            .is_some()
+    );
 
     let remaining: i64 = store
         .lock()

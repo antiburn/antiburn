@@ -108,6 +108,33 @@ SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_cont
    AND {current}
    ORDER BY s.started_at_epoch DESC, s.session_id DESC";
 
+// Unsupported sessions cannot produce historical findings. Their direct positive
+// resource-use facts can still suppress an advisory inventory target.
+const RESOURCE_USE_SQL: &str = "
+SELECT e.evidence_json, s.agent, s.session_id, a.initial_context_json, s.cwd
+  FROM session s
+  JOIN session_evidence e
+    ON e.environment_key = s.environment_key
+   AND e.agent = s.agent
+   AND e.session_id = s.session_id
+  LEFT JOIN session_analysis a
+    ON a.environment_key = s.environment_key
+   AND a.agent = s.agent
+   AND a.session_id = s.session_id
+   AND NOT (a.analyzed_generation IS NOT s.source_generation)
+   AND NOT (a.parser_revision IS NOT ?4)
+   AND NOT (a.analyzer_revision IS NOT ?5)
+   AND NOT (a.metrics_schema_revision IS NOT ?7)
+ WHERE s.environment_key = ?1
+   AND s.started_at_epoch >= ?2
+   AND s.started_at_epoch < ?3
+   AND e.status = 'unsupported'
+   AND NOT (e.analyzed_generation IS NOT s.source_generation)
+   AND NOT (e.parser_revision IS NOT ?4)
+   AND NOT (e.analyzer_revision IS NOT ?5)
+   AND NOT (e.evidence_schema_revision IS NOT ?6)
+ ORDER BY s.started_at_epoch DESC, s.session_id DESC";
+
 const TOKEN_BURN_TURNS_SQL: &str = "
 SELECT scope, model, effort, speed, ts_ms, input_tokens, output_tokens,
        cache_read_tokens, cache_write_tokens, cache_write_1h_tokens
@@ -403,6 +430,54 @@ fn reduce_with_state_on_snapshot(
             }
             accumulator.observe_session_with_token_burn(evidence, token_evidence);
             resource_session_index = resource_session_index.saturating_add(1);
+        }
+    }
+
+    // Keep detector-ineligible sessions outside the historical report cohort.
+    // Their direct positive uses can prevent a false current-inventory target.
+    {
+        let mut statement = transaction.prepare(RESOURCE_USE_SQL)?;
+        let mut rows = statement.query(params![
+            request.environment_key,
+            request.window.start_epoch,
+            request.window.end_epoch,
+            PARSER_REVISION,
+            ANALYZER_REVISION,
+            EVIDENCE_SCHEMA_REVISION,
+            METRICS_SCHEMA_REVISION,
+        ])?;
+        while let Some(row) = rows.next()? {
+            ensure_not_cancelled(cancel)?;
+            let evidence: SessionEvidence = serde_json::from_str(&row.get::<_, String>(0)?)
+                .context("stored resource-use evidence is invalid")?;
+            let agent: String = row.get(1)?;
+            let Some(agent_kind) = crate::agents::kind_from_slug(&agent)
+                .filter(|agent| resources::first_tier_agents().contains(agent))
+            else {
+                continue;
+            };
+            let session_id: String = row.get(2)?;
+            let initial_context = row
+                .get::<_, Option<String>>(3)?
+                .as_deref()
+                .map(serde_json::from_str::<InitialContextBreakdown>)
+                .transpose()
+                .context("stored initial context is invalid")?;
+            let cwd: Option<String> = row.get(4)?;
+            let project_root = cwd
+                .as_deref()
+                .and_then(|cwd| trusted_repository_for_cwd(Path::new(cwd), &repository_roots));
+            if project_root.is_none() {
+                resource_builder.mark_scan_failed(agent_kind);
+            }
+            resource_builder.observe_positive_uses(
+                &request.environment_key,
+                agent_kind,
+                &session_id,
+                project_root,
+                &evidence,
+                initial_context.as_ref(),
+            );
         }
     }
 
@@ -2271,6 +2346,7 @@ mod tests {
                 store
                     .delete_session(&SessionKey::new("native", "claude-code", session_id))
                     .unwrap()
+                    .is_some()
             );
         }
         store

@@ -308,7 +308,9 @@ pub fn purge_ignored_sessions(store: &Store) -> anyhow::Result<usize> {
         let Some(cwd) = session.cwd.as_deref() else {
             continue;
         };
-        if ignored_paths::set_contains(&ignored, cwd) && store.delete_session(&session.key)? {
+        if ignored_paths::set_contains(&ignored, cwd)
+            && store.delete_session(&session.key)?.is_some()
+        {
             removed += 1;
         }
     }

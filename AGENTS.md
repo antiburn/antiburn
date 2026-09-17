@@ -14,6 +14,16 @@ Keep maintained product and contributor documentation in the repository,
 including design-system rules, coverage documents, runbooks, and reusable
 agent skills.
 
+## Solution design
+
+- Start with the user outcome.
+- Treat the current design as one option, not a fixed limit.
+- Match each claim to a source that can support it.
+- If a broad claim is not safe, make a narrower useful claim and state its limit.
+- Consider a separate source when the current source cannot support the feature.
+- Use hypotheses for investigation. Label them as hypotheses and do not present them as facts.
+- Prefer the smallest complete solution. Do not add full support when scoped support solves the user problem.
+
 ## React
 
 Do not add `useEffect`. Derive values during render, handle work in the event
@@ -46,15 +56,9 @@ with `scripts/check-design-drift.mjs`.
 
 ## Comments
 
-Write code comments in ASD-STE100 Simplified Technical English:
-
-- Use the active voice and present tense.
-- Keep instructions to 20 words or fewer and descriptions to 25 words or fewer.
-- Put one idea in each sentence.
-- Use simple words and keep articles such as "the" and "a".
-- Do not use idioms, humor, slang, or telegraphic fragments.
-- Keep identifiers and API names unchanged.
-- Add a comment only when it states important information the code cannot show.
+Write code comments in ASD-STE100 Simplified Technical English. Use active
+voice and present tense. Add a comment only for important information the code
+cannot show. Keep identifiers and API names unchanged.
 
 ## Session and check coverage
 
@@ -71,10 +75,10 @@ Update both documents when a session parsing change affects check coverage.
 
 Keep coverage documents as current baselines, not phase plans. List every
 `SourceFormat` exactly once per inventory or matrix, with exact enum names.
-Record accepted source shapes, finding scope, clean-result limits, and dated
-maintainer confirmations with reviewed passive alternatives. A pinned schema,
-header, or producer commit with synthetic fixtures can define an accepted shape
-when a release range is unavailable. Do not claim all historical versions.
+Record accepted source shapes, finding scope, and clean-result limits. A pinned
+schema, header, or producer commit with synthetic fixtures can define an
+accepted shape when a release range is unavailable. Do not claim all historical
+versions.
 
 Run `check_coverage_contract` after coverage edits. Its inventory checks do not
 replace characterization and behavior tests or manual review of matrix cells.

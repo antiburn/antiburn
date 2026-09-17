@@ -123,6 +123,12 @@ fn every_detector_has_an_actionable_bounded_fallback_prompt() {
         );
         assert!(prompt.as_str().contains("effective configuration"));
         assert!(prompt.as_str().contains("Before you apply a change"));
+        assert!(prompt.as_str().contains("list labeled hypotheses"));
+        assert!(
+            prompt
+                .as_str()
+                .contains("Do not apply an edit until the target is proved.")
+        );
         assert!(!prompt.as_str().contains("Remediation reference:"));
     }
 }

@@ -2,10 +2,12 @@
 
 Audit date: 2026-09-16.
 
-This document covers local passive evidence only. Coverage must not use hooks,
-new extensions, runtime subscriptions, or agent calls to fill evidence gaps. Existing
-persisted output from the reviewed Pi example extension is a passive input. The
-current OpenCode WSL discovery conflict is recorded in `session-coverage.md`.
+This document covers local passive session evidence and the desktop's read-only
+current resource inventory. Session evidence supports historical claims. Current
+inventory supports claims about what is enabled now. It cannot prove what a past
+session exposed. Existing persisted output from the reviewed Pi example extension
+is a passive input. The current OpenCode WSL discovery conflict is recorded in
+`session-coverage.md`.
 
 See [`session-coverage.md`](session-coverage.md) for discovery, framing, parsing,
 companion-source, and provider-route coverage for the same source formats.
@@ -15,16 +17,15 @@ companion-source, and provider-route coverage for the same source formats.
 | Status      | Meaning                                                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Assessable  | The current reader can produce the evidence needed for a finding and a clean result. A damaged or incomplete session can still be partial.        |
-| Partial     | The source has useful passive evidence, but the current reader or the source cannot prove all required facts. Do not report a clean result.       |
+| Partial     | The source has useful evidence, but its supported claims are limited. It cannot support a clean result.                                            |
 | Unsupported | The reviewed passive sources do not prove a required fact or its policy semantics. This is source-scoped, not a claim about future formats.       |
 | Unknown     | The source or its relevant field semantics are not characterized. Do not infer support from a path, field name, mode name, or generic JSON shape. |
 
-`Partial` means the implemented reader can produce a bounded positive finding,
-but cannot prove every fact required for a clean result. An unimplemented or
-uncharacterized evidence path is `Unknown` or `Unsupported`, not `Partial`.
-`Assessable` describes the accepted source contract, not every session or
-historical release. Complete session facts, eligible activity, and reviewed
-model/provider policy remain necessary for clean.
+`Partial` can support a scoped finding only when its source note says so. It does
+not promise an implemented finding path. An unimplemented or uncharacterized
+path is `Unknown` or `Unsupported`.
+`Assessable` describes an accepted source contract, not every session or past
+release. A clean result still needs complete session facts and eligible activity.
 
 ## Checks
 
@@ -122,6 +123,13 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `Uncharacterized`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 
 ## Evidence Boundaries
+
+Lifecycle provider sweeps use same-turn published provider/model evidence and
+keep the harness and inferred model vendor separate from the recorded route.
+Missing or custom routes do not prove direct provider activity. These display
+signals do not authorize a finding, a clean result, remediation, or historical
+spend attribution; all check-specific route and API requirements below remain
+unchanged. See [`session-lifecycle-events.md`](session-lifecycle-events.md#scoped-sweep-evidence).
 
 Burn checks use only sessions admitted by the repository scan gate. A session
 needs a resolvable Git repository CWD. Disabled roots and their linked
@@ -699,7 +707,8 @@ claim an implemented finding path.
 
 ## Coverage Promotion Rule
 
-Change an entry to `Assessable` only when all of these conditions are true:
+Change an entry to `Assessable` only when it can support both findings and clean
+results. It needs all of these conditions:
 
 - The accepted source shape is explicit through a schema, header, or pinned
   producer commit and synthetic fixtures. Record a release range when known.
@@ -710,13 +719,10 @@ Change an entry to `Assessable` only when all of these conditions are true:
 - The model and provider policy is reviewed where the check needs policy.
 - The implementation does not use current configuration as historical session evidence.
 
-If a passive source cannot meet these conditions, keep the entry `Partial`,
-`Unsupported`, or `Unknown`. Do not convert missing evidence into a clean result.
-For the reviewed targets (OpenCode, Pi, Codex, Claude Code, and Antigravity),
-record alternative passive-source research and explicit maintainer confirmation
-for unsupported named checks. The ledger above records the current decisions.
-Cursor and other agents retain their deferred basic support; these decisions
-do not assert a completed audit of all their native sources.
+If a source cannot meet these conditions, keep the supported scope as `Partial`,
+`Unsupported`, or `Unknown`. Do not convert missing evidence into a clean
+result. Record the source limit and any separate source used for an advisory
+assessment. The confirmation ledger records current reviewed decisions.
 
 ## Test Coverage
 

@@ -10,22 +10,17 @@ import { nativePeekBridge } from "./nativePeekBridge"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
-  ActivityEntryPayload,
   AppInfo,
   AppSettings,
   MainWindowSectionId,
   MainWindowSectionRequest,
   MainWindowSessionRequest,
-  Nudge,
-  NudgeActionTarget,
-  NudgeKind,
   RepositoryItemPayload,
   ScanStatus,
-  SessionAnalysisPayload,
-  SessionIdentityPayload,
   StorageHealthPayload,
   UpdateStatusPayload,
 } from "./ipcPayloads"
+import type { SessionIdentityPayload } from "./sessionIpc"
 import type {
   AllowanceUsageSummaryPayload,
   LiveUsageSummaryPayload,
@@ -35,8 +30,10 @@ import type {
 
 export * from "./ipcPayloads"
 export * from "./mainWindowIpc"
+export * from "./nudgeIpc"
 export type { MainWindowSessionRequest } from "./ipcPayloads"
 export * from "./providerUsageIpc"
+export * from "./sessionIpc"
 export type { SettingsPane } from "./settingsPanes"
 
 /* -------------------------------------------------------------------------
@@ -117,22 +114,10 @@ export async function takeMainWindowSectionTarget(): Promise<MainWindowSectionRe
   return invoke<MainWindowSectionRequest | null>("take_main_window_section_target")
 }
 
-/** Take the latest target that arrived before the main renderer could listen. */
-export async function takeMainWindowSessionTarget(): Promise<MainWindowSessionRequest | null> {
-  if (!hasShell()) return null
-  return invoke<MainWindowSessionRequest | null>("take_main_window_session_target")
-}
-
 /** Tell the shell that the popover's initial activity and usage state settled. */
 export async function popoverContentReady(generation: number): Promise<void> {
   if (!hasShell()) return
   await invoke("popover_content_ready", { generation })
-}
-
-/** Version stamp of the active runtime pricing catalog. */
-export async function engineCatalogVersion(): Promise<string | null> {
-  if (!hasShell()) return null
-  return invoke<string>("engine_catalog_version")
 }
 
 /**
@@ -174,18 +159,6 @@ export async function closeCurrentWindow(): Promise<void> {
   if (!hasShell()) return
   const { getCurrentWindow } = await import("@tauri-apps/api/window")
   await getCurrentWindow().close()
-}
-
-/**
- * Quit antiburn.
- *
- * Routed through the shell rather than closing windows, because a menu-bar app
- * outlives its windows: only `exit(0)` distinguishes a deliberate quit from the
- * window closes the shell suppresses.
- */
-export async function quitApp(): Promise<void> {
-  if (!hasShell()) return
-  await invoke("quit_app")
 }
 
 /**
@@ -241,19 +214,6 @@ export async function withPopoverHold<T>(action: () => Promise<T>): Promise<T> {
   } finally {
     await invoke("end_popover_hold").catch(() => undefined)
   }
-}
-
-/**
- * Resize the popover to the height the view now on screen needs.
- *
- * The shell clamps the value, so this is a request rather than an instruction.
- * `animate` is decided here because the reduced-motion preference is a
- * webview-side media query and a height change is motion. The result is true
- * only when this request reaches its target before a newer request replaces it.
- */
-export async function setPopoverHeight(height: number, animate: boolean): Promise<boolean> {
-  if (!hasShell()) return true
-  return invoke<boolean>("set_popover_height", { height, animate })
 }
 
 /** Resize the floating HUD around its measured panel. */
@@ -428,7 +388,7 @@ export type AutoFixAnalyticsOutcome =
 export type PromptPreparationAnalyticsOutcome =
   "ready" | "stale" | "expired" | "unavailable" | "failed"
 /** The closed vocabulary `sessionFilterSelected` reports its filter as. */
-export type SessionFilterAnalyticsKind =
+type SessionFilterAnalyticsKind =
   "notable" | "material" | "agent" | "failing" | "passing" | "all"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
@@ -494,44 +454,6 @@ export async function finishOnboarding(
   })
 }
 
-/** The sessions to show in the popover, newest first. */
-export async function listRecentSessions(windowDays?: number): Promise<ActivityEntryPayload[]> {
-  if (!hasShell()) return []
-  return invoke<ActivityEntryPayload[]>("list_recent_sessions", {
-    windowDays: windowDays ?? null,
-  })
-}
-
-/** One session's analysis, sub-agent roster, and fork relations. */
-export async function getSessionAnalysis(
-  agent: string,
-  sessionId: string,
-  wslDistro?: string | null,
-): Promise<SessionAnalysisPayload | null> {
-  if (!hasShell()) return null
-  return invoke<SessionAnalysisPayload>("get_session_analysis", {
-    agent,
-    sessionId,
-    wslDistro: wslDistro ?? null,
-  })
-}
-
-/** One sub-agent's own analysis. */
-export async function getSubagentAnalysis(
-  agent: string,
-  parentSessionId: string,
-  subagentId: string,
-  wslDistro?: string | null,
-): Promise<SessionAnalysisPayload | null> {
-  if (!hasShell()) return null
-  return invoke<SessionAnalysisPayload>("get_subagent_analysis", {
-    agent,
-    parentSessionId,
-    subagentId,
-    wslDistro: wslDistro ?? null,
-  })
-}
-
 /**
  * Per-provider token and cost totals derived from the sessions on this machine.
  *
@@ -564,7 +486,7 @@ export async function getAllowanceUsage(): Promise<AllowanceUsageSummaryPayload>
   })
 }
 
-export const EMPTY_ALLOWANCE_USAGE: AllowanceUsageSummaryPayload = {
+const EMPTY_ALLOWANCE_USAGE: AllowanceUsageSummaryPayload = {
   accounts: [],
   overageSpanDays: 30,
   generatedAt: "",
@@ -662,12 +584,6 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   generatedAt: "",
 }
 
-/** Return the newest recent transcript write as epoch seconds. */
-export async function getLatestSessionActivity(): Promise<number | null> {
-  if (!hasShell()) return null
-  return invoke<number | null>("get_latest_session_activity")
-}
-
 /** Return whether the retained HUD renderer should run background work. */
 export async function isOverlayWorkActive(): Promise<boolean> {
   if (!hasShell()) return false
@@ -675,7 +591,7 @@ export async function isOverlayWorkActive(): Promise<boolean> {
 }
 
 /** One usage bar as the hover detail window renders it. */
-export interface HudDetailBar {
+interface HudDetailBar {
   key: string
   label: string
   percent: number
@@ -828,24 +744,6 @@ export async function removeScanRoot(path: string): Promise<string[]> {
   return invoke<string[]>("remove_scan_root", { path })
 }
 
-/**
- * Delete antiburn's own records for one session.
- *
- * Only antiburn's records. The agent's transcript is never touched.
- */
-export async function deleteSessionData(
-  agent: string,
-  sessionId: string,
-  wslDistro?: string | null,
-): Promise<boolean> {
-  if (!hasShell()) return false
-  return invoke<boolean>("delete_session_data", {
-    agent,
-    sessionId,
-    wslDistro: wslDistro ?? null,
-  })
-}
-
 /** Open the project directory through the native file manager. */
 export async function openProjectFolder(path: string): Promise<void> {
   if (!hasShell()) throw new Error("The native file manager is unavailable")
@@ -858,95 +756,16 @@ export async function revealSource(path: string): Promise<void> {
   await invoke("reveal_source", { path })
 }
 
-/* -------------------------------------------------------------------------
- * Nudge commands
- *
- * Registered by the shell from `antiburn_nudge::commands::`. Every one of them
- * is called from the notification window only, and every one is a request the
- * crate may decline — a nudge that has already been dismissed answers none of
- * them, which is why they all resolve to nothing.
- * ---------------------------------------------------------------------- */
-
-/**
- * Report a clicked CTA back to the crate.
- *
- * The crate hands `(kind, actionId, target)` to the shell's `on_action`
- * callback and then dismisses the notification, so this both acts and closes.
- */
-export async function nudgeAction(
-  kind: NudgeKind,
-  actionId: string,
-  target?: NudgeActionTarget,
-): Promise<void> {
-  if (!hasShell()) return
-  await invoke("nudge_action", { kind, actionId, target })
-}
-
-/** Hide the notification without acting (close button, or the auto-dismiss timeout). */
-export async function dismissNudge(): Promise<void> {
-  if (!hasShell()) return
-  await invoke("nudge_dismiss")
-}
-
-/**
- * Reveal the notification at its measured content `height`.
- *
- * The crate keeps the window hidden until this arrives, then sizes, places, and
- * shows it in one step — which is what stops the notification from visibly
- * resizing on screen as it appears.
- */
-export async function revealNudge(height: number): Promise<void> {
-  if (!hasShell()) return
-  await invoke("nudge_reveal", { height })
-}
-
-/**
- * Resize the *already visible* notification to a new measured `height` (it
- * expanded or collapsed on hover). On macOS the native frame animates with the
- * system's resize ease, anchored at its top edge; elsewhere it snaps.
- */
-export async function resizeNudge(height: number): Promise<void> {
-  if (!hasShell()) return
-  await invoke("nudge_resize", { height })
-}
-
-/**
- * Signal that this window's `nudge:show` listener is attached.
- *
- * The window is prewarmed, so a nudge can be emitted before the webview is
- * listening. The crate retains the pending payload and re-delivers it here,
- * rather than the first nudge after a launch being silently lost.
- */
-export async function nudgeReady(): Promise<void> {
-  if (!hasShell()) return
-  await invoke("nudge_ready")
-}
-
-/**
- * Report the notification's hover state (macOS only; a no-op elsewhere).
- *
- * An unprompted nudge never takes key-window status on its own, so hover-driven
- * CSS only receives the mouse-moved events it needs once the cursor has
- * genuinely entered the notification — at which point taking key is safe.
- * Deliberately *not* called for a hover the crate detected by sampling the
- * cursor (`NUDGE_HOVER_EVENT`): that path exists precisely because the window
- * is receiving no mouse events, so there is no `:hover` to feed.
- */
-export async function setNudgeHovered(hovered: boolean): Promise<void> {
-  if (!hasShell()) return
-  await invoke("nudge_set_hovered", { hovered })
-}
-
 const noShellUnlisten: UnlistenFn = () => undefined
 
 /** Event the shell emits when the main renderer can start or stop presenting work. */
-export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
+const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 
 /** Event carrying a revisioned session target to an existing main renderer. */
-export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
+const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
 
 /** Event carrying a revisioned section target to an existing main renderer. */
-export const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
+const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
 
 /** Subscribe to main-window presentation visibility. */
 export async function onMainWindowVisibilityChanged(
@@ -1011,7 +830,7 @@ export async function onScanEvent(
  * but rendered in the popover too; this is what keeps a long-lived popover
  * webview current without a poll.
  */
-export const SETTINGS_CHANGED_EVENT = "settings:changed"
+const SETTINGS_CHANGED_EVENT = "settings:changed"
 
 /** Subscribe to settings writes from any window. The result unsubscribes. */
 export async function onSettingsChanged(
@@ -1022,42 +841,12 @@ export async function onSettingsChanged(
 }
 
 /** Event emitted after the Settings window reaches the screen. */
-export const SETTINGS_SHOWN_EVENT = "settings:shown"
+const SETTINGS_SHOWN_EVENT = "settings:shown"
 
 /** Subscribe to the Settings window reaching the screen. */
 export async function onSettingsShown(handler: () => void): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen(SETTINGS_SHOWN_EVENT, () => handler())
-}
-
-/**
- * Event the shell emits when stored sessions were removed outside a scan
- * (repository opt-out, index clearing, retention cleanup). Mirrors `SESSIONS_INVALIDATED_EVENT`
- * in `src-tauri/src/commands.rs`.
- */
-export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"
-
-/** Subscribe to out-of-band session-index changes. The result unsubscribes. */
-export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen(SESSIONS_INVALIDATED_EVENT, () => handler())
-}
-
-/**
- * Event the shell emits when one session's cached analysis changes outside a
- * scan. Mirrors `SESSION_ENTRY_CHANGED_EVENT` in `src-tauri/src/commands.rs`.
- * The payload is the fresh entry for that session.
- */
-export const SESSION_ENTRY_CHANGED_EVENT = "sessions:entry-changed"
-
-/** Subscribe to one session's entry changing. The result unsubscribes. */
-export async function onSessionEntryChanged(
-  handler: (entry: ActivityEntryPayload) => void,
-): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) =>
-    handler(event.payload),
-  )
 }
 
 /**
@@ -1070,7 +859,7 @@ export async function onSessionEntryChanged(
  * when what it wants is "the popover just opened," full stop — including
  * starting the visible-only usage poll (R6).
  */
-export const POPOVER_SHOWN_EVENT = "popover:shown"
+const POPOVER_SHOWN_EVENT = "popover:shown"
 
 /** Subscribe to the popover reaching the screen. The result unsubscribes. */
 export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
@@ -1084,7 +873,7 @@ export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
  *
  * R6: this is what stops the visible-only usage poll `onPopoverShown` starts.
  */
-export const POPOVER_HIDDEN_EVENT = "popover:hidden"
+const POPOVER_HIDDEN_EVENT = "popover:hidden"
 
 /** Subscribe to the popover leaving the screen. The result unsubscribes. */
 export async function onPopoverHidden(handler: () => void): Promise<UnlistenFn> {
@@ -1093,7 +882,7 @@ export async function onPopoverHidden(handler: () => void): Promise<UnlistenFn> 
 }
 
 /** Event the shell emits after it refreshes the cached live-usage snapshot. */
-export const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
+const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
 
 /** Subscribe to refreshed provider limit snapshots. The result unsubscribes. */
 export async function onLiveUsageChanged(
@@ -1106,7 +895,7 @@ export async function onLiveUsageChanged(
 }
 
 /** Event the shell emits when storage health changes. Mirrors `src-tauri/src/storage_health.rs`. */
-export const STORAGE_HEALTH_EVENT = "storage:health"
+const STORAGE_HEALTH_EVENT = "storage:health"
 
 /**
  * Subscribe to storage-health changes. The returned function unsubscribes.
@@ -1125,7 +914,7 @@ export async function onStorageHealth(
  * Event the shell emits to move an *already open* settings window to a pane.
  * Mirrors `src-tauri/src/settings.rs`.
  */
-export const SETTINGS_PANE_EVENT = "settings:pane"
+const SETTINGS_PANE_EVENT = "settings:pane"
 
 /** Subscribe to pane requests aimed at an open settings window. */
 export async function onSettingsPaneRequest(
@@ -1136,7 +925,7 @@ export async function onSettingsPaneRequest(
 }
 
 /** Event the shell emits as the update lifecycle changes. */
-export const UPDATE_EVENT = "update:status"
+const UPDATE_EVENT = "update:status"
 
 /**
  * Subscribe to checks, download progress, installation, and failures. The
@@ -1150,36 +939,6 @@ export async function onUpdateStatus(
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<UpdateStatusPayload>(UPDATE_EVENT, (event) => handler(event.payload))
-}
-
-/**
- * Event the nudge crate emits to the notification window, carrying the
- * {@link Nudge} to draw. Mirrors `NUDGE_SHOW_EVENT` in
- * `src-tauri/crates/nudge/src/lib.rs`.
- */
-export const NUDGE_SHOW_EVENT = "nudge:show"
-
-/** Subscribe to incoming nudges. The returned function unsubscribes. */
-export async function onNudgeShow(handler: (nudge: Nudge) => void): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen<Nudge>(NUDGE_SHOW_EVENT, (event) => handler(event.payload))
-}
-
-/**
- * Event the nudge crate emits carrying whether the cursor is over the
- * notification, sampled natively. Mirrors `NUDGE_HOVER_EVENT` in the crate.
- *
- * macOS only. It backs up — never replaces — the window's own
- * `mouseenter`/`mouseleave`, which stop firing whenever another antiburn window
- * (the settings window, or the popover) holds macOS key-window status, because
- * AppKit routes mouse-moved events there instead.
- */
-export const NUDGE_HOVER_EVENT = "nudge:hover"
-
-/** Subscribe to the native hover signal. The returned function unsubscribes. */
-export async function onNudgeHover(handler: (hovered: boolean) => void): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen<boolean>(NUDGE_HOVER_EVENT, (event) => handler(event.payload === true))
 }
 
 /* -------------------------------------------------------------------------
@@ -1210,12 +969,6 @@ export async function requestFolderAccess(dir: string): Promise<FolderAccessOutc
 export async function openFolderAccessSettings(): Promise<void> {
   if (!hasShell()) return
   await invoke("open_folder_access_settings")
-}
-
-/** Open the antiburn GitHub repository in the system browser. */
-export async function openGithubRepo(): Promise<void> {
-  if (!hasShell()) return
-  await invoke("open_github_repo")
 }
 
 /** Probe outcomes from this run, for a bug report. */

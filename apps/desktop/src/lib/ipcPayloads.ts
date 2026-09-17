@@ -5,12 +5,7 @@
  * apart from the command wrappers that send and receive them.
  */
 
-import type {
-  ActiveSessionsSummary,
-  BillableTokens,
-  SessionCostComponents,
-  SessionEfficiency,
-} from "./types/session"
+import type { SessionIdentityPayload } from "./sessionIpc"
 
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
@@ -173,38 +168,6 @@ export interface AppInfo {
   analyticsOperator: string | null
 }
 
-/** One row of the activity list, before it is shaped for presentation. */
-export interface ModelRunPayload {
-  model: string
-  thinkingMode?: string
-}
-
-export interface ActivityEntryPayload {
-  agent: string
-  sessionId: string
-  repo: string
-  timestamp: string
-  isActive: boolean
-  surface: string
-  wslDistro: string | null
-  title: string | null
-  hasForkParent: boolean
-  forkChildCount: number
-  /** Cost of the parent transcript plus every sub-agent the session launched. */
-  cost: SessionCostComponents | null
-  /** Every model that contributed billable tokens. */
-  models: string[]
-  /** Parent model runs followed by runs used only by sub-agents. */
-  modelRuns: ModelRunPayload[]
-}
-
-/** Identity of one local session, as the analysis view carries it. */
-export interface SessionIdentityPayload {
-  agent: string
-  sessionId: string
-  wslDistro: string | null
-}
-
 /** One revisioned request to show a session in the retained main window. */
 export interface MainWindowSessionRequest {
   revision: number
@@ -217,92 +180,6 @@ export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
 export interface MainWindowSectionRequest {
   revision: number
   section: MainWindowSectionId
-}
-
-/** One end of a local fork relation. */
-export interface SessionRelationPayload {
-  identity: SessionIdentityPayload
-  title: string | null
-  available: boolean
-}
-
-/** Direct fork relations for one session. */
-export interface SessionRelationsPayload {
-  title: string | null
-  parent: SessionRelationPayload | null
-  children: SessionRelationPayload[]
-}
-
-/** One sub-agent an orchestrator launched. */
-export interface SubagentMemberPayload {
-  agent: string
-  subagentId: string
-  label: string
-  /** The sub-agent's own priced cost, or null when it is not yet analyzed. */
-  cost: SessionCostComponents | null
-  /** Billable tokens that back `cost`. */
-  tokens: BillableTokens | null
-  /** Unix seconds of the sub-agent's first transcript event, or null when unknown. */
-  startedAtEpoch: number | null
-  /** Every model/thinking-mode pair the sub-agent used. */
-  modelRuns: ModelRunPayload[]
-}
-
-/** The sub-agent picture for one session. */
-export interface OrchestrationPayload {
-  orchestrating: boolean
-  orchestratorAgent: string
-  orchestratorSessionId: string
-  subagentCount: number
-  members: SubagentMemberPayload[]
-}
-
-/** Everything the session-analysis surface renders for one session. */
-export interface SessionAnalysisPayload {
-  summary: ActiveSessionsSummary | null
-  supportsAnalysis: boolean
-  title: string | null
-  wslDistro: string | null
-  isActive: boolean
-  /** Cost of the parent transcript plus every sub-agent it launched. */
-  cost: SessionCostComponents | null
-  /** Cost of the parent transcript, without any sub-agent. */
-  topLevelCost: SessionCostComponents | null
-  /** Cost of every sub-agent this session launched, combined. The value is
-   * `null` when the session has no sub-agent, or when no sub-agent could
-   * be priced. */
-  subagentsCost: SessionCostComponents | null
-  /** Billable tokens that back `cost`. The count sums the parent transcript
-   * and every sub-agent. */
-  inclusiveTokens: BillableTokens | null
-  /** Billable tokens that back `subagentsCost`. The count sums every
-   * sub-agent. The value is `null` when the session has no sub-agent. */
-  subagentsTokens: BillableTokens | null
-  /** Where the spend behind `cost` went. The same subject as `cost`. */
-  efficiency: SessionEfficiency | null
-  models: string[]
-  /** Parent model runs followed by runs used only by sub-agents. */
-  modelRuns: ModelRunPayload[]
-  orchestration: OrchestrationPayload | null
-  relations: SessionRelationsPayload | null
-  /** The provider's own transcript, for the reveal action. */
-  sourcePath: string | null
-  /** The stored absolute working directory. */
-  projectPath: string | null
-  /** Unix seconds of this session's own first transcript event, or null when
-   * unknown. The sub-agent roster uses it to show each member's start as
-   * elapsed time from the session start. */
-  startedAtEpoch: number | null
-  /** True when no published row set exists yet for this session, so every
-   * other field above is a placeholder rather than a real read. The worker
-   * fills the gap on its own; the view should show an indexing state, not
-   * an empty-transcript state. */
-  analysisPending: boolean
-  /** True when the fields above come from a published fence that a fresher
-   * pass is already queued or running behind, or whose transcript has since
-   * moved on. The data on screen is real, just not the latest — unlike
-   * `analysisPending`, which means there is nothing to show yet. */
-  analysisStale: boolean
 }
 
 /** One repository row. Mirrors Rust `RepositoryItem`. */
@@ -320,7 +197,7 @@ export interface RepositoryItemPayload {
 }
 
 /** What one agent's last pass saw. */
-export interface AgentScanState {
+interface AgentScanState {
   agent: string
   lastCompletedAt: string | null
   sessionsSeen: number
@@ -381,76 +258,4 @@ export interface UpdateStatusPayload {
   failureOperation: "check" | "install" | null
   /** Monotonic process-local order for event and snapshot reconciliation. */
   revision: number
-}
-
-/* -------------------------------------------------------------------------
- * Nudge payloads — mirrors `src-tauri/crates/nudge/src/model.rs`
- *
- * The nudge crate is the *mechanism* behind the floating notification window:
- * it owns that window and its placement, and knows nothing about why a nudge
- * fires. These shapes are the whole contract between it and `NudgeView`.
- * ---------------------------------------------------------------------- */
-
-/** Window label the shell gives the notification window. Mirrors `NUDGE_LABEL`. */
-export const NUDGE_WINDOW_LABEL = "nudge"
-
-/**
- * What surfaced a nudge. Mirrors Rust `NudgeKind`.
- *
- * The view is deliberately kind-agnostic — it draws whatever fields arrived —
- * so a new trigger is a new variant here and a new payload builder in Rust,
- * with no change to the notification UI.
- */
-export type NudgeKind =
-  | "updateAvailable"
-  | "scanFailure"
-  | "diskSpaceLow"
-  | "usageMilestone"
-  | "menuBarLocation"
-  | "test"
-
-/** Visual tone — informational, positive, or attention. Mirrors Rust `NudgeTone`. */
-export type NudgeTone = "info" | "success" | "warning"
-
-/**
- * Optional structured target carried by a CTA and echoed back to the shell when
- * it is clicked, so the handler acts on what the nudge was actually about.
- */
-export type NudgeActionTarget =
-  | { type: "update"; expectedVersion: string }
-  | { type: "providerUsage"; provider: string; accountKey: string | null }
-  | { type: "session"; agent: string; sessionId: string; environment: string | null }
-
-/** One actionable CTA on the notification. Mirrors Rust `NudgeAction`. */
-export interface NudgeAction {
-  /** Stable identifier routed back to the shell on click. */
-  id: string
-  label: string
-  /** Rendered as the emphasized button, and always last (macOS convention). */
-  primary: boolean
-  target?: NudgeActionTarget
-}
-
-/**
- * Payload of the `nudge:show` event. Mirrors Rust `Nudge`.
- *
- * Empty optionals are omitted on the wire (`skip_serializing_if` in Rust), so
- * `recommendations` arrives absent rather than as `[]`.
- */
-export interface Nudge {
-  id: string
-  kind: NudgeKind
-  tone: NudgeTone
-  title: string
-  /** Short summary that stays visible in collapsed and expanded states. */
-  subtitle: string
-  /** Detailed copy revealed when the notification expands. */
-  description: string
-  /** Who or what this is about, when it is about one. Never drawn; the shell acts on it. */
-  actor?: string
-  /** Suggested steps, revealed when the notification expands on hover. */
-  recommendations?: string[]
-  actions: NudgeAction[]
-  /** Auto-dismiss timeout in milliseconds; absent means sticky until acted on. */
-  timeoutMs?: number
 }
