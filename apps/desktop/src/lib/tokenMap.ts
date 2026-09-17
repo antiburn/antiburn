@@ -3,7 +3,7 @@ import type {
   HudTokenMapPayload,
   HudTokenMapSession,
   HudTokenMapSubagent,
-} from "./ipc"
+} from "./hudIpc"
 
 export type WorkMode = keyof HudModeTokens
 
@@ -19,13 +19,26 @@ export const WORK_MODES: readonly WorkMode[] = [
 ]
 
 /** Candidate tokens-per-minute values for one dot, finest first. */
+const FINEST_DOT_VALUE = 250
+const COARSEST_DOT_VALUE = 500_000
 export const DOT_VALUE_LADDER: readonly number[] = [
-  250, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000, 200_000, 500_000,
+  FINEST_DOT_VALUE,
+  500,
+  1_000,
+  2_000,
+  5_000,
+  10_000,
+  20_000,
+  50_000,
+  100_000,
+  200_000,
+  COARSEST_DOT_VALUE,
 ]
 
 /** Thin frame colours, one per blob in order. Distinct from the mode palette. */
-export const FRAME_COLORS: readonly string[] = [
-  "var(--color-label-tertiary)",
+const DEFAULT_FRAME_COLOR = "var(--color-label-tertiary)"
+const FRAME_COLORS: readonly string[] = [
+  DEFAULT_FRAME_COLOR,
   "var(--color-system-red)",
   "var(--color-system-indigo-text)",
   "var(--color-system-gold-text)",
@@ -35,7 +48,7 @@ export const FRAME_COLORS: readonly string[] = [
 
 /** The frame colour of the blob at `index`. */
 export function frameColor(index: number): string {
-  return FRAME_COLORS[index % FRAME_COLORS.length]
+  return FRAME_COLORS[index % FRAME_COLORS.length] ?? DEFAULT_FRAME_COLOR
 }
 
 /** Format a tokens-per-minute rate for a label: 60, 4.2k, 12k, 1.3M. */
@@ -54,9 +67,9 @@ function trimZero(value: number): string {
  * A session whose last turn is older than this, in seconds, leaves the map.
  * The newest turn inside it pulses. It matches the VU meter's live window.
  */
-export const LIVE_SECS = 90
+const LIVE_SECS = 90
 
-export type TokenMapDot = {
+type TokenMapDot = {
   /** Grid cell column and row, in cells. */
   x: number
   y: number
@@ -72,7 +85,7 @@ export type TokenMapDot = {
   owner: string | null
 }
 
-export type TokenMapBlob = {
+type TokenMapBlob = {
   key: string
   sessionId: string
   agent: string
@@ -114,7 +127,7 @@ export type TokenMapOptions = {
 const DEFAULT_CELLS = 20
 
 /** Agents on the map before it shows. One agent leaves the live LED alone. */
-export const MIN_MAP_AGENTS = 2
+const MIN_MAP_AGENTS = 2
 
 /**
  * The live agents on the map: every session, plus each sub-agent that wrote
@@ -252,7 +265,7 @@ export function deriveTokenMap(
     .sort((a, b) => sessionRate(b) - sessionRate(a))
   const empty: TokenMapLayout = {
     cells,
-    dotValue: DOT_VALUE_LADDER[0],
+    dotValue: FINEST_DOT_VALUE,
     blobs: [],
     dots: [],
     overflow: false,
@@ -261,8 +274,7 @@ export function deriveTokenMap(
   if (sessions.length === 0) return empty
 
   const ladder = DOT_VALUE_LADDER.filter((value) => value >= (options.minDotValue ?? 0))
-  const candidates =
-    ladder.length > 0 ? ladder : [DOT_VALUE_LADDER[DOT_VALUE_LADDER.length - 1]]
+  const candidates = ladder.length > 0 ? ladder : [COARSEST_DOT_VALUE]
 
   let chosen: {
     dotValue: number
@@ -282,7 +294,7 @@ export function deriveTokenMap(
   }
   if (!chosen) {
     // Even the coarsest step overflows: keep the sessions that fit, drop the rest.
-    const dotValue = candidates[candidates.length - 1]
+    const dotValue = candidates[candidates.length - 1] ?? COARSEST_DOT_VALUE
     const perSession = sessions.map((session) => sessionDots(session, dotValue))
     const placed: Placed[] = []
     for (let count = sessions.length; count > 0; count -= 1) {
@@ -323,7 +335,10 @@ function build(
   const dots: TokenMapDot[] = []
   sessions.forEach((session, index) => {
     const rect = chosen.placed[index]
-    const { specs, dim } = chosen.perSession[index]
+    const entry = chosen.perSession[index]
+    // The packer returns one rect per session, so these are always present.
+    if (!rect || !entry) return
+    const { specs, dim } = entry
     blobs.push({
       key: `${session.agent}:${session.sessionId}`,
       sessionId: session.sessionId,
@@ -352,6 +367,7 @@ function build(
       })
     })
   })
-  const liveMode = liveIndex >= 0 ? topMode(sessions[liveIndex]) : null
+  const liveSession = liveIndex >= 0 ? sessions[liveIndex] : undefined
+  const liveMode = liveSession ? topMode(liveSession) : null
   return { cells, dotValue: chosen.dotValue, blobs, dots, overflow, liveMode }
 }

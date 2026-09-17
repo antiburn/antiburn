@@ -200,6 +200,7 @@ pub fn settle_after_drag(_app: &tauri::AppHandle) -> DockSettings {
 pub fn tear_off() -> bool {
     let mut dock = state();
     let was_docked = dock.docked || dock.home.is_some();
+    #[cfg(target_os = "macos")]
     if was_docked {
         tracing::info!(event = "hud_tear_off", edge = ?dock.edge);
     }

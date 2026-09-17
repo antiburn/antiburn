@@ -1,8 +1,9 @@
 import { act, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type * as HudIpc from "../../lib/hudIpc"
+import type { HudDetailState } from "../../lib/hudIpc"
 import type * as Ipc from "../../lib/ipc"
-import type { HudDetailState } from "../../lib/ipc"
 import { HudDetailView } from "./HudDetailView"
 
 const getHudDetailState = vi.hoisted(() => vi.fn())
@@ -10,7 +11,11 @@ const setHudDetailSize = vi.hoisted(() => vi.fn(async () => {}))
 const concealHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 vi.mock("../../lib/ipc", async () => {
   const actual = await vi.importActual<typeof Ipc>("../../lib/ipc")
-  return { ...actual, getHudDetailState, setHudDetailSize, concealHudDetail }
+  return { ...actual, setHudDetailSize, concealHudDetail }
+})
+vi.mock("../../lib/hudIpc", async () => {
+  const actual = await vi.importActual<typeof HudIpc>("../../lib/hudIpc")
+  return { ...actual, getHudDetailState }
 })
 
 const push = vi.hoisted(() => ({

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import type { HudModeTokens, HudTokenMapPayload, HudTokenMapSession } from "./ipc"
+import type { HudModeTokens, HudTokenMapPayload, HudTokenMapSession } from "./hudIpc"
 import {
   DOT_VALUE_LADDER,
   deriveTokenMap,
@@ -158,7 +158,7 @@ describe("deriveTokenMap", () => {
     expect(layout.blobs.map((blob) => blob.sessionId)).toEqual(["a", "b"])
     const live = layout.dots.filter((dot) => dot.live)
     expect(live).toHaveLength(1)
-    expect(live[0].blob).toBe(0)
+    expect(live[0]?.blob).toBe(0)
 
     const none = deriveTokenMap(payload([stale], 1_000))
     expect(none.dots).toEqual([])
@@ -184,7 +184,7 @@ describe("deriveTokenMap", () => {
   })
 
   it("reports overflow when even the coarsest step cannot fit", () => {
-    const top = DOT_VALUE_LADDER[DOT_VALUE_LADDER.length - 1]
+    const top = DOT_VALUE_LADDER.at(-1) ?? 0
     const sessions = Array.from({ length: 80 }, (_, index) =>
       session(`s${index}`, { looking: top * 5 * 4 }),
     )
@@ -199,8 +199,8 @@ describe("deriveTokenMap", () => {
     const layout = deriveTokenMap(
       payload([session("a", { looking: 5_000 }, { subagents: [sub] })]),
     )
-    expect(layout.blobs[0].modes.looking).toBe(5_000)
-    expect(layout.blobs[0].subagents).toEqual([sub])
+    expect(layout.blobs[0]?.modes.looking).toBe(5_000)
+    expect(layout.blobs[0]?.subagents).toEqual([sub])
   })
 
   it("shows the map at two sessions, hides at one, and waits a poll after hiding", () => {

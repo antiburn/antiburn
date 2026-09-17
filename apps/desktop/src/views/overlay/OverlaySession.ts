@@ -5,7 +5,6 @@ import type { MouseEvent as ReactMouseEvent } from "react"
 import { flushSync } from "react-dom"
 
 import {
-  getHudTokenMap,
   getLatestSessionActivity,
   getLiveUsage,
   hideHudDetail,
@@ -16,11 +15,14 @@ import {
   onSessionsInvalidated,
   resizeOverlayWindow,
   SCAN_EVENTS,
+  type LiveUsageSummaryPayload,
+} from "../../lib/ipc"
+import {
+  getHudTokenMap,
   showHudDetail,
   type HudDetailState,
   type HudSpendRate,
-  type LiveUsageSummaryPayload,
-} from "../../lib/ipc"
+} from "../../lib/hudIpc"
 import { devSpendRate, withDevBlock, type HudDevOverride } from "../../lib/hudDev"
 import { BurnWakeTracker, activityWake } from "../../lib/hudWake"
 import {

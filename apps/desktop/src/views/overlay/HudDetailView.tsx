@@ -3,12 +3,8 @@ import { useCallback, useState, useSyncExternalStore } from "react"
 import { flushSync } from "react-dom"
 
 import { LedBar } from "../../components/ui/LedBar"
-import {
-  concealHudDetail,
-  getHudDetailState,
-  setHudDetailSize,
-  type HudDetailState,
-} from "../../lib/ipc"
+import { concealHudDetail, setHudDetailSize } from "../../lib/ipc"
+import { getHudDetailState, type HudDetailState } from "../../lib/hudIpc"
 import { formatRate, WORK_MODES, type WorkMode } from "../../lib/tokenMap"
 import { resetsIn } from "../../lib/usageBars"
 

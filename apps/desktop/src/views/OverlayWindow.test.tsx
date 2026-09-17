@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../lib/ipc"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
+import type * as HudIpc from "../lib/hudIpc"
+import type { HudDetailState } from "../lib/hudIpc"
 import { OverlayWindow } from "./OverlayWindow"
 
 const REFRESH_TEST_MS = 60_000
@@ -12,7 +14,7 @@ const getLatestSessionActivity = vi.hoisted(() => vi.fn())
 const isOverlayWorkActive = vi.hoisted(() => vi.fn())
 const getHudTokenMap = vi.hoisted(() => vi.fn())
 const refreshLiveUsage = vi.hoisted(() => vi.fn())
-const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
+const showHudDetail = vi.hoisted(() => vi.fn(async (_state: HudDetailState) => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const resizeOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
 const livePush = vi.hoisted(() => ({
@@ -33,13 +35,15 @@ vi.mock("../lib/ipc", async () => {
     getLiveUsage,
     getLatestSessionActivity,
     isOverlayWorkActive,
-    getHudTokenMap,
     refreshLiveUsage,
-    showHudDetail,
     hideHudDetail,
     resizeOverlayWindow,
     onLiveUsageChanged,
   }
+})
+vi.mock("../lib/hudIpc", async () => {
+  const actual = await vi.importActual<typeof HudIpc>("../lib/hudIpc")
+  return { ...actual, getHudTokenMap, showHudDetail }
 })
 
 const invoke = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}))
@@ -720,16 +724,19 @@ describe("OverlayWindow", () => {
       fireEvent.mouseEnter(frame(container))
       await advance(400)
       expect(showHudDetail).toHaveBeenCalledTimes(1)
-      expect(showHudDetail.mock.calls[0][0]).toMatchObject({ reason: "show", target: "usage" })
+      expect(showHudDetail.mock.calls[0]?.[0]).toMatchObject({
+        reason: "show",
+        target: "usage",
+      })
 
       const box = container.querySelector('g[data-blob="claude-code:s2"]')!
       fireEvent.mouseEnter(box)
       expect(showHudDetail).toHaveBeenCalledTimes(2)
-      expect(showHudDetail.mock.calls[1][0]).toMatchObject({
+      expect(showHudDetail.mock.calls[1]?.[0]).toMatchObject({
         reason: "show",
         target: "claude-code:s2",
       })
-      expect(showHudDetail.mock.calls[1][0].map.sessions[1]).toMatchObject({
+      expect(showHudDetail.mock.calls[1]?.[0].map?.sessions[1]).toMatchObject({
         key: "claude-code:s2",
         agent: "claude-code",
         tokensPerMin: 250,
@@ -737,7 +744,7 @@ describe("OverlayWindow", () => {
 
       fireEvent.mouseLeave(box)
       expect(showHudDetail).toHaveBeenCalledTimes(3)
-      expect(showHudDetail.mock.calls[2][0]).toMatchObject({ target: "usage" })
+      expect(showHudDetail.mock.calls[2]?.[0]).toMatchObject({ target: "usage" })
     } finally {
       vi.useRealTimers()
     }

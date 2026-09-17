@@ -1,4 +1,4 @@
-import type { HudSpendRate } from "./ipc"
+import type { HudSpendRate } from "./hudIpc"
 import type { LiveUsageSummaryPayload } from "./providerUsageIpc"
 
 /**
@@ -13,26 +13,35 @@ export const PERIOD_SLOW_MS = 3_000
 export const PERIOD_FAST_MS = 300
 
 /** Dollars per minute at or below which the LED ticks at the slow end. */
-export const SPEND_FLOOR_USD_PER_MIN = 0.05
+const SPEND_FLOOR_USD_PER_MIN = 0.05
 /** Dollars per minute at or above which the LED strobes at the fast end. */
 export const SPEND_CEIL_USD_PER_MIN = 2
 
 /** Allowance per hour, in percentage points, at the slow end. */
-export const CONSUMPTION_FLOOR_PCT_PER_HOUR = 5
+const CONSUMPTION_FLOOR_PCT_PER_HOUR = 5
 /** Allowance per hour, in percentage points, at the fast end. */
-export const CONSUMPTION_CEIL_PCT_PER_HOUR = 100
+const CONSUMPTION_CEIL_PCT_PER_HOUR = 100
 
 /**
  * Eight geometric rungs between the slow and fast ends, in milliseconds.
  * WebKit restarts a CSS animation when its duration changes, so the period
  * moves in gear changes instead of on every poll.
  */
+const SLOWEST_PERIOD_MS = 3_000
+const FASTEST_PERIOD_MS = 300
 export const LED_PERIOD_RUNGS_MS: readonly number[] = [
-  3_000, 2_100, 1_480, 1_040, 730, 510, 360, 300,
+  SLOWEST_PERIOD_MS,
+  2_100,
+  1_480,
+  1_040,
+  730,
+  510,
+  360,
+  FASTEST_PERIOD_MS,
 ]
 
 /** Where the LED's period comes from, best first. */
-export type BlinkSource = "spend" | "usage" | "fixed"
+type BlinkSource = "spend" | "usage" | "fixed"
 
 export type BlinkPeriod = {
   /** Milliseconds per blink cycle. */
@@ -46,11 +55,11 @@ export type BlinkPeriod = {
  * rung covers the same multiple of the rate.
  */
 function rungFor(rate: number, floor: number, ceil: number): number {
-  if (!Number.isFinite(rate) || rate <= floor) return LED_PERIOD_RUNGS_MS[0]
-  if (rate >= ceil) return LED_PERIOD_RUNGS_MS[LED_PERIOD_RUNGS_MS.length - 1]
+  if (!Number.isFinite(rate) || rate <= floor) return SLOWEST_PERIOD_MS
+  if (rate >= ceil) return FASTEST_PERIOD_MS
   const t = Math.log(rate / floor) / Math.log(ceil / floor)
   const index = Math.round(t * (LED_PERIOD_RUNGS_MS.length - 1))
-  return LED_PERIOD_RUNGS_MS[index]
+  return LED_PERIOD_RUNGS_MS[index] ?? SLOWEST_PERIOD_MS
 }
 
 /** The blink period for a spend rate in dollars per minute, or null for none. */
@@ -66,7 +75,7 @@ export function ledPeriodFromConsumption(pctPerHour: number | null): number | nu
 }
 
 /** The fastest allowance consumption rate the usage payload reports. */
-export function peakConsumptionRate(usage: LiveUsageSummaryPayload | null): number | null {
+function peakConsumptionRate(usage: LiveUsageSummaryPayload | null): number | null {
   let peak: number | null = null
   for (const provider of usage?.providers ?? []) {
     for (const window of provider.windows) {

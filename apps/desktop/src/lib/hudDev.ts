@@ -1,4 +1,4 @@
-import type { HudSpendRate } from "./ipc"
+import type { HudSpendRate } from "./hudIpc"
 import type { UsageBarItem } from "./usageBars"
 
 /**

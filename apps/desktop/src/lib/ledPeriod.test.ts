@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import type { HudSpendRate } from "./ipc"
+import type { HudSpendRate } from "./hudIpc"
 import {
   blinkPeriod,
   describeSpend,
