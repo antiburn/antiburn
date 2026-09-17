@@ -3259,7 +3259,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_resource_no_finding_is_verification_clean_not_report_clean() {
+    fn incomplete_resource_evidence_cannot_verify_a_remediation() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_invoked_mcp(&store, "clean", 121, "server-a");
@@ -3280,7 +3280,7 @@ mod tests {
                 antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence
             )
         );
-        assert!(assessments.assessments[0].clean_for_verification);
+        assert!(!assessments.assessments[0].clean_for_verification);
     }
 
     #[test]

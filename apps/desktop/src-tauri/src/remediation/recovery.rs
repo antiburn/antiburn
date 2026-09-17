@@ -14,7 +14,7 @@ pub(crate) fn recover_uncertain_write(
         );
     }
     let definition = parse_watch_definition(&record.definition_json)?;
-    let Some(mut replacement) = definition
+    let Some(replacement) = definition
         .config_proposed_value
         .clone()
         .or(definition.replacement.clone())
@@ -59,16 +59,13 @@ pub(crate) fn recover_uncertain_write(
     if matches!(
         setting,
         ConfigSetting::McpServer | ConfigSetting::BuiltInTool | ConfigSetting::Skill
-    ) {
-        let Some(value) = resource_replacement_value(&replacement, definition.resource.as_deref())
-        else {
-            return store.mark_remediation_recovery_checked(
-                &record.remediation_id,
-                "verificationUnavailable",
-                now,
-            );
-        };
-        replacement = value.to_owned();
+    ) && resource_replacement_value(&replacement, definition.resource.as_deref()).is_none()
+    {
+        return store.mark_remediation_recovery_checked(
+            &record.remediation_id,
+            "verificationUnavailable",
+            now,
+        );
     }
     if policy.action_support(
         RemediationAction::RecoverUncertainWrite(setting),

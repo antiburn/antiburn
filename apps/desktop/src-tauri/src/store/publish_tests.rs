@@ -545,6 +545,8 @@ fn a_winning_ready_publication_activates_only_exact_markers_from_new_user_conten
     insert_waiting_prompt(&store, "exact", "exact-target");
     insert_waiting_prompt(&store, "extended", "extended-target");
     insert_waiting_prompt(&store, "assistant", "assistant-target");
+    insert_waiting_prompt(&store, "thinking", "thinking-target");
+    insert_waiting_prompt(&store, "tool-input", "tool-input-target");
     let writer = FencedTurnRowStore::new(store.clone(), key, claim.claim_fence);
     writer
         .write_turn_rows(&[
@@ -556,6 +558,22 @@ fn a_winning_ready_publication_activates_only_exact_markers_from_new_user_conten
                     "Remediation reference: ABR-assistant",
                 )],
                 ..turn_row(2)
+            },
+            TurnRow {
+                role: "user",
+                content: vec![ContentPart::new(
+                    ContentKind::Thinking,
+                    "Remediation reference: ABR-thinking",
+                )],
+                ..turn_row(3)
+            },
+            TurnRow {
+                role: "user",
+                content: vec![ContentPart::new(
+                    ContentKind::ToolInput,
+                    "Remediation reference: ABR-tool-input",
+                )],
+                ..turn_row(4)
             },
         ])
         .unwrap();
@@ -581,6 +599,12 @@ fn a_winning_ready_publication_activates_only_exact_markers_from_new_user_conten
         store.remediation("assistant").unwrap().unwrap().state,
         RemediationState::WaitingForPromptUse
     );
+    for remediation_id in ["thinking", "tool-input"] {
+        assert_eq!(
+            store.remediation(remediation_id).unwrap().unwrap().state,
+            RemediationState::WaitingForPromptUse
+        );
+    }
 }
 
 /* R6: `published_fence` itself — a winning publish stamps it, a lost race

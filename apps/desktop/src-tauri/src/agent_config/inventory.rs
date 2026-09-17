@@ -1628,7 +1628,20 @@ fn merge_indexed<'a>(
                 }
                 continue;
             }
-            EvidenceValue::Partial { observed, .. } => observed,
+            EvidenceValue::Partial { observed, reason } => {
+                for kind in [
+                    ResourceKind::McpServer,
+                    ResourceKind::BuiltInTool,
+                    ResourceKind::Skill,
+                ] {
+                    builder.issue(
+                        Some(kind),
+                        indexed.scope,
+                        InventoryIssueReason::PartialIndexedEvidence(*reason),
+                    );
+                }
+                observed
+            }
             EvidenceValue::Complete(observed) => observed,
         };
         indexed_coverage_issue(

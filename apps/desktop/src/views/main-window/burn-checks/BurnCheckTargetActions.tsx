@@ -224,7 +224,12 @@ export function BurnCheckTargetActions({
           outcome?.outcome === "recoveryNeeded" ? outcome.watchId : value.acceptedWatchId,
         busy: null,
         reviewBlocked: true,
-        status: null,
+        status:
+          outcome?.outcome === "conflict"
+            ? "Another change now conflicts with this operation. Close this review and check the setting."
+            : outcome?.outcome === "unavailable"
+              ? "The current setting no longer passes the write safety check."
+              : null,
       }))
       if (outcome?.outcome === "recoveryNeeded") refresh()
       if (outcome?.outcome === "expired" || outcome?.outcome === "stale") {
@@ -238,7 +243,7 @@ export function BurnCheckTargetActions({
         ...value,
         busy: null,
         reviewBlocked: true,
-        status: null,
+        status: "Could not confirm the result. Check the setting before you try again.",
       }))
     }
   }

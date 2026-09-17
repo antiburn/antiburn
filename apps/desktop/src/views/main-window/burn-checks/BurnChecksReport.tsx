@@ -180,7 +180,7 @@ function CheckDetail({
         : ["tool", "tools"]
   const resourceCount =
     named && targetList
-      ? `${targetList.targets.length} affected ${resourceNames[targetList.targets.length === 1 ? 0 : 1]}`
+      ? `${targetList.truncated ? "At least " : ""}${targetList.targets.length} affected ${resourceNames[targetList.targets.length === 1 ? 0 : 1]}`
       : null
   const showFindingActions = check.finding > 0 && targetList
   const showSnoozedAction = snoozed && check.finding === 0

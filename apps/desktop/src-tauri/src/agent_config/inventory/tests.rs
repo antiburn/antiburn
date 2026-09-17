@@ -431,11 +431,17 @@ fn indexed_resources_merge_with_current_candidates_and_keep_partial_limits() {
         "Read",
         ResourceScope::Project,
     );
-    assert!(!inventory.issues.contains(&InventoryIssue {
-        kind: None,
-        scope: ResourceScope::Project,
-        reason: InventoryIssueReason::PartialIndexedEvidence(CoverageReason::CapExceeded),
-    }));
+    for kind in [
+        ResourceKind::McpServer,
+        ResourceKind::BuiltInTool,
+        ResourceKind::Skill,
+    ] {
+        assert!(inventory.issues.contains(&InventoryIssue {
+            kind: Some(kind),
+            scope: ResourceScope::Project,
+            reason: InventoryIssueReason::PartialIndexedEvidence(CoverageReason::CapExceeded),
+        }));
+    }
 }
 
 #[test]

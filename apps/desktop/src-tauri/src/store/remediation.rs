@@ -836,7 +836,7 @@ pub(super) fn activate_waiting_prompt_remediations_in(
         "SELECT CAST(content.content AS TEXT) FROM turn
           JOIN turn_content AS content ON content.turn_rowid = turn.rowid
          WHERE turn.environment_key = ?1 AND turn.agent = ?2 AND turn.session_id = ?3
-           AND turn.claim_fence = ?4 AND turn.role = 'user'",
+            AND turn.claim_fence = ?4 AND turn.role = 'user' AND content.kind = 'user'",
     )?;
     let content = statement
         .query_map(

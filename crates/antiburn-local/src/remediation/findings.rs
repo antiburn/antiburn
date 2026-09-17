@@ -441,8 +441,12 @@ pub fn scoped_resource_no_finding(
     ) || !crate::insights::detectors::in_denominator(detector, evidence)
         || (detector == DetectorId::UnusedBuiltInTools
             && complete_assistant_turns(evidence) == Some(0))
-        || (!eligible(detector, evidence)
-            && !crate::insights::detectors::source_assessable(detector, evidence, source_evidence))
+        || {
+            let source_assessable =
+                crate::insights::detectors::source_assessable(detector, evidence, source_evidence);
+            !source_assessable
+                && (!eligible(detector, evidence) || !clean_facts_complete(detector, evidence))
+        }
     {
         return false;
     }

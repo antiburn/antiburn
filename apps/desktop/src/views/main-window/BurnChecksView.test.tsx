@@ -674,7 +674,7 @@ describe("BurnChecksView", () => {
     setWindowWidth(1400)
     const first = setup(target, true)
 
-    expect(await screen.findByText(/1 affected MCP server$/)).toBeVisible()
+    expect(await screen.findByText(/At least 1 affected MCP server$/)).toBeVisible()
     first.view.unmount()
 
     setup(target)
@@ -692,8 +692,8 @@ describe("BurnChecksView", () => {
       },
     )
 
-    const resources = await screen.findByText(/2 affected MCP servers$/)
-    expect(resources).toHaveTextContent("2 affected MCP servers")
+    const resources = await screen.findByText(/At least 2 affected MCP servers$/)
+    expect(resources).toHaveTextContent("At least 2 affected MCP servers")
     expect(screen.queryByText("23 sessions affected")).not.toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Burn check details" })).toHaveTextContent(
       "23 failed",
@@ -1515,7 +1515,11 @@ describe("BurnChecksView", () => {
     const dialog = await screen.findByRole("dialog", { name: "Review change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
-    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        "Could not confirm the result. Check the setting before you try again.",
+      ),
+    )
     expect(screen.getByRole("dialog", { name: "Review change" })).toBeVisible()
     await waitFor(() =>
       expect(commands.noteInteraction).toHaveBeenCalledWith({
@@ -1834,8 +1838,8 @@ describe("BurnChecksView", () => {
     ["conflict", { outcome: "conflict" }],
     ["unavailable", { outcome: "unavailable", reason: "safetyCheckFailed" }],
   ] as const)(
-    "keeps the %s apply outcome in the review without a message",
-    async (_name, outcome) => {
+    "keeps the %s apply outcome in the review with feedback",
+    async (name, outcome) => {
       commands.apply.mockResolvedValueOnce(outcome)
       setup()
       fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
@@ -1845,7 +1849,11 @@ describe("BurnChecksView", () => {
       await waitFor(() =>
         expect(within(dialog).getByRole("button", { name: "Close" })).toBeEnabled(),
       )
-      expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument()
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        name === "conflict"
+          ? "Another change now conflicts with this operation. Close this review and check the setting."
+          : "The current setting no longer passes the write safety check.",
+      )
       expect(within(dialog).getByRole("button", { name: "Apply change" })).toBeDisabled()
     },
   )
