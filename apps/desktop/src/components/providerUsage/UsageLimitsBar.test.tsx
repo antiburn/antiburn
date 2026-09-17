@@ -350,9 +350,79 @@ describe("UsageLimitsBar — the live sweep", () => {
     )
   })
 
-  it("keeps the bar dark while the live session draws on a provider it does not show", () => {
-    const { container } = bar({ liveProviders: ["google"], expanded: false })
-    expect(container.querySelector(".led-sweep-ring")).toBeNull()
+  it.each([false, true])(
+    "does not run a clock for an unrelated live provider when expanded=%s",
+    (expanded) => {
+      const { container } = bar({ liveProviders: ["google"], expanded })
+      expect(screen.getByTestId("usage-limits-bar")).not.toHaveClass("led-clock")
+      expect(container.querySelector(".led-sweep-ring, .led-sweep-dot")).toBeNull()
+    },
+  )
+
+  it.each([false, true])(
+    "does not run a clock for an unavailable-only live provider when expanded=%s",
+    (expanded) => {
+      const { container } = bar({
+        live: liveSummary({ providers: [], errors: [sourceError()] }),
+        liveProviders: ["anthropic"],
+        expanded,
+      })
+      expect(screen.getByTestId("usage-limits-bar")).not.toHaveClass("led-clock")
+      expect(container.querySelector(".led-sweep-ring, .led-sweep-dot")).toBeNull()
+    },
+  )
+
+  it.each([
+    { models: [], sweeps: false },
+    { models: ["claude-opus-4-6"], sweeps: false },
+    { models: ["claude-fable-5"], sweeps: true },
+  ])("runs the scoped-meter clock only for matching models: $models", ({ models, sweeps }) => {
+    const { container } = bar({
+      live: liveSummary({
+        providers: [
+          liveProvider({ windows: [liveWindow({ role: "other", scopeModel: "fable" })] }),
+        ],
+      }),
+      liveProviders: ["anthropic"],
+      liveModels: { anthropic: models },
+      expanded: true,
+    })
+    expect(screen.getByTestId("usage-limits-bar").classList.contains("led-clock")).toBe(sweeps)
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(sweeps ? 13 : 0)
+  })
+
+  it("does not run a clock for a closed ring with no percentage", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ windows: [liveWindow({ usedPercent: null })] })],
+      }),
+      liveProviders: ["anthropic"],
+    })
+    expect(screen.getByTestId("usage-limits-bar")).not.toHaveClass("led-clock")
+    expect(screen.queryByTestId("usage-ring-sweep")).not.toBeInTheDocument()
+  })
+
+  it("runs the clock for a closed zero-percent ring", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ windows: [liveWindow({ usedPercent: 0 })] })],
+      }),
+      liveProviders: ["anthropic"],
+    })
+    expect(screen.getByTestId("usage-limits-bar")).toHaveClass("led-clock")
+    expect(screen.getByTestId("usage-ring-sweep")).toBeInTheDocument()
+  })
+
+  it("runs the clock for an expanded account-wide meter with no percentage", () => {
+    const { container } = bar({
+      live: liveSummary({
+        providers: [liveProvider({ windows: [liveWindow({ usedPercent: null })] })],
+      }),
+      liveProviders: ["anthropic"],
+      expanded: true,
+    })
+    expect(screen.getByTestId("usage-limits-bar")).toHaveClass("led-clock")
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
   })
 
   it("does not sweep the rings without a live session", () => {

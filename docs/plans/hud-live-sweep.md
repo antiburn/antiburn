@@ -310,12 +310,12 @@ sweep while tokens flow, not while the agent waits.
   lightness 0.85, a dark shade of the same hue above one over it. A webview
   without the syntax keeps the white gleam. `SegmentedMeter` and the ring
   paint only the brand and red tints, so they stay on the shimmer white.
-- **The renderer keeps a local 30 s clock for keyed sessions too.** The plan
-  had the bus's `quiet` event end the sweep by itself. A snapshot that lists
-  a session written 20 s ago, or a missed event, then needs a timer anyway,
-  so each entry carries the instant its write stops counting and one timer
-  serves keyed and keyless sessions alike. `quiet` and `idle` still remove
-  the session at once.
+- **Registry-owned expiry replaces the earlier renderer clock.** The lifecycle
+  registry owns the 30 s quiet and 180 s idle deadlines. `quiet` stops the
+  sweep but retains the active session; `idle` removes it. The registry also
+  expires anonymous activity. Renderers reconcile sequenced events, snapshots,
+  and named presence rather than running local lifecycle-expiry timers. The
+  current contract is [session lifecycle events](../session-lifecycle-events.md).
 - **The sweep position runs in bar lengths.** The pseudo-element formula in
   the plan multiplied by the segment count; the built one divides the
   segment index by it instead, so the band and the row lag are the same

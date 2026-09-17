@@ -116,9 +116,23 @@ pub fn popover_content_ready(window: tauri::WebviewWindow, generation: u64) {
 ///
 /// `pane` is optional and is a *request*: the frontend owns the pane list, so
 /// an id it does not recognize simply leaves the window where it was.
+///
+/// `async` is load-bearing, not style. A synchronous command runs on the main
+/// thread *inside* the calling webview's IPC callback. On Windows a webview
+/// created from there never finishes: WebView2 cannot create a controller
+/// while the thread is still inside one of its own callbacks, so
+/// `WebviewWindowBuilder::build` keeps the main thread and the window never
+/// loads its page. `async` moves the command to the async runtime, and
+/// [`main_window::on_main_value`] then reaches the main thread through an
+/// ordinary event-loop turn. Every command that can create a window owes the
+/// same treatment.
 #[tauri::command]
-pub fn open_settings_window(app: tauri::AppHandle, pane: Option<String>) -> CommandResult<()> {
-    settings::open(&app, pane).map_err(fail)
+pub async fn open_settings_window(
+    app: tauri::AppHandle,
+    pane: Option<String>,
+) -> CommandResult<()> {
+    crate::main_window::on_main_value(&app, move |app| settings::open(app, pane).map_err(fail))
+        .await?
 }
 
 /// The pane a caller asked for, taken once, as the settings window mounts.

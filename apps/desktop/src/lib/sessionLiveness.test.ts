@@ -64,7 +64,7 @@ describe("canonical sweep selectors", () => {
       expect(liveProviders(live)).toEqual([])
       expect(liveModels(live)).toEqual({})
       expect(
-        liveWindowSweeps({ scopeModel: "fable" }, false, liveModels(live).anthropic ?? []),
+        liveWindowSweeps({ scopeModel: "fable" }, true, liveModels(live).anthropic ?? []),
       ).toBe(false)
     },
   )
