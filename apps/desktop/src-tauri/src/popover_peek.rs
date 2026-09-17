@@ -130,13 +130,16 @@ fn validate_state_caller(actual: &str) -> Result<(), String> {
     }
 }
 
+/// `async` keeps the companion build off the popover's IPC callback. The first
+/// request creates the companion webview, and a webview created from inside
+/// another webview's callback never loads on Windows. See
+/// [`crate::commands::open_settings_window`].
 #[tauri::command]
-pub fn show_popover_peek(
+pub async fn show_popover_peek(
     window: tauri::WebviewWindow,
     target: PopoverPeekTarget,
     anchor: AnchorRegion,
     initial_presentation: Option<PopoverPeekData>,
-    manager: tauri::State<'_, PopoverPeekManager>,
 ) -> Result<AnchoredWindowRequest<PopoverPeekTarget>, String> {
     validate_popover_caller(window.label())?;
     let presentation = match initial_presentation {
@@ -153,9 +156,12 @@ pub fn show_popover_peek(
         }),
         None => None,
     };
-    manager
-        .request_with_presentation(window.app_handle(), target, anchor, presentation)
-        .map_err(|error| error.to_string())
+    crate::main_window::on_main_value(window.app_handle(), move |app| {
+        app.state::<PopoverPeekManager>()
+            .request_with_presentation(app, target, anchor, presentation)
+            .map_err(|error| error.to_string())
+    })
+    .await?
 }
 
 fn validate_checks_presentation(presentation: &ChecksPresentation) -> Result<(), String> {
