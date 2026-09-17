@@ -6,7 +6,11 @@ mod history_tests {
 
     use super::super::*;
     use crate::provider_usage::live::model::{UsageSource, WindowRole};
-    use crate::store::{SessionKey, SessionRecord};
+    use crate::store::{AppSettings, SessionKey, SessionRecord};
+
+    /// A finite retention setting, so a test exercising an age-based cutoff
+    /// does not have to reason about the forever default.
+    const RETENTION_DAYS: i32 = 90;
 
     const NOW: i64 = 1_800_000_000;
     const ACCOUNT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -426,6 +430,12 @@ mod history_tests {
     #[test]
     fn retention_bounds_readings_and_clear_removes_provider_history() {
         let store = store();
+        store
+            .save_settings(&AppSettings {
+                session_data_retention_days: RETENTION_DAYS,
+                ..AppSettings::default()
+            })
+            .unwrap();
         let old = snapshot(
             ACCOUNT_A,
             NOW - 91 * 86_400,
@@ -477,6 +487,12 @@ mod history_tests {
     fn retention_deletes_an_orphaned_period_and_its_observations_after_the_allocation_checks_are_gone()
      {
         let store = store();
+        store
+            .save_settings(&AppSettings {
+                session_data_retention_days: RETENTION_DAYS,
+                ..AppSettings::default()
+            })
+            .unwrap();
         let old = snapshot(
             ACCOUNT_A,
             NOW - 91 * 86_400,
@@ -605,6 +621,12 @@ mod history_tests {
     #[test]
     fn pruned_period_ids_do_not_reuse_an_old_id() {
         let store = store();
+        store
+            .save_settings(&AppSettings {
+                session_data_retention_days: RETENTION_DAYS,
+                ..AppSettings::default()
+            })
+            .unwrap();
         let old = snapshot(
             ACCOUNT_A,
             NOW - 91 * 86_400,

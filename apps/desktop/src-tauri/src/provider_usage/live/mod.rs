@@ -45,7 +45,6 @@
 pub mod anthropic;
 pub mod antigravity;
 pub mod codex;
-pub mod history;
 pub mod metrics;
 pub mod milestones;
 pub mod model;
@@ -410,12 +409,10 @@ pub fn summarize_collected(
             }
         }
     }
-    let history = store
-        .map(|store| history::record(store, &collected.snapshots))
-        .unwrap_or_default();
     let midnight = local_midnight(now, utc_offset_minutes);
     let at =
         time::OffsetDateTime::from_unix_timestamp(now).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let samples_since_epoch = now - SAMPLE_LOOKBACK_SECONDS;
 
     let mut providers: Vec<LiveProviderUsage> = collected
         .snapshots
@@ -435,7 +432,7 @@ pub fn summarize_collected(
                 .windows
                 .iter()
                 .map(|entry| {
-                    let samples = history.samples(&history::window_key(&snapshot, &entry.id));
+                    let samples = window_samples(store, &snapshot, &entry.id, samples_since_epoch);
                     window(entry.clone(), &samples, &snapshot, at, midnight)
                 })
                 .collect(),
@@ -478,6 +475,36 @@ pub fn summarize_collected(
             .collect(),
         meters,
         generated_at: crate::store::iso_from_epoch(Some(now)),
+    }
+}
+
+/// How far back [`window_samples`] looks for history: a weekly window plus
+/// one reading before its start, which is what
+/// [`metrics::latest_stable_segment`] needs to tell a fresh window from a
+/// continuing one.
+const SAMPLE_LOOKBACK_SECONDS: i64 = 8 * 24 * 60 * 60;
+
+/// Durable history for one snapshot's window, or empty when there is no
+/// store to read or no opaque account key to key the readings by.
+///
+/// Called after [`crate::store::Store::record_provider_usage_snapshots`] has
+/// already written this pass's readings, so the query sees the reading it is
+/// about.
+fn window_samples(
+    store: Option<&crate::store::Store>,
+    snapshot: &ProviderUsageSnapshot,
+    window_id: &str,
+    since_epoch: i64,
+) -> Vec<metrics::UsageSample> {
+    let (Some(store), Some(account_key)) = (store, snapshot.account.as_deref()) else {
+        return Vec::new();
+    };
+    match store.provider_usage_samples(snapshot.provider, account_key, window_id, since_epoch) {
+        Ok(samples) => samples,
+        Err(error) => {
+            ::tracing::warn!(event = "provider_usage_samples_query_failed", error = %error);
+            Vec::new()
+        }
     }
 }
 

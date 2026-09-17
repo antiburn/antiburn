@@ -494,23 +494,56 @@ fn a_completed_background_collection_records_history_and_shapes_the_view() {
         "/tmp/antiburn-live-usage-background-collection",
     ))
     .expect("in-memory store");
-    let mut reading = snapshot(Freshness::Fresh, NOW, 44.0);
+    let reading = snapshot(Freshness::Fresh, NOW, 44.0);
     let collected = sources::Collected {
-        snapshots: vec![reading.clone()],
+        snapshots: vec![reading],
         errors: Vec::new(),
     };
 
     let summary = summarize_collected(collected, Vec::new(), Some(&store), None, NOW, 0);
-    reading.account = summary.providers[0].account_key.clone();
-    let key = super::history::window_key(&reading, "five-hour");
+    let account_key = summary.providers[0]
+        .account_key
+        .clone()
+        .expect("an opaque account key");
 
     assert_eq!(summary.providers[0].windows[0].used_percent, Some(44.0));
-    assert_eq!(super::history::load(&store).samples(&key).len(), 1);
+    let samples = store
+        .provider_usage_samples("anthropic", &account_key, "five-hour", 0)
+        .expect("query succeeds");
+    assert_eq!(
+        samples.len(),
+        1,
+        "the durable observation table holds the reading, not a separate cache"
+    );
+}
+
+#[test]
+fn the_forecast_is_computed_from_durable_observations() {
+    // The forecast cache blob is gone: two readings recorded a pass apart
+    // must still give the forecast a rate, now read straight from
+    // `provider_usage_observation`.
+    let store = crate::store::Store::open_in_memory(std::path::Path::new(
+        "/tmp/antiburn-live-usage-forecast-from-observations",
+    ))
+    .expect("in-memory store");
+    let earlier = sources::Collected {
+        snapshots: vec![snapshot(Freshness::Fresh, NOW - 1_200, 40.0)],
+        errors: Vec::new(),
+    };
+    summarize_collected(earlier, Vec::new(), Some(&store), None, NOW - 1_200, 0);
+
+    let later = sources::Collected {
+        snapshots: vec![snapshot(Freshness::Fresh, NOW, 44.0)],
+        errors: Vec::new(),
+    };
+    let summary = summarize_collected(later, Vec::new(), Some(&store), None, NOW, 0);
+
     assert!(
-        !store
-            .internal_value("internal:liveUsageHistoryV2")
-            .unwrap()
-            .contains("account-a")
+        summary.providers[0].windows[0]
+            .forecast
+            .consumption_rate
+            .is_some(),
+        "two readings twenty minutes apart give the forecast a rate"
     );
 }
 
