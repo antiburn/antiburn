@@ -51,6 +51,7 @@ pub fn load_placements(store: &Store) -> Vec<Placement> {
 }
 
 /// Whether the reader last left the HUD on. Absent means off.
+#[cfg(target_os = "macos")]
 pub fn load_enabled(store: &Store) -> bool {
     store.internal_value(ENABLED_KEY).as_deref() == Some("true")
 }

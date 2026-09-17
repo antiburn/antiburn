@@ -253,6 +253,7 @@ pub fn wake_overlay(app: &AppHandle, reason: &str) {
 pub fn wake_overlay(_app: &tauri::AppHandle, _reason: &str) {}
 
 /// Forget the dock position. The window is about to hide.
+#[cfg(target_os = "macos")]
 pub(crate) fn reset() {
     let mut dock = state();
     dock.docked = false;
@@ -586,7 +587,7 @@ fn on_tab_strip(edge: DockEdge, frame: &Rect, tab: f64, cursor: (f64, f64)) -> b
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn same_rect(left: &Rect, right: &Rect) -> bool {
     left.x == right.x
         && left.y == right.y
