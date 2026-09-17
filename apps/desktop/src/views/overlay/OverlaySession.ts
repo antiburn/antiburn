@@ -388,6 +388,10 @@ export class OverlaySession {
           spend: null,
         })
         if (hadMap) void this.syncWindow(true, generation)
+        // The detail window spells the map out. It needs the empty state too.
+        if (hadMap && this.detailShown) {
+          void showHudDetail(this.detailState("refresh")).catch(() => {})
+        }
         return
       }
       void getHudTokenMap(TOKEN_MAP_WINDOW_SECS)

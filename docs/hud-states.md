@@ -29,9 +29,9 @@ stateDiagram-v2
 
     note right of Collapsed
         The frame, the bars, and the
-        token map above them while a
-        session writes. No detail
-        panel and no window chrome.
+        token map above them while two
+        or more sessions write. No
+        detail panel, no window chrome.
     end note
     note right of DetailShown
         A separate display-only window
