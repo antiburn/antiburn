@@ -36,7 +36,15 @@ export function MainWindowLayout({
       <div className="main-window-workspace">{children}</div>
       {panel && (
         <div className="main-window-panel">
-          <ScrollPane className="min-h-0" topEdgeFade>
+          {/* The panel holds no focusable control, so the viewport itself
+              carries the tab stop. Without it a keyboard reaches nothing
+              that has scrolled out of sight. */}
+          <ScrollPane
+            className="min-h-0"
+            viewportTabIndex={0}
+            viewportLabel="Side panel"
+            topEdgeFade
+          >
             {panel}
           </ScrollPane>
         </div>

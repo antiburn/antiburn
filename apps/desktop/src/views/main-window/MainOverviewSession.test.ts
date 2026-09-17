@@ -171,9 +171,11 @@ describe("MainOverviewSession", () => {
     expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first")
     vi.mocked(adapter.getAllowanceUsage).mockRejectedValueOnce(new Error("Unavailable"))
     scanFinished()
-    await vi.waitFor(() => expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2))
+    // The mock records the call before the rejection reaches the catch, so
+    // the test waits for the state it checks.
+    await vi.waitFor(() => expect(session.getSnapshot().allowanceError).toBe(true))
+    expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2)
     expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first")
-    expect(session.getSnapshot().allowanceError).toBe(true)
     expect(session.getSnapshot().usageError).toBe(false)
     stop()
   })

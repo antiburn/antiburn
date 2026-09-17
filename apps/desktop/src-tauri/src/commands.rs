@@ -986,7 +986,10 @@ pub async fn get_allowance_usage(
         let rollups = store
             .provider_usage_period_rollups(0, MAX_ALLOWANCE_PERIODS)
             .map_err(fail)?;
-        let incidents = store.quota_incidents(since_epoch).map_err(fail)?;
+        // The daily series reaches back two windows, so the incidents behind
+        // it must reach as far. The overage total keeps the shorter span.
+        let series_since_epoch = bounds.previous_30_days_start;
+        let incidents = store.quota_incidents(series_since_epoch).map_err(fail)?;
         // Reach one window further back than the series. A period that spans
         // the first day started before it, and its first reading states the
         // whole rise from the period's start.
@@ -1002,7 +1005,7 @@ pub async fn get_allowance_usage(
         let consumption = provider_usage::allowance::consumption(&readings);
         let blocks = provider_usage::allowance::account_blocks(
             &incidents,
-            since_epoch.saturating_mul(1_000),
+            series_since_epoch.saturating_mul(1_000),
         );
         let allowances = provider_usage::allowance::account_allowances(
             &rollups,
@@ -2951,6 +2954,36 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// The earlier of the two daily series counts the blocks of its own days.
+    /// The caller must load incidents for both series, not for the trailing
+    /// thirty days alone.
+    #[test]
+    fn the_earlier_series_counts_a_block_of_its_own_days() {
+        let bounds = provider_usage::window_bounds(1_800_000_000, 0);
+        let offset = provider_usage::local_offset(0);
+        let older = bounds.previous_30_days_start + 5 * provider_usage::DAY;
+        let recent = bounds.last_30_days_start + 2 * provider_usage::DAY;
+        let blocks = [
+            provider_usage::allowance::Block {
+                started_at_ms: older.saturating_mul(1_000),
+                reset_at_ms: None,
+            },
+            provider_usage::allowance::Block {
+                started_at_ms: recent.saturating_mul(1_000),
+                reset_at_ms: None,
+            },
+        ];
+
+        let (days, previous_days) = allowance_days(None, &blocks, &bounds, offset);
+
+        assert_eq!(previous_days[5].block_count, 1);
+        assert_eq!(days[2].block_count, 1);
+        assert_eq!(
+            previous_days.iter().map(|day| day.block_count).sum::<u32>(),
+            1
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn blocking_command_work_keeps_the_current_thread_runtime_responsive() {

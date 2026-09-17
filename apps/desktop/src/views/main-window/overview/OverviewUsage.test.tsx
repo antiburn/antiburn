@@ -203,4 +203,29 @@ describe("OverviewUsage", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/cannot read the allowance figures/)
     expect(screen.queryByText(/no allowance readings yet/)).not.toBeInTheDocument()
   })
+
+  it("draws no chart after a failed allowance read", () => {
+    // The totals state the failed read. A chart that says it has no readings
+    // yet states a different thing about the same account.
+    renderTotals({ allowance: null, allowanceError: true })
+    expect(screen.queryByText(/no meter readings to chart yet/)).not.toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Allowance by day" })).not.toBeInTheDocument()
+  })
+
+  it("keeps the subscription figures when the cost read fails", () => {
+    // The two units are separate reads. A failed cost read must not take the
+    // unit the reader is looking at off the page.
+    renderTotals({ totals: null, usageError: true })
+    expect(screen.getByRole("region", { name: "Allowance" })).toBeInTheDocument()
+    expect(screen.getByRole("radio", { name: "Cost" })).toBeInTheDocument()
+    expect(screen.queryByText("Local usage is unavailable.")).not.toBeInTheDocument()
+  })
+
+  it("states the failed cost read on the cost branch, with a retry", () => {
+    const onRetryUsage = vi.fn()
+    renderTotals({ metric: "cost", totals: null, usageError: true, onRetryUsage })
+    expect(screen.getByRole("alert")).toHaveTextContent("Local usage is unavailable.")
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(onRetryUsage).toHaveBeenCalled()
+  })
 })

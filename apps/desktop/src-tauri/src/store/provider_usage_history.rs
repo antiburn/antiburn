@@ -57,6 +57,8 @@ pub struct ProviderUsageObservation {
     pub reported_resets_at_epoch: Option<i64>,
     pub plan: Option<String>,
     pub plan_tier: Option<String>,
+    /// The refusal the provider stated on this observation, if it stated one.
+    pub refusal_kind: Option<String>,
 }
 
 /// One closed-over allowance period, reduced to the figures the usage
@@ -699,7 +701,7 @@ fn existing_observation(
             "SELECT id, period_id, provider, account_key, window_id, window_kind, window_role,
                     scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
                     is_authoritative, confidence, source_id, reported_starts_at_epoch,
-                    reported_resets_at_epoch, plan, plan_tier
+                    reported_resets_at_epoch, plan, plan_tier, refusal_kind
                FROM provider_usage_observation
               WHERE provider = ?1 AND account_key = ?2 AND window_id = ?3
                 AND window_kind = ?4 AND window_role = ?5 AND scope_key = ?6
@@ -737,6 +739,9 @@ fn is_more_complete(reading: &Reading<'_>, existing: &ProviderUsageObservation) 
         || existing.reported_resets_at_epoch.is_some()
             && reading.resets_at_epoch.is_some()
             && existing.reported_resets_at_epoch != reading.resets_at_epoch
+        // A reading that adds a refusal to a stored one that has none is more
+        // complete. Without this, the refusal never reaches the rollup.
+        || existing.refusal_kind.is_none() && reading.refusal_kind.is_some()
 }
 
 fn merge_boundary_evidence<'a>(
@@ -873,7 +878,7 @@ fn query_observations(
         "SELECT id, period_id, provider, account_key, window_id, window_kind, window_role,
                 scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
                 is_authoritative, confidence, source_id, reported_starts_at_epoch,
-                reported_resets_at_epoch, plan, plan_tier
+                reported_resets_at_epoch, plan, plan_tier, refusal_kind
            FROM provider_usage_observation
           WHERE period_id = ?1
           ORDER BY observed_at_epoch, id",
@@ -922,6 +927,7 @@ fn row_to_observation(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderUsage
         reported_resets_at_epoch: row.get(16)?,
         plan: row.get(17)?,
         plan_tier: row.get(18)?,
+        refusal_kind: row.get(19)?,
     })
 }
 

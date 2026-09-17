@@ -89,6 +89,30 @@ describe("MainWindowLimitsSession", () => {
     stop()
   })
 
+  it("keeps a pushed snapshot over a read that answers after it", async () => {
+    // A read stays in flight while the provider pushes newer figures. The
+    // read carries the older state, so it must not land on top of the push.
+    const { adapter, session, setVisible, liveChanged } = setup(false)
+    let answer: (value: LiveUsageSummaryPayload) => void = () => undefined
+    vi.mocked(adapter.getLiveUsage).mockReturnValueOnce(
+      new Promise<LiveUsageSummaryPayload>((resolve) => {
+        answer = resolve
+      }),
+    )
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(adapter.getVisible).toHaveBeenCalled())
+
+    setVisible(true)
+    await vi.waitFor(() => expect(adapter.getLiveUsage).toHaveBeenCalled())
+    liveChanged(liveUsage("pushed"))
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("pushed")
+
+    answer(liveUsage("stale"))
+    for (let tick = 0; tick < 5; tick += 1) await Promise.resolve()
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("pushed")
+    stop()
+  })
+
   it("leaves the sidebar usable when the read fails", async () => {
     const { adapter, session } = setup()
     vi.mocked(adapter.getLiveUsage).mockRejectedValueOnce(new Error("no reading"))

@@ -46,6 +46,8 @@ export function OverviewUsage({
   allowance,
   allowanceLoading = false,
   allowanceError = false,
+  usageError = false,
+  onRetryUsage,
   loading = false,
 }: {
   metric: OverviewMetric
@@ -56,8 +58,14 @@ export function OverviewUsage({
   allowance: AllowanceUsageSummaryPayload | null
   allowanceLoading?: boolean
   allowanceError?: boolean
+  usageError?: boolean
+  onRetryUsage?: () => void
   loading?: boolean
 }) {
+  // Each unit reads its own figures, so a failed read belongs to the unit it
+  // failed for. The other unit stays on the page.
+  const costFailed = usageError && !totals
+  const allowanceFailed = allowanceError && !allowance
   return (
     <section
       aria-label="Usage"
@@ -72,10 +80,25 @@ export function OverviewUsage({
         className="self-end"
       />
       {metric === "cost" ? (
-        <>
-          <OverviewSpendTotals totals={totals} loading={loading} />
-          <OverviewSpendChart days={days} previousDays={previousDays} loading={loading} />
-        </>
+        costFailed ? (
+          <div className="flex flex-1 items-center justify-center text-center">
+            <div>
+              <p role="alert" className="type-body text-label-secondary">
+                Local usage is unavailable.
+              </p>
+              {onRetryUsage && (
+                <button type="button" onClick={onRetryUsage} className="ui-push-button mt-3">
+                  Retry
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <OverviewSpendTotals totals={totals} loading={loading} />
+            <OverviewSpendChart days={days} previousDays={previousDays} loading={loading} />
+          </>
+        )
       ) : (
         <>
           <OverviewAllowanceTotals
@@ -84,10 +107,14 @@ export function OverviewUsage({
             loading={allowanceLoading}
             error={allowanceError}
           />
-          <OverviewAllowanceChart
-            accounts={allowanceAccounts(allowance)}
-            loading={allowanceLoading}
-          />
+          {/* The totals above state the failed read. A chart that says it has
+              no readings yet states a different thing, so it stays away. */}
+          {!allowanceFailed && (
+            <OverviewAllowanceChart
+              accounts={allowanceAccounts(allowance)}
+              loading={allowanceLoading}
+            />
+          )}
         </>
       )}
     </section>

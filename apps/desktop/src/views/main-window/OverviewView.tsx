@@ -56,52 +56,41 @@ export function OverviewView({
         />
       )}
       <h1 className="sr-only">Overview</h1>
-      {!usage && state.usageError ? (
-        <div className="flex flex-1 items-center justify-center text-center">
-          <div>
-            <p role="alert" className="type-body text-label-secondary">
-              Local usage is unavailable.
+      <ScrollPane className="min-h-0" topEdgeFade>
+        <div
+          role="region"
+          aria-label={loading ? "Loading Overview" : "Overview"}
+          aria-busy={loading || undefined}
+          className="overview-page flex w-full flex-col gap-[var(--space-xl)] px-8 py-6"
+        >
+          {loading && (
+            <p role="status" className="sr-only">
+              Loading Overview.
             </p>
-            <button type="button" onClick={session.refresh} className="ui-push-button mt-3">
-              Retry
-            </button>
+          )}
+          <OverviewUsage
+            metric={metric}
+            onMetricChange={setMetric}
+            totals={usage?.totals ?? null}
+            days={usage?.days ?? []}
+            previousDays={usage?.previousDays ?? []}
+            allowance={state.allowance}
+            allowanceLoading={state.allowanceLoading}
+            allowanceError={state.allowanceError}
+            usageError={state.usageError}
+            onRetryUsage={session.refresh}
+            loading={loading}
+          />
+          <div className="overview-stack p-[var(--space-lg)]">
+            <OverviewRecentSessions
+              entries={state.recentSessions}
+              loading={loading && !state.recentSessions}
+              onSelect={onSelectSession}
+              onOpenAll={onOpenSessions}
+            />
           </div>
         </div>
-      ) : (
-        <ScrollPane className="min-h-0" topEdgeFade>
-          <div
-            role="region"
-            aria-label={loading ? "Loading Overview" : "Overview"}
-            aria-busy={loading || undefined}
-            className="overview-page flex w-full flex-col gap-[var(--space-xl)] px-8 py-6"
-          >
-            {loading && (
-              <p role="status" className="sr-only">
-                Loading Overview.
-              </p>
-            )}
-            <OverviewUsage
-              metric={metric}
-              onMetricChange={setMetric}
-              totals={usage?.totals ?? null}
-              days={usage?.days ?? []}
-              previousDays={usage?.previousDays ?? []}
-              allowance={state.allowance}
-              allowanceLoading={state.allowanceLoading}
-              allowanceError={state.allowanceError}
-              loading={loading}
-            />
-            <div className="overview-stack p-[var(--space-lg)]">
-              <OverviewRecentSessions
-                entries={state.recentSessions}
-                loading={loading && !state.recentSessions}
-                onSelect={onSelectSession}
-                onOpenAll={onOpenSessions}
-              />
-            </div>
-          </div>
-        </ScrollPane>
-      )}
+      </ScrollPane>
     </div>
   )
 }

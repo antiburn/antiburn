@@ -45,6 +45,8 @@ export class MainWindowLimitsSession {
   private visible = false
   /** Counts the visibility events this start has seen. */
   private visibleRevision = 0
+  /** Counts the reads this start has asked for. Only the newest one wins. */
+  private readVersion = 0
 
   constructor(adapter: MainWindowLimitsAdapter = productionAdapter) {
     this.adapter = adapter
@@ -83,13 +85,19 @@ export class MainWindowLimitsSession {
           const gained = visible && !this.visible
           this.visibleRevision += 1
           this.visible = visible
-          if (gained) void this.load(generation)
+          // A read asked for before the window hid answers for a state
+          // nobody sees. The next read replaces it.
+          this.readVersion += 1
+          if (gained) void this.load(generation, this.readVersion)
         }),
       ),
       this.listen(
         generation,
         this.adapter.onLiveUsageChanged((liveUsage) => {
           if (generation === this.generation && this.visible) {
+            // The push carries the newest figures. A read still in flight
+            // carries older ones, so it must not land after this.
+            this.readVersion += 1
             this.update({ liveUsage, loading: false })
           }
         }),
@@ -103,17 +111,18 @@ export class MainWindowLimitsSession {
     // read must not write over it.
     if (revision !== this.visibleRevision) return
     this.visible = visible
-    if (visible) await this.load(generation)
+    if (visible) await this.load(generation, ++this.readVersion)
   }
 
-  private async load(generation: number): Promise<void> {
+  private async load(generation: number, version: number): Promise<void> {
+    const current = () => generation === this.generation && version === this.readVersion
     try {
       const liveUsage = await this.adapter.getLiveUsage()
-      if (generation === this.generation) this.update({ liveUsage, loading: false })
+      if (current()) this.update({ liveUsage, loading: false })
     } catch {
       // The limits panel shows its own empty state. A failed read must not
       // take the sidebar's navigation down with it.
-      if (generation === this.generation) this.update({ loading: false })
+      if (current()) this.update({ loading: false })
     }
   }
 
@@ -122,6 +131,7 @@ export class MainWindowLimitsSession {
     for (const stop of this.stops.splice(0)) stop()
     this.visible = false
     this.visibleRevision = 0
+    this.readVersion = 0
     this.snapshot = { liveUsage: null, loading: true }
   }
 }
