@@ -11,6 +11,93 @@ mod reconcile;
 mod schedules;
 mod scoped_models;
 
+#[derive(Default)]
+pub(super) struct ActorProbe {
+    page_task: Mutex<Option<tokio::task::AbortHandle>>,
+    progress: Mutex<PageProgress>,
+    round_gate: Mutex<Option<RoundGate>>,
+}
+
+#[derive(Default)]
+struct PageProgress {
+    processed: usize,
+    next_allowed: Option<Instant>,
+}
+
+struct RoundGate {
+    completed: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+}
+
+impl ActorProbe {
+    pub(super) fn page_started(&self, task: tokio::task::AbortHandle) {
+        *self.page_task.lock().unwrap() = Some(task);
+    }
+
+    pub(super) fn page_processed(&self, next_allowed: Option<Instant>) {
+        let mut progress = self.progress.lock().unwrap();
+        progress.processed += 1;
+        progress.next_allowed = next_allowed;
+    }
+
+    pub(super) async fn round_completed(&self) {
+        let gate = self.round_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            let _ = gate.completed.send(());
+            let _ = gate.resume.await;
+        }
+    }
+
+    fn pause_after_round(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (completed, acknowledgement) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        let mut gate = self.round_gate.lock().unwrap();
+        assert!(gate.is_none(), "only one round gate can be installed");
+        *gate = Some(RoundGate { completed, resume });
+        (acknowledgement, release)
+    }
+
+    fn processed(&self) -> usize {
+        self.progress.lock().unwrap().processed
+    }
+
+    // The current-thread test keeps the actor parked while the blocking task finishes.
+    fn wait_for_finished_task(&self) {
+        let task = self
+            .page_task
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the actor issued a page");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !task.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the page task did not finish"
+            );
+            std::thread::yield_now();
+        }
+    }
+}
+
+async fn wait_for_processed_pages(events: &SessionEvents, pages: usize) {
+    wait_until(|| events.test_probe.processed() >= pages).await;
+}
+
+async fn wait_for_round(acknowledgement: &mut tokio::sync::oneshot::Receiver<()>) {
+    wait_until(|| match acknowledgement.try_recv() {
+        Ok(()) => true,
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => false,
+        Err(error) => panic!("the actor dropped the round acknowledgement: {error}"),
+    })
+    .await;
+}
+
 fn key(session_id: &str) -> SessionKey {
     SessionKey::new("native", "claude-code", session_id)
 }
@@ -143,8 +230,8 @@ struct Scripted {
     /// `None`: pages return at once. `Some(n)`: the next `n` computed pages
     /// return, then pages wait for `allow` or `release`.
     gate: (Mutex<Option<usize>>, Condvar),
-    /// Presence pages that returned to the actor's blocking task.
-    completed: std::sync::atomic::AtomicUsize,
+    /// The source counts answers before the return gate opens.
+    answers: std::sync::atomic::AtomicUsize,
 }
 
 impl Scripted {
@@ -209,19 +296,6 @@ impl Scripted {
         *self.gate.0.lock().unwrap() = None;
         self.gate.1.notify_all();
     }
-
-    /// Spin, without yielding to the actor, until `pages` presence pages
-    /// have returned, then a short margin so the blocking task can finish.
-    fn spin_until_completed(&self, pages: usize) {
-        for _ in 0..5_000 {
-            if self.completed.load(Ordering::Relaxed) >= pages {
-                std::thread::sleep(Duration::from_millis(20));
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        panic!("the page did not complete in time");
-    }
 }
 
 impl ReconcileSource for Scripted {
@@ -251,8 +325,8 @@ impl ReconcileSource for Scripted {
                 Ok((present, *self.revision.lock().unwrap()))
             }
         };
+        self.answers.fetch_add(1, Ordering::Relaxed);
         self.wait_for_gate();
-        self.completed.fetch_add(1, Ordering::Relaxed);
         answer
     }
 
@@ -272,9 +346,9 @@ impl ReconcileSource for Scripted {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| Ok((Vec::new(), Revision(0))));
+        self.answers.fetch_add(1, Ordering::Relaxed);
         if self.active_gated.load(Ordering::Relaxed) {
             self.wait_for_gate();
-            self.completed.fetch_add(1, Ordering::Relaxed);
         }
         answer
     }
@@ -346,7 +420,8 @@ async fn settle() {
 /// this also sleeps the thread briefly between checks. Panics after a
 /// generous real-time bound.
 async fn wait_until(mut done: impl FnMut() -> bool) {
-    for _ in 0..5_000 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         if done() {
             return;
         }
@@ -1627,13 +1702,14 @@ async fn a_round_services_every_ready_source_once() {
     }
     events.report(sync_removed("spilled", 1, RemovalReason::Deleted, 25));
     source.release();
-    source.spin_until_completed(1);
+    events.test_probe.wait_for_finished_task();
+    let (mut acknowledgement, release_round) = events.test_probe.pause_after_round();
     assert_eq!(
         harness.rounds(),
         rounds_before,
         "nothing ran without a yield"
     );
-    tokio::task::yield_now().await;
+    wait_for_round(&mut acknowledgement).await;
 
     // One round: expiry, then the page, then the spill, then the inbox.
     let after_round = drain(&mut bus);
@@ -1676,6 +1752,8 @@ async fn a_round_services_every_ready_source_once() {
         "one inbox batch per round"
     );
     assert_eq!(harness.rounds(), rounds_before + 1);
+    assert_eq!(events.test_probe.processed(), 1);
+    release_round.send(()).unwrap();
 }
 
 #[tokio::test(start_paused = true)]

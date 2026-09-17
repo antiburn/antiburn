@@ -1643,6 +1643,8 @@ pub struct SessionEvents {
     model_wake: Notify,
     #[cfg(test)]
     rounds: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    test_probe: tests::ActorProbe,
 }
 
 impl Default for SessionEvents {
@@ -1662,6 +1664,8 @@ impl Default for SessionEvents {
             model_wake: Notify::new(),
             #[cfg(test)]
             rounds: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            test_probe: tests::ActorProbe::default(),
         }
     }
 }
@@ -1997,6 +2001,8 @@ async fn run(
         }
         if let Some(outcome) = finished {
             apply_page(events, &mut actor, outcome, now_epoch);
+            #[cfg(test)]
+            events.test_probe.page_processed(actor.next_allowed);
         } else if recovery_ready {
             apply(events, |registry| {
                 let mut out = Vec::new();
@@ -2026,6 +2032,8 @@ async fn run(
                 .len()
                 == ADMISSION_PENDING_CAP;
         }
+        #[cfg(test)]
+        events.test_probe.round_completed().await;
         tokio::task::yield_now().await;
     }
 }
@@ -2144,7 +2152,7 @@ fn issue_page(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .next_page_request(now)?;
     let source = Arc::clone(source);
-    Some(tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         let result = match &request {
             PageRequest::Active { since, after } => {
                 source.active(*since, after.as_ref(), RECONCILE_PAGE)
@@ -2152,7 +2160,10 @@ fn issue_page(
             _ => source.presence(request.keys()),
         };
         PageOutcome { request, result }
-    }))
+    });
+    #[cfg(test)]
+    events.test_probe.page_started(task.abort_handle());
+    Some(task)
 }
 
 /// Apply a completed page or delay its retry. A read failure preserves the cursor and

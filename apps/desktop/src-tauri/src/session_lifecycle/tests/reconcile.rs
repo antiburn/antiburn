@@ -28,6 +28,89 @@ fn indexed_chunks(keys: &[SessionKey], at: i64, revision: u64) -> Vec<Observatio
 }
 
 #[tokio::test(start_paused = true)]
+async fn page_acknowledgements_follow_actor_processing_and_error_backoff() {
+    let source = Arc::new(Scripted::default());
+    source.set_rows(vec![(key("waiting"), 1, BASE)], 20);
+    source.fail_next(1);
+    source.hold();
+    let harness = start_with(BASE, Vec::new(), source.clone());
+    let events = &harness.events;
+    harness.push(broad(RemovalReason::Purged, 10));
+    harness.push(index("waiting", 1, BASE, false, 5));
+
+    wait_until(|| source.answers.load(Ordering::Relaxed) == 1).await;
+    assert_eq!(events.test_probe.processed(), 0);
+    assert!(
+        events
+            .test_probe
+            .progress
+            .lock()
+            .unwrap()
+            .next_allowed
+            .is_none()
+    );
+    assert!(
+        !events
+            .test_probe
+            .page_task
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_finished(),
+        "the computed error still waits at the return gate"
+    );
+    source.allow(1);
+    events.test_probe.wait_for_finished_task();
+    assert_eq!(
+        events.test_probe.processed(),
+        0,
+        "task completion is not processing"
+    );
+
+    wait_for_processed_pages(events, 1).await;
+    assert_eq!(
+        events.test_probe.progress.lock().unwrap().next_allowed,
+        Some(Instant::now() + RECONCILE_BACKOFF_MIN),
+        "the actor installs backoff before acknowledging the error"
+    );
+    assert!(live(events).is_empty());
+    tokio::time::advance(RECONCILE_BACKOFF_MIN - Duration::from_millis(1)).await;
+    settle().await;
+    assert_eq!(source.requests().len(), 1, "no retry before backoff");
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_until(|| source.answers.load(Ordering::Relaxed) == 2).await;
+    assert_eq!(source.requests(), vec![vec![key("waiting")]; 2]);
+    assert_eq!(
+        events.test_probe.processed(),
+        1,
+        "the successful answer remains held"
+    );
+    assert!(live(events).is_empty());
+
+    source.release();
+    events.test_probe.wait_for_finished_task();
+    assert_eq!(
+        events.test_probe.processed(),
+        1,
+        "the actor has not consumed the success"
+    );
+    assert!(live(events).is_empty());
+    wait_for_processed_pages(events, 2).await;
+    assert!(
+        events
+            .test_probe
+            .progress
+            .lock()
+            .unwrap()
+            .next_allowed
+            .is_none()
+    );
+    assert_eq!(live(events)[0].session, session_ref("waiting"));
+    assert!(harness.with_registry(|registry| registry.pending.is_empty()));
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failed_page_keeps_the_cursor_and_retries_after_backoff() {
     let walked = keys_named("w", 600);
     let source = Arc::new(Scripted::default());
@@ -62,8 +145,7 @@ async fn a_failed_page_keeps_the_cursor_and_retries_after_backoff() {
     source.allow(1);
     wait_until(|| source.requests().len() == 3).await;
     source.release();
-    source.spin_until_completed(3);
-    settle().await;
+    wait_for_processed_pages(&harness.events, 3).await;
     let requests = source.requests();
     assert_eq!(requests[0], walked[..256]);
     assert_eq!(requests[1], walked[256..512]);
@@ -310,10 +392,12 @@ async fn a_blocked_carry_does_not_busy_loop() {
         harness.push(chunk);
     }
     harness.push(touched("blocked", 1, BASE, 50));
-    // The first page fails and the actor backs off.
-    wait_until(|| source.requests().len() == 1).await;
-    source.spin_until_completed(1);
-    settle().await;
+    // The first page fails before the actor necessarily drains all admission facts.
+    wait_for_processed_pages(&harness.events, 1).await;
+    wait_until(|| {
+        harness.with_registry(|registry| registry.pending.len() == ADMISSION_PENDING_CAP)
+    })
+    .await;
     harness.with_registry(|registry| {
         assert_eq!(registry.pending.len(), ADMISSION_PENDING_CAP);
         assert!(!registry.pending.contains_key(&key("blocked")));
@@ -335,8 +419,7 @@ async fn a_blocked_carry_does_not_busy_loop() {
     // The backoff timer is the one ready arm; it issues the retry.
     tokio::time::sleep(RECONCILE_BACKOFF_MIN + Duration::from_secs(1)).await;
     wait_until(|| source.requests().len() == 2).await;
-    source.spin_until_completed(2);
-    settle().await;
+    wait_for_processed_pages(&harness.events, 2).await;
     assert!(
         harness.rounds() <= parked + 2,
         "one round for the timer, one for the failed page"
@@ -491,9 +574,11 @@ async fn pruning_capacity_retries_the_blocked_carry_after_page_backoff() {
         harness.push(chunk);
     }
     harness.push(touched("unique", 1, BASE, 50));
-    wait_until(|| source.requests().len() == 1).await;
-    source.spin_until_completed(1);
-    settle().await;
+    wait_for_processed_pages(&harness.events, 1).await;
+    wait_until(|| {
+        harness.with_registry(|registry| registry.pending.len() == ADMISSION_PENDING_CAP)
+    })
+    .await;
     assert_eq!(
         harness.with_registry(|r| r.pending.len()),
         ADMISSION_PENDING_CAP
@@ -622,8 +707,7 @@ async fn seed_recovery_failures_back_off_while_facts_spill_and_expiry_progress()
         .await;
         tokio::time::advance(Duration::from_secs(1)).await;
         wait_until(|| source.active_requests.lock().unwrap().len() == before + 1).await;
-        source.spin_until_completed(index + 3);
-        settle().await;
+        wait_for_processed_pages(&events, index + 1).await;
         elapsed += delay as i64;
         let rounds = events.rounds.load(Ordering::Relaxed);
         settle().await;
@@ -720,8 +804,8 @@ async fn shutdown_discards_a_held_recovery_page() {
     actor.abort();
     assert!(actor.await.unwrap_err().is_cancelled());
     source.release();
-    source.spin_until_completed(1);
-    settle().await;
+    events.test_probe.wait_for_finished_task();
+    assert_eq!(events.test_probe.processed(), 0);
     assert_eq!(live(&events).len(), 256);
     assert_eq!(events.current_seq(), 0);
     assert!(matches!(
@@ -916,8 +1000,7 @@ async fn full_recovery_page_advances_the_cursor_before_a_later_failure_and_retry
     assert_eq!(events.current_seq(), 0);
     tokio::time::advance(RECONCILE_BACKOFF_MIN).await;
     wait_until(|| source.active_requests.lock().unwrap().len() == 4).await;
-    source.spin_until_completed(4);
-    settle().await;
+    wait_for_processed_pages(&events, 2).await;
     assert_eq!(live(&events).len(), RECONCILE_PAGE * 2);
     assert_eq!(events.current_seq(), RECONCILE_PAGE as u64);
     assert_eq!(
