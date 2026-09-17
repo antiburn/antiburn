@@ -370,3 +370,6 @@ sampled from real transcripts.
     the fresh read and the confetti all run, and celebrate now. Spend and
     block overrides ride a `hud_dev` event to the overlay webview; dock and
     wake call the hud crate directly. Nothing ships in release builds.
+16. **Countdown leads with the time.** The blocked line reads "resets in
+    1h 30m · 5-hour limit": the HUD clips the tail, and the limit's name
+    was hiding the time.

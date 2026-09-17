@@ -1197,11 +1197,11 @@ describe("OverlayWindow", () => {
       render(<OverlayWindow />)
       await advance(0)
       expect(screen.getByTestId("hud-countdown").textContent).toBe(
-        "5-hour limit · resets in 1h 30m",
+        "resets in 1h 30m · 5-hour limit",
       )
       await advance(65_000)
       expect(screen.getByTestId("hud-countdown").textContent).toBe(
-        "5-hour limit · resets in 1h 29m",
+        "resets in 1h 29m · 5-hour limit",
       )
       expect(refreshLiveUsage).not.toHaveBeenCalled()
     } finally {

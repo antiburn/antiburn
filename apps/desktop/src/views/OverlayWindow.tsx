@@ -94,10 +94,11 @@ export function OverlayWindow() {
         ) : (
           blocked && (
             <p
+              // The time leads: the line clips at its tail on a narrow HUD.
               className="led-caption type-footnote text-label-secondary mt-1.5 truncate"
               data-testid="hud-countdown"
             >
-              {blocked.label} · {resetsIn(blocked.resetsAt, state.now)}
+              {resetsIn(blocked.resetsAt, state.now)} · {blocked.label}
             </p>
           )
         )}
