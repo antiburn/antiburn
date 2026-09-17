@@ -26,7 +26,8 @@ Every supported source passes through these boundaries:
 
 1. Discovery identifies the agent, native source, surface, session identity, and companions.
 2. Source validation pins the accepted file boundary or database snapshot.
-3. The dedicated `SessionReader` selects an exact `SourceFormat`.
+3. The shell supplies `SessionInput.source_format`; `reader_for` selects the
+   `SessionReader` by agent label, and the reader consumes that source contract.
 4. Bounded framing rejects oversized, malformed, truncated, or unreadable records.
 5. Parsing emits normalized metrics, content, and evidence observations.
 6. The evidence sink records complete, partial, or unavailable facts.
@@ -133,6 +134,14 @@ Newly discovered repositories remain enabled by default.
 
 Provider identity, API shape, and model identity are separate facts. A model
 name alone does not establish option or accounting semantics.
+
+Lifecycle execution metadata reads the provider and model from the same newest
+published modeled turn. It keeps harness identity, recorded provider, canonical
+route, and model-family vendor separate. Pi's `openai-codex` route normalizes to
+`openai`; intermediary routes never become the model vendor. Missing or custom
+routes do not use a harness or model fallback for HUD provider sweeps. This is a
+consumer of existing durable evidence, not new parser or check coverage. See
+[`session-lifecycle-events.md`](session-lifecycle-events.md#scoped-sweep-evidence).
 
 | Agent and format          | Provider evidence                                                                      | API evidence                                                                                                                      | Model evidence                                                   | Current policy state                                                                                                           |
 | ------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |

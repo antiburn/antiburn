@@ -18,6 +18,8 @@
     "allow-copy-prompt-fix-burn-check-targets",
     "allow-acknowledge-main-window-session-target",
     "allow-delete-session-data",
+    "allow-get-live-sessions",
+    "allow-get-live-sessions-for",
     "allow-get-live-usage",
     "allow-get-provider-usage",
     "allow-get-checks-report",

@@ -1158,6 +1158,41 @@ pub fn count_turn_rows(
     Ok(count.max(0) as u64)
 }
 
+/// The newest modeled turn supplies these fields together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnExecution {
+    pub model: String,
+    pub provider: Option<String>,
+}
+
+/// Reads execution evidence from the newest modeled turn at `claim_fence`.
+///
+/// The newest turn tells which model the session runs now. The complete
+/// model set of the session does not: a session that changes its model
+/// keeps every model it used. A turn without a model, such as a user turn,
+/// is skipped.
+pub fn latest_turn_execution(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<Option<TurnExecution>> {
+    conn.query_row(
+        "SELECT model, provider FROM turn
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND claim_fence = ?4 AND model IS NOT NULL AND model <> \'\'
+          ORDER BY ts_ms DESC, turn_index DESC
+          LIMIT 1",
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        |row| {
+            Ok(TurnExecution {
+                model: row.get(0)?,
+                provider: row.get(1)?,
+            })
+        },
+    )
+    .optional()
+}
+
 /// Counts the `turn_content` rows for `key`'s turns stamped with
 /// `claim_fence`.
 pub fn count_turn_content_rows(
@@ -1487,6 +1522,54 @@ mod tests {
         let row = turn_row_from_event(&event, "s1", 1);
         assert_eq!(row.provider.as_deref(), Some(""));
         assert_eq!(row.api.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn newest_execution_keeps_provider_and_model_on_one_fenced_turn() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "pi",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let mut old = sample_row(0);
+        old.ts_ms = Some(100);
+        old.model = Some("gpt-6-astra".into());
+        old.provider = Some("openai-codex".into());
+        let mut new = sample_row(1);
+        new.ts_ms = Some(200);
+        new.model = Some("claude-fable-5".into());
+        new.provider = None;
+        let mut user = sample_row(2);
+        user.ts_ms = Some(300);
+        user.model = None;
+        user.provider = Some("must-not-cross-join".into());
+        insert_turn_rows(&conn, &key, 7, &[old, new, user]).unwrap();
+        let mut unpublished = sample_row(3);
+        unpublished.ts_ms = Some(400);
+        unpublished.model = Some("unpublished".into());
+        unpublished.provider = Some("unpublished-route".into());
+        insert_turn_rows(&conn, &key, 8, &[unpublished]).unwrap();
+        assert_eq!(
+            latest_turn_execution(&conn, &key, 7).unwrap(),
+            Some(TurnExecution {
+                model: "claude-fable-5".into(),
+                provider: None,
+            })
+        );
+        let mut tie = sample_row(4);
+        tie.ts_ms = Some(200);
+        tie.model = Some("claude-fable-5".into());
+        tie.provider = Some("openrouter".into());
+        insert_turn_rows(&conn, &key, 7, &[tie]).unwrap();
+        assert_eq!(
+            latest_turn_execution(&conn, &key, 7).unwrap(),
+            Some(TurnExecution {
+                model: "claude-fable-5".into(),
+                provider: Some("openrouter".into()),
+            })
+        );
     }
 
     #[test]

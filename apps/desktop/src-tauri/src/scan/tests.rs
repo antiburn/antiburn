@@ -1497,7 +1497,7 @@ fn scoped_persistence_skips_unchanged_rows_without_calling_the_store() {
     })
     .unwrap();
 
-    assert!(!persisted);
+    assert!(persisted.is_none());
     assert_eq!(calls.get(), 0);
 }
 
@@ -1516,12 +1516,12 @@ fn scoped_persistence_writes_changed_new_and_returned_rows_once() {
         std::slice::from_ref(&returned.key),
         |batch| {
             writes.lock().unwrap().push(batch.to_vec());
-            Ok(())
+            Ok(batch.len())
         },
     )
     .unwrap();
 
-    assert!(persisted);
+    assert_eq!(persisted, Some(3), "the write's own result comes back");
     assert_eq!(
         writes.into_inner().unwrap(),
         vec![vec![changed, new, returned]]
@@ -1831,21 +1831,14 @@ async fn an_unchanged_pass_emits_nothing_and_reports_no_list_change() {
     assert!(second.changed.is_empty());
     assert!(!second.list_changed);
 
-    let announced = Mutex::new(Vec::new());
-    announce_changed_rows(
-        &store,
-        &second.changed,
-        &previous,
-        1_800_000_100,
-        &|entry| {
-            announced.lock().unwrap().push(entry);
-        },
+    assert!(
+        row_change_facets(&second.records, &second.changed, &previous).is_empty(),
+        "an unchanged pass reports no row change"
     );
-    assert!(announced.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn a_moved_cursor_emits_exactly_one_entry_and_reports_no_list_change() {
+async fn a_moved_cursor_reports_exactly_one_row_change_and_no_list_change() {
     let home = tempfile::TempDir::new().unwrap();
     let path = write_claude_session(home.path(), "moving");
     let store = crate::store::Store::open_in_memory(home.path()).unwrap();
@@ -1883,23 +1876,16 @@ async fn a_moved_cursor_emits_exactly_one_entry_and_reports_no_list_change() {
         .upsert_sessions(&second.records, &agents::evidence_cohort())
         .unwrap();
 
-    let announced = Mutex::new(Vec::new());
-    announce_changed_rows(
-        &store,
-        &second.changed,
-        &previous,
-        1_800_000_200,
-        &|entry| {
-            announced.lock().unwrap().push(entry);
-        },
-    );
-    let entries = announced.lock().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].session_id, "moving");
+    let changes = row_change_facets(&second.records, &second.changed, &previous);
+    assert_eq!(changes.len(), 1);
+    let (session, facets) = &changes[0];
+    assert_eq!(session.session_id, "moving");
+    assert!(facets.metadata, "an append moves the activity metadata");
+    assert!(!facets.title, "the title did not change");
 }
 
 #[tokio::test]
-async fn a_new_session_emits_nothing_and_reports_a_list_change() {
+async fn a_new_session_reports_no_row_change_and_reports_a_list_change() {
     let home = tempfile::TempDir::new().unwrap();
     let path = write_claude_session(home.path(), "fresh");
     let store = crate::store::Store::open_in_memory(home.path()).unwrap();
@@ -1916,18 +1902,147 @@ async fn a_new_session_emits_nothing_and_reports_a_list_change() {
     assert!(described.list_changed);
 
     // A brand-new session has no row on screen to patch; the list's own
-    // `list_changed` refetch is what picks it up, not this event.
-    let announced = Mutex::new(Vec::new());
-    announce_changed_rows(
-        &store,
-        &described.changed,
-        &previous,
-        1_800_000_100,
-        &|entry| {
-            announced.lock().unwrap().push(entry);
-        },
+    // `list_changed` refetch is what picks it up, not a row fact.
+    assert!(row_change_facets(&described.records, &described.changed, &previous).is_empty());
+}
+
+#[test]
+fn a_title_only_change_reports_the_title_facet_alone() {
+    let previous = record_for_facets("stable", Some("Old title"), 1_000);
+    let mut refreshed = previous.clone();
+    refreshed.title = Some("New title".into());
+
+    let facets = facets_between(&previous, &refreshed);
+
+    assert!(facets.title);
+    assert!(!facets.metadata);
+    assert!(!facets.analysis);
+}
+
+#[test]
+fn a_metadata_change_reports_the_metadata_facet_alone() {
+    let previous = record_for_facets("stable", Some("Same title"), 1_000);
+    let mut refreshed = previous.clone();
+    refreshed.updated_at_epoch = Some(2_000);
+    refreshed.activity_cursor = "moved".into();
+
+    let facets = facets_between(&previous, &refreshed);
+
+    assert!(!facets.title);
+    assert!(facets.metadata);
+}
+
+/// A minimal stored record for the facet diff tests. Synthetic values only.
+fn record_for_facets(session_id: &str, title: Option<&str>, at: i64) -> SessionRecord {
+    SessionRecord {
+        key: SessionKey::new("native", "claude-code", session_id),
+        source_kind: "file".into(),
+        source_label: format!("/home/avery/.claude/projects/demo/{session_id}.jsonl"),
+        wsl_distro: None,
+        title: title.map(str::to_string),
+        title_source: title.map(|_| "vendor".to_string()),
+        cwd: Some("/home/avery/code/widgets".into()),
+        surface: "cli".into(),
+        updated_at_epoch: Some(at),
+        activity_cursor: "cursor".into(),
+        activity_source: "event".into(),
+        subagent_count: 0,
+        fork_parent_session_id: None,
+        source_fingerprint: None,
+    }
+}
+
+#[test]
+fn a_reused_source_label_with_a_new_identity_still_reads_as_new() {
+    let previous_owner = record_for_facets("first-owner", None, 1_000);
+    let activity_key = SessionActivityKey::new(
+        previous_owner.key.environment_key.clone(),
+        previous_owner.key.agent.clone(),
+        previous_owner.source_label.clone(),
     );
-    assert!(announced.lock().unwrap().is_empty());
+    let previous_records =
+        std::collections::HashMap::from([(activity_key, previous_owner.clone())]);
+
+    // A new session identity now writes to the same source label.
+    let mut reused_label = record_for_facets("second-owner", None, 2_000);
+    reused_label.source_label = previous_owner.source_label.clone();
+
+    let sessions = indexed_sessions_for_report(
+        2_010,
+        std::slice::from_ref(&reused_label),
+        &[reused_label.key.clone()],
+        &previous_records,
+        &[(reused_label.key.clone(), crate::store::Incarnation(7))],
+    );
+
+    assert_eq!(sessions.len(), 1);
+    assert!(
+        sessions[0].is_new,
+        "a new identity is new even when its source label was known"
+    );
+    assert_eq!(
+        sessions[0].incarnation,
+        crate::store::Incarnation(7),
+        "the fact carries the upsert's incarnation"
+    );
+
+    // A record the upsert returned no incarnation for was not written.
+    let sessions = indexed_sessions_for_report(
+        2_010,
+        std::slice::from_ref(&reused_label),
+        &[reused_label.key.clone()],
+        &previous_records,
+        &[],
+    );
+    assert!(sessions.is_empty());
+
+    // The same identity again is not new, whatever its label.
+    let known_key = SessionActivityKey::new("native", "claude-code", "/another/label.jsonl");
+    let mut known = previous_owner.clone();
+    known.updated_at_epoch = Some(2_000);
+    let previous_records = std::collections::HashMap::from([(known_key, previous_owner)]);
+    let sessions = indexed_sessions_for_report(
+        2_010,
+        std::slice::from_ref(&known),
+        &[known.key.clone()],
+        &previous_records,
+        &[(known.key.clone(), crate::store::Incarnation(1))],
+    );
+    assert_eq!(sessions.len(), 1);
+    assert!(!sessions[0].is_new);
+}
+
+/// The targeted (watcher) refresh path feeds `describe_with_states` a
+/// previous map for the same labels. A label whose file now carries a new
+/// session identity must read as a membership change, which
+/// `refresh_sessions_locked` reports as `IndexChanged { ScanPass }`.
+#[tokio::test]
+async fn a_reused_source_label_reports_a_list_change_for_the_new_identity() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = write_claude_session(home.path(), "second-identity");
+    let mut previous = record_for_facets("first-identity", None, 1_799_000_000);
+    previous.source_label = path.to_string_lossy().into_owned();
+    let previous_map = std::collections::HashMap::from([(
+        SessionActivityKey::new("native", "claude-code", &previous.source_label),
+        previous,
+    )]);
+
+    let described = describe_with_states(
+        vec![log(AgentKind::Claude, path, 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+        &previous_map,
+    )
+    .await;
+
+    assert_eq!(described.changed.len(), 1);
+    assert_eq!(described.changed[0].session_id, "second-identity");
+    assert!(
+        described.list_changed,
+        "a new identity behind a known label is a membership change"
+    );
+    // No previously known row to patch: the list refetch is the path.
+    assert!(row_change_facets(&described.records, &described.changed, &previous_map).is_empty());
 }
 
 #[tokio::test]
@@ -1945,3 +2060,325 @@ async fn a_rejected_transcript_reports_a_list_change() {
     assert_eq!(described.rejected.len(), 1);
     assert!(described.list_changed);
 }
+
+fn activity_key(agent: AgentKind, source_label: &str) -> SessionActivityKey {
+    SessionActivityKey::new("native", agent.slug(), source_label)
+}
+
+fn agents(kinds: &[AgentKind]) -> BTreeSet<AgentKind> {
+    kinds.iter().copied().collect()
+}
+
+#[test]
+fn anonymous_generations_increase_and_the_ledger_keeps_the_highest_per_agent() {
+    let mut ledger = AnonymousLedger::default();
+
+    assert_eq!(ledger.issue(AgentKind::Codex), Some(AnonymousGen(1)));
+    assert_eq!(ledger.issue(AgentKind::Claude), Some(AnonymousGen(2)));
+    // A same-second second touch of the same agent still gets its own,
+    // higher generation: causality, not time, orders it.
+    assert_eq!(ledger.issue(AgentKind::Codex), Some(AnonymousGen(3)));
+
+    assert_eq!(
+        ledger.outstanding,
+        BTreeMap::from([
+            (AgentKind::Codex, AnonymousGen(3)),
+            (AgentKind::Claude, AnonymousGen(2)),
+        ])
+    );
+}
+
+#[test]
+fn an_exhausted_generation_counter_issues_nothing_rather_than_wrapping() {
+    let mut ledger = AnonymousLedger {
+        next: u64::MAX,
+        outstanding: BTreeMap::new(),
+    };
+    assert_eq!(ledger.issue(AgentKind::Codex), None);
+    assert_eq!(ledger.next, u64::MAX);
+    assert!(ledger.outstanding.is_empty());
+
+    // The touch that found the counter exhausted is not reported.
+    let work = scoped::ScopedWork {
+        agents: agents(&[AgentKind::Codex]),
+        ..Default::default()
+    };
+    assert!(touch_observations(&mut ledger, &work, None, 1_000).is_empty());
+}
+
+#[test]
+fn a_full_pass_captures_every_outstanding_agent_and_a_scoped_pass_only_its_own() {
+    let mut ledger = AnonymousLedger::default();
+    ledger.issue(AgentKind::Codex);
+    ledger.issue(AgentKind::Claude);
+    ledger.issue(AgentKind::Codex);
+
+    assert_eq!(
+        ledger.capture(&PassScope::Full),
+        vec![
+            AnonymousCover {
+                agent: AgentKind::Claude,
+                through: AnonymousGen(2),
+            },
+            AnonymousCover {
+                agent: AgentKind::Codex,
+                through: AnonymousGen(3),
+            },
+        ]
+    );
+    assert_eq!(
+        ledger.capture(&PassScope::Agents(agents(&[AgentKind::Codex]))),
+        vec![AnonymousCover {
+            agent: AgentKind::Codex,
+            through: AnonymousGen(3),
+        }]
+    );
+    // A scope with nothing outstanding captures nothing, so a successful
+    // pass over it sends no cover at all.
+    assert!(
+        ledger
+            .capture(&PassScope::Agents(agents(&[AgentKind::Kiro])))
+            .is_empty()
+    );
+}
+
+#[test]
+fn settling_forgets_only_generations_the_cover_reaches() {
+    let mut ledger = AnonymousLedger::default();
+    ledger.issue(AgentKind::Codex);
+    ledger.issue(AgentKind::Claude);
+    let captured = ledger.capture(&PassScope::Full);
+
+    // A touch reported while the pass runs outranks the capture.
+    ledger.issue(AgentKind::Codex);
+    ledger.settle(&captured);
+
+    assert_eq!(
+        ledger.outstanding,
+        BTreeMap::from([(AgentKind::Codex, AnonymousGen(3))]),
+        "Claude settled at 2; Codex moved to 3 after the capture and stays"
+    );
+
+    // The next pass captures generation 3 and settles it.
+    let captured = ledger.capture(&PassScope::Full);
+    ledger.settle(&captured);
+    assert!(ledger.outstanding.is_empty());
+
+    // Settling a cover with nothing outstanding changes nothing.
+    ledger.settle(&captured);
+    assert!(ledger.outstanding.is_empty());
+}
+
+#[test]
+fn a_failed_or_busy_pass_leaves_the_capture_outstanding() {
+    let mut ledger = AnonymousLedger::default();
+    ledger.issue(AgentKind::Codex);
+    let captured = ledger.capture(&PassScope::Full);
+    assert_eq!(captured.len(), 1);
+
+    // Without a settle (the pass failed, was busy, or was cancelled), the
+    // generation is still outstanding, and the next capture names it again.
+    assert_eq!(ledger.capture(&PassScope::Full), captured);
+
+    let ok = ScanStatus::default();
+    assert!(pass_covers(&ok));
+    let failed = ScanStatus {
+        error: Some("disk full".into()),
+        ..ScanStatus::default()
+    };
+    assert!(!pass_covers(&failed));
+    let cancelled = ScanStatus {
+        cancelled: true,
+        ..ScanStatus::default()
+    };
+    assert!(!pass_covers(&cancelled));
+}
+
+#[test]
+fn a_burst_reports_keyed_touches_then_one_generation_per_agent_lane() {
+    let mut ledger = AnonymousLedger::default();
+    let known = activity_key(
+        AgentKind::Claude,
+        "/home/avery/.claude/projects/p/known.jsonl",
+    );
+    let deleted = activity_key(
+        AgentKind::Claude,
+        "/home/avery/.claude/projects/p/gone.jsonl",
+    );
+    let work = scoped::ScopedWork {
+        sessions: BTreeSet::from([known.clone(), deleted]),
+        agents: agents(&[AgentKind::Codex]),
+        db_agents: agents(&[AgentKind::Cursor]),
+        quiet_agents: agents(&[AgentKind::Kiro]),
+        title_agents: agents(&[AgentKind::Claude]),
+    };
+    let identities = std::collections::HashMap::from([(
+        known,
+        (
+            SessionKey::new("native", "claude-code", "known-id"),
+            crate::store::Incarnation(4),
+        ),
+    )]);
+
+    let facts = touch_observations(
+        &mut ledger,
+        &work,
+        Some((identities, crate::store::Revision(9))),
+        1_000,
+    );
+
+    assert_eq!(
+        facts,
+        vec![
+            session_lifecycle::Observation::Touched {
+                session: session_lifecycle::TouchedSession {
+                    key: SessionKey::new("native", "claude-code", "known-id"),
+                    incarnation: crate::store::Incarnation(4),
+                    seen: crate::store::Revision(9),
+                },
+                agent: AgentKind::Claude,
+                at: 1_000,
+            },
+            session_lifecycle::Observation::Anonymous {
+                agent: AgentKind::Codex,
+                at: 1_000,
+                generation: AnonymousGen(1),
+            },
+            session_lifecycle::Observation::Anonymous {
+                agent: AgentKind::Cursor,
+                at: 1_000,
+                generation: AnonymousGen(2),
+            },
+        ],
+        "the deleted key has no anonymous substitute; quiet and title lanes report nothing"
+    );
+    assert_eq!(
+        ledger.outstanding,
+        BTreeMap::from([
+            (AgentKind::Codex, AnonymousGen(1)),
+            (AgentKind::Cursor, AnonymousGen(2)),
+        ])
+    );
+}
+
+#[test]
+fn a_failed_identity_lookup_reports_no_keyed_touch_and_no_substitute() {
+    let mut ledger = AnonymousLedger::default();
+    let work = scoped::ScopedWork {
+        sessions: BTreeSet::from([activity_key(
+            AgentKind::Claude,
+            "/home/avery/.claude/x.jsonl",
+        )]),
+        agents: agents(&[AgentKind::Codex]),
+        ..Default::default()
+    };
+
+    let facts = touch_observations(&mut ledger, &work, None, 1_000);
+
+    assert_eq!(
+        facts,
+        vec![session_lifecycle::Observation::Anonymous {
+            agent: AgentKind::Codex,
+            at: 1_000,
+            generation: AnonymousGen(1),
+        }]
+    );
+}
+
+#[test]
+fn a_quiet_only_burst_issues_no_generation_and_its_pass_covers_nothing() {
+    let mut ledger = AnonymousLedger::default();
+    let work = scoped::ScopedWork {
+        quiet_agents: agents(&[AgentKind::Claude]),
+        ..Default::default()
+    };
+
+    assert!(touch_observations(&mut ledger, &work, None, 1_000).is_empty());
+    assert!(ledger.outstanding.is_empty());
+    assert!(
+        ledger
+            .capture(&PassScope::Agents(agents(&[AgentKind::Claude])))
+            .is_empty()
+    );
+
+    // An outstanding generation for the same agent from an earlier
+    // anonymous touch is covered by the quiet rediscovery, since that pass
+    // discovers everything under the agent's root.
+    ledger.issue(AgentKind::Claude);
+    assert_eq!(
+        ledger.capture(&PassScope::Agents(agents(&[AgentKind::Claude]))),
+        vec![AnonymousCover {
+            agent: AgentKind::Claude,
+            through: AnonymousGen(1),
+        }]
+    );
+}
+
+/// The scheduler wiring cannot run without a Tauri app. Its shape is pinned
+/// at the source instead: every scheduler-owned pass captures before it
+/// runs, settles and covers only on success, and the cover is the last
+/// report of the pass on the waiting path. A pass a command asks for goes
+/// through `run_pass`, which owns no ledger and covers nothing.
+#[test]
+fn only_scheduler_owned_passes_cover_and_only_after_their_indexed_reports() {
+    let source = include_str!("mod.rs").replace("\r\n", "\n");
+    for checkout in [source.clone(), source.replace('\n', "\r\n")] {
+        assert_scheduler_source_contract(&checkout);
+    }
+}
+
+fn assert_scheduler_source_contract(source: &str) {
+    let source = source.replace("\r\n", "\n");
+    let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+
+    let covered = {
+        let start = production.find("async fn run_covered_pass(").unwrap();
+        let body = &production[start..];
+        &body[..body.find("\n}\n").unwrap()]
+    };
+    let capture = covered
+        .find("ledger.capture(&scope)")
+        .expect("captures at start");
+    let run = covered
+        .find("try_run_pass(app, None, trigger, scope).await?")
+        .expect("runs the pass");
+    let gate = covered
+        .find("if pass_covers(&status) {")
+        .expect("gates on success");
+    let settle = covered.find("ledger.settle(&covers);").expect("settles");
+    let report = covered
+        .find("report_covered(app, covers).await;")
+        .expect("covers");
+    assert!(capture < run && run < gate && gate < settle && settle < report);
+
+    // Every scheduler pass goes through the covered helper; nothing else
+    // sends a cover.
+    assert_eq!(
+        production.matches("run_covered_pass(").count(),
+        4,
+        "one definition, three call sites"
+    );
+    assert!(
+        !production.contains("run_pass(&app, None, "),
+        "the scheduler runs no uncovered pass"
+    );
+    assert_eq!(
+        production.matches("report_covered(").count(),
+        2,
+        "one definition, one call site"
+    );
+    assert_eq!(
+        production.matches("Observation::AnonymousCovered").count(),
+        1
+    );
+    assert!(!include_str!("scoped.rs").contains("AnonymousCovered"));
+    assert!(!include_str!("../commands.rs").contains("AnonymousCovered"));
+
+    // Anonymous touches are issued only from the burst path, before any
+    // floor or pass, so a generation issued during a pass is above its
+    // capture.
+    assert_eq!(production.matches("ledger.issue(").count(), 1);
+    assert_eq!(production.matches("Observation::Anonymous {").count(), 1);
+}
+
+mod producers;

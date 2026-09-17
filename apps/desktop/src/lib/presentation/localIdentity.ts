@@ -27,16 +27,17 @@ export const NATIVE_ENVIRONMENT_KEY = "native"
  * Identity of the execution environment a session or clone lives in: the
  * machine itself, or one WSL distribution on it.
  *
- * Normalized with the invariant `en-US` locale rather than the user's, so the
- * key a session is cached under does not change when the system language does
- * (the Turkish dotless-i is the classic way that goes wrong).
+ * ASCII letters use lowercase to match Rust's `to_ascii_lowercase`.
+ * Non-ASCII characters stay unchanged.
  */
 export function environmentKey(wslDistro?: string | null): string {
   const distro = wslDistro?.trim()
-  return distro ? `wsl:${distro.toLocaleLowerCase("en-US")}` : NATIVE_ENVIRONMENT_KEY
+  return distro
+    ? `wsl:${distro.replace(/[A-Z]/g, (letter) => letter.toLowerCase())}`
+    : NATIVE_ENVIRONMENT_KEY
 }
 
-/** True when two environments are the same, ignoring distribution-name case. */
+/** True when two environments are the same, ignoring ASCII distribution-name case. */
 export function sameEnvironment(a?: string | null, b?: string | null): boolean {
   return environmentKey(a) === environmentKey(b)
 }

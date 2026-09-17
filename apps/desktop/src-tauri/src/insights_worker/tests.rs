@@ -989,7 +989,7 @@ async fn the_store_is_lockable_while_a_pass_runs() {
 }
 
 #[tokio::test]
-async fn a_published_completion_announces_one_list_entry() {
+async fn a_published_completion_announces_one_session_key() {
     let store = store();
     store
         .upsert_sessions(&[record("announcement")], &crate::agents::evidence_cohort())
@@ -1005,18 +1005,19 @@ async fn a_published_completion_announces_one_list_entry() {
             &store,
             &|| 100,
             &runner,
-            &|entry| {
-                announced.lock().unwrap().push(entry);
+            &|key| {
+                announced.lock().unwrap().push(key.clone());
             },
             &|_, _| {}
         )
         .await
         .unwrap()
     );
-    let entries = announced.lock().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].session_id, "announcement");
-    // The synthetic pass has no priceable model breakdown, so this test checks the event contract only.
+    let keys = announced.lock().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].session_id, "announcement");
+    // The compact key is the whole contract now: the projection worker owns
+    // the rich row reconstruction.
 }
 
 #[tokio::test]
@@ -1038,8 +1039,8 @@ async fn a_backed_off_outcome_announces_nothing() {
             &store,
             &|| 100,
             &runner,
-            &|entry| {
-                announced.lock().unwrap().push(entry);
+            &|key| {
+                announced.lock().unwrap().push(key.clone());
             },
             &|_, _| {}
         )
