@@ -215,6 +215,8 @@ describe("blocked limits", () => {
   const bar = (label: string, percent: number, resetsAt: Date | null): UsageBarItem => ({
     key: label,
     label,
+    provider: "anthropic",
+    scopeModel: null,
     providerName: "Anthropic",
     percent,
     resetsAt,

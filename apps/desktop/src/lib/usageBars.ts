@@ -10,6 +10,13 @@ import {
 
 export type UsageBarItem = {
   key: string
+  /** The provider slug the window belongs to, for the live blink. */
+  provider: string
+  /**
+   * The model this window measures, as the provider names it, or `null` for
+   * an account-wide window. A scoped bar sweeps only while that model runs.
+   */
+  scopeModel: string | null
   label: string
   /** The tool the limit belongs to, as shown to the reader. */
   providerName: string
@@ -120,6 +127,8 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
     group.windows.map((window) => ({
       key: `${group.provider.provider}-${window.id}`,
       providerName: group.provider.displayName,
+      provider: group.provider.provider,
+      scopeModel: window.scopeModel,
       label: multiProvider
         ? `${group.provider.displayName} · ${liveWindowLabel(window)}`
         : liveWindowLabel(window),

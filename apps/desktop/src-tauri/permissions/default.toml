@@ -19,7 +19,7 @@ permissions = [
   "allow-get-hud-detail-state",
   "allow-get-hud-token-map",
   "allow-get-hygiene-summary",
-  "allow-get-latest-session-activity",
+  "allow-get-live-sessions",
   "allow-get-live-usage",
   "allow-get-provider-usage",
   "allow-get-scan-status",

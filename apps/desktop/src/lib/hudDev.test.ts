@@ -6,6 +6,8 @@ import type { UsageBarItem } from "./usageBars"
 const bar = (key: string): UsageBarItem => ({
   key,
   label: key,
+  provider: "anthropic",
+  scopeModel: null,
   providerName: "Claude",
   percent: 40,
   resetsAt: null,

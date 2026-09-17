@@ -2,11 +2,26 @@ import { useCallback, useState, useSyncExternalStore } from "react"
 
 import { LedBar } from "../components/ui/LedBar"
 import { Confetti } from "../components/ui/Confetti"
-import { blockedBars, resetsIn } from "../lib/usageBars"
 import { TokenMap } from "../components/ui/TokenMap"
+import { liveWindowSweeps } from "../lib/presentation/liveUsage"
+import { blockedBars, resetsIn, type UsageBarItem } from "../lib/usageBars"
 import { OverlaySession } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
+
+/**
+ * The bar's row within its provider's run of bars. The bars of one provider
+ * sit together, so the count of bars above it with the same provider is
+ * its row.
+ */
+function providerRow(bars: readonly UsageBarItem[], index: number): number {
+  const provider = bars[index]!.provider
+  let row = 0
+  for (let above = 0; above < index; above += 1) {
+    if (bars[above]!.provider === provider) row += 1
+  }
+  return row
+}
 
 /** Render the content-sized usage HUD. The detail window owns the full stats. */
 export function OverlayWindow() {
@@ -15,6 +30,11 @@ export function OverlayWindow() {
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
+  )
+  // A bar scoped to one model sweeps only while a live session runs that
+  // model. Every other bar sweeps for any live session on its provider.
+  const sweeping = state.bars.map((bar) =>
+    liveWindowSweeps(bar, state.liveProviders.includes(bar.provider), state.liveModels),
   )
   const panelRef = useCallback(
     (node: HTMLDivElement | null) => session.registerPanel(node),
@@ -61,16 +81,24 @@ export function OverlayWindow() {
         )}
 
         {state.bars.length === 0 ? (
-          <div className="pointer-events-none">
-            <LedBar segments={HUD_SEGMENTS} split={[]} />
+          <div
+            className={`hud-leds pointer-events-none ${state.sessionLive ? "led-clock led-clock-soft" : ""}`.trimEnd()}
+          >
+            <LedBar segments={HUD_SEGMENTS} split={[]} live={state.sessionLive} />
           </div>
         ) : (
-          <div className="pointer-events-none space-y-[3px]">
+          // `led-clock` runs the one sweep clock every live bar reads, so the
+          // bars stay in phase whenever each bar joined.
+          <div
+            className={`hud-leds pointer-events-none space-y-[3px] ${sweeping.some(Boolean) ? "led-clock led-clock-soft" : ""}`.trimEnd()}
+          >
             {state.bars.map((bar, index) => (
               <LedBar
                 key={bar.key}
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
+                live={sweeping[index]!}
+                row={providerRow(state.bars, index)}
                 blinkLast={state.sessionLive && index === 0}
                 blinkPeriodMs={state.blinkPeriodMs}
                 blinkColor={
