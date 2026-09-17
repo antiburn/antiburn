@@ -172,6 +172,7 @@ export class OverlaySession {
   private devSpend: HudSpendRate | null = null
   /** Until when the "HUD Dev" menu holds the first bar at its limit. */
   private devBlockUntil = 0
+  private devBlockTimer = 0
   /** When work last ran, in epoch seconds, for the quiet-spell wake. */
   private lastEventActivity: number | null = null
   private burnWake = new BurnWakeTracker()
@@ -501,6 +502,9 @@ export class OverlaySession {
     this.burnWake = new BurnWakeTracker()
     window.clearTimeout(this.celebrationTimer)
     this.celebrationTimer = 0
+    window.clearTimeout(this.devBlockTimer)
+    this.devBlockTimer = 0
+    this.devBlockUntil = 0
     this.resetAskedFor = 0
     this.removeDragListeners()
     this.observer?.disconnect()
@@ -737,8 +741,15 @@ export class OverlaySession {
         return
       }
       case "block": {
+        window.clearTimeout(this.devBlockTimer)
         this.devBlockUntil = Date.now() + override.secs * 1_000
         apply(this.latestUsage)
+        // The usage poll runs once a minute. This timer ends a shorter block
+        // at the time the menu asked for.
+        this.devBlockTimer = window.setTimeout(() => {
+          this.devBlockTimer = 0
+          apply(this.latestUsage)
+        }, override.secs * 1_000)
         return
       }
       case "celebrate":

@@ -28,10 +28,10 @@ stateDiagram-v2
     Docked --> Collapsed: pointer rests on the tab,<br/>wake, or dragged away
 
     note right of Collapsed
-        Bars only, plus the token map
-        above them while a session
-        writes. No panel, no
-        background, no chrome.
+        The frame, the bars, and the
+        token map above them while a
+        session writes. No detail
+        panel and no window chrome.
     end note
     note right of DetailShown
         A separate display-only window
