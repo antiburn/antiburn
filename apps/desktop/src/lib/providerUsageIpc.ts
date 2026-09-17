@@ -1,5 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core"
 
+import { traceAsync, traceEvent } from "./perfTrace"
+
 /** How well the app can describe one provider's usage. Mirrors Rust `ProviderUsageState`. */
 export type ProviderUsageState = "live" | "estimated" | "observed" | "detected" | "unknown"
 
@@ -287,15 +289,42 @@ export interface SessionQuotaPayload {
 /** Every `(provider, account)` this app has observed at least one quota
  * period for, and each account's lanes. */
 export async function getQuotaAccounts(): Promise<QuotaAccountsPayload> {
-  if (!isTauri()) return EMPTY_QUOTA_ACCOUNTS
-  return invoke<QuotaAccountsPayload>("get_quota_accounts")
+  return traceAsync("ipc.getQuotaAccounts", {}, async () => {
+    if (!isTauri()) return EMPTY_QUOTA_ACCOUNTS
+    return invoke<QuotaAccountsPayload>("get_quota_accounts")
+  })
 }
 
 /** One lane's quota windows over a range, its meter readings, and the
  * sessions estimated to have contributed to each window. */
 export async function getQuotaUsage(request: QuotaUsageRequest): Promise<QuotaUsagePayload> {
-  if (!isTauri()) return EMPTY_QUOTA_USAGE
-  return invoke<QuotaUsagePayload>("get_quota_usage", { request })
+  const { provider, accountKey, lane, rangeStartEpoch, rangeEndEpoch } = request
+  const usage = await traceAsync(
+    "ipc.getQuotaUsage",
+    {
+      provider,
+      accountKey,
+      lane,
+      rangeStartEpoch,
+      rangeEndEpoch,
+      spanDays: (rangeEndEpoch - rangeStartEpoch) / 86400,
+    },
+    async () => {
+      if (!isTauri()) return EMPTY_QUOTA_USAGE
+      return invoke<QuotaUsagePayload>("get_quota_usage", { request })
+    },
+  )
+  traceEvent("ipc.getQuotaUsage.payload", {
+    periods: usage.periods.length,
+    samples: usage.periods.reduce((total, period) => total + period.samples.length, 0),
+    contributionBuckets: usage.periods.reduce(
+      (total, period) => total + period.contributions.length,
+      0,
+    ),
+    sessions: usage.periods.reduce((total, period) => total + period.sessions.length, 0),
+    factorNull: usage.factor == null,
+  })
+  return usage
 }
 
 /** One session's estimated quota contributions, by provider and lane. */
