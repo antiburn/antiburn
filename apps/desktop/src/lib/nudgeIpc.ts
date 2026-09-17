@@ -11,9 +11,6 @@ const noShellUnlisten: UnlistenFn = () => undefined
  * fires. These shapes are the whole contract between it and `NudgeView`.
  * ---------------------------------------------------------------------- */
 
-/** Window label the shell gives the notification window. Mirrors `NUDGE_LABEL`. */
-export const NUDGE_WINDOW_LABEL = "nudge"
-
 /**
  * What surfaced a nudge. Mirrors Rust `NudgeKind`.
  *
@@ -30,7 +27,7 @@ export type NudgeKind =
   | "test"
 
 /** Visual tone — informational, positive, or attention. Mirrors Rust `NudgeTone`. */
-export type NudgeTone = "info" | "success" | "warning"
+type NudgeTone = "info" | "success" | "warning"
 
 /**
  * Optional structured target carried by a CTA and echoed back to the shell when
@@ -159,7 +156,7 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
  * {@link Nudge} to draw. Mirrors `NUDGE_SHOW_EVENT` in
  * `src-tauri/crates/nudge/src/lib.rs`.
  */
-export const NUDGE_SHOW_EVENT = "nudge:show"
+const NUDGE_SHOW_EVENT = "nudge:show"
 
 /** Subscribe to incoming nudges. The returned function unsubscribes. */
 export async function onNudgeShow(handler: (nudge: Nudge) => void): Promise<UnlistenFn> {
@@ -176,7 +173,7 @@ export async function onNudgeShow(handler: (nudge: Nudge) => void): Promise<Unli
  * (the settings window, or the popover) holds macOS key-window status, because
  * AppKit routes mouse-moved events there instead.
  */
-export const NUDGE_HOVER_EVENT = "nudge:hover"
+const NUDGE_HOVER_EVENT = "nudge:hover"
 
 /** Subscribe to the native hover signal. The returned function unsubscribes. */
 export async function onNudgeHover(handler: (hovered: boolean) => void): Promise<UnlistenFn> {

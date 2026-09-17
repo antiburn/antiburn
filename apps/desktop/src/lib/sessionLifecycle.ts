@@ -92,7 +92,7 @@ export function sessionRefKey(ref: SessionRefPayload): string {
 }
 
 /** Create a lifecycle identity for a listed session. */
-export function sessionInterest(
+function sessionInterest(
   agent: string,
   sessionId: string,
   wslDistro?: string | null,
