@@ -17,6 +17,12 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Added
+
+- `Bucket` carries the estimated USD cost of its events, by component
+  (`Bucket::cost`), inclusive of sub-agent events in merged metrics. Advance
+  metrics schema revision to 9 so stored analyses rerun to populate it.
+
 ## [0.8.0] - 2026-09-16
 
 ### Added

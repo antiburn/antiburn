@@ -47,6 +47,13 @@
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 40,
+          "cost": {
+            "cacheReadUsd": 0.0,
+            "cacheWriteUsd": 0.0,
+            "inputUsd": 0.0002,
+            "outputUsd": 0.00025,
+            "totalUsd": 0.00045
+          },
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCacheRoutingMiss": false,

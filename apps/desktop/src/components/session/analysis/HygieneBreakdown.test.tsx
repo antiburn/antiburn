@@ -34,6 +34,7 @@ const PAYLOAD: SessionHygienePayload = {
     { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
   ],
   evidenceState: "ready",
+  unusedResources: null,
 }
 
 function view() {

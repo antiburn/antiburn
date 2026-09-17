@@ -56,6 +56,17 @@ pub(crate) fn recover_uncertain_write(
             now,
         );
     };
+    if matches!(
+        setting,
+        ConfigSetting::McpServer | ConfigSetting::BuiltInTool | ConfigSetting::Skill
+    ) && resource_replacement_value(&replacement, definition.resource.as_deref()).is_none()
+    {
+        return store.mark_remediation_recovery_checked(
+            &record.remediation_id,
+            "verificationUnavailable",
+            now,
+        );
+    }
     if policy.action_support(
         RemediationAction::RecoverUncertainWrite(setting),
         definition.source_format.value(),
@@ -160,7 +171,21 @@ pub(crate) fn recover_uncertain_write(
     }
     match effective.value {
         value if value == replacement => {
-            store.finalize_remediation_write(&record.remediation_id, now.saturating_mul(1_000), now)
+            let verification_available =
+                DetectorId::from_key(&definition.detector).is_some_and(|detector| {
+                    super::watch_verification_available(
+                        &definition,
+                        &record.scope_kind,
+                        &record.agent,
+                        detector,
+                    )
+                });
+            store.finalize_remediation_write(
+                &record.remediation_id,
+                now.saturating_mul(1_000),
+                now,
+                verification_available,
+            )
         }
         _ => store.mark_remediation_recovery_checked(
             &record.remediation_id,
@@ -168,6 +193,14 @@ pub(crate) fn recover_uncertain_write(
             now,
         ),
     }
+}
+
+pub(super) fn resource_replacement_value<'a>(
+    replacement: &'a str,
+    expected_resource: Option<&str>,
+) -> Option<&'a str> {
+    let (resource, value) = replacement.split_once('=')?;
+    (Some(resource) == expected_resource).then_some(value)
 }
 
 pub(super) fn recovery_target_matches(

@@ -847,7 +847,9 @@ fn project_config_disabled_value(value: &str) -> bool {
     matches!(value.to_ascii_lowercase().as_str(), "1" | "true")
 }
 
-fn global_config_root(home: &Path) -> Result<PathBuf, ConfigUnavailableReason> {
+pub(in crate::agent_config) fn global_config_root(
+    home: &Path,
+) -> Result<PathBuf, ConfigUnavailableReason> {
     let process_home = std::env::var_os("HOME");
     let xdg_config_home = process_home
         .as_deref()
@@ -874,7 +876,7 @@ fn global_config_root_for(
     Ok(root.join("opencode"))
 }
 
-fn project_hierarchy(
+pub(in crate::agent_config) fn project_hierarchy(
     cwd: &Path,
     trusted_root: &Path,
 ) -> Result<Vec<PathBuf>, ConfigUnavailableReason> {

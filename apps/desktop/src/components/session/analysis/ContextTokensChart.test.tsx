@@ -377,6 +377,35 @@ describe("ContextTokensChart", () => {
     expect(screen.getAllByText("rehydration")).toHaveLength(1)
   })
 
+  it("shares one label between cache events 10 slices apart in a 100-slice session", () => {
+    // A horizontal pill label is wide, so two rehydrations 10 slices apart in
+    // a 100-slice session still overlap their labels; only the first carries
+    // one, unlike the narrower vertical labels the Cost chart draws.
+    const marked = (index: number) => index === 10 || index === 20
+    const buckets = Array.from({ length: 100 }, (_, index) =>
+      bucket({
+        contextTokens: 100_000,
+        rewriteTokens: marked(index) ? 90_000 : 0,
+        isCacheRehydration: marked(index),
+        ...(marked(index)
+          ? {
+              cacheRehydration: {
+                contextTokens: 100_000,
+                stillCachedTokens: 10_000,
+                rewrittenTokens: 90_000,
+                growthTokens: 0,
+              },
+            }
+          : {}),
+      }),
+    )
+    render(
+      <ContextTokensChart buckets={buckets} contextWindow={258_400} highlight="rehydration" />,
+    )
+
+    expect(screen.getAllByText("rehydration")).toHaveLength(1)
+  })
+
   it("lights every layer at rest, with no grey in the plot", () => {
     const buckets = [
       bucket({ contextTokens: 100_000, tokensIn: 900, tokensOut: 400 }),

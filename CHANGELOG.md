@@ -20,6 +20,12 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- The session detail Cost tab shows how the estimated cost grew over the
+  session, split by input, output, cache read, and cache write, with
+  compaction and cache rehydration marks.
+
 ## [0.6.0] - 2026-09-16
 
 ### Added
