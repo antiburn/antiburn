@@ -188,11 +188,103 @@ live macOS validation after changes to the native window mechanism.
 ## Data and timing
 
 - Each LED bar has 20 segments.
-- Only the first bar blinks during a live session, and only on the HUD. The
-  detail window does not blink.
-- A transcript write stays live for 90 seconds.
-- The renderer reads liveness once when shown. Session and scan events push
-  later changes, and one timer clears the live state at its expiry.
+- Unscoped bars sweep only for positive canonical provider-route counts.
+  The harness does not determine the provider: Pi's recorded `openai-codex`
+  route becomes OpenAI, while Pi's `anthropic` route activates Claude.
+  The shell keeps the model vendor separate. Claude through OpenRouter,
+  AWS, or Azure does not activate direct Anthropic bars. Unknown or missing
+  routes and anonymous harness activity activate no provider bar.
+  The detail window does not sweep. The popover uses the same route counts
+  for its open usage meters and closed provider ring.
+- A bar that holds one model sweeps only while a working session has published
+  evidence for that model on the bar's canonical provider route. The Anthropic weekly Fable limit is such a bar: a session on Opus
+  leaves it still, and a session on Fable sweeps it. The shell reports the
+  model and recorded provider from the same newest published modeled turn,
+  and the renderer matches that model only within its canonical route.
+  Until publication supplies that evidence, the session activates neither
+  provider nor model-scoped bars. The ring on the closed popover bar keeps the provider rule, because
+  it shows the provider's highest meter rather than one window.
+- The sweep is a gleam about three segments wide that crosses the lit
+  segments from the left. An unlit segment does not move. A segment takes
+  two brightness levels, off and the peak, instead of a smooth ramp: the
+  three segments of the band hold the peak together, and the band hops a
+  segment at a time, like a lamp. The gleam peaks
+  at about a quarter of full strength on the HUD, which floats over the
+  reader's work, and at a bit over half in the popover, which the reader
+  opened. A
+  segment keeps its colour under it either way. Above a dark
+  segment the gleam is the shimmer white the session list runs across a
+  running session's title, because the bar colours sit too close to the
+  brand tint for a 6-pixel dot to show the tint above them. Above a light
+  segment it is a dark shade of the segment's own hue: the OpenAI bar takes
+  the label colour, which is near white in dark mode, and white above white
+  shows nothing. A bar with nothing lit flashes its first segment in the
+  brand tint as the sweep passes, so a session at zero usage still shows. On
+  the closed popover bar the gleam runs from twelve o'clock to the end of
+  the ring's arc and fades there; a ring under an eighth flashes its first
+  eighth in the brand tint.
+- The cycle is 4 seconds, the cycle of the shimmer the session list runs
+  across a running session's title, on the HUD and in the popover alike: a
+  live session moves at one pace on every surface. The two also share a
+  phase. A CSS animation starts when the browser applies it, so the
+  renderer sets the start time of each live animation from the wall clock
+  instead. A title shimmer and a meter sweep therefore hold the same point
+  of the cycle, however late either one starts. The renderer sets the start
+  time again when an animation starts, when the window comes back, and once
+  each cycle, so a window that stopped painting returns in step. It sets
+  the start time on an animation frame, where the animation clock and the
+  wall clock agree. The stylesheets declare no delay, because a delay would
+  move the phase on every render. The sweep then holds back 0.2 seconds. The shimmer's band is soft
+  and almost a title wide, so it fades in, and this band is sharp and three
+  segments wide, so it snaps on: equal centres look early on the meter. The band crosses the bar
+  in about 2 seconds, half the cycle, and the bar rests for the remainder.
+  A provider's rows run 100 milliseconds apart from the top. With no bars at
+  all, the one empty bar sweeps for named working or anonymous activity, not
+  quiet sessions.
+- One animation drives every live meter on a surface, and each segment
+  reads the sweep position from it. A CSS animation starts when the browser
+  applies it, so a meter with its own animation keeps its own clock. The
+  shared clock holds the rows in phase, however late a row joins.
+- Under reduced motion the sweep stops, and the next segment to light holds
+  the brand tint instead, which is the first segment when usage is too low
+  to light one. The ring holds its next eighth.
+- Liveness comes from the session lifecycle registry: the renderer
+  subscribes to `session:lifecycle`, then reads the versioned
+  `get_live_sessions` snapshot, and applies only deltas with a higher
+  sequence. Global liveness remains true while the registry's exact `working` or
+  `anonymous` count is above zero; the snapshot carries the counts and the
+  last lifecycle event of each registry batch re-stamps them, so the
+  snapshot's bounded rows never decide it. A session works until the
+  registry says `quiet` (30 seconds without a write); anonymous agent
+  activity works until the registry says `anonymous_cleared`, when a scan
+  pass covers it or the same window passes. The renderer keeps no timer
+  for lifecycle expiry. Quiet sessions remain active for list pills until
+  180 seconds without a write, but do not blink. A new write can resume them;
+  `resumed` is Activity metadata, not a fourth state. Deadline wakes include
+  one second of slack; transport can add delay.
+- The projection bridge relays lifecycle transitions while enriched row loads
+  run separately. A resync replaces the snapshot and counts; row projection
+  never decides HUD liveness. Silent startup seeds can have sequence zero.
+  Unknown list identities are distinct from known presence or absence at zero.
+  A truncated zero-sequence seed queries omitted interests and accepts their
+  same-sequence answers once; duplicate or stale answers cannot replace newer
+  evidence. Exact HUD counts remain independent of these list queries.
+  V49 persists incarnations internally; V48 remains attribution data.
+  See `docs/session-lifecycle-events.md` for evidence guards, permissions,
+  named presence, convergence, and resource limits.
+- Exact per-harness working and anonymous counts cover every canonical identity,
+  independently of the snapshot row limit. Execution counts group by route and
+  model within each harness. Missing routes have no model-derived fallback.
+  Pending, failed, unmodeled, and anonymous evidence proves no provider or model
+  sweep. Other unknown identities do not suppress a known matching model.
+- The existing projection worker reads compact published models in pages of at
+  most 256, outside the actor. Incarnation, metadata epoch, ticket, and writer
+  revision guard each answer. Publication fences identify row provenance, not
+  a version. A successful analysis observation invalidates old model evidence;
+  processing or failure alone does not. Metadata changes publish sequenced
+  `sweep_changed` events without changing activity timestamps.
+- Explicit recovery clears positive scoped evidence until a current snapshot or
+  aggregate arrives. A failed recovery cannot retain a stale model sweep.
 - The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
 - Hiding the HUD parks the native polls and the retained renderer's timers.

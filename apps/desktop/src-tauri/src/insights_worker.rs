@@ -15,7 +15,6 @@ use tokio::task::JoinSet;
 use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
 use crate::analytics::ingested_incidents::{self, IngestedIncidents};
 use crate::commands;
-use crate::dto::ActivityEntry;
 use crate::fork_lineage;
 use crate::store::{
     EvidenceClaim, EvidenceCompletion, EvidenceFailure, FencedTurnRowStore, PublishedEvidence,
@@ -157,8 +156,20 @@ async fn run_worker(app: tauri::AppHandle) {
         run_record_pass(record, signal, claim_fence, store_handle.clone())
     };
     let announce_app = app.clone();
-    let announce = move |entry: ActivityEntry| {
-        let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
+    // The worker reports a typed fact only. The projection worker
+    // rebuilds the rich row and emits the frontend events.
+    let announce = move |key: &SessionKey| {
+        crate::session_lifecycle::report(
+            &announce_app,
+            crate::session_lifecycle::SyncObservation::RowChanged {
+                session: key.clone(),
+                facets: crate::session_lifecycle::UpdateFacets {
+                    analysis: true,
+                    ..Default::default()
+                },
+                at: unix_now(),
+            },
+        );
     };
     let report_app = app.clone();
     let announce_idle = move || {
@@ -210,12 +221,6 @@ fn published_status(evidence: &SessionEvidence) -> PublishedEvidence {
     } else {
         PublishedEvidence::Unsupported
     }
-}
-
-pub(crate) fn completion_entry(store: &Store, key: &SessionKey, now: i64) -> Option<ActivityEntry> {
-    let session = store.session(key).ok()??;
-    let repositories = store.repositories().ok()?;
-    commands::activity_entry(store, &repositories, session, now).ok()
 }
 
 /// What applying one evidence pass's outcome did to the store.
@@ -401,7 +406,7 @@ pub(crate) async fn process_next(
     store: &Store,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
-    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) -> anyhow::Result<bool> {
     let Some(claim) =
@@ -445,9 +450,7 @@ pub(crate) async fn process_next(
     let published = outcome.applied && pass.outcome == PassOutcome::Published;
     if published {
         fork_lineage::link_claude_fork(store, &claim.key)?;
-    }
-    if published && let Some(entry) = completion_entry(store, &claim.key, clock()) {
-        announce(entry);
+        announce(&claim.key);
     }
     if let Some((agent, ingested)) = outcome.ingested {
         report_ingested(agent, ingested);
@@ -459,7 +462,7 @@ pub(crate) async fn process_next_work(
     store: &Store,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
-    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) -> anyhow::Result<bool> {
     let now = clock();
@@ -498,7 +501,7 @@ pub(crate) async fn worker_loop(
     handle: &WorkerHandle,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
-    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    announce: &(dyn Fn(&SessionKey) + Send + Sync),
     announce_idle: &(dyn Fn() + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) {

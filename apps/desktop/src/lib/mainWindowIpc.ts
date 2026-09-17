@@ -131,13 +131,13 @@ export async function requestMainWindowRecovery(generation: number): Promise<voi
 }
 
 /** Event emitted when the main renderer can start or stop presenting work. */
-export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
+const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 
 /** Event carrying a revisioned session target to an existing main renderer. */
-export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
+const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
 
 /** Event asking a hidden retained renderer for its committed health. */
-export const MAIN_WINDOW_HEALTH_CHECK_EVENT = "main:health-check"
+const MAIN_WINDOW_HEALTH_CHECK_EVENT = "main:health-check"
 
 /** Subscribe to main-window presentation visibility. */
 export async function onMainWindowVisibilityChanged(

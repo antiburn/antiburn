@@ -159,6 +159,14 @@ fn provider_for_namespace(namespace: &str) -> &'static str {
     }
 }
 
+/// Identify the model vendor from a recognized family, independently of the billing route.
+pub(crate) fn model_vendor(model: &str) -> Option<&'static str> {
+    let model = model.trim().to_ascii_lowercase();
+    let family = model.rsplit('/').next().unwrap_or_default();
+    let vendor = provider_for_family(family);
+    (vendor != UNKNOWN).then_some(vendor)
+}
+
 /// The vendor a bare model family belongs to.
 fn provider_for_family(model: &str) -> &'static str {
     if model.starts_with("claude") {

@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use reqwest::StatusCode;
 use reqwest::header::{ETAG, IF_NONE_MATCH};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
 const CACHE_FILE: &str = "model-pricing.json";
@@ -201,7 +201,12 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                         // The session limit badge prices each session's cost
                         // against the current pricing table on every read, so
                         // no durable estimate needs a re-price here.
-                        let _ = app.emit(crate::commands::SESSIONS_INVALIDATED_EVENT, ());
+                        crate::session_lifecycle::report(
+                            &app,
+                            crate::session_lifecycle::SyncObservation::IndexChanged {
+                                reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
+                            },
+                        );
                     }
                     true
                 }
