@@ -4,17 +4,21 @@ import { frameColor, type TokenMapLayout } from "../../lib/tokenMap"
  * The map draws in HUD pixels, so a dot is the size of an LED and sits on
  * the same column. The panel content is the 176px window minus its 8px side
  * margins and its 10px padding. The LED row spreads 20 6px segments across
- * it, and the VU rows sit 9px apart.
+ * it, and the VU rows sit 9px apart. A wider panel, such as the island,
+ * spreads the same 20 columns over its own content width.
  */
 const CONTENT_PX = 140
 const LED_PX = 6
 const SMALL_PX = 4
-const COLUMN_PITCH = (CONTENT_PX - LED_PX) / 19
+const COLUMNS = 20
 const ROW_PITCH = 9
 const FRAME_PAD = 1.5
 
 /**
  * Draw the token map: one dot blob per live session on the LED grid.
+ *
+ * `contentWidth` is the panel content width in pixels. The columns follow
+ * the LED segments of the bars below, whatever the width.
  *
  * `onHoverBlob` reports the blob under the pointer by key, or null when the
  * pointer leaves it. Each blob is one group, so a move from the frame to a
@@ -24,22 +28,25 @@ const FRAME_PAD = 1.5
 export function TokenMap({
   layout,
   className = "",
+  contentWidth = CONTENT_PX,
   onHoverBlob,
 }: {
   layout: TokenMapLayout
   className?: string
+  contentWidth?: number
   onHoverBlob?: (key: string | null, subagentId?: string | null) => void
 }) {
+  const columnPitch = (contentWidth - LED_PX) / (COLUMNS - 1)
   // Crop to the rows in use, so the dots stay close to the bars below.
   const rows = layout.blobs.reduce((max, blob) => Math.max(max, blob.y + blob.h), 1)
   const height = (rows - 1) * ROW_PITCH + LED_PX
-  const cx = (x: number) => x * COLUMN_PITCH + LED_PX / 2
+  const cx = (x: number) => x * columnPitch + LED_PX / 2
   const cy = (y: number) => y * ROW_PITCH + LED_PX / 2
   return (
     <svg
-      viewBox={`0 0 ${CONTENT_PX} ${height}`}
+      viewBox={`0 0 ${contentWidth} ${height}`}
       className={`block w-full overflow-visible ${className}`.trimEnd()}
-      style={{ aspectRatio: `${CONTENT_PX} / ${height}` }}
+      style={{ aspectRatio: `${contentWidth} / ${height}` }}
       aria-hidden="true"
       data-dot-value={layout.dotValue}
     >

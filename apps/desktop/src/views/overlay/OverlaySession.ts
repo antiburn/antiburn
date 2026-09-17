@@ -21,6 +21,13 @@ import {
   type HudSpendRate,
 } from "../../lib/hudIpc"
 import { devSpendRate, withDevBlock, type HudDevOverride } from "../../lib/hudDev"
+import {
+  getHudIslandState,
+  HUD_ISLAND_OFF,
+  islandSpendFigure,
+  onHudIslandState,
+  type HudIslandState,
+} from "../../lib/hudIsland"
 import { BurnWakeTracker, activityWake } from "../../lib/hudWake"
 import {
   hideOverlayWindow,
@@ -87,6 +94,10 @@ export type OverlaySnapshot = {
   blinkPeriodMs: number
   /** The spend rate in words, or null when the window carried no tokens. */
   spend: string | null
+  /** The spend rate as a figure for the island's wing, or null. */
+  spendFigure: string | null
+  /** Where the HUD sits in the notch, if it does, and the notch's shape. */
+  island: HudIslandState
   /** The clock the countdown to a reset reads from. */
   now: number
   /** The reset message under the bars, or null. */
@@ -105,6 +116,8 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   showMap: false,
   blinkPeriodMs: blinkPeriod(null, null).periodMs,
   spend: null,
+  spendFigure: null,
+  island: HUD_ISLAND_OFF,
   now: 0,
   celebration: null,
 }
@@ -168,6 +181,7 @@ export class OverlaySession {
   private stopVisibilityListening: (() => void) | null = null
   private stopDetailShownListening: (() => void) | null = null
   private stopDevListening: (() => void) | null = null
+  private stopIslandListening: (() => void) | null = null
   /** A spend rate the "HUD Dev" menu pinned, in place of the measured one. */
   private devSpend: HudSpendRate | null = null
   /** Until when the "HUD Dev" menu holds the first bar at its limit. */
@@ -386,6 +400,7 @@ export class OverlaySession {
           showMap: false,
           blinkPeriodMs: blinkPeriod(null, this.latestUsage).periodMs,
           spend: null,
+          spendFigure: null,
         })
         if (hadMap) void this.syncWindow(true, generation)
         // The detail window spells the map out. It needs the empty state too.
@@ -411,6 +426,7 @@ export class OverlaySession {
             showMap,
             blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
             spend: describeSpend(this.latestSpend),
+            spendFigure: islandSpendFigure(this.latestSpend),
           })
           if (hadMap !== showMap) void this.syncWindow(true, generation)
           if (this.detailShown) {
@@ -432,6 +448,21 @@ export class OverlaySession {
         })
         .catch(() => {})
     }
+
+    // The shell owns the island. The HUD asks once, then follows its events.
+    void getHudIslandState()
+      .then((island) => {
+        if (this.isCurrent(generation)) this.applyIsland(island)
+      })
+      .catch(() => {})
+    void onHudIslandState((island) => {
+      if (this.isCurrent(generation)) this.applyIsland(island)
+    })
+      .then((dispose) => {
+        if (this.isCurrent(generation)) this.stopIslandListening = dispose
+        else dispose()
+      })
+      .catch(() => {})
 
     void listen<boolean>("overlay_hover", (event) => {
       if (this.isCurrent(generation)) this.requestHover(Boolean(event.payload))
@@ -502,6 +533,8 @@ export class OverlaySession {
     this.stopDetailShownListening = null
     this.stopDevListening?.()
     this.stopDevListening = null
+    this.stopIslandListening?.()
+    this.stopIslandListening = null
     this.lastEventActivity = null
     this.burnWake = new BurnWakeTracker()
     window.clearTimeout(this.celebrationTimer)
@@ -522,6 +555,7 @@ export class OverlaySession {
       liveProviders: [],
       liveModels: {},
       celebration: null,
+      island: HUD_ISLAND_OFF,
     })
   }
 
@@ -560,8 +594,25 @@ export class OverlaySession {
     }
   }
 
+  /**
+   * Take the island's new shape. A collapse hides the detail: the notch row
+   * has nothing to explain. An expansion under the pointer shows it.
+   */
+  private applyIsland(island: HudIslandState): void {
+    const wasCollapsed = this.snapshot.island.island === "collapsed"
+    this.update({ island })
+    if (island.island === "collapsed") {
+      this.clearShowTimer()
+      this.hideDetail()
+    } else if (wasCollapsed && this.snapshot.hovered && !this.snapshot.dragging) {
+      this.armShowTimer()
+    }
+  }
+
   private armShowTimer(): void {
     if (this.showTimer != null || this.detailShown) return
+    // The collapsed island is the notch row alone. It has no detail.
+    if (this.snapshot.island.island === "collapsed") return
     this.showTimer = window.setTimeout(() => {
       this.showTimer = null
       if (!this.active || !this.snapshot.hovered || this.snapshot.dragging) return
@@ -741,6 +792,7 @@ export class OverlaySession {
         this.commitLayout({
           blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
           spend: describeSpend(this.latestSpend),
+          spendFigure: islandSpendFigure(this.latestSpend),
         })
         return
       }
@@ -786,6 +838,8 @@ export class OverlaySession {
       this.snapshot.showMap === next.showMap &&
       this.snapshot.blinkPeriodMs === next.blinkPeriodMs &&
       this.snapshot.spend === next.spend &&
+      this.snapshot.spendFigure === next.spendFigure &&
+      this.snapshot.island === next.island &&
       this.snapshot.now === next.now &&
       this.snapshot.celebration === next.celebration
     ) {

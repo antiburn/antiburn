@@ -12,9 +12,14 @@
 use std::sync::LazyLock;
 
 mod dock;
+mod island;
 pub use dock::{
     DockEdge, DockSettings, dock_overlay, dock_settings, restore_dock, settle_after_drag, tear_off,
     wake_overlay,
+};
+pub use island::{
+    IslandPhase, IslandState, begin_drag, island_overlay, island_state, refresh_notch,
+    set_fake_notch,
 };
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]
@@ -722,7 +727,8 @@ fn apply_height(
     };
 
     window.set_resizable(true)?;
-    let size_result = window.set_size(LogicalSize::new(OVERLAY_WIDTH, target_height));
+    let width = island::frame_width().unwrap_or(OVERLAY_WIDTH);
+    let size_result = window.set_size(LogicalSize::new(width, target_height));
     if size_result.is_ok() {
         RESIZE_STATE.set_height(target_height);
     } else {

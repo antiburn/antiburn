@@ -8,6 +8,14 @@ import { ToggleRow } from "../../components/ui/ToggleRow"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { createExternalStore } from "../../lib/externalStore"
 import {
+  getHudIslandState,
+  HUD_ISLAND_OFF,
+  isHudIslandAvailable,
+  onHudIslandState,
+  setHudIsland,
+  type HudIslandState,
+} from "../../lib/hudIsland"
+import {
   EMPTY_LIVE_USAGE,
   getLiveUsage,
   onLiveUsageChanged,
@@ -86,6 +94,22 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
     }),
   )
   const live = useSyncExternalStore(store.subscribe, store.getSnapshot)
+  // The island switch shows only on a Mac with a notch. The shell owns the
+  // state: the HUD's own drag can put it in the notch or take it out.
+  const [islandStore] = useState(() =>
+    createExternalStore<{ available: boolean; state: HudIslandState }>({
+      initial: { available: false, state: HUD_ISLAND_OFF },
+      load: async () => {
+        const available = await isHudIslandAvailable().catch(() => false)
+        const state = available
+          ? await getHudIslandState().catch(() => HUD_ISLAND_OFF)
+          : HUD_ISLAND_OFF
+        return { available, state }
+      },
+      subscribe: (set) => onHudIslandState((state) => set({ available: true, state })),
+    }),
+  )
+  const island = useSyncExternalStore(islandStore.subscribe, islandStore.getSnapshot)
   const on = settings?.liveUsageEnabled ?? false
   const hidden = settings?.liveUsageHiddenProviders ?? []
   const meters = roster(live)
@@ -97,6 +121,12 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
 
   function handleHudChange(next: boolean) {
     hudVisibility.set(next)
+  }
+
+  function handleIslandChange(next: boolean) {
+    void setHudIsland(next)
+      .then(() => islandStore.refresh())
+      .catch(() => undefined)
   }
 
   // Write the hidden set, then refresh: a provider the reader just turned on
@@ -153,6 +183,16 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               label="Docking"
               description="Drag the HUD against any edge of the screen to dock it there. A small tab stays visible; rest the pointer on it to peek the HUD in. Drag it away to undock. A docked HUD also peeks in when a session starts writing after an hour of quiet, or when spend runs hot."
             />
+            {island.available && (
+              <ToggleRow
+                label="Sit in the notch"
+                description="Tucks the HUD into the notch of the built-in display, black on black, with the live light on one side and the spend rate on the other. Rest the pointer on the notch to open it. Dragging the HUD onto the notch does the same; dragging it out brings it back."
+                checked={island.state.island !== "off"}
+                onChange={handleIslandChange}
+                disabled={!hudShown}
+                disabledTooltip="Show the HUD first."
+              />
+            )}
           </Card>
         </SectionGroup>
       )}

@@ -19,6 +19,8 @@
   --color-hud-stroke-bottom: var(--color-hud-stroke-bottom-val);
   --color-hud-control-ink: var(--color-hud-control-ink-val);
   --color-hud-control-edge: var(--color-hud-control-edge-val);
+  --color-hud-island: var(--color-hud-island-val);
+  --color-hud-island-ink: var(--color-hud-island-ink-val);
   --color-led-off: var(--color-led-off-val);
   --color-led-notch: var(--color-led-notch-val);
   --color-led-notch-highlight: var(--color-led-notch-highlight-val);
@@ -80,6 +82,12 @@
    */
   --color-hud-control-ink-val: hsl(0 0% 32%);
   --color-hud-control-edge-val: hsl(0 0% 80%);
+  /*
+   * The island. Pure black in both themes, so it merges with the notch, and
+   * one light ink for the captions on it.
+   */
+  --color-hud-island-val: hsl(0 0% 0%);
+  --color-hud-island-ink-val: hsl(0 0% 92%);
   --color-mode-looking-val: hsl(215 100% 48%);
   --color-mode-running-val: hsl(140 80% 36%);
   --color-mode-changing-val: hsl(280 85% 55%);
@@ -100,6 +108,8 @@
     --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
     --color-hud-control-ink-val: hsl(0 0% 78%);
     --color-hud-control-edge-val: hsl(0 0% 32%);
+    --color-hud-island-val: hsl(0 0% 0%);
+    --color-hud-island-ink-val: hsl(0 0% 92%);
     --color-led-off-val: hsl(0 0% 50% / 0.45);
     --color-led-notch-val: hsl(0 0% 20% / 0.95);
     --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
@@ -123,6 +133,8 @@
   --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
   --color-hud-control-ink-val: hsl(0 0% 32%);
   --color-hud-control-edge-val: hsl(0 0% 80%);
+  --color-hud-island-val: hsl(0 0% 0%);
+  --color-hud-island-ink-val: hsl(0 0% 92%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
   --color-led-notch-val: hsl(0 0% 20% / 0.95);
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
@@ -145,6 +157,8 @@
   --color-hud-stroke-bottom-val: hsl(0 0% 0% / 0.22);
   --color-hud-control-ink-val: hsl(0 0% 78%);
   --color-hud-control-edge-val: hsl(0 0% 32%);
+  --color-hud-island-val: hsl(0 0% 0%);
+  --color-hud-island-ink-val: hsl(0 0% 92%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
   --color-led-notch-val: hsl(0 0% 20% / 0.95);
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
@@ -231,6 +245,53 @@ body[data-transparent-window] #root {
     linear-gradient(#000 0 0);
   mask-composite: exclude;
   pointer-events: none;
+}
+
+/*
+ * The island: a black panel that sits in the notch. Its bottom corners take
+ * the notch's radius. Its top corners curve out into the screen edge, drawn
+ * by the fillet pseudo-elements in the transparent gutter either side: each
+ * is a square with a quarter circle of transparency cut from its outer,
+ * lower corner, so the island seems to grow out of the bezel. Expanded, the
+ * radii grow with it.
+ */
+.hud-island {
+  --island-fillet: 6px;
+  border-radius: 0 0 14px 14px;
+  transition: border-radius var(--duration-fast) ease-out;
+}
+
+.hud-island-open {
+  --island-fillet: 19px;
+  border-radius: 0 0 24px 24px;
+}
+
+.hud-island-fillets::before,
+.hud-island-fillets::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: var(--island-fillet);
+  height: var(--island-fillet);
+  pointer-events: none;
+}
+
+.hud-island-fillets::before {
+  right: 100%;
+  background: radial-gradient(
+    circle at 0 100%,
+    transparent calc(var(--island-fillet) - 0.5px),
+    var(--color-hud-island) var(--island-fillet)
+  );
+}
+
+.hud-island-fillets::after {
+  left: 100%;
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent calc(var(--island-fillet) - 0.5px),
+    var(--color-hud-island) var(--island-fillet)
+  );
 }
 
 /*

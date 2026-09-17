@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-hud-island"
+description = "Enables the set_hud_island command without any pre-configured scope."
+commands.allow = ["set_hud_island"]
+
+[[permission]]
+identifier = "deny-set-hud-island"
+description = "Denies the set_hud_island command without any pre-configured scope."
+commands.deny = ["set_hud_island"]

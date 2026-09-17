@@ -142,6 +142,9 @@ pub fn spawn_display_watcher(app: &AppHandle) {
                 continue;
             }
             connected = now;
+            // The notch may have come or gone with the display.
+            let _ =
+                crate::main_window::on_main_value(&app, |_| antiburn_hud::refresh_notch()).await;
             let entries = load_placements(&app.state::<Store>());
             if let Err(error) = antiburn_hud::apply_placement(&app, &entries) {
                 ::tracing::warn!(event = "hud_display_change_move_failed", error = %error);

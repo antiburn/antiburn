@@ -1257,6 +1257,67 @@ describe("OverlayWindow", () => {
     }
   })
 
+  it("draws the collapsed island as the notch row alone and keeps the detail shut", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector("[data-island]")).toBeNull()
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "collapsed",
+          wing: 30,
+          fillet: 6,
+          notch: 200,
+          height: 32,
+        }),
+      )
+      const island = container.querySelector("[data-island]")
+      expect(island?.getAttribute("data-island")).toBe("collapsed")
+      expect(island?.classList.contains("hud-island-fillets")).toBe(true)
+      expect(screen.getByTestId("island-live-led")).toBeTruthy()
+      // No priced spend in the summary, so the right wing shows the usage LED.
+      expect(screen.getByTestId("island-usage-led")).toBeTruthy()
+      expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(0)
+
+      act(() => hover.emit(true))
+      await advance(400)
+      expect(showHudDetail).not.toHaveBeenCalled()
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "expanded",
+          wing: 30,
+          fillet: 19,
+          notch: 200,
+          height: 32,
+        }),
+      )
+      expect(
+        container.querySelector("[data-island]")?.classList.contains("hud-island-open"),
+      ).toBe(true)
+      expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+      // The pointer is still on the island, so the expansion opens the detail.
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "off",
+          wing: 0,
+          fillet: 0,
+          notch: 0,
+          height: 0,
+        }),
+      )
+      expect(container.querySelector("[data-island]")).toBeNull()
+      expect(container.querySelector(".hud-frame")).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("keeps hover active inside the transparent frame margin", async () => {
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(nativeEvents.get("overlay_hover")?.size).toBe(1))
