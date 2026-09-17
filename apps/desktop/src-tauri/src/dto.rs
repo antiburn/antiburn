@@ -731,6 +731,7 @@ pub struct BurnCheckDisplayFactsPayload {
     pub last_observed_at_ms: i64,
     pub estimate_method: Option<BurnCheckEstimateMethod>,
     pub estimated_opportunity: Option<BurnCheckEstimatedValuePayload>,
+    pub estimated_token_burn_basis_points: Option<u16>,
     pub verification_limit: BurnCheckVerificationLimit,
 }
 
@@ -777,6 +778,7 @@ pub enum BurnCheckWatchLifecycle {
     Reserved,
     Writing,
     RecoveryNeeded,
+    WaitingForPromptUse,
     Watching,
     Fixed,
     Recurred,
@@ -888,11 +890,13 @@ pub struct BurnCheckTargetPayload {
     pub finding: BurnCheckFindingPayload,
     pub display: BurnCheckDisplayFactsPayload,
     pub occurrence_count: u64,
-    pub affected_session_count: u64,
+    pub affected_session_count: Option<u64>,
     pub project_name: Option<String>,
     pub project_location: Option<String>,
     /// Full local directory for explicit folder actions, excluded from analytics.
     pub project_path: Option<String>,
+    /// Local configuration file for a reviewed remediation target, excluded from analytics.
+    pub config_file: Option<String>,
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
@@ -945,6 +949,35 @@ pub struct BurnCheckTargetListPayload {
     pub targets: Vec<BurnCheckTargetPayload>,
     pub samples: Vec<BurnCheckSamplePayload>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckRemediationOutcomePayload {
+    Failed,
+    Passed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckRemediationAttemptPayload {
+    pub detector: BurnCheckDetectorId,
+    pub watch_id: String,
+    pub display: BurnCheckDisplayFactsPayload,
+    pub origin: AggregateWinOrigin,
+    pub lifecycle: BurnCheckWatchLifecycle,
+    pub outcome: BurnCheckRemediationOutcomePayload,
+    pub verification: BurnCheckVerificationPayload,
+    pub savings: BurnCheckSavingsPayload,
+    pub effective_boundary_ms: Option<i64>,
+    pub verified_boundary_ms: Option<i64>,
+    pub recurred_boundary_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckRemediationProgressPayload {
+    pub attempts: Vec<BurnCheckRemediationAttemptPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1025,6 +1058,7 @@ pub enum AutoFixSideEffect {
 )]
 pub enum ApplyPreparedBurnCheckOperationOutcome {
     AppliedAwaitingVerification { watch_id: String },
+    Applied,
     RecoveryNeeded { watch_id: String },
     Stale,
     Expired,
@@ -1087,7 +1121,7 @@ pub enum PromptFixUnavailableReason {
 pub enum CopyPromptFixBurnCheckTargetOutcome {
     PromptReady {
         prompt: String,
-        watch: BurnCheckWatchPayload,
+        watch: Option<BurnCheckWatchPayload>,
     },
     Stale,
     Expired,
@@ -1721,6 +1755,7 @@ impl From<crate::remediation::BurnCheckDisplayFacts> for BurnCheckDisplayFactsPa
                     },
                 }
             }),
+            estimated_token_burn_basis_points: value.estimated_token_burn_basis_points,
             verification_limit: match value.verification_limit {
                 Limit::FreshEvidenceFromSameSourceAndTarget => {
                     BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget
@@ -1742,6 +1777,7 @@ impl From<crate::store::RemediationState> for BurnCheckWatchLifecycle {
             crate::store::RemediationState::Reserved => Self::Reserved,
             crate::store::RemediationState::Writing => Self::Writing,
             crate::store::RemediationState::RecoveryNeeded => Self::RecoveryNeeded,
+            crate::store::RemediationState::WaitingForPromptUse => Self::WaitingForPromptUse,
             crate::store::RemediationState::Watching => Self::Watching,
             crate::store::RemediationState::Fixed => Self::Fixed,
             crate::store::RemediationState::Recurred => Self::Recurred,
@@ -1895,10 +1931,13 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             },
             display: value.display.into(),
             occurrence_count: u64::try_from(value.occurrences).unwrap_or(u64::MAX),
-            affected_session_count: u64::try_from(value.affected_sessions).unwrap_or(u64::MAX),
+            affected_session_count: value
+                .affected_sessions
+                .map(|count| u64::try_from(count).unwrap_or(u64::MAX)),
             project_name: value.project_name,
             project_location: value.project_location,
             project_path: value.project_path,
+            config_file: value.config_file,
             auto_fix: match value.auto_fix {
                 crate::remediation::AutoFixAvailability::Available => {
                     AutoFixAvailabilityPayload::Available
@@ -2052,6 +2091,44 @@ impl From<crate::remediation::BurnCheckTargetList> for BurnCheckTargetListPayloa
     }
 }
 
+impl From<crate::remediation::BurnCheckRemediationProgress>
+    for BurnCheckRemediationProgressPayload
+{
+    fn from(value: crate::remediation::BurnCheckRemediationProgress) -> Self {
+        Self {
+            attempts: value
+                .attempts
+                .into_iter()
+                .map(|attempt| BurnCheckRemediationAttemptPayload {
+                    detector: attempt.detector.into(),
+                    watch_id: attempt.watch_id,
+                    display: attempt.display.into(),
+                    origin: match attempt.origin {
+                        crate::remediation::RemediationOrigin::Passive => {
+                            AggregateWinOrigin::Passive
+                        }
+                        crate::remediation::RemediationOrigin::Action => AggregateWinOrigin::Action,
+                    },
+                    lifecycle: attempt.lifecycle.into(),
+                    outcome: match attempt.outcome {
+                        crate::remediation::BurnCheckRemediationOutcome::Failed => {
+                            BurnCheckRemediationOutcomePayload::Failed
+                        }
+                        crate::remediation::BurnCheckRemediationOutcome::Passed => {
+                            BurnCheckRemediationOutcomePayload::Passed
+                        }
+                    },
+                    verification: attempt.verification.into(),
+                    savings: attempt.savings.into(),
+                    effective_boundary_ms: attempt.effective_boundary_ms,
+                    verified_boundary_ms: attempt.verified_boundary_ms,
+                    recurred_boundary_ms: attempt.recurred_boundary_ms,
+                })
+                .collect(),
+        }
+    }
+}
+
 fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
     match reason {
         NotAssessedReason::NoSessionsInWindow => "noSessionsInWindow",
@@ -2063,6 +2140,42 @@ fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
 }
 
 impl ChecksReportPayload {
+    pub(crate) fn from_reduced_report(report: &crate::insights_report::ReducedReport) -> Self {
+        let mut payload = Self::from_report(
+            &report.report,
+            report.evidence_settled,
+            report.pending_evidence,
+        );
+        for detector in [
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::UnusedSkills,
+        ] {
+            let Some(assessment) = report.resources.detector(detector) else {
+                continue;
+            };
+            let category = &mut payload.categories[detector.index()];
+            category.finding = assessment.unused_count;
+            category.clean = u64::from(assessment.clean);
+            category.unavailable = u64::from(assessment.unavailable);
+            category.agents = if assessment.unused_count > 0 {
+                &assessment.finding_agents
+            } else {
+                &assessment.clean_agents
+            }
+            .iter()
+            .cloned()
+            .collect();
+            category.estimated_token_burn_basis_points =
+                assessment.estimated_token_burn_basis_points;
+        }
+        let resource_tokens = report.resources.measured_finding_tokens_by_session();
+        payload.estimated_token_burn_basis_points = report
+            .report
+            .estimated_token_burn_with_resource_tokens_by_session(resource_tokens.as_deref());
+        payload
+    }
+
     pub fn from_report(
         report: &EfficiencyReport,
         evidence_settled: bool,
@@ -2607,6 +2720,10 @@ mod tests {
                     "watchId": "opaque-watch"
                 })
             );
+            assert_eq!(
+                serde_json::to_value(ApplyPreparedBurnCheckOperationOutcome::Applied).unwrap(),
+                serde_json::json!({"outcome": "applied"})
+            );
         }
 
         #[test]
@@ -2627,6 +2744,7 @@ mod tests {
                     value: -1.25,
                     unit: BurnCheckSavingsUnit::ApiEquivalentUsd,
                 }),
+                estimated_token_burn_basis_points: Some(1_250),
                 verification_limit:
                     BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
             };
@@ -2643,6 +2761,7 @@ mod tests {
                     "currentValue",
                     "estimateMethod",
                     "estimatedOpportunity",
+                    "estimatedTokenBurnBasisPoints",
                     "firstObservedAtMs",
                     "lastObservedAtMs",
                     "observationCount",
@@ -2657,6 +2776,7 @@ mod tests {
             );
             assert_eq!(value["estimatedOpportunity"]["value"], -1.25);
             assert_eq!(value["estimatedOpportunity"]["unit"], "apiEquivalentUsd");
+            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_250);
             let serialized = value.to_string();
             for private_name in [
                 "path",
@@ -3143,6 +3263,50 @@ mod tests {
         assert!(value["tokens"].is_null());
         assert_eq!(value["modelRuns"], serde_json::json!([]));
         assert!(value["startedAtEpoch"].is_null());
+    }
+
+    #[test]
+    fn remediation_progress_preserves_outcome_origin_and_boundaries() {
+        let payload = BurnCheckRemediationProgressPayload::from(
+            crate::remediation::BurnCheckRemediationProgress {
+                attempts: vec![crate::remediation::BurnCheckRemediationAttempt {
+                    detector: DetectorId::OldModelUsage,
+                    watch_id: "attempt".into(),
+                    display: crate::remediation::BurnCheckDisplayFacts {
+                        resource_kind: crate::remediation::BurnCheckResourceKind::Model,
+                        resource_identity: Some("old".into()),
+                        current_value: Some("old".into()),
+                        replacement_value: Some("new".into()),
+                        scope_kind: crate::remediation::BurnCheckScopeKind::Project,
+                        quantity: None,
+                        quantity_unit: None,
+                        observation_count: 1,
+                        first_observed_at_ms: 10,
+                        last_observed_at_ms: 20,
+                        estimate_method: None,
+                        estimated_opportunity: None,
+                        estimated_token_burn_basis_points: None,
+                        verification_limit: crate::remediation::BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
+                    },
+                    origin: crate::remediation::RemediationOrigin::Action,
+                    lifecycle: crate::store::RemediationState::WaitingForPromptUse,
+                    outcome: crate::remediation::BurnCheckRemediationOutcome::Failed,
+                    verification: crate::remediation::VerificationStatus::Reserved,
+                    savings: crate::remediation::SavingsStatus::Pending {
+                        method_revision: None,
+                    },
+                    effective_boundary_ms: None,
+                    verified_boundary_ms: None,
+                    recurred_boundary_ms: None,
+                }],
+            },
+        );
+
+        let value = serde_json::to_value(payload).unwrap();
+        assert_eq!(value["attempts"][0]["lifecycle"], "waitingForPromptUse");
+        assert_eq!(value["attempts"][0]["outcome"], "failed");
+        assert_eq!(value["attempts"][0]["origin"], "action");
+        assert!(value["attempts"][0]["effectiveBoundaryMs"].is_null());
     }
 
     #[test]

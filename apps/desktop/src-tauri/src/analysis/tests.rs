@@ -17,6 +17,55 @@ fn cursor_chat_database_uses_its_own_source_format() {
 }
 
 #[test]
+fn cursor_discovery_labels_keep_their_source_formats() {
+    let desktop = SessionSource::Inline {
+        label: "cursor-desktop:workspace:composer".to_owned(),
+        content: String::new(),
+    };
+    let chat_store = SessionSource::Inline {
+        label: "cursor-store:/tmp/.cursor/chats/workspace/session/store.db".to_owned(),
+        content: String::new(),
+    };
+    let cli_store = SessionSource::Inline {
+        label: "cursor-store:/tmp/.cursor/projects/workspace/store.db".to_owned(),
+        content: String::new(),
+    };
+
+    assert_eq!(
+        source_format(AgentKind::Cursor, &desktop),
+        SourceFormat::CursorIdeComposer
+    );
+    assert_eq!(
+        source_format(AgentKind::Cursor, &chat_store),
+        SourceFormat::CursorChatStoreDb
+    );
+    assert_eq!(
+        source_format(AgentKind::Cursor, &cli_store),
+        SourceFormat::CursorCliStoreDb
+    );
+}
+
+#[test]
+fn cursor_routing_rejects_unrelated_path_and_label_markers() {
+    let unrelated_json = SessionSource::File(std::path::PathBuf::from(
+        "/tmp/.cursor/projects/project/session.json",
+    ));
+    let incidental_label = SessionSource::Inline {
+        label: "cursor-agent:/tmp/state.vscdb-copy.jsonl".to_owned(),
+        content: String::new(),
+    };
+
+    assert_eq!(
+        source_format(AgentKind::Cursor, &unrelated_json),
+        SourceFormat::CursorCliAgentJsonl
+    );
+    assert_eq!(
+        source_format(AgentKind::Cursor, &incidental_label),
+        SourceFormat::CursorCliAgentJsonl
+    );
+}
+
+#[test]
 fn kiro_cli_v2_and_v3_paths_use_separate_source_formats() {
     let temp = tempfile::TempDir::new().unwrap();
     let v2_directory = temp.path().join("cli");

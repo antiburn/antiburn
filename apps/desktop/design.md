@@ -796,8 +796,8 @@ Leave 8px before the session list.
 Resource titles and generic finding copy center their first line within a 40px action row.
 The actions align with that first line and wrap without negative vertical offsets.
 Every finding explanation appears below the header metrics.
-Checks without resource cards place their actions at the header’s right edge. Resource actions
-remain inside their cards. Do not repeat explanations or check-level actions in the body.
+All check actions sit at the header’s right edge. Named resource cards contain evidence only.
+Do not repeat explanations or check-level actions in the body.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
 the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
 does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll
@@ -810,7 +810,7 @@ surfaces stay neutral. The main view shows failed and passed groups. It hides no
 settled historical coverage gaps use a not-assessed count, not a processing state. Category rows use
 separate `session-card` rounded controls and accessible selection buttons. The selected detail uses one short, check-specific
 finding sentence below the heading. The prompt action sits at the heading’s right edge. Do not show internal target identities,
-repeated observations, repeated guidance, or detail refresh and bounded-list notices. Only unused MCP servers and unused skills show
+repeated observations, repeated guidance, or detail refresh and bounded-list notices. Unused MCP servers, skills, and built-in tools show
 named resource rows. Show bounded failed-session lists directly. Opening a card selects it in the
 standard Sessions collection and detail layout. Returning to Burn checks preserves the check
 selection. A single-target `Fix` opens a small modal that shows the effect, scope, and one

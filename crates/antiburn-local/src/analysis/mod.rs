@@ -81,7 +81,9 @@ pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,
 };
-pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, SourceOrigin};
+pub use initial_context::{
+    InitialContextBreakdown, InitialContextSourceCount, SourceOrigin, estimate_proportional_tokens,
+};
 pub use interface::{
     ContentKind, ContentPart, ContextSourceKind, ContextWindowSource, EvidenceObservation,
     MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource,

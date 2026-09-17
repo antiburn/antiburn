@@ -36,6 +36,7 @@ function target(overrides: Partial<BurnCheckTargetPayload> = {}): BurnCheckTarge
       lastObservedAtMs: 2,
       estimateMethod: "builtInDefinitionReplication",
       estimatedOpportunity: null,
+      estimatedTokenBurnBasisPoints: null,
       verificationLimit: "freshEvidenceFromSameSourceAndTarget",
     },
     occurrenceCount: 2,
