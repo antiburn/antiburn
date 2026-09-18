@@ -156,6 +156,10 @@ crate stores it with the dock state.
   HUD hangs below the notch row. It collapses 3s after the pointer leaves
   the island and the hotspot. A wake expands it the same way, for as long as
   a docked HUD peeks.
+- **The detail.** On the island the detail window takes the dark theme,
+  whatever the reader's own choice is, and the width of the panel the island
+  draws. It hangs centred under the notch, so the card and the island read as
+  one object. The reader's theme returns when the HUD leaves the notch.
 - **The drag preview.** A drag that carries the HUD over the notch turns the
   floating frame into the island's shape before the drop, so the release
   says what it will do. Dragging back out restores the frame. A drop above

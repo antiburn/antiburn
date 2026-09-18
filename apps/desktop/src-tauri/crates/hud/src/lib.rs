@@ -841,6 +841,30 @@ const DETAIL_CONCEAL_FALLBACK_MS: u64 = 80;
 #[cfg(any(target_os = "macos", test))]
 const DETAIL_WIDTH: f64 = 176.0;
 
+/// The transparent pad the detail webview keeps around its card, in logical
+/// pixels (`p-2`). The card sits inside it, so the card is as wide as the
+/// window minus this pad on each side.
+#[cfg(any(target_os = "macos", test))]
+const DETAIL_CARD_PAD: f64 = 8.0;
+
+/// The detail window width, and the offset from the HUD window's left edge to
+/// the panel the HUD draws inside it.
+///
+/// The island draws a panel as wide as the notch and both wings, inset by a
+/// fillet on each side. The detail card takes that same width and sits under
+/// it, so the two read as one object on the notch.
+#[cfg(any(target_os = "macos", test))]
+fn detail_metrics(island: &IslandState) -> (f64, f64) {
+    match island.island {
+        IslandPhase::Collapsed | IslandPhase::Expanded => (
+            island.notch + island.wing * 2.0 + DETAIL_CARD_PAD * 2.0,
+            island.fillet - DETAIL_CARD_PAD,
+        ),
+        // A floating or previewing HUD keeps the frame width.
+        IslandPhase::Off | IslandPhase::Preview => (DETAIL_WIDTH, 0.0),
+    }
+}
+
 /// Gap between the panel and the detail window frame. Zero: the webview
 /// carries a transparent pad for its shadow, and that pad is the visible gap.
 #[cfg(any(target_os = "macos", test))]
@@ -960,10 +984,8 @@ pub fn apply_detail_size(app: &AppHandle, height: f64) {
     let Some(hud) = app.get_webview_window(OVERLAY_LABEL) else {
         return;
     };
-    if detail
-        .set_size(LogicalSize::new(DETAIL_WIDTH, height))
-        .is_err()
-    {
+    let (width, _) = detail_metrics(&island::island_state());
+    if detail.set_size(LogicalSize::new(width, height)).is_err() {
         return;
     }
     if position_detail_window(&detail, &hud, height).is_none() {
@@ -1120,9 +1142,11 @@ fn reposition_detail_after_hud_frame(hud: &WebviewWindow) {
 
 #[cfg(target_os = "macos")]
 fn position_detail_window(detail: &WebviewWindow, hud: &WebviewWindow, height: f64) -> Option<()> {
-    let anchor = panel_anchor(hud)?;
+    let mut anchor = panel_anchor(hud)?;
+    let (width, inset) = detail_metrics(&island::island_state());
+    anchor.x += inset;
     let frame = monitor_frame(hud);
-    let (x, y) = compute_detail_position(&anchor, frame.as_ref(), DETAIL_WIDTH, height);
+    let (x, y) = compute_detail_position(&anchor, frame.as_ref(), width, height);
     detail.set_position(LogicalPosition::new(x, y)).ok()
 }
 
@@ -1288,6 +1312,37 @@ mod tests {
             right: 1512.0,
             bottom: 982.0,
         }
+    }
+
+    fn island(phase: IslandPhase) -> IslandState {
+        IslandState {
+            island: phase,
+            wing: 30.0,
+            fillet: 19.0,
+            notch: 183.0,
+            height: 38.0,
+        }
+    }
+
+    #[test]
+    fn the_detail_keeps_the_frame_width_off_the_island() {
+        assert_eq!(
+            detail_metrics(&island(IslandPhase::Off)),
+            (DETAIL_WIDTH, 0.0)
+        );
+        assert_eq!(
+            detail_metrics(&island(IslandPhase::Preview)),
+            (DETAIL_WIDTH, 0.0)
+        );
+    }
+
+    #[test]
+    fn the_detail_takes_the_island_panel_width() {
+        let (width, inset) = detail_metrics(&island(IslandPhase::Expanded));
+        // The card is the notch and both wings wide, and its own pad puts it
+        // on the panel's left edge.
+        assert_eq!(width - DETAIL_CARD_PAD * 2.0, 183.0 + 60.0);
+        assert_eq!(inset + DETAIL_CARD_PAD, 19.0);
     }
 
     #[test]

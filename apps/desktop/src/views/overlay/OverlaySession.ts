@@ -655,6 +655,7 @@ export class OverlaySession {
       spend: this.snapshot.spend,
       target: this.detailTarget(),
       subagent: this.hoverSubagent,
+      island: this.snapshot.island.island !== "off",
     }
   }
 
