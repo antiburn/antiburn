@@ -11,6 +11,10 @@ const HUD_SEGMENTS = 20
 const PANEL_PAD_PX = 10
 /** The panel content width in the floating frame: the window minus its margins and padding. */
 const FLOATING_CONTENT_PX = 140
+/** The diameter of one LED segment, in pixels (`h-1.5 w-1.5`). */
+const LED_DOT_PX = 6
+/** The smallest gap between bar rows, which the narrow floating frame keeps. */
+const LED_ROW_GAP_MIN_PX = 3
 
 /** Render the content-sized usage HUD. The detail window owns the full stats. */
 export function OverlayWindow() {
@@ -177,7 +181,7 @@ function IslandPanel({
           )}
         </div>
       </div>
-      {open && <div className="px-2.5 pb-2.5">{children}</div>}
+      {open && <div className="p-2.5">{children}</div>}
     </div>
   )
 }
@@ -195,6 +199,13 @@ function HudContent({
   blink: boolean
 }) {
   const blocked = blockedBars(state.bars)[0] ?? null
+  // The bars sit their segments edge to edge across the content, so a wide
+  // frame spreads them. The rows take that same gap, and the dots read as a
+  // grid instead of rows of different pitch.
+  const rowGap = Math.max(
+    LED_ROW_GAP_MIN_PX,
+    (contentWidth - HUD_SEGMENTS * LED_DOT_PX) / (HUD_SEGMENTS - 1),
+  )
   const blinkColor = state.tokenMap.liveMode
     ? `var(--color-mode-${state.tokenMap.liveMode})`
     : null
@@ -226,7 +237,10 @@ function HudContent({
       ) : (
         // The HUD shows the spend-rate blink alone. The live sweep stays on
         // the popover meters.
-        <div className="hud-leds pointer-events-none space-y-[3px]">
+        <div
+          className="hud-leds pointer-events-none flex flex-col"
+          style={{ rowGap: `${rowGap}px` }}
+        >
           {state.bars.map((bar, index) => (
             <LedBar
               key={bar.key}

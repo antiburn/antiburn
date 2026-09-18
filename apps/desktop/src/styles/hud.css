@@ -322,8 +322,9 @@ body[data-transparent-window] #root {
 
   50%,
   100% {
-    /* The lit LED dims. It never goes out, so the eye reads a live segment. */
-    background-color: color-mix(in srgb, var(--led-on) 35%, transparent);
+    /* The lit LED dims a little. A large step reads as a strobe, and the HUD
+       sits in the corner of the eye all day. */
+    background-color: color-mix(in srgb, var(--led-on) 60%, transparent);
   }
 }
 

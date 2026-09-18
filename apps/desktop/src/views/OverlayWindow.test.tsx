@@ -898,7 +898,7 @@ describe("OverlayWindow", () => {
       expect(container.querySelectorAll("svg[data-dot-value] circle")).toHaveLength(5),
     )
     const svg = container.querySelector("svg[data-dot-value]")!
-    const bars = container.querySelector(".space-y-\\[3px\\]")
+    const bars = container.querySelector(".hud-leds")
     expect(svg.compareDocumentPosition(bars!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
