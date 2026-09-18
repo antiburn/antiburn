@@ -86,6 +86,12 @@ impl SessionReader for PiSessionReader {
                 RawSource::KiroCliV2Bundle { .. } => {
                     anyhow::bail!("Kiro bundle is not a Pi source")
                 }
+                RawSource::KiroCliV3Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a Pi source")
+                }
+                RawSource::CopilotCliBundle { .. } => {
+                    anyhow::bail!("Copilot bundle is not a Pi source")
+                }
             };
             sink.finish(state.finish());
             Ok(VisitOutcome::Unvalidated)

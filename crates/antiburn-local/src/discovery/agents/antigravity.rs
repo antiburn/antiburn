@@ -814,6 +814,8 @@ fn brain_origin_of(file: &Path) -> Option<BrainOrigin> {
 /// brain transcript via the first step's `created_at`).
 #[derive(Debug, Clone)]
 struct CliHistoryEntry {
+    /// Conversation identity when the history producer records it.
+    conversation_id: Option<String>,
     /// User's first prompt — usable as the session title.
     display: String,
     /// Absolute working directory of the CLI when the session started.
@@ -860,6 +862,12 @@ async fn read_cli_history(gemini_root: &Path) -> Option<Vec<CliHistoryEntry>> {
                 out.pop_front();
             }
             out.push_back(CliHistoryEntry {
+                conversation_id: value
+                    .get("conversationId")
+                    .or_else(|| value.get("conversation_id"))
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty() && value.len() <= HISTORY_FIELD_MAX_BYTES)
+                    .map(str::to_owned),
                 display: display.to_owned(),
                 workspace: workspace.to_owned(),
                 timestamp_secs: timestamp_ms / 1000,
@@ -876,12 +884,25 @@ async fn read_cli_history(gemini_root: &Path) -> Option<Vec<CliHistoryEntry>> {
 /// within ±5 seconds (the CLI logs the session-start timestamp in
 /// `history.jsonl` and uses the same instant as the brain transcript's
 /// first step's `created_at`, but the two writes can lag slightly).
-fn find_cli_history_entry(
-    history: &[CliHistoryEntry],
+fn find_cli_history_entry<'a>(
+    history: &'a [CliHistoryEntry],
+    conversation_id: &str,
     created_at_secs: i64,
-) -> Option<&CliHistoryEntry> {
+) -> Option<&'a CliHistoryEntry> {
+    if !conversation_id.is_empty() {
+        if let Some(entry) = history
+            .iter()
+            .find(|entry| entry.conversation_id.as_deref() == Some(conversation_id))
+        {
+            return Some(entry);
+        }
+        if history.iter().any(|entry| entry.conversation_id.is_some()) {
+            return None;
+        }
+    }
     history
         .iter()
+        .filter(|entry| entry.conversation_id.is_none())
         .min_by_key(|entry| entry.timestamp_secs.abs_diff(created_at_secs))
         .filter(|entry| entry.timestamp_secs.abs_diff(created_at_secs) <= 5)
 }
@@ -928,7 +949,11 @@ fn augment_brain_metadata_with_history(
     };
 
     let (cwd, title) = match origin {
-        BrainOrigin::Cli => cli_cwd_and_title_from_history(preview, history),
+        BrainOrigin::Cli => cli_cwd_and_title_from_history(
+            uuid_dir.file_name().and_then(|name| name.to_str()),
+            preview,
+            history,
+        ),
         BrainOrigin::Ide | BrainOrigin::Legacy => brain_cwd_and_title_from_prose(preview),
     };
     if metadata.cwd.is_none() {
@@ -945,6 +970,7 @@ fn augment_brain_metadata_with_history(
 /// CLI origin: look up the workspace + display in `history.jsonl` by
 /// correlating to the brain transcript's first step `created_at`.
 fn cli_cwd_and_title_from_history(
+    session_id: Option<&str>,
     raw: &str,
     history: Option<&[CliHistoryEntry]>,
 ) -> (Option<String>, Option<String>) {
@@ -956,7 +982,8 @@ fn cli_cwd_and_title_from_history(
         Some(ts) => ts,
         None => return (None, None),
     };
-    match find_cli_history_entry(history, created) {
+    let conversation_id = session_id.unwrap_or_default();
+    match find_cli_history_entry(history, conversation_id, created) {
         Some(entry) => (Some(entry.workspace.clone()), Some(entry.display.clone())),
         None => (None, None),
     }

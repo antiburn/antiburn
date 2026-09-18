@@ -420,19 +420,14 @@ export function BurnCheckTargetChooserDialog({
                   </p>
                   <div className="mt-2 divide-y divide-separator">
                     {group.items.map(({ target, review }) => (
-                      <div
-                        key={target.findingId}
-                        className="flex items-start justify-between gap-4 py-2 first:pt-0 last:pb-0"
-                      >
-                        <span className="min-w-0">
-                          <span className="block type-body font-semibold text-label">
-                            {targetTitle(target)}
-                          </span>
-                          <span className="block break-all type-footnote font-mono text-label-tertiary">
-                            {review.selectorLabel}
-                          </span>
+                      <div key={target.findingId} className="min-w-0 py-2 first:pt-0 last:pb-0">
+                        <span className="block type-body font-semibold text-label">
+                          {targetTitle(target)}
                         </span>
-                        <span className="shrink-0 type-callout font-mono text-label">
+                        <span className="block break-all type-footnote font-mono text-label-tertiary">
+                          {review.selectorLabel}
+                        </span>
+                        <span className="mt-1 block max-w-full break-all type-callout font-mono text-label">
                           {review.currentValue} → {review.proposedValue}
                         </span>
                       </div>

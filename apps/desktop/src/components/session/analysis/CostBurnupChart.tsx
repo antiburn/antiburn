@@ -70,6 +70,20 @@ const MARK_STROKE: Record<"rehydration" | "compaction", string> = {
   rehydration: "var(--color-mark-rehydration)",
   compaction: "var(--color-mark-compaction)",
 }
+const EVENT_LABELS = [
+  {
+    kind: "compaction" as const,
+    key: "compaction-label",
+    matches: (point: CostBurnupPoint) => point.isCompactionBoundary,
+    text: compactionMarkLabel,
+  },
+  {
+    kind: "rehydration" as const,
+    key: "rehydration-label",
+    matches: (point: CostBurnupPoint) => point.isCacheRehydration,
+    text: () => "Rehydration",
+  },
+]
 /** A sub-agent launch tick's fixed pixel geometry: a short mark on the baseline. */
 const SUBAGENT_TICK_WIDTH = 2
 const SUBAGENT_TICK_HEIGHT = 6
@@ -388,49 +402,28 @@ export function CostBurnupChart({
             overlapping it. Each label takes its line's lit color, or grey
             when another layer is highlighted, so it still names the line. */}
         {hasCostData &&
-          data
-            .filter((point) => point.isCompactionBoundary && labeledCompaction.has(point.index))
-            .map((point) => {
-              const lit = highlight == null || highlight === "compaction"
-              return (
+          EVENT_LABELS.flatMap(({ kind, key, matches, text }) => {
+            const labeled = kind === "compaction" ? labeledCompaction : labeledRehydration
+            const lit = highlight == null || highlight === kind
+            return data
+              .filter((point) => matches(point) && labeled.has(point.index))
+              .map((point) => (
                 <ReferenceLine
-                  key={`compaction-label-${point.index}`}
+                  key={`${key}-${point.index}`}
                   className="animate-chart-mark"
                   yAxisId="cost"
                   x={point.index}
                   stroke="none"
                   label={{
                     ...AXIS_LABEL,
-                    value: compactionMarkLabel(point),
+                    value: text(point),
                     position: "insideTop" as const,
                     angle: -90,
-                    fill: lit ? MARK_STROKE.compaction : REST_MARK_STROKE,
+                    fill: lit ? MARK_STROKE[kind] : REST_MARK_STROKE,
                   }}
                 />
-              )
-            })}
-        {hasCostData &&
-          data
-            .filter((point) => point.isCacheRehydration && labeledRehydration.has(point.index))
-            .map((point) => {
-              const lit = highlight == null || highlight === "rehydration"
-              return (
-                <ReferenceLine
-                  key={`rehydration-label-${point.index}`}
-                  className="animate-chart-mark"
-                  yAxisId="cost"
-                  x={point.index}
-                  stroke="none"
-                  label={{
-                    ...AXIS_LABEL,
-                    value: "Rehydration",
-                    position: "insideTop" as const,
-                    angle: -90,
-                    fill: lit ? MARK_STROKE.rehydration : REST_MARK_STROKE,
-                  }}
-                />
-              )
-            })}
+              ))
+          })}
       </AreaChart>
     </ResponsiveContainer>
   )

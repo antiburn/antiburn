@@ -19,6 +19,29 @@ fn roots() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (temporary, home, project)
 }
 
+#[test]
+fn indexed_identity_aliases_cover_all_native_agents() {
+    let cases = [
+        (AgentKind::Claude, "claude-code"),
+        (AgentKind::Codex, "codex"),
+        (AgentKind::OpenCode, "opencode"),
+        (AgentKind::Pi, "pi"),
+        (AgentKind::Cursor, "cursor-ide"),
+        (AgentKind::Copilot, "github-copilot"),
+        (AgentKind::Cline, "cline"),
+        (AgentKind::Kiro, "kiro-cli"),
+        (AgentKind::AmpCode, "amp-code"),
+        (AgentKind::Antigravity, "antigravity"),
+        (AgentKind::Windsurf, "devin"),
+    ];
+    for (agent, identity) in cases {
+        assert!(
+            evidence_agent_matches(agent, identity),
+            "{agent:?}/{identity}"
+        );
+    }
+}
+
 fn write(path: &Path, value: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, value).unwrap();
@@ -173,6 +196,141 @@ fn opencode_direct_server_named_servers_is_not_treated_as_a_nested_map() {
         .enabled,
         EnabledState::Enabled
     );
+}
+
+#[test]
+fn json_mcp_enabled_and_disabled_fields_must_agree() {
+    let (_temporary, home, project) = roots();
+    write(
+        &home.join(".claude.json"),
+        r#"{
+            "mcpServers": {
+                "enabled": {"command": "one", "enabled": true},
+                "disabled": {"command": "two", "disabled": true},
+                "complement": {"command": "three", "enabled": true, "disabled": false},
+                "disabled-complement": {"command": "three-b", "enabled": false, "disabled": true},
+                "conflict": {"command": "four", "enabled": true, "disabled": true},
+                "same": {"command": "five", "enabled": false, "disabled": false},
+                "invalid": {"command": "six", "enabled": "yes"},
+                "invalid-disabled": {"command": "seven", "disabled": "no"}
+            }
+        }"#,
+    );
+
+    let inventory = advisory_resource_inventory(
+        &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+        [],
+    )
+    .unwrap();
+
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "enabled",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Enabled
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "disabled",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Disabled
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "complement",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Enabled
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "disabled-complement",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Disabled
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "conflict",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Unknown
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "same",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Unknown
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "invalid-disabled",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Unknown
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "invalid",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Unknown
+    );
+    assert!(inventory.issues.contains(&InventoryIssue {
+        kind: Some(ResourceKind::McpServer),
+        scope: ResourceScope::Global,
+        reason: InventoryIssueReason::ConflictingDefinition,
+    }));
+    assert!(inventory.issues.contains(&InventoryIssue {
+        kind: Some(ResourceKind::McpServer),
+        scope: ResourceScope::Global,
+        reason: InventoryIssueReason::UnsupportedShape,
+    }));
+}
+
+#[test]
+fn skill_traversal_budget_stops_recursive_descent() {
+    let mut builder = InventoryBuilder::new(AgentKind::Claude);
+    let mut directories_remaining = 0;
+    enumerate_skill_directory(
+        &mut builder,
+        Path::new("missing"),
+        Path::new("."),
+        ResourceScope::Global,
+        &mut directories_remaining,
+    );
+    assert!(builder.issues.contains(&InventoryIssue {
+        kind: Some(ResourceKind::Skill),
+        scope: ResourceScope::Global,
+        reason: InventoryIssueReason::ResourceCapExceeded,
+    }));
 }
 
 #[test]
@@ -347,6 +505,152 @@ fn pi_inventory_replaces_global_tools_and_requires_the_pinned_mcp_package() {
         "review",
         ResourceScope::Project,
     );
+}
+
+#[test]
+fn phase_eight_inventories_each_vendor_mcp_and_skill_root_by_scope() {
+    let (_temporary, home, project) = roots();
+    let cases = [
+        (AgentKind::Cursor, ".cursor/mcp.json", ".cursor/skills"),
+        (
+            AgentKind::Copilot,
+            ".copilot/mcp-config.json",
+            ".copilot/skills",
+        ),
+        (AgentKind::Cline, ".cline/mcp.json", ".cline/skills"),
+        (AgentKind::Kiro, ".kiro/settings/mcp.json", ".kiro/skills"),
+        (
+            AgentKind::AmpCode,
+            ".config/amp/settings.json",
+            ".config/amp/skills",
+        ),
+        (
+            AgentKind::Antigravity,
+            ".gemini/config/mcp_config.json",
+            ".gemini/config/skills",
+        ),
+        (
+            AgentKind::Windsurf,
+            ".config/devin/mcp_config.json",
+            ".config/devin/skills",
+        ),
+    ];
+    for (agent, global_mcp, global_skills) in cases {
+        write(
+            &home.join(global_mcp),
+            if agent == AgentKind::AmpCode {
+                r#"{"amp.mcpServers":{"global":{"command":"global"}}}"#
+            } else {
+                r#"{"mcpServers":{"global":{"command":"global"}}}"#
+            },
+        );
+        write(
+            &project.join(match agent {
+                AgentKind::Copilot => ".github/mcp.json",
+                AgentKind::Antigravity => ".agents/mcp_config.json",
+                _ => match agent {
+                    AgentKind::Cursor => ".cursor/mcp.json",
+                    AgentKind::Cline => ".cline/mcp.json",
+                    AgentKind::Kiro => ".kiro/settings/mcp.json",
+                    AgentKind::AmpCode => ".amp/settings.json",
+                    AgentKind::Windsurf => ".devin/mcp_config.json",
+                    _ => unreachable!(),
+                },
+            }),
+            if agent == AgentKind::Copilot {
+                r#"{"servers":{"project":{"type":"stdio","command":"project","disabled":true}}}"#
+            } else {
+                r#"{"mcpServers":{"project":{"command":"project","disabled":true}}}"#
+            },
+        );
+        write(
+            &home.join(format!("{global_skills}/global/SKILL.md")),
+            "---\nname: global\ndescription: Global skill.\n---\n",
+        );
+        write(
+            &project.join(match agent {
+                AgentKind::Copilot | AgentKind::Antigravity | AgentKind::Windsurf => {
+                    ".agents/skills/project/SKILL.md"
+                }
+                AgentKind::Cursor => ".cursor/skills/project/SKILL.md",
+                AgentKind::Cline => ".cline/skills/project/SKILL.md",
+                AgentKind::Kiro => ".kiro/skills/project/SKILL.md",
+                AgentKind::AmpCode => ".agents/skills/project/SKILL.md",
+                _ => unreachable!(),
+            }),
+            "---\nname: project\ndescription: Project skill.\n---\n",
+        );
+        let inventory = advisory_resource_inventory(
+            &ConfigContext::native(agent, &home, Some(project.clone())),
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            resource(
+                &inventory,
+                ResourceKind::McpServer,
+                "global",
+                ResourceScope::Global
+            )
+            .enabled,
+            EnabledState::Enabled,
+            "{agent:?}"
+        );
+        assert_eq!(
+            resource(
+                &inventory,
+                ResourceKind::McpServer,
+                "project",
+                ResourceScope::Project
+            )
+            .enabled,
+            EnabledState::Disabled,
+            "{agent:?}"
+        );
+        if agent == AgentKind::Copilot {
+            assert!(!inventory.resources.iter().any(|resource| {
+                resource.kind == ResourceKind::McpServer && resource.canonical_name == "servers"
+            }));
+        }
+        resource(
+            &inventory,
+            ResourceKind::Skill,
+            "global",
+            ResourceScope::Global,
+        );
+        resource(
+            &inventory,
+            ResourceKind::Skill,
+            "project",
+            ResourceScope::Project,
+        );
+    }
+}
+
+#[test]
+fn shared_agents_skill_root_is_merged_once_with_agent_root() {
+    let (_temporary, home, project) = roots();
+    write(
+        &home.join(".agents/skills/review/SKILL.md"),
+        "---\nname: review\ndescription: Review code.\n---\n",
+    );
+    write(
+        &home.join(".cursor/skills/review/SKILL.md"),
+        "---\nname: review\ndescription: Review code.\n---\n",
+    );
+    let inventory = advisory_resource_inventory(
+        &ConfigContext::native(AgentKind::Cursor, &home, Some(project)),
+        [],
+    )
+    .unwrap();
+    let review = resource(
+        &inventory,
+        ResourceKind::Skill,
+        "review",
+        ResourceScope::Global,
+    );
+    assert_eq!(review.provenance.len(), 1);
+    assert_eq!(review.definition_tokens, Some(6));
 }
 
 #[test]

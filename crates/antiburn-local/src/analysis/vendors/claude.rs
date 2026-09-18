@@ -531,6 +531,12 @@ impl SessionReader for ClaudeSessionReader {
                 RawSource::KiroCliV2Bundle { .. } => {
                     anyhow::bail!("Kiro bundle is not a Claude source")
                 }
+                RawSource::KiroCliV3Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a Claude source")
+                }
+                RawSource::CopilotCliBundle { .. } => {
+                    anyhow::bail!("Copilot bundle is not a Claude source")
+                }
             };
             sink.finish(state.into_summary());
             Ok(VisitOutcome::Unvalidated)

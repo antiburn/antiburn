@@ -289,10 +289,77 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
 /// `Unsupported`. Eligibility is the sole gate for a finding: a directly
 /// observed finding needs no more than this.
 pub fn eligible(detector: DetectorId, evidence: &SessionEvidence) -> bool {
-    requirements(detector)
-        .finding
-        .iter()
-        .all(|fact| fact.state(evidence) != FactState::Unsupported)
+    source_supports_finding(detector, evidence.capabilities.source_format)
+        && requirements(detector)
+            .finding
+            .iter()
+            .all(|fact| fact.state(evidence) != FactState::Unsupported)
+}
+
+/// Mirrors the finding column of the maintained source matrix. Evidence fields
+/// cannot opt an uncharacterized source into a detector contract.
+fn source_supports_finding(detector: DetectorId, format: crate::analysis::SourceFormat) -> bool {
+    use crate::analysis::SourceFormat;
+    matches!(
+        (format, detector),
+        (
+            SourceFormat::ClaudeJsonl | SourceFormat::CodexRolloutJsonl,
+            DetectorId::SessionsOverDepth
+                | DetectorId::ModelOverthinking
+                | DetectorId::OverpoweredSubagents
+                | DetectorId::UnusedMcpServers
+                | DetectorId::UnusedBuiltInTools
+                | DetectorId::UnusedSkills
+                | DetectorId::OldModelUsage
+                | DetectorId::OveruseOfFastMode
+                | DetectorId::CacheChurn,
+        ) | (
+            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2,
+            DetectorId::SessionsOverDepth
+                | DetectorId::OverpoweredSubagents
+                | DetectorId::UnusedSkills
+                | DetectorId::OldModelUsage
+                | DetectorId::CacheChurn,
+        ) | (
+            SourceFormat::PiV3Jsonl,
+            DetectorId::SessionsOverDepth
+                | DetectorId::ModelOverthinking
+                | DetectorId::OverpoweredSubagents
+                | DetectorId::OldModelUsage,
+        ) | (
+            SourceFormat::CursorJsonl
+                | SourceFormat::CursorCliAgentJsonl
+                | SourceFormat::CursorCliStoreDb
+                | SourceFormat::CursorChatStoreDb
+                | SourceFormat::CursorIdeComposer,
+            DetectorId::OldModelUsage,
+        ) | (
+            SourceFormat::AntigravityJson
+                | SourceFormat::AntigravityBrainJsonl
+                | SourceFormat::AntigravityCascadeJson
+                | SourceFormat::AntigravitySqlite,
+            DetectorId::SessionsOverDepth | DetectorId::OldModelUsage,
+        ) | (
+            SourceFormat::CopilotCliJsonl,
+            DetectorId::SessionsOverDepth
+                | DetectorId::OverpoweredSubagents
+                | DetectorId::OldModelUsage,
+        ) | (
+            SourceFormat::ClineMessagesContractV1,
+            DetectorId::OverpoweredSubagents | DetectorId::OldModelUsage,
+        ) | (
+            SourceFormat::AmpThreadJson,
+            DetectorId::SessionsOverDepth | DetectorId::OldModelUsage,
+        ) | (
+            SourceFormat::DevinLocalSqlite,
+            DetectorId::OverpoweredSubagents
+        ) | (
+            SourceFormat::WindsurfWorkspaceJson | SourceFormat::WindsurfMirrorJson,
+            DetectorId::UnusedMcpServers
+                | DetectorId::UnusedBuiltInTools
+                | DetectorId::OldModelUsage,
+        )
+    )
 }
 
 /// A session supports a clean claim for `detector` when every clean fact
@@ -344,6 +411,7 @@ fn source_supports_clean(format: crate::analysis::SourceFormat) -> bool {
         | SourceFormat::WindsurfWorkspaceJson
         | SourceFormat::WindsurfMirrorJson
         | SourceFormat::WindsurfCascadeProtobuf
+        | SourceFormat::DevinLocalSqlite
         | SourceFormat::Uncharacterized => false,
     }
 }

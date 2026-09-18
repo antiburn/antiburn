@@ -1,0 +1,1 @@
+{"session_id":"synthetic-kiro-root","parent_session_id":null,"session_state":{"version":"v1","rts_model_state":{"model_info":{"model_id":"synthetic-model","context_window_tokens":32}},"conversation_metadata":{"user_turn_metadatas":[{"model":"synthetic-model","input_token_count":3,"output_token_count":2}]}}}

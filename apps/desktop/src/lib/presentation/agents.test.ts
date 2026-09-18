@@ -40,6 +40,7 @@ describe("agentDisplayName / agentIconName", () => {
   it("resolves a known slug to its display name and icon slot", () => {
     expect(agentDisplayName("claude-code")).toBe("Claude Code")
     expect(agentIconName("claude-code")).toBe("claude")
+    expect(agentDisplayName("windsurf")).toBe("Devin")
   })
 
   it("falls back to the generic icon slot for unknown slugs", () => {
@@ -66,13 +67,17 @@ describe("agentSupportsAnalysis", () => {
     expect(agentSupportsAnalysis("kiro")).toBe(true)
   })
 
-  it.each(["copilot", "amp-code", "windsurf"])(
+  it.each(["copilot", "amp-code"])(
     "keeps %s registered without enabling session analysis",
     (slug) => {
       expect(AGENT_SLUGS).toContain(slug)
       expect(agentSupportsAnalysis(slug)).toBe(false)
     },
   )
+
+  it("enables Devin Local analysis under the stable Windsurf slug", () => {
+    expect(agentSupportsAnalysis("windsurf")).toBe(true)
+  })
 
   it("is false for unknown slugs", () => {
     expect(agentSupportsAnalysis("totally-made-up")).toBe(false)

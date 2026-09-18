@@ -1,0 +1,1 @@
+{"version":39,"threadId":"T-synthetic-39","messages":[{"role":"assistant","id":"msg-synthetic-1","timestamp":"2026-09-01T10:00:00Z","model":"synthetic-model","usage":{"inputTokens":12,"outputTokens":4,"cacheReadTokens":2,"cacheCreationTokens":1,"totalInputTokens":14,"maxInputTokens":32},"features":["skill-synthetic"]}],"tools":[],"skills":[]}

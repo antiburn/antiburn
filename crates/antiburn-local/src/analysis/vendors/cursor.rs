@@ -56,6 +56,12 @@ impl SessionReader for CursorSessionReader {
             RawSource::KiroCliV2Bundle { .. } => {
                 anyhow::bail!("Kiro bundle is not a Cursor source")
             }
+            RawSource::KiroCliV3Bundle { .. } => {
+                anyhow::bail!("Kiro bundle is not a Cursor source")
+            }
+            RawSource::CopilotCliBundle { .. } => {
+                anyhow::bail!("Copilot bundle is not a Cursor source")
+            }
         };
         sink.finish(summary);
         Ok(VisitOutcome::Unvalidated)

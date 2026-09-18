@@ -35,3 +35,4 @@ Each subdirectory below holds its own fixtures with its own README:
 | `copilot_characterization/`   | The persisted Copilot CLI v1 event-chain reader.                           |
 | `cline_messages_contract_v1/` | The Cline terminal bundle reader.                                          |
 | `kiro_cli_v2_bundle/`         | The Kiro CLI V2 metadata and journal reader.                               |
+| `source_contracts/`           | Synthetic source contracts and fail-closed boundary cases.                  |
