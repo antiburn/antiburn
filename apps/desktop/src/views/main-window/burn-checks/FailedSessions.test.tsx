@@ -190,7 +190,7 @@ describe("FailedSessions", () => {
     const view = render(<FailedSessions samples={[]} total={0} />)
     expect(view.container).toBeEmptyDOMElement()
     view.rerender(<FailedSessions samples={[]} total={7} />)
-    expect(screen.getByText("No failed sessions are available to open.")).toBeVisible()
+    expect(screen.queryByText(/No failed sessions/)).toBeNull()
     expect(screen.queryByText(/Showing/)).toBeNull()
   })
 })

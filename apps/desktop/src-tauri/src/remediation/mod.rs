@@ -1351,9 +1351,15 @@ impl RemediationController {
         let source_format = match resource.agent {
             AgentKind::Claude => SourceFormat::ClaudeJsonl,
             AgentKind::Codex => SourceFormat::CodexRolloutJsonl,
+            AgentKind::Cursor => SourceFormat::CursorCliAgentJsonl,
+            AgentKind::Copilot => SourceFormat::CopilotIdeChatJson,
+            AgentKind::Cline => SourceFormat::ClineSessionJson,
             AgentKind::OpenCode => SourceFormat::OpenCodeJsonl,
+            AgentKind::Kiro => SourceFormat::KiroSessionJson,
+            AgentKind::AmpCode => SourceFormat::AmpThreadJson,
+            AgentKind::Antigravity => SourceFormat::AntigravityCascadeJson,
+            AgentKind::Windsurf => SourceFormat::DevinLocalSqlite,
             AgentKind::Pi => SourceFormat::PiV3Jsonl,
-            _ => return Err(ControllerError::Internal),
         };
         let cause = match resource.kind {
             crate::agent_config::ResourceKind::McpServer => FindingCause::UnusedMcpServer {

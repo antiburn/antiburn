@@ -490,6 +490,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     #[serial_test::serial]
     fn custom_xdg_devin_cli_path_is_owned() {
         let previous = std::env::var_os("XDG_DATA_HOME");
