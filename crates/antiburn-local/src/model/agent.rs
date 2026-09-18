@@ -99,7 +99,7 @@ impl AgentKind {
             AgentKind::Kiro => "Kiro",
             AgentKind::AmpCode => "Amp",
             AgentKind::Antigravity => "Antigravity",
-            AgentKind::Windsurf => "Windsurf",
+            AgentKind::Windsurf => "Devin",
             AgentKind::Pi => "Pi",
         }
     }
@@ -132,6 +132,12 @@ mod tests {
         for kind in AgentKind::ALL.iter().copied() {
             assert_eq!(kind.to_string(), kind.slug());
         }
+    }
+
+    #[test]
+    fn windsurf_identity_uses_the_devin_display_label() {
+        assert_eq!(AgentKind::Windsurf.slug(), "windsurf");
+        assert_eq!(AgentKind::Windsurf.display_label(), "Devin");
     }
 
     #[test]

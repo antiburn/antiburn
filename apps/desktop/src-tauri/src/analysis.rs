@@ -27,7 +27,7 @@ use antiburn_local::analysis::{
     SourceFormat, SourceKind, StoredResume, StreamSnapshot, TurnRow, TurnRowSink, TurnRowStore,
     TurnScope, VisitOutcome, aggregate_metrics, append_only_guarantee, evidence_from_facts,
     merge_metrics, metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
-    reader_for,
+    reader_for_input,
 };
 use antiburn_local::discovery::source_version::claude_sidecar_fingerprint;
 use antiburn_local::discovery::{
@@ -447,14 +447,20 @@ pub fn fingerprint_of(source: &SessionSource) -> String {
     let SessionSource::File(path) = source else {
         return MISSING_FINGERPRINT.to_string();
     };
+    if let Some(fingerprint) = bundle_fingerprint(path) {
+        return fingerprint;
+    }
+    fingerprint_of_path(path)
+}
+
+fn fingerprint_of_path(path: &std::path::Path) -> String {
     let Ok(metadata) = std::fs::metadata(path) else {
         return MISSING_FINGERPRINT.to_string();
     };
     let mtime = metadata
         .modified()
         .ok()
-        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|since| since.as_secs())
+        .and_then(system_time_nanos)
         .unwrap_or(0);
     format!("{mtime}:{}", metadata.len())
 }
@@ -471,6 +477,189 @@ pub(crate) async fn fingerprint_with_subagents(
         .await;
     subagent_paths.sort();
     combined_fingerprint(agent, source, &subagent_paths)
+}
+
+fn system_time_nanos(time: std::time::SystemTime) -> Option<i128> {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => i128::try_from(duration.as_nanos()).ok(),
+        Err(error) => i128::try_from(error.duration().as_nanos())
+            .ok()
+            .map(|nanos| -nanos),
+    }
+}
+
+fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
+    let file_name = path.file_name()?.to_str()?;
+    let mut paths = if path
+        .ancestors()
+        .any(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))
+    {
+        let root = path
+            .ancestors()
+            .find(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))?;
+        let directory = path.parent()?;
+        let database = root.join("data/db/sessions.db");
+        let mut paths = vec![path.to_path_buf(), database.clone()];
+        paths.extend(database_sidecars(&database));
+        let session_id = file_name.strip_suffix(".json").unwrap_or(file_name);
+        paths.push(directory.join(format!("{session_id}.messages.json")));
+        if let Ok(connection) = rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) && let Ok(mut statement) = connection.prepare(
+            "SELECT agent_id, parent_session_id, messages_path FROM sessions WHERE is_subagent = 1",
+        ) && let Ok(rows) = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                let (_agent_id, parent_session_id, messages_path) = row;
+                let referenced = std::path::Path::new(&messages_path);
+                if parent_session_id.as_deref() == Some(session_id)
+                    || referenced.parent() == Some(directory)
+                {
+                    paths.push(std::path::PathBuf::from(messages_path));
+                }
+            }
+        }
+        if let Some(state) = database_state(&database, &format!("cline:{session_id}")) {
+            paths.push(state);
+        }
+        paths
+    } else if file_name == "session.json" {
+        vec![path.to_path_buf(), path.parent()?.join("messages.jsonl")]
+    } else if file_name == "events.jsonl"
+        && path
+            .parent()?
+            .parent()?
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some("session-state")
+    {
+        let mut paths = vec![
+            path.to_path_buf(),
+            path.parent()?.parent()?.join("session-store.db"),
+        ];
+        paths.extend(database_sidecars(paths.get(1)?));
+        let session_id = path.parent()?.file_name()?.to_string_lossy();
+        if let Some(state) = database_state(paths.get(1)?, &format!("copilot:{session_id}")) {
+            paths.push(state);
+        }
+        paths
+    } else if path.extension().and_then(|extension| extension.to_str()) == Some("json")
+        && path.parent()?.file_name().and_then(|name| name.to_str()) == Some("cli")
+    {
+        vec![path.to_path_buf(), path.with_extension("jsonl")]
+    } else {
+        return None;
+    };
+    paths.sort();
+    paths.dedup();
+    let parts: Vec<_> = paths
+        .iter()
+        .map(
+            |path| match path.to_string_lossy().strip_prefix("sqlite-state:") {
+                Some(state) => (path.to_string_lossy().into_owned(), state.to_owned()),
+                None => (
+                    path.to_string_lossy().into_owned(),
+                    fingerprint_of_path(path),
+                ),
+            },
+        )
+        .collect();
+    serde_json::to_string(&parts)
+        .ok()
+        .map(|value| format!("bundle-v1:{value}"))
+}
+
+fn database_sidecars(database: &std::path::Path) -> Vec<std::path::PathBuf> {
+    ["-wal", "-shm"]
+        .into_iter()
+        .map(|suffix| std::path::PathBuf::from(format!("{}{}", database.display(), suffix)))
+        .collect()
+}
+
+fn database_state(database: &std::path::Path, scope: &str) -> Option<std::path::PathBuf> {
+    let connection = rusqlite::Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let (query, parameter) = scope.split_once(':')?;
+    let state = match query {
+        "cline" => connection
+            .prepare(
+                "SELECT session_id, status, model, agent_id, parent_session_id,
+                        is_subagent, messages_path
+                   FROM sessions
+                  WHERE session_id = ?1 OR parent_session_id = ?1
+                     OR messages_path LIKE ?2
+                  ORDER BY session_id",
+            )
+            .ok()?
+            .query_map(
+                rusqlite::params![parameter, format!("%/{parameter}/%")],
+                |row| {
+                    Ok(vec![
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        row.get::<_, i64>(5)?.to_string(),
+                        row.get::<_, String>(6)?,
+                    ])
+                },
+            )
+            .ok()?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .ok()?,
+        "copilot" => {
+            let mut state = Vec::new();
+            let identity = connection
+                .query_row(
+                    "SELECT session_id, shutdown_model FROM sessions WHERE session_id = ?1",
+                    [parameter],
+                    |row| Ok(vec![row.get::<_, String>(0)?, row.get::<_, String>(1)?]),
+                )
+                .ok()?;
+            state.push(identity);
+            let mut statement = connection
+                .prepare(
+                    "SELECT request_id, agent_id, parent_tool_call_id, model,
+                            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+                       FROM request_usage WHERE session_id = ?1 ORDER BY request_id",
+                )
+                .ok()?;
+            let rows = statement
+                .query_map([parameter], |row| {
+                    Ok(vec![
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        row.get::<_, String>(3)?,
+                        row.get::<_, u64>(4)?.to_string(),
+                        row.get::<_, u64>(5)?.to_string(),
+                        row.get::<_, u64>(6)?.to_string(),
+                        row.get::<_, u64>(7)?.to_string(),
+                    ])
+                })
+                .ok()?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .ok()?;
+            state.extend(rows);
+            state
+        }
+        _ => return None,
+    };
+    Some(std::path::PathBuf::from(format!(
+        "sqlite-state:{}{}",
+        query,
+        serde_json::to_string(&state).ok()?
+    )))
 }
 
 /// Build one stable fingerprint from a parent and its sorted child paths.
@@ -539,28 +728,52 @@ pub async fn locate(
 
 /// Shape a located source into the raw payload the analysis layer reads.
 pub(crate) async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSource> {
-    if agent == AgentKind::Cline
-        && source_format(agent, source) == SourceFormat::ClineMessagesContractV1
-    {
+    raw_source_with_format(agent, source, source_format(agent, source)).await
+}
+
+async fn raw_source_with_format(
+    agent: AgentKind,
+    source: &SessionSource,
+    format: SourceFormat,
+) -> Option<RawSource> {
+    if agent == AgentKind::Cline && format == SourceFormat::ClineMessagesContractV1 {
         let SessionSource::File(manifest_path) = source else {
             return None;
         };
         let session_id = manifest_path.file_stem()?.to_str()?;
         let directory = manifest_path.parent()?;
-        let sessions_dir = directory.parent()?;
         return Some(RawSource::ClineBundle {
-            db_path: sessions_dir.join("sessions.db"),
+            db_path: cline_database_path(manifest_path)?,
             manifest_path: manifest_path.clone(),
             messages_path: directory.join(format!("{session_id}.messages.json")),
         });
     }
-    if agent == AgentKind::Kiro && source_format(agent, source) == SourceFormat::KiroCliV2Bundle {
+    if agent == AgentKind::Kiro && format == SourceFormat::KiroCliV2Bundle {
         let SessionSource::File(metadata_path) = source else {
             return None;
         };
         return Some(RawSource::KiroCliV2Bundle {
             metadata_path: metadata_path.clone(),
             messages_path: metadata_path.with_extension("jsonl"),
+        });
+    }
+    if agent == AgentKind::Kiro && format == SourceFormat::KiroCliV3Bundle {
+        let SessionSource::File(metadata_path) = source else {
+            return None;
+        };
+        return Some(RawSource::KiroCliV3Bundle {
+            metadata_path: metadata_path.clone(),
+            messages_path: metadata_path.parent()?.join("messages.jsonl"),
+        });
+    }
+    if agent == AgentKind::Copilot && format == SourceFormat::CopilotCliJsonl {
+        let SessionSource::File(events_path) = source else {
+            return None;
+        };
+        let state_root = events_path.parent()?.parent()?;
+        return Some(RawSource::CopilotCliBundle {
+            events_path: events_path.clone(),
+            db_path: state_root.join("session-store.db"),
         });
     }
     match source {
@@ -571,6 +784,11 @@ pub(crate) async fn raw_source(agent: AgentKind, source: &SessionSource) -> Opti
             db_path,
             ..
         } => Some(RawSource::Sqlite(db_path.clone())),
+        SessionSource::ProviderDb {
+            agent: AgentKind::Windsurf,
+            db_path,
+            ..
+        } if path_has_component(db_path, "devin") => Some(RawSource::Sqlite(db_path.clone())),
         SessionSource::ProviderDb { .. } => {
             session_source_content(source).await.map(RawSource::Jsonl)
         }
@@ -648,13 +866,47 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
             SourceFormat::CopilotCliJsonl
         }
         (AgentKind::Copilot, _) => SourceFormat::CopilotIdeChatJson,
+        (AgentKind::AmpCode, SessionSource::File(path)) if is_amp_file_changes_path(path) => {
+            SourceFormat::AmpFileChanges
+        }
+        (AgentKind::AmpCode, SessionSource::File(path)) if is_amp_thread_path(path) => {
+            SourceFormat::AmpThreadJson
+        }
+        (AgentKind::Windsurf, SessionSource::File(path)) => {
+            let path = path.to_string_lossy().to_ascii_lowercase();
+            if path.ends_with(".pb") && path.contains("/.codeium/windsurf/cascade/") {
+                SourceFormat::WindsurfCascadeProtobuf
+            } else if path.contains("/workspacestorage/") && path.contains("/chatsessions/") {
+                SourceFormat::WindsurfWorkspaceJson
+            } else {
+                // Mirror roots are configured by the embedding application,
+                // so their path is not a stable part of the contract.
+                SourceFormat::WindsurfMirrorJson
+            }
+        }
+        (AgentKind::Windsurf, SessionSource::ProviderDb { db_path, .. })
+            if path_has_component(db_path, "devin") =>
+        {
+            SourceFormat::DevinLocalSqlite
+        }
+        (AgentKind::Windsurf, SessionSource::Inline { label, .. })
+            if label.starts_with("windsurf-mirror:") =>
+        {
+            SourceFormat::WindsurfMirrorJson
+        }
         (AgentKind::Cline, SessionSource::File(path))
             if path
                 .parent()
                 .and_then(|parent| parent.parent())
                 .is_some_and(|sessions| {
-                    sessions.file_name().and_then(|name| name.to_str()) == Some("sessions")
+                    matches!(
+                        sessions.file_name().and_then(|name| name.to_str()),
+                        Some("sessions") | Some("tasks")
+                    )
                 })
+                && path
+                    .ancestors()
+                    .any(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))
                 && path
                     .file_stem()
                     .and_then(|name| name.to_str())
@@ -699,6 +951,34 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
         (AgentKind::Kiro, _) => SourceFormat::KiroSessionJson,
         _ => SourceFormat::Uncharacterized,
     }
+}
+
+fn cline_database_path(manifest_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    manifest_path
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == ".cline"))
+        .map(|root| root.join("data").join("db").join("sessions.db"))
+}
+
+fn is_amp_thread_path(path: &std::path::Path) -> bool {
+    let path = normalized_path(path);
+    path.contains("/.local/share/amp/threads/")
+        || path.contains("/appdata/roaming/amp/threads/")
+        || path.contains("/.amp/threads/")
+}
+
+fn is_amp_file_changes_path(path: &std::path::Path) -> bool {
+    normalized_path(path).contains("/.amp/file-changes/")
+}
+
+fn normalized_path(path: &std::path::Path) -> String {
+    format!("/{}/", path.to_string_lossy().replace('\\', "/")).to_ascii_lowercase()
+}
+
+fn path_has_component(path: &std::path::Path, expected: &str) -> bool {
+    normalized_path(path)
+        .split('/')
+        .any(|component| component == expected)
 }
 
 fn is_uuid(value: &str) -> bool {
@@ -775,8 +1055,9 @@ fn stream_vendor_with_claim_hook(
 /// (insights_worker.rs) is what turns an unset profile into the terminal
 /// `Unsupported` state; this function's job is only to describe the source,
 /// never to decide whether it is good enough.
-fn adapter_supports_provider_db(agent: &str) -> bool {
+fn adapter_supports_provider_db(agent: &str, source_format: SourceFormat) -> bool {
     matches!(agent, "opencode" | "antigravity")
+        || (agent == "windsurf" && source_format == SourceFormat::DevinLocalSqlite)
 }
 
 /// One child input's contribution to the parent's folded coverage, kept
@@ -1043,7 +1324,7 @@ fn stream_vendor_with_hooks(
         // used to; a SQLite source from an adapter without database support is the one
         // remaining path that outcome still covers, further down.
         let kind = SourceKind::from(&input.source);
-        let adapter = reader_for(&input.agent);
+        let adapter = reader_for_input(input);
         let capabilities = adapter.capabilities(input);
         // Every input after the parent is a discovered child transcript, so
         // its rows get `Delegated` scope from position. The adapter's own
@@ -1240,11 +1521,16 @@ fn stream_vendor_with_hooks(
                 adapter.visit(input, &mut accumulator)
             }
             RawSource::Sqlite(_)
-                if !adapter_supports_provider_db(adapter.agent()) && index == 0 =>
+                if !adapter_supports_provider_db(adapter.agent(), input.source_format)
+                    && index == 0 =>
             {
                 return StreamOutcome::ParentUnsupported;
             }
-            RawSource::Sqlite(_) if !adapter_supports_provider_db(adapter.agent()) => continue,
+            RawSource::Sqlite(_)
+                if !adapter_supports_provider_db(adapter.agent(), input.source_format) =>
+            {
+                continue;
+            }
             RawSource::Sqlite(_) if index == 0 => {
                 let outcome = match database_claim {
                     Some(fingerprint) => {
@@ -1258,6 +1544,26 @@ fn stream_vendor_with_hooks(
                 outcome
             }
             RawSource::Sqlite(_) => continue,
+            RawSource::CopilotCliBundle { events_path, .. } if index == 0 => {
+                let bundle_source = SessionSource::File(events_path.clone());
+                let bundle_claim = fingerprint_of(&bundle_source);
+                parent_fingerprint = Some(bundle_claim.clone());
+                after_claim(index, events_path);
+                let outcome = match adapter.visit(input, &mut accumulator) {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
+                    }
+                };
+                if fingerprint_of(&bundle_source) != bundle_claim {
+                    Ok(VisitOutcome::SourceChanged(
+                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
+                    ))
+                } else {
+                    Ok(outcome)
+                }
+            }
+            RawSource::CopilotCliBundle { .. } => continue,
             RawSource::ClineBundle { manifest_path, .. } if index == 0 => {
                 let claim = match claim_file(manifest_path) {
                     Ok(claim) => claim,
@@ -1265,27 +1571,68 @@ fn stream_vendor_with_hooks(
                         return StreamOutcome::ParentUnreadable(UnreadableReason::ClaimFailed);
                     }
                 };
-                adapter.visit_claimed(
+                let bundle_source = SessionSource::File(manifest_path.clone());
+                let bundle_claim = fingerprint_of(&bundle_source);
+                parent_fingerprint = Some(bundle_claim.clone());
+                let outcome = match adapter.visit_claimed(
                     input,
                     &claim,
                     AppendOnlyGuarantee::Absent,
                     cancelled,
                     &mut accumulator,
-                )
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
+                    }
+                };
+                if fingerprint_of(&bundle_source) != bundle_claim {
+                    Ok(VisitOutcome::SourceChanged(
+                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
+                    ))
+                } else {
+                    Ok(outcome)
+                }
             }
             RawSource::ClineBundle { .. } => continue,
-            RawSource::KiroCliV2Bundle {
-                metadata_path,
-                messages_path,
-            } if index == 0 => {
-                parent_fingerprint = Some(format!(
-                    "{}:{}",
-                    fingerprint_of(&SessionSource::File(metadata_path.clone())),
-                    fingerprint_of(&SessionSource::File(messages_path.clone()))
-                ));
-                adapter.visit(input, &mut accumulator)
+            RawSource::KiroCliV2Bundle { metadata_path, .. } if index == 0 => {
+                let bundle_source = SessionSource::File(metadata_path.clone());
+                let bundle_claim = fingerprint_of(&bundle_source);
+                parent_fingerprint = Some(bundle_claim.clone());
+                let outcome = match adapter.visit(input, &mut accumulator) {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
+                    }
+                };
+                if fingerprint_of(&bundle_source) != bundle_claim {
+                    Ok(VisitOutcome::SourceChanged(
+                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
+                    ))
+                } else {
+                    Ok(outcome)
+                }
             }
             RawSource::KiroCliV2Bundle { .. } => continue,
+            RawSource::KiroCliV3Bundle { metadata_path, .. } if index == 0 => {
+                let bundle_source = SessionSource::File(metadata_path.clone());
+                let bundle_claim = fingerprint_of(&bundle_source);
+                parent_fingerprint = Some(bundle_claim.clone());
+                let outcome = match adapter.visit(input, &mut accumulator) {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
+                    }
+                };
+                if fingerprint_of(&bundle_source) != bundle_claim {
+                    Ok(VisitOutcome::SourceChanged(
+                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
+                    ))
+                } else {
+                    Ok(outcome)
+                }
+            }
+            RawSource::KiroCliV3Bundle { .. } => continue,
         };
         match result {
             Ok(outcome @ VisitOutcome::SourceChanged(_)) => {
@@ -1560,7 +1907,8 @@ pub async fn analyze_for_evidence(
     let Some(source) = locate(agent, session_id, wsl_distro).await else {
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
     };
-    let Some(raw) = raw_source(agent, &source).await else {
+    let admitted_format = source_format(agent, &source);
+    let Some(raw) = raw_source_with_format(agent, &source, admitted_format).await else {
         // Only a provider-database source reaches here: `raw_source` reads
         // its content directly, so a `None` means that read failed. Treated
         // the same as a file claim failure — the source could not be opened.
@@ -1576,7 +1924,7 @@ pub async fn analyze_for_evidence(
         agent: label.to_string(),
         session_id: session_id.to_string(),
         source: raw,
-        source_format: source_format(agent, &source),
+        source_format: admitted_format,
         fork_parent_session_id: fork_parent_session_id.clone(),
     };
 
@@ -1609,7 +1957,8 @@ pub async fn analyze_for_evidence(
             continue;
         };
         let source = SessionSource::File(path.clone());
-        let Some(raw) = raw_source(agent, &source).await else {
+        let admitted_format = source_format(agent, &source);
+        let Some(raw) = raw_source_with_format(agent, &source, admitted_format).await else {
             continue;
         };
         let label_text = Explorers::DISK.subagent_label(&agent, path).await;
@@ -1620,7 +1969,7 @@ pub async fn analyze_for_evidence(
                 agent: label.to_string(),
                 session_id: subagent_id,
                 source: raw,
-                source_format: source_format(agent, &source),
+                source_format: admitted_format,
                 fork_parent_session_id: fork_parent_session_id.clone(),
             },
         ));

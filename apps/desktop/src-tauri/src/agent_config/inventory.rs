@@ -11,6 +11,7 @@ use super::{ConfigContext, ConfigUnavailableReason};
 
 const MAX_RESOURCES: usize = 512;
 const MAX_DIRECTORY_ENTRIES: usize = 256;
+const MAX_SKILL_DIRECTORIES: usize = 4096;
 const MAX_RESOURCE_NAME_BYTES: usize = 256;
 const PI_MCP_PACKAGE: &str = "pi-mcp-extension";
 const PI_MCP_VERSION: &str = "1.5.0";
@@ -274,7 +275,17 @@ pub fn advisory_resource_inventory<'a>(
     }
     if !matches!(
         context.agent,
-        AgentKind::Claude | AgentKind::Codex | AgentKind::OpenCode | AgentKind::Pi
+        AgentKind::Claude
+            | AgentKind::Codex
+            | AgentKind::OpenCode
+            | AgentKind::Pi
+            | AgentKind::Cursor
+            | AgentKind::Copilot
+            | AgentKind::Cline
+            | AgentKind::Kiro
+            | AgentKind::AmpCode
+            | AgentKind::Antigravity
+            | AgentKind::Windsurf
     ) {
         return Err(ConfigUnavailableReason::UnsupportedAgent);
     }
@@ -306,7 +317,27 @@ pub fn advisory_resource_inventory<'a>(
             opencode_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
         }
         AgentKind::Pi => pi_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref()),
-        _ => unreachable!("the supported agent gate is exhaustive"),
+        AgentKind::Cursor => {
+            cursor_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
+        }
+        AgentKind::Copilot => {
+            copilot_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
+        }
+        AgentKind::Cline => {
+            cline_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
+        }
+        AgentKind::Kiro => {
+            kiro_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
+        }
+        AgentKind::AmpCode => {
+            amp_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
+        }
+        AgentKind::Antigravity => {
+            antigravity_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
+        }
+        AgentKind::Windsurf => {
+            devin_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
+        }
     }
     merge_indexed(&mut builder, indexed);
     Ok(builder.finish())
@@ -392,6 +423,32 @@ fn enumerate_skill_root(
     safety_root: &Path,
     scope: ResourceScope,
 ) {
+    let mut directories_remaining = MAX_SKILL_DIRECTORIES;
+    enumerate_skill_directory(
+        builder,
+        directory,
+        safety_root,
+        scope,
+        &mut directories_remaining,
+    );
+}
+
+fn enumerate_skill_directory(
+    builder: &mut InventoryBuilder,
+    directory: &Path,
+    safety_root: &Path,
+    scope: ResourceScope,
+    directories_remaining: &mut usize,
+) {
+    if *directories_remaining == 0 {
+        builder.issue(
+            Some(ResourceKind::Skill),
+            scope,
+            InventoryIssueReason::ResourceCapExceeded,
+        );
+        return;
+    }
+    *directories_remaining -= 1;
     let metadata = match std::fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
@@ -506,7 +563,21 @@ fn enumerate_skill_root(
                     InventoryIssueReason::Config(reason),
                 ),
             },
-            Ok(false) => {}
+            Ok(false) => {
+                // Cursor supports category directories below a skill root.
+                if matches!(
+                    std::fs::symlink_metadata(&path),
+                    Ok(metadata) if metadata.is_dir()
+                ) {
+                    enumerate_skill_directory(
+                        builder,
+                        &path,
+                        safety_root,
+                        scope,
+                        directories_remaining,
+                    );
+                }
+            }
             Err(reason) => builder.issue(
                 Some(ResourceKind::Skill),
                 scope,
@@ -670,28 +741,395 @@ fn add_json_mcp_map(
         return;
     };
     for (name, definition) in servers {
-        if !definition.is_object() {
+        let Some(definition) = definition.as_object() else {
             builder.issue(
                 Some(ResourceKind::McpServer),
                 scope,
                 InventoryIssueReason::UnsupportedShape,
             );
             continue;
+        };
+        if definition.contains_key("url") || definition.contains_key("serverUrl") {
+            builder.issue(
+                Some(ResourceKind::McpServer),
+                scope,
+                InventoryIssueReason::DynamicSource,
+            );
         }
-        let enabled = definition
-            .get("enabled")
-            .map(|value| {
-                value.as_bool().map_or(EnabledState::Unknown, |enabled| {
-                    if enabled {
-                        EnabledState::Enabled
-                    } else {
-                        EnabledState::Disabled
-                    }
-                })
-            })
-            .unwrap_or(EnabledState::Enabled);
-        builder.replace(ResourceKind::McpServer, name, enabled, scope, provenance);
+        let enabled = definition.get("enabled").map(Value::as_bool);
+        let disabled = definition.get("disabled").map(Value::as_bool);
+        let enabled_state = if enabled.is_some_and(|value| value.is_none())
+            || disabled.is_some_and(|value| value.is_none())
+        {
+            builder.issue(
+                Some(ResourceKind::McpServer),
+                scope,
+                InventoryIssueReason::UnsupportedShape,
+            );
+            EnabledState::Unknown
+        } else {
+            match (enabled.flatten(), disabled.flatten()) {
+                (Some(enabled), Some(disabled)) if enabled == disabled => {
+                    builder.issue(
+                        Some(ResourceKind::McpServer),
+                        scope,
+                        InventoryIssueReason::ConflictingDefinition,
+                    );
+                    EnabledState::Unknown
+                }
+                (Some(enabled), Some(_)) => enabled_state_from_enabled(enabled),
+                (Some(enabled), None) => enabled_state_from_enabled(enabled),
+                (None, Some(disabled)) => enabled_state_from_enabled(!disabled),
+                (None, None) => EnabledState::Enabled,
+            }
+        };
+        builder.replace(
+            ResourceKind::McpServer,
+            name,
+            enabled_state,
+            scope,
+            provenance,
+        );
     }
+}
+
+fn enabled_state_from_enabled(enabled: bool) -> EnabledState {
+    if enabled {
+        EnabledState::Enabled
+    } else {
+        EnabledState::Disabled
+    }
+}
+
+fn add_json_mcp_document(
+    builder: &mut InventoryBuilder,
+    document: &Value,
+    scope: ResourceScope,
+    provenance: ResourceProvenance,
+) {
+    let map = document
+        .get("mcpServers")
+        .or_else(|| document.get("amp.mcpServers"));
+    if map.is_none()
+        && document
+            .as_object()
+            .is_some_and(|document| document.keys().any(|key| key.starts_with("amp.")))
+    {
+        return;
+    }
+    add_json_mcp_map(builder, map.or(Some(document)), scope, provenance);
+}
+
+fn inventory_json_file(
+    builder: &mut InventoryBuilder,
+    path: &Path,
+    root: &Path,
+    scope: ResourceScope,
+) {
+    if let Some(document) = optional_json(builder, path, root, scope, true) {
+        add_json_mcp_document(
+            builder,
+            &document,
+            scope,
+            ResourceProvenance::StandardConfig,
+        );
+    }
+}
+
+fn inventory_github_mcp_file(
+    builder: &mut InventoryBuilder,
+    path: &Path,
+    root: &Path,
+    scope: ResourceScope,
+) {
+    if let Some(document) = optional_json(builder, path, root, scope, true) {
+        add_json_mcp_map(
+            builder,
+            document.get("servers"),
+            scope,
+            ResourceProvenance::StandardConfig,
+        );
+    }
+}
+
+fn inventory_project_roots(
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+) -> impl Iterator<Item = PathBuf> {
+    cwd.into_iter()
+        .zip(root)
+        .flat_map(|(cwd, root)| hierarchy(cwd, root))
+}
+
+fn inventory_skills(
+    builder: &mut InventoryBuilder,
+    home: &Path,
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+    global: &[&str],
+    project: &[&str],
+) {
+    let global_root = home.to_owned();
+    for relative in global {
+        enumerate_skill_root(
+            builder,
+            &home.join(relative),
+            &global_root,
+            ResourceScope::Global,
+        );
+    }
+    if let (Some(cwd), Some(root)) = (cwd, root) {
+        for directory in hierarchy(cwd, root) {
+            for relative in project {
+                enumerate_skill_root(
+                    builder,
+                    &directory.join(relative),
+                    root,
+                    ResourceScope::Project,
+                );
+            }
+        }
+    }
+}
+
+fn cursor_inventory(
+    builder: &mut InventoryBuilder,
+    home: &Path,
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+) {
+    inventory_json_file(
+        builder,
+        &home.join(".cursor/mcp.json"),
+        home,
+        ResourceScope::Global,
+    );
+    for directory in inventory_project_roots(cwd, root) {
+        inventory_json_file(
+            builder,
+            &directory.join(".cursor/mcp.json"),
+            root.unwrap_or(directory.as_path()),
+            ResourceScope::Project,
+        );
+    }
+    inventory_skills(
+        builder,
+        home,
+        cwd,
+        root,
+        &[
+            ".agents/skills",
+            ".cursor/skills",
+            ".claude/skills",
+            ".codex/skills",
+        ],
+        &[
+            ".agents/skills",
+            ".cursor/skills",
+            ".claude/skills",
+            ".codex/skills",
+        ],
+    );
+}
+
+fn copilot_inventory(
+    builder: &mut InventoryBuilder,
+    home: &Path,
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+) {
+    inventory_json_file(
+        builder,
+        &home.join(".copilot/mcp-config.json"),
+        home,
+        ResourceScope::Global,
+    );
+    if let (Some(cwd), Some(root)) = (cwd, root) {
+        for directory in hierarchy(cwd, root) {
+            inventory_github_mcp_file(
+                builder,
+                &directory.join(".github/mcp.json"),
+                root,
+                ResourceScope::Project,
+            );
+            inventory_json_file(
+                builder,
+                &directory.join(".mcp.json"),
+                root,
+                ResourceScope::Project,
+            );
+        }
+    }
+    inventory_skills(
+        builder,
+        home,
+        cwd,
+        root,
+        &[".agents/skills", ".copilot/skills"],
+        &[".agents/skills", ".github/skills", ".claude/skills"],
+    );
+}
+
+fn cline_inventory(
+    builder: &mut InventoryBuilder,
+    home: &Path,
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+) {
+    for relative in [
+        ".cline/mcp.json",
+        ".cline/data/settings/cline_mcp_settings.json",
+    ] {
+        inventory_json_file(builder, &home.join(relative), home, ResourceScope::Global);
+    }
+    if let (Some(cwd), Some(root)) = (cwd, root) {
+        for directory in hierarchy(cwd, root) {
+            inventory_json_file(
+                builder,
+                &directory.join(".cline/mcp.json"),
+                root,
+                ResourceScope::Project,
+            );
+        }
+    }
+    inventory_skills(
+        builder,
+        home,
+        cwd,
+        root,
+        &[".cline/skills"],
+        &[".cline/skills", ".clinerules/skills"],
+    );
+}
+
+fn kiro_inventory(
+    builder: &mut InventoryBuilder,
+    home: &Path,
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+) {
+    inventory_json_file(
+        builder,
+        &home.join(".kiro/settings/mcp.json"),
+        home,
+        ResourceScope::Global,
+    );
+    if let Some(root) = root {
+        inventory_json_file(
+            builder,
+            &root.join(".kiro/settings/mcp.json"),
+            root,
+            ResourceScope::Project,
+        );
+    }
+    inventory_skills(
+        builder,
+        home,
+        cwd,
+        root,
+        &[".kiro/skills"],
+        &[".kiro/skills"],
+    );
+}
+
+fn amp_inventory(
+    builder: &mut InventoryBuilder,
+    home: &Path,
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+) {
+    inventory_json_file(
+        builder,
+        &home.join(".config/amp/settings.json"),
+        home,
+        ResourceScope::Global,
+    );
+    if let Some(root) = root {
+        inventory_json_file(
+            builder,
+            &root.join(".amp/settings.json"),
+            root,
+            ResourceScope::Project,
+        );
+    }
+    inventory_skills(
+        builder,
+        home,
+        cwd,
+        root,
+        &[
+            ".config/agents/skills",
+            ".agents/skills",
+            ".config/amp/skills",
+            ".claude/skills",
+        ],
+        &[".agents/skills", ".claude/skills"],
+    );
+}
+
+fn antigravity_inventory(
+    builder: &mut InventoryBuilder,
+    home: &Path,
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+) {
+    inventory_json_file(
+        builder,
+        &home.join(".gemini/config/mcp_config.json"),
+        home,
+        ResourceScope::Global,
+    );
+    if let Some(root) = root {
+        inventory_json_file(
+            builder,
+            &root.join(".agents/mcp_config.json"),
+            root,
+            ResourceScope::Project,
+        );
+    }
+    inventory_skills(
+        builder,
+        home,
+        cwd,
+        root,
+        &[
+            ".agents/skills",
+            ".gemini/config/skills",
+            ".gemini/antigravity-cli/skills",
+        ],
+        &[".agents/skills"],
+    );
+}
+
+fn devin_inventory(
+    builder: &mut InventoryBuilder,
+    home: &Path,
+    cwd: Option<&Path>,
+    root: Option<&Path>,
+) {
+    inventory_json_file(
+        builder,
+        &home.join(".config/devin/mcp_config.json"),
+        home,
+        ResourceScope::Global,
+    );
+    if let Some(root) = root {
+        for relative in [".devin/mcp_config.json", ".devin/mcp_config.local.json"] {
+            inventory_json_file(builder, &root.join(relative), root, ResourceScope::Project);
+        }
+    }
+    inventory_skills(
+        builder,
+        home,
+        cwd,
+        root,
+        &[
+            ".agents/skills",
+            ".config/devin/skills",
+            ".codeium/windsurf/skills",
+        ],
+        &[".agents/skills", ".devin/skills", ".windsurf/skills"],
+    );
 }
 
 fn add_claude_controls(builder: &mut InventoryBuilder, document: &Value, scope: ResourceScope) {
@@ -1697,7 +2135,13 @@ fn evidence_agent_matches(agent: AgentKind, evidence_agent: &str) -> bool {
         AgentKind::Codex => evidence_agent == "codex",
         AgentKind::OpenCode => evidence_agent == "opencode",
         AgentKind::Pi => evidence_agent == "pi",
-        _ => false,
+        AgentKind::Cursor => matches!(evidence_agent, "cursor" | "cursor-ide"),
+        AgentKind::Copilot => matches!(evidence_agent, "copilot" | "github-copilot"),
+        AgentKind::Cline => evidence_agent == "cline",
+        AgentKind::Kiro => matches!(evidence_agent, "kiro" | "kiro-cli"),
+        AgentKind::AmpCode => matches!(evidence_agent, "amp" | "amp-code"),
+        AgentKind::Antigravity => evidence_agent == "antigravity",
+        AgentKind::Windsurf => matches!(evidence_agent, "windsurf" | "devin"),
     }
 }
 

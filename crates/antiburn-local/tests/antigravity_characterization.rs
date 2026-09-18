@@ -21,6 +21,8 @@ fn input(source: RawSource) -> SessionInput {
         RawSource::Jsonl(_) => SourceFormat::AntigravityBrainJsonl,
         RawSource::ClineBundle { .. } => SourceFormat::Uncharacterized,
         RawSource::KiroCliV2Bundle { .. } => SourceFormat::Uncharacterized,
+        RawSource::KiroCliV3Bundle { .. } => SourceFormat::Uncharacterized,
+        RawSource::CopilotCliBundle { .. } => SourceFormat::Uncharacterized,
     };
     SessionInput {
         agent: "antigravity".into(),

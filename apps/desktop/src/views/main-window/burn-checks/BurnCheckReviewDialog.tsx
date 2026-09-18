@@ -94,7 +94,7 @@ export function BurnCheckReviewDialog({
           <p className="mt-2 break-all type-footnote font-mono text-label-tertiary">
             {review.configFile} · {review.selectorLabel}
           </p>
-          <p className="mt-2 type-callout font-mono text-label">
+          <p className="mt-2 max-w-full break-all type-callout font-mono text-label">
             {review.currentValue} → {review.proposedValue}
           </p>
         </div>

@@ -10,7 +10,7 @@ use antiburn_local::analysis::{
 };
 use antiburn_local::insights::ReportWindow;
 
-const SOURCE_FORMATS: [SourceFormat; 31] = [
+const SOURCE_FORMATS: [SourceFormat; 32] = [
     SourceFormat::ClaudeJsonl,
     SourceFormat::CodexRolloutJsonl,
     SourceFormat::OpenCodeJsonl,
@@ -41,6 +41,7 @@ const SOURCE_FORMATS: [SourceFormat; 31] = [
     SourceFormat::WindsurfWorkspaceJson,
     SourceFormat::WindsurfMirrorJson,
     SourceFormat::WindsurfCascadeProtobuf,
+    SourceFormat::DevinLocalSqlite,
     SourceFormat::Uncharacterized,
 ];
 
@@ -418,6 +419,61 @@ fn resource_revalidation_keeps_the_indexed_provenance_requirement() {
 
     assert!(!resource_target_matches(&indexed, &advisory));
     assert!(resource_target_matches(&advisory, &indexed));
+}
+
+#[test]
+fn resource_targets_do_not_expose_supporting_sessions_as_samples() {
+    let target = insights_report::UnusedResourceTarget {
+        agent: AgentKind::Claude,
+        kind: crate::agent_config::ResourceKind::Skill,
+        canonical_name: "review".into(),
+        scope: insights_report::ResourceAssessmentScope::Global,
+        observations: 1,
+        indexed: false,
+        replicated_tokens: Some(10),
+        estimated_token_burn_basis_points: Some(100),
+        supporting_sessions: vec![insights_report::ResourceSupportingSession {
+            environment_key: "native".into(),
+            agent: "claude-code".into(),
+            session_id: "session-1".into(),
+            observed_at_ms: 1,
+        }],
+    };
+    let finding = Finding::advisory_resource(
+        AgentKind::Claude,
+        SourceFormat::ClaudeJsonl,
+        FindingCause::UnusedSkill {
+            skill: "review".into(),
+            tokens: Some(10),
+            cost_usd: None,
+            pricing_revision: None,
+        },
+    )
+    .unwrap();
+    let cached = CachedTarget {
+        findings: Vec::new(),
+        resource: Some(CachedResourceTarget {
+            target,
+            context: BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 1,
+                },
+            },
+            finding,
+        }),
+        target_key: String::new(),
+        canonical_identity: String::new(),
+        workspace_key: None,
+        agent: AgentKind::Claude,
+        scope_kind: "global".into(),
+        scope_key: String::new(),
+        physical_target_key: None,
+        config: None,
+    };
+
+    assert!(cached.sample_sessions().is_empty());
 }
 
 #[cfg(not(windows))]

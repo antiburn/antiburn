@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { useSyncExternalStore } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
@@ -12,6 +13,7 @@ import type {
 import type * as ClipboardModule from "../../lib/clipboard"
 import type * as InsightsIpcModule from "../../lib/insightsIpc"
 import type * as IpcModule from "../../lib/ipc"
+import * as SnoozedBurnChecks from "../../lib/snoozedBurnChecks"
 import { BurnChecksSession, type BurnChecksAdapter } from "./BurnChecksSession"
 import { BurnChecksView } from "./BurnChecksView"
 import { BurnCheckDetail, CheckPromptAction } from "./burn-checks/BurnCheckDetail"
@@ -527,6 +529,152 @@ describe("BurnChecksView", () => {
     expect(screen.getByRole("button", { name: "Snooze" })).not.toHaveAttribute("aria-disabled")
     fireEvent.click(snoozed)
     expect(snoozed).toHaveAttribute("aria-expanded", "false")
+  })
+
+  describe("check state labels", () => {
+    const watchingTarget: BurnCheckTargetPayload = {
+      ...target,
+      watch: {
+        watchId: "watch-1",
+        origin: "action",
+        lifecycle: "watching",
+        verification: { status: "watching" },
+        savings: { status: "pending" },
+      },
+    }
+
+    function mockSnoozes(initial: readonly SnoozedBurnChecks.SnoozedBurnCheck[]) {
+      let records = initial
+      const listeners = new Set<() => void>()
+      const subscribe = (listener: () => void) => {
+        listeners.add(listener)
+        return () => {
+          listeners.delete(listener)
+        }
+      }
+      const getSnapshot = () => records
+      vi.spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks").mockImplementation(
+        function useSnoozedChecksSnapshot() {
+          return useSyncExternalStore(subscribe, getSnapshot)
+        },
+      )
+      return (next: readonly SnoozedBurnChecks.SnoozedBurnCheck[]) => {
+        records = next
+        for (const listener of listeners) listener()
+      }
+    }
+
+    afterEach(() => vi.restoreAllMocks())
+
+    it("shows awaiting in the header and collection once target details load", async () => {
+      const pending = deferred<BurnCheckTargetPayload[]>()
+      setup(pending.promise, false, aggregate, report)
+      const heading = await screen.findByRole("heading", { name: "Old model usage", level: 2 })
+      const header = heading.closest("header")!
+      expect(within(header).queryByText("Awaiting verification")).not.toBeInTheDocument()
+
+      await act(async () => pending.resolve([watchingTarget]))
+
+      const badge = await within(header).findByText("Awaiting verification")
+      expect(badge.closest("button")).toBeNull()
+      expect(header).toHaveTextContent("1 failed")
+      expect(header).toHaveTextContent("2 passed")
+      const groupHeading = screen.getByRole("heading", { name: "Awaiting verification 1" })
+      expect(groupHeading.querySelector("svg")).toHaveAttribute("aria-hidden", "true")
+      expect(
+        within(groupHeading.closest("section")!).getByRole("button", {
+          name: /Old model usage/,
+        }),
+      ).toHaveAttribute("aria-pressed", "true")
+      expect(
+        screen.queryByText("A later complete session confirms each change."),
+      ).not.toBeInTheDocument()
+    })
+
+    it.each([
+      { name: "ordinary findings", targets: [target] },
+      { name: "empty target details", targets: [] },
+      { name: "mixed verification states", targets: [watchingTarget, target] },
+    ])("does not show awaiting for $name", async ({ targets }) => {
+      const { session } = setup(targets, false, aggregate, report)
+      await waitFor(() =>
+        expect(session.getSnapshot().targets.oldModelUsage?.data).toBeDefined(),
+      )
+      const header = screen
+        .getByRole("heading", { name: "Old model usage", level: 2 })
+        .closest("header")!
+      expect(within(header).queryByText("Awaiting verification")).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole("heading", { name: /Awaiting verification/ }),
+      ).not.toBeInTheDocument()
+    })
+
+    it.each([null, new Date("2026-09-25T12:00:00Z").getTime()])(
+      "shows snooze %s before awaiting and restores awaiting after unsnooze",
+      async (until) => {
+        const setSnoozes = mockSnoozes([{ detector: "oldModelUsage", scope: "check", until }])
+        const unsnooze = vi.spyOn(SnoozedBurnChecks, "unsnoozeBurnCheck").mockResolvedValue()
+        const { session } = setup(watchingTarget, false, aggregate, report)
+        fireEvent.click(await screen.findByRole("button", { name: "Snoozed 1" }))
+        fireEvent.click(screen.getByRole("button", { name: /Old model usage/ }))
+        await waitFor(() =>
+          expect(session.getSnapshot().targets.oldModelUsage?.data).toBeDefined(),
+        )
+        const heading = screen.getByRole("heading", { name: "Old model usage", level: 2 })
+        const header = heading.closest("header")!
+        const label = SnoozedBurnChecks.formatSnoozeUntil(until)
+        expect(within(header).getByText(label)).toBeInTheDocument()
+        expect(within(header).queryByText("Awaiting verification")).not.toBeInTheDocument()
+        expect(
+          screen.queryByRole("heading", { name: /Awaiting verification/ }),
+        ).not.toBeInTheDocument()
+        fireEvent.click(within(header).getByRole("button", { name: "Unsnooze" }))
+        expect(unsnooze).toHaveBeenCalledWith("oldModelUsage")
+
+        act(() => setSnoozes([]))
+
+        expect(await within(header).findByText("Awaiting verification")).toBeInTheDocument()
+        expect(within(header).queryByText(label)).not.toBeInTheDocument()
+        expect(within(header).getByRole("button", { name: "Snooze" })).toBeInTheDocument()
+        expect(screen.getByRole("button", { name: /Old model usage/ })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        )
+      },
+    )
+
+    it("removes the header state when an ordinary finding's snooze expires", async () => {
+      const until = new Date("2026-09-25T12:00:00Z").getTime()
+      const setSnoozes = mockSnoozes([{ detector: "oldModelUsage", scope: "check", until }])
+      setup(target, false, aggregate, report)
+      fireEvent.click(await screen.findByRole("button", { name: "Snoozed 1" }))
+      fireEvent.click(screen.getByRole("button", { name: /Old model usage/ }))
+      const header = screen
+        .getByRole("heading", { name: "Old model usage", level: 2 })
+        .closest("header")!
+      const label = SnoozedBurnChecks.formatSnoozeUntil(until)
+      expect(within(header).getByText(label)).toBeInTheDocument()
+
+      act(() => setSnoozes([]))
+
+      expect(within(header).queryByText(label)).not.toBeInTheDocument()
+      expect(within(header).queryByText("Awaiting verification")).not.toBeInTheDocument()
+      expect(screen.getByRole("button", { name: /Old model usage/ })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      )
+    })
+
+    it("keeps ordinary passed checks free of state badges", async () => {
+      setup(target, false, aggregate, report)
+      fireEvent.click(await screen.findByRole("button", { name: "Passed checks 1" }))
+      fireEvent.click(screen.getByRole("button", { name: /Unused skills/ }))
+      const header = screen
+        .getByRole("heading", { name: "Unused skills", level: 2 })
+        .closest("header")!
+      expect(within(header).queryByText("Awaiting verification")).not.toBeInTheDocument()
+      expect(within(header).queryByText(/Snoozed/)).not.toBeInTheDocument()
+    })
   })
 
   it("uses only the category agent inventory for neutral vendor watermarks", async () => {
@@ -1058,6 +1206,47 @@ describe("BurnChecksView", () => {
     dialog = await screen.findByRole("dialog", { name: "Changes applied" })
     expect(within(dialog).getByRole("status")).toHaveTextContent("3 changes applied")
     expect(commands.apply).toHaveBeenCalledTimes(3)
+  })
+
+  it("keeps long config values readable in the batch review", async () => {
+    const currentValue = "copy-value-with-a-long-config-selector-".repeat(8)
+    const proposedValue = "claude-sonnet-5-replacement-value-".repeat(8)
+    commands.prepare.mockResolvedValue({
+      outcome: "reviewReady",
+      review: {
+        preparedOperationId: "prepared-long-value",
+        expiresAtEpoch: 100,
+        agent: "claude-code",
+        scope: "project",
+        setting: "model",
+        configFile: "~/Sites/pickleheads/.claude/settings.local.json",
+        selectorLabel: "copy-cluade-local",
+        currentValue,
+        proposedValue,
+        effect: "modelSelection",
+        sideEffect: "modelBehaviorMayChange",
+      },
+    })
+    const targets = [0, 1].map((index) => ({
+      ...target,
+      findingId: `finding-long-${index}`,
+      actionId: `action-long-${index}`,
+      display: { ...target.display, resourceIdentity: `model-long-${index}` },
+    }))
+    setup(targets)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Select all" }))
+    fireEvent.click(within(dialog).getByRole("button", { name: "Review 2 changes" }))
+
+    dialog = await screen.findByRole("dialog", { name: "Review 2 changes" })
+    const values = within(dialog).getAllByText(`${currentValue} → ${proposedValue}`)
+    expect(values).toHaveLength(2)
+    for (const value of values) {
+      expect(value).toHaveClass("block", "max-w-full", "break-all")
+      expect(value).toBeVisible()
+    }
   })
 
   it("applies only the selected automatic fixes", async () => {

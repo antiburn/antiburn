@@ -120,7 +120,7 @@ pub use source_validity::{
 };
 pub use vendors::claude::ClaudeSessionReader;
 pub use vendors::pi::PiSessionReader;
-pub use vendors::{has_dedicated_reader, reader_for};
+pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 
 // +1 for Pi V3 source admission. The adapter now requires the leading valid
 // `session` header and rejects duplicate record IDs, so stored Pi sessions
@@ -201,7 +201,9 @@ pub use vendors::{has_dedicated_reader, reader_for};
 // `isApiErrorMessage` assistant record now maps to a quota or provider
 // incident (`vendors::claude::api_error_observation`), so a stored Claude
 // or Codex session must reparse to collect them.
-pub const PARSER_REVISION: i64 = 38;
+// +1 for thread rollback boundaries, Antigravity response identities, and the
+// Devin Local migration-17 reader. Existing sessions must reparse these inputs.
+pub const PARSER_REVISION: i64 = 39;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -279,7 +281,8 @@ pub const METRICS_SCHEMA_REVISION: i64 = 9;
 // +1 for source-surface formats and fail-closed skill alias attribution.
 // +1 for nested resource evidence and paired parent-call and child-model observations.
 // +1 for the provider_incidents evidence group.
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 19;
+// +1 for the DevinLocalSqlite source-format wire value in persisted evidence.
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 20;
 /// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
 /// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
 /// evidence replay, not the published `SessionEvidence` shape itself.
@@ -289,7 +292,8 @@ pub const EVIDENCE_SCHEMA_REVISION: i64 = 19;
 // +1 for dedicated source-surface capability contracts.
 // +1 for nested resources, paired subagent models, and incomplete linkage state.
 // +1 for Codex quota and provider incidents and their bounded-collection cap flags.
-pub const COVERAGE_SCHEMA_REVISION: i64 = 5;
+// +1 for source-specific clean-result and applicability gates.
+pub const COVERAGE_SCHEMA_REVISION: i64 = 6;
 /// Versions [`resume::StreamSnapshot`]'s own shape. [`resume::StreamSnapshot::is_current`]
 /// rejects a persisted snapshot stamped with an older revision.
 ///
@@ -340,7 +344,7 @@ pub fn analyze_sources_with(
         .iter()
         .filter_map(|input| {
             match catch_unwind(AssertUnwindSafe(|| {
-                reader_for(&input.agent).normalize(input)
+                vendors::reader_for_input(input).normalize(input)
             })) {
                 Ok(Ok(session)) => Some(session),
                 // An unreadable source affects one session only.
@@ -443,7 +447,7 @@ pub fn analyze_sources_with(
 
 /// Normalize a single source without aggregation (handy for tests/tools).
 pub fn normalize_source(input: &SessionInput) -> anyhow::Result<NormalizedSession> {
-    reader_for(&input.agent).normalize(input)
+    vendors::reader_for_input(input).normalize(input)
 }
 
 #[cfg(test)]

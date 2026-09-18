@@ -150,6 +150,7 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
     }
 }
 
+/// Builds the hidden settings window and starts its renderer load.
 fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
     ::tracing::info!(
         event = "window_renderer_load_started",
@@ -195,6 +196,7 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
             return Err(error);
         }
     };
+    crate::wayland_titlebar::repair(&window);
     center_on_active_monitor(&window, WIDTH, HEIGHT);
     Ok(())
 }

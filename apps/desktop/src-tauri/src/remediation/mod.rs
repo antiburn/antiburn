@@ -158,22 +158,10 @@ impl CachedTarget {
     }
 
     fn sample_sessions(&self) -> Vec<BurnCheckSampleSession> {
-        self.resource.as_ref().map_or_else(
-            || sample_sessions(&self.findings),
-            |resource| {
-                resource
-                    .target
-                    .supporting_sessions
-                    .iter()
-                    .map(|sample| BurnCheckSampleSession {
-                        environment_key: sample.environment_key.clone(),
-                        agent: sample.agent.clone(),
-                        session_id: sample.session_id.clone(),
-                        observed_at_ms: sample.observed_at_ms,
-                    })
-                    .collect()
-            },
-        )
+        // Resource evidence supports attribution and savings estimates, not sample-session UI.
+        self.resource
+            .as_ref()
+            .map_or_else(|| sample_sessions(&self.findings), |_| Vec::new())
     }
 }
 
@@ -1363,9 +1351,15 @@ impl RemediationController {
         let source_format = match resource.agent {
             AgentKind::Claude => SourceFormat::ClaudeJsonl,
             AgentKind::Codex => SourceFormat::CodexRolloutJsonl,
+            AgentKind::Cursor => SourceFormat::CursorCliAgentJsonl,
+            AgentKind::Copilot => SourceFormat::CopilotIdeChatJson,
+            AgentKind::Cline => SourceFormat::ClineSessionJson,
             AgentKind::OpenCode => SourceFormat::OpenCodeJsonl,
+            AgentKind::Kiro => SourceFormat::KiroSessionJson,
+            AgentKind::AmpCode => SourceFormat::AmpThreadJson,
+            AgentKind::Antigravity => SourceFormat::AntigravityCascadeJson,
+            AgentKind::Windsurf => SourceFormat::DevinLocalSqlite,
             AgentKind::Pi => SourceFormat::PiV3Jsonl,
-            _ => return Err(ControllerError::Internal),
         };
         let cause = match resource.kind {
             crate::agent_config::ResourceKind::McpServer => FindingCause::UnusedMcpServer {

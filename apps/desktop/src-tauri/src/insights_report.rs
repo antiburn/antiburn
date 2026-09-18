@@ -28,6 +28,8 @@ use antiburn_local::remediation::SAVINGS_METHOD_REVISION;
 mod findings;
 mod resources;
 
+#[cfg(test)]
+pub(crate) use resources::ResourceSupportingSession;
 pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedResourceTarget};
 
 #[cfg(test)]

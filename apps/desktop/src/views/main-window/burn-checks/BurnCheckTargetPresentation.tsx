@@ -109,11 +109,6 @@ export function FailedSessions({
   if (total === 0) return null
   const cards = (
     <div data-failed-session-cards className="flex flex-col gap-2">
-      {samples.length === 0 && (
-        <p className="type-callout text-label-secondary">
-          No failed sessions are available to open.
-        </p>
-      )}
       {samples.map((sample) => (
         <SessionRow
           key={sample.navigationHandle}
