@@ -100,11 +100,11 @@ export interface SessionLimitAllocationSummaryPayload {
  * lane's nominal duration, `cadence` was extrapolated from another observed
  * weekly reset, and `turnGap` was inferred from a gap in local turn
  * activity. Mirrors Rust `QuotaBoundarySource`. */
-export type QuotaBoundarySourcePayload = "reported" | "derived" | "cadence" | "turnGap"
+type QuotaBoundarySourcePayload = "reported" | "derived" | "cadence" | "turnGap"
 
 /** A lane's currently open window, when one exists. Mirrors Rust
  * `QuotaCurrentPeriodPayload`. */
-export interface QuotaCurrentPeriodPayload {
+interface QuotaCurrentPeriodPayload {
   startsAtEpoch: number
   resetsAtEpoch: number
 }
@@ -149,7 +149,7 @@ export interface QuotaUsageRequest {
 
 /** The lane's factor at the newest point in effect. Mirrors Rust
  * `QuotaFactorPayload`. */
-export interface QuotaFactorPayload {
+interface QuotaFactorPayload {
   usdPerPercent: number
   /** `learned` from a meter delta, `seeded` from a single first-reading
    * estimate. */
@@ -178,7 +178,7 @@ export interface QuotaContributionPayload {
 
 /** One session's estimated total inside a quota period. Mirrors Rust
  * `QuotaSessionTotalPayload`. */
-export interface QuotaSessionTotalPayload {
+interface QuotaSessionTotalPayload {
   agent: string
   sessionId: string
   wslDistro: string | null
@@ -197,7 +197,7 @@ export interface QuotaUnattributedPayload {
 
 /** Unattributed spend inside one 15-minute bucket of a quota period.
  * Mirrors Rust `QuotaBucketTotalPayload`. */
-export interface QuotaBucketTotalPayload {
+interface QuotaBucketTotalPayload {
   bucketStartEpoch: number
   usd: number
   percent: number | null
@@ -238,51 +238,6 @@ export interface QuotaUsagePayload {
   rangeEndEpoch: number
   factor: QuotaFactorPayload | null
   periods: QuotaPeriodPayload[]
-  generatedAt: string
-}
-
-/** Request for `get_session_quota`. Mirrors Rust `SessionQuotaRequest`. */
-export interface SessionQuotaRequest {
-  agent: string
-  sessionId: string
-  wslDistro: string | null
-}
-
-/** The quota period one [[SessionQuotaEntryPayload]] falls in. Mirrors Rust
- * `SessionQuotaPeriodPayload`. */
-export interface SessionQuotaPeriodPayload {
-  periodId: number | null
-  startsAtEpoch: number
-  resetsAtEpoch: number
-  startSource: QuotaBoundarySourcePayload
-  resetSource: QuotaBoundarySourcePayload
-  peakPercent: number | null
-}
-
-/** One `(provider, lane, period)` a session's turns fell in. Mirrors Rust
- * `SessionQuotaEntryPayload`. */
-export interface SessionQuotaEntryPayload {
-  provider: string
-  displayName: string
-  /** `null` when the session has no resolved account for this provider. */
-  accountKey: string | null
-  /** `null` only when `confidence` is `"unbound"`: an entry with no
-   * resolved account has no lane to name either. */
-  lane: string | null
-  /** `null` only when `confidence` is `"unbound"`. */
-  laneLabel: string | null
-  /** `null` only when `confidence` is `"unbound"`. */
-  period: SessionQuotaPeriodPayload | null
-  usd: number
-  percent: number | null
-  /** `"learned"`, `"seeded"`, or `"unbound"` when the session has no
-   * resolved account for the provider its usage attributes to. */
-  confidence: "learned" | "seeded" | "unbound"
-}
-
-/** Response for `get_session_quota`. Mirrors Rust `SessionQuotaPayload`. */
-export interface SessionQuotaPayload {
-  entries: SessionQuotaEntryPayload[]
   generatedAt: string
 }
 
@@ -327,20 +282,12 @@ export async function getQuotaUsage(request: QuotaUsageRequest): Promise<QuotaUs
   return usage
 }
 
-/** One session's estimated quota contributions, by provider and lane. */
-export async function getSessionQuota(
-  request: SessionQuotaRequest,
-): Promise<SessionQuotaPayload> {
-  if (!isTauri()) return EMPTY_SESSION_QUOTA
-  return invoke<SessionQuotaPayload>("get_session_quota", { request })
-}
-
-export const EMPTY_QUOTA_ACCOUNTS: QuotaAccountsPayload = {
+const EMPTY_QUOTA_ACCOUNTS: QuotaAccountsPayload = {
   accounts: [],
   generatedAt: "",
 }
 
-export const EMPTY_QUOTA_USAGE: QuotaUsagePayload = {
+const EMPTY_QUOTA_USAGE: QuotaUsagePayload = {
   provider: "",
   accountKey: "",
   lane: "",
@@ -349,11 +296,6 @@ export const EMPTY_QUOTA_USAGE: QuotaUsagePayload = {
   rangeEndEpoch: 0,
   factor: null,
   periods: [],
-  generatedAt: "",
-}
-
-export const EMPTY_SESSION_QUOTA: SessionQuotaPayload = {
-  entries: [],
   generatedAt: "",
 }
 
