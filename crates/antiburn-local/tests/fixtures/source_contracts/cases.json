@@ -16,7 +16,7 @@
   },
   "devin_local": {
     "accepted_migration": 17,
-    "required_cases": ["missing_child", "duplicate_tool_call", "conflicting_model", "oversized_row", "changed_source"],
+    "required_cases": ["missing_child", "duplicate_tool_call", "conflicting_model", "oversized_row", "changed_source", "acp_conflicting", "acp_interrupted", "acp_duplicate"],
     "required_tables": ["sessions", "message_nodes", "subagent_heads", "tool_call_state"]
   },
   "antigravity": {

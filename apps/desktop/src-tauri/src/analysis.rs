@@ -27,7 +27,7 @@ use antiburn_local::analysis::{
     SourceFormat, SourceKind, StoredResume, StreamSnapshot, TurnRow, TurnRowSink, TurnRowStore,
     TurnScope, VisitOutcome, aggregate_metrics, append_only_guarantee, evidence_from_facts,
     merge_metrics, metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
-    reader_for,
+    reader_for_input,
 };
 use antiburn_local::discovery::source_version::claude_sidecar_fingerprint;
 use antiburn_local::discovery::{
@@ -591,10 +591,17 @@ pub async fn locate(
 }
 
 /// Shape a located source into the raw payload the analysis layer reads.
+#[cfg(test)]
 async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSource> {
-    if agent == AgentKind::Cline
-        && source_format(agent, source) == SourceFormat::ClineMessagesContractV1
-    {
+    raw_source_with_format(agent, source, source_format(agent, source)).await
+}
+
+async fn raw_source_with_format(
+    agent: AgentKind,
+    source: &SessionSource,
+    format: SourceFormat,
+) -> Option<RawSource> {
+    if agent == AgentKind::Cline && format == SourceFormat::ClineMessagesContractV1 {
         let SessionSource::File(manifest_path) = source else {
             return None;
         };
@@ -606,7 +613,7 @@ async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSourc
             messages_path: directory.join(format!("{session_id}.messages.json")),
         });
     }
-    if agent == AgentKind::Kiro && source_format(agent, source) == SourceFormat::KiroCliV2Bundle {
+    if agent == AgentKind::Kiro && format == SourceFormat::KiroCliV2Bundle {
         let SessionSource::File(metadata_path) = source else {
             return None;
         };
@@ -615,7 +622,7 @@ async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSourc
             messages_path: metadata_path.with_extension("jsonl"),
         });
     }
-    if agent == AgentKind::Kiro && source_format(agent, source) == SourceFormat::KiroCliV3Bundle {
+    if agent == AgentKind::Kiro && format == SourceFormat::KiroCliV3Bundle {
         let SessionSource::File(metadata_path) = source else {
             return None;
         };
@@ -624,8 +631,7 @@ async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSourc
             messages_path: metadata_path.parent()?.join("messages.jsonl"),
         });
     }
-    if agent == AgentKind::Copilot && source_format(agent, source) == SourceFormat::CopilotCliJsonl
-    {
+    if agent == AgentKind::Copilot && format == SourceFormat::CopilotCliJsonl {
         let SessionSource::File(events_path) = source else {
             return None;
         };
@@ -639,7 +645,7 @@ async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSourc
         SessionSource::File(path) => Some(RawSource::File(path.clone())),
         SessionSource::Inline { content, .. } => Some(RawSource::Jsonl(content.clone())),
         SessionSource::ProviderDb {
-            agent: AgentKind::OpenCode | AgentKind::Antigravity,
+            agent: AgentKind::OpenCode | AgentKind::Antigravity | AgentKind::Windsurf,
             db_path,
             ..
         } => Some(RawSource::Sqlite(db_path.clone())),
@@ -732,11 +738,19 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
                 SourceFormat::WindsurfCascadeProtobuf
             } else if path.contains("/workspacestorage/") && path.contains("/chatsessions/") {
                 SourceFormat::WindsurfWorkspaceJson
-            } else if path.contains("/mirror/windsurf/") {
-                SourceFormat::WindsurfMirrorJson
             } else {
-                SourceFormat::Uncharacterized
+                // Mirror roots are configured by the embedding application,
+                // so their path is not a stable part of the contract.
+                SourceFormat::WindsurfMirrorJson
             }
+        }
+        (AgentKind::Windsurf, SessionSource::ProviderDb { db_path, .. })
+            if db_path
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("/devin/") =>
+        {
+            SourceFormat::DevinLocalSqlite
         }
         (AgentKind::Windsurf, SessionSource::Inline { label, .. })
             if label.starts_with("windsurf-mirror:") =>
@@ -1164,7 +1178,7 @@ fn stream_vendor_with_hooks(
         // used to; a SQLite source from an adapter without database support is the one
         // remaining path that outcome still covers, further down.
         let kind = SourceKind::from(&input.source);
-        let adapter = reader_for(&input.agent);
+        let adapter = reader_for_input(input);
         let capabilities = adapter.capabilities(input);
         // Every input after the parent is a discovered child transcript, so
         // its rows get `Delegated` scope from position. The adapter's own
@@ -1741,7 +1755,8 @@ pub async fn analyze_for_evidence(
     let Some(source) = locate(agent, session_id, wsl_distro).await else {
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
     };
-    let Some(raw) = raw_source(agent, &source).await else {
+    let admitted_format = source_format(agent, &source);
+    let Some(raw) = raw_source_with_format(agent, &source, admitted_format).await else {
         // Only a provider-database source reaches here: `raw_source` reads
         // its content directly, so a `None` means that read failed. Treated
         // the same as a file claim failure — the source could not be opened.
@@ -1757,7 +1772,7 @@ pub async fn analyze_for_evidence(
         agent: label.to_string(),
         session_id: session_id.to_string(),
         source: raw,
-        source_format: source_format(agent, &source),
+        source_format: admitted_format,
         fork_parent_session_id: fork_parent_session_id.clone(),
     };
 
@@ -1790,7 +1805,8 @@ pub async fn analyze_for_evidence(
             continue;
         };
         let source = SessionSource::File(path.clone());
-        let Some(raw) = raw_source(agent, &source).await else {
+        let admitted_format = source_format(agent, &source);
+        let Some(raw) = raw_source_with_format(agent, &source, admitted_format).await else {
             continue;
         };
         let label_text = Explorers::DISK.subagent_label(&agent, path).await;
@@ -1801,7 +1817,7 @@ pub async fn analyze_for_evidence(
                 agent: label.to_string(),
                 session_id: subagent_id,
                 source: raw,
-                source_format: source_format(agent, &source),
+                source_format: admitted_format,
                 fork_parent_session_id: fork_parent_session_id.clone(),
             },
         ));

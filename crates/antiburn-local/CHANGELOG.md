@@ -47,9 +47,9 @@ version and refuses the release if there is none.
   source-format, provider-incident, pricing-revision, one-hour cache-write, and
   per-detector attribution fields. `TargetAssessment::complete` is replaced by
   its typed `assessment` field.
-- Advance parser revision to 38, analyzer revision to 24, evidence schema
-  revision to 19, coverage schema revision to 5, and resume snapshot revision
-  to 9 so persisted results refresh under the new contracts.
+- Advance parser revision to 39, analyzer revision to 24, evidence schema
+  revision to 20, and coverage schema revision to 6. Resume snapshot revision
+  remains 11 because resumable reader and sink state did not change.
 
 ### Fixed
 

@@ -197,6 +197,9 @@ fn windsurf_routes_workspace_cascade_and_mirror_sources() {
         label: "windsurf-mirror:synthetic.json".to_owned(),
         content: String::new(),
     };
+    let configured_mirror = SessionSource::File(std::path::PathBuf::from(
+        "/private/embedding-cache/session.json",
+    ));
 
     assert_eq!(
         source_format(AgentKind::Windsurf, &workspace),
@@ -212,6 +215,10 @@ fn windsurf_routes_workspace_cascade_and_mirror_sources() {
     );
     assert_eq!(
         source_format(AgentKind::Windsurf, &mirrored_file),
+        SourceFormat::WindsurfMirrorJson
+    );
+    assert_eq!(
+        source_format(AgentKind::Windsurf, &configured_mirror),
         SourceFormat::WindsurfMirrorJson
     );
 }
@@ -239,20 +246,13 @@ fn cline_task_manifest_uses_the_messages_contract_source_format() {
 }
 
 #[test]
-fn misleading_agent_paths_remain_uncharacterized() {
+fn unrecognized_non_windsurf_paths_remain_uncharacterized() {
     let amp = SessionSource::File(std::path::PathBuf::from(
         "/home/tester/.amp/file-changes-copy/thread.json",
-    ));
-    let windsurf = SessionSource::File(std::path::PathBuf::from(
-        "/home/tester/Windsurf/workspaceStorage-copy/session.json",
     ));
 
     assert_eq!(
         source_format(AgentKind::AmpCode, &amp),
-        SourceFormat::Uncharacterized
-    );
-    assert_eq!(
-        source_format(AgentKind::Windsurf, &windsurf),
         SourceFormat::Uncharacterized
     );
 }

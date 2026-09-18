@@ -4,6 +4,7 @@ use super::SessionSource;
 use crate::analysis::SourceFormat;
 use crate::model::AgentKind;
 use crate::platform::environment::DiscoveryEnvironment;
+use rusqlite::Connection;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,42 @@ pub fn claude_sidecar_fingerprint(transcript: &Path) -> std::io::Result<String> 
 
 pub(crate) fn provider_db_fingerprint(latest: u64, rows: u64) -> String {
     format!("sv1:db:{latest}:{rows}")
+}
+
+pub(crate) fn devin_provider_db_fingerprint(latest: u64, rows: u64) -> String {
+    format!("sv2:devin:{latest}:{rows}")
+}
+
+/// Hash every Devin row that the reader uses to select and normalize a
+/// session. The row order is explicit so the value is stable across SQLite
+/// snapshots and does not depend on HashMap iteration.
+pub(crate) fn devin_content_fingerprint(connection: &Connection, session_id: &str) -> Option<u64> {
+    let queries = [
+        "SELECT id, working_directory, model, main_chain_id, hidden, created_at, last_activity_at FROM sessions WHERE id = ?1",
+        "SELECT node_id, parent_node_id, session_id, raw_message, created_at FROM message_nodes WHERE session_id = ?1 ORDER BY node_id",
+        "SELECT session_id, tool_call_id, child_agent_id, child_chain_node_id FROM subagent_heads WHERE session_id = ?1 ORDER BY tool_call_id, child_agent_id",
+        "SELECT session_id, tool_call_id, state FROM tool_call_state WHERE session_id = ?1 ORDER BY tool_call_id",
+    ];
+    let mut bytes = Vec::new();
+    for query in queries {
+        let mut statement = connection.prepare(query).ok()?;
+        let columns = statement.column_count();
+        let mut rows = statement.query([session_id]).ok()?;
+        while let Some(row) = rows.next().ok()? {
+            for index in 0..columns {
+                let value = row.get_ref(index).ok()?;
+                bytes.extend_from_slice(format!("{:?}\0", value).as_bytes());
+            }
+            bytes.push(b'\n');
+        }
+    }
+    Some(fnv1a64(&bytes))
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +164,13 @@ impl super::Explorers {
                     .provider_db_fingerprint(agent, db_path, session_id)
                     .await?;
                 Some(SourceVersion {
-                    fingerprint: provider_db_fingerprint(latest, rows),
+                    fingerprint: if *agent == AgentKind::Windsurf
+                        && descriptor.source_format == SourceFormat::DevinLocalSqlite
+                    {
+                        devin_provider_db_fingerprint(latest, rows)
+                    } else {
+                        provider_db_fingerprint(latest, rows)
+                    },
                     estimated_bytes: None,
                     streamability: Streamability::DatabaseRows,
                     source_format: descriptor.source_format,

@@ -19,6 +19,29 @@ fn roots() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (temporary, home, project)
 }
 
+#[test]
+fn indexed_identity_aliases_cover_all_native_agents() {
+    let cases = [
+        (AgentKind::Claude, "claude-code"),
+        (AgentKind::Codex, "codex"),
+        (AgentKind::OpenCode, "opencode"),
+        (AgentKind::Pi, "pi"),
+        (AgentKind::Cursor, "cursor-ide"),
+        (AgentKind::Copilot, "github-copilot"),
+        (AgentKind::Cline, "cline"),
+        (AgentKind::Kiro, "kiro-cli"),
+        (AgentKind::AmpCode, "amp-code"),
+        (AgentKind::Antigravity, "antigravity"),
+        (AgentKind::Windsurf, "devin"),
+    ];
+    for (agent, identity) in cases {
+        assert!(
+            evidence_agent_matches(agent, identity),
+            "{agent:?}/{identity}"
+        );
+    }
+}
+
 fn write(path: &Path, value: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, value).unwrap();
@@ -347,6 +370,143 @@ fn pi_inventory_replaces_global_tools_and_requires_the_pinned_mcp_package() {
         "review",
         ResourceScope::Project,
     );
+}
+
+#[test]
+fn phase_eight_inventories_each_vendor_mcp_and_skill_root_by_scope() {
+    let (_temporary, home, project) = roots();
+    let cases = [
+        (AgentKind::Cursor, ".cursor/mcp.json", ".cursor/skills"),
+        (
+            AgentKind::Copilot,
+            ".copilot/mcp-config.json",
+            ".copilot/skills",
+        ),
+        (AgentKind::Cline, ".cline/mcp.json", ".cline/skills"),
+        (AgentKind::Kiro, ".kiro/settings/mcp.json", ".kiro/skills"),
+        (
+            AgentKind::AmpCode,
+            ".config/amp/settings.json",
+            ".config/amp/skills",
+        ),
+        (
+            AgentKind::Antigravity,
+            ".gemini/config/mcp_config.json",
+            ".gemini/config/skills",
+        ),
+        (
+            AgentKind::Windsurf,
+            ".config/devin/mcp_config.json",
+            ".config/devin/skills",
+        ),
+    ];
+    for (agent, global_mcp, global_skills) in cases {
+        write(
+            &home.join(global_mcp),
+            if agent == AgentKind::AmpCode {
+                r#"{"amp.mcpServers":{"global":{"command":"global"}}}"#
+            } else {
+                r#"{"mcpServers":{"global":{"command":"global"}}}"#
+            },
+        );
+        write(
+            &project.join(match agent {
+                AgentKind::Copilot => ".github/mcp.json",
+                AgentKind::Antigravity => ".agents/mcp_config.json",
+                _ => match agent {
+                    AgentKind::Cursor => ".cursor/mcp.json",
+                    AgentKind::Cline => ".cline/mcp.json",
+                    AgentKind::Kiro => ".kiro/settings/mcp.json",
+                    AgentKind::AmpCode => ".amp/settings.json",
+                    AgentKind::Windsurf => ".devin/mcp_config.json",
+                    _ => unreachable!(),
+                },
+            }),
+            r#"{"mcpServers":{"project":{"command":"project","disabled":true}}}"#,
+        );
+        write(
+            &home.join(format!("{global_skills}/global/SKILL.md")),
+            "---\nname: global\ndescription: Global skill.\n---\n",
+        );
+        write(
+            &project.join(match agent {
+                AgentKind::Copilot | AgentKind::Antigravity | AgentKind::Windsurf => {
+                    ".agents/skills/project/SKILL.md"
+                }
+                AgentKind::Cursor => ".cursor/skills/project/SKILL.md",
+                AgentKind::Cline => ".cline/skills/project/SKILL.md",
+                AgentKind::Kiro => ".kiro/skills/project/SKILL.md",
+                AgentKind::AmpCode => ".agents/skills/project/SKILL.md",
+                _ => unreachable!(),
+            }),
+            "---\nname: project\ndescription: Project skill.\n---\n",
+        );
+        let inventory = advisory_resource_inventory(
+            &ConfigContext::native(agent, &home, Some(project.clone())),
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            resource(
+                &inventory,
+                ResourceKind::McpServer,
+                "global",
+                ResourceScope::Global
+            )
+            .enabled,
+            EnabledState::Enabled,
+            "{agent:?}"
+        );
+        assert_eq!(
+            resource(
+                &inventory,
+                ResourceKind::McpServer,
+                "project",
+                ResourceScope::Project
+            )
+            .enabled,
+            EnabledState::Disabled,
+            "{agent:?}"
+        );
+        resource(
+            &inventory,
+            ResourceKind::Skill,
+            "global",
+            ResourceScope::Global,
+        );
+        resource(
+            &inventory,
+            ResourceKind::Skill,
+            "project",
+            ResourceScope::Project,
+        );
+    }
+}
+
+#[test]
+fn shared_agents_skill_root_is_merged_once_with_agent_root() {
+    let (_temporary, home, project) = roots();
+    write(
+        &home.join(".agents/skills/review/SKILL.md"),
+        "---\nname: review\ndescription: Review code.\n---\n",
+    );
+    write(
+        &home.join(".cursor/skills/review/SKILL.md"),
+        "---\nname: review\ndescription: Review code.\n---\n",
+    );
+    let inventory = advisory_resource_inventory(
+        &ConfigContext::native(AgentKind::Cursor, &home, Some(project)),
+        [],
+    )
+    .unwrap();
+    let review = resource(
+        &inventory,
+        ResourceKind::Skill,
+        "review",
+        ResourceScope::Global,
+    );
+    assert_eq!(review.provenance.len(), 1);
+    assert_eq!(review.definition_tokens, Some(6));
 }
 
 #[test]

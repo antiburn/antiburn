@@ -384,6 +384,7 @@ pub enum SourceFormat {
     WindsurfWorkspaceJson,
     WindsurfMirrorJson,
     WindsurfCascadeProtobuf,
+    DevinLocalSqlite,
     #[default]
     Uncharacterized,
 }
@@ -760,6 +761,23 @@ impl SourceCapabilities {
             provider_incidents: false,
             harness_version: false,
             repeated_context_accounting: None,
+        }
+    }
+
+    /// Copilot CLI v1 events preserve request order, model identity, token
+    /// classes, and validated child-session relationships. They do not carry
+    /// historical resource inventories or effort/speed controls.
+    pub fn copilot() -> Self {
+        Self {
+            source_format: SourceFormat::CopilotCliJsonl,
+            timestamps_and_order: true,
+            tool_invocations: true,
+            model_identity: true,
+            token_classes: true,
+            subagent_relationships: true,
+            subagent_models: true,
+            thread_identity: true,
+            ..Self::default()
         }
     }
 
@@ -1208,6 +1226,7 @@ mod tests {
     use super::*;
     use crate::analysis::SessionEvidenceAccumulator;
     use crate::analysis::evidence_query::TurnFacts;
+    use crate::analysis::{EVIDENCE_SCHEMA_REVISION, PARSER_REVISION};
 
     fn empty_evidence(session_id: &str) -> SessionEvidence {
         SessionEvidenceAccumulator::new(EvidenceSource {
@@ -1225,7 +1244,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 19,
+            "schemaRevision": EVIDENCE_SCHEMA_REVISION,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -1255,9 +1274,9 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 38,
+                "parserRevision": PARSER_REVISION,
                 "analyzerRevision": 24,
-                "evidenceSchemaRevision": 19,
+                "evidenceSchemaRevision": EVIDENCE_SCHEMA_REVISION,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",

@@ -433,7 +433,7 @@ describe("OnboardingView", () => {
     expect(screen.getByText("304 sessions")).toBeInTheDocument()
     expect(screen.getByRole("switch", { name: "Show Claude Code sessions" })).toBeChecked()
     // An agent with no sessions starts switched off.
-    expect(screen.getByRole("switch", { name: "Show Windsurf sessions" })).not.toBeChecked()
+    expect(screen.getByRole("switch", { name: "Show Devin sessions" })).not.toBeChecked()
 
     fireEvent.click(screen.getByRole("switch", { name: "Show Codex sessions" }))
 

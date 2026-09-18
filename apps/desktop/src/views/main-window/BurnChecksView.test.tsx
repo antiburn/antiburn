@@ -1060,6 +1060,47 @@ describe("BurnChecksView", () => {
     expect(commands.apply).toHaveBeenCalledTimes(3)
   })
 
+  it("keeps long config values readable in the batch review", async () => {
+    const currentValue = "copy-value-with-a-long-config-selector-".repeat(8)
+    const proposedValue = "claude-sonnet-5-replacement-value-".repeat(8)
+    commands.prepare.mockResolvedValue({
+      outcome: "reviewReady",
+      review: {
+        preparedOperationId: "prepared-long-value",
+        expiresAtEpoch: 100,
+        agent: "claude-code",
+        scope: "project",
+        setting: "model",
+        configFile: "~/Sites/pickleheads/.claude/settings.local.json",
+        selectorLabel: "copy-cluade-local",
+        currentValue,
+        proposedValue,
+        effect: "modelSelection",
+        sideEffect: "modelBehaviorMayChange",
+      },
+    })
+    const targets = [0, 1].map((index) => ({
+      ...target,
+      findingId: `finding-long-${index}`,
+      actionId: `action-long-${index}`,
+      display: { ...target.display, resourceIdentity: `model-long-${index}` },
+    }))
+    setup(targets)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Select all" }))
+    fireEvent.click(within(dialog).getByRole("button", { name: "Review 2 changes" }))
+
+    dialog = await screen.findByRole("dialog", { name: "Review 2 changes" })
+    const values = within(dialog).getAllByText(`${currentValue} → ${proposedValue}`)
+    expect(values).toHaveLength(2)
+    for (const value of values) {
+      expect(value).toHaveClass("block", "max-w-full", "break-all")
+      expect(value).toBeVisible()
+    }
+  })
+
   it("applies only the selected automatic fixes", async () => {
     const targets = Array.from({ length: 2 }, (_, index) => ({
       ...target,

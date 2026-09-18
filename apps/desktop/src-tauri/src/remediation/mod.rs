@@ -158,22 +158,10 @@ impl CachedTarget {
     }
 
     fn sample_sessions(&self) -> Vec<BurnCheckSampleSession> {
-        self.resource.as_ref().map_or_else(
-            || sample_sessions(&self.findings),
-            |resource| {
-                resource
-                    .target
-                    .supporting_sessions
-                    .iter()
-                    .map(|sample| BurnCheckSampleSession {
-                        environment_key: sample.environment_key.clone(),
-                        agent: sample.agent.clone(),
-                        session_id: sample.session_id.clone(),
-                        observed_at_ms: sample.observed_at_ms,
-                    })
-                    .collect()
-            },
-        )
+        // Resource evidence supports attribution and savings estimates, not sample-session UI.
+        self.resource
+            .as_ref()
+            .map_or_else(|| sample_sessions(&self.findings), |_| Vec::new())
     }
 }
 

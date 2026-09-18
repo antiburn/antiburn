@@ -11,6 +11,7 @@ mod cline;
 mod codex;
 mod copilot;
 mod cursor;
+mod devin;
 mod generic_jsonl;
 mod kiro;
 mod opencode;
@@ -34,6 +35,15 @@ static WINDSURF: passive::PassiveSessionReader = passive::PassiveSessionReader {
     agent: "windsurf",
     format: crate::analysis::SourceFormat::WindsurfWorkspaceJson,
 };
+static DEVIN: devin::DevinLocalSessionReader = devin::DevinLocalSessionReader;
+
+pub fn reader_for_input(input: &crate::analysis::SessionInput) -> &'static dyn SessionReader {
+    if input.source_format == crate::analysis::SourceFormat::DevinLocalSqlite {
+        &DEVIN
+    } else {
+        reader_for(&input.agent)
+    }
+}
 
 /// Resolve the reader for an agent label, without case sensitivity.
 pub fn reader_for(agent: &str) -> &'static dyn SessionReader {
@@ -164,5 +174,21 @@ mod tests {
                 "{agent} must fail closed"
             );
         }
+    }
+
+    #[test]
+    fn devin_sqlite_uses_the_dedicated_reader() {
+        let input = crate::analysis::SessionInput {
+            agent: "windsurf".to_owned(),
+            session_id: "test".to_owned(),
+            source: RawSource::Sqlite(std::path::PathBuf::from("/tmp/sessions.db")),
+            source_format: crate::analysis::SourceFormat::DevinLocalSqlite,
+            fork_parent_session_id: None,
+        };
+        assert!(
+            reader_for_input(&input)
+                .capabilities(&input)
+                .tool_invocations
+        );
     }
 }

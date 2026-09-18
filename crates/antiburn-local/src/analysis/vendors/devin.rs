@@ -1,0 +1,702 @@
+//! Read-only Devin Local migration-17 session analysis.
+//!
+//! Devin keeps the active conversation as a linked forest in SQLite. This
+//! reader walks only the path named by `sessions.main_chain_id`. It retains
+//! model, time, and tool-call facts, but does not claim Devin's token or cache
+//! semantics.
+
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+use rusqlite::{Connection, OpenFlags};
+use serde_json::Value;
+
+use crate::analysis::SourceChangedReason;
+use crate::analysis::evidence::{SourceCapabilities, SourceFormat};
+use crate::analysis::framing::PartialReason;
+use crate::analysis::interface::{
+    EvidenceObservation, NormalizedRecord, RawSource, RecordSink, RelationProvenance,
+    SessionCollector, SessionInput, SessionReader, SessionSummary, VisitOutcome,
+};
+use crate::analysis::model::{
+    NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
+};
+use crate::analysis::records::parse_ts;
+use crate::discovery::source_version::{devin_content_fingerprint, devin_provider_db_fingerprint};
+
+pub struct DevinLocalSessionReader;
+
+impl SessionReader for DevinLocalSessionReader {
+    fn agent(&self) -> &'static str {
+        "windsurf"
+    }
+
+    fn capabilities(&self, input: &SessionInput) -> SourceCapabilities {
+        SourceCapabilities {
+            source_format: input.source_format_or(SourceFormat::DevinLocalSqlite),
+            timestamps_and_order: true,
+            tool_invocations: true,
+            model_identity: true,
+            subagent_relationships: true,
+            subagent_models: true,
+            ..SourceCapabilities::generic()
+        }
+    }
+
+    fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
+        let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+        self.visit(input, &mut collector)?;
+        collector.into_session()
+    }
+
+    fn visit(
+        &self,
+        input: &SessionInput,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        let RawSource::Sqlite(path) = &input.source else {
+            anyhow::bail!("Devin Local requires a SQLite source")
+        };
+        validate_input(input)?;
+        let connection = open_database(path)?;
+        connection.execute_batch("BEGIN")?;
+        validate_schema(&connection)?;
+        let summary = visit_connection(&connection, path, &input.session_id, sink)?;
+        connection.execute_batch("COMMIT")?;
+        sink.finish(summary);
+        Ok(VisitOutcome::Unvalidated)
+    }
+
+    fn visit_db_claimed(
+        &self,
+        input: &SessionInput,
+        claimed_fingerprint: &str,
+        _cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        let RawSource::Sqlite(path) = &input.source else {
+            anyhow::bail!("a claimed Devin Local source must be SQLite")
+        };
+        validate_input(input)?;
+        let connection = open_database(path)?;
+        connection.execute_batch("BEGIN")?;
+        validate_schema(&connection)?;
+        let actual = session_fingerprint(&connection, &input.session_id)
+            .map(|(latest, rows)| devin_provider_db_fingerprint(latest, rows));
+        if actual.as_deref() != Some(claimed_fingerprint) {
+            return Ok(VisitOutcome::SourceChanged(
+                SourceChangedReason::FingerprintMismatch,
+            ));
+        }
+        let summary = visit_connection(&connection, path, &input.session_id, sink)?;
+        connection.execute_batch("COMMIT")?;
+
+        let verification = open_database(path)?;
+        let observed = session_fingerprint(&verification, &input.session_id)
+            .map(|(latest, rows)| devin_provider_db_fingerprint(latest, rows));
+        if observed.as_deref() != Some(claimed_fingerprint) {
+            return Ok(VisitOutcome::SourceChanged(
+                SourceChangedReason::FingerprintMismatch,
+            ));
+        }
+        sink.finish(summary);
+        Ok(VisitOutcome::AcceptedFull)
+    }
+}
+
+fn validate_input(input: &SessionInput) -> anyhow::Result<()> {
+    match (input.source_format, &input.source) {
+        (SourceFormat::DevinLocalSqlite, RawSource::Sqlite(_))
+        | (SourceFormat::Uncharacterized, RawSource::Sqlite(_)) => Ok(()),
+        _ => anyhow::bail!("Devin Local source format does not match its source"),
+    }
+}
+
+fn open_database(path: &Path) -> anyhow::Result<Connection> {
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("opening Devin Local database {}", path.display()))
+}
+
+fn validate_schema(connection: &Connection) -> anyhow::Result<()> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version != 17 {
+        anyhow::bail!("Devin Local SQLite migration {version} is not supported")
+    }
+    let required = [
+        (
+            "sessions",
+            &[
+                "id",
+                "working_directory",
+                "model",
+                "main_chain_id",
+                "hidden",
+                "created_at",
+                "last_activity_at",
+            ] as &[_],
+        ),
+        (
+            "message_nodes",
+            &[
+                "node_id",
+                "parent_node_id",
+                "session_id",
+                "raw_message",
+                "created_at",
+            ] as &[_],
+        ),
+        (
+            "subagent_heads",
+            &[
+                "session_id",
+                "tool_call_id",
+                "child_agent_id",
+                "child_chain_node_id",
+            ] as &[_],
+        ),
+        (
+            "tool_call_state",
+            &["session_id", "tool_call_id", "state"] as &[_],
+        ),
+    ];
+    for (table, names) in required {
+        let columns = table_columns(connection, table)?;
+        if !names.iter().all(|name| columns.contains(*name)) {
+            anyhow::bail!("Devin Local SQLite source has an unsupported {table} schema")
+        }
+    }
+    Ok(())
+}
+
+fn table_columns(connection: &Connection, table: &str) -> anyhow::Result<HashSet<String>> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    Ok(statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+type Row = HashMap<String, String>;
+
+fn table_rows(connection: &Connection, table: &str) -> anyhow::Result<Vec<Row>> {
+    let mut statement = connection.prepare(&format!("SELECT * FROM {table}"))?;
+    let columns: Vec<String> = statement
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let mut rows = statement.query([])?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.next()? {
+        let mut values = Row::new();
+        for (index, column) in columns.iter().enumerate() {
+            let value = row.get_ref(index)?;
+            let text = match value {
+                rusqlite::types::ValueRef::Null => None,
+                rusqlite::types::ValueRef::Text(bytes) => String::from_utf8(bytes.to_vec()).ok(),
+                rusqlite::types::ValueRef::Integer(value) => Some(value.to_string()),
+                rusqlite::types::ValueRef::Real(value) => Some(value.to_string()),
+                rusqlite::types::ValueRef::Blob(_) => None,
+            };
+            if let Some(text) = text {
+                values.insert(column.clone(), text);
+            }
+        }
+        result.push(values);
+    }
+    Ok(result)
+}
+
+fn session_fingerprint(connection: &Connection, session_id: &str) -> Option<(u64, u64)> {
+    let latest: i64 = connection
+        .query_row(
+            "SELECT COALESCE((SELECT last_activity_at FROM sessions WHERE id = ?1), (SELECT created_at FROM sessions WHERE id = ?1), 0), (SELECT COUNT(*) FROM message_nodes WHERE session_id = ?1)",
+            [session_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM message_nodes WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let content = devin_content_fingerprint(connection, session_id)?;
+    Some((content ^ latest.max(0) as u64, rows.max(0) as u64))
+}
+
+fn visit_connection(
+    connection: &Connection,
+    db_path: &Path,
+    session_id: &str,
+    sink: &mut dyn RecordSink,
+) -> anyhow::Result<SessionSummary> {
+    let sessions = table_rows(connection, "sessions")?;
+    let session = sessions
+        .iter()
+        .find(|row| row.get("id").is_some_and(|id| id == session_id))
+        .ok_or_else(|| anyhow::anyhow!("Devin Local session {session_id} was not found"))?;
+    if session
+        .get("hidden")
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    {
+        return Ok(SessionSummary::default());
+    }
+    let nodes = table_rows(connection, "message_nodes")?;
+    let chain = active_chain(session, &nodes)?;
+    let mut child_models = HashMap::new();
+    for row in &sessions {
+        if let (Some(id), Some(model)) = (row.get("id"), row.get("model")) {
+            child_models.insert(id.clone(), model.clone());
+        }
+    }
+    let heads = table_rows(connection, "subagent_heads")?;
+    let states = table_rows(connection, "tool_call_state")?;
+    let mut seen_calls = HashSet::new();
+    let mut incomplete = false;
+    let mut model = session.get("model").cloned();
+    for node in chain {
+        let Some(raw) = node.get("raw_message") else {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(raw) else {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            continue;
+        };
+        let role = match value.get("role").and_then(Value::as_str) {
+            Some("user") => Role::User,
+            Some("assistant") => Role::Assistant,
+            Some("tool") => Role::Tool,
+            _ => continue,
+        };
+        let ts_ms = node
+            .get("created_at")
+            .and_then(|value| value.parse::<i64>().ok())
+            .and_then(|value| parse_ts(&Value::from(value)));
+        let mut event = NormalizedEvent::new(role);
+        event.ts_ms = ts_ms;
+        event.model = value
+            .pointer("/metadata/generation_model")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                value
+                    .pointer("/metadata/model")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .or_else(|| session.get("model").cloned());
+        model = event.model.clone().or(model);
+        event.message_id = value
+            .get("message_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        event.usage = usage(&value);
+        if role == Role::Assistant
+            && let Some(calls) = value.get("tool_calls").and_then(Value::as_array)
+        {
+            for call in calls {
+                let Some(name) = call.get("name").and_then(Value::as_str) else {
+                    incomplete = true;
+                    continue;
+                };
+                let id = call.get("id").and_then(Value::as_str).unwrap_or("");
+                if !seen_calls.insert((session_id.to_owned(), id.to_owned())) {
+                    incomplete = true;
+                    continue;
+                }
+                event.tools.push(ToolCall {
+                    name: name.to_owned(),
+                    category: ToolCategory::from_tool_name(name),
+                    detail: None,
+                });
+                if name == "run_subagent" {
+                    match relation(
+                        session_id,
+                        id,
+                        &heads,
+                        &states,
+                        &child_models,
+                        &nodes,
+                        db_path,
+                    ) {
+                        Some(child_model) => sink.record(NormalizedRecord::Observation(Box::new(
+                            EvidenceObservation::SubagentSpawn {
+                                ts_ms,
+                                parent_model: event.model.clone(),
+                                parent_call_id: Some(id.to_owned()),
+                                child_model: Some(child_model),
+                                provenance: RelationProvenance::TaskToolUse,
+                            },
+                        ))),
+                        None => incomplete = true,
+                    }
+                }
+            }
+        }
+        sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+    }
+    Ok(SessionSummary {
+        model,
+        coverage_gaps: if incomplete {
+            vec![PartialReason::AttributionIncomplete]
+        } else {
+            Vec::new()
+        },
+        ..SessionSummary::default()
+    })
+}
+
+fn active_chain(session: &Row, nodes: &[Row]) -> anyhow::Result<Vec<Row>> {
+    let mut by_id = HashMap::new();
+    for node in nodes.iter().filter(|node| {
+        node.get("session_id")
+            .is_some_and(|id| session.get("id") == Some(id))
+    }) {
+        if let Some(id) = node.get("node_id") {
+            by_id.insert(id.clone(), node.clone());
+        }
+    }
+    let mut current = session
+        .get("main_chain_id")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing main chain"))?;
+    let mut chain = Vec::new();
+    let mut seen = HashSet::new();
+    while let Some(node) = by_id.get(&current) {
+        if !seen.insert(current.clone()) {
+            anyhow::bail!("cycle in Devin Local main chain")
+        }
+        current = node.get("parent_node_id").cloned().unwrap_or_default();
+        chain.push(node.clone());
+        if current.is_empty() {
+            break;
+        }
+    }
+    if chain.is_empty() || !current.is_empty() {
+        anyhow::bail!("Devin Local main chain is incomplete")
+    }
+    chain.reverse();
+    Ok(chain)
+}
+
+fn relation(
+    session_id: &str,
+    call_id: &str,
+    heads: &[Row],
+    states: &[Row],
+    models: &HashMap<String, String>,
+    nodes: &[Row],
+    db_path: &Path,
+) -> Option<String> {
+    let matching: Vec<&Row> = heads
+        .iter()
+        .filter(|row| {
+            row.get("session_id") == Some(&session_id.to_owned())
+                && row.get("tool_call_id") == Some(&call_id.to_owned())
+        })
+        .collect();
+    if matching.len() != 1 {
+        return None;
+    }
+    let head = matching[0];
+    let child = head.get("child_agent_id")?;
+    let chain_node = head.get("child_chain_node_id")?;
+    if states
+        .iter()
+        .filter(|row| {
+            row.get("session_id") == Some(&session_id.to_owned())
+                && row.get("tool_call_id") == Some(&call_id.to_owned())
+        })
+        .filter_map(|row| row.get("state"))
+        .any(|state| match serde_json::from_str::<Value>(state) {
+            Ok(state) => state
+                .get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| matches!(status, "interrupted" | "failed")),
+            Err(_) => true,
+        })
+    {
+        return None;
+    }
+    let node = nodes.iter().find(|row| {
+        row.get("session_id") == Some(child) && row.get("node_id") == Some(chain_node)
+    })?;
+    let value: Value = serde_json::from_str(node.get("raw_message")?).ok()?;
+    let actual = value
+        .pointer("/metadata/generation_model")
+        .and_then(Value::as_str)
+        .or_else(|| value.pointer("/metadata/model").and_then(Value::as_str))?;
+    let stored = models.get(child)?;
+    if actual != stored {
+        return None;
+    }
+    acp_relation_is_consistent(db_path, session_id, call_id, child, actual)?;
+    Some(actual.to_owned())
+}
+
+/// ACP is a child companion, not a source. Read it only after the SQLite
+/// relation has supplied the top-level session, call, child id, and model.
+/// Missing companions are valid because ACP is optional; an applicable,
+/// malformed or conflicting companion makes that relation unusable.
+fn acp_relation_is_consistent(
+    db_path: &Path,
+    parent_session_id: &str,
+    call_id: &str,
+    child_id: &str,
+    model: &str,
+) -> Option<()> {
+    let mut matched = Vec::new();
+    for directory in acp_directories(db_path) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !entry.file_type().ok().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if !(name.ends_with(".json") || name.ends_with(".ndjson")) {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in content.lines() {
+                let Ok(value) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
+                if value.get("schema").and_then(Value::as_u64) != Some(6)
+                    && value.get("version").and_then(Value::as_u64) != Some(6)
+                {
+                    continue;
+                }
+                let child = string_field(&value, &["childAgentId", "child_agent_id", "agentId"]);
+                let parent = string_field(
+                    &value,
+                    &["parentSessionId", "parent_session_id", "sessionId"],
+                );
+                let call = string_field(&value, &["toolCallId", "tool_call_id"]);
+                if child.as_deref() == Some(child_id)
+                    && parent.as_deref() == Some(parent_session_id)
+                    && call.as_deref() == Some(call_id)
+                {
+                    let companion_model =
+                        string_field(&value, &["model", "modelId", "model_id", "generationModel"]);
+                    let status = string_field(&value, &["status", "stopReason", "stop_reason"]);
+                    if status.as_deref().is_some_and(|status| {
+                        matches!(status, "interrupted" | "failed" | "cancelled")
+                    }) || companion_model
+                        .as_deref()
+                        .is_some_and(|value| value != model)
+                    {
+                        return None;
+                    }
+                    matched.push(path.clone());
+                }
+            }
+        }
+    }
+    (matched.len() <= 1).then_some(())
+}
+
+fn string_field(value: &Value, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        value
+            .get(*name)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn acp_directories(db_path: &Path) -> Vec<PathBuf> {
+    let Some(cli_root) = db_path.parent() else {
+        return Vec::new();
+    };
+    let mut directories = vec![
+        cli_root.join("acp-messages"),
+        cli_root.join("User").join("acp-messages"),
+    ];
+    if let Some(home) = crate::discovery::home_dir() {
+        directories.push(
+            home.join(".config")
+                .join("devin")
+                .join("User")
+                .join("acp-messages"),
+        );
+        directories.push(
+            home.join("Library")
+                .join("Application Support")
+                .join("Devin")
+                .join("User")
+                .join("acp-messages"),
+        );
+    }
+    directories
+}
+
+fn usage(value: &Value) -> Usage {
+    let metric = value.pointer("/metadata/metrics");
+    let number = |name| {
+        metric
+            .and_then(|metric| metric.get(name))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    Usage {
+        input_tokens: number("input_tokens"),
+        output_tokens: number("output_tokens"),
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cache_creation_1h_tokens: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::interface::{RecordSink, SessionSummary};
+    use tempfile::TempDir;
+
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/devin_local_migration_17.sql");
+
+    #[derive(Default)]
+    struct Capture {
+        observations: Vec<EvidenceObservation>,
+        summary: Option<SessionSummary>,
+    }
+
+    impl RecordSink for Capture {
+        fn record(&mut self, record: NormalizedRecord) {
+            if let NormalizedRecord::Observation(observation) = record {
+                self.observations.push(*observation);
+            }
+        }
+
+        fn finish(&mut self, summary: SessionSummary) {
+            self.summary = Some(summary);
+        }
+    }
+
+    fn input(db_path: &Path) -> SessionInput {
+        SessionInput {
+            agent: "windsurf".to_owned(),
+            session_id: "root".to_owned(),
+            source: RawSource::Sqlite(db_path.to_owned()),
+            source_format: SourceFormat::DevinLocalSqlite,
+            fork_parent_session_id: None,
+        }
+    }
+
+    fn fixture_db() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sessions.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(FIXTURE).unwrap();
+        drop(connection);
+        (dir, path)
+    }
+
+    #[test]
+    fn migration_17_fixture_emits_one_exact_subagent_relation() {
+        let (_dir, path) = fixture_db();
+        let mut capture = Capture::default();
+        DevinLocalSessionReader
+            .visit(&input(&path), &mut capture)
+            .unwrap();
+        assert!(matches!(
+            capture.observations.as_slice(),
+            [EvidenceObservation::SubagentSpawn {
+                parent_call_id: Some(call),
+                parent_model: Some(parent),
+                child_model: Some(child),
+                provenance: RelationProvenance::TaskToolUse,
+                ..
+            }] if call == "call-1" && parent == "claude-opus-4-6" && child == "claude-opus-4-7-20260115"
+        ));
+        assert_eq!(capture.summary.unwrap().coverage_gaps, Vec::new());
+    }
+
+    #[test]
+    fn fingerprint_changes_when_reader_content_changes_without_row_growth() {
+        let (_dir, path) = fixture_db();
+        let connection = Connection::open(&path).unwrap();
+        let before = session_fingerprint(&connection, "root");
+        connection
+            .execute(
+                "UPDATE message_nodes SET raw_message = raw_message || ' ' WHERE session_id = 'root' AND node_id = 1",
+                [],
+            )
+            .unwrap();
+        let after = session_fingerprint(&connection, "root");
+        assert_ne!(before, after);
+        assert_eq!(before.map(|(_, rows)| rows), after.map(|(_, rows)| rows));
+    }
+
+    #[test]
+    fn missing_duplicate_conflicting_and_interrupted_relations_are_partial() {
+        for change in [
+            "DELETE FROM subagent_heads",
+            "INSERT INTO subagent_heads VALUES ('root', 'call-1', 'child', 3); INSERT INTO subagent_heads VALUES ('root', 'call-1', 'child', 3)",
+            "UPDATE subagent_heads SET child_agent_id = 'other'",
+            "UPDATE tool_call_state SET state = '{\"status\":\"interrupted\"}'",
+        ] {
+            let (_dir, path) = fixture_db();
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch(change).unwrap();
+            drop(connection);
+            let mut capture = Capture::default();
+            DevinLocalSessionReader
+                .visit(&input(&path), &mut capture)
+                .unwrap();
+            assert_eq!(
+                capture.summary.unwrap().coverage_gaps,
+                vec![PartialReason::AttributionIncomplete],
+                "relation case: {change}"
+            );
+        }
+    }
+
+    #[test]
+    fn acp_schema_6_is_used_only_as_a_joined_child_companion() {
+        let (_dir, path) = fixture_db();
+        let companion_dir = path.parent().unwrap().join("acp-messages");
+        fs::create_dir_all(&companion_dir).unwrap();
+        fs::write(
+            companion_dir.join("child.ndjson"),
+            "{\"schema\":6,\"parentSessionId\":\"root\",\"toolCallId\":\"call-1\",\"childAgentId\":\"child\",\"model\":\"claude-opus-4-7-20260115\",\"status\":\"completed\"}\n",
+        )
+        .unwrap();
+        let mut capture = Capture::default();
+        DevinLocalSessionReader
+            .visit(&input(&path), &mut capture)
+            .unwrap();
+        assert_eq!(capture.observations.len(), 1);
+
+        fs::write(
+            companion_dir.join("child.ndjson"),
+            "{\"schema\":6,\"parentSessionId\":\"root\",\"toolCallId\":\"call-1\",\"childAgentId\":\"child\",\"model\":\"other-model\",\"status\":\"completed\"}\n",
+        )
+        .unwrap();
+        let mut capture = Capture::default();
+        DevinLocalSessionReader
+            .visit(&input(&path), &mut capture)
+            .unwrap();
+        assert!(capture.observations.is_empty());
+        assert_eq!(
+            capture.summary.unwrap().coverage_gaps,
+            vec![PartialReason::AttributionIncomplete]
+        );
+    }
+}

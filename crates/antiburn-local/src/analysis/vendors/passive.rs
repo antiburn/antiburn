@@ -48,12 +48,6 @@ mod tests {
             ("kiro", "session.chat", SourceFormat::KiroChat),
             ("kiro", "session.v3", SourceFormat::KiroCliV3Bundle),
             ("kiro", "chat-save.json", SourceFormat::KiroChatSaveExport),
-            ("amp-code", "thread.json", SourceFormat::AmpThreadJson),
-            (
-                "amp-code",
-                "file-changes.json",
-                SourceFormat::AmpFileChanges,
-            ),
             (
                 "windsurf",
                 "workspace.json",

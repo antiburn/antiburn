@@ -23,6 +23,9 @@
 {"family":"devin_local","case":"conflicting_model"}
 {"family":"devin_local","case":"oversized_row"}
 {"family":"devin_local","case":"changed_source"}
+{"family":"devin_local","case":"acp_conflicting"}
+{"family":"devin_local","case":"acp_interrupted"}
+{"family":"devin_local","case":"acp_duplicate"}
 {"family":"antigravity","case":"missing_brain"}
 {"family":"antigravity","case":"malformed_proto"}
 {"family":"antigravity","case":"conflicting_identity"}

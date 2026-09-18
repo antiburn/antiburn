@@ -88,10 +88,10 @@ fn devin_local_migration_17_source_has_required_tables() {
     connection
         .execute_batch(
             "PRAGMA user_version = 17;
-         CREATE TABLE sessions (session_id TEXT PRIMARY KEY, model TEXT, head_node_id TEXT);
-         CREATE TABLE message_nodes (session_id TEXT, node_id TEXT, parent_node_id TEXT);
-         CREATE TABLE subagent_heads (session_id TEXT, tool_call_id TEXT, child_session_id TEXT);
-         CREATE TABLE tool_call_state (session_id TEXT, tool_call_id TEXT, kind TEXT);",
+         CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT, model TEXT, main_chain_id INTEGER, hidden INTEGER, created_at INTEGER, last_activity_at INTEGER);
+         CREATE TABLE message_nodes (session_id TEXT, node_id INTEGER, parent_node_id INTEGER, raw_message TEXT, created_at INTEGER);
+         CREATE TABLE subagent_heads (session_id TEXT, tool_call_id TEXT, child_agent_id TEXT, child_chain_node_id INTEGER);
+         CREATE TABLE tool_call_state (session_id TEXT, tool_call_id TEXT, state TEXT);",
         )
         .unwrap();
     assert_eq!(

@@ -1537,11 +1537,17 @@ fn read_cursor_store_db_snapshot(path: &Path) -> Option<CursorStoreDbSnapshot> {
         if !sqlite_table_exists(&conn, table) {
             continue;
         }
-        let rows = sqlite_table_string_rows(&conn, table);
+        let (rows, unreadable) = sqlite_table_string_rows(&conn, table);
         if table == "meta" {
             meta_values.extend(rows.iter().map(|(_, value)| value.clone()));
         }
         records.extend(rows);
+        if table == "blobs" && unreadable {
+            records.push((
+                "cursor-unreadable-blob".to_owned(),
+                r#"{"type":"__unreadable_blob__"}"#.to_owned(),
+            ));
+        }
     }
     if records.is_empty() {
         return None;
@@ -1866,7 +1872,7 @@ fn sqlite_table_exists(conn: &Connection, table: &str) -> bool {
     .is_ok()
 }
 
-fn sqlite_table_string_rows(conn: &Connection, table: &str) -> Vec<(String, String)> {
+fn sqlite_table_string_rows(conn: &Connection, table: &str) -> (Vec<(String, String)>, bool) {
     let mut out = Vec::new();
     let direct_sql = format!("SELECT key, CAST(value AS TEXT) FROM {table}");
     if let Ok(mut stmt) = conn.prepare(&direct_sql)
@@ -1874,39 +1880,45 @@ fn sqlite_table_string_rows(conn: &Connection, table: &str) -> Vec<(String, Stri
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
     {
-        out.extend(rows.flatten().filter_map(|(key, value)| {
-            // Cursor `~/.cursor/chats/*/store.db#meta.value` is a TEXT column
-            // whose content is hex-encoded JSON (literal ASCII hex like
-            // `7b22...` rather than `{"...`). When the raw text doesn't look
-            // JSON-ish, try a hex-decode pass before giving up.
+        let mut unreadable = false;
+        for row in rows {
+            let Ok((key, value)) = row else {
+                unreadable = true;
+                continue;
+            };
+            // Cursor stores may contain binary or truncated blobs. Keep the
+            // readable rows, but retain a partial marker when a relevant row
+            // cannot be decoded.
             if looks_like_jsonish(&value) {
-                Some((key, value))
+                out.push((key, value));
+            } else if let Some(decoded) = decode_hex_jsonish(&value) {
+                out.push((key, decoded));
             } else {
-                decode_hex_jsonish(&value).map(|decoded| (key, decoded))
+                unreadable = true;
             }
-        }));
+        }
         if !out.is_empty() {
-            return out;
+            return (out, unreadable);
         }
     }
 
     let pragma = format!("PRAGMA table_info({table})");
     let Ok(mut info_stmt) = conn.prepare(&pragma) else {
-        return out;
+        return (out, true);
     };
     let Ok(columns) = info_stmt.query_map([], |row| row.get::<_, String>(1)) else {
-        return out;
+        return (out, true);
     };
     let columns = columns.flatten().collect::<Vec<_>>();
     if columns.is_empty() {
-        return out;
+        return (out, true);
     }
     let sql = format!("SELECT * FROM {table}");
     let Ok(mut stmt) = conn.prepare(&sql) else {
-        return out;
+        return (out, true);
     };
     let Ok(mut rows) = stmt.query([]) else {
-        return out;
+        return (out, true);
     };
     while let Ok(Some(row)) = rows.next() {
         let mut key = None;
@@ -1942,7 +1954,7 @@ fn sqlite_table_string_rows(conn: &Connection, table: &str) -> Vec<(String, Stri
             out.push((key.unwrap_or_else(|| table.to_string()), value));
         }
     }
-    out
+    (out, true)
 }
 
 fn looks_like_jsonish(text: &str) -> bool {

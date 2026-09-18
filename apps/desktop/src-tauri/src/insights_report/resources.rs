@@ -1198,11 +1198,18 @@ const fn resource_kinds() -> [ResourceKind; 3] {
     ]
 }
 
-pub(crate) const fn first_tier_agents() -> [AgentKind; 4] {
+pub(crate) const fn first_tier_agents() -> [AgentKind; 11] {
     [
         AgentKind::Claude,
         AgentKind::Codex,
+        AgentKind::Cursor,
+        AgentKind::Copilot,
+        AgentKind::Cline,
         AgentKind::OpenCode,
+        AgentKind::Kiro,
+        AgentKind::AmpCode,
+        AgentKind::Antigravity,
+        AgentKind::Windsurf,
         AgentKind::Pi,
     ]
 }
