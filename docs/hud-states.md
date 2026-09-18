@@ -137,6 +137,51 @@ There is no setting and no dock control; the drop is the gesture.
   only the tab on screen. Hiding the HUD keeps it docked, so the next open
   parks it again.
 
+### Island
+
+On a Mac with a notch, the HUD can sit in it. The island is a pure black
+panel the width of the notch plus a 30 logical px wing either side, and it
+belongs to the built-in display. Drag the HUD onto the notch and drop it
+there, or press "Move to Notch" on the Docking row in Settings › Usage. Drag
+it out, or press the same button again, to leave. It is a third placement beside floating and edge docking, and the
+crate stores it with the dock state.
+
+- **Collapsed.** The island is the notch row alone, so the notch covers all
+  of it but the wings. The left wing holds the live mark. The right wing shows
+  the spend rate as a figure, or the top bar's mark when there is no rate to
+  show. The marks are short bars, not dots, because a round light beside the
+  lens reads as the camera light. The live mark pulses between three-quarters
+  and one-third opacity on the spend-rate period, and holds the dim value
+  under reduced motion. The detail window never opens from the collapsed row.
+- **Expanded.** The crate polls the global cursor every 100ms while
+  collapsed. The pointer resting for 150ms in the hotspot, the notch plus
+  10px either side and 5px below, or on a wing, expands the island: the full
+  HUD hangs below the notch row. It collapses 3s after the pointer leaves
+  the island and the hotspot. A wake expands it the same way, for as long as
+  a docked HUD peeks.
+- **The detail.** On the island the detail window takes the dark theme,
+  whatever the reader's own choice is, and the width of the panel the island
+  draws. It hangs centred under the notch, so the card and the island read as
+  one object. The reader's theme returns when the HUD leaves the notch.
+- **The drag preview.** A drag that carries the HUD over the notch turns the
+  floating frame into the island's shape before the drop, so the release
+  says what it will do. Dragging back out restores the frame. A drop above
+  the notch row, overlapping the notch, sits the HUD in the notch. A drop on a
+  display without a notch docks or floats as before.
+- **A display change.** The island belongs to the display with the notch. When
+  that display leaves, the HUD parks at the top edge of the display it lands
+  on and keeps the wish for the notch. The watcher reads the notch again every
+  poll while the wish is unmet, so the island returns as soon as a notch is
+  back, whether the display list changed or the safe area only settled late.
+  Dragging the HUD off the island, or the settings button, clears the wish.
+- **No notch.** A stored island placement on a Mac without a notch, such as
+  an external display alone, falls back to a top dock on the HUD's display.
+  When a notched display returns, the HUD goes back into the notch.
+- **The window.** The island window is the notch, the wings, and a
+  transparent gutter either side where the top corners curve out into the
+  bezel. Its height follows the content as the floating frame's does. The
+  webview draws nothing under the notch itself.
+
 ### When there are no bars
 
 The HUD shows one empty track when it has no reading to draw. The track is the

@@ -224,6 +224,12 @@ colors:
   hud-control-edge: # the close control's edge; no alpha, for the same reason
     light: "hsl(0 0% 80%)"
     dark: "hsl(0 0% 32%)"
+  hud-island: # the notch island's panel, used as `bg-hud-island`; pure black in both themes, so it merges with the notch
+    light: "hsl(0 0% 0%)"
+    dark: "hsl(0 0% 0%)"
+  hud-island-ink: # the captions on the island; one light ink, because the island is black in both themes
+    light: "hsl(0 0% 92%)"
+    dark: "hsl(0 0% 92%)"
   led-off: # unlit LED segment; one mid grey for both themes, because the desktop tints the translucent HUD frame
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
@@ -1129,6 +1135,24 @@ The live LED blinks at the spend rate (`hud-led-blink` under `motion`), and
 its lit half takes `mode-<mode>` of the session with the newest turn, so one
 animated dot says both how fast the machine spends and what it is doing.
 Reduced motion stops the loop; the detail window states the rate in words.
+
+### Notch island
+
+On a display with a notch, the HUD can sit in it. The island is pure black
+(`hud-island`, as `bg-hud-island`) in both themes, so it merges with the
+notch, and its captions take one light ink (`hud-island-ink`). Collapsed, it
+is the notch row alone: a 30px wing either side of the notch, with its
+bottom corners at a 14px radius and 6px fillets curving out into the bezel
+(`.hud-island`, `.hud-island-fillets`). Expanded, the HUD content hangs
+below the row, the corners open to 24px and the fillets to 19px
+(`.hud-island-open`), over `duration-fast`. The window is the notch plus the
+wings plus a transparent gutter either side for the fillets. The left wing
+holds the live LED, blinking at the spend rate as the floating frame's LED
+does, and the right wing shows the spend rate as a four-character figure
+(`$12`, `$1.2`, `$.05`) in `type-footnote`, or the top bar's LED when the
+rate is below half a cent a minute. The bars do not blink on the island; the
+wing LED is the one animated dot. The token map and bars keep their 20
+columns and spread over the island's width.
 
 ### Project folder actions
 

@@ -263,17 +263,53 @@ pub async fn open_overlay_window(
         }
         return Err(fail(error));
     }
-    // A HUD the reader left docked comes back docked.
-    antiburn_hud::restore_dock(&app, dock);
+    // A HUD the reader left docked comes back docked. The island reads the
+    // notch from AppKit, which is main-thread work.
+    crate::main_window::on_main_value(&app, move |app| antiburn_hud::restore_dock(app, dock))
+        .await?;
     Ok(())
 }
 
 /// Free a docked HUD: a drag started on it.
+///
+/// While the drag runs, the HUD previews the island when a drop would make
+/// one.
 #[tauri::command]
 pub fn tear_off_overlay(app: tauri::AppHandle) -> bool {
-    let was_docked = antiburn_hud::tear_off();
+    let was_docked = antiburn_hud::begin_drag(&app);
     crate::hud::save_dock(&app.state::<Store>(), antiburn_hud::dock_settings());
     was_docked
+}
+
+/// Whether a connected display has a notch for the HUD to sit in.
+#[tauri::command]
+pub fn hud_island_available() -> bool {
+    antiburn_hud::refresh_notch()
+}
+
+/// What the island is doing now, for a HUD webview that just mounted.
+#[tauri::command]
+pub fn hud_island_state() -> antiburn_hud::IslandState {
+    antiburn_hud::island_state()
+}
+
+/// Put the HUD in the notch, or take it out and float it at its last place.
+///
+/// Returns the dock state after the change, for the webview's toggle.
+#[tauri::command]
+pub fn set_hud_island(app: tauri::AppHandle, on: bool) -> antiburn_hud::DockSettings {
+    let store = app.state::<Store>();
+    if on {
+        antiburn_hud::island_overlay(&app);
+    } else if antiburn_hud::tear_off(&app) {
+        let entries = crate::hud::load_placements(&store);
+        if let Err(error) = antiburn_hud::apply_placement(&app, &entries) {
+            ::tracing::warn!(event = "hud_island_leave_move_failed", error = %error);
+        }
+    }
+    let dock = antiburn_hud::dock_settings();
+    crate::hud::save_dock(&store, dock);
+    dock
 }
 
 /// Bring a docked HUD back for a while. `reason` is logged for tuning.

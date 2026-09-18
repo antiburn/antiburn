@@ -272,6 +272,17 @@ describe("HudDetailView", () => {
     expect(screen.queryByTestId("hud-detail-spend")).toBeNull()
   })
 
+  it("takes the dark theme on the island and gives it back after", async () => {
+    document.documentElement.dataset["theme"] = "light"
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ island: true })))
+    expect(document.documentElement.dataset["theme"]).toBe("dark")
+    act(() => push.emit!(detailState({ island: false })))
+    expect(document.documentElement.dataset["theme"]).toBe("light")
+    delete document.documentElement.dataset["theme"]
+  })
+
   it("draws no map section when the payload carries none", async () => {
     render(<HudDetailView />)
     await waitFor(() => expect(push.emit).not.toBeNull())
