@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tear-off-overlay"
+description = "Enables the tear_off_overlay command without any pre-configured scope."
+commands.allow = ["tear_off_overlay"]
+
+[[permission]]
+identifier = "deny-tear-off-overlay"
+description = "Denies the tear_off_overlay command without any pre-configured scope."
+commands.deny = ["tear_off_overlay"]

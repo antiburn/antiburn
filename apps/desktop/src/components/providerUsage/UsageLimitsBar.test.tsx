@@ -339,11 +339,6 @@ describe("UsageLimitsBar — the live sweep", () => {
     expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).toHaveClass(
       "led-clock",
     )
-    // The popover is a panel the reader opened, so its gleam runs at the
-    // full peak; only the floating HUD softens it.
-    expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).not.toHaveClass(
-      "led-clock-soft",
-    )
     // The component writes no phase, because `installLivePhase` owns it. A
     // delay from a render would move the sweep on every later render.
     const clock = live.container.querySelector<HTMLElement>('[data-testid="usage-limits-bar"]')

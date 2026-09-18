@@ -18,6 +18,8 @@ export type UsageBarItem = {
    */
   scopeModel: string | null
   label: string
+  /** The tool the limit belongs to, as shown to the reader. */
+  providerName: string
   percent: number
   resetsAt: Date | null
   color: string
@@ -68,7 +70,7 @@ const CLAUDE_SATURATION_GAIN = 1.15
 const CLAUDE_BRAND = saturated(`#${siClaude.hex}`, CLAUDE_SATURATION_GAIN)
 
 /** The LED color that follows the label token, and has no color of its own. */
-export const LABEL_BAR_COLOR = "var(--color-label)"
+const LABEL_BAR_COLOR = "var(--color-label)"
 
 const PROVIDER_COLORS: Record<string, string> = {
   anthropic: CLAUDE_BRAND,
@@ -109,7 +111,9 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
   const withBars = (response ? liveDisplayableProviders(response) : [])
     .map((provider) => ({
       provider,
-      windows: liveWindows(provider).filter((window) => window.usedPercent != null),
+      windows: liveWindows(provider, { includeIdleModelLimits: true }).filter(
+        (window) => window.usedPercent != null,
+      ),
     }))
     .filter((group) => group.windows.length > 0)
 
@@ -122,6 +126,7 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
   return withBars.flatMap((group) =>
     group.windows.map((window) => ({
       key: `${group.provider.provider}-${window.id}`,
+      providerName: group.provider.displayName,
       provider: group.provider.provider,
       scopeModel: window.scopeModel,
       label: multiProvider
@@ -135,6 +140,25 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
         : liveWindowElapsed(window, generatedAt),
     })),
   )
+}
+
+/** The bars at their limit: the tool refuses work until the reset. */
+export function blockedBars(bars: readonly UsageBarItem[]): UsageBarItem[] {
+  return bars.filter((bar) => bar.percent >= 100)
+}
+
+/** The bars that were at their limit in `previous` and are below it in `next`. */
+export function limitsReset(
+  previous: readonly UsageBarItem[],
+  next: readonly UsageBarItem[],
+): UsageBarItem[] {
+  const blocked = new Set(blockedBars(previous).map((bar) => bar.key))
+  return next.filter((bar) => blocked.has(bar.key) && bar.percent < 100)
+}
+
+/** True when a blocked bar's reset time has passed, so a fresh read is due. */
+export function resetDue(bars: readonly UsageBarItem[], now: number): boolean {
+  return blockedBars(bars).some((bar) => bar.resetsAt != null && bar.resetsAt.getTime() <= now)
 }
 
 const CLOCK_HORIZON_MS = 12 * 3_600_000
