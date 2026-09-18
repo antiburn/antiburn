@@ -12,6 +12,7 @@ use super::*;
 
 mod activity_tests;
 mod coverage_tests;
+mod quota_incident_tests;
 mod reconcile_tests;
 mod remediation_tests;
 mod resume_tests;
