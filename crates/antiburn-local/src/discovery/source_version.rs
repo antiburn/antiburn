@@ -5,6 +5,7 @@ use crate::analysis::SourceFormat;
 use crate::model::AgentKind;
 use crate::platform::environment::DiscoveryEnvironment;
 use rusqlite::Connection;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,7 +57,7 @@ pub(crate) fn devin_content_fingerprint(connection: &Connection, session_id: &st
         "SELECT session_id, tool_call_id, child_agent_id, child_chain_node_id FROM subagent_heads WHERE session_id = ?1 ORDER BY tool_call_id, child_agent_id",
         "SELECT session_id, tool_call_id, state FROM tool_call_state WHERE session_id = ?1 ORDER BY tool_call_id",
     ];
-    let mut bytes = Vec::new();
+    let mut fingerprint = Fnv1a64::default();
     for query in queries {
         let mut statement = connection.prepare(query).ok()?;
         let columns = statement.column_count();
@@ -64,18 +65,39 @@ pub(crate) fn devin_content_fingerprint(connection: &Connection, session_id: &st
         while let Some(row) = rows.next().ok()? {
             for index in 0..columns {
                 let value = row.get_ref(index).ok()?;
-                bytes.extend_from_slice(format!("{:?}\0", value).as_bytes());
+                fingerprint.write_fmt(format_args!("{:?}\0", value)).ok()?;
             }
-            bytes.push(b'\n');
+            fingerprint.write(b"\n");
         }
     }
-    Some(fnv1a64(&bytes))
+    Some(fingerprint.finish())
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-    })
+struct Fnv1a64(u64);
+
+impl Default for Fnv1a64 {
+    fn default() -> Self {
+        Self(0xcbf29ce484222325)
+    }
+}
+
+impl Fnv1a64 {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0 = bytes.iter().fold(self.0, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Write for Fnv1a64 {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        self.write(value.as_bytes());
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]

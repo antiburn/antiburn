@@ -182,14 +182,14 @@ fn table_columns(connection: &Connection, table: &str) -> anyhow::Result<HashSet
 
 type Row = HashMap<String, String>;
 
-fn table_rows(connection: &Connection, table: &str) -> anyhow::Result<Vec<Row>> {
-    let mut statement = connection.prepare(&format!("SELECT * FROM {table}"))?;
+fn query_rows(connection: &Connection, query: &str, session_id: &str) -> anyhow::Result<Vec<Row>> {
+    let mut statement = connection.prepare(query)?;
     let columns: Vec<String> = statement
         .column_names()
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
-    let mut rows = statement.query([])?;
+    let mut rows = statement.query([session_id])?;
     let mut result = Vec::new();
     while let Some(row) = rows.next()? {
         let mut values = Row::new();
@@ -209,6 +209,60 @@ fn table_rows(connection: &Connection, table: &str) -> anyhow::Result<Vec<Row>> 
         result.push(values);
     }
     Ok(result)
+}
+
+fn session_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+    query_rows(
+        connection,
+        "SELECT id, working_directory, model, main_chain_id, hidden, created_at, last_activity_at
+         FROM sessions WHERE id = ?1",
+        session_id,
+    )
+}
+
+fn message_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+    query_rows(
+        connection,
+        "SELECT node_id, parent_node_id, session_id, raw_message, created_at
+         FROM message_nodes
+         WHERE session_id = ?1
+            OR (session_id, node_id) IN (
+                SELECT child_agent_id, child_chain_node_id
+                FROM subagent_heads WHERE session_id = ?1
+            )
+         ORDER BY session_id, node_id",
+        session_id,
+    )
+}
+
+fn child_model_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+    query_rows(
+        connection,
+        "SELECT id, model FROM sessions
+         WHERE id IN (
+             SELECT child_agent_id FROM subagent_heads WHERE session_id = ?1
+         )",
+        session_id,
+    )
+}
+
+fn head_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+    query_rows(
+        connection,
+        "SELECT session_id, tool_call_id, child_agent_id, child_chain_node_id
+         FROM subagent_heads WHERE session_id = ?1
+         ORDER BY tool_call_id, child_agent_id",
+        session_id,
+    )
+}
+
+fn state_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+    query_rows(
+        connection,
+        "SELECT session_id, tool_call_id, state FROM tool_call_state
+         WHERE session_id = ?1 ORDER BY tool_call_id",
+        session_id,
+    )
 }
 
 fn session_fingerprint(connection: &Connection, session_id: &str) -> Option<(u64, u64)> {
@@ -236,7 +290,7 @@ fn visit_connection(
     session_id: &str,
     sink: &mut dyn RecordSink,
 ) -> anyhow::Result<SessionSummary> {
-    let sessions = table_rows(connection, "sessions")?;
+    let sessions = session_rows(connection, session_id)?;
     let session = sessions
         .iter()
         .find(|row| row.get("id").is_some_and(|id| id == session_id))
@@ -247,16 +301,17 @@ fn visit_connection(
     {
         return Ok(SessionSummary::default());
     }
-    let nodes = table_rows(connection, "message_nodes")?;
+    let nodes = message_rows(connection, session_id)?;
     let chain = active_chain(session, &nodes)?;
     let mut child_models = HashMap::new();
-    for row in &sessions {
+    for row in child_model_rows(connection, session_id)? {
         if let (Some(id), Some(model)) = (row.get("id"), row.get("model")) {
             child_models.insert(id.clone(), model.clone());
         }
     }
-    let heads = table_rows(connection, "subagent_heads")?;
-    let states = table_rows(connection, "tool_call_state")?;
+    let heads = head_rows(connection, session_id)?;
+    let states = state_rows(connection, session_id)?;
+    let mut acp_index = None;
     let mut seen_calls = HashSet::new();
     let mut incomplete = false;
     let mut model = session.get("model").cloned();
@@ -324,7 +379,7 @@ fn visit_connection(
                         &states,
                         &child_models,
                         &nodes,
-                        db_path,
+                        acp_index.get_or_insert_with(|| acp_companion_index(db_path)),
                     ) {
                         Some(child_model) => sink.record(NormalizedRecord::Observation(Box::new(
                             EvidenceObservation::SubagentSpawn {
@@ -393,7 +448,7 @@ fn relation(
     states: &[Row],
     models: &HashMap<String, String>,
     nodes: &[Row],
-    db_path: &Path,
+    acp_index: &AcpIndex,
 ) -> Option<String> {
     let matching: Vec<&Row> = heads
         .iter()
@@ -437,22 +492,22 @@ fn relation(
     if actual != stored {
         return None;
     }
-    acp_relation_is_consistent(db_path, session_id, call_id, child, actual)?;
+    acp_relation_is_consistent(acp_index, session_id, call_id, child, actual)?;
     Some(actual.to_owned())
 }
 
-/// ACP is a child companion, not a source. Read it only after the SQLite
-/// relation has supplied the top-level session, call, child id, and model.
-/// Missing companions are valid because ACP is optional; an applicable,
-/// malformed or conflicting companion makes that relation unusable.
-fn acp_relation_is_consistent(
-    db_path: &Path,
-    parent_session_id: &str,
-    call_id: &str,
-    child_id: &str,
-    model: &str,
-) -> Option<()> {
-    let mut matched = Vec::new();
+type AcpKey = (String, String, String);
+type AcpIndex = HashMap<AcpKey, Vec<AcpCompanion>>;
+
+#[derive(Clone)]
+struct AcpCompanion {
+    model: Option<String>,
+    status: Option<String>,
+}
+
+/// Build one index for the optional ACP companion files used by this session.
+fn acp_companion_index(db_path: &Path) -> AcpIndex {
+    let mut index = AcpIndex::new();
     for directory in acp_directories(db_path) {
         let Ok(entries) = fs::read_dir(directory) else {
             continue;
@@ -481,33 +536,69 @@ fn acp_relation_is_consistent(
                 {
                     continue;
                 }
-                let child = string_field(&value, &["childAgentId", "child_agent_id", "agentId"]);
-                let parent = string_field(
+                let Some(child) =
+                    string_field(&value, &["childAgentId", "child_agent_id", "agentId"])
+                else {
+                    continue;
+                };
+                let Some(parent) = string_field(
                     &value,
                     &["parentSessionId", "parent_session_id", "sessionId"],
-                );
-                let call = string_field(&value, &["toolCallId", "tool_call_id"]);
-                if child.as_deref() == Some(child_id)
-                    && parent.as_deref() == Some(parent_session_id)
-                    && call.as_deref() == Some(call_id)
-                {
-                    let companion_model =
-                        string_field(&value, &["model", "modelId", "model_id", "generationModel"]);
-                    let status = string_field(&value, &["status", "stopReason", "stop_reason"]);
-                    if status.as_deref().is_some_and(|status| {
-                        matches!(status, "interrupted" | "failed" | "cancelled")
-                    }) || companion_model
-                        .as_deref()
-                        .is_some_and(|value| value != model)
-                    {
-                        return None;
-                    }
-                    matched.push(path.clone());
-                }
+                ) else {
+                    continue;
+                };
+                let Some(call) = string_field(&value, &["toolCallId", "tool_call_id"]) else {
+                    continue;
+                };
+                index
+                    .entry((parent, call, child))
+                    .or_default()
+                    .push(AcpCompanion {
+                        model: string_field(
+                            &value,
+                            &["model", "modelId", "model_id", "generationModel"],
+                        ),
+                        status: string_field(&value, &["status", "stopReason", "stop_reason"]),
+                    });
             }
         }
     }
-    (matched.len() <= 1).then_some(())
+    index
+}
+
+/// ACP is a child companion, not a source. Missing companions are valid
+/// because ACP is optional; an applicable, malformed, or conflicting
+/// companion makes that relation unusable.
+fn acp_relation_is_consistent(
+    index: &AcpIndex,
+    parent_session_id: &str,
+    call_id: &str,
+    child_id: &str,
+    model: &str,
+) -> Option<()> {
+    let Some(matched) = index.get(&(
+        parent_session_id.to_owned(),
+        call_id.to_owned(),
+        child_id.to_owned(),
+    )) else {
+        return Some(());
+    };
+    if matched.len() > 1 {
+        return None;
+    }
+    let companion = matched.first()?;
+    if companion
+        .status
+        .as_deref()
+        .is_some_and(|status| matches!(status, "interrupted" | "failed" | "cancelled"))
+        || companion
+            .model
+            .as_deref()
+            .is_some_and(|value| value != model)
+    {
+        return None;
+    }
+    Some(())
 }
 
 fn string_field(value: &Value, names: &[&str]) -> Option<String> {
