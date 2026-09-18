@@ -2,7 +2,8 @@
   "copilot": {
     "accepted_event_version": 1,
     "required_cases": ["missing_parent", "duplicate_relation", "conflicting_shutdown", "oversized_record", "changed_source"],
-    "required_fields": ["id", "timestamp", "parentId", "type", "data"]
+    "required_fields": ["id", "timestamp", "parentId", "type", "data"],
+    "required_store_columns": ["session_id", "request_id", "agent_id", "parent_tool_call_id", "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"]
   },
   "cline": {
     "accepted_messages_version": 1,

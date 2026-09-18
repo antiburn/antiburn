@@ -236,34 +236,29 @@ fn discover_devin_sessions(path: &Path, now: i64, since_secs: i64) -> Vec<Sessio
     ) else {
         return Vec::new();
     };
-    let Ok(version) = connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-    else {
-        return Vec::new();
-    };
-    if version != 17 {
+    if !valid_devin_schema(&connection) {
         return Vec::new();
     }
     let cutoff = now.saturating_sub(since_secs.max(0));
-    let Ok(mut statement) =
-        connection.prepare("SELECT id, last_activity_at, created_at, hidden FROM sessions")
-    else {
+    let Ok(mut statement) = connection.prepare(
+        "SELECT id, last_activity_at, created_at, hidden FROM sessions
+         WHERE COALESCE(hidden, 0) = 0
+           AND COALESCE(last_activity_at, created_at) >= ?1",
+    ) else {
         return Vec::new();
     };
-    let Ok(rows) = statement.query_map([], |row| {
+    let Ok(rows) = statement.query_map([cutoff], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<i64>>(1)?,
             row.get::<_, Option<i64>>(2)?,
-            row.get::<_, i64>(3)?,
+            row.get::<_, Option<i64>>(3)?.unwrap_or(0),
         ))
     }) else {
         return Vec::new();
     };
     rows.flatten()
-        .filter_map(|(id, updated, created, hidden)| {
-            if hidden != 0 {
-                return None;
-            }
+        .filter_map(|(id, updated, created, _hidden)| {
             let timestamp = updated.or(created)?;
             (timestamp >= cutoff).then_some(SessionLog {
                 agent_type: AgentKind::Windsurf,
@@ -286,6 +281,9 @@ fn devin_session_exists(path: &Path, session_id: &str) -> bool {
     ) else {
         return false;
     };
+    if !valid_devin_schema(&connection) {
+        return false;
+    }
     connection
         .query_row(
             "SELECT 1 FROM sessions WHERE id = ?1 AND COALESCE(hidden, 0) = 0",
@@ -295,12 +293,69 @@ fn devin_session_exists(path: &Path, session_id: &str) -> bool {
         .is_ok()
 }
 
+fn valid_devin_schema(connection: &Connection) -> bool {
+    let Ok(version) = connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+    else {
+        return false;
+    };
+    if version != 17 {
+        return false;
+    }
+    [
+        (
+            "sessions",
+            [
+                "id",
+                "model",
+                "main_chain_id",
+                "hidden",
+                "created_at",
+                "last_activity_at",
+            ]
+            .as_slice(),
+        ),
+        (
+            "message_nodes",
+            ["node_id", "session_id", "raw_message", "created_at"].as_slice(),
+        ),
+        (
+            "subagent_heads",
+            [
+                "session_id",
+                "tool_call_id",
+                "child_agent_id",
+                "child_chain_node_id",
+            ]
+            .as_slice(),
+        ),
+        (
+            "tool_call_state",
+            ["session_id", "tool_call_id", "state"].as_slice(),
+        ),
+    ]
+    .into_iter()
+    .all(|(table, required)| {
+        let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info({table})")) else {
+            return false;
+        };
+        let Ok(columns) = statement.query_map([], |row| row.get::<_, String>(1)) else {
+            return false;
+        };
+        columns
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+            .is_ok_and(|columns| required.iter().all(|column| columns.contains(*column)))
+    })
+}
+
 fn devin_session_fingerprint(path: &Path, session_id: &str) -> Option<(u64, u64)> {
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .ok()?;
+    if !valid_devin_schema(&connection) {
+        return None;
+    }
     let latest: i64 = connection.query_row(
         "SELECT COALESCE((SELECT last_activity_at FROM sessions WHERE id = ?1), (SELECT created_at FROM sessions WHERE id = ?1), 0), COUNT(*) FROM message_nodes WHERE session_id = ?1",
         [session_id],

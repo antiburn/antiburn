@@ -52,6 +52,8 @@ pub(crate) fn devin_provider_db_fingerprint(latest: u64, rows: u64) -> String {
 pub(crate) const DEVIN_ACP_MAX_FILES: usize = 64;
 pub(crate) const DEVIN_ACP_MAX_BYTES_PER_FILE: u64 = 4 * 1024 * 1024;
 pub(crate) const DEVIN_ACP_MAX_RECORDS: usize = 4096;
+pub(crate) const DEVIN_SQLITE_MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const DEVIN_SQLITE_MAX_ROWS: usize = 100_000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DevinAcpCompanion {
@@ -65,15 +67,17 @@ pub(crate) struct DevinAcpCompanion {
 pub(crate) fn devin_acp_companion_records(
     db_path: &Path,
     keys: &HashSet<(String, String, String)>,
-) -> Vec<DevinAcpCompanion> {
+) -> (Vec<DevinAcpCompanion>, bool) {
     let mut records = Vec::new();
     let mut scanned_files = 0;
+    let mut partial = false;
     'directories: for directory in devin_acp_directories(db_path) {
         let Ok(entries) = std::fs::read_dir(directory) else {
             continue;
         };
         for entry in entries.flatten() {
             if records.len() >= DEVIN_ACP_MAX_RECORDS || scanned_files >= DEVIN_ACP_MAX_FILES {
+                partial = true;
                 break 'directories;
             }
             let path = entry.path();
@@ -91,12 +95,27 @@ pub(crate) fn devin_acp_companion_records(
             let Ok(file) = std::fs::File::open(path) else {
                 continue;
             };
-            let reader = BufReader::new(file).take(DEVIN_ACP_MAX_BYTES_PER_FILE);
-            for line in reader.lines() {
-                let Ok(line) = line else {
-                    break;
+            let mut reader = BufReader::new(file).take(DEVIN_ACP_MAX_BYTES_PER_FILE);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                let read = match reader.read_until(b'\n', &mut line) {
+                    Ok(read) => read,
+                    Err(_) => {
+                        partial = true;
+                        break;
+                    }
                 };
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                if read == 0 {
+                    break;
+                }
+                let terminated = line.last() == Some(&b'\n');
+                if !terminated && read as u64 == DEVIN_ACP_MAX_BYTES_PER_FILE {
+                    partial = true;
+                }
+                let line = line.strip_suffix(b"\n").unwrap_or(&line);
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
                     continue;
                 };
                 if value.get("schema").and_then(serde_json::Value::as_u64) != Some(6)
@@ -133,9 +152,13 @@ pub(crate) fn devin_acp_companion_records(
                     status: acp_string_field(&value, &["status", "stopReason", "stop_reason"]),
                 });
             }
+            if records.len() >= DEVIN_ACP_MAX_RECORDS {
+                partial = true;
+                break 'directories;
+            }
         }
     }
-    records
+    (records, partial)
 }
 
 fn devin_acp_directories(db_path: &Path) -> Vec<std::path::PathBuf> {
@@ -190,14 +213,21 @@ pub(crate) fn devin_content_fingerprint(
         "SELECT session_id, tool_call_id, state FROM tool_call_state WHERE session_id = ?1 ORDER BY tool_call_id",
     ];
     let mut fingerprint = Fnv1a64::default();
+    let mut partial = false;
     for query in queries {
         let mut statement = connection.prepare(query).ok()?;
         let columns = statement.column_count();
         let mut rows = statement.query([session_id]).ok()?;
+        let mut row_count = 0;
         while let Some(row) = rows.next().ok()? {
+            if row_count == DEVIN_SQLITE_MAX_ROWS {
+                partial = true;
+                break;
+            }
+            row_count += 1;
             for index in 0..columns {
                 let value = row.get_ref(index).ok()?;
-                fingerprint.write_fmt(format_args!("{:?}\0", value)).ok()?;
+                write_bounded_sqlite_value(&mut fingerprint, value);
             }
             fingerprint.write(b"\n");
         }
@@ -210,10 +240,16 @@ pub(crate) fn devin_content_fingerprint(
         )
         .ok()?;
     let mut rows = statement.query([session_id]).ok()?;
+    let mut key_count = 0;
     while let Some(row) = rows.next().ok()? {
+        if key_count == DEVIN_SQLITE_MAX_ROWS {
+            partial = true;
+            break;
+        }
+        key_count += 1;
         keys.insert((row.get(0).ok()?, row.get(1).ok()?, row.get(2).ok()?));
     }
-    let mut companions = devin_acp_companion_records(db_path, &keys);
+    let (mut companions, acp_partial) = devin_acp_companion_records(db_path, &keys);
     companions.sort_by_key(|companion| {
         (
             companion.parent_session_id.clone(),
@@ -229,7 +265,28 @@ pub(crate) fn devin_content_fingerprint(
             .ok()?;
         fingerprint.write(b"\n");
     }
+    if partial {
+        fingerprint.write(b"sqlite-scan-partial\n");
+    }
+    if acp_partial {
+        fingerprint.write(b"acp-scan-partial\n");
+    }
     Some(fingerprint.finish())
+}
+
+fn write_bounded_sqlite_value(fingerprint: &mut Fnv1a64, value: rusqlite::types::ValueRef<'_>) {
+    match value {
+        rusqlite::types::ValueRef::Text(bytes) if bytes.len() > DEVIN_SQLITE_MAX_TEXT_BYTES => {
+            let end = bytes.len().min(DEVIN_SQLITE_MAX_TEXT_BYTES);
+            fingerprint.write(&bytes[..end]);
+            fingerprint
+                .write_fmt(format_args!(":truncated:{}\0", bytes.len()))
+                .ok();
+        }
+        _ => {
+            fingerprint.write_fmt(format_args!("{:?}\0", value)).ok();
+        }
+    }
 }
 
 struct Fnv1a64(u64);

@@ -148,11 +148,14 @@ fn visit_bundle(
     let directory = manifest_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("missing session directory"))?;
+    let directory_prefix = format!("{}%", directory.display());
     let mut children = conn.prepare(
         "SELECT session_id, status, model, agent_id, parent_session_id, is_subagent, messages_path
-           FROM sessions WHERE is_subagent = 1",
+           FROM sessions
+          WHERE is_subagent = 1
+            AND (parent_session_id = ?1 OR messages_path LIKE ?2)",
     )?;
-    let rows = children.query_map([], row_from_sql)?;
+    let rows = children.query_map(params![session_id, directory_prefix], row_from_sql)?;
     let mut child_ids = HashSet::new();
     for row in rows {
         let child = row?;

@@ -107,7 +107,7 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `AntigravityCascadeJson`       | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
 | `AntigravityWorkspaceChatJson` | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 | `AntigravitySqlite`            | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
-| `CopilotCliJsonl`              | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Unsupported |
+| `CopilotCliJsonl`              | Unsupported | Unsupported | Assessable  | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Unsupported |
 | `CopilotIdeChatJson`           | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Partial     | Unknown     | Unknown     |
 | `ClineSessionJson`             | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 | `ClineMessagesContractV1`      | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
@@ -232,7 +232,7 @@ roots, explicit non-pattern skill directories, and pinned
 pattern, lazy Pi MCP, malformed, unsafe, capped, conflicting, and partial
 indexed sources remain explicit clean-result limits.
 
-Phase 8 inventory files are Cursor `.cursor/mcp.json`; Copilot
+Inventory files are Cursor `.cursor/mcp.json`; Copilot
 `~/.copilot/mcp-config.json`, `.mcp.json`, and `.github/mcp.json`; Cline MCP
 settings; Kiro `.kiro/settings/mcp.json`; Amp settings; Antigravity
 `mcp_config.json`; and Devin/Windsurf MCP settings. Their documented skill roots

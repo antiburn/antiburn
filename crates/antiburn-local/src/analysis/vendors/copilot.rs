@@ -23,6 +23,9 @@ use crate::analysis::records::parse_ts;
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 use crate::analysis::{SourceCapabilities, SourceFormat};
 
+const MAX_DATABASE_ROWS: u64 = 100_000;
+const MAX_EVENT_IDENTITIES: usize = 100_000;
+
 /// Parses the public Copilot SDK v1 event envelope persisted by Copilot CLI.
 pub struct CopilotSessionReader;
 
@@ -164,6 +167,7 @@ impl CopilotSessionReader {
         let mut state = CopilotState {
             emit_shutdown_usage,
             directory_id,
+            expected_session_id: input.session_id.clone(),
             ..CopilotState::default()
         };
         let mut framed = BoundedJsonlReader::new(reader);
@@ -214,16 +218,37 @@ impl CopilotSessionReader {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
         }
         validate_store_schema(&transaction)?;
+        let database_identity: (String, String) = transaction.query_row(
+            "SELECT session_id, shutdown_model FROM sessions WHERE session_id = ?1",
+            [input.session_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if database_identity.0 != input.session_id
+            || state.current_model.as_deref() != Some(database_identity.1.as_str())
+        {
+            state.invalid = true;
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+        }
         let mut rows = transaction.prepare(
             "SELECT request_id, agent_id, parent_tool_call_id, model,
                     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-             FROM request_usage WHERE session_id = ?1 ORDER BY request_id",
+             FROM request_usage WHERE session_id = ?1 ORDER BY request_id LIMIT ?2",
         )?;
         let mut count = 0_u64;
+        let mut database_rows = 0_u64;
         let mut totals = UsageTotals::default();
         let mut child_keys = HashSet::new();
-        let mut query = rows.query([input.session_id.as_str()])?;
+        let mut query = rows.query(rusqlite::params![
+            input.session_id.as_str(),
+            MAX_DATABASE_ROWS + 1
+        ])?;
         while let Some(row) = query.next()? {
+            database_rows += 1;
+            if database_rows > MAX_DATABASE_ROWS {
+                state.invalid = true;
+                sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+                break;
+            }
             let request_id: String = row.get(0)?;
             let agent_id: Option<String> = row.get(1)?;
             let parent_tool_call_id: Option<String> = row.get(2)?;
@@ -253,8 +278,18 @@ impl CopilotSessionReader {
                 }
             }
             if !delegated {
-                count += 1;
-                totals += usage;
+                let Some(next_count) = count.checked_add(1) else {
+                    state.invalid = true;
+                    sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+                    continue;
+                };
+                let Some(next_totals) = totals.checked_add(usage) else {
+                    state.invalid = true;
+                    sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+                    continue;
+                };
+                count = next_count;
+                totals = next_totals;
             }
             sink.record(NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent {
                 ts_ms: None,
@@ -313,12 +348,16 @@ struct UsageTotals {
     cache_write_tokens: u64,
 }
 
-impl std::ops::AddAssign for UsageTotals {
-    fn add_assign(&mut self, rhs: Self) {
-        self.input_tokens += rhs.input_tokens;
-        self.output_tokens += rhs.output_tokens;
-        self.cache_read_tokens += rhs.cache_read_tokens;
-        self.cache_write_tokens += rhs.cache_write_tokens;
+impl UsageTotals {
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        Some(Self {
+            input_tokens: self.input_tokens.checked_add(rhs.input_tokens)?,
+            output_tokens: self.output_tokens.checked_add(rhs.output_tokens)?,
+            cache_read_tokens: self.cache_read_tokens.checked_add(rhs.cache_read_tokens)?,
+            cache_write_tokens: self
+                .cache_write_tokens
+                .checked_add(rhs.cache_write_tokens)?,
+        })
     }
 }
 
@@ -358,6 +397,7 @@ fn validate_store_schema(connection: &Connection) -> anyhow::Result<()> {
 
 #[derive(Default)]
 struct CopilotState {
+    expected_session_id: String,
     directory_id: Option<String>,
     started: bool,
     shutdown: bool,
@@ -395,11 +435,13 @@ impl CopilotState {
                 .and_then(Value::as_str)
                 .is_some_and(|parent| self.event_ids.contains(parent))
         };
-        if !valid_parent
-            || self.shutdown
-            || (kind == "session.start" && self.started)
-            || !self.event_ids.insert(id.to_owned())
-        {
+        if !valid_parent || self.shutdown || (kind == "session.start" && self.started) {
+            return self.invalid(sink);
+        }
+        if self.event_ids.len() >= MAX_EVENT_IDENTITIES {
+            return self.cap_exceeded(sink);
+        }
+        if !self.event_ids.insert(id.to_owned()) {
             return self.invalid(sink);
         }
         match kind {
@@ -420,6 +462,7 @@ impl CopilotState {
                         .directory_id
                         .as_deref()
                         .is_some_and(|directory_id| directory_id != session_id)
+                    || self.expected_session_id != session_id
                 {
                     return self.invalid(sink);
                 }
@@ -441,6 +484,9 @@ impl CopilotState {
                 self.current_model = Some(model.to_owned());
             }
             "subagent.started" => {
+                if self.subagents.len() >= MAX_EVENT_IDENTITIES {
+                    return self.cap_exceeded(sink);
+                }
                 let Some(call_id) = value
                     .pointer("/data/toolCallId")
                     .and_then(Value::as_str)
@@ -542,7 +588,10 @@ impl CopilotState {
                 .pointer("/requests/count")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            self.shutdown_totals += totals;
+            let Some(next_totals) = self.shutdown_totals.checked_add(totals) else {
+                return self.invalid(sink);
+            };
+            self.shutdown_totals = next_totals;
             if !self.emit_shutdown_usage {
                 continue;
             }
@@ -585,6 +634,11 @@ impl CopilotState {
     fn invalid(&mut self, sink: &mut dyn RecordSink) {
         self.invalid = true;
         sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+    }
+
+    fn cap_exceeded(&mut self, sink: &mut dyn RecordSink) {
+        self.invalid = true;
+        sink.record(NormalizedRecord::Unusable(PartialReason::Oversized));
     }
 
     fn finish(self) -> SessionSummary {

@@ -486,10 +486,11 @@ fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
         let directory = path.parent()?;
         let database = root.join("data/db/sessions.db");
         let mut paths = vec![path.to_path_buf(), database.clone()];
+        paths.extend(database_sidecars(&database));
         let session_id = file_name.strip_suffix(".json").unwrap_or(file_name);
         paths.push(directory.join(format!("{session_id}.messages.json")));
         if let Ok(connection) = rusqlite::Connection::open_with_flags(
-            database,
+            &database,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) && let Ok(mut statement) = connection.prepare(
             "SELECT agent_id, parent_session_id, messages_path FROM sessions WHERE is_subagent = 1",
@@ -501,14 +502,17 @@ fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
             ))
         }) {
             for row in rows.flatten() {
-                let (agent_id, parent_session_id, messages_path) = row;
+                let (_agent_id, parent_session_id, messages_path) = row;
                 let referenced = std::path::Path::new(&messages_path);
                 if parent_session_id.as_deref() == Some(session_id)
                     || referenced.parent() == Some(directory)
                 {
-                    paths.push(directory.join(format!("{agent_id}.messages.json")));
+                    paths.push(std::path::PathBuf::from(messages_path));
                 }
             }
+        }
+        if let Some(state) = database_state(&database, &format!("cline:{session_id}")) {
+            paths.push(state);
         }
         paths
     } else if file_name == "session.json" {
@@ -521,10 +525,16 @@ fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
             .and_then(|name| name.to_str())
             == Some("session-state")
     {
-        vec![
+        let mut paths = vec![
             path.to_path_buf(),
             path.parent()?.parent()?.join("session-store.db"),
-        ]
+        ];
+        paths.extend(database_sidecars(paths.get(1)?));
+        let session_id = path.parent()?.file_name()?.to_string_lossy();
+        if let Some(state) = database_state(paths.get(1)?, &format!("copilot:{session_id}")) {
+            paths.push(state);
+        }
+        paths
     } else if path.extension().and_then(|extension| extension.to_str()) == Some("json")
         && path.parent()?.file_name().and_then(|name| name.to_str()) == Some("cli")
     {
@@ -536,16 +546,106 @@ fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
     paths.dedup();
     let parts: Vec<_> = paths
         .iter()
-        .map(|path| {
-            (
-                path.to_string_lossy().into_owned(),
-                fingerprint_of_path(path),
-            )
-        })
+        .map(
+            |path| match path.to_string_lossy().strip_prefix("sqlite-state:") {
+                Some(state) => (path.to_string_lossy().into_owned(), state.to_owned()),
+                None => (
+                    path.to_string_lossy().into_owned(),
+                    fingerprint_of_path(path),
+                ),
+            },
+        )
         .collect();
     serde_json::to_string(&parts)
         .ok()
         .map(|value| format!("bundle-v1:{value}"))
+}
+
+fn database_sidecars(database: &std::path::Path) -> Vec<std::path::PathBuf> {
+    ["-wal", "-shm"]
+        .into_iter()
+        .map(|suffix| std::path::PathBuf::from(format!("{}{}", database.display(), suffix)))
+        .collect()
+}
+
+fn database_state(database: &std::path::Path, scope: &str) -> Option<std::path::PathBuf> {
+    let connection = rusqlite::Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let (query, parameter) = scope.split_once(':')?;
+    let state = match query {
+        "cline" => connection
+            .prepare(
+                "SELECT session_id, status, model, agent_id, parent_session_id,
+                        is_subagent, messages_path
+                   FROM sessions
+                  WHERE session_id = ?1 OR parent_session_id = ?1
+                     OR messages_path LIKE ?2
+                  ORDER BY session_id",
+            )
+            .ok()?
+            .query_map(
+                rusqlite::params![parameter, format!("%/{parameter}/%")],
+                |row| {
+                    Ok(vec![
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        row.get::<_, i64>(5)?.to_string(),
+                        row.get::<_, String>(6)?,
+                    ])
+                },
+            )
+            .ok()?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .ok()?,
+        "copilot" => {
+            let mut state = Vec::new();
+            let identity = connection
+                .query_row(
+                    "SELECT session_id, shutdown_model FROM sessions WHERE session_id = ?1",
+                    [parameter],
+                    |row| Ok(vec![row.get::<_, String>(0)?, row.get::<_, String>(1)?]),
+                )
+                .ok()?;
+            state.push(identity);
+            let mut statement = connection
+                .prepare(
+                    "SELECT request_id, agent_id, parent_tool_call_id, model,
+                            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+                       FROM request_usage WHERE session_id = ?1 ORDER BY request_id",
+                )
+                .ok()?;
+            let rows = statement
+                .query_map([parameter], |row| {
+                    Ok(vec![
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        row.get::<_, String>(3)?,
+                        row.get::<_, u64>(4)?.to_string(),
+                        row.get::<_, u64>(5)?.to_string(),
+                        row.get::<_, u64>(6)?.to_string(),
+                        row.get::<_, u64>(7)?.to_string(),
+                    ])
+                })
+                .ok()?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .ok()?;
+            state.extend(rows);
+            state
+        }
+        _ => return None,
+    };
+    Some(std::path::PathBuf::from(format!(
+        "sqlite-state:{}{}",
+        query,
+        serde_json::to_string(&state).ok()?
+    )))
 }
 
 /// Build one stable fingerprint from a parent and its sorted child paths.
@@ -675,15 +775,7 @@ async fn raw_source_with_format(
             agent: AgentKind::Windsurf,
             db_path,
             ..
-        } if db_path.components().any(|component| {
-            component
-                .as_os_str()
-                .to_string_lossy()
-                .eq_ignore_ascii_case("devin")
-        }) =>
-        {
-            Some(RawSource::Sqlite(db_path.clone()))
-        }
+        } if path_has_component(db_path, "devin") => Some(RawSource::Sqlite(db_path.clone())),
         SessionSource::ProviderDb { .. } => {
             session_source_content(source).await.map(RawSource::Jsonl)
         }
@@ -780,12 +872,7 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
             }
         }
         (AgentKind::Windsurf, SessionSource::ProviderDb { db_path, .. })
-            if db_path.components().any(|component| {
-                component
-                    .as_os_str()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case("devin")
-            }) =>
+            if path_has_component(db_path, "devin") =>
         {
             SourceFormat::DevinLocalSqlite
         }
@@ -861,16 +948,24 @@ fn cline_database_path(manifest_path: &std::path::Path) -> Option<std::path::Pat
 }
 
 fn is_amp_thread_path(path: &std::path::Path) -> bool {
-    let path = path.to_string_lossy().to_ascii_lowercase();
+    let path = normalized_path(path);
     path.contains("/.local/share/amp/threads/")
         || path.contains("/appdata/roaming/amp/threads/")
         || path.contains("/.amp/threads/")
 }
 
 fn is_amp_file_changes_path(path: &std::path::Path) -> bool {
-    path.to_string_lossy()
-        .to_ascii_lowercase()
-        .contains("/.amp/file-changes/")
+    normalized_path(path).contains("/.amp/file-changes/")
+}
+
+fn normalized_path(path: &std::path::Path) -> String {
+    format!("/{}/", path.to_string_lossy().replace('\\', "/")).to_ascii_lowercase()
+}
+
+fn path_has_component(path: &std::path::Path, expected: &str) -> bool {
+    normalized_path(path)
+        .split('/')
+        .any(|component| component == expected)
 }
 
 fn is_uuid(value: &str) -> bool {

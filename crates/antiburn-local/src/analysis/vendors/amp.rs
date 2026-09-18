@@ -3,6 +3,7 @@
 //! This reader accepts explicit whole-thread exports only. File-change records
 //! and live CLI state do not satisfy this contract and remain unavailable.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -87,10 +88,13 @@ impl SessionReader for AmpSessionReader {
             Ok(pinned) => pinned,
             Err(reason) => return Ok(VisitOutcome::SourceChanged(reason)),
         };
-        let outcome = self.visit(input, sink)?;
-        Ok(pinned
-            .recheck_full()?
-            .map_or(outcome, VisitOutcome::SourceChanged))
+        let value = read_json_reader(pinned.reader((MAX_RECORD_BYTES + 1) as u64))?;
+        let summary = parse_export(&value, &input.session_id, sink)?;
+        if let Some(reason) = pinned.recheck_full()? {
+            return Ok(VisitOutcome::SourceChanged(reason));
+        }
+        sink.finish(summary);
+        Ok(VisitOutcome::AcceptedFull)
     }
 }
 
@@ -109,6 +113,7 @@ fn parse_export(
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("Amp export has no messages"))?;
     let mut summary = SessionSummary::default();
+    let mut assistant_usage_ids = HashSet::new();
     for message in messages {
         let role = message.get("role").and_then(Value::as_str);
         let usage = message.get("usage");
@@ -117,6 +122,14 @@ fn parse_export(
         }
         if role != Some("assistant") {
             continue;
+        }
+        let message_id = message
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Amp assistant message has no stable id"))?;
+        if usage.is_some() && !assistant_usage_ids.insert(message_id) {
+            anyhow::bail!("Amp assistant usage record is duplicated");
         }
         let model = message
             .get("model")
@@ -182,7 +195,7 @@ fn parse_export(
             thinking_mode: None,
             speed: None,
             has_thinking: false,
-            message_id: None,
+            message_id: Some(message_id.to_owned()),
             is_compaction_boundary: false,
             compaction_trigger: None,
             compaction_pre_tokens: None,
@@ -233,6 +246,15 @@ fn read_json(path: &Path) -> anyhow::Result<Value> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+fn read_json_reader(mut reader: impl Read) -> anyhow::Result<Value> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_RECORD_BYTES {
+        anyhow::bail!("Amp export is too large");
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +277,10 @@ mod tests {
         AmpSessionReader.visit(&input(content), &mut sink).unwrap();
         let session = sink.into_session().unwrap();
         assert_eq!(session.events.len(), 1);
+        assert_eq!(
+            session.events[0].message_id.as_deref(),
+            Some("msg-synthetic-1")
+        );
         assert_eq!(session.events[0].usage.input_tokens, 12);
         assert_eq!(session.events[0].usage.cache_creation_tokens, 1);
     }
@@ -289,5 +315,26 @@ mod tests {
         };
         let mut sink = SessionCollector::new("amp-code", "T-synthetic-39");
         assert!(AmpSessionReader.visit(&file_changes, &mut sink).is_err());
+    }
+
+    #[test]
+    fn duplicate_usage_and_missing_identity_fail_closed() {
+        let content = include_str!("../../../tests/fixtures/source_contracts/amp_export_v39.json")
+            .replace(
+                "}],\"tools\"",
+                "},{\"role\":\"assistant\",\"id\":\"msg-synthetic-1\",\"timestamp\":\"2026-09-01T10:01:00Z\",\"model\":\"synthetic-model\",\"usage\":{\"inputTokens\":12,\"outputTokens\":4,\"cacheReadTokens\":2,\"cacheCreationTokens\":1,\"totalInputTokens\":14,\"maxInputTokens\":32}}],\"tools\"",
+            );
+        let mut sink = SessionCollector::new("amp-code", "T-synthetic-39");
+        assert!(AmpSessionReader.visit(&input(&content), &mut sink).is_err());
+
+        let missing_id =
+            include_str!("../../../tests/fixtures/source_contracts/amp_export_v39.json")
+                .replace("\"id\":\"msg-synthetic-1\",", "");
+        let mut sink = SessionCollector::new("amp-code", "T-synthetic-39");
+        assert!(
+            AmpSessionReader
+                .visit(&input(&missing_id), &mut sink)
+                .is_err()
+        );
     }
 }

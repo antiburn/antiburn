@@ -127,9 +127,10 @@ fn copilot_schema_7_source_has_required_usage_columns() {
             "PRAGMA user_version = 7;
          CREATE TABLE sessions (session_id TEXT PRIMARY KEY, shutdown_model TEXT);
          CREATE TABLE request_usage (
-             session_id TEXT, request_id TEXT, agent_id TEXT,
-             input_tokens INTEGER, output_tokens INTEGER,
-             cache_read_tokens INTEGER, cache_write_tokens INTEGER
+              session_id TEXT, request_id TEXT, agent_id TEXT,
+              parent_tool_call_id TEXT, model TEXT,
+              input_tokens INTEGER, output_tokens INTEGER,
+              cache_read_tokens INTEGER, cache_write_tokens INTEGER
          );",
         )
         .unwrap();
@@ -152,6 +153,8 @@ fn copilot_schema_7_source_has_required_usage_columns() {
                 "session_id",
                 "request_id",
                 "agent_id",
+                "parent_tool_call_id",
+                "model",
                 "input_tokens",
                 "output_tokens",
                 "cache_read_tokens",

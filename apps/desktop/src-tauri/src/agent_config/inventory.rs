@@ -102,7 +102,6 @@ struct InventoryBuilder {
     agent: AgentKind,
     resources: BTreeMap<ResourceKey, AdvisoryResource>,
     issues: Vec<InventoryIssue>,
-    skill_directories_remaining: usize,
 }
 
 impl InventoryBuilder {
@@ -111,21 +110,7 @@ impl InventoryBuilder {
             agent,
             resources: BTreeMap::new(),
             issues: Vec::new(),
-            skill_directories_remaining: MAX_SKILL_DIRECTORIES,
         }
-    }
-
-    fn enter_skill_directory(&mut self, scope: ResourceScope) -> bool {
-        if self.skill_directories_remaining == 0 {
-            self.issue(
-                Some(ResourceKind::Skill),
-                scope,
-                InventoryIssueReason::ResourceCapExceeded,
-            );
-            return false;
-        }
-        self.skill_directories_remaining -= 1;
-        true
     }
 
     fn issue(
@@ -438,9 +423,32 @@ fn enumerate_skill_root(
     safety_root: &Path,
     scope: ResourceScope,
 ) {
-    if !builder.enter_skill_directory(scope) {
+    let mut directories_remaining = MAX_SKILL_DIRECTORIES;
+    enumerate_skill_directory(
+        builder,
+        directory,
+        safety_root,
+        scope,
+        &mut directories_remaining,
+    );
+}
+
+fn enumerate_skill_directory(
+    builder: &mut InventoryBuilder,
+    directory: &Path,
+    safety_root: &Path,
+    scope: ResourceScope,
+    directories_remaining: &mut usize,
+) {
+    if *directories_remaining == 0 {
+        builder.issue(
+            Some(ResourceKind::Skill),
+            scope,
+            InventoryIssueReason::ResourceCapExceeded,
+        );
         return;
     }
+    *directories_remaining -= 1;
     let metadata = match std::fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
@@ -561,7 +569,13 @@ fn enumerate_skill_root(
                     std::fs::symlink_metadata(&path),
                     Ok(metadata) if metadata.is_dir()
                 ) {
-                    enumerate_skill_root(builder, &path, safety_root, scope);
+                    enumerate_skill_directory(
+                        builder,
+                        &path,
+                        safety_root,
+                        scope,
+                        directories_remaining,
+                    );
                 }
             }
             Err(reason) => builder.issue(
@@ -822,6 +836,22 @@ fn inventory_json_file(
     }
 }
 
+fn inventory_github_mcp_file(
+    builder: &mut InventoryBuilder,
+    path: &Path,
+    root: &Path,
+    scope: ResourceScope,
+) {
+    if let Some(document) = optional_json(builder, path, root, scope, true) {
+        add_json_mcp_map(
+            builder,
+            document.get("servers"),
+            scope,
+            ResourceProvenance::StandardConfig,
+        );
+    }
+}
+
 fn inventory_project_roots(
     cwd: Option<&Path>,
     root: Option<&Path>,
@@ -916,14 +946,18 @@ fn copilot_inventory(
     );
     if let (Some(cwd), Some(root)) = (cwd, root) {
         for directory in hierarchy(cwd, root) {
-            for relative in [".github/mcp.json", ".mcp.json"] {
-                inventory_json_file(
-                    builder,
-                    &directory.join(relative),
-                    root,
-                    ResourceScope::Project,
-                );
-            }
+            inventory_github_mcp_file(
+                builder,
+                &directory.join(".github/mcp.json"),
+                root,
+                ResourceScope::Project,
+            );
+            inventory_json_file(
+                builder,
+                &directory.join(".mcp.json"),
+                root,
+                ResourceScope::Project,
+            );
         }
     }
     inventory_skills(

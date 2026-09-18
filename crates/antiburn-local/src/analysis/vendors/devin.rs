@@ -27,8 +27,8 @@ use crate::analysis::model::{
 };
 use crate::analysis::records::parse_ts;
 use crate::discovery::source_version::{
-    DevinAcpCompanion, devin_acp_companion_records, devin_content_fingerprint,
-    devin_provider_db_fingerprint,
+    DEVIN_SQLITE_MAX_ROWS, DEVIN_SQLITE_MAX_TEXT_BYTES, DevinAcpCompanion,
+    devin_acp_companion_records, devin_content_fingerprint, devin_provider_db_fingerprint,
 };
 
 pub struct DevinLocalSessionReader;
@@ -39,8 +39,12 @@ impl SessionReader for DevinLocalSessionReader {
     }
 
     fn capabilities(&self, input: &SessionInput) -> SourceCapabilities {
+        let format = input.source_format_or(SourceFormat::DevinLocalSqlite);
+        if format != SourceFormat::DevinLocalSqlite {
+            return SourceCapabilities::uncharacterized(format);
+        }
         SourceCapabilities {
-            source_format: input.source_format_or(SourceFormat::DevinLocalSqlite),
+            source_format: format,
             timestamps_and_order: true,
             tool_invocations: true,
             model_identity: true,
@@ -186,8 +190,16 @@ fn table_columns(connection: &Connection, table: &str) -> anyhow::Result<HashSet
 }
 
 type Row = HashMap<String, String>;
+struct QueriedRows {
+    rows: Vec<Row>,
+    partial: bool,
+}
 
-fn query_rows(connection: &Connection, query: &str, session_id: &str) -> anyhow::Result<Vec<Row>> {
+fn query_rows(
+    connection: &Connection,
+    query: &str,
+    session_id: &str,
+) -> anyhow::Result<QueriedRows> {
     let mut statement = connection.prepare(query)?;
     let columns: Vec<String> = statement
         .column_names()
@@ -196,13 +208,28 @@ fn query_rows(connection: &Connection, query: &str, session_id: &str) -> anyhow:
         .collect();
     let mut rows = statement.query([session_id])?;
     let mut result = Vec::new();
+    let mut partial = false;
     while let Some(row) = rows.next()? {
+        if result.len() == DEVIN_SQLITE_MAX_ROWS {
+            partial = true;
+            break;
+        }
         let mut values = Row::new();
         for (index, column) in columns.iter().enumerate() {
             let value = row.get_ref(index)?;
             let text = match value {
                 rusqlite::types::ValueRef::Null => None,
-                rusqlite::types::ValueRef::Text(bytes) => String::from_utf8(bytes.to_vec()).ok(),
+                rusqlite::types::ValueRef::Text(bytes) => {
+                    let end = bytes.len().min(DEVIN_SQLITE_MAX_TEXT_BYTES);
+                    let end = (0..=end)
+                        .rev()
+                        .find(|index| std::str::from_utf8(&bytes[..*index]).is_ok())
+                        .unwrap_or(0);
+                    if end < bytes.len() {
+                        partial = true;
+                    }
+                    String::from_utf8(bytes[..end].to_vec()).ok()
+                }
                 rusqlite::types::ValueRef::Integer(value) => Some(value.to_string()),
                 rusqlite::types::ValueRef::Real(value) => Some(value.to_string()),
                 rusqlite::types::ValueRef::Blob(_) => None,
@@ -213,10 +240,13 @@ fn query_rows(connection: &Connection, query: &str, session_id: &str) -> anyhow:
         }
         result.push(values);
     }
-    Ok(result)
+    Ok(QueriedRows {
+        rows: result,
+        partial,
+    })
 }
 
-fn session_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+fn session_rows(connection: &Connection, session_id: &str) -> anyhow::Result<QueriedRows> {
     query_rows(
         connection,
         "SELECT id, working_directory, model, main_chain_id, hidden, created_at, last_activity_at
@@ -225,7 +255,7 @@ fn session_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec
     )
 }
 
-fn message_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+fn message_rows(connection: &Connection, session_id: &str) -> anyhow::Result<QueriedRows> {
     query_rows(
         connection,
         "SELECT node_id, parent_node_id, session_id, raw_message, created_at
@@ -240,7 +270,7 @@ fn message_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec
     )
 }
 
-fn child_model_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+fn child_model_rows(connection: &Connection, session_id: &str) -> anyhow::Result<QueriedRows> {
     query_rows(
         connection,
         "SELECT id, model FROM sessions
@@ -251,7 +281,7 @@ fn child_model_rows(connection: &Connection, session_id: &str) -> anyhow::Result
     )
 }
 
-fn head_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+fn head_rows(connection: &Connection, session_id: &str) -> anyhow::Result<QueriedRows> {
     query_rows(
         connection,
         "SELECT session_id, tool_call_id, child_agent_id, child_chain_node_id
@@ -261,7 +291,7 @@ fn head_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Ro
     )
 }
 
-fn state_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<Row>> {
+fn state_rows(connection: &Connection, session_id: &str) -> anyhow::Result<QueriedRows> {
     query_rows(
         connection,
         "SELECT session_id, tool_call_id, state FROM tool_call_state
@@ -301,6 +331,7 @@ fn visit_connection(
 ) -> anyhow::Result<SessionSummary> {
     let sessions = session_rows(connection, session_id)?;
     let session = sessions
+        .rows
         .iter()
         .find(|row| row.get("id").is_some_and(|id| id == session_id))
         .ok_or_else(|| anyhow::anyhow!("Devin Local session {session_id} was not found"))?;
@@ -311,25 +342,36 @@ fn visit_connection(
         return Ok(SessionSummary::default());
     }
     let nodes = message_rows(connection, session_id)?;
-    let chain = active_chain(session, &nodes)?;
+    let chain = active_chain(session, &nodes.rows)?;
     let mut child_models = HashMap::new();
-    for row in child_model_rows(connection, session_id)? {
+    let child_models_rows = child_model_rows(connection, session_id)?;
+    let child_models_partial = child_models_rows.partial;
+    for row in child_models_rows.rows {
         if let (Some(id), Some(model)) = (row.get("id"), row.get("model")) {
             child_models.insert(id.clone(), model.clone());
         }
     }
-    let heads = head_rows(connection, session_id)?;
-    let states = state_rows(connection, session_id)?;
+    let head_query = head_rows(connection, session_id)?;
+    let state_query = state_rows(connection, session_id)?;
+    let heads = head_query.rows;
+    let states = state_query.rows;
     let mut acp_index = None;
+    let mut acp_partial = false;
     let mut seen_calls = HashSet::new();
-    let mut incomplete = false;
+    let mut incomplete = sessions.partial
+        || nodes.partial
+        || child_models_partial
+        || head_query.partial
+        || state_query.partial;
     let mut model = session.get("model").cloned();
     for node in chain {
         let Some(raw) = node.get("raw_message") else {
+            incomplete = true;
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             continue;
         };
         let Ok(value) = serde_json::from_str::<Value>(raw) else {
+            incomplete = true;
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             continue;
         };
@@ -387,8 +429,12 @@ fn visit_connection(
                         &heads,
                         &states,
                         &child_models,
-                        &nodes,
-                        acp_index.get_or_insert_with(|| acp_companion_index(db_path, &heads)),
+                        &nodes.rows,
+                        acp_index.get_or_insert_with(|| {
+                            let (index, partial) = acp_companion_index(db_path, &heads);
+                            acp_partial = partial;
+                            index
+                        }),
                     ) {
                         Some(child_model) => sink.record(NormalizedRecord::Observation(Box::new(
                             EvidenceObservation::SubagentSpawn {
@@ -408,7 +454,7 @@ fn visit_connection(
     }
     Ok(SessionSummary {
         model,
-        coverage_gaps: if incomplete {
+        coverage_gaps: if incomplete || acp_partial {
             vec![PartialReason::AttributionIncomplete]
         } else {
             Vec::new()
@@ -511,7 +557,7 @@ type AcpIndex = HashMap<AcpKey, Vec<AcpCompanion>>;
 type AcpCompanion = DevinAcpCompanion;
 
 /// Build one index for the optional ACP companion files used by this session.
-fn acp_companion_index(db_path: &Path, heads: &[Row]) -> AcpIndex {
+fn acp_companion_index(db_path: &Path, heads: &[Row]) -> (AcpIndex, bool) {
     let keys = heads
         .iter()
         .filter_map(|head| {
@@ -522,19 +568,23 @@ fn acp_companion_index(db_path: &Path, heads: &[Row]) -> AcpIndex {
             ))
         })
         .collect();
-    devin_acp_companion_records(db_path, &keys)
-        .into_iter()
-        .fold(HashMap::new(), |mut index, companion| {
-            index
-                .entry((
-                    companion.parent_session_id.clone(),
-                    companion.call_id.clone(),
-                    companion.child_id.clone(),
-                ))
-                .or_default()
-                .push(companion);
-            index
-        })
+    let (records, partial) = devin_acp_companion_records(db_path, &keys);
+    (
+        records
+            .into_iter()
+            .fold(HashMap::new(), |mut index, companion| {
+                index
+                    .entry((
+                        companion.parent_session_id.clone(),
+                        companion.call_id.clone(),
+                        companion.child_id.clone(),
+                    ))
+                    .or_default()
+                    .push(companion);
+                index
+            }),
+        partial,
+    )
 }
 
 /// ACP is a child companion, not a source. Missing companions are valid

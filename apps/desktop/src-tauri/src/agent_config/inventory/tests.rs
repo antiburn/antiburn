@@ -208,8 +208,11 @@ fn json_mcp_enabled_and_disabled_fields_must_agree() {
                 "enabled": {"command": "one", "enabled": true},
                 "disabled": {"command": "two", "disabled": true},
                 "complement": {"command": "three", "enabled": true, "disabled": false},
+                "disabled-complement": {"command": "three-b", "enabled": false, "disabled": true},
                 "conflict": {"command": "four", "enabled": true, "disabled": true},
-                "invalid": {"command": "five", "enabled": "yes"}
+                "same": {"command": "five", "enabled": false, "disabled": false},
+                "invalid": {"command": "six", "enabled": "yes"},
+                "invalid-disabled": {"command": "seven", "disabled": "no"}
             }
         }"#,
     );
@@ -254,7 +257,37 @@ fn json_mcp_enabled_and_disabled_fields_must_agree() {
         resource(
             &inventory,
             ResourceKind::McpServer,
+            "disabled-complement",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Disabled
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
             "conflict",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Unknown
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "same",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Unknown
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "invalid-disabled",
             ResourceScope::Global
         )
         .enabled,
@@ -285,10 +318,14 @@ fn json_mcp_enabled_and_disabled_fields_must_agree() {
 #[test]
 fn skill_traversal_budget_stops_recursive_descent() {
     let mut builder = InventoryBuilder::new(AgentKind::Claude);
-    for _ in 0..MAX_SKILL_DIRECTORIES {
-        assert!(builder.enter_skill_directory(ResourceScope::Global));
-    }
-    assert!(!builder.enter_skill_directory(ResourceScope::Global));
+    let mut directories_remaining = 0;
+    enumerate_skill_directory(
+        &mut builder,
+        Path::new("missing"),
+        Path::new("."),
+        ResourceScope::Global,
+        &mut directories_remaining,
+    );
     assert!(builder.issues.contains(&InventoryIssue {
         kind: Some(ResourceKind::Skill),
         scope: ResourceScope::Global,
@@ -520,7 +557,11 @@ fn phase_eight_inventories_each_vendor_mcp_and_skill_root_by_scope() {
                     _ => unreachable!(),
                 },
             }),
-            r#"{"mcpServers":{"project":{"command":"project","disabled":true}}}"#,
+            if agent == AgentKind::Copilot {
+                r#"{"servers":{"project":{"type":"stdio","command":"project","disabled":true}}}"#
+            } else {
+                r#"{"mcpServers":{"project":{"command":"project","disabled":true}}}"#
+            },
         );
         write(
             &home.join(format!("{global_skills}/global/SKILL.md")),
@@ -566,6 +607,11 @@ fn phase_eight_inventories_each_vendor_mcp_and_skill_root_by_scope() {
             EnabledState::Disabled,
             "{agent:?}"
         );
+        if agent == AgentKind::Copilot {
+            assert!(!inventory.resources.iter().any(|resource| {
+                resource.kind == ResourceKind::McpServer && resource.canonical_name == "servers"
+            }));
+        }
         resource(
             &inventory,
             ResourceKind::Skill,
