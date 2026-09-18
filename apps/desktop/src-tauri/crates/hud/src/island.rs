@@ -282,16 +282,20 @@ pub fn refresh_notch() -> bool {
 
 /// Pretend the primary display has a notch, or stop pretending. Development
 /// menu only. Returns the new setting.
+///
+/// The event tells the settings pane that the notch came or went, because the
+/// pane reads the notch one time when it opens.
 #[cfg(target_os = "macos")]
-pub fn set_fake_notch(on: bool) -> bool {
+pub fn set_fake_notch(app: &AppHandle, on: bool) -> bool {
     FAKE_NOTCH_ON.store(on, Ordering::Relaxed);
     refresh_notch();
+    emit(app, island_state());
     on
 }
 
 /// Keep the fake notch inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
-pub fn set_fake_notch(_on: bool) -> bool {
+pub fn set_fake_notch(_app: &AppHandle, _on: bool) -> bool {
     false
 }
 

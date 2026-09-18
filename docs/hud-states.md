@@ -142,8 +142,8 @@ There is no setting and no dock control; the drop is the gesture.
 On a Mac with a notch, the HUD can sit in it. The island is a pure black
 panel the width of the notch plus a 30 logical px wing either side, and it
 belongs to the built-in display. Drag the HUD onto the notch and drop it
-there, or turn on "Sit in the notch" in Settings › Usage. Drag it out to
-leave. It is a third placement beside floating and edge docking, and the
+there, or press "Move to Notch" on the Docking row in Settings › Usage. Drag
+it out, or press the same button again, to leave. It is a third placement beside floating and edge docking, and the
 crate stores it with the dock state.
 
 - **Collapsed.** The island is the notch row alone, so the notch covers all

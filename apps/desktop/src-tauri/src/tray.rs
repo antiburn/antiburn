@@ -801,7 +801,7 @@ fn toggle_fake_notch(app: &AppHandle) {
     let on = app
         .try_state::<TrayMenu>()
         .is_some_and(|menu| menu.fake_notch.is_checked().unwrap_or(false));
-    let enabled = antiburn_hud::set_fake_notch(on);
+    let enabled = antiburn_hud::set_fake_notch(app, on);
     if let Some(menu) = app.try_state::<TrayMenu>()
         && let Err(error) = menu.fake_notch.set_checked(enabled)
     {
