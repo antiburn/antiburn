@@ -390,7 +390,7 @@ fn should_recompute(
     !existing.contains_key(&(from_epoch, to_epoch)) || to_epoch >= recompute_since
 }
 
-fn window_start_epoch(period: &ProviderUsagePeriod, lane: &str) -> Option<i64> {
+pub(crate) fn window_start_epoch(period: &ProviderUsagePeriod, lane: &str) -> Option<i64> {
     period.starts_at_epoch.or_else(|| {
         period
             .resets_at_epoch
