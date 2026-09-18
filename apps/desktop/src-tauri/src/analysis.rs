@@ -460,10 +460,18 @@ fn fingerprint_of_path(path: &std::path::Path) -> String {
     let mtime = metadata
         .modified()
         .ok()
-        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|since| since.as_nanos())
+        .and_then(system_time_nanos)
         .unwrap_or(0);
     format!("{mtime}:{}", metadata.len())
+}
+
+fn system_time_nanos(time: std::time::SystemTime) -> Option<i128> {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => i128::try_from(duration.as_nanos()).ok(),
+        Err(error) => i128::try_from(error.duration().as_nanos())
+            .ok()
+            .map(|nanos| -nanos),
+    }
 }
 
 fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {

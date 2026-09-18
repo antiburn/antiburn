@@ -6,8 +6,10 @@
 //! semantics.
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+#[cfg(test)]
+use std::path::PathBuf;
 
 use anyhow::Context;
 use rusqlite::{Connection, OpenFlags};
@@ -24,7 +26,10 @@ use crate::analysis::model::{
     NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
 use crate::analysis::records::parse_ts;
-use crate::discovery::source_version::{devin_content_fingerprint, devin_provider_db_fingerprint};
+use crate::discovery::source_version::{
+    DevinAcpCompanion, devin_acp_companion_records, devin_content_fingerprint,
+    devin_provider_db_fingerprint,
+};
 
 pub struct DevinLocalSessionReader;
 
@@ -83,7 +88,7 @@ impl SessionReader for DevinLocalSessionReader {
         let connection = open_database(path)?;
         connection.execute_batch("BEGIN")?;
         validate_schema(&connection)?;
-        let actual = session_fingerprint(&connection, &input.session_id)
+        let actual = session_fingerprint(&connection, path, &input.session_id)
             .map(|(latest, rows)| devin_provider_db_fingerprint(latest, rows));
         if actual.as_deref() != Some(claimed_fingerprint) {
             return Ok(VisitOutcome::SourceChanged(
@@ -94,7 +99,7 @@ impl SessionReader for DevinLocalSessionReader {
         connection.execute_batch("COMMIT")?;
 
         let verification = open_database(path)?;
-        let observed = session_fingerprint(&verification, &input.session_id)
+        let observed = session_fingerprint(&verification, path, &input.session_id)
             .map(|(latest, rows)| devin_provider_db_fingerprint(latest, rows));
         if observed.as_deref() != Some(claimed_fingerprint) {
             return Ok(VisitOutcome::SourceChanged(
@@ -265,7 +270,11 @@ fn state_rows(connection: &Connection, session_id: &str) -> anyhow::Result<Vec<R
     )
 }
 
-fn session_fingerprint(connection: &Connection, session_id: &str) -> Option<(u64, u64)> {
+fn session_fingerprint(
+    connection: &Connection,
+    db_path: &Path,
+    session_id: &str,
+) -> Option<(u64, u64)> {
     let latest: i64 = connection
         .query_row(
             "SELECT COALESCE((SELECT last_activity_at FROM sessions WHERE id = ?1), (SELECT created_at FROM sessions WHERE id = ?1), 0), (SELECT COUNT(*) FROM message_nodes WHERE session_id = ?1)",
@@ -280,7 +289,7 @@ fn session_fingerprint(connection: &Connection, session_id: &str) -> Option<(u64
             |row| row.get(0),
         )
         .ok()?;
-    let content = devin_content_fingerprint(connection, session_id)?;
+    let content = devin_content_fingerprint(connection, db_path, session_id)?;
     Some((content ^ latest.max(0) as u64, rows.max(0) as u64))
 }
 
@@ -379,7 +388,7 @@ fn visit_connection(
                         &states,
                         &child_models,
                         &nodes,
-                        acp_index.get_or_insert_with(|| acp_companion_index(db_path)),
+                        acp_index.get_or_insert_with(|| acp_companion_index(db_path, &heads)),
                     ) {
                         Some(child_model) => sink.record(NormalizedRecord::Observation(Box::new(
                             EvidenceObservation::SubagentSpawn {
@@ -499,71 +508,33 @@ fn relation(
 type AcpKey = (String, String, String);
 type AcpIndex = HashMap<AcpKey, Vec<AcpCompanion>>;
 
-#[derive(Clone)]
-struct AcpCompanion {
-    model: Option<String>,
-    status: Option<String>,
-}
+type AcpCompanion = DevinAcpCompanion;
 
 /// Build one index for the optional ACP companion files used by this session.
-fn acp_companion_index(db_path: &Path) -> AcpIndex {
-    let mut index = AcpIndex::new();
-    for directory in acp_directories(db_path) {
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !entry.file_type().ok().is_some_and(|kind| kind.is_file()) {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("");
-            if !(name.ends_with(".json") || name.ends_with(".ndjson")) {
-                continue;
-            }
-            let Ok(content) = fs::read_to_string(&path) else {
-                continue;
-            };
-            for line in content.lines() {
-                let Ok(value) = serde_json::from_str::<Value>(line) else {
-                    continue;
-                };
-                if value.get("schema").and_then(Value::as_u64) != Some(6)
-                    && value.get("version").and_then(Value::as_u64) != Some(6)
-                {
-                    continue;
-                }
-                let Some(child) =
-                    string_field(&value, &["childAgentId", "child_agent_id", "agentId"])
-                else {
-                    continue;
-                };
-                let Some(parent) = string_field(
-                    &value,
-                    &["parentSessionId", "parent_session_id", "sessionId"],
-                ) else {
-                    continue;
-                };
-                let Some(call) = string_field(&value, &["toolCallId", "tool_call_id"]) else {
-                    continue;
-                };
-                index
-                    .entry((parent, call, child))
-                    .or_default()
-                    .push(AcpCompanion {
-                        model: string_field(
-                            &value,
-                            &["model", "modelId", "model_id", "generationModel"],
-                        ),
-                        status: string_field(&value, &["status", "stopReason", "stop_reason"]),
-                    });
-            }
-        }
-    }
-    index
+fn acp_companion_index(db_path: &Path, heads: &[Row]) -> AcpIndex {
+    let keys = heads
+        .iter()
+        .filter_map(|head| {
+            Some((
+                head.get("session_id")?.clone(),
+                head.get("tool_call_id")?.clone(),
+                head.get("child_agent_id")?.clone(),
+            ))
+        })
+        .collect();
+    devin_acp_companion_records(db_path, &keys)
+        .into_iter()
+        .fold(HashMap::new(), |mut index, companion| {
+            index
+                .entry((
+                    companion.parent_session_id.clone(),
+                    companion.call_id.clone(),
+                    companion.child_id.clone(),
+                ))
+                .or_default()
+                .push(companion);
+            index
+        })
 }
 
 /// ACP is a child companion, not a source. Missing companions are valid
@@ -601,42 +572,6 @@ fn acp_relation_is_consistent(
     Some(())
 }
 
-fn string_field(value: &Value, names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| {
-        value
-            .get(*name)
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    })
-}
-
-fn acp_directories(db_path: &Path) -> Vec<PathBuf> {
-    let Some(cli_root) = db_path.parent() else {
-        return Vec::new();
-    };
-    let mut directories = vec![
-        cli_root.join("acp-messages"),
-        cli_root.join("User").join("acp-messages"),
-    ];
-    if let Some(home) = crate::discovery::home_dir() {
-        directories.push(
-            home.join(".config")
-                .join("devin")
-                .join("User")
-                .join("acp-messages"),
-        );
-        directories.push(
-            home.join("Library")
-                .join("Application Support")
-                .join("Devin")
-                .join("User")
-                .join("acp-messages"),
-        );
-    }
-    directories
-}
-
 fn usage(value: &Value) -> Usage {
     let metric = value.pointer("/metadata/metrics");
     let number = |name| {
@@ -658,6 +593,7 @@ fn usage(value: &Value) -> Usage {
 mod tests {
     use super::*;
     use crate::analysis::interface::{RecordSink, SessionSummary};
+    use std::fs;
     use tempfile::TempDir;
 
     const FIXTURE: &str = include_str!("../../../tests/fixtures/devin_local_migration_17.sql");
@@ -723,16 +659,36 @@ mod tests {
     fn fingerprint_changes_when_reader_content_changes_without_row_growth() {
         let (_dir, path) = fixture_db();
         let connection = Connection::open(&path).unwrap();
-        let before = session_fingerprint(&connection, "root");
+        let before = session_fingerprint(&connection, &path, "root");
         connection
             .execute(
-                "UPDATE message_nodes SET raw_message = raw_message || ' ' WHERE session_id = 'root' AND node_id = 1",
+                "UPDATE sessions SET model = 'child-model-2' WHERE id = 'child'",
                 [],
             )
             .unwrap();
-        let after = session_fingerprint(&connection, "root");
-        assert_ne!(before, after);
-        assert_eq!(before.map(|(_, rows)| rows), after.map(|(_, rows)| rows));
+        let after_child_model = session_fingerprint(&connection, &path, "root");
+        assert_ne!(before, after_child_model);
+        connection
+            .execute(
+                "UPDATE message_nodes SET raw_message = raw_message || ' ' WHERE session_id = 'child' AND node_id = 3",
+                [],
+            )
+            .unwrap();
+        let after_child_message = session_fingerprint(&connection, &path, "root");
+        assert_ne!(after_child_model, after_child_message);
+        let companion_dir = path.parent().unwrap().join("acp-messages");
+        fs::create_dir_all(&companion_dir).unwrap();
+        fs::write(
+            companion_dir.join("child.ndjson"),
+            "{\"schema\":6,\"parentSessionId\":\"root\",\"toolCallId\":\"call-1\",\"childAgentId\":\"child\",\"model\":\"child-model-2\",\"status\":\"completed\"}\n",
+        )
+        .unwrap();
+        let after_companion = session_fingerprint(&connection, &path, "root");
+        assert_ne!(after_child_message, after_companion);
+        assert_eq!(
+            before.map(|(_, rows)| rows),
+            after_companion.map(|(_, rows)| rows)
+        );
     }
 
     #[test]

@@ -313,7 +313,7 @@ fn devin_session_fingerprint(path: &Path, session_id: &str) -> Option<(u64, u64)
             |row| row.get(0),
         )
         .ok()?;
-    let content = devin_content_fingerprint(&connection, session_id)?;
+    let content = devin_content_fingerprint(&connection, path, session_id)?;
     Some((content ^ latest.max(0) as u64, rows.max(0) as u64))
 }
 

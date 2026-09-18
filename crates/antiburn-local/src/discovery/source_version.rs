@@ -5,7 +5,9 @@ use crate::analysis::SourceFormat;
 use crate::model::AgentKind;
 use crate::platform::environment::DiscoveryEnvironment;
 use rusqlite::Connection;
+use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -47,13 +49,143 @@ pub(crate) fn devin_provider_db_fingerprint(latest: u64, rows: u64) -> String {
     format!("sv2:devin:{latest}:{rows}")
 }
 
+pub(crate) const DEVIN_ACP_MAX_FILES: usize = 64;
+pub(crate) const DEVIN_ACP_MAX_BYTES_PER_FILE: u64 = 4 * 1024 * 1024;
+pub(crate) const DEVIN_ACP_MAX_RECORDS: usize = 4096;
+
+#[derive(Debug, Clone)]
+pub(crate) struct DevinAcpCompanion {
+    pub parent_session_id: String,
+    pub call_id: String,
+    pub child_id: String,
+    pub model: Option<String>,
+    pub status: Option<String>,
+}
+
+pub(crate) fn devin_acp_companion_records(
+    db_path: &Path,
+    keys: &HashSet<(String, String, String)>,
+) -> Vec<DevinAcpCompanion> {
+    let mut records = Vec::new();
+    let mut scanned_files = 0;
+    'directories: for directory in devin_acp_directories(db_path) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if records.len() >= DEVIN_ACP_MAX_RECORDS || scanned_files >= DEVIN_ACP_MAX_FILES {
+                break 'directories;
+            }
+            let path = entry.path();
+            if !entry.file_type().ok().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if !(name.ends_with(".json") || name.ends_with(".ndjson")) {
+                continue;
+            }
+            scanned_files += 1;
+            let Ok(file) = std::fs::File::open(path) else {
+                continue;
+            };
+            let reader = BufReader::new(file).take(DEVIN_ACP_MAX_BYTES_PER_FILE);
+            for line in reader.lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if value.get("schema").and_then(serde_json::Value::as_u64) != Some(6)
+                    && value.get("version").and_then(serde_json::Value::as_u64) != Some(6)
+                {
+                    continue;
+                }
+                let Some(child_id) =
+                    acp_string_field(&value, &["childAgentId", "child_agent_id", "agentId"])
+                else {
+                    continue;
+                };
+                let Some(parent_session_id) = acp_string_field(
+                    &value,
+                    &["parentSessionId", "parent_session_id", "sessionId"],
+                ) else {
+                    continue;
+                };
+                let Some(call_id) = acp_string_field(&value, &["toolCallId", "tool_call_id"])
+                else {
+                    continue;
+                };
+                if !keys.contains(&(parent_session_id.clone(), call_id.clone(), child_id.clone())) {
+                    continue;
+                }
+                records.push(DevinAcpCompanion {
+                    parent_session_id,
+                    call_id,
+                    child_id,
+                    model: acp_string_field(
+                        &value,
+                        &["model", "modelId", "model_id", "generationModel"],
+                    ),
+                    status: acp_string_field(&value, &["status", "stopReason", "stop_reason"]),
+                });
+            }
+        }
+    }
+    records
+}
+
+fn devin_acp_directories(db_path: &Path) -> Vec<std::path::PathBuf> {
+    let Some(cli_root) = db_path.parent() else {
+        return Vec::new();
+    };
+    let mut directories = vec![
+        cli_root.join("acp-messages"),
+        cli_root.join("User").join("acp-messages"),
+    ];
+    if let Some(home) = crate::discovery::home_dir() {
+        directories.push(
+            home.join(".config")
+                .join("devin")
+                .join("User")
+                .join("acp-messages"),
+        );
+        directories.push(
+            home.join("Library")
+                .join("Application Support")
+                .join("Devin")
+                .join("User")
+                .join("acp-messages"),
+        );
+    }
+    directories
+}
+
+fn acp_string_field(value: &serde_json::Value, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        value
+            .get(*name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    })
+}
+
 /// Hash every Devin row that the reader uses to select and normalize a
 /// session. The row order is explicit so the value is stable across SQLite
 /// snapshots and does not depend on HashMap iteration.
-pub(crate) fn devin_content_fingerprint(connection: &Connection, session_id: &str) -> Option<u64> {
+pub(crate) fn devin_content_fingerprint(
+    connection: &Connection,
+    db_path: &Path,
+    session_id: &str,
+) -> Option<u64> {
     let queries = [
         "SELECT id, working_directory, model, main_chain_id, hidden, created_at, last_activity_at FROM sessions WHERE id = ?1",
-        "SELECT node_id, parent_node_id, session_id, raw_message, created_at FROM message_nodes WHERE session_id = ?1 ORDER BY node_id",
+        "SELECT id, model FROM sessions WHERE id IN (SELECT child_agent_id FROM subagent_heads WHERE session_id = ?1) ORDER BY id",
+        "SELECT node_id, parent_node_id, session_id, raw_message, created_at FROM message_nodes WHERE session_id = ?1 OR (session_id, node_id) IN (SELECT child_agent_id, child_chain_node_id FROM subagent_heads WHERE session_id = ?1) ORDER BY session_id, node_id",
         "SELECT session_id, tool_call_id, child_agent_id, child_chain_node_id FROM subagent_heads WHERE session_id = ?1 ORDER BY tool_call_id, child_agent_id",
         "SELECT session_id, tool_call_id, state FROM tool_call_state WHERE session_id = ?1 ORDER BY tool_call_id",
     ];
@@ -69,6 +201,33 @@ pub(crate) fn devin_content_fingerprint(connection: &Connection, session_id: &st
             }
             fingerprint.write(b"\n");
         }
+    }
+    let mut keys = HashSet::new();
+    let mut statement = connection
+        .prepare(
+            "SELECT session_id, tool_call_id, child_agent_id FROM subagent_heads
+             WHERE session_id = ?1 ORDER BY tool_call_id, child_agent_id",
+        )
+        .ok()?;
+    let mut rows = statement.query([session_id]).ok()?;
+    while let Some(row) = rows.next().ok()? {
+        keys.insert((row.get(0).ok()?, row.get(1).ok()?, row.get(2).ok()?));
+    }
+    let mut companions = devin_acp_companion_records(db_path, &keys);
+    companions.sort_by_key(|companion| {
+        (
+            companion.parent_session_id.clone(),
+            companion.call_id.clone(),
+            companion.child_id.clone(),
+            companion.model.clone(),
+            companion.status.clone(),
+        )
+    });
+    for companion in companions {
+        fingerprint
+            .write_fmt(format_args!("{companion:?}\0"))
+            .ok()?;
+        fingerprint.write(b"\n");
     }
     Some(fingerprint.finish())
 }
@@ -289,8 +448,7 @@ fn file_fingerprint(path: &Path) -> String {
     let mtime = metadata
         .modified()
         .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|time| time.as_nanos())
+        .and_then(system_time_nanos)
         .unwrap_or_default();
     format!("{mtime}:{}", metadata.len())
 }
