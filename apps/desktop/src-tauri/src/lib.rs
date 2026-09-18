@@ -98,6 +98,7 @@ mod tray;
 mod tray_title;
 mod updates;
 mod usage_alerts;
+mod wayland_titlebar;
 mod webview_defaults;
 mod window_lifecycle;
 mod window_placement;
