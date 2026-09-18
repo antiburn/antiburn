@@ -1,5 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core"
 
+import { traceAsync, traceEvent } from "./perfTrace"
+
 /** How well the app can describe one provider's usage. Mirrors Rust `ProviderUsageState`. */
 export type ProviderUsageState = "live" | "estimated" | "observed" | "detected" | "unknown"
 
@@ -239,18 +241,98 @@ export interface QuotaUsagePayload {
   generatedAt: string
 }
 
+/** Request for `get_session_quota`. Mirrors Rust `SessionQuotaRequest`. */
+interface SessionQuotaRequest {
+  agent: string
+  sessionId: string
+  wslDistro: string | null
+}
+
+/** The quota period one [[SessionQuotaEntryPayload]] falls in. Mirrors Rust
+ * `SessionQuotaPeriodPayload`. */
+interface SessionQuotaPeriodPayload {
+  periodId: number | null
+  startsAtEpoch: number
+  resetsAtEpoch: number
+  startSource: QuotaBoundarySourcePayload
+  resetSource: QuotaBoundarySourcePayload
+  peakPercent: number | null
+}
+
+/** One `(provider, lane, period)` a session's turns fell in. Mirrors Rust
+ * `SessionQuotaEntryPayload`. */
+export interface SessionQuotaEntryPayload {
+  provider: string
+  displayName: string
+  /** `null` when the session has no resolved account for this provider. */
+  accountKey: string | null
+  /** `null` only when `confidence` is `"unbound"`: an entry with no
+   * resolved account has no lane to name either. */
+  lane: string | null
+  /** `null` only when `confidence` is `"unbound"`. */
+  laneLabel: string | null
+  /** `null` only when `confidence` is `"unbound"`. */
+  period: SessionQuotaPeriodPayload | null
+  usd: number
+  percent: number | null
+  /** `"learned"`, `"seeded"`, or `"unbound"` when the session has no
+   * resolved account for the provider its usage attributes to. */
+  confidence: "learned" | "seeded" | "unbound"
+}
+
+/** Response for `get_session_quota`. Mirrors Rust `SessionQuotaPayload`. */
+export interface SessionQuotaPayload {
+  entries: SessionQuotaEntryPayload[]
+  generatedAt: string
+}
+
 /** Every `(provider, account)` this app has observed at least one quota
  * period for, and each account's lanes. */
 export async function getQuotaAccounts(): Promise<QuotaAccountsPayload> {
-  if (!isTauri()) return EMPTY_QUOTA_ACCOUNTS
-  return invoke<QuotaAccountsPayload>("get_quota_accounts")
+  return traceAsync("ipc.getQuotaAccounts", {}, async () => {
+    if (!isTauri()) return EMPTY_QUOTA_ACCOUNTS
+    return invoke<QuotaAccountsPayload>("get_quota_accounts")
+  })
 }
 
 /** One lane's quota windows over a range, its meter readings, and the
  * sessions estimated to have contributed to each window. */
 export async function getQuotaUsage(request: QuotaUsageRequest): Promise<QuotaUsagePayload> {
-  if (!isTauri()) return EMPTY_QUOTA_USAGE
-  return invoke<QuotaUsagePayload>("get_quota_usage", { request })
+  const { provider, accountKey, lane, rangeStartEpoch, rangeEndEpoch } = request
+  const usage = await traceAsync(
+    "ipc.getQuotaUsage",
+    {
+      provider,
+      accountKey,
+      lane,
+      rangeStartEpoch,
+      rangeEndEpoch,
+      spanDays: (rangeEndEpoch - rangeStartEpoch) / 86400,
+    },
+    async () => {
+      if (!isTauri()) return EMPTY_QUOTA_USAGE
+      return invoke<QuotaUsagePayload>("get_quota_usage", { request })
+    },
+  )
+  traceEvent("ipc.getQuotaUsage.payload", {
+    periods: usage.periods.length,
+    samples: usage.periods.reduce((total, period) => total + period.samples.length, 0),
+    contributionBuckets: usage.periods.reduce(
+      (total, period) => total + period.contributions.length,
+      0,
+    ),
+    sessions: usage.periods.reduce((total, period) => total + period.sessions.length, 0),
+    factorNull: usage.factor == null,
+  })
+  return usage
+}
+
+/** One session's estimated quota contributions, by provider and lane. */
+export async function getSessionQuota(
+  request: SessionQuotaRequest,
+): Promise<SessionQuotaPayload> {
+  if (!isTauri()) return EMPTY_SESSION_QUOTA
+  return invoke<SessionQuotaPayload>("get_session_quota", { request })
 }
 
 const EMPTY_QUOTA_ACCOUNTS: QuotaAccountsPayload = {
@@ -267,6 +349,11 @@ const EMPTY_QUOTA_USAGE: QuotaUsagePayload = {
   rangeEndEpoch: 0,
   factor: null,
   periods: [],
+  generatedAt: "",
+}
+
+const EMPTY_SESSION_QUOTA: SessionQuotaPayload = {
+  entries: [],
   generatedAt: "",
 }
 

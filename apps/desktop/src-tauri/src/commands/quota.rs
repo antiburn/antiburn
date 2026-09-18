@@ -14,9 +14,10 @@ use crate::dto::{
     SessionQuotaRequest,
 };
 
-/// A quota query's range may not exceed this many days: enough for a month
-/// view, bounded so one request cannot force an unbounded turn-row scan.
-const MAX_QUOTA_RANGE_DAYS: i64 = 35;
+/// A quota query's range may not exceed this many days: enough for ten
+/// weekly windows, bounded so one request cannot force an unbounded
+/// turn-row scan.
+const MAX_QUOTA_RANGE_DAYS: i64 = 70;
 
 /// Every provider account this app has observed at least one quota period
 /// for, with the lanes each one carries. Feeds the quota screen's account
@@ -793,9 +794,10 @@ mod tests {
     }
 
     #[test]
-    fn quota_range_validation_rejects_a_range_over_thirty_five_days_and_accepts_a_week() {
+    fn quota_range_validation_rejects_a_range_over_seventy_days_and_accepts_a_week() {
         assert!(validate_quota_range(0, 7 * 86_400).is_ok());
-        assert!(validate_quota_range(0, 36 * 86_400).is_err());
+        assert!(validate_quota_range(0, 70 * 86_400).is_ok());
+        assert!(validate_quota_range(0, 71 * 86_400).is_err());
         assert!(
             validate_quota_range(100, 100).is_err(),
             "an empty range is rejected"

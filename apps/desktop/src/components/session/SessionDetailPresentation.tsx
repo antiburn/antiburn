@@ -77,7 +77,9 @@ import { UnusedContext } from "./analysis/UnusedContext"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
 import { SubagentBadge } from "./orchestration/SubagentBadge"
+import { SessionQuotaSection, type SessionQuotaOpenTarget } from "./SessionQuotaSection"
 import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
+import type { SessionQuotaPayload } from "../../lib/ipc"
 
 /**
  * Skeleton anti-flash timing. A fast load finishes before the delay elapses,
@@ -143,6 +145,13 @@ export interface SessionDetailPresentationProps {
   modelRuns: PresentableModelRun[]
   /** Direct fork relations resolved from local transcripts. */
   relations: LocalSessionRelations | null
+  /** This session's quota contributions, for the Cost tab's Quota block. */
+  sessionQuota?: SessionQuotaPayload | null
+  /** Whether the last quota load failed. Never hides the rest of the detail. */
+  sessionQuotaError?: boolean
+  /** Open one quota window on the Quota screen. Omitted where there is no
+   *  Quota screen to open, such as the popover. */
+  onOpenQuota?: (target: SessionQuotaOpenTarget) => void
   /** Return to the previous session when navigation history exists. */
   onBack?: (() => void) | undefined
   /** Navigate to the newer adjacent session; omit when none exists. */
@@ -677,6 +686,9 @@ export function SessionDetailPresentation({
   subagentCount,
   modelRuns,
   relations,
+  sessionQuota = null,
+  sessionQuotaError = false,
+  onOpenQuota,
   onBack,
   onPrev,
   onNext,
@@ -960,10 +972,20 @@ export function SessionDetailPresentation({
   )
 
   const efficiencySection = efficiencyCard && (
-    <section className="mt-auto shrink-0">
+    <section className={cn("shrink-0", sessionQuota == null && "mt-auto")}>
       <TabSectionHeading>Efficiency</TabSectionHeading>
       <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
     </section>
+  )
+
+  const quotaSection = onOpenQuota && (
+    <div className="mt-auto shrink-0">
+      <SessionQuotaSection
+        sessionQuota={sessionQuota}
+        sessionQuotaError={sessionQuotaError}
+        onOpenQuota={onOpenQuota}
+      />
+    </div>
   )
 
   return (
@@ -1137,6 +1159,7 @@ export function SessionDetailPresentation({
                   )}
 
                   {efficiencySection}
+                  {quotaSection}
                 </div>
               )}
 

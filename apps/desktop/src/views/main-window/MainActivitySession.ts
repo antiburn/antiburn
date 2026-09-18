@@ -11,6 +11,7 @@ import {
   listRecentSessions,
   getLiveUsage,
   getSessionLimitAllocations,
+  getSessionQuota,
   getMainWindowVisible,
   acknowledgeMainWindowSessionTarget,
   noteInteraction,
@@ -25,6 +26,7 @@ import {
   type SessionAnalysisPayload,
   type LiveUsageSummaryPayload,
   type SessionLimitAllocationSummaryPayload,
+  type SessionQuotaPayload,
   type MainWindowSessionRequest,
   type SessionUpdatedPayload,
   type SurfaceOrigin,
@@ -56,6 +58,11 @@ export interface MainActivitySnapshot {
   now: number
   liveUsage: LiveUsageSummaryPayload
   allocations: SessionLimitAllocationSummaryPayload
+  /** The open subject's quota contributions, loaded alongside its analysis. */
+  sessionQuota: SessionQuotaPayload | null
+  /** Whether the last quota load for the open subject failed. A failure
+   *  never blanks the rest of the detail view. */
+  sessionQuotaError: boolean
   /** The selected Sessions sidebar filter, parsed from `settings.sessionFilter`. */
   filter: SessionFilter
 }
@@ -120,6 +127,8 @@ export class MainActivitySession {
     now: Date.now(),
     liveUsage: EMPTY_LIVE_USAGE,
     allocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
+    sessionQuota: null,
+    sessionQuotaError: false,
     filter: parseSessionFilterId(DEFAULT_SETTINGS.sessionFilter),
   }
   private listeners = new Set<() => void>()
@@ -140,6 +149,10 @@ export class MainActivitySession {
   private invalidated = false
   private analysisTask: Promise<void> | null = null
   private analysisDirty = false
+  private sessionQuotaVersion = 0
+  private sessionQuotaRun = 0
+  private sessionQuotaTask: Promise<void> | null = null
+  private sessionQuotaDirty = false
   private usageTask: Promise<void> | null = null
   private usageDirty = false
   private usageRevision = 0
@@ -241,6 +254,7 @@ export class MainActivitySession {
           this.usageRevision += 1
           if (this.snapshot.active) this.update({ liveUsage })
           this.refreshUsage()
+          this.refreshSessionQuota()
         }),
       ),
       this.listen(
@@ -326,8 +340,12 @@ export class MainActivitySession {
         subject.subagent?.parentSessionId ?? subject.sessionId,
         subject.wslDistro,
       ) === key
-    )
+    ) {
+      // Session quota loads alongside analysis: same subject match, same
+      // trigger, per loadSessionQuota's contract.
       this.refreshAnalysis()
+      this.refreshSessionQuota()
+    }
     if (update.facets.usage || update.facets.limits || update.facets.analysis) {
       this.refreshUsage()
     }
@@ -388,6 +406,8 @@ export class MainActivitySession {
       liveSessions.clearInterest(this)
       this.analysisRun += 1
       this.analysisTask = null
+      this.sessionQuotaRun += 1
+      this.sessionQuotaTask = null
       return
     }
     const rows = this.snapshot.entries
@@ -399,6 +419,7 @@ export class MainActivitySession {
     this.refreshList()
     this.refreshUsage()
     this.refreshAnalysis()
+    this.refreshSessionQuota()
   }
 
   dispose = (): void => {
@@ -407,6 +428,9 @@ export class MainActivitySession {
     this.analysisVersion += 1
     this.analysisRun += 1
     this.analysisTask = null
+    this.sessionQuotaVersion += 1
+    this.sessionQuotaRun += 1
+    this.sessionQuotaTask = null
     this.initialized = false
     this.visible = false
     for (const stop of this.stops.splice(0)) stop()
@@ -513,8 +537,20 @@ export class MainActivitySession {
     this.analysisVersion += 1
     this.analysisRun += 1
     this.analysisTask = null
-    this.update({ subject, history, analysis: null, loading: true, refreshing: false })
+    this.sessionQuotaVersion += 1
+    this.sessionQuotaRun += 1
+    this.sessionQuotaTask = null
+    this.update({
+      subject,
+      history,
+      analysis: null,
+      loading: true,
+      refreshing: false,
+      sessionQuota: null,
+      sessionQuotaError: false,
+    })
     this.refreshAnalysis()
+    this.refreshSessionQuota()
   }
 
   clearSelection = (): void => {
@@ -522,12 +558,17 @@ export class MainActivitySession {
     this.analysisVersion += 1
     this.analysisRun += 1
     this.analysisTask = null
+    this.sessionQuotaVersion += 1
+    this.sessionQuotaRun += 1
+    this.sessionQuotaTask = null
     this.update({
       subject: null,
       history: [],
       analysis: null,
       loading: false,
       refreshing: false,
+      sessionQuota: null,
+      sessionQuotaError: false,
     })
   }
 
@@ -579,6 +620,50 @@ export class MainActivitySession {
           loading: false,
           refreshing: false,
         })
+      }
+    }
+  }
+
+  refreshSessionQuota = (): void => {
+    this.sessionQuotaVersion += 1
+    this.sessionQuotaDirty = true
+    if (!this.snapshot.active || !this.snapshot.subject || this.sessionQuotaTask) return
+    const run = ++this.sessionQuotaRun
+    this.sessionQuotaTask = this.loadSessionQuota(run).finally(() => {
+      if (run !== this.sessionQuotaRun) return
+      this.sessionQuotaTask = null
+      if (this.sessionQuotaDirty && this.snapshot.active && this.snapshot.subject)
+        this.refreshSessionQuota()
+    })
+  }
+
+  /**
+   * One subject's quota contributions, loaded alongside its analysis. A
+   * failure sets `sessionQuotaError` and keeps the last good value, so it
+   * never blanks the rest of the detail view.
+   */
+  private async loadSessionQuota(run: number): Promise<void> {
+    while (
+      run === this.sessionQuotaRun &&
+      this.sessionQuotaDirty &&
+      this.snapshot.active &&
+      this.snapshot.subject
+    ) {
+      this.sessionQuotaDirty = false
+      const subject = this.snapshot.subject
+      const version = this.sessionQuotaVersion
+      const work = this.workVersion
+      try {
+        const sessionQuota = await getSessionQuota({
+          agent: subject.agent,
+          sessionId: subject.subagent?.parentSessionId ?? subject.sessionId,
+          wslDistro: subject.wslDistro ?? null,
+        })
+        if (version !== this.sessionQuotaVersion || work !== this.workVersion) continue
+        this.update({ sessionQuota, sessionQuotaError: false })
+      } catch {
+        if (version !== this.sessionQuotaVersion || work !== this.workVersion) continue
+        this.update({ sessionQuotaError: true })
       }
     }
   }

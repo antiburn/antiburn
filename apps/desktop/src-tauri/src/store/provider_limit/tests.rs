@@ -213,6 +213,40 @@ fn an_unbound_session_with_one_known_account_falls_back_to_it() {
 }
 
 #[test]
+fn a_session_with_no_analysis_row_still_appears() {
+    let store = memory_store();
+    let key = insert_session(&store, "session");
+    insert_turn(&store, &key, 150_000, 200_000);
+    observe_account(&store, &account('a'));
+
+    // The group-first rewrite joins `session_analysis` in the outer query.
+    // Confirm the fixture carries no such row, so this test actually
+    // exercises the LEFT JOIN rather than an INNER JOIN that happens to
+    // match.
+    let analysis_row_count: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM session_analysis
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+            |row| row.get(0),
+        )
+        .expect("counts analysis rows");
+    assert_eq!(analysis_row_count, 0, "test setup carries no analysis row");
+
+    let dollars = store
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000, None)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    assert_eq!(
+        dollars.len(),
+        1,
+        "a session with turns but no analysis row still appears"
+    );
+    assert_eq!(dollars[0].key, key);
+}
+
+#[test]
 fn attribution_prices_one_hour_cache_writes_at_double_the_input_rate() {
     let store = memory_store();
     let key = insert_session(&store, "session");

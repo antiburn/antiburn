@@ -4,6 +4,7 @@ import { applyTheme } from "./lib/appearance"
 import { installBootstrapDiagnostics, reportBootstrapFailure } from "./lib/bootstrapDiagnostics"
 import { getSettings, mainWindowReady, onSettingsChanged } from "./lib/ipc"
 import { installMainWindowHealthResponder } from "./lib/mainWindowHealth"
+import { installLongTaskObserver } from "./lib/perfTrace"
 import { MainWindowView } from "./views/MainWindowView"
 
 const RESPONDER_INSTALL_TIMEOUT = 1_000
@@ -75,6 +76,7 @@ async function guardedInstallResponder(): Promise<() => void> {
 }
 
 export async function mountMainWindow(): Promise<void> {
+  installLongTaskObserver()
   const disposeDiagnostics = installBootstrapDiagnostics()
   const themeSession = new MainWindowThemeSession()
   let disposeResponder: (() => void) | null = null
