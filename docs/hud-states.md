@@ -147,9 +147,12 @@ it out, or press the same button again, to leave. It is a third placement beside
 crate stores it with the dock state.
 
 - **Collapsed.** The island is the notch row alone, so the notch covers all
-  of it but the wings. The left wing holds the live LED. The right wing shows
-  the spend rate as a figure, or the top bar's LED when there is no rate to
-  show. The detail window never opens from the collapsed row.
+  of it but the wings. The left wing holds the live mark. The right wing shows
+  the spend rate as a figure, or the top bar's mark when there is no rate to
+  show. The marks are short bars, not dots, because a round light beside the
+  lens reads as the camera light. The live mark pulses between three-quarters
+  and one-third opacity on the spend-rate period, and holds the dim value
+  under reduced motion. The detail window never opens from the collapsed row.
 - **Expanded.** The crate polls the global cursor every 100ms while
   collapsed. The pointer resting for 150ms in the hotspot, the notch plus
   10px either side and 5px below, or on a wing, expands the island: the full

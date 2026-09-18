@@ -328,6 +328,28 @@ body[data-transparent-window] #root {
   }
 }
 
+/*
+ * The island's live mark. The notch row sits beside the camera, so the mark
+ * is a short bar and not a dot: a dot next to the lens reads as the camera
+ * light. The pulse moves the opacity a small step, because the mark stays in
+ * the corner of the eye all day. The element holds the dim value, so reduced
+ * motion keeps the same brightness without the loop.
+ */
+.led-pulse {
+  animation: led-pulse var(--led-period, 3s) ease-in-out infinite;
+}
+
+@keyframes led-pulse {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
 /* The newest turn on the token map. */
 .token-map-live {
   animation: token-map-live 1.6s ease-in-out infinite;
@@ -506,6 +528,7 @@ body[data-transparent-window] #root {
  */
 @media (prefers-reduced-motion: reduce) {
   .led-blink,
+  .led-pulse,
   .token-map-live,
   .hud-confetti,
   .led-clock {

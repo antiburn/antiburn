@@ -145,14 +145,15 @@ function IslandPanel({
         <div className="flex shrink-0 items-center justify-center" style={wing}>
           <span
             data-testid="island-live-led"
-            className={`h-1.5 w-1.5 rounded-full ${
-              state.sessionLive ? "led-lit led-blink" : "led-off bg-led-off"
+            // A short bar, not a dot: a round light beside the lens reads as
+            // the camera light. `led-pulse` holds it dim and moves it little.
+            className={`h-1 w-3.5 rounded-full ${
+              state.sessionLive ? "led-lit led-pulse opacity-75" : "led-off bg-led-off"
             }`}
             style={
               state.sessionLive
                 ? ({
                     backgroundColor: liveColor,
-                    "--led-on": liveColor,
                     "--led-period": `${state.blinkPeriodMs}ms`,
                   } as CSSProperties)
                 : undefined
@@ -175,7 +176,7 @@ function IslandPanel({
           ) : (
             <span
               data-testid="island-usage-led"
-              className={`h-1.5 w-1.5 rounded-full ${topBar ? "led-lit" : "led-off bg-led-off"}`}
+              className={`h-1 w-3.5 rounded-full ${topBar ? "led-lit" : "led-off bg-led-off"}`}
               style={topBar ? { backgroundColor: topBar.color } : undefined}
             />
           )}
