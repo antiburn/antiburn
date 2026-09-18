@@ -59,6 +59,25 @@ filter. For example, `RUST_LOG=trace pnpm --filter @antiburn/desktop dev`
 enables trace output. Logs can contain local diagnostic values. Check them
 before you share them.
 
+## Omarchy: popover obscured by pinned windows
+
+Omarchy's pinned floating windows can cover the usage popover. As an optional
+workaround, add this rule after the defaults in `~/.config/hypr/hyprland.lua`.
+It places the popover in the same compositor group as those pinned windows:
+
+```lua
+o.window(
+  { class = "^Antiburn$", title = "^antiburn Usage Popover$" },
+  { float = true, pin = true }
+)
+```
+
+Run `hyprctl reload config-only` and `hyprctl configerrors`, then restart antiburn.
+The config-only reload avoids reapplying monitor modes. This rule
+targets only the usage popover. Hyprland pinning makes it available across
+workspaces while visible; it does not enable antiburn's **Pin Window** option,
+so normal dismissal on focus loss still applies.
+
 ## Restart onboarding
 
 Select **Reset Onboarding** in the debug-build tray menu. This action sets
