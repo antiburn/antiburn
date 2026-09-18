@@ -473,7 +473,11 @@ mod tests {
                      id INTEGER PRIMARY KEY,
                      provider TEXT NOT NULL,
                      account_key TEXT NOT NULL,
-                     window_role TEXT NOT NULL
+                     window_id TEXT NOT NULL DEFAULT '',
+                     window_kind TEXT NOT NULL DEFAULT '',
+                     window_role TEXT NOT NULL,
+                     scope_key TEXT NOT NULL DEFAULT 'account',
+                     scope_label TEXT NOT NULL DEFAULT 'account'
                  );
                  CREATE TABLE provider_limit_factor_point (
                      provider TEXT NOT NULL,

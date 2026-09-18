@@ -306,7 +306,7 @@ fn a_clear_keeps_the_incarnation_counter() {
 fn pre_migration_rows_have_incarnation_zero_and_a_recreate_exceeds_it() {
     let store = v48_store_with_row("upgraded");
     let key = SessionKey::new("native", "claude-code", "upgraded");
-    assert_eq!(store.schema_version().unwrap(), 51);
+    assert_eq!(store.schema_version().unwrap(), 52);
     assert_eq!(stored_incarnation(&store, &key), Some(0));
     assert_eq!(counter(&store), 0);
 

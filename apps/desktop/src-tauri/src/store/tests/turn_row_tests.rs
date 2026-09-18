@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 51);
+    assert_eq!(super::schema::MIGRATIONS.len(), 52);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 51);
+    assert_eq!(store.schema_version().unwrap(), 52);
     let index_exists = store
         .lock()
         .query_row(
@@ -62,7 +62,7 @@ fn v50_removes_legacy_live_usage_history_but_preserves_snapshot() {
     )
     .unwrap();
 
-    assert_eq!(store.schema_version().unwrap(), 51);
+    assert_eq!(store.schema_version().unwrap(), 52);
     assert_eq!(store.internal_value("internal:liveUsageHistoryV2"), None);
     assert_eq!(
         store.internal_value("internal:liveUsageSnapshotV2"),

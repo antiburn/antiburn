@@ -3,12 +3,13 @@ use std::path::Path;
 use rusqlite::params;
 
 use super::*;
-use crate::store::provider_limit::LANE_FIVE_HOUR;
+use crate::store::provider_limit::{LANE_FIVE_HOUR, LANE_WEEKLY};
 use crate::store::{SessionKey, SessionRecord};
 
 const PROVIDER: &str = "anthropic";
 const AGENT: &str = "claude-code";
 const MODEL: &str = "claude-opus-4-6";
+const FABLE_MODEL: &str = "claude-fable-5";
 
 fn account() -> String {
     "a".repeat(64)
@@ -58,7 +59,7 @@ fn insert_session(store: &Store, session_id: &str) -> SessionKey {
 
 /// Publish one turn at `ts_ms`, with its session evidence published, so the
 /// attribution query's `session_evidence` join matches it.
-fn insert_turn(store: &Store, key: &SessionKey, ts_ms: i64, input_tokens: i64) {
+fn insert_turn(store: &Store, key: &SessionKey, ts_ms: i64, input_tokens: i64, model: &str) {
     let connection = store.lock();
     connection
         .execute(
@@ -82,7 +83,7 @@ fn insert_turn(store: &Store, key: &SessionKey, ts_ms: i64, input_tokens: i64) {
                 key.agent,
                 key.session_id,
                 ts_ms,
-                MODEL,
+                model,
                 input_tokens
             ],
         )
@@ -102,6 +103,57 @@ fn insert_period(store: &Store, start: i64, reset: i64) -> i64 {
             params![PROVIDER, account(), reset - start, start, reset],
         )
         .expect("inserts a synthetic period");
+    connection.last_insert_rowid()
+}
+
+/// An account-wide weekly period, the sibling of [`insert_period`] for the
+/// `LANE_WEEKLY` lane.
+fn insert_weekly_account_period(store: &Store, start: i64, reset: i64) -> i64 {
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, 'seven-day', 'weekly', 'primaryLong',
+                       'account', 'account', ?3, ?4, ?5, ?4, ?4)",
+            params![PROVIDER, account(), reset - start, start, reset],
+        )
+        .expect("inserts a synthetic weekly account period");
+    connection.last_insert_rowid()
+}
+
+/// A supplemental weekly period scoped to one model, such as Anthropic's
+/// "Fable" limit, the source of a `model:<slug>` lane.
+fn insert_model_period(
+    store: &Store,
+    window_id: &str,
+    scope_label: &str,
+    start: i64,
+    reset: i64,
+) -> i64 {
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, ?3, 'weekly', 'supplemental',
+                       ?4, ?5, ?6, ?7, ?8, ?7, ?7)",
+            params![
+                PROVIDER,
+                account(),
+                window_id,
+                format!("model:{scope_label}"),
+                scope_label,
+                reset - start,
+                start,
+                reset
+            ],
+        )
+        .expect("inserts a synthetic model-scoped period");
     connection.last_insert_rowid()
 }
 
@@ -209,7 +261,7 @@ fn delta_sample_arithmetic_prices_turns_between_two_readings() {
     let store = memory_store();
     observe_account(&store);
     let key = insert_session(&store, "s1");
-    insert_turn(&store, &key, 150_000, 200_000); // 200,000 * 5e-6 = $1.00
+    insert_turn(&store, &key, 150_000, 200_000, MODEL); // 200,000 * 5e-6 = $1.00
     let period_id = insert_period(&store, 0, 18_000);
     push_observation(&store, period_id, 100, 10.0, None);
     push_observation(&store, period_id, 200, 15.0, None);
@@ -242,7 +294,7 @@ fn two_rollout_observations_produce_a_rollout_sample_and_a_delta_method_point() 
     let store = memory_store();
     observe_account(&store);
     let key = insert_session(&store, "s1");
-    insert_turn(&store, &key, 150_000, 200_000); // 200,000 * 5e-6 = $1.00
+    insert_turn(&store, &key, 150_000, 200_000, MODEL); // 200,000 * 5e-6 = $1.00
     let period_id = insert_period(&store, 0, 18_000);
     push_observation_with_source(&store, period_id, 100, 10.0, CODEX_ROLLOUT_SOURCE_ID);
     push_observation_with_source(&store, period_id, 200, 15.0, CODEX_ROLLOUT_SOURCE_ID);
@@ -279,8 +331,8 @@ fn equal_readings_merge_into_one_interval_spanning_the_whole_plateau() {
     let store = memory_store();
     observe_account(&store);
     let key = insert_session(&store, "s1");
-    insert_turn(&store, &key, 120_000, 100_000); // $0.50, before the plateau's end
-    insert_turn(&store, &key, 180_000, 100_000); // $0.50, after the plateau
+    insert_turn(&store, &key, 120_000, 100_000, MODEL); // $0.50, before the plateau's end
+    insert_turn(&store, &key, 180_000, 100_000, MODEL); // $0.50, after the plateau
     let period_id = insert_period(&store, 0, 18_000);
     push_observation(&store, period_id, 100, 10.0, None);
     push_observation(&store, period_id, 150, 10.0, None); // equal: merges with 100
@@ -345,7 +397,7 @@ fn window_start_only_forms_while_no_delta_sample_exists_yet() {
     // Period 1: one positive reading, no pair possible. Window start is the
     // only sample this lane can produce yet.
     let key1 = insert_session(&store, "s1");
-    insert_turn(&store, &key1, 250_000, 100_000); // $0.50
+    insert_turn(&store, &key1, 250_000, 100_000, MODEL); // $0.50
     let period1 = insert_period(&store, 0, 18_000);
     push_observation(&store, period1, 500, 8.0, None);
     learn(&store, 600);
@@ -369,7 +421,7 @@ fn window_start_only_forms_while_no_delta_sample_exists_yet() {
 
     // Period 2: two readings in one lane, so a real delta sample appears.
     let key2 = insert_session(&store, "s2");
-    insert_turn(&store, &key2, 18_150_000, 100_000); // $0.50
+    insert_turn(&store, &key2, 18_150_000, 100_000, MODEL); // $0.50
     let period2 = insert_period(&store, 18_000, 36_000);
     push_observation(&store, period2, 18_100, 5.0, None);
     push_observation(&store, period2, 18_200, 10.0, None);
@@ -410,7 +462,7 @@ fn a_point_is_appended_only_when_the_factor_actually_changes() {
     let store = memory_store();
     observe_account(&store);
     let key = insert_session(&store, "s1");
-    insert_turn(&store, &key, 150_000, 200_000); // $1.00
+    insert_turn(&store, &key, 150_000, 200_000, MODEL); // $1.00
     let period_id = insert_period(&store, 0, 18_000);
     push_observation(&store, period_id, 100, 10.0, None);
     push_observation(&store, period_id, 200, 15.0, None);
@@ -427,7 +479,7 @@ fn a_point_is_appended_only_when_the_factor_actually_changes() {
     );
 
     // A late turn changes the same interval, so the point is replaced.
-    insert_turn(&store, &key, 180_000, 400_000); // +$2.00
+    insert_turn(&store, &key, 180_000, 400_000, MODEL); // +$2.00
     learn(&store, 500);
     assert_eq!(
         count_points(&store),
@@ -465,7 +517,7 @@ fn the_recompute_window_upserts_a_late_arriving_turn_into_the_same_sample() {
     assert_eq!(kind, "unattributed", "no turns exist for this pair yet");
 
     let key = insert_session(&store, "s1");
-    insert_turn(&store, &key, 150_000, 200_000); // $1.00, arrives late
+    insert_turn(&store, &key, 150_000, 200_000, MODEL); // $1.00, arrives late
     learn(&store, 400);
 
     let row_count: i64 = store
@@ -530,9 +582,9 @@ fn a_plan_change_drops_earlier_samples_and_appends_a_point() {
     push_observation(&store, period_id, 200, 15.0, Some("pro"));
     push_observation(&store, period_id, 300, 20.0, Some("pro"));
     push_observation(&store, period_id, 400, 25.0, Some("pro"));
-    insert_turn(&store, &key, 150_000, 200_000); // $1.00
-    insert_turn(&store, &key, 250_000, 200_000); // $1.00
-    insert_turn(&store, &key, 350_000, 200_000); // $1.00
+    insert_turn(&store, &key, 150_000, 200_000, MODEL); // $1.00
+    insert_turn(&store, &key, 250_000, 200_000, MODEL); // $1.00
+    insert_turn(&store, &key, 350_000, 200_000, MODEL); // $1.00
     learn(&store, 450);
 
     let pro_point = store
@@ -545,7 +597,7 @@ fn a_plan_change_drops_earlier_samples_and_appends_a_point() {
     // A new "max"-plan reading, priced twice as expensive per token: factor
     // should reflect only this new-plan sample, not blend with the old plan.
     push_observation(&store, period_id, 500, 30.0, Some("max"));
-    insert_turn(&store, &key, 450_000, 400_000); // $2.00
+    insert_turn(&store, &key, 450_000, 400_000, MODEL); // $2.00
     learn(&store, 600);
 
     let max_point = store
@@ -566,7 +618,7 @@ fn learning_records_one_residual_row_per_period() {
     let store = memory_store();
     observe_account(&store);
     let key = insert_session(&store, "s1");
-    insert_turn(&store, &key, 150_000, 200_000); // $1.00
+    insert_turn(&store, &key, 150_000, 200_000, MODEL); // $1.00
     let period_id = insert_period(&store, 0, 18_000);
     push_observation(&store, period_id, 100, 10.0, None);
     push_observation(&store, period_id, 200, 15.0, None);
@@ -643,9 +695,9 @@ fn a_plan_tier_change_with_the_same_plan_drops_earlier_samples_and_appends_a_poi
         Some("max"),
         Some("default_claude_max_5x"),
     );
-    insert_turn(&store, &key, 150_000, 200_000); // $1.00
-    insert_turn(&store, &key, 250_000, 200_000); // $1.00
-    insert_turn(&store, &key, 350_000, 200_000); // $1.00
+    insert_turn(&store, &key, 150_000, 200_000, MODEL); // $1.00
+    insert_turn(&store, &key, 250_000, 200_000, MODEL); // $1.00
+    insert_turn(&store, &key, 350_000, 200_000, MODEL); // $1.00
     let learned = learn(&store, 450);
     assert_eq!(learned.len(), 1);
     assert_eq!(learned[0].plan.as_deref(), Some("max"));
@@ -675,7 +727,7 @@ fn a_plan_tier_change_with_the_same_plan_drops_earlier_samples_and_appends_a_poi
         Some("max"),
         Some("default_claude_max_20x"),
     );
-    insert_turn(&store, &key, 450_000, 400_000); // $2.00
+    insert_turn(&store, &key, 450_000, 400_000, MODEL); // $2.00
     let learned = learn(&store, 600);
     assert_eq!(learned.len(), 1);
     assert_eq!(learned[0].plan.as_deref(), Some("max"));
@@ -709,7 +761,7 @@ fn a_point_computed_from_old_observations_is_dated_by_their_epoch_not_by_now() {
     // Readings from two days ago, as a bootstrap or backfill pass would see.
     let two_days_ago = 2 * 86_400;
     let period_id = insert_period(&store, two_days_ago, two_days_ago + 18_000);
-    insert_turn(&store, &key, (two_days_ago + 150) * 1_000, 200_000); // $1.00
+    insert_turn(&store, &key, (two_days_ago + 150) * 1_000, 200_000, MODEL); // $1.00
     push_observation(&store, period_id, two_days_ago + 100, 10.0, None);
     push_observation(&store, period_id, two_days_ago + 200, 15.0, None);
 
@@ -735,7 +787,7 @@ fn a_tier_change_with_no_delta_yet_seeds_a_window_start_sample_and_point() {
 
     // Period 1: two "standard"-tier readings form a delta sample and point.
     let key1 = insert_session(&store, "s1");
-    insert_turn(&store, &key1, 150_000, 200_000); // $1.00
+    insert_turn(&store, &key1, 150_000, 200_000, MODEL); // $1.00
     let period1 = insert_period(&store, 0, 18_000);
     push_observation_with_tier(&store, period1, 100, 10.0, Some("max"), Some("standard"));
     push_observation_with_tier(&store, period1, 200, 15.0, Some("max"), Some("standard"));
@@ -750,7 +802,7 @@ fn a_tier_change_with_no_delta_yet_seeds_a_window_start_sample_and_point() {
     // no partner yet, so only a window-start sample can form for this tier
     // — and it can, because the delta check is scoped to (plan, plan_tier).
     let key2 = insert_session(&store, "s2");
-    insert_turn(&store, &key2, 18_050_000, 200_000); // $1.00
+    insert_turn(&store, &key2, 18_050_000, 200_000, MODEL); // $1.00
     let period2 = insert_period(&store, 18_000, 36_000);
     push_observation_with_tier(&store, period2, 18_100, 5.0, Some("max"), Some("pro"));
     learn(&store, 18_200);
@@ -778,4 +830,52 @@ fn count_points(store: &Store) -> i64 {
             |row| row.get(0),
         )
         .unwrap()
+}
+
+#[test]
+fn model_matches_scope_recognizes_a_contiguous_slug_run_in_the_model_id() {
+    assert!(model_matches_scope("claude-fable-5-1", "Fable"));
+    assert!(model_matches_scope("claude-fable-5", "Fable"));
+    assert!(!model_matches_scope("claude-opus-4-6", "Fable"));
+    assert!(model_matches_scope("claude-fable-5-1[1m]", "Fable"));
+    assert!(model_matches_scope("gpt-5-fable", "Fable"));
+    assert!(!model_matches_scope("claude-fabled-1", "Fable"));
+}
+
+#[test]
+fn a_model_scoped_lane_prices_only_its_own_model_while_the_account_weekly_lane_prices_every_model()
+{
+    let store = memory_store();
+    observe_account(&store);
+    let key = insert_session(&store, "s1");
+    insert_turn(&store, &key, 150_000, 100_000, FABLE_MODEL); // Fable: $1.00
+    insert_turn(&store, &key, 160_000, 200_000, MODEL); // Opus: $1.00
+
+    let model_period = insert_model_period(&store, "weekly-fable", "Fable", 0, 604_800);
+    push_observation(&store, model_period, 100, 10.0, None);
+    push_observation(&store, model_period, 200, 15.0, None);
+
+    let account_period = insert_weekly_account_period(&store, 0, 604_800);
+    push_observation(&store, account_period, 100, 10.0, None);
+    push_observation(&store, account_period, 200, 15.0, None);
+
+    learn(&store, 300);
+
+    let fable_samples = store
+        .all_delta_factor_samples(PROVIDER, &account(), "model:fable")
+        .unwrap();
+    assert_eq!(fable_samples.len(), 1);
+    assert!(
+        (fable_samples[0].total_usd() - 1.0).abs() < 1e-9,
+        "the model-scoped lane prices only the turn on its own model"
+    );
+
+    let weekly_samples = store
+        .all_delta_factor_samples(PROVIDER, &account(), LANE_WEEKLY)
+        .unwrap();
+    assert_eq!(weekly_samples.len(), 1);
+    assert!(
+        (weekly_samples[0].total_usd() - 2.0).abs() < 1e-9,
+        "the account-wide weekly lane prices every model"
+    );
 }
