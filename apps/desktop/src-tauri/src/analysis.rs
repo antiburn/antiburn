@@ -461,7 +461,7 @@ fn fingerprint_of_path(path: &std::path::Path) -> String {
         .modified()
         .ok()
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|since| since.as_secs())
+        .map(|since| since.as_nanos())
         .unwrap_or(0);
     format!("{mtime}:{}", metadata.len())
 }
@@ -476,17 +476,31 @@ fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
             .ancestors()
             .find(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))?;
         let directory = path.parent()?;
-        let mut paths = vec![path.to_path_buf(), root.join("data/db/sessions.db")];
+        let database = root.join("data/db/sessions.db");
+        let mut paths = vec![path.to_path_buf(), database.clone()];
         let session_id = file_name.strip_suffix(".json").unwrap_or(file_name);
         paths.push(directory.join(format!("{session_id}.messages.json")));
-        if let Ok(entries) = std::fs::read_dir(directory) {
-            paths.extend(entries.filter_map(Result::ok).filter_map(|entry| {
-                entry
-                    .file_type()
-                    .ok()
-                    .filter(|kind| kind.is_file())
-                    .map(|_| entry.path())
-            }));
+        if let Ok(connection) = rusqlite::Connection::open_with_flags(
+            database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) && let Ok(mut statement) = connection.prepare(
+            "SELECT agent_id, parent_session_id, messages_path FROM sessions WHERE is_subagent = 1",
+        ) && let Ok(rows) = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                let (agent_id, parent_session_id, messages_path) = row;
+                let referenced = std::path::Path::new(&messages_path);
+                if parent_session_id.as_deref() == Some(session_id)
+                    || referenced.parent() == Some(directory)
+                {
+                    paths.push(directory.join(format!("{agent_id}.messages.json")));
+                }
+            }
         }
         paths
     } else if file_name == "session.json" {
@@ -645,10 +659,23 @@ async fn raw_source_with_format(
         SessionSource::File(path) => Some(RawSource::File(path.clone())),
         SessionSource::Inline { content, .. } => Some(RawSource::Jsonl(content.clone())),
         SessionSource::ProviderDb {
-            agent: AgentKind::OpenCode | AgentKind::Antigravity | AgentKind::Windsurf,
+            agent: AgentKind::OpenCode | AgentKind::Antigravity,
             db_path,
             ..
         } => Some(RawSource::Sqlite(db_path.clone())),
+        SessionSource::ProviderDb {
+            agent: AgentKind::Windsurf,
+            db_path,
+            ..
+        } if db_path.components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("devin")
+        }) =>
+        {
+            Some(RawSource::Sqlite(db_path.clone()))
+        }
         SessionSource::ProviderDb { .. } => {
             session_source_content(source).await.map(RawSource::Jsonl)
         }
@@ -745,10 +772,12 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
             }
         }
         (AgentKind::Windsurf, SessionSource::ProviderDb { db_path, .. })
-            if db_path
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .contains("/devin/") =>
+            if db_path.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("devin")
+            }) =>
         {
             SourceFormat::DevinLocalSqlite
         }
@@ -910,8 +939,9 @@ fn stream_vendor_with_claim_hook(
 /// (insights_worker.rs) is what turns an unset profile into the terminal
 /// `Unsupported` state; this function's job is only to describe the source,
 /// never to decide whether it is good enough.
-fn adapter_supports_provider_db(agent: &str) -> bool {
+fn adapter_supports_provider_db(agent: &str, source_format: SourceFormat) -> bool {
     matches!(agent, "opencode" | "antigravity")
+        || (agent == "windsurf" && source_format == SourceFormat::DevinLocalSqlite)
 }
 
 /// One child input's contribution to the parent's folded coverage, kept
@@ -1375,11 +1405,16 @@ fn stream_vendor_with_hooks(
                 adapter.visit(input, &mut accumulator)
             }
             RawSource::Sqlite(_)
-                if !adapter_supports_provider_db(adapter.agent()) && index == 0 =>
+                if !adapter_supports_provider_db(adapter.agent(), input.source_format)
+                    && index == 0 =>
             {
                 return StreamOutcome::ParentUnsupported;
             }
-            RawSource::Sqlite(_) if !adapter_supports_provider_db(adapter.agent()) => continue,
+            RawSource::Sqlite(_)
+                if !adapter_supports_provider_db(adapter.agent(), input.source_format) =>
+            {
+                continue;
+            }
             RawSource::Sqlite(_) if index == 0 => {
                 let outcome = match database_claim {
                     Some(fingerprint) => {
@@ -1422,6 +1457,7 @@ fn stream_vendor_with_hooks(
                 };
                 let bundle_source = SessionSource::File(manifest_path.clone());
                 let bundle_claim = fingerprint_of(&bundle_source);
+                parent_fingerprint = Some(bundle_claim.clone());
                 let outcome = match adapter.visit_claimed(
                     input,
                     &claim,

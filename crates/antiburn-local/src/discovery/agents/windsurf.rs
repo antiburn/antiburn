@@ -90,11 +90,13 @@ impl AgentExplorer for WindsurfExplorer {
                     environment: Default::default(),
                 })
                 .collect();
-        logs.extend(discover_devin_sessions(
-            &devin_database_path(&home),
-            now,
-            since_secs,
-        ));
+        let database_path = devin_database_path(&home);
+        let devin_logs = tokio::task::spawn_blocking(move || {
+            discover_devin_sessions(&database_path, now, since_secs)
+        })
+        .await
+        .unwrap_or_default();
+        logs.extend(devin_logs);
         logs
     }
 
@@ -488,17 +490,20 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn custom_xdg_devin_cli_path_is_owned() {
         let previous = std::env::var_os("XDG_DATA_HOME");
-        unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/antiburn-test-xdg-data") };
+        let result = std::panic::catch_unwind(|| {
+            unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/antiburn-test-xdg-data") };
 
-        let home = home_dir().expect("the test environment must have a home directory");
-        let path = devin_database_path(&home);
-        assert!(DISK_WINDSURF.owns_path(&lower_path(&path)));
-
+            let home = home_dir().expect("the test environment must have a home directory");
+            let path = devin_database_path(&home);
+            assert!(DISK_WINDSURF.owns_path(&lower_path(&path)));
+        });
         match previous {
             Some(value) => unsafe { std::env::set_var("XDG_DATA_HOME", value) },
             None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
         }
+        result.unwrap();
     }
 }

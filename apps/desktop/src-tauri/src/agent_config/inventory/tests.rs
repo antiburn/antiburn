@@ -199,6 +199,104 @@ fn opencode_direct_server_named_servers_is_not_treated_as_a_nested_map() {
 }
 
 #[test]
+fn json_mcp_enabled_and_disabled_fields_must_agree() {
+    let (_temporary, home, project) = roots();
+    write(
+        &home.join(".claude.json"),
+        r#"{
+            "mcpServers": {
+                "enabled": {"command": "one", "enabled": true},
+                "disabled": {"command": "two", "disabled": true},
+                "complement": {"command": "three", "enabled": true, "disabled": false},
+                "conflict": {"command": "four", "enabled": true, "disabled": true},
+                "invalid": {"command": "five", "enabled": "yes"}
+            }
+        }"#,
+    );
+
+    let inventory = advisory_resource_inventory(
+        &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+        [],
+    )
+    .unwrap();
+
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "enabled",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Enabled
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "disabled",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Disabled
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "complement",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Enabled
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "conflict",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Unknown
+    );
+    assert_eq!(
+        resource(
+            &inventory,
+            ResourceKind::McpServer,
+            "invalid",
+            ResourceScope::Global
+        )
+        .enabled,
+        EnabledState::Unknown
+    );
+    assert!(inventory.issues.contains(&InventoryIssue {
+        kind: Some(ResourceKind::McpServer),
+        scope: ResourceScope::Global,
+        reason: InventoryIssueReason::ConflictingDefinition,
+    }));
+    assert!(inventory.issues.contains(&InventoryIssue {
+        kind: Some(ResourceKind::McpServer),
+        scope: ResourceScope::Global,
+        reason: InventoryIssueReason::UnsupportedShape,
+    }));
+}
+
+#[test]
+fn skill_traversal_budget_stops_recursive_descent() {
+    let mut builder = InventoryBuilder::new(AgentKind::Claude);
+    for _ in 0..MAX_SKILL_DIRECTORIES {
+        assert!(builder.enter_skill_directory(ResourceScope::Global));
+    }
+    assert!(!builder.enter_skill_directory(ResourceScope::Global));
+    assert!(builder.issues.contains(&InventoryIssue {
+        kind: Some(ResourceKind::Skill),
+        scope: ResourceScope::Global,
+        reason: InventoryIssueReason::ResourceCapExceeded,
+    }));
+}
+
+#[test]
 fn codex_inventory_uses_trusted_layers_and_default_enabled_mcp() {
     let (_temporary, home, project) = roots();
     let canonical_project = project.canonicalize().unwrap();

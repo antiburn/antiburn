@@ -145,6 +145,9 @@ fn visit_bundle(
     validate_aggregate(&manifest, root_usage)?;
     summary.model = Some(root.model.clone());
 
+    let directory = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("missing session directory"))?;
     let mut children = conn.prepare(
         "SELECT session_id, status, model, agent_id, parent_session_id, is_subagent, messages_path
            FROM sessions WHERE is_subagent = 1",
@@ -153,16 +156,15 @@ fn visit_bundle(
     let mut child_ids = HashSet::new();
     for row in rows {
         let child = row?;
+        if child.parent_session_id.as_deref() != Some(session_id)
+            && child.messages_path.parent() != Some(directory)
+        {
+            continue;
+        }
         if !child_ids.insert(child.session_id.clone()) {
             anyhow::bail!("duplicate child session row");
         }
-        validate_child(
-            &child,
-            session_id,
-            manifest_path
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("missing session directory"))?,
-        )?;
+        validate_child(&child, session_id, directory)?;
         sink.record(NormalizedRecord::Observation(Box::new(
             EvidenceObservation::SubagentSpawn {
                 ts_ms: None,
@@ -388,7 +390,7 @@ fn parse_messages(
                 cache_creation_tokens: metric(metrics, "cacheWriteTokens")?,
                 cache_creation_1h_tokens: 0,
             };
-            usage_totals += usage;
+            usage_totals.checked_add_assign(usage)?;
             usage
         } else {
             Usage::default()
@@ -432,12 +434,25 @@ struct UsageTotals {
     cache_write_tokens: u64,
 }
 
-impl std::ops::AddAssign<Usage> for UsageTotals {
-    fn add_assign(&mut self, usage: Usage) {
-        self.input_tokens += usage.input_tokens;
-        self.output_tokens += usage.output_tokens;
-        self.cache_read_tokens += usage.cache_read_tokens;
-        self.cache_write_tokens += usage.cache_creation_tokens;
+impl UsageTotals {
+    fn checked_add_assign(&mut self, usage: Usage) -> anyhow::Result<()> {
+        self.input_tokens = self
+            .input_tokens
+            .checked_add(usage.input_tokens)
+            .ok_or_else(|| anyhow::anyhow!("input token total overflow"))?;
+        self.output_tokens = self
+            .output_tokens
+            .checked_add(usage.output_tokens)
+            .ok_or_else(|| anyhow::anyhow!("output token total overflow"))?;
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .checked_add(usage.cache_read_tokens)
+            .ok_or_else(|| anyhow::anyhow!("cache read token total overflow"))?;
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .checked_add(usage.cache_creation_tokens)
+            .ok_or_else(|| anyhow::anyhow!("cache write token total overflow"))?;
+        Ok(())
     }
 }
 
@@ -521,6 +536,11 @@ mod tests {
         conn.execute(
             "INSERT INTO sessions VALUES ('child_1', 'completed', 'model-child', 'child_agent', 'root_1', 1, ?1)",
             params![directory.join("child_agent.messages.json").to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions VALUES ('other_child', 'completed', 'model-other', 'other_agent', 'other_root', 1, '/other/other_agent.messages.json')",
+            [],
         )
         .unwrap();
         (
@@ -759,5 +779,18 @@ mod tests {
                 .unwrap(),
             VisitOutcome::SourceChanged(_)
         ));
+    }
+
+    #[test]
+    fn usage_totals_reject_overflow() {
+        let mut totals = UsageTotals {
+            input_tokens: u64::MAX,
+            ..UsageTotals::default()
+        };
+        let error = totals.checked_add_assign(Usage {
+            input_tokens: 1,
+            ..Usage::default()
+        });
+        assert!(error.is_err());
     }
 }

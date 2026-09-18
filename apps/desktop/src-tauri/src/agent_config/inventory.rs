@@ -11,6 +11,7 @@ use super::{ConfigContext, ConfigUnavailableReason};
 
 const MAX_RESOURCES: usize = 512;
 const MAX_DIRECTORY_ENTRIES: usize = 256;
+const MAX_SKILL_DIRECTORIES: usize = 4096;
 const MAX_RESOURCE_NAME_BYTES: usize = 256;
 const PI_MCP_PACKAGE: &str = "pi-mcp-extension";
 const PI_MCP_VERSION: &str = "1.5.0";
@@ -101,6 +102,7 @@ struct InventoryBuilder {
     agent: AgentKind,
     resources: BTreeMap<ResourceKey, AdvisoryResource>,
     issues: Vec<InventoryIssue>,
+    skill_directories_remaining: usize,
 }
 
 impl InventoryBuilder {
@@ -109,7 +111,21 @@ impl InventoryBuilder {
             agent,
             resources: BTreeMap::new(),
             issues: Vec::new(),
+            skill_directories_remaining: MAX_SKILL_DIRECTORIES,
         }
+    }
+
+    fn enter_skill_directory(&mut self, scope: ResourceScope) -> bool {
+        if self.skill_directories_remaining == 0 {
+            self.issue(
+                Some(ResourceKind::Skill),
+                scope,
+                InventoryIssueReason::ResourceCapExceeded,
+            );
+            return false;
+        }
+        self.skill_directories_remaining -= 1;
+        true
     }
 
     fn issue(
@@ -422,6 +438,9 @@ fn enumerate_skill_root(
     safety_root: &Path,
     scope: ResourceScope,
 ) {
+    if !builder.enter_skill_directory(scope) {
+        return;
+    }
     let metadata = match std::fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
@@ -723,36 +742,48 @@ fn add_json_mcp_map(
                 InventoryIssueReason::DynamicSource,
             );
         }
-        let enabled = if let Some(value) = definition.get("enabled") {
-            match value.as_bool() {
-                Some(true) => EnabledState::Enabled,
-                Some(false) => EnabledState::Disabled,
-                None => {
-                    builder.issue(
-                        Some(ResourceKind::McpServer),
-                        scope,
-                        InventoryIssueReason::UnsupportedShape,
-                    );
-                    EnabledState::Unknown
-                }
-            }
-        } else if let Some(value) = definition.get("disabled") {
-            match value.as_bool() {
-                Some(true) => EnabledState::Disabled,
-                Some(false) => EnabledState::Enabled,
-                None => {
-                    builder.issue(
-                        Some(ResourceKind::McpServer),
-                        scope,
-                        InventoryIssueReason::UnsupportedShape,
-                    );
-                    EnabledState::Unknown
-                }
-            }
+        let enabled = definition.get("enabled").map(Value::as_bool);
+        let disabled = definition.get("disabled").map(Value::as_bool);
+        let enabled_state = if enabled.is_some_and(|value| value.is_none())
+            || disabled.is_some_and(|value| value.is_none())
+        {
+            builder.issue(
+                Some(ResourceKind::McpServer),
+                scope,
+                InventoryIssueReason::UnsupportedShape,
+            );
+            EnabledState::Unknown
         } else {
-            EnabledState::Enabled
+            match (enabled.flatten(), disabled.flatten()) {
+                (Some(enabled), Some(disabled)) if enabled == disabled => {
+                    builder.issue(
+                        Some(ResourceKind::McpServer),
+                        scope,
+                        InventoryIssueReason::ConflictingDefinition,
+                    );
+                    EnabledState::Unknown
+                }
+                (Some(enabled), Some(_)) => enabled_state_from_enabled(enabled),
+                (Some(enabled), None) => enabled_state_from_enabled(enabled),
+                (None, Some(disabled)) => enabled_state_from_enabled(!disabled),
+                (None, None) => EnabledState::Enabled,
+            }
         };
-        builder.replace(ResourceKind::McpServer, name, enabled, scope, provenance);
+        builder.replace(
+            ResourceKind::McpServer,
+            name,
+            enabled_state,
+            scope,
+            provenance,
+        );
+    }
+}
+
+fn enabled_state_from_enabled(enabled: bool) -> EnabledState {
+    if enabled {
+        EnabledState::Enabled
+    } else {
+        EnabledState::Disabled
     }
 }
 

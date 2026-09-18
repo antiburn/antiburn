@@ -211,16 +211,31 @@ fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<St
                 .find(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))?;
             let directory = path.parent()?;
             let session_id = path.file_stem()?.to_str()?;
-            let mut paths = vec![path.clone(), root.join("data/db/sessions.db")];
+            let database = root.join("data/db/sessions.db");
+            let mut paths = vec![path.clone(), database.clone()];
             paths.push(directory.join(format!("{session_id}.messages.json")));
-            if let Ok(entries) = std::fs::read_dir(directory) {
-                paths.extend(entries.filter_map(Result::ok).filter_map(|entry| {
-                    entry
-                        .file_type()
-                        .ok()
-                        .filter(|kind| kind.is_file())
-                        .map(|_| entry.path())
-                }));
+            if let Ok(connection) = rusqlite::Connection::open_with_flags(
+                database,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ) && let Ok(mut statement) = connection.prepare(
+                "SELECT agent_id, parent_session_id, messages_path FROM sessions WHERE is_subagent = 1",
+            ) && let Ok(rows) = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            }) {
+                for row in rows.flatten() {
+                    let (agent_id, parent_session_id, messages_path) = row;
+                    let referenced = Path::new(&messages_path);
+                    if parent_session_id.as_deref() == Some(session_id)
+                        || referenced.parent() == Some(directory)
+                    {
+                        paths.push(directory.join(format!("{agent_id}.messages.json")));
+                    }
+                }
             }
             paths
         }
@@ -253,7 +268,7 @@ fn file_fingerprint(path: &Path) -> String {
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|time| time.as_secs())
+        .map(|time| time.as_nanos())
         .unwrap_or_default();
     format!("{mtime}:{}", metadata.len())
 }
