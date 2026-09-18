@@ -67,8 +67,8 @@ describe("OverviewSpendChart", () => {
       "aria-label",
       "Wed 19 Aug · not priced · 900 · 2 sessions",
     )
-    expect(buttons[3]!.querySelector("[data-unpriced]")).not.toBeNull()
-    expect(buttons[4]!.querySelector("[data-unpriced]")).toBeNull()
+    expect(buttons[3]!.querySelector("[data-outline]")).not.toBeNull()
+    expect(buttons[4]!.querySelector("[data-outline]")).toBeNull()
   })
 
   it("shows a placeholder while loading and with no days", () => {

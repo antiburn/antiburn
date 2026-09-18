@@ -3,7 +3,7 @@ import { useRef } from "react"
 import type {
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
-} from "../../../lib/providerUsageIpc"
+} from "../../lib/providerUsageIpc"
 import {
   liveDisplayableProviders,
   liveErrorNote,
@@ -14,24 +14,24 @@ import {
   liveUnavailableProviders,
   liveWindows,
   orderedLiveAccounts,
-} from "../../../lib/presentation/liveUsage"
+} from "../../lib/presentation/liveUsage"
 
-import { WindowMeterRow } from "../../../components/providerUsage/UsageLimitsBar"
-import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
-import { Skeleton } from "../../../components/ui/Skeleton"
-import { useElementWidth } from "../../../lib/useElementWidth"
+import { WindowMeterRow } from "../../components/providerUsage/UsageLimitsBar"
+import { useStableAccountNumbers } from "../../components/providerUsage/useStableAccountNumbers"
+import { Skeleton } from "../../components/ui/Skeleton"
+import { useElementWidth } from "../../lib/useElementWidth"
 
 /** The popover's dot count, used until the group has a measured width. */
-const OVERVIEW_METER_SEGMENTS = 32
+const PANEL_METER_SEGMENTS = 32
 /** One dot and its gap, in pixels: the popover's packing at its row width. */
-const OVERVIEW_METER_PITCH = 9
+const PANEL_METER_PITCH = 9
 /** Below this count the meter reads as a row of beads, not an instrument. */
-const OVERVIEW_METER_MIN_SEGMENTS = 16
+const PANEL_METER_MIN_SEGMENTS = 16
 
 /** The dot count that packs a meter of `width` pixels like the popover's. */
 export function meterSegmentsForWidth(width: number): number {
-  if (width <= 0) return OVERVIEW_METER_SEGMENTS
-  return Math.max(OVERVIEW_METER_MIN_SEGMENTS, Math.floor(width / OVERVIEW_METER_PITCH))
+  if (width <= 0) return PANEL_METER_SEGMENTS
+  return Math.max(PANEL_METER_MIN_SEGMENTS, Math.floor(width / PANEL_METER_PITCH))
 }
 
 /**
@@ -58,13 +58,19 @@ function MeterGroup({ windows, now }: { windows: LiveUsageWindowPayload[]; now: 
 }
 
 /**
- * The provider limits panel: one group per provider account, stacked with a
- * rule between, with a dot meter for each of its windows and the reset time
- * under each meter. The meters take the card's width and add dots as it
- * grows. The stale tag floats in the top-right corner. The panel shows no
- * local cost figure; those belong to the totals above the panel.
+ * The main window's provider limits: one group per provider account, stacked
+ * with a rule between, with a dot meter for each of its windows and the reset
+ * time under each meter. The meters take the panel's width and add dots as it
+ * grows. The stale tag floats in the top-right corner.
+ *
+ * The panel floats in a card at the top right, over the workspace. The meters
+ * report the live state of every account, which no one section owns, so they
+ * keep a place of their own instead of a place in one section.
+ *
+ * The card is window furniture, not a card on a page. It shows no local cost
+ * figure; those belong to the Overview.
  */
-export function OverviewProviderLimits({
+export function ProviderLimitsPanel({
   live,
   loading = false,
 }: {
@@ -88,22 +94,23 @@ export function OverviewProviderLimits({
   // time, not the wall clock. A render must not read the clock.
   const at = live ? Date.parse(live.generatedAt) || 0 : 0
   const stale = limited.some(({ reading }) => reading.freshness === "stale")
+  // A read that answers with nothing leaves no account and no error. The
+  // panel says so, because a skeleton that stays states a read in flight.
+  const nothing = !live || (limited.length === 0 && unavailable.length === 0)
 
   return (
     <section
       aria-label="Provider limits"
       aria-busy={loading || undefined}
-      className="overview-provider-limits relative rounded-control bg-surface-card p-[var(--space-lg)] shadow-stats-card"
+      className="relative px-3 pb-[var(--space-sm)]"
     >
       {limited.length > 0 && stale && (
-        <p
-          className={`type-caption absolute top-[var(--space-lg)] right-[var(--space-lg)] ${liveFreshnessToneClass("stale")}`}
-        >
+        <p className={`type-caption absolute top-0 right-2 ${liveFreshnessToneClass("stale")}`}>
           Stale
         </p>
       )}
-      {loading || !live ? (
-        <div className="flex flex-col gap-[var(--space-2xl)]">
+      {loading ? (
+        <div className="flex flex-col gap-[var(--space-lg)]">
           {["first", "second"].map((seat) => (
             <div key={seat} className="flex flex-col gap-[var(--space-md)]">
               <Skeleton className="h-3 w-28" />
@@ -112,7 +119,7 @@ export function OverviewProviderLimits({
             </div>
           ))}
         </div>
-      ) : limited.length === 0 && unavailable.length === 0 ? (
+      ) : nothing ? (
         <p className="type-callout text-label-secondary">
           No provider limits to show. Sign in with a coding tool, or turn a meter on in
           Settings.

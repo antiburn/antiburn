@@ -71,7 +71,7 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters, Incarnation,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     OwningSession, Presence, ProjectionRevisions, PublishedEvidence, PublishedModel,
-    RETAIN_SESSION_DATA_FOREVER, RelationKind, RelationRecord, Remediation,
+    QuotaIncidentRecord, RETAIN_SESSION_DATA_FOREVER, RelationKind, RelationRecord, Remediation,
     RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
     RepositoryRecord, Revision, SessionActivityKey, SessionBadgeMetric, SessionKey, SessionRecord,
     SourcePublishMode, SourcePublishOutcome, SourceVersionState, ThemePreference,
@@ -1942,6 +1942,7 @@ impl Store {
         tx.execute("DELETE FROM provider_limit_factor_sample", [])?;
         tx.execute("DELETE FROM provider_limit_factor_point", [])?;
         tx.execute("DELETE FROM provider_usage_observation", [])?;
+        tx.execute("DELETE FROM provider_usage_period_rollup", [])?;
         tx.execute("DELETE FROM provider_usage_period", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM provider_account_seen", [])?;
@@ -2616,6 +2617,56 @@ impl Store {
                 pricing_breakdown_json: row.get(3)?,
                 provider_hints_json: row.get(4)?,
                 provider_accounts_json: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every session's observed quota incidents since `since_epoch`.
+    ///
+    /// The incidents live inside the stored evidence blob. SQLite pulls the
+    /// array out, so only a session that observed a refusal is read back and
+    /// only its incidents cross the boundary, not the whole blob.
+    ///
+    /// The evidence may come from an older schema revision. That evidence
+    /// still records the refusal; it records no reset clock, so the block
+    /// counts and states no wait.
+    pub fn quota_incidents(&self, since_epoch: i64) -> Result<Vec<QuotaIncidentRecord>> {
+        // The evidence value is adjacently tagged, so a complete value holds
+        // the incidents directly and a partial one holds them under
+        // `observed`.
+        let incidents = "COALESCE(
+                 json_extract(e.evidence_json, '$.quotaIncidents.value.incidents'),
+                 json_extract(e.evidence_json, '$.quotaIncidents.value.observed.incidents')
+             )";
+        let connection = self.lock();
+        let mut statement = connection.prepare(&format!(
+            "SELECT s.agent,
+                    {incidents},
+                    COALESCE((
+                        SELECT json_group_array(json_object(
+                            'provider', spa.provider,
+                            'accountKey', spa.account_key
+                        ))
+                          FROM session_provider_account spa
+                         WHERE spa.environment_key = s.environment_key
+                           AND spa.agent = s.agent
+                           AND spa.session_id = s.session_id
+                    ), '[]')
+               FROM session s
+               JOIN session_evidence e
+                 ON e.environment_key = s.environment_key
+                AND e.agent = s.agent
+                AND e.session_id = s.session_id
+              WHERE COALESCE(s.updated_at_epoch, 0) >= ?1
+                AND e.status = 'ready'
+                AND COALESCE(json_array_length({incidents}), 0) > 0"
+        ))?;
+        let rows = statement.query_map(params![since_epoch], |row| {
+            Ok(QuotaIncidentRecord {
+                agent: row.get(0)?,
+                incidents_json: row.get(1)?,
+                provider_accounts_json: row.get(2)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

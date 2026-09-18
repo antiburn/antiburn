@@ -345,6 +345,16 @@ Code's own coarser classification), reviewed against harness version
   another `5xx` status (`ServerError`), or, when no status is present,
   `error: "server_error"` (`ServerError`).
 
+A Claude quota incident also carries the limit family and the reset time the
+record states in its message text. A `session limit` text gives
+`RollingWindow` and a `weekly limit` text gives `Weekly`; a text neither
+phrase matches stays `RateLimit`, because `apiErrorStatus` alone still proves
+the refusal. The stated reset becomes a `QuotaResetClock` — an hour, a minute,
+and the named zone — not an instant: the engine holds no zone database, so the
+application resolves the clock. The reader keeps the two parsed values and
+drops the text; no message text is stored. Evidence written before this field
+existed deserializes with no clock.
+
 Every other status or `error` value is ignored, including `error: "unknown"`
 with no status (Claude's connection-refused case) and every 4xx other than
 429. `ProviderIncidentKind::Connection` is Codex-only: no Claude field
@@ -360,8 +370,10 @@ Maintainer confirmation (2026-09-14): extend provider incidents with
 `codex_error_info` codes, and add Claude `isApiErrorMessage` records as a
 new quota/provider incident source. Reviewed passive alternatives:
 
-- Classifying Claude errors from `content[].text` — rejected: free text,
-  unpinned, and the project never reads or stores error message text.
+- Classifying Claude errors from `content[].text` — rejected: free text and
+  unpinned. The reader parses the limit family and the reset clock from an
+  `isApiErrorMessage` text and keeps neither the text nor any other message
+  text.
 - Mapping Claude `error: "unknown"` to `Connection` — rejected: the label
   covers more than connection failures.
 - Mapping non-5xx `http_status_code` values inside Codex transport

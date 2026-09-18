@@ -100,6 +100,8 @@ const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
 const MENU_RANDOM_USAGE: &str = "random-usage";
 #[cfg(debug_assertions)]
 const MENU_BURN_CHECKS: &str = "burn-checks";
+#[cfg(debug_assertions)]
+const MENU_CODEX_ONLY: &str = "codex-only";
 const MENU_QUIT: &str = "quit";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
@@ -115,6 +117,13 @@ const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
 #[cfg(debug_assertions)]
 const BURN_CHECKS_LABEL: &str = "Simulate Burn Checks";
+#[cfg(debug_assertions)]
+const CODEX_ONLY_LABEL: &str = "Simulate Codex Only";
+/// The canonical provider id the Codex-only simulation keeps.
+///
+/// Codex readings carry the provider that serves them, not the tool name.
+#[cfg(debug_assertions)]
+const CODEX_PROVIDER: &str = crate::provider_usage::providers::OPENAI;
 
 /// Debug-only state that replaces a report with stable sample findings.
 #[cfg(debug_assertions)]
@@ -124,6 +133,25 @@ pub struct DebugBurnChecks {
 
 #[cfg(debug_assertions)]
 impl Default for DebugBurnChecks {
+    fn default() -> Self {
+        Self {
+            enabled: Mutex::new(false),
+        }
+    }
+}
+
+/// Debug-only state that hides every provider except Codex.
+///
+/// The reader keeps one account with one window. It is the smallest live
+/// reading the meter card can show, so the card's small layout is testable
+/// without a second provider account.
+#[cfg(debug_assertions)]
+pub struct DebugCodexOnly {
+    enabled: Mutex<bool>,
+}
+
+#[cfg(debug_assertions)]
+impl Default for DebugCodexOnly {
     fn default() -> Self {
         Self {
             enabled: Mutex::new(false),
@@ -144,6 +172,8 @@ pub struct TrayMenu {
     random_usage: CheckMenuItem<Wry>,
     #[cfg(debug_assertions)]
     burn_checks: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    codex_only: CheckMenuItem<Wry>,
 }
 
 struct BuiltMenu {
@@ -153,6 +183,8 @@ struct BuiltMenu {
     random_usage: CheckMenuItem<Wry>,
     #[cfg(debug_assertions)]
     burn_checks: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    codex_only: CheckMenuItem<Wry>,
 }
 
 /// The label the pin item carries for a given state — it names the action, not
@@ -173,9 +205,13 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         random_usage: menu.random_usage,
         #[cfg(debug_assertions)]
         burn_checks: menu.burn_checks,
+        #[cfg(debug_assertions)]
+        codex_only: menu.codex_only,
     });
     #[cfg(debug_assertions)]
     app.manage(DebugBurnChecks::default());
+    #[cfg(debug_assertions)]
+    app.manage(DebugCodexOnly::default());
 
     let tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(TRAY_ICON)?)
@@ -322,6 +358,51 @@ fn toggle_burn_checks(app: &AppHandle) -> bool {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *enabled = !*enabled;
     *enabled
+}
+
+/// Toggle the Codex-only reading without touching the cached snapshot.
+#[cfg(debug_assertions)]
+fn toggle_codex_only(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<DebugCodexOnly>() else {
+        return false;
+    };
+    let mut enabled = state
+        .enabled
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *enabled = !*enabled;
+    *enabled
+}
+
+/// Keep only Codex in a live-usage summary.
+///
+/// The cache keeps every provider. This filters the copy the views read, so
+/// the simulation never reaches the store, the alerts, or the tray figure.
+#[cfg(debug_assertions)]
+pub(crate) fn simulate_codex_only(
+    app: &AppHandle,
+    summary: crate::dto::LiveUsageSummary,
+) -> crate::dto::LiveUsageSummary {
+    let enabled = app.try_state::<DebugCodexOnly>().is_some_and(|state| {
+        *state
+            .enabled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
+    if !enabled {
+        return summary;
+    }
+    let mut summary = summary;
+    summary
+        .providers
+        .retain(|entry| entry.provider == CODEX_PROVIDER);
+    summary
+        .errors
+        .retain(|entry| entry.provider == CODEX_PROVIDER);
+    summary
+        .meters
+        .retain(|entry| entry.provider == CODEX_PROVIDER);
+    summary
 }
 
 /// Replace the report display with predictable development findings.
@@ -641,6 +722,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    #[cfg(debug_assertions)]
+    let codex_only_item = CheckMenuItem::with_id(
+        app,
+        MENU_CODEX_ONLY,
+        CODEX_ONLY_LABEL,
+        true,
+        false,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
@@ -665,6 +755,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &random_usage_item,
         #[cfg(debug_assertions)]
         &burn_checks_item,
+        #[cfg(debug_assertions)]
+        &codex_only_item,
         &separator,
         &quit_item,
     ];
@@ -676,6 +768,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         random_usage: random_usage_item,
         #[cfg(debug_assertions)]
         burn_checks: burn_checks_item,
+        #[cfg(debug_assertions)]
+        codex_only: codex_only_item,
     })
 }
 
@@ -759,6 +853,21 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 ::tracing::warn!(event = "tray_burn_checks_relabel_failed", enabled, error = %error);
             }
             let _ = app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        }
+        #[cfg(debug_assertions)]
+        MENU_CODEX_ONLY => {
+            let enabled = toggle_codex_only(app);
+            if let Some(menu) = app.try_state::<TrayMenu>()
+                && let Err(error) = menu.codex_only.set_checked(enabled)
+            {
+                ::tracing::warn!(event = "tray_codex_only_relabel_failed", enabled, error = %error);
+            }
+            // The live-usage event carries the summary, so the views take the
+            // filtered copy from here instead of asking for it again.
+            let _ = app.emit(
+                crate::usage_alerts::EVENT_CHANGED,
+                commands::cached_live_usage(app),
+            );
         }
         MENU_QUIT => {
             // Exit code 0 distinguishes a deliberate quit from the window

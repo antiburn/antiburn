@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
 import type { ProviderUsageWindowPayload } from "../../../lib/providerUsageIpc"
@@ -19,6 +19,28 @@ function window(
 }
 
 describe("OverviewSpendTotals", () => {
+  it("says the figure is an estimate antiburn makes, not a bill", () => {
+    // A dollar figure reads as a bill. The tooltip names where the number
+    // comes from and what it cannot know.
+    render(
+      <OverviewSpendTotals
+        totals={{
+          today: window(),
+          week: window(),
+          monthToDate: window(),
+          last30Days: window(),
+        }}
+      />,
+    )
+    const today = screen.getByText("Today", { selector: "[aria-hidden]" }).closest("[tabindex]")
+
+    fireEvent.focus(today!)
+
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /tokens your sessions used since midnight.*estimate, not a bill/,
+    )
+  })
+
   it("shows a spend figure with its token count and sessions for each span", () => {
     render(
       <OverviewSpendTotals

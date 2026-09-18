@@ -25,6 +25,7 @@
 //!    session that ran across midnight counts entirely in the day it last
 //!    touched. The views say so.
 
+pub mod allowance;
 pub(crate) mod codex_rollout_history;
 pub(crate) mod factor;
 pub mod live;
@@ -79,10 +80,10 @@ pub struct WindowBounds {
 
 /// Seconds in one local day. Daylight-saving changes are ignored here, as
 /// they are in [`window_bounds`].
-const DAY: i64 = 86_400;
+pub(crate) const DAY: i64 = 86_400;
 
 /// Days in each of the two daily series.
-const SERIES_DAYS: usize = 30;
+pub(crate) const SERIES_DAYS: usize = 30;
 
 impl WindowBounds {
     /// The earliest instant any window reaches back to.
@@ -141,7 +142,7 @@ pub fn lookback_start(now: i64, utc_offset_minutes: i32) -> i64 {
 }
 
 /// A validated [`UtcOffset`], falling back to UTC for anything implausible.
-fn local_offset(minutes: i32) -> UtcOffset {
+pub(crate) fn local_offset(minutes: i32) -> UtcOffset {
     let minutes = minutes.clamp(-MAX_OFFSET_MINUTES, MAX_OFFSET_MINUTES);
     UtcOffset::from_whole_seconds(minutes * 60).unwrap_or(UtcOffset::UTC)
 }
@@ -192,7 +193,7 @@ fn day_index(epoch: i64, start: i64) -> Option<usize> {
 }
 
 /// The reader's calendar date for the day that starts at `day_start`.
-fn local_date(day_start: i64, offset: UtcOffset) -> String {
+pub(crate) fn local_date(day_start: i64, offset: UtcOffset) -> String {
     let date: Date = OffsetDateTime::from_unix_timestamp(day_start)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH)
         .to_offset(offset)

@@ -8,7 +8,7 @@ import type {
   SessionUpdatedPayload,
 } from "../../lib/ipc"
 import type {
-  LiveUsageSummaryPayload,
+  AllowanceUsageSummaryPayload,
   ProviderUsageSummaryPayload,
 } from "../../lib/providerUsageIpc"
 import {
@@ -30,10 +30,9 @@ const usage = (generatedAt: string): ProviderUsageSummaryPayload => ({
   generatedAt,
 })
 
-const liveUsage = (generatedAt: string): LiveUsageSummaryPayload => ({
-  providers: [],
-  errors: [],
-  meters: [],
+const allowance = (generatedAt: string): AllowanceUsageSummaryPayload => ({
+  accounts: [],
+  overageSpanDays: 30,
   generatedAt,
 })
 
@@ -143,14 +142,13 @@ function deferred<T>() {
 function setup(visibleInitially = true, overrides: Partial<MainOverviewAdapter> = {}) {
   let visible: (value: boolean) => void = () => undefined
   let indexChangedHandler: (change: SessionIndexChangedPayload) => void = () => undefined
-  let liveChanged: (value: LiveUsageSummaryPayload) => void = () => undefined
   let reportChanged: () => void = () => undefined
   let updated: (change: SessionUpdatedPayload) => void = () => undefined
   const live = fakeLiveSessions()
   const adapter: MainOverviewAdapter = {
     liveSessions: live.source,
     getUsage: vi.fn().mockResolvedValue(usage("first")),
-    getLiveUsage: vi.fn().mockResolvedValue(liveUsage("live-first")),
+    getAllowanceUsage: vi.fn().mockResolvedValue(allowance("allowance-first")),
     getChecksReport: vi.fn().mockResolvedValue(report(0)),
     cancelChecksReport: vi.fn().mockResolvedValue(undefined),
     listRecentSessions: vi
@@ -164,10 +162,6 @@ function setup(visibleInitially = true, overrides: Partial<MainOverviewAdapter> 
     getVisible: vi.fn().mockResolvedValue(visibleInitially),
     onVisible: vi.fn(async (handler) => {
       visible = handler
-      return vi.fn()
-    }),
-    onLiveUsageChanged: vi.fn(async (handler) => {
-      liveChanged = handler
       return vi.fn()
     }),
     onChecksReportChanged: vi.fn(async (handler) => {
@@ -194,7 +188,6 @@ function setup(visibleInitially = true, overrides: Partial<MainOverviewAdapter> 
     invalidated: () => indexChangedHandler(indexChanged("invalidated")),
     indexChanged: (cause: SessionIndexChangedPayload["cause"]) =>
       indexChangedHandler(indexChanged(cause)),
-    liveChanged: (value: LiveUsageSummaryPayload) => liveChanged(value),
     reportChanged: () => reportChanged(),
     entryChanged: (facets?: Partial<SessionUpdatedPayload["facets"]>) =>
       updated(update(entry("e", "2026-09-14T09:00:00Z"), facets)),
@@ -215,7 +208,6 @@ describe("MainOverviewSession", () => {
     const stopActive = session.subscribe(() => undefined)
     await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledOnce())
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("first"))
-    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-first")
     setVisible(false)
     expect(session.getSnapshot().active).toBe(false)
     stopActive()
@@ -269,23 +261,51 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
-  it("rejects a hidden read's result and takes pushed live usage only while active", async () => {
+  it("keeps the last allowance figures after a failed read", async () => {
+    // The cost totals and the allowance totals are separate reads. A failed
+    // allowance read must not blank the page the reader is looking at.
+    const { adapter, session, scanFinished } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().allowance).not.toBeNull())
+    expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first")
+    vi.mocked(adapter.getAllowanceUsage).mockRejectedValueOnce(new Error("Unavailable"))
+    scanFinished()
+    // The mock records the call before the rejection reaches the catch, so
+    // the test waits for the state it checks.
+    await vi.waitFor(() => expect(session.getSnapshot().allowanceError).toBe(true))
+    expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first")
+    expect(session.getSnapshot().usageError).toBe(false)
+    stop()
+  })
+
+  it("marks a failed first allowance read, and stops its loading state", async () => {
+    // With no figures to keep, the page must state the failure. A loading
+    // state that never ends states a read that is still in flight.
+    const { adapter, session } = setup()
+    sessions.push(session)
+    vi.mocked(adapter.getAllowanceUsage).mockRejectedValueOnce(new Error("Unavailable"))
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().allowanceError).toBe(true))
+    expect(session.getSnapshot().allowance).toBeNull()
+    expect(session.getSnapshot().allowanceLoading).toBe(false)
+    stop()
+  })
+
+  it("rejects a hidden read's result", async () => {
     const pending = deferred<ProviderUsageSummaryPayload>()
-    const { adapter, session, setVisible, liveChanged } = setup()
+    const { adapter, session, setVisible } = setup()
     sessions.push(session)
     const stop = session.subscribe(() => undefined)
     await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
     vi.mocked(adapter.getUsage).mockReturnValueOnce(pending.promise)
     session.refresh()
     setVisible(false)
-    liveChanged(liveUsage("live-hidden"))
     pending.resolve(usage("hidden"))
     await Promise.resolve()
     expect(session.getSnapshot().usage?.generatedAt).toBe("first")
-    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-first")
     setVisible(true)
-    liveChanged(liveUsage("live-pushed"))
-    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-pushed")
     await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(3))
     stop()
   })

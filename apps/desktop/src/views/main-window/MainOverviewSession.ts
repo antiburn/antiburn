@@ -7,11 +7,10 @@ import {
   type ChecksReportPayload,
 } from "../../lib/insightsIpc"
 import {
-  getLiveUsage,
+  getAllowanceUsage,
   getMainWindowVisible,
   getProviderUsage,
   listRecentSessions,
-  onLiveUsageChanged,
   onMainWindowVisibilityChanged,
   onSessionIndexChanged,
   onSessionUpdated,
@@ -20,7 +19,7 @@ import {
   type SessionUpdatedPayload,
 } from "../../lib/ipc"
 import type {
-  LiveUsageSummaryPayload,
+  AllowanceUsageSummaryPayload,
   ProviderUsageSummaryPayload,
 } from "../../lib/providerUsageIpc"
 import {
@@ -32,13 +31,12 @@ import {
 
 export interface MainOverviewAdapter {
   getUsage(): Promise<ProviderUsageSummaryPayload>
-  getLiveUsage(): Promise<LiveUsageSummaryPayload>
+  getAllowanceUsage(): Promise<AllowanceUsageSummaryPayload>
   getChecksReport(consumerId: string): Promise<ChecksReportPayload | null>
   cancelChecksReport(consumerId: string): Promise<void>
   listRecentSessions(): Promise<ActivityEntryPayload[]>
   getVisible(): Promise<boolean>
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
-  onLiveUsageChanged(handler: (usage: LiveUsageSummaryPayload) => void): Promise<() => void>
   onChecksReportChanged(handler: () => void): Promise<() => void>
   onSessionIndexChanged(
     handler: (change: SessionIndexChangedPayload) => void,
@@ -50,13 +48,12 @@ export interface MainOverviewAdapter {
 
 const productionAdapter: MainOverviewAdapter = {
   getUsage: () => getProviderUsage(),
-  getLiveUsage: () => getLiveUsage(),
+  getAllowanceUsage: () => getAllowanceUsage(),
   getChecksReport: (consumerId) => getChecksReport(consumerId),
   cancelChecksReport: (consumerId) => cancelChecksReport(consumerId),
   listRecentSessions: () => listRecentSessions(),
   getVisible: () => getMainWindowVisible(),
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
-  onLiveUsageChanged: (handler) => onLiveUsageChanged(handler),
   onChecksReportChanged: (handler) => onChecksReportChanged(handler),
   onSessionIndexChanged: (handler) => onSessionIndexChanged(handler),
   onSessionUpdated: (handler) => onSessionUpdated(handler),
@@ -88,7 +85,13 @@ export interface MainOverviewSnapshot {
   /** True when the newest local usage read failed and nothing replaced it. */
   usageError: boolean
   /** The provider limit snapshot, or null before the first successful read. */
-  liveUsage: LiveUsageSummaryPayload | null
+  /** Utilization and overage for each account, or null before the first
+   *  successful read. */
+  allowance: AllowanceUsageSummaryPayload | null
+  /** True while an allowance read is in flight and nothing is on the page. */
+  allowanceLoading: boolean
+  /** True when the newest allowance read failed and nothing replaced it. */
+  allowanceError: boolean
   /** The Burn checks report, or null before the first successful read. */
   report: ChecksReportPayload | null
   /** The newest local sessions, or null before the first successful read. */
@@ -128,7 +131,9 @@ export class MainOverviewSession {
     active: false,
     usage: null,
     usageError: false,
-    liveUsage: null,
+    allowance: null,
+    allowanceLoading: false,
+    allowanceError: false,
     report: null,
     recentSessions: null,
     loading: false,
@@ -140,6 +145,7 @@ export class MainOverviewSession {
   private generation = 0
   private workVersion = 0
   private refreshVersion = 0
+  private allowanceVersion = 0
   private reportVersion = 0
   private recentVersion = 0
   private visible = false
@@ -195,12 +201,6 @@ export class MainOverviewSession {
           visibilityRevision += 1
           this.visible = visible
           this.syncActive()
-        }),
-      ),
-      this.listen(
-        generation,
-        this.adapter.onLiveUsageChanged((liveUsage) => {
-          if (generation === this.generation && this.snapshot.active) this.update({ liveUsage })
         }),
       ),
       this.listen(
@@ -276,7 +276,7 @@ export class MainOverviewSession {
       const work = this.workVersion
       const version = this.refreshVersion
       this.update({ loading: !this.snapshot.usage, refreshing: !!this.snapshot.usage })
-      void this.loadLiveUsage(work, version)
+      void this.loadAllowance(work, ++this.allowanceVersion)
       this.refreshReport()
       this.refreshRecentSessions()
       try {
@@ -291,19 +291,20 @@ export class MainOverviewSession {
     }
   }
 
-  private async loadLiveUsage(work: number, version: number): Promise<void> {
+  private async loadAllowance(work: number, version: number): Promise<void> {
+    this.update({ allowanceLoading: !this.snapshot.allowance })
     try {
-      const liveUsage = await this.adapter.getLiveUsage()
-      if (
-        work === this.workVersion &&
-        version === this.refreshVersion &&
-        this.snapshot.active
-      ) {
-        this.update({ liveUsage })
+      const allowance = await this.adapter.getAllowanceUsage()
+      if (work === this.workVersion && version === this.allowanceVersion) {
+        this.update({ allowance, allowanceLoading: false, allowanceError: false })
       }
     } catch {
-      // The limits panel shows its own empty state. A failed read must not
-      // hide the local totals.
+      // The allowance panels state the failure themselves. A failed read must
+      // not hide the cost totals beside them, and it must not read as an
+      // account with no meter history.
+      if (work === this.workVersion && version === this.allowanceVersion) {
+        this.update({ allowanceLoading: false, allowanceError: true })
+      }
     }
   }
 
@@ -359,6 +360,6 @@ export class MainOverviewSession {
     this.releaseConsumer()
     for (const stop of this.stops.splice(0)) stop()
     this.adapter.liveSessions.clearInterest(this)
-    this.update({ active: false, loading: false, refreshing: false })
+    this.update({ active: false, loading: false, refreshing: false, allowanceLoading: false })
   }
 }

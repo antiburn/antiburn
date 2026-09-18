@@ -30,6 +30,7 @@ mod history_tests {
         used_percent: Option<f64>,
     ) -> ProviderUsageSnapshot {
         ProviderUsageSnapshot {
+            refusal_kind: None,
             provider: "anthropic",
             account: Some(account.into()),
             account_uuid: None,
@@ -58,6 +59,30 @@ mod history_tests {
             supplemental: None,
             reset_credits: None,
         }
+    }
+
+    /// The same snapshot in the long window, which is the one a daily
+    /// allowance series reads.
+    fn weekly_snapshot(
+        account: &str,
+        observed_at: i64,
+        starts_at: Option<i64>,
+        resets_at: Option<i64>,
+        used_percent: Option<f64>,
+    ) -> ProviderUsageSnapshot {
+        let mut snapshot = snapshot(
+            account,
+            observed_at,
+            "seven-day",
+            starts_at,
+            resets_at,
+            used_percent,
+        );
+        for window in &mut snapshot.windows {
+            window.role = WindowRole::PrimaryLong;
+            window.kind = UsageWindowKind::Weekly;
+        }
+        snapshot
     }
 
     fn session() -> SessionRecord {
@@ -479,13 +504,14 @@ mod history_tests {
         assert_eq!(remaining, 0);
     }
 
-    /// Retention used to keep an orphaned period alive whenever a
-    /// materialized allocation row or a dirty-queue entry still pointed at
-    /// it. Both checks are gone with the allocator; a period with no
-    /// remaining observations must still disappear on its own.
+    /// Retention keeps a period whose readings have expired, because its
+    /// rollup is the only record of the peak the reader reached inside it.
+    ///
+    /// The allocation-era exemptions are gone. A materialized allocation row
+    /// and a dirty-queue entry no longer hold a period alive. The rollup is
+    /// the one exemption that remains.
     #[test]
-    fn retention_deletes_an_orphaned_period_and_its_observations_after_the_allocation_checks_are_gone()
-     {
+    fn retention_keeps_an_expired_period_for_its_rollup() {
         let store = store();
         store
             .save_settings(&AppSettings {
@@ -522,7 +548,151 @@ mod history_tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(!period_exists, "an orphaned period is deleted, not kept");
+        assert!(
+            period_exists,
+            "a period with a rollup outlives its readings"
+        );
+        drop(connection);
+
+        let rollups = store.provider_usage_period_rollups(0, 10).unwrap();
+        assert_eq!(rollups.len(), 1);
+        assert_eq!(rollups[0].period_id, period_id);
+        assert_eq!(rollups[0].peak_used_percent, Some(10.0));
+        assert_eq!(rollups[0].observation_count, 1);
+    }
+
+    #[test]
+    fn a_rollup_states_the_peak_the_last_figure_and_the_refusal_count() {
+        let store = store();
+        let start = NOW - 18_000;
+        let low = snapshot(
+            ACCOUNT_A,
+            start,
+            "five-hour",
+            Some(start),
+            Some(NOW),
+            Some(20.0),
+        );
+        let mut peak = snapshot(
+            ACCOUNT_A,
+            start + 600,
+            "five-hour",
+            Some(start),
+            Some(NOW),
+            Some(100.0),
+        );
+        peak.refusal_kind = Some("usage_limit_reached".to_string());
+        let last = snapshot(
+            ACCOUNT_A,
+            start + 1_200,
+            "five-hour",
+            Some(start),
+            Some(NOW),
+            Some(65.0),
+        );
+
+        let changed = store
+            .record_provider_usage_snapshots(&[low, peak, last])
+            .unwrap();
+        assert_eq!(changed.len(), 1);
+
+        let rollups = store.provider_usage_period_rollups(0, 10).unwrap();
+        assert_eq!(rollups.len(), 1);
+        let rollup = &rollups[0];
+        assert_eq!(rollup.period_id, changed[0]);
+        assert_eq!(rollup.peak_used_percent, Some(100.0));
+        assert_eq!(rollup.last_used_percent, Some(65.0));
+        assert_eq!(rollup.observation_count, 3);
+        assert_eq!(rollup.refusal_count, 1);
+        assert_eq!(rollup.starts_at_epoch, Some(start));
+        assert_eq!(rollup.resets_at_epoch, Some(NOW));
+    }
+
+    /// A refusal is a fact the first reading of a moment can miss. The
+    /// reading that states it must reach the row and the rollup.
+    #[test]
+    fn a_refusal_reaches_a_stored_reading_of_the_same_moment() {
+        let store = store();
+        let start = NOW - 18_000;
+        let quiet = snapshot(
+            ACCOUNT_A,
+            start + 600,
+            "five-hour",
+            Some(start),
+            Some(NOW),
+            Some(100.0),
+        );
+        let mut refused = quiet.clone();
+        refused.refusal_kind = Some("usage_limit_reached".to_string());
+
+        store.record_provider_usage_snapshots(&[quiet]).unwrap();
+        let changed = store.record_provider_usage_snapshots(&[refused]).unwrap();
+        assert_eq!(changed.len(), 1);
+
+        let history = store
+            .provider_usage_period_history(changed[0])
+            .unwrap()
+            .expect("the period exists");
+        assert_eq!(
+            history.observations[0].refusal_kind.as_deref(),
+            Some("usage_limit_reached")
+        );
+        let rollups = store.provider_usage_period_rollups(0, 10).unwrap();
+        assert_eq!(rollups[0].refusal_count, 1);
+    }
+
+    /// A reading that arrives after retention pruned the earlier ones must
+    /// not lower the peak the period already reached.
+    #[test]
+    fn a_later_reading_never_lowers_a_recorded_peak() {
+        let store = store();
+        // The default keeps every reading, so a prune against it removes
+        // nothing and the test never reaches the state it is about.
+        store
+            .save_settings(&AppSettings {
+                session_data_retention_days: RETENTION_DAYS,
+                ..AppSettings::default()
+            })
+            .unwrap();
+        let start = NOW - 91 * 86_400 - 18_000;
+        let reset = NOW - 91 * 86_400;
+        let peak = snapshot(
+            ACCOUNT_A,
+            start,
+            "five-hour",
+            Some(start),
+            Some(reset),
+            Some(80.0),
+        );
+        let period_id = store.record_provider_usage_snapshots(&[peak]).unwrap()[0];
+        store.apply_session_retention(NOW).unwrap();
+        assert!(
+            store
+                .provider_usage_period_history(period_id)
+                .unwrap()
+                .expect("the period keeps its rollup")
+                .observations
+                .is_empty(),
+            "the prune must remove the reading the peak came from"
+        );
+
+        let late = snapshot(
+            ACCOUNT_A,
+            start + 60,
+            "five-hour",
+            Some(start),
+            Some(reset),
+            Some(5.0),
+        );
+        store.record_provider_usage_snapshots(&[late]).unwrap();
+
+        let rollup = store
+            .provider_usage_period_rollups(0, 10)
+            .unwrap()
+            .into_iter()
+            .find(|rollup| rollup.period_id == period_id)
+            .expect("the period keeps its rollup");
+        assert_eq!(rollup.peak_used_percent, Some(80.0));
     }
 
     #[test]
@@ -676,5 +846,113 @@ mod history_tests {
             history.observations[0].plan_tier.as_deref(),
             Some("standard")
         );
+    }
+
+    /// The daily series reads the long window only, in time order, and
+    /// leaves out a reading the provider stated no figure for.
+    #[test]
+    fn readings_come_back_in_time_order_for_the_long_window_only() {
+        let store = store();
+        let start = NOW - 3 * 86_400;
+        store
+            .record_provider_usage_snapshots(&[
+                weekly_snapshot(ACCOUNT_A, start, Some(start), Some(NOW), Some(10.0)),
+                weekly_snapshot(ACCOUNT_A, start + 3_600, Some(start), Some(NOW), Some(28.0)),
+                weekly_snapshot(ACCOUNT_A, start + 7_200, Some(start), Some(NOW), None),
+                snapshot(
+                    ACCOUNT_A,
+                    start + 10_800,
+                    "five-hour",
+                    Some(start),
+                    Some(NOW),
+                    Some(90.0),
+                ),
+            ])
+            .unwrap();
+
+        let readings = store
+            .provider_usage_readings(0, "primaryLong", 100)
+            .unwrap();
+
+        let figures: Vec<f64> = readings.iter().map(|row| row.used_percent).collect();
+        assert_eq!(figures, vec![10.0, 28.0]);
+        assert_eq!(readings[0].observed_at_epoch, start);
+        assert_eq!(readings[1].observed_at_epoch, start + 3_600);
+        assert_eq!(readings[0].period_id, readings[1].period_id);
+    }
+
+    /// The series reads every account, however many readings come before it.
+    #[test]
+    fn readings_page_past_one_query_and_keep_every_account() {
+        // A single capped query answers in account order, so the accounts
+        // that sort last fall off the end and get no series at all.
+        let store = store();
+        let start = NOW - 3 * 86_400;
+        let snapshots: Vec<_> = (0i32..4)
+            .flat_map(|step| {
+                let observed_at = start + i64::from(step) * 3_600;
+                [
+                    weekly_snapshot(
+                        ACCOUNT_A,
+                        observed_at,
+                        Some(start),
+                        Some(NOW),
+                        Some(f64::from(step) * 10.0),
+                    ),
+                    weekly_snapshot(
+                        ACCOUNT_B,
+                        observed_at,
+                        Some(start),
+                        Some(NOW),
+                        Some(f64::from(step) * 5.0),
+                    ),
+                ]
+            })
+            .collect();
+        store.record_provider_usage_snapshots(&snapshots).unwrap();
+
+        let readings = store.provider_usage_readings(0, "primaryLong", 3).unwrap();
+
+        assert_eq!(readings.len(), 8);
+        let accounts: Vec<&str> = readings
+            .iter()
+            .map(|row| row.account_key.as_str())
+            .collect();
+        assert_eq!(
+            accounts,
+            vec![ACCOUNT_A; 4]
+                .into_iter()
+                .chain([ACCOUNT_B; 4])
+                .collect::<Vec<_>>()
+        );
+        let times: Vec<i64> = readings
+            .iter()
+            .take(4)
+            .map(|row| row.observed_at_epoch)
+            .collect();
+        assert_eq!(
+            times,
+            vec![start, start + 3_600, start + 7_200, start + 10_800]
+        );
+    }
+
+    /// A reading older than the bound is not one the series asks for.
+    #[test]
+    fn readings_start_at_the_bound_the_caller_states() {
+        let store = store();
+        let start = NOW - 10 * 86_400;
+        store
+            .record_provider_usage_snapshots(&[
+                weekly_snapshot(ACCOUNT_A, start, Some(start), Some(NOW), Some(10.0)),
+                weekly_snapshot(ACCOUNT_A, NOW - 3_600, Some(start), Some(NOW), Some(40.0)),
+            ])
+            .unwrap();
+
+        let readings = store
+            .provider_usage_readings(NOW - 86_400, "primaryLong", 100)
+            .unwrap();
+
+        assert_eq!(readings.len(), 1);
+        assert_eq!(readings[0].used_percent, 40.0);
     }
 }

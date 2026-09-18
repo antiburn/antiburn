@@ -1,35 +1,35 @@
-import { useSyncExternalStore } from "react"
+import { useState, useSyncExternalStore } from "react"
 
 import { isMacOS } from "../../lib/platform"
 
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { type MainOverviewSession } from "./MainOverviewSession"
-import { OverviewBurnChecks } from "./overview/OverviewBurnChecks"
-import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
-import { OverviewSpendChart } from "./overview/OverviewSpendChart"
-import { OverviewSpendTotals } from "./overview/OverviewSpendTotals"
+import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
 
 import "./overview/overview.css"
 
 /**
- * The main window's landing section: local spend totals, then one card
- * with Burn checks over recent sessions beside the provider limits card,
- * and the daily spend chart along the bottom, where it takes any height
- * the window has to spare. The Burn checks and Sessions panels are
- * summaries; their controls leave for the full sections.
+ * The main window's landing section: the usage block, which is the unit
+ * control over the daily chart and the totals it summarizes, and then the
+ * recent sessions card. The chart takes any height the window has to spare.
+ * The Sessions panel is a summary; its control leaves for the full section.
+ *
+ * The page holds the unit. The chart and the totals both read it, so the
+ * page can never show dollars in one place and allowance in another.
+ *
+ * The live provider limits are not here. They sit in the main window's
+ * sidebar, where every section shows them.
  */
 export function OverviewView({
   active,
   session,
-  onOpenBurnChecks,
   onOpenSessions,
   onSelectSession,
 }: {
   active: boolean
   session: MainOverviewSession
-  onOpenBurnChecks: () => void
   onOpenSessions: () => void
   onSelectSession: (entry: SessionListEntry) => void
 }) {
@@ -38,6 +38,9 @@ export function OverviewView({
     session.getSnapshot,
     session.getSnapshot,
   )
+  // The page opens on the subscription, because the plan is the limit a
+  // reader meets. A dollar estimate is the second question.
+  const [metric, setMetric] = useState<OverviewMetric>("allowance")
   const usage = state.usage
   const loading = !usage && !state.usageError
   return (
@@ -53,58 +56,41 @@ export function OverviewView({
         />
       )}
       <h1 className="sr-only">Overview</h1>
-      {!usage && state.usageError ? (
-        <div className="flex flex-1 items-center justify-center text-center">
-          <div>
-            <p role="alert" className="type-body text-label-secondary">
-              Local usage is unavailable.
+      <ScrollPane className="min-h-0" topEdgeFade>
+        <div
+          role="region"
+          aria-label={loading ? "Loading Overview" : "Overview"}
+          aria-busy={loading || undefined}
+          className="overview-page flex w-full flex-col gap-[var(--space-xl)] px-8 py-6"
+        >
+          {loading && (
+            <p role="status" className="sr-only">
+              Loading Overview.
             </p>
-            <button type="button" onClick={session.refresh} className="ui-push-button mt-3">
-              Retry
-            </button>
-          </div>
-        </div>
-      ) : (
-        <ScrollPane className="min-h-0" topEdgeFade>
-          <div
-            role="region"
-            aria-label={loading ? "Loading Overview" : "Overview"}
-            aria-busy={loading || undefined}
-            className="overview-page flex w-full flex-col gap-[var(--space-xl)] px-8 py-6"
-          >
-            {loading && (
-              <p role="status" className="sr-only">
-                Loading Overview.
-              </p>
-            )}
-            <OverviewSpendTotals totals={usage?.totals ?? null} loading={loading} />
-            <div className="overview-panels">
-              <div className="overview-stack p-[var(--space-lg)]">
-                <OverviewBurnChecks
-                  report={state.report}
-                  loading={loading && !state.report}
-                  onOpen={onOpenBurnChecks}
-                />
-                <OverviewRecentSessions
-                  entries={state.recentSessions}
-                  loading={loading && !state.recentSessions}
-                  onSelect={onSelectSession}
-                  onOpenAll={onOpenSessions}
-                />
-              </div>
-              <OverviewProviderLimits
-                live={state.liveUsage}
-                loading={loading && !state.liveUsage}
-              />
-            </div>
-            <OverviewSpendChart
-              days={usage?.days ?? []}
-              previousDays={usage?.previousDays ?? []}
-              loading={loading}
+          )}
+          <OverviewUsage
+            metric={metric}
+            onMetricChange={setMetric}
+            totals={usage?.totals ?? null}
+            days={usage?.days ?? []}
+            previousDays={usage?.previousDays ?? []}
+            allowance={state.allowance}
+            allowanceLoading={state.allowanceLoading}
+            allowanceError={state.allowanceError}
+            usageError={state.usageError}
+            onRetryUsage={session.refresh}
+            loading={loading}
+          />
+          <div className="overview-stack p-[var(--space-lg)]">
+            <OverviewRecentSessions
+              entries={state.recentSessions}
+              loading={loading && !state.recentSessions}
+              onSelect={onSelectSession}
+              onOpenAll={onOpenSessions}
             />
           </div>
-        </ScrollPane>
-      )}
+        </div>
+      </ScrollPane>
     </div>
   )
 }

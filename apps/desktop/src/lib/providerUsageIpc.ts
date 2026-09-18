@@ -220,6 +220,94 @@ export interface LiveUsageMeterPayload {
   carrierLabel?: string
 }
 
+/**
+ * How much of one allowance window the reader consumed, across whole
+ * periods. Mirrors Rust `AllowanceUtilization`.
+ */
+export interface AllowanceUtilizationPayload {
+  /** The median peak across the periods, or null while too few periods
+   * exist for a median to describe a typical one. The peak stands alone
+   * until then; it is honest at any sample size. */
+  typicalPercent: number | null
+  /** The highest figure any one period reached. */
+  peakPercent: number
+  /** The mean peak across every period antiburn holds. It answers "how much
+   * of the plan do I use", where the peak answers "can the plan hold me". */
+  averagePercent: number
+  periodCount: number
+  /** How many of those periods reached 100%. A refusal happens there and at
+   * nothing less, so there is no lower threshold to report. */
+  maxedPeriodCount: number
+  /** The window the periods measure: `weekly`, `rolling`, or the provider's
+   * own word. The weekly window measures plan fit and the rolling window
+   * measures burstiness, so the reader must know which. */
+  windowKind: string
+  /** ISO-8601 stamp of the oldest period counted. */
+  firstPeriodAt: string
+  /** ISO-8601 stamp of the newest period counted. */
+  lastPeriodAt: string
+}
+
+/** The demand the provider refused. Mirrors Rust `AllowanceOverage`. */
+export interface AllowanceOveragePayload {
+  /** How many times the provider blocked the reader. A retry storm is one
+   * block, not one for each refused attempt. */
+  blockCount: number
+  /** The total wait across the blocks that state a reset. */
+  waitedSeconds: number
+  /** Blocks that state no usable reset. They are counted and contribute no
+   * waiting time, rather than being dropped or guessed at. */
+  blocksWithoutWait: number
+  lastBlockAt: string | null
+}
+
+/**
+ * One provider account's two allowance numbers. Mirrors Rust
+ * `AllowanceUsageAccount`.
+ *
+ * Utilization is supply consumed and overage is demand refused. Neither
+ * follows from the other: a period can close well under its limit and still
+ * contain a block from a shorter window.
+ */
+export interface AllowanceUsageAccountPayload {
+  provider: string
+  displayName: string
+  accountKey: string
+  /** The long window: how well the plan fits. */
+  utilization: AllowanceUtilizationPayload | null
+  /** The short rolling window: the cause of the blocks, not a second
+   * plan-fit figure. The two windows answer different questions. */
+  burst: AllowanceUtilizationPayload | null
+  overage: AllowanceOveragePayload
+  /** The trailing thirty days, oldest first. */
+  days: AllowanceDayPayload[]
+  /** The thirty days before those, for the same comparison the cost chart
+   * draws. */
+  previousDays: AllowanceDayPayload[]
+}
+
+/** One day of an account's allowance series. Mirrors Rust `AllowanceDay`. */
+export interface AllowanceDayPayload {
+  /** The reader's calendar date, `YYYY-MM-DD`. */
+  localDate: string
+  /** Points of the allowance the reader consumed on this day, or null when
+   * no reading speaks for the day. A gap is unknown, never zero. */
+  usedPercent: number | null
+  /** Blocks that started on this day. A block is its own fact, so it is
+   * reported even for a day the meter says nothing about. */
+  blockCount: number
+}
+
+/** The allowance numbers for every account. Mirrors Rust `AllowanceUsageSummary`. */
+export interface AllowanceUsageSummaryPayload {
+  /** One entry for each provider account with either number. An account
+   * with no allowance evidence is absent rather than zeroed. */
+  accounts: AllowanceUsageAccountPayload[]
+  /** How many trailing days `overage` covers. The utilization figures cover
+   * every period still held, which is a longer span. */
+  overageSpanDays: number
+  generatedAt: string
+}
 type LiveLoginCarrier =
   | "claudeCredentialsFile"
   | "claudeKeychain"

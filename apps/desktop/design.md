@@ -14,6 +14,7 @@ sources:
   - src/styles/main-window.css
   - src/styles/burn-checks-report.css
   - src/styles/session-analysis-colors.css
+  - src/styles/overview-series-colors.css
   - src/styles/session-rows.css
   - src/styles/session-detail.css
   - src/components/ui/text-roll.css
@@ -285,6 +286,18 @@ colors:
   mark-compaction: # a compaction mark, lit; the brand tint in both themes
     light: "hsl(17.6 100% 58.6%)"
     dark: "hsl(17.6 100% 58.6%)"
+  series-1: # Overview account series, first: the deep blue of a reading, at full strength
+    light: "hsl(201.5 100% 34.9%)"
+    dark: "hsl(201.6 77% 62.5%)"
+  series-2: # Overview account series, second: the same blue, muted; the ramp inverts on dark
+    light: "hsl(201 48% 74%)"
+    dark: "hsl(201 38% 37%)"
+  series-3: # Overview account series, third: the same blue, between the first two
+    light: "hsl(201 62% 55%)"
+    dark: "hsl(201 50% 50%)"
+  series-4: # Overview account series, fourth: the same blue, palest
+    light: "hsl(202 31% 88%)"
+    dark: "hsl(201 28% 28%)"
   measure: # the reading itself: the real-work run and the cost-scale measure; a calm blue
     light: "hsl(191.5 83% 36.8%)"
     dark: "hsl(192 63% 47.6%)"
@@ -488,16 +501,15 @@ including its opacity and native system colours. Reduced transparency applies eq
 to System and the corresponding explicit theme.
 Notes for what isn't expressible as a token:
 
-- **Overview panels** — the provider usage meters stay 180 CSS pixels wide
-  (180 native logical points), including when the panels stack below 700px. The
-  usage meters use a card background and inset outline. The checks and sessions
-  section fills the remaining column without an outer card. Both retain 16px internal
-  padding. Individual burn findings match compact session cards: `bg-session-card`,
+- **Overview panels** — the usage meters use a card background and inset
+  outline. The checks and sessions section fills the remaining column without an
+  outer card. Both retain 16px internal padding. Individual burn findings match
+  compact session cards: `bg-session-card`,
   `--radius-popover` corners, 12px horizontal and 8px vertical padding, 6px gaps,
   and `hover:bg-surface-secondary/50` with the shared `session-card` transition.
   Finding rows have no separator lines. “Recent” sits at the left
   of the sessions header, on the same baseline as “All sessions”, with both using
-  `type-caption text-label-secondary`. The width stays local to `overview.css`.
+  `type-caption text-label-secondary`.
 
 - **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
   a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.
@@ -688,7 +700,17 @@ Notes for what isn't expressible as a token:
   tokens in `waste-warn`, and in `system-red-text` when the waste is both a large share of the
   startup context and large in absolute terms. `waste-warn` is its own token because `brand` is
   too dark on the light surface to read as orange beside that red. Everything else stays greyscale
-  until the pointer names a layer. The wide Cost tab is a query
+  until the pointer names a layer. The Overview allowance chart draws every provider account on
+  one percent scale, so there color names an account: the `series-1` to `series-4` tokens hand
+  out one hue, the deep blue of a reading, at four weights. One hue keeps the chart calm and
+  keeps every series away from the red that marks a block, which is the one mark on the chart a
+  reader must not miss. Weight names the account: the first two weights sit at opposite ends of
+  the ramp, which is the widest separation one hue can give the common case of two accounts, and
+  a difference in lightness alone survives every type of color vision deficiency. The cost is
+  that the muted series reads as the secondary one. A fifth account repeats the first weight,
+  because a repeat is honest and a fifth step does not stay separable. A block keeps the system red and its own
+  shape, a dot over the bar ringed in the window surface, so it never depends on hue alone and
+  never sinks into the bar beneath it. The wide Cost tab is a query
   container, and its burn checks answer their own pane width. Each check is a card, which is what
   groups its name with its verdict; the verdict is the mark alone, with the word kept for a screen
   reader, and the card itself is the affordance that opens the explanation. Two cards to a row, and
@@ -704,6 +726,17 @@ Notes for what isn't expressible as a token:
   their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
+  A card floats at the top right, over the workspace, and holds the live provider meters.
+  The card takes width from the window: 156px at the 1000px minimum window width, then
+  `clamp(156px, calc(20vw - 44px), 316px)` up to 316px from 1800px. The sections beside it
+  need the width more at the small sizes and less at the large ones. Every section shows the same meters, so they sit over the workspace instead of
+  under the section rows. The card uses the popover corner, the opaque `surface-window`
+  fill under the `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card`
+  outline. The tint keeps the material the meters had in the sidebar. It insets 16px from the
+  window edges on all four sides, including on macOS, where the drag strip covers only the
+  sidebar. It keeps the full window height between those margins. It scrolls alone when the accounts outgrow it. The workspace holds a matching inset, so no section draws under it.
+  The meters hold 12px of padding on each side and pack one dot every 9px of measured
+  width, to a floor of 16 dots.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,
   and 12px icon gaps, which Settings keeps. A top-level item can nest child rows one level deep,
@@ -730,10 +763,11 @@ Notes for what isn't expressible as a token:
 
 ### Main window collection and detail architecture
 
-The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
-at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
-the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
-the detail retains 440px; at the 1100px default width, it receives 540px.
+The 220px navigation sidebar, 340px collection pane, flexible detail pane, and fluid provider
+card remain visible at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+the session detail owns its toolbar and scroll area. The workspace reserves the provider
+card and the 16px margin on each side of it. At the 1000px minimum window width, the
+detail retains 252px; at the 1100px default width, it receives 332px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;

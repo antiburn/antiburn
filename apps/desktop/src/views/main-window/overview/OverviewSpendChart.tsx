@@ -2,7 +2,6 @@ import { useState, type CSSProperties, type KeyboardEvent } from "react"
 
 import type { ProviderUsageDayPayload } from "../../../lib/providerUsageIpc"
 import {
-  axisDayLabel,
   dayLabel,
   niceCeiling,
   seriesMax,
@@ -18,19 +17,17 @@ import {
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
+import {
+  Bar,
+  ChartAxis,
+  ChartLegend,
+  GUIDE_FRACTIONS,
+  GuideLabels,
+  Guides,
+  DAY_TOOLTIP_DELAY_MS,
+} from "./overviewChartParts"
 
 import "./overview.css"
-
-/** The axis names every seventh day and the last one. */
-const AXIS_LABEL_STEP = 7
-/** A dated label this close to "Today" would collide with it. */
-const AXIS_LABEL_CLEARANCE = 3
-
-/** A day's tooltip opens almost at once; the pointer is already on the bar. */
-const DAY_TOOLTIP_DELAY_MS = 100
-
-/** The fractions of the scale that carry a hairline and a figure. */
-const GUIDE_FRACTIONS = [1, 0.75, 0.5, 0.25]
 
 /**
  * The figures beside the guides, one precision for the whole scale: whole
@@ -52,7 +49,7 @@ function barGeometry(day: ProviderUsageDayPayload | undefined, ceiling: number) 
   const usd = day?.estimatedUsd ?? null
   const tokens = day ? windowTokens(day) : 0
   return {
-    unpriced: usd == null && tokens > 0,
+    outline: usd == null && tokens > 0,
     fraction: usd == null ? 0 : Math.min(1, usd / ceiling),
   }
 }
@@ -140,153 +137,65 @@ export function OverviewSpendChart({
       {loading || days.length === 0 ? (
         <Skeleton className="block min-h-[var(--overview-chart-height)] w-full flex-1" />
       ) : (
-        <>
-          <div className="overview-chart-scroll">
-            <div className="overview-chart-body">
-              <div className="overview-plot">
-                <div className="relative h-full">
-                  <Legend />
-                  <Guides />
-                  <div
-                    role="group"
-                    aria-label="Estimated spend for the past 30 days"
-                    className="overview-days relative"
-                  >
-                    {days.map((day, index) => {
-                      const previous = previousDays[index]
-                      const now = barGeometry(day, ceiling)
-                      const before = barGeometry(previous, ceiling)
-                      const isToday = index === lastIndex
-                      const detail = dayDetail(day, previous, isToday)
-                      return (
-                        <Tooltip
-                          key={day.localDate}
-                          label={<SegmentFigure>{detail}</SegmentFigure>}
-                          delayMs={DAY_TOOLTIP_DELAY_MS}
+        <div className="overview-chart-scroll">
+          <div className="overview-chart-body">
+            <div className="overview-plot">
+              <div className="relative h-full">
+                <ChartLegend nowClassName="bg-token-in" />
+                <Guides />
+                <div
+                  role="group"
+                  aria-label="Estimated spend for the past 30 days"
+                  className="overview-days relative"
+                >
+                  {days.map((day, index) => {
+                    const previous = previousDays[index]
+                    const now = barGeometry(day, ceiling)
+                    const before = barGeometry(previous, ceiling)
+                    const isToday = index === lastIndex
+                    const detail = dayDetail(day, previous, isToday)
+                    return (
+                      <Tooltip
+                        key={day.localDate}
+                        label={<SegmentFigure>{detail}</SegmentFigure>}
+                        delayMs={DAY_TOOLTIP_DELAY_MS}
+                      >
+                        <button
+                          type="button"
+                          data-day={day.localDate}
+                          aria-label={detail}
+                          tabIndex={index === focusIndex ? 0 : -1}
+                          className="overview-day"
+                          onFocus={() => setFocusDate(day.localDate)}
+                          onKeyDown={(event) => onKeyDown(event, index)}
+                          style={{ "--overview-bar-index": index } as CSSProperties}
                         >
-                          <button
-                            type="button"
-                            data-day={day.localDate}
-                            aria-label={detail}
-                            tabIndex={index === focusIndex ? 0 : -1}
-                            className="overview-day"
-                            onFocus={() => setFocusDate(day.localDate)}
-                            onKeyDown={(event) => onKeyDown(event, index)}
-                            style={{ "--overview-bar-index": index } as CSSProperties}
-                          >
-                            <Bar
-                              fraction={before.fraction}
-                              unpriced={before.unpriced}
-                              className="bg-label-tertiary/30 text-label-tertiary/30"
-                            />
-                            <Bar
-                              fraction={now.fraction}
-                              unpriced={now.unpriced}
-                              className={
-                                isToday
-                                  ? "bg-token-in text-token-in"
-                                  : "bg-token-in text-token-in opacity-70"
-                              }
-                            />
-                          </button>
-                        </Tooltip>
-                      )
-                    })}
-                  </div>
+                          <Bar
+                            fraction={before.fraction}
+                            outline={before.outline}
+                            className="bg-label-tertiary/30 text-label-tertiary/30"
+                          />
+                          <Bar
+                            fraction={now.fraction}
+                            outline={now.outline}
+                            className={
+                              isToday
+                                ? "bg-token-in text-token-in"
+                                : "bg-token-in text-token-in opacity-70"
+                            }
+                          />
+                        </button>
+                      </Tooltip>
+                    )
+                  })}
                 </div>
-                <GuideLabels ceiling={ceiling} />
               </div>
-              <div
-                className="overview-axis type-caption mt-[var(--space-xs)] text-label-tertiary"
-                aria-hidden="true"
-              >
-                {days.map((day, index) => (
-                  <span key={day.localDate} className="overview-axis-day">
-                    {index === lastIndex ? (
-                      <span className="overview-axis-label">Today</span>
-                    ) : index % AXIS_LABEL_STEP === 0 &&
-                      index < lastIndex - AXIS_LABEL_CLEARANCE ? (
-                      <span className="overview-axis-label">{axisDayLabel(day.localDate)}</span>
-                    ) : null}
-                  </span>
-                ))}
-              </div>
+              <GuideLabels labels={guideLabels(ceiling)} />
             </div>
+            <ChartAxis dates={days.map((day) => day.localDate)} />
           </div>
-        </>
+        </div>
       )}
     </section>
-  )
-}
-
-/** The key for the two series, over the top-left corner of the plot. */
-function Legend() {
-  return (
-    <p className="overview-legend type-caption flex items-center gap-[var(--space-md)] text-label-secondary">
-      <span className="inline-flex items-center gap-[var(--space-xs)]">
-        <span aria-hidden="true" className="h-2 w-2 rounded-small bg-token-in" />
-        Last 30 days
-      </span>
-      <span className="inline-flex items-center gap-[var(--space-xs)]">
-        <span aria-hidden="true" className="h-2 w-2 rounded-small bg-label-tertiary/30" />
-        30 days before
-      </span>
-    </p>
-  )
-}
-
-/** One pill, sized as a share of the chart height. */
-function Bar({
-  fraction,
-  unpriced,
-  className,
-}: {
-  fraction: number
-  unpriced: boolean
-  className: string
-}) {
-  return (
-    <span
-      aria-hidden="true"
-      className={`overview-bar ${className}`}
-      data-unpriced={unpriced ? "" : undefined}
-      style={{ blockSize: `${fraction * 100}%` }}
-    />
-  )
-}
-
-/** Hairlines at each quarter of the scale, behind the bars. */
-function Guides() {
-  return (
-    <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-      {GUIDE_FRACTIONS.map((fraction) => (
-        <div
-          key={fraction}
-          className="absolute inset-x-0 border-t border-separator/60"
-          style={{ top: `${(1 - fraction) * 100}%` }}
-        />
-      ))}
-    </div>
-  )
-}
-
-/** The figures for the guides, in a gutter to the right of the bars. */
-function GuideLabels({ ceiling }: { ceiling: number }) {
-  const labels = guideLabels(ceiling)
-  return (
-    <div
-      aria-hidden="true"
-      className="overview-scale type-metadata relative text-label-tertiary"
-    >
-      {GUIDE_FRACTIONS.map((fraction) => (
-        <span
-          key={fraction}
-          className="absolute right-0 -translate-y-1/2 whitespace-nowrap"
-          style={{ top: `${(1 - fraction) * 100}%` }}
-        >
-          <SegmentFigure>{labels.get(fraction) ?? ""}</SegmentFigure>
-        </span>
-      ))}
-    </div>
   )
 }

@@ -1,0 +1,59 @@
+/* ==========================================================================
+   Overview series sub-palette.
+
+   One color for each provider account charted on the Overview.
+
+   Every account draws in the deep blue of a reading, at a different weight.
+   One hue keeps the chart calm and, more important, keeps it out of the way
+   of the red that marks a block. A block is the one mark on this chart that
+   a reader must not miss, so no series may approach red.
+
+   Weight, not hue, names an account. The first two weights sit at opposite
+   ends of the ramp, so the common case of two accounts gets the widest
+   separation the hue can give. The third and fourth fall between them.
+
+   A fifth account repeats the first weight. A repeat is honest; a fifth
+   step of one hue does not stay separable.
+
+   Every token is presentation only: nothing here knows which account it
+   draws. Tailwind v4 processes `@theme` in any file the build imports.
+   ========================================================================== */
+
+@theme {
+  --color-series-1: var(--color-series-1-val);
+  --color-series-2: var(--color-series-2-val);
+  --color-series-3: var(--color-series-3-val);
+  --color-series-4: var(--color-series-4-val);
+}
+
+/* --- Light (default and explicit) --- */
+:root,
+:root[data-theme="light"] {
+  --color-series-1-val: hsl(201.5 100% 34.9%); /* deep blue, full strength */
+  --color-series-2-val: hsl(201 48% 74%); /* deep blue, muted */
+  --color-series-3-val: hsl(201 62% 55%); /* deep blue, between the two */
+  --color-series-4-val: hsl(202 31% 88%); /* deep blue, palest */
+}
+
+/* --- Dark ---
+   `@media` cannot share a selector list with a plain `:root` rule, so the
+   system-preference branch and the explicit [data-theme='dark'] branch are
+   written separately, mirroring how tokens.css duplicates its dark palette.
+
+   The ramp inverts: the strong weight lifts off the dark surface and the
+   muted weight sinks toward it, which keeps the same order of emphasis. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-series-1-val: hsl(201.6 77% 62.5%);
+    --color-series-2-val: hsl(201 38% 37%);
+    --color-series-3-val: hsl(201 50% 50%);
+    --color-series-4-val: hsl(201 28% 28%);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-series-1-val: hsl(201.6 77% 62.5%);
+  --color-series-2-val: hsl(201 38% 37%);
+  --color-series-3-val: hsl(201 50% 50%);
+  --color-series-4-val: hsl(201 28% 28%);
+}

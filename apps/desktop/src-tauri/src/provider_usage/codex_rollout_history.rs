@@ -36,7 +36,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use super::live::model::{Confidence, Freshness, ProviderUsageSnapshot, UsageSource, UsageWindow};
-use super::live::sources::codex_rollout::parse_windows;
+use super::live::sources::codex_rollout::{parse_refusal_kind, parse_windows};
 use crate::store::Store;
 use crate::store::codex_rollout_checkpoint::{RolloutCandidate, RolloutCheckpoint};
 
@@ -76,6 +76,8 @@ pub(crate) struct RolloutReading {
     pub observed_at: OffsetDateTime,
     pub plan: Option<String>,
     pub windows: Vec<UsageWindow>,
+    /// The refusal the reading stated, when it stated one.
+    pub refusal_kind: Option<String>,
 }
 
 impl RolloutReading {
@@ -85,6 +87,7 @@ impl RolloutReading {
     /// no finer-grained tier, unlike Claude's `rateLimitTier`.
     pub(crate) fn snapshot(&self, account_key: &str) -> ProviderUsageSnapshot {
         ProviderUsageSnapshot {
+            refusal_kind: self.refusal_kind.clone(),
             provider: OPENAI,
             account: Some(account_key.to_owned()),
             account_uuid: None,
@@ -409,6 +412,7 @@ fn parse_rollout_line(line: &[u8]) -> Option<RolloutReading> {
         observed_at,
         plan,
         windows,
+        refusal_kind: parse_refusal_kind(rate_limits),
     })
 }
 

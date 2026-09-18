@@ -395,6 +395,10 @@ pub(crate) fn refresh_publish_and_evaluate(
             .is_some_and(|settings| settings.live_usage_active()),
         false,
     );
+    // The cache and the alerts keep every provider. Only the copy the views
+    // read carries the simulation.
+    #[cfg(debug_assertions)]
+    let summary = crate::tray::simulate_codex_only(app, summary);
     let _ = app.emit(EVENT_CHANGED, &summary);
     if let Some(settings) = settings.as_ref() {
         evaluate_milestones(app, &live, settings, &snapshots, now);
