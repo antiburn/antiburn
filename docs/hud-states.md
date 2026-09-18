@@ -165,6 +165,12 @@ crate stores it with the dock state.
   says what it will do. Dragging back out restores the frame. A drop above
   the notch row, overlapping the notch, sits the HUD in the notch. A drop on a
   display without a notch docks or floats as before.
+- **A display change.** The island belongs to the display with the notch. When
+  that display leaves, the HUD parks at the top edge of the display it lands
+  on and keeps the wish for the notch. The watcher reads the notch again every
+  poll while the wish is unmet, so the island returns as soon as a notch is
+  back, whether the display list changed or the safe area only settled late.
+  Dragging the HUD off the island, or the settings button, clears the wish.
 - **No notch.** A stored island placement on a Mac without a notch, such as
   an external display alone, falls back to a top dock on the HUD's display.
   When a notched display returns, the HUD goes back into the notch.

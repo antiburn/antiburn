@@ -137,6 +137,14 @@ pub fn spawn_display_watcher(app: &AppHandle) {
                     continue;
                 }
             }
+            // A notch can come back without the display list changing: the
+            // safe area of a display settles after an arrangement change, and
+            // the HUD waits at the top edge until it does.
+            if antiburn_hud::island_wanted_off_notch() {
+                let _ = crate::main_window::on_main_value(&app, |_| antiburn_hud::refresh_notch())
+                    .await;
+                antiburn_hud::reclaim_island(&app);
+            }
             let now = antiburn_hud::monitor_keys(&app);
             if now == connected {
                 continue;

@@ -98,6 +98,9 @@ pub(crate) struct DockState {
     pub(crate) docked: bool,
     /// The HUD sits in the notch. `docked` then means collapsed.
     pub(crate) island: bool,
+    /// The reader wants the notch. It stays true while a display change takes
+    /// the notch away, so the island comes back when a notch returns.
+    pub(crate) island_wanted: bool,
     /// Where the HUD sits when peeked in, in physical desktop pixels.
     pub(crate) home: Option<(f64, f64)>,
     /// The display the HUD docked against.
@@ -117,6 +120,7 @@ static DOCK: Mutex<DockState> = Mutex::new(DockState {
     edge: DockEdge::Right,
     docked: false,
     island: false,
+    island_wanted: false,
     home: None,
     #[cfg(target_os = "macos")]
     frame: None,
@@ -145,7 +149,7 @@ pub fn dock_settings() -> DockSettings {
     DockSettings {
         docked: dock.docked || dock.home.is_some(),
         edge: dock.edge,
-        island: dock.island,
+        island: dock.island || dock.island_wanted,
     }
 }
 
@@ -240,6 +244,7 @@ pub fn tear_off(app: &tauri::AppHandle) -> bool {
         let was_island = dock.island;
         dock.docked = false;
         dock.island = false;
+        dock.island_wanted = false;
         dock.home = None;
         dock.generation += 1;
         (was_docked, was_island)
@@ -319,19 +324,50 @@ pub(crate) fn reset() {
 /// still there, and to the top edge when it is gone.
 #[cfg(target_os = "macos")]
 pub(crate) fn redock_after_placement(app: &AppHandle, window: &WebviewWindow) {
-    let (edge, island_with_notch) = {
+    let (edge, wants_island, has_notch) = {
         let dock = state();
         if !dock.docked && dock.home.is_none() {
             return;
         }
-        (dock.edge, dock.island && dock.notch.is_some())
+        (
+            dock.edge,
+            dock.island || dock.island_wanted,
+            dock.notch.is_some(),
+        )
     };
-    if island_with_notch {
-        super::island::island_at(app, window);
+    if redock_choice(wants_island, has_notch) == Redock::Island
+        && super::island::island_at(app, window)
+    {
         return;
     }
     tear_off(app);
+    if wants_island {
+        // The notch went with the display. The wish stays, so the island
+        // returns when a display with a notch does.
+        state().island_wanted = true;
+    }
     dock_at(app, window, edge);
+}
+
+/// What a placement change makes of the HUD. Pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Redock {
+    /// Back to the notch.
+    Island,
+    /// No notch to go to: park at the remembered edge, which an island left
+    /// as the top, and keep the wish.
+    EdgeKeepingWish,
+    /// An ordinary dock.
+    Edge,
+}
+
+/// Decide what a placement change does with a stored island. Pure.
+fn redock_choice(wants_island: bool, has_notch: bool) -> Redock {
+    match (wants_island, has_notch) {
+        (true, true) => Redock::Island,
+        (true, false) => Redock::EdgeKeepingWish,
+        (false, _) => Redock::Edge,
+    }
 }
 
 /// Keep a docked window at its tab after its height changed.
@@ -873,6 +909,24 @@ mod tests {
             edge_dropped_on(&FRAME, &corner, SIDE_INSET),
             Some(DockEdge::Left)
         );
+    }
+
+    #[test]
+    fn a_placement_change_puts_a_stored_island_back_on_the_notch() {
+        assert_eq!(redock_choice(true, true), Redock::Island);
+    }
+
+    #[test]
+    fn a_placement_change_without_a_notch_keeps_the_island_wish() {
+        // The display carrying the notch left. The HUD parks at the edge it
+        // remembers, and the wish waits for a notch to come back.
+        assert_eq!(redock_choice(true, false), Redock::EdgeKeepingWish);
+    }
+
+    #[test]
+    fn a_placement_change_leaves_an_ordinary_dock_alone() {
+        assert_eq!(redock_choice(false, true), Redock::Edge);
+        assert_eq!(redock_choice(false, false), Redock::Edge);
     }
 
     #[test]

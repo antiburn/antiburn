@@ -280,6 +280,53 @@ pub fn refresh_notch() -> bool {
     false
 }
 
+/// True when the reader wants the notch and the HUD is not there.
+///
+/// A display change can take the notch away and leave the HUD at the top
+/// edge. The shell asks with this before it reads the notch again.
+#[cfg(target_os = "macos")]
+pub fn island_wanted_off_notch() -> bool {
+    let dock = state();
+    dock.island_wanted && !dock.island
+}
+
+/// Keep the question answerable where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn island_wanted_off_notch() -> bool {
+    false
+}
+
+/// Put the HUD back on the notch after a notch came back.
+///
+/// The caller reads the notch again on the main thread first. Returns true
+/// when the island came back.
+#[cfg(target_os = "macos")]
+pub fn reclaim_island(app: &AppHandle) -> bool {
+    {
+        let dock = state();
+        if !dock.island_wanted || dock.island || dock.notch.is_none() {
+            return false;
+        }
+    }
+    let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
+        return false;
+    };
+    dock::tear_off(app);
+    if island_at(app, &window) {
+        tracing::info!(event = "hud_island_reclaimed");
+        return true;
+    }
+    // The island did not take. Hold the wish for the next try.
+    state().island_wanted = true;
+    false
+}
+
+/// Keep the island unavailable where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn reclaim_island(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
 /// Pretend the primary display has a notch, or stop pretending. Development
 /// menu only. Returns the new setting.
 ///
@@ -389,6 +436,7 @@ pub(crate) fn island_at(app: &AppHandle, window: &WebviewWindow) -> bool {
         };
         let rect = island_rect(&notch.rect, notch.scale);
         dock.island = true;
+        dock.island_wanted = true;
         dock.docked = true;
         dock.edge = dock::DockEdge::Top;
         dock.home = Some((rect.x, rect.y));
