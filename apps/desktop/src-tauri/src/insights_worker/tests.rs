@@ -1424,10 +1424,10 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     let stored = store.evidence(&pi.key).unwrap().unwrap();
     assert_eq!(stored.status, EvidenceStatus::Ready);
     let evidence_json = stored.evidence_json.as_deref().unwrap();
-    assert!(evidence_json.contains("\"schemaRevision\":20"));
+    assert!(evidence_json.contains("\"schemaRevision\":21"));
     let evidence: SessionEvidence = serde_json::from_str(evidence_json).unwrap();
     assert_eq!(evidence.capabilities, SourceCapabilities::pi());
-    assert_eq!(evidence.schema_revision, 20);
+    assert_eq!(evidence.schema_revision, 21);
 
     let report = crate::insights_report::reduce_report(
         data_dir.path().to_path_buf(),

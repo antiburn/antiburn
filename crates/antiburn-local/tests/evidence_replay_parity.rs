@@ -26,11 +26,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, FenceScope, MemoryTurnRowStore, NormalizedEvent,
-    NormalizedRecord, RawSource, Role, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, TurnScope, TurnSessionKey, VisitOutcome, evidence_from_facts,
-    query_coverage_record, query_turn_facts, reader_for,
+    COVERAGE_SCHEMA_REVISION, CompositeSink, EVIDENCE_SCHEMA_REVISION, EvidenceSource, FenceScope,
+    MemoryTurnRowStore, NormalizedEvent, NormalizedRecord, RawSource, Role, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
+    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey,
+    VisitOutcome, evidence_from_facts, query_coverage_record, query_turn_facts, reader_for,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -254,8 +254,8 @@ fn run_fixture_and_replay(
         (facts, record)
     });
     let replayed = evidence_from_facts(&facts, &record);
-    assert_eq!(record.coverage_schema_revision, 5);
-    assert_eq!(replayed.schema_revision, 20);
+    assert_eq!(record.coverage_schema_revision, COVERAGE_SCHEMA_REVISION);
+    assert_eq!(replayed.schema_revision, EVIDENCE_SCHEMA_REVISION);
     let json_evidence: SessionEvidence =
         serde_json::from_str(&serde_json::to_string(&replayed).unwrap()).unwrap();
     assert_eq!(replayed, json_evidence);

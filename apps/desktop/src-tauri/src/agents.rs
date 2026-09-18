@@ -79,6 +79,7 @@ mod tests {
                     | AgentKind::Copilot
                     | AgentKind::Cline
                     | AgentKind::Kiro
+                    | AgentKind::AmpCode
             );
             assert_eq!(supports_analysis(kind), expected, "{kind:?}");
         }

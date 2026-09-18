@@ -1,6 +1,6 @@
 import "../../../styles/burn-checks-report.css"
 
-import { ChevronRight, Clock } from "lucide-react"
+import { ChevronRight, Clock, Hourglass } from "lucide-react"
 import { useCallback, useRef, useState, type KeyboardEvent } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
@@ -17,6 +17,7 @@ import {
   formatSnoozeUntil,
   snoozedDetectorIds,
   useSnoozedBurnChecks,
+  type SnoozedBurnCheck,
 } from "../../../lib/snoozedBurnChecks"
 import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
@@ -154,18 +155,41 @@ function CheckDetailContent({
   )
 }
 
+function CheckStateBadge({
+  awaiting,
+  snooze,
+}: {
+  awaiting: boolean
+  snooze: SnoozedBurnCheck | undefined
+}) {
+  if (!snooze && !awaiting) return null
+  const Icon = snooze ? Clock : Hourglass
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-card px-2 py-1 type-footnote whitespace-nowrap text-label-secondary">
+      <Icon
+        size={12}
+        className={cn("shrink-0", !snooze && "text-system-orange")}
+        aria-hidden="true"
+      />
+      {snooze ? formatSnoozeUntil(snooze.until) : "Awaiting verification"}
+    </span>
+  )
+}
+
 function CheckDetail({
   check,
   visible,
   deliberate,
-  snoozed,
+  awaiting,
+  snooze,
   session,
   state,
 }: {
   check: ChecksCategoryPayload
   visible: boolean
   deliberate: boolean
-  snoozed: boolean
+  awaiting: boolean
+  snooze: SnoozedBurnCheck | undefined
   session: BurnChecksSession
   state: BurnChecksSnapshot
 }) {
@@ -183,7 +207,7 @@ function CheckDetail({
       ? `${targetList.truncated ? "At least " : ""}${targetList.targets.length} affected ${resourceNames[targetList.targets.length === 1 ? 0 : 1]}`
       : null
   const showFindingActions = check.finding > 0 && targetList
-  const showSnoozedAction = snoozed && check.finding === 0
+  const showSnoozedAction = snooze !== undefined && check.finding === 0
   const trackVisibility = useCallback(
     (node: HTMLDivElement | null) =>
       session.setTargetsVisible(check.id, node !== null, deliberate),
@@ -223,12 +247,15 @@ function CheckDetail({
                 </div>
               )}
             </div>
-            <CheckMetadata
-              check={check}
-              presentation={presentation}
-              resourceCount={resourceCount}
-              inline
-            />
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <CheckStateBadge awaiting={awaiting} snooze={snooze} />
+              <CheckMetadata
+                check={check}
+                presentation={presentation}
+                resourceCount={resourceCount}
+                inline
+              />
+            </div>
           </div>
           {check.finding > 0 && (
             <p className="w-full type-body text-pretty text-label-secondary">
@@ -551,21 +578,15 @@ export function BurnChecksReport({
               {activeAwaiting.length > 0 && (
                 <section className="burn-checks-group" aria-labelledby="burn-checks-awaiting">
                   <h2 id="burn-checks-awaiting" className="flex items-center gap-2 px-1">
-                    <span
-                      className="h-2 w-2 rounded-full bg-system-orange"
-                      aria-hidden="true"
-                    />
+                    <Hourglass size={14} className="text-system-orange" aria-hidden="true" />
                     <span className="type-footnote font-medium! text-label-tertiary">
                       Awaiting verification
-                    </span>
+                    </span>{" "}
                     <span className="burn-check-group-count type-footnote tabular-nums text-label-tertiary">
                       {activeAwaiting.length}
                     </span>
                   </h2>
-                  <p className="px-1 pt-1 type-footnote text-label-tertiary">
-                    A later complete session confirms each change.
-                  </p>
-                  <div className="burn-checks-group-body mt-2">
+                  <div className="burn-checks-group-body">
                     {activeAwaiting.map((check) => renderCheck(check))}
                   </div>
                 </section>
@@ -684,7 +705,8 @@ export function BurnChecksReport({
                 check={check}
                 visible={check.id === selectedVisibleId}
                 deliberate={ui.deliberateIds.has(check.id)}
-                snoozed={snoozedIds.has(check.id)}
+                awaiting={awaitingIds.has(check.id)}
+                snooze={snoozed.find((item) => item.detector === check.id)}
                 session={session}
                 state={state}
               />

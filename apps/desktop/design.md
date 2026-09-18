@@ -953,6 +953,9 @@ circle badges. Badges have a 16px minimum width and height, tabular numerals,
 and a radius of half `space-lg`; larger counts can expand horizontally.
 Prefix failed checks with `CircleAlert` and passed checks with `CircleCheck`.
 Use `burn-check-failure-fill` for failed icons and `burn-check-pass-fill` for passed icons. The passed group retains its disclosure chevron and keyboard behavior.
+Prefix Awaiting verification with a static 14px `Hourglass` in `system-orange`.
+Keep its count and separator. Omit the collection helper sentence; use the standard
+section-heading margin before the cards.
 Place a collapsed Snoozed group below Passed checks with a neutral Clock and a current count badge.
 Separate adjacent collection groups with a semantic separator aligned to the card edges,
 with 16px above and below the line.
@@ -1030,6 +1033,16 @@ and a diagonal transparent-to-7.5% label-color gradient.
 Show it only when unused space below the content is at least the current mark size.
 Observe viewport and content sizes so expanded samples cannot overlap the mark.
 Keep it static, hidden from accessibility, and transparent to pointer input.
+
+Place a noninteractive status pill before the shared metrics, below the detail title.
+Use the collection's existing state: a snooze takes precedence over awaiting verification.
+Snoozed checks show a 12px `Clock` and the existing localized Snoozed-until or
+Snoozed-forever label. Awaiting checks show a static 12px `Hourglass` in `system-orange`
+and “Awaiting verification”. Other checks show no status pill.
+Use `rounded-full`, `surface-card`, secondary `type-footnote` ink, 8px horizontal
+padding, 4px vertical padding, and a 4px icon gap. Keep each pill on one line and let
+its metadata row wrap. The icons are decorative. Add no hover, press, or loading motion.
+Action buttons retain `rounded-control`; status pills do not use action-button styles.
 
 Detail headings repeat the card’s failed/passed counts and available burn and cost
 metadata through the same presentation component. They also show “N session(s) affected”

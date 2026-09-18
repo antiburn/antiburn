@@ -91,6 +91,40 @@ fn kiro_cli_v2_and_v3_paths_use_separate_source_formats() {
 }
 
 #[test]
+fn kiro_v3_bundle_fingerprint_changes_when_the_journal_changes() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let directory = temp
+        .path()
+        .join("sess_22222222-2222-4222-8222-222222222222");
+    std::fs::create_dir_all(&directory).unwrap();
+    let metadata = directory.join("session.json");
+    let journal = directory.join("messages.jsonl");
+    std::fs::write(&metadata, "metadata").unwrap();
+    std::fs::write(&journal, "journal").unwrap();
+    let source = SessionSource::File(metadata);
+    let before = fingerprint_of(&source);
+    std::fs::write(journal, "journal changed").unwrap();
+    assert_ne!(before, fingerprint_of(&source));
+}
+
+#[test]
+fn cline_bundle_fingerprint_includes_database_and_child_artifacts() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let directory = temp.path().join(".cline/data/tasks/root");
+    std::fs::create_dir_all(&directory).unwrap();
+    let manifest = directory.join("root.json");
+    std::fs::write(&manifest, "manifest").unwrap();
+    std::fs::write(directory.join("root.messages.json"), "messages").unwrap();
+    let db = temp.path().join(".cline/data/db/sessions.db");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    std::fs::write(&db, "database").unwrap();
+    let source = SessionSource::File(manifest);
+    let before = fingerprint_of(&source);
+    std::fs::write(db, "database changed").unwrap();
+    assert_ne!(before, fingerprint_of(&source));
+}
+
+#[test]
 fn copilot_cli_events_use_the_v1_cli_source_format() {
     let source = SessionSource::File(std::path::PathBuf::from(
         "/Users/test/.copilot/session-state/11111111-1111-4111-8111-111111111111/events.jsonl",
@@ -103,6 +137,56 @@ fn copilot_cli_events_use_the_v1_cli_source_format() {
 }
 
 #[test]
+fn copilot_bundle_fingerprint_includes_the_session_store() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let state_root = temp.path().join("session-state/session");
+    std::fs::create_dir_all(&state_root).unwrap();
+    let events = state_root.join("events.jsonl");
+    let store = temp.path().join("session-state/session-store.db");
+    std::fs::write(&events, "events").unwrap();
+    std::fs::write(&store, "store").unwrap();
+    let source = SessionSource::File(events);
+    let before = fingerprint_of(&source);
+    std::fs::write(store, "store changed").unwrap();
+    assert_ne!(before, fingerprint_of(&source));
+}
+
+#[test]
+fn copilot_bundle_fingerprint_sees_wal_visible_session_state() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let state_root = temp
+        .path()
+        .join("session-state/11111111-1111-4111-8111-111111111111");
+    std::fs::create_dir_all(&state_root).unwrap();
+    let events = state_root.join("events.jsonl");
+    let store = temp.path().join("session-state/session-store.db");
+    std::fs::write(&events, "events").unwrap();
+    let connection = rusqlite::Connection::open(&store).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE sessions (session_id TEXT, shutdown_model TEXT);
+             CREATE TABLE request_usage (
+                 session_id TEXT, request_id TEXT, agent_id TEXT,
+                 parent_tool_call_id TEXT, model TEXT,
+                 input_tokens INTEGER, output_tokens INTEGER,
+                 cache_read_tokens INTEGER, cache_write_tokens INTEGER
+             );
+             INSERT INTO sessions VALUES ('11111111-1111-4111-8111-111111111111', 'model');",
+        )
+        .unwrap();
+    let source = SessionSource::File(events);
+    let before = fingerprint_of(&source);
+    connection
+        .execute(
+            "INSERT INTO request_usage VALUES (?1, 'request', NULL, NULL, 'model', 1, 2, 3, 4)",
+            ["11111111-1111-4111-8111-111111111111"],
+        )
+        .unwrap();
+    assert_ne!(before, fingerprint_of(&source));
+}
+
+#[test]
 fn cline_v1_root_manifest_uses_the_messages_contract_source_format() {
     let source = SessionSource::File(std::path::PathBuf::from(
         "/Users/test/.cline/data/sessions/root_1/root_1.json",
@@ -111,6 +195,153 @@ fn cline_v1_root_manifest_uses_the_messages_contract_source_format() {
     assert_eq!(
         source_format(AgentKind::Cline, &source),
         SourceFormat::ClineMessagesContractV1
+    );
+}
+
+#[test]
+fn amp_routes_threads_and_file_changes_to_distinct_source_formats() {
+    let thread = SessionSource::File(std::path::PathBuf::from(
+        "/home/tester/.local/share/amp/threads/T-synthetic.json",
+    ));
+    let changes = SessionSource::File(std::path::PathBuf::from(
+        "/home/tester/.amp/file-changes/T-synthetic.jsonl",
+    ));
+
+    assert_eq!(
+        source_format(AgentKind::AmpCode, &thread),
+        SourceFormat::AmpThreadJson
+    );
+    assert_eq!(
+        source_format(AgentKind::AmpCode, &changes),
+        SourceFormat::AmpFileChanges
+    );
+}
+
+#[test]
+fn amp_routes_native_windows_paths_by_components() {
+    let thread = SessionSource::File(std::path::PathBuf::from(
+        r"C:\Users\tester\AppData\Roaming\Amp\threads\thread.json",
+    ));
+    let changes = SessionSource::File(std::path::PathBuf::from(
+        r"C:\Users\tester\.amp\file-changes\thread.jsonl",
+    ));
+
+    assert_eq!(
+        source_format(AgentKind::AmpCode, &thread),
+        SourceFormat::AmpThreadJson
+    );
+    assert_eq!(
+        source_format(AgentKind::AmpCode, &changes),
+        SourceFormat::AmpFileChanges
+    );
+}
+
+#[test]
+fn windsurf_routes_workspace_cascade_and_mirror_sources() {
+    let workspace = SessionSource::File(std::path::PathBuf::from(
+        "/home/tester/.config/Windsurf/User/workspaceStorage/x/chatSessions/synthetic.json",
+    ));
+    let cascade = SessionSource::File(std::path::PathBuf::from(
+        "/home/tester/.codeium/windsurf/cascade/synthetic.pb",
+    ));
+    let mirrored_file = SessionSource::File(std::path::PathBuf::from(
+        "/home/tester/mirror/windsurf/synthetic.json",
+    ));
+    let mirror = SessionSource::Inline {
+        label: "windsurf-mirror:synthetic.json".to_owned(),
+        content: String::new(),
+    };
+    let configured_mirror = SessionSource::File(std::path::PathBuf::from(
+        "/private/embedding-cache/session.json",
+    ));
+
+    assert_eq!(
+        source_format(AgentKind::Windsurf, &workspace),
+        SourceFormat::WindsurfWorkspaceJson
+    );
+    assert_eq!(
+        source_format(AgentKind::Windsurf, &cascade),
+        SourceFormat::WindsurfCascadeProtobuf
+    );
+    assert_eq!(
+        source_format(AgentKind::Windsurf, &mirror),
+        SourceFormat::WindsurfMirrorJson
+    );
+    assert_eq!(
+        source_format(AgentKind::Windsurf, &mirrored_file),
+        SourceFormat::WindsurfMirrorJson
+    );
+    assert_eq!(
+        source_format(AgentKind::Windsurf, &configured_mirror),
+        SourceFormat::WindsurfMirrorJson
+    );
+}
+
+#[test]
+fn cline_database_path_uses_the_fixed_data_db_location() {
+    let manifest = std::path::Path::new("/home/tester/.cline/data/tasks/synthetic/synthetic.json");
+    assert_eq!(
+        cline_database_path(manifest),
+        Some(std::path::PathBuf::from(
+            "/home/tester/.cline/data/db/sessions.db",
+        ))
+    );
+}
+
+#[test]
+fn cline_task_manifest_uses_the_messages_contract_source_format() {
+    let source = SessionSource::File(std::path::PathBuf::from(
+        "/home/tester/.cline/data/tasks/synthetic/synthetic.json",
+    ));
+    assert_eq!(
+        source_format(AgentKind::Cline, &source),
+        SourceFormat::ClineMessagesContractV1
+    );
+}
+
+#[test]
+fn cline_legacy_flat_task_manifest_keeps_the_legacy_format() {
+    let source = SessionSource::File(std::path::PathBuf::from(
+        "/home/tester/.cline/tasks/task-1.json",
+    ));
+    assert_eq!(
+        source_format(AgentKind::Cline, &source),
+        SourceFormat::ClineSessionJson
+    );
+}
+
+#[test]
+fn devin_database_routing_does_not_capture_other_windsurf_databases() {
+    let devin = SessionSource::ProviderDb {
+        agent: AgentKind::Windsurf,
+        db_path: std::path::PathBuf::from("C:\\Users\\tester\\Devin\\session.db"),
+        session_id: "session".to_owned(),
+    };
+    let windsurf = SessionSource::ProviderDb {
+        agent: AgentKind::Windsurf,
+        db_path: std::path::PathBuf::from("C:\\Users\\tester\\Windsurf\\session.db"),
+        session_id: "session".to_owned(),
+    };
+
+    assert_eq!(
+        source_format(AgentKind::Windsurf, &devin),
+        SourceFormat::DevinLocalSqlite
+    );
+    assert_eq!(
+        source_format(AgentKind::Windsurf, &windsurf),
+        SourceFormat::Uncharacterized
+    );
+}
+
+#[test]
+fn unrecognized_non_windsurf_paths_remain_uncharacterized() {
+    let amp = SessionSource::File(std::path::PathBuf::from(
+        "/home/tester/.amp/file-changes-copy/thread.json",
+    ));
+
+    assert_eq!(
+        source_format(AgentKind::AmpCode, &amp),
+        SourceFormat::Uncharacterized
     );
 }
 

@@ -180,6 +180,7 @@ fn legacy_source_format(value: &str) -> Option<SourceFormat> {
         "WindsurfWorkspaceJson" => SourceFormat::WindsurfWorkspaceJson,
         "WindsurfMirrorJson" => SourceFormat::WindsurfMirrorJson,
         "WindsurfCascadeProtobuf" => SourceFormat::WindsurfCascadeProtobuf,
+        "DevinLocalSqlite" => SourceFormat::DevinLocalSqlite,
         "Uncharacterized" => SourceFormat::Uncharacterized,
         _ => return None,
     })

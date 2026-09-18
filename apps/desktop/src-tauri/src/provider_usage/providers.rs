@@ -224,7 +224,7 @@ pub fn display_name(provider: &str) -> &'static str {
         GITHUB => "GitHub Copilot",
         GOOGLE => "Google",
         CURSOR => "Cursor",
-        WINDSURF => "Windsurf",
+        WINDSURF => "Devin",
         AMP => "Amp",
         KIRO => "Kiro",
         OPENROUTER => "OpenRouter",

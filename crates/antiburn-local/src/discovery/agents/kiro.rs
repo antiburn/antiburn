@@ -183,7 +183,10 @@ async fn discover_recent_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec
                     Ok(d) => d.as_secs() as i64,
                     Err(_) => continue,
                 };
-                if mtime_epoch < cutoff {
+                let companion_mtime = companion_mtime_epoch(&path).await;
+                let newest_mtime =
+                    companion_mtime.map_or(mtime_epoch, |mtime| mtime.max(mtime_epoch));
+                if newest_mtime < cutoff {
                     continue;
                 }
 
@@ -195,7 +198,7 @@ async fn discover_recent_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec
                 let session_id = session_id_for_file(&path, canonical).await;
                 candidates.push(Candidate {
                     path,
-                    mtime_epoch,
+                    mtime_epoch: newest_mtime,
                     session_id,
                     canonical,
                 });
@@ -232,6 +235,21 @@ async fn discover_recent_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec
             updated_at: Some(candidate.mtime_epoch),
         })
         .collect()
+}
+
+async fn companion_mtime_epoch(path: &Path) -> Option<i64> {
+    let companion = if path.file_name().and_then(|name| name.to_str()) == Some("session.json") {
+        path.parent()?.join("messages.jsonl")
+    } else if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+        path.with_extension("jsonl")
+    } else {
+        return None;
+    };
+    let modified = tokio::fs::metadata(companion).await.ok()?.modified().ok()?;
+    modified
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|time| time.as_secs() as i64)
 }
 
 fn kiro_storage_root_in(home: &Path) -> PathBuf {
@@ -454,5 +472,27 @@ mod tests {
         assert!(!is_kiro_session_file(&ignored_history));
         assert!(!is_kiro_session_file(&ignored_lock));
         assert_eq!(KiroExplorer.list_subagents(&root).await, vec![child]);
+    }
+
+    #[tokio::test]
+    async fn v2_discovery_recency_uses_the_newest_required_sibling() {
+        let home = TempDir::new().unwrap();
+        let cli = home.path().join(".kiro").join("sessions").join("cli");
+        tokio::fs::create_dir_all(&cli).await.unwrap();
+        let metadata = cli.join("11111111-1111-4111-8111-111111111111.json");
+        let journal = metadata.with_extension("jsonl");
+        tokio::fs::write(&metadata, "{}").await.unwrap();
+        tokio::fs::write(&journal, "{}").await.unwrap();
+        set_file_mtime(&metadata, 1_700_000_000 - 100);
+        set_file_mtime(&journal, 1_700_000_000 - 10);
+
+        let logs = discover_recent_in(
+            &[home.path().join(".kiro").join("sessions")],
+            1_700_000_000,
+            20,
+        )
+        .await;
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].updated_at, Some(1_700_000_000 - 10));
     }
 }

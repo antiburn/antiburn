@@ -14,12 +14,14 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::discovery::scanner::AgentKind;
+use crate::discovery::source_version::devin_content_fingerprint;
 use crate::discovery::{
     AgentExplorer, SessionLog, SessionMirror, SessionSource, SurfacePaths, WatchRoot,
     app_config_dir_in, dir_has_json_files, find_chat_session_dirs, home_dir,
     recent_files_with_exts,
 };
 use async_trait::async_trait;
+use rusqlite::{Connection, OpenFlags};
 
 /// Windsurf discovery over the vendor's own layout, plus whatever the embedding
 /// application has configured.
@@ -58,6 +60,9 @@ impl WindsurfExplorer {
             dirs.insert(dir);
         }
 
+        // Cascade stores protobuf sessions directly in this root.
+        dirs.insert(home.join(".codeium").join("windsurf").join("cascade"));
+
         if let Some(mirror) = self.populated_mirror_dir(home).await {
             dirs.insert(mirror);
         }
@@ -74,19 +79,66 @@ impl AgentExplorer for WindsurfExplorer {
             None => return Vec::new(),
         };
         let dirs = self.log_dirs_in(&home).await;
-        recent_files_with_exts(&dirs, now, since_secs, &["json"])
-            .await
-            .into_iter()
-            .map(|file| SessionLog {
-                agent_type: AgentKind::Windsurf,
-                source: SessionSource::File(file.path),
-                updated_at: Some(file.mtime_epoch),
-                environment: Default::default(),
-            })
-            .collect()
+        let mut logs: Vec<SessionLog> =
+            recent_files_with_exts(&dirs, now, since_secs, &["json", "pb"])
+                .await
+                .into_iter()
+                .map(|file| SessionLog {
+                    agent_type: AgentKind::Windsurf,
+                    source: SessionSource::File(file.path),
+                    updated_at: Some(file.mtime_epoch),
+                    environment: Default::default(),
+                })
+                .collect();
+        let database_path = devin_database_path(&home);
+        let devin_logs = tokio::task::spawn_blocking(move || {
+            discover_devin_sessions(&database_path, now, since_secs)
+        })
+        .await
+        .unwrap_or_default();
+        logs.extend(devin_logs);
+        logs
     }
 
-    /// Owns Windsurf IDE state across all platforms (`<app-config>/Windsurf/
+    async fn direct_session_source(
+        &self,
+        session_id: &str,
+    ) -> crate::discovery::DirectSessionSource {
+        let Some(home) = home_dir() else {
+            return crate::discovery::DirectSessionSource::Unsupported;
+        };
+        let path = devin_database_path(&home);
+        let id = session_id.to_owned();
+        let lookup_path = path.clone();
+        let found = tokio::task::spawn_blocking(move || devin_session_exists(&lookup_path, &id))
+            .await
+            .unwrap_or(false);
+        if found {
+            crate::discovery::DirectSessionSource::Found(SessionSource::ProviderDb {
+                agent: AgentKind::Windsurf,
+                db_path: path,
+                session_id: session_id.to_owned(),
+            })
+        } else {
+            // A Devin miss must still allow legacy Windsurf file lookup.
+            crate::discovery::DirectSessionSource::Unsupported
+        }
+    }
+
+    async fn provider_db_fingerprint(
+        &self,
+        db_path: &Path,
+        session_id: &str,
+    ) -> Option<(u64, u64)> {
+        let path = db_path.to_owned();
+        let id = session_id.to_owned();
+        tokio::task::spawn_blocking(move || devin_session_fingerprint(&path, &id))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Owns legacy Windsurf and current Devin Desktop IDE state across all platforms (`<app-config>/Windsurf/
     /// User/workspaceStorage/`), the `.codeium/windsurf/` cascade tree, and the
     /// configured mirror.
     ///
@@ -102,11 +154,23 @@ impl AgentExplorer for WindsurfExplorer {
     /// No CLI substring — Devin CLI bundled in Windsurf 2.0 has an
     /// undocumented path (P1 spike in the 2026-05-25 audit).
     fn owns_path(&self, path_lower: &str) -> bool {
+        let owns_devin_cli = home_dir()
+            .map(|home| {
+                devin_database_path(&home)
+                    .parent()
+                    .map(|root| {
+                        let root = format!("{}/", lower_path(root).trim_end_matches('/'));
+                        path_lower.starts_with(&root)
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
         path_lower.contains("/.codeium/windsurf/")
             || path_lower.contains("/library/application support/windsurf/")
             || path_lower.contains("/.config/windsurf/")
             || path_lower.contains("/appdata/roaming/windsurf/")
             || path_lower.contains("/windsurf/user/workspacestorage/")
+            || owns_devin_cli
             || self.mirror.owns(path_lower)
     }
 
@@ -121,7 +185,12 @@ impl AgentExplorer for WindsurfExplorer {
     /// mirror directory, if any.
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         SurfacePaths {
-            cli: Vec::new(),
+            cli: vec![
+                devin_database_path(home)
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| home.join(".local").join("share").join("devin").join("cli")),
+            ],
             ide_desktop: vec![
                 app_config_dir_in("Windsurf", home)
                     .join("User")
@@ -136,12 +205,171 @@ impl AgentExplorer for WindsurfExplorer {
     /// directory is not watched: it is an embedding application's own copy,
     /// not a root this agent writes to.
     fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
-        self.surface_paths(home)
-            .ide_desktop
+        let surface = self.surface_paths(home);
+        surface
+            .cli
             .into_iter()
+            .chain(surface.ide_desktop)
             .map(WatchRoot::recursive)
             .collect()
     }
+}
+
+fn devin_database_path(home: &Path) -> PathBuf {
+    let data_home = crate::discovery::env_path_when_real_home(home, "XDG_DATA_HOME")
+        .unwrap_or_else(|| home.join(".local").join("share"));
+    data_home.join("devin").join("cli").join("sessions.db")
+}
+
+fn lower_path(path: &Path) -> String {
+    path.to_string_lossy().to_lowercase()
+}
+
+fn discover_devin_sessions(path: &Path, now: i64, since_secs: i64) -> Vec<SessionLog> {
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let path = path.to_owned();
+    let Ok(connection) = Connection::open_with_flags(
+        path.clone(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    if !valid_devin_schema(&connection) {
+        return Vec::new();
+    }
+    let cutoff = now.saturating_sub(since_secs.max(0));
+    let Ok(mut statement) = connection.prepare(
+        "SELECT id, last_activity_at, created_at, hidden FROM sessions
+         WHERE COALESCE(hidden, 0) = 0
+           AND COALESCE(last_activity_at, created_at) >= ?1",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([cutoff], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+        ))
+    }) else {
+        return Vec::new();
+    };
+    rows.flatten()
+        .filter_map(|(id, updated, created, _hidden)| {
+            let timestamp = updated.or(created)?;
+            (timestamp >= cutoff).then_some(SessionLog {
+                agent_type: AgentKind::Windsurf,
+                source: SessionSource::ProviderDb {
+                    agent: AgentKind::Windsurf,
+                    db_path: path.clone(),
+                    session_id: id,
+                },
+                updated_at: Some(timestamp),
+                environment: Default::default(),
+            })
+        })
+        .collect()
+}
+
+fn devin_session_exists(path: &Path, session_id: &str) -> bool {
+    let Ok(connection) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return false;
+    };
+    if !valid_devin_schema(&connection) {
+        return false;
+    }
+    connection
+        .query_row(
+            "SELECT 1 FROM sessions WHERE id = ?1 AND COALESCE(hidden, 0) = 0",
+            [session_id],
+            |_| Ok(()),
+        )
+        .is_ok()
+}
+
+fn valid_devin_schema(connection: &Connection) -> bool {
+    let Ok(version) = connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+    else {
+        return false;
+    };
+    if version != 17 {
+        return false;
+    }
+    [
+        (
+            "sessions",
+            [
+                "id",
+                "model",
+                "main_chain_id",
+                "hidden",
+                "created_at",
+                "last_activity_at",
+            ]
+            .as_slice(),
+        ),
+        (
+            "message_nodes",
+            ["node_id", "session_id", "raw_message", "created_at"].as_slice(),
+        ),
+        (
+            "subagent_heads",
+            [
+                "session_id",
+                "tool_call_id",
+                "child_agent_id",
+                "child_chain_node_id",
+            ]
+            .as_slice(),
+        ),
+        (
+            "tool_call_state",
+            ["session_id", "tool_call_id", "state"].as_slice(),
+        ),
+    ]
+    .into_iter()
+    .all(|(table, required)| {
+        let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info({table})")) else {
+            return false;
+        };
+        let Ok(columns) = statement.query_map([], |row| row.get::<_, String>(1)) else {
+            return false;
+        };
+        columns
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+            .is_ok_and(|columns| required.iter().all(|column| columns.contains(*column)))
+    })
+}
+
+fn devin_session_fingerprint(path: &Path, session_id: &str) -> Option<(u64, u64)> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    if !valid_devin_schema(&connection) {
+        return None;
+    }
+    let latest: i64 = connection.query_row(
+        "SELECT COALESCE((SELECT last_activity_at FROM sessions WHERE id = ?1), (SELECT created_at FROM sessions WHERE id = ?1), 0), COUNT(*) FROM message_nodes WHERE session_id = ?1",
+        [session_id],
+        |row| row.get(0),
+    ).ok()?;
+    let rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM message_nodes WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let content = devin_content_fingerprint(&connection, path, session_id)?;
+    Some((content ^ latest.max(0) as u64, rows.max(0) as u64))
 }
 
 #[cfg(test)]
@@ -220,6 +448,15 @@ mod tests {
         let dirs = DISK_WINDSURF.log_dirs_in(home.path()).await;
         assert!(dirs.contains(&ws_root));
         assert!(dirs.contains(&other_root));
+        assert!(
+            dirs.contains(
+                &home
+                    .path()
+                    .join(".codeium")
+                    .join("windsurf")
+                    .join("cascade")
+            )
+        );
     }
 
     #[tokio::test]
@@ -305,5 +542,24 @@ mod tests {
     fn mirror_paths_are_owned_only_when_configured() {
         assert!(MIRRORED.owns_path("/home/avery/mirror/windsurf/abc.json"));
         assert!(!DISK_WINDSURF.owns_path("/home/avery/mirror/windsurf/abc.json"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn custom_xdg_devin_cli_path_is_owned() {
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        let result = std::panic::catch_unwind(|| {
+            unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/antiburn-test-xdg-data") };
+
+            let home = home_dir().expect("the test environment must have a home directory");
+            let path = devin_database_path(&home);
+            assert!(DISK_WINDSURF.owns_path(&lower_path(&path)));
+        });
+        match previous {
+            Some(value) => unsafe { std::env::set_var("XDG_DATA_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+        }
+        result.unwrap();
     }
 }

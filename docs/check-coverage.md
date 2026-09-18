@@ -43,7 +43,7 @@ release. A clean result still needs complete session facts and eligible activity
 
 ## Source Inventory
 
-The tables list all 30 `SourceFormat` keys. Known source shape and release
+The tables list all 32 `SourceFormat` keys. Known source shape and release
 version are separate facts. A version range is not always available; an accepted
 schema, header, or pinned producer commit with synthetic fixtures can establish
 a bounded contract. No row promises parity across all historical versions.
@@ -65,21 +65,22 @@ a bounded contract. No row promises parity across all historical versions.
 | `AntigravityBrainJsonl`        | Antigravity brain transcript JSONL                                  | Unversioned; current shape is partially characterized                                                                                                             | Dedicated                             |
 | `AntigravityCascadeJson`       | Antigravity API cascade or mirror JSON                              | Unversioned; current shape is partially characterized                                                                                                             | Dedicated                             |
 | `AntigravityWorkspaceChatJson` | Antigravity workspace `chatSessions/*.json`                         | Unversioned and uncharacterized                                                                                                                                   | Dedicated fail-closed profile         |
-| `AntigravitySqlite`            | Native `conversations/<uuid>.db` plus an optional brain transcript  | agy 1.0.16 reverse-engineered subset; requires `user_version = 1` and reviewed `gen_metadata(idx,data)` or `steps(idx,metadata)` columns; not full schema support | Dedicated                             |
-| `CopilotCliJsonl`              | `session-state/<uuid>/events.jsonl`                                 | Public Copilot SDK v1 envelope; fixture-backed `session.start` and persisted `session.shutdown` contract                                                          | Dedicated v1 CLI reader               |
+| `AntigravitySqlite`            | Native `conversations/<uuid>.db` plus an optional brain transcript  | agy 1.0.16 reverse-engineered subset; requires `user_version = 1` and reviewed `gen_metadata(idx,data)` or `steps(idx,metadata)` columns; exact bounded response identities; conflicting model joins are partial; not full schema support | Dedicated                             |
+| `CopilotCliJsonl`              | `session-state/<uuid>/events.jsonl` plus sibling `session-store.db`  | Public Copilot SDK v1 envelope plus schema-v7 read-only request store; target-session request rows reconcile the persisted shutdown totals; unknown lanes remain partial | Dedicated v1 bundle reader            |
 | `CopilotIdeChatJson`           | VS Code-family `chatSessions/*.json`                                | Unversioned; IDE and CLI contracts are separate                                                                                                                   | Dedicated fail-closed                 |
 | `ClineSessionJson`             | Cline metadata and message companion                                | Cline 2.0+ naming is known; message schemas are not pinned                                                                                                        | Dedicated fail-closed                 |
-| `ClineMessagesContractV1`      | Cline terminal `sessions.db`, root manifest, and messages artifacts | Cline messages-contract v1; fixture-backed required `sessions` columns and canonical root/child artifacts                                                         | Dedicated v1 bundle reader            |
+| `ClineMessagesContractV1`      | Cline `.cline/data/db/sessions.db`, root manifest, and messages artifacts | Cline messages-contract v1; required `sessions` columns include `agent_id`; root and child artifacts use exact paths, parent IDs, origins, and model matches | Dedicated v1 bundle reader            |
 | `KiroSessionJson`              | Kiro workspace-session JSON                                         | Unversioned and uncharacterized                                                                                                                                   | Dedicated fail-closed                 |
 | `KiroChat`                     | Kiro `.chat` fallback                                               | Unversioned and uncharacterized                                                                                                                                   | Dedicated fail-closed                 |
-| `KiroCliV2Bundle`              | Kiro CLI V2 `.json` metadata and matching `.jsonl` journal          | Fixture-backed observed V1 metadata and V1 envelope contract; UUID siblings only                                                                                  | Dedicated V2 bundle reader            |
-| `KiroCliV3Bundle`              | Kiro CLI V3 `session.json` and `messages.jsonl` directory           | Separate path is known, but no pinned `session.json` producer shape                                                                                               | Dedicated fail-closed                 |
+| `KiroCliV2Bundle`              | Kiro CLI V2 `.json` metadata and matching `.jsonl` journal          | Fixture-backed observed V1 metadata and V1 envelope contract; UUID siblings only; D/S unavailable and C unsupported                                                | Dedicated V2 bundle reader            |
+| `KiroCliV3Bundle`              | Kiro CLI V3 `session.json` and `messages.jsonl` directory           | Separate path is known, but no pinned `session.json` producer shape; fail-closed                                                                                | Dedicated fail-closed                 |
 | `KiroChatSaveExport`           | Manual Kiro CLI `/chat save` JSON                                   | Public command is known; export schema is not published                                                                                                           | Not scanned; unsupported              |
-| `AmpThreadJson`                | Amp `threads/*.json` whole-thread record                            | Unversioned and uncharacterized                                                                                                                                   | Dedicated fail-closed                 |
+| `AmpThreadJson`                | Amp `threads/*.json` whole-thread record                            | Explicit full-export envelope version 39; ordered assistant usage with `totalInputTokens`, `maxInputTokens`, model, timestamp, tools, and activated skills; findings only | Dedicated v39 export reader           |
 | `AmpFileChanges`               | Amp `file-changes/**/*.{json,jsonl}`                                | File-change fallback, not a thread                                                                                                                                | Dedicated fail-closed                 |
 | `WindsurfWorkspaceJson`        | Windsurf workspace chat JSON                                        | Unversioned and uncharacterized                                                                                                                                   | Dedicated fail-closed                 |
 | `WindsurfMirrorJson`           | Configured Windsurf mirror JSON                                     | Unversioned and uncharacterized                                                                                                                                   | Dedicated fail-closed                 |
 | `WindsurfCascadeProtobuf`      | Windsurf Cascade `.pb` data                                         | Private and uncharacterized                                                                                                                                       | Dedicated fail-closed when discovered |
+| `DevinLocalSqlite`             | Devin Local migration-17 `sessions.db`                              | Migration 17 and required table columns are fixture-pinned; WAL-visible read-only snapshots; ACP schema 6 is optional child companion only | Dedicated S-only reader |
 | `Uncharacterized`              | Unknown-agent generic fallback                                      | No source contract                                                                                                                                                | Generic fail-closed                   |
 
 ## Coverage Matrix
@@ -94,7 +95,7 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `CodexRolloutJsonl`            | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  |
 | `OpenCodeJsonl`                | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  |
 | `OpenCodeSqliteV2`             | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  |
-| `PiV3Jsonl`                    | Assessable  | Assessable  | Partial     | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Assessable  |
+| `PiV3Jsonl`                    | Assessable  | Assessable  | Partial     | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Unsupported |
 | `CursorJsonl`                  | Unsupported | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Partial     | Unknown     | Unknown     |
 | `CursorCliAgentJsonl`          | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
 | `CursorCliStoreDb`             | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
@@ -112,14 +113,15 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `ClineMessagesContractV1`      | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
 | `KiroSessionJson`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 | `KiroChat`                     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `KiroCliV2Bundle`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
+| `KiroCliV2Bundle`              | Unsupported | Unknown     | Unsupported | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unsupported |
 | `KiroCliV3Bundle`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 | `KiroChatSaveExport`           | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
-| `AmpThreadJson`                | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
+| `AmpThreadJson`                | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
 | `AmpFileChanges`               | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 | `WindsurfWorkspaceJson`        | Unknown     | Unknown     | Unknown     | Partial     | Partial     | Unknown     | Partial     | Unknown     | Unknown     |
 | `WindsurfMirrorJson`           | Unknown     | Unknown     | Unknown     | Partial     | Partial     | Unknown     | Partial     | Unknown     | Unknown     |
 | `WindsurfCascadeProtobuf`      | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
+| `DevinLocalSqlite`             | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 | `Uncharacterized`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 
 ## Evidence Boundaries
@@ -148,8 +150,9 @@ evidence does not verify the target.
 
 The native desktop advisory inventory is separate from these per-session
 detector rules. It enumerates bounded standard current resources for Claude
-Code, Codex, OpenCode, and Pi and can merge current indexed resource
-observations. Its result contains logical names, state, scope, provenance, and
+Code, Codex, Cursor, Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, and
+Devin/Windsurf and can merge current indexed resource observations. Its result
+contains logical names, state, scope, provenance, and
 limits only. Skill candidates can include a proportional token estimate for the
 frontmatter `title` or `name` plus `description`. The estimate excludes the
 skill body. The inventory contains no physical path or selector.
@@ -235,6 +238,16 @@ roots, explicit non-pattern skill directories, and pinned
 `8a01fc53f3289d2e8eb492d67ba45cd84d64e7f2`. Runtime, managed, remote, plugin,
 pattern, lazy Pi MCP, malformed, unsafe, capped, conflicting, and partial
 indexed sources remain explicit clean-result limits.
+
+Inventory files are Cursor `.cursor/mcp.json`; Copilot
+`~/.copilot/mcp-config.json`, `.mcp.json`, and `.github/mcp.json`; Cline MCP
+settings; Kiro `.kiro/settings/mcp.json`; Amp settings; Antigravity
+`mcp_config.json`; and Devin/Windsurf MCP settings. Their documented skill roots
+are scanned in global and project scope. Where supported, global
+`~/.agents/skills` is scanned with the vendor-specific root, and duplicate
+same-agent, same-scope identities are merged. These inputs are current state,
+never historical exposure, and malformed, dynamic, plugin, unsupported, or
+capped inputs block clean.
 
 Report-time token estimates (`insights/report.rs::token_cost` and
 `TokenBurnTurnEvidence`), old-model remediation savings, and provider-limit
@@ -545,6 +558,7 @@ The exact source-format Auto Fix matrix lists every `SourceFormat` once.
 | `WindsurfWorkspaceJson`        | No             | No                 | No remediation prompt                       |
 | `WindsurfMirrorJson`           | No             | No                 | No remediation prompt                       |
 | `WindsurfCascadeProtobuf`      | No             | No                 | No remediation prompt                       |
+| `DevinLocalSqlite`             | No             | No                 | No remediation prompt                       |
 | `Uncharacterized`              | No             | No                 | No remediation prompt                       |
 
 | Scope and environment              | macOS       | Linux       | Native Windows        | WSL         |
@@ -697,9 +711,9 @@ claim an implemented finding path.
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Copilot CLI                        | Persisted event logs omit per-call usage and loaded inventories that the official schema marks transient. Model/effort changes, skill calls, and subagent configuration lack a complete request-level check contract. Configuration alone is not actual delegation. |
 | Copilot IDE                        | Chat JSON can carry model names, but model/time and other check facts are uncharacterized. CLI contracts do not apply to IDE storage.                                                                                                                               |
-| Cline                              | Metadata/message companion loading and fingerprinting remain incomplete. Calls and model names do not prove paired timing, historical resources, or other check facts.                                                                                              |
+| Cline                              | The characterized messages-contract-v1 bundle supports bounded delegated and model findings only. Calls and model names do not prove paired timing, historical resources, or other clean facts; legacy sources fail closed.                                      |
 | Kiro canonical and chat            | Separate source shapes; resource definitions, exposure, calls, models, timing, and settings lack characterized detector-grade semantics. The fallback does not inherit canonical coverage.                                                                          |
-| Amp thread                         | No whole-thread check contract. Saved routing modes do not prove actual model effort or speed; native delegation, resources, timing, and accounting remain uncharacterized.                                                                                         |
+| Amp thread                         | The characterized thread JSON supports bounded depth and model findings only. Saved routing modes do not prove actual model effort or speed; resources, timing, and accounting remain uncharacterized.                                                          |
 | Amp file changes                   | Not a conversation session. No check can use file-change records as request, model, or inventory proof.                                                                                                                                                             |
 | Windsurf workspace and mirror JSON | Calls and model names can exist, but complete resource, timing, control, and accounting semantics remain uncharacterized.                                                                                                                                           |
 | Windsurf protobuf                  | Discovery recognizes Cascade paths; no bounded protobuf session parser or supported field contract exists.                                                                                                                                                          |

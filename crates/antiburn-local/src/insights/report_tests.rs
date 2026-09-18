@@ -65,6 +65,7 @@ fn source_format_serde_keys_are_stable() {
             SourceFormat::WindsurfCascadeProtobuf,
             "windsurf_cascade_protobuf",
         ),
+        (SourceFormat::DevinLocalSqlite, "devin_local_sqlite"),
         (SourceFormat::Uncharacterized, "uncharacterized"),
     ];
 
@@ -1928,6 +1929,41 @@ fn coverage_contract_observed_resources_allow_findings_but_not_inventory_clean()
     assert!(
         failures.is_empty(),
         "observed resources cannot prove a complete inventory: {failures:?}"
+    );
+}
+
+#[test]
+fn unrelated_partial_resource_facts_do_not_erase_a_scoped_finding() {
+    let mut row = complete_row("scoped-resource-finding");
+    let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+        unreachable!()
+    };
+    sources.mcp_servers.insert(
+        "server-a".to_owned(),
+        LoadedSource {
+            description: None,
+            configured: true,
+            available: true,
+            injected: true,
+            invoked: false,
+            token_count: None,
+            origin: EvidenceValue::Unsupported,
+        },
+    );
+    sources.skill_coverage = EvidenceValue::Partial {
+        observed: (),
+        reason: crate::analysis::CoverageReason::MalformedRecord,
+    };
+
+    assert_eq!(
+        status_for(row, DetectorId::UnusedMcpServers),
+        DetectorStatus::Findings(detectors::DetectorFindings {
+            finding_sessions: 1,
+            examples: vec![SessionExample {
+                agent: "claude".to_owned(),
+                session_id: "scoped-resource-finding".to_owned(),
+            }],
+        })
     );
 }
 

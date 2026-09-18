@@ -555,11 +555,41 @@ async fn test_read_cli_history_retains_recent_entries_after_the_limit() {
     assert_eq!(history.first().unwrap().display, "session 4");
     assert_eq!(history.last().unwrap().display, "session 4099");
     assert_eq!(
-        find_cli_history_entry(&history, 1_779_004_099)
+        find_cli_history_entry(&history, "", 1_779_004_099)
             .unwrap()
             .workspace,
         "/tmp/repo-4099"
     );
+}
+
+#[test]
+fn antigravity_history_prefers_conversation_id_over_timestamp() {
+    let history = vec![
+        CliHistoryEntry {
+            conversation_id: Some("wanted".to_owned()),
+            display: "wanted session".to_owned(),
+            workspace: "/tmp/wanted".to_owned(),
+            timestamp_secs: 100,
+        },
+        CliHistoryEntry {
+            conversation_id: None,
+            display: "nearby session".to_owned(),
+            workspace: "/tmp/nearby".to_owned(),
+            timestamp_secs: 101,
+        },
+    ];
+    let raw = r#"{"conversationId":"wanted","created_at":"1970-01-01T00:01:41Z"}"#;
+    let mut metadata = SessionMetadata::default();
+    augment_brain_metadata_with_history(
+        Path::new(
+            "/tmp/.gemini/antigravity-cli/brain/wanted/.system_generated/logs/transcript.jsonl",
+        ),
+        raw,
+        &mut metadata,
+        Some(&history),
+    );
+    assert_eq!(metadata.cwd.as_deref(), Some("/tmp/wanted"));
+    assert_eq!(metadata.title.as_deref(), Some("wanted session"));
 }
 
 /// CLI brain transcripts without a matching history entry leave both

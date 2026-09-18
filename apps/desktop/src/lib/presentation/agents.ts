@@ -92,10 +92,10 @@ const AGENTS: Record<string, AgentInfo> = {
     supportsAnalysis: true,
   },
   windsurf: {
-    displayName: "Windsurf",
+    displayName: "Devin",
     icon: "windsurf",
     defaultSurface: "ide_desktop",
-    supportsAnalysis: false,
+    supportsAnalysis: true,
   },
   pi: {
     displayName: "Pi",

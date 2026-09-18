@@ -179,13 +179,13 @@
     },
     "provenance": {
       "analyzerRevision": 24,
-      "evidenceSchemaRevision": 20,
+      "evidenceSchemaRevision": 21,
       "harnessVersion": {
         "state": "complete",
         "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 38,
+      "parserRevision": 39,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -201,7 +201,7 @@
         "incidents": []
       }
     },
-    "schemaRevision": 20,
+    "schemaRevision": 21,
     "subagents": {
       "state": "complete",
       "value": {

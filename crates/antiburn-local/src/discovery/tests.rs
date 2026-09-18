@@ -933,10 +933,14 @@ fn surface_paths_each_agent_returns_expected_shape() {
         );
     }
 
-    // Windsurf is IDE-only.
+    // The stable Windsurf identity now covers Devin Local CLI data and Devin
+    // Desktop roots, while retaining the legacy Windsurf roots.
     let ty = AgentKind::Windsurf;
     let sp = Explorers::DISK.surface_paths_for(&ty, &home);
-    assert!(sp.cli.is_empty(), "{ty:?} should not expose CLI roots");
+    assert!(
+        !sp.cli.is_empty(),
+        "{ty:?} should expose Devin Local CLI roots"
+    );
     assert!(
         !sp.ide_desktop.is_empty(),
         "{ty:?} should expose IDE/Desktop roots"
