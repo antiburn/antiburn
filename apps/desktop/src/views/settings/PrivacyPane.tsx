@@ -294,7 +294,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 </li>
                 <li>
                   For one finished usage window, whether a dollars-only estimate landed above or
-                  below the provider&rsquo;s own meter, and by how much, reduced to a coarse band.
+                  below the provider&rsquo;s own meter, and by how much, reduced to a coarse
+                  band.
                 </li>
                 <li>
                   How much of that window&rsquo;s meter rise no local session could explain,
