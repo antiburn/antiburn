@@ -10,7 +10,7 @@ export interface MainWindowSessionIdentity {
 export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
 
 /** One exact destination requested from outside the retained main renderer. */
-export interface MainWindowNavigationDestination {
+interface MainWindowNavigationDestination {
   section: MainWindowSectionId
   target: MainWindowSessionIdentity | null
 }
@@ -158,7 +158,7 @@ export async function requestMainWindowRecovery(generation: number): Promise<voi
 const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 
 /** Event carrying a revisioned destination to an existing main renderer. */
-export const MAIN_WINDOW_NAVIGATION_TARGET_EVENT = "main:navigation-target"
+const MAIN_WINDOW_NAVIGATION_TARGET_EVENT = "main:navigation-target"
 
 /** Event asking a hidden retained renderer for its committed health. */
 const MAIN_WINDOW_HEALTH_CHECK_EVENT = "main:health-check"

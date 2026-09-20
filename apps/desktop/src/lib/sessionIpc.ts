@@ -46,7 +46,7 @@ export interface ActivityEntryPayload {
 }
 
 /** Identity of one local session, as the analysis view carries it. */
-export interface SessionIdentityPayload {
+interface SessionIdentityPayload {
   agent: string
   sessionId: string
   wslDistro: string | null

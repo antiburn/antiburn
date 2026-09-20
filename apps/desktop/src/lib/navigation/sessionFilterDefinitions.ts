@@ -6,5 +6,5 @@ export const FIXED_SESSION_FILTERS = [
   { id: "all", label: "All Sessions", aliases: [], group: "all" },
 ] as const
 
-export type FixedSessionFilterId = (typeof FIXED_SESSION_FILTERS)[number]["id"]
+type FixedSessionFilterId = (typeof FIXED_SESSION_FILTERS)[number]["id"]
 export type SessionFilter = { kind: FixedSessionFilterId } | { kind: "agent"; agent: string }
