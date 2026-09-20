@@ -259,3 +259,125 @@ fn empty_inputs_resolve_to_no_periods() {
     assert!(resolve_periods(LANE_WEEKLY, WEEK, &[], &[], 0, WEEK, 0).is_empty());
     assert!(resolve_periods(LANE_FIVE_HOUR, FIVE_HOURS, &[], &[], 0, FIVE_HOURS, 0).is_empty());
 }
+
+/// Three readings that only ever state a reset, as Codex does: each window's
+/// own start is derived from its own reset, seven days back. The provider
+/// restarted the window twice before its stated reset, at 22h and at
+/// 22h + 5d17m, so the first two derived windows must be cut short exactly
+/// where the next one begins, and the last, with no successor, keeps its
+/// stated reset.
+#[test]
+fn three_reset_only_weekly_readings_yield_contiguous_truncated_windows() {
+    let base = 1_000;
+    let r1 = base + WEEK;
+    let r2 = r1 + 22 * 3_600;
+    let r3 = r2 + 5 * DAY + 17 * 60;
+    let observed = [
+        period(1, None, Some(r1), r1),
+        period(2, None, Some(r2), r2),
+        period(3, None, Some(r3), r3),
+    ];
+    let periods = resolve_periods(LANE_WEEKLY, WEEK, &observed, &[], base, r3 + WEEK, r3);
+    let p1 = find(&periods, 1);
+    let p2 = find(&periods, 2);
+    let p3 = find(&periods, 3);
+
+    assert_eq!(p1.starts_at_epoch, r1 - WEEK);
+    assert_eq!(
+        p1.resets_at_epoch, p2.starts_at_epoch,
+        "the first window is cut short exactly where the second begins"
+    );
+    assert_eq!(p1.reset_source, BoundarySource::Truncated);
+
+    assert_eq!(p2.starts_at_epoch, r2 - WEEK);
+    assert_eq!(
+        p2.resets_at_epoch, p3.starts_at_epoch,
+        "the second window is cut short exactly where the third begins"
+    );
+    assert_eq!(p2.reset_source, BoundarySource::Truncated);
+
+    assert_eq!(p3.starts_at_epoch, r3 - WEEK);
+    assert_eq!(
+        p3.resets_at_epoch, r3,
+        "the last window has no successor, so it keeps its stated reset"
+    );
+    assert_eq!(p3.reset_source, BoundarySource::Reported);
+}
+
+#[test]
+fn near_duplicate_weekly_readings_merge_keeping_the_later_reset() {
+    let base_reset = 10 * WEEK;
+    // Two readings of the same window, resets five seconds apart: well
+    // inside RESET_JITTER_SECS, so they are the same window restated.
+    let observed = [
+        period(1, None, Some(base_reset), base_reset),
+        period(2, None, Some(base_reset + 3), base_reset + 3),
+    ];
+    let periods = resolve_periods(
+        LANE_WEEKLY,
+        WEEK,
+        &observed,
+        &[],
+        base_reset - WEEK,
+        base_reset + 3,
+        base_reset,
+    );
+    assert!(
+        !periods.iter().any(|p| p.period_id == Some(1)),
+        "the earlier near-duplicate reading is dropped"
+    );
+    let survivor = find(&periods, 2);
+    assert_eq!(
+        survivor.resets_at_epoch,
+        base_reset + 3,
+        "the later reading's reset is the one kept"
+    );
+}
+
+#[test]
+fn consecutive_non_overlapping_weekly_periods_are_unchanged() {
+    let observed = [
+        period(1, Some(0), Some(WEEK), WEEK),
+        period(2, Some(WEEK), Some(2 * WEEK), 2 * WEEK),
+    ];
+    let periods = resolve_periods(LANE_WEEKLY, WEEK, &observed, &[], 0, 2 * WEEK, 2 * WEEK);
+    let p1 = find(&periods, 1);
+    let p2 = find(&periods, 2);
+    assert_eq!(p1.resets_at_epoch, WEEK);
+    assert_eq!(p1.reset_source, BoundarySource::Reported);
+    assert_eq!(p2.starts_at_epoch, WEEK);
+    assert_eq!(p2.reset_source, BoundarySource::Reported);
+}
+
+#[test]
+fn five_hour_lane_is_untouched_by_the_weekly_clip_path() {
+    // Two overlapping five-hour periods: the clip-and-merge path must not
+    // touch this lane, so the overlap survives exactly as reported.
+    let observed = [
+        period(1, Some(0), Some(FIVE_HOURS), FIVE_HOURS),
+        period(
+            2,
+            Some(FIVE_HOURS / 2),
+            Some(FIVE_HOURS + FIVE_HOURS / 2),
+            FIVE_HOURS + FIVE_HOURS / 2,
+        ),
+    ];
+    let periods = resolve_periods(
+        LANE_FIVE_HOUR,
+        FIVE_HOURS,
+        &observed,
+        &[],
+        0,
+        2 * FIVE_HOURS,
+        FIVE_HOURS + FIVE_HOURS / 2,
+    );
+    let p1 = find(&periods, 1);
+    let p2 = find(&periods, 2);
+    assert_eq!(
+        p1.resets_at_epoch, FIVE_HOURS,
+        "overlapping five-hour periods are not clipped"
+    );
+    assert_eq!(p1.reset_source, BoundarySource::Reported);
+    assert_eq!(p2.starts_at_epoch, FIVE_HOURS / 2);
+    assert_eq!(p2.reset_source, BoundarySource::Reported);
+}

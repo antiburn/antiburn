@@ -21,12 +21,23 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     unattributed: { usd: 0, percent: 0, sessionCount: 0 },
     unattributedBuckets: [],
     estimatedPercent: null,
+    unexplainedBuckets: [],
+    unexplainedPercent: null,
+    meterCoverageUntil: null,
+    meterRegressions: 0,
     ...over,
   }
 }
 
 function row(t: number): QuotaSeriesRow {
-  return { t, index: 0, meter: null, other: null, unattributed: null }
+  return {
+    t,
+    index: 0,
+    meter: null,
+    other: null,
+    unattributed: null,
+    unexplained: null,
+  }
 }
 
 describe("windowSlots", () => {

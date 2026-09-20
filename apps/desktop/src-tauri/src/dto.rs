@@ -490,8 +490,10 @@ pub struct SessionLimitAllocationSummary {
 /// One quota window's derived start or end, in terms a reader can trust or
 /// distrust: `"reported"` came from the provider directly, `"derived"` was
 /// computed from the other boundary and the lane's nominal duration,
-/// `"cadence"` was extrapolated from another observed weekly reset, and
-/// `"turnGap"` was inferred from a gap in local turn activity.
+/// `"cadence"` was extrapolated from another observed weekly reset,
+/// `"turnGap"` was inferred from a gap in local turn activity, and
+/// `"truncated"` marks a reset moved earlier because the next window began
+/// before the provider's stated reset for this one.
 pub type QuotaBoundarySource = String;
 
 /// A lane's currently open window, when one exists. Mirrors Rust
@@ -635,8 +637,27 @@ pub struct QuotaPeriodPayload {
     /// unbound row, so a chart can plot unattributed spend over time
     /// instead of a single period total.
     pub unattributed_buckets: Vec<QuotaBucketTotalPayload>,
-    /// The sum of every bound session's estimated percent.
+    /// The sum of every bound session's, unattributed's, and unexplained
+    /// percent, so at the period's last reading it equals the meter. A
+    /// closed period never exceeds 100: its factor-priced tail scales down
+    /// to fit under that cap instead of overshooting a value the meter
+    /// cannot reach. An open period can still overshoot, since it may
+    /// gather more readings before it closes.
     pub estimated_percent: Option<f64>,
+    /// One entry per meter-rise segment that had no local dollars to share
+    /// it across: the whole segment's rise, at its own end (the reading
+    /// that closed it), so the chart can ramp up to it. `usd` is always
+    /// `0.0`; `percent` is always `Some`.
+    pub unexplained_buckets: Vec<QuotaBucketTotalPayload>,
+    /// The sum of every unexplained segment's percent. `None` only when the
+    /// period carries no meter reading at all.
+    pub unexplained_percent: Option<f64>,
+    /// The last meter reading's own time this period shared its rise from,
+    /// `None` when the period carries no reading.
+    pub meter_coverage_until: Option<i64>,
+    /// How many meter-rise segments closed on a reading lower than the one
+    /// that opened them.
+    pub meter_regressions: u32,
 }
 
 /// Response for `get_quota_usage`.
@@ -694,9 +715,14 @@ pub struct SessionQuotaEntryPayload {
     pub period: Option<SessionQuotaPeriodPayload>,
     pub usd: f64,
     pub percent: Option<f64>,
-    /// `"learned"`, `"seeded"`, or `"unbound"` when the session has no
-    /// resolved account for the provider its usage attributes to.
+    /// `"measured"` when every one of the session's buckets fell in a
+    /// shared meter segment, `"learned"` or `"seeded"` from the factor
+    /// otherwise, or `"unbound"` when the session has no resolved account
+    /// for the provider its usage attributes to.
     pub confidence: String,
+    /// The plan the account's newest observation reported, or `None` before
+    /// any reading names one.
+    pub plan: Option<LiveProviderPlan>,
 }
 
 /// Response for `get_session_quota`.
@@ -2760,6 +2786,14 @@ mod tests {
                     percent: Some(1.0),
                 }],
                 estimated_percent: Some(2.0),
+                unexplained_buckets: vec![QuotaBucketTotalPayload {
+                    bucket_start_epoch: 0,
+                    usd: 0.0,
+                    percent: Some(0.5),
+                }],
+                unexplained_percent: Some(0.5),
+                meter_coverage_until: Some(500),
+                meter_regressions: 0,
             }],
             generated_at: "2026-09-16T00:00:00Z".to_string(),
         };
@@ -2783,6 +2817,11 @@ mod tests {
         assert_eq!(period["unattributedBuckets"][0]["usd"], 0.5);
         assert_eq!(period["unattributedBuckets"][0]["percent"], 1.0);
         assert_eq!(period["estimatedPercent"], 2.0);
+        assert_eq!(period["unexplainedBuckets"][0]["usd"], 0.0);
+        assert_eq!(period["unexplainedBuckets"][0]["percent"], 0.5);
+        assert_eq!(period["unexplainedPercent"], 0.5);
+        assert_eq!(period["meterCoverageUntil"], 500);
+        assert_eq!(period["meterRegressions"], 0);
     }
 
     #[test]
@@ -2806,6 +2845,10 @@ mod tests {
                     usd: 1.0,
                     percent: Some(2.0),
                     confidence: "learned".to_string(),
+                    plan: Some(LiveProviderPlan {
+                        name: "max".to_string(),
+                        tier: Some("max_20x".to_string()),
+                    }),
                 },
                 SessionQuotaEntryPayload {
                     provider: "openai".to_string(),
@@ -2817,6 +2860,7 @@ mod tests {
                     usd: 0.5,
                     percent: None,
                     confidence: "unbound".to_string(),
+                    plan: None,
                 },
             ],
             generated_at: "2026-09-16T00:00:00Z".to_string(),
@@ -2829,7 +2873,10 @@ mod tests {
         assert_eq!(json["entries"][0]["period"]["startSource"], "reported");
         assert_eq!(json["entries"][0]["period"]["resetSource"], "derived");
         assert_eq!(json["entries"][0]["confidence"], "learned");
+        assert_eq!(json["entries"][0]["plan"]["name"], "max");
+        assert_eq!(json["entries"][0]["plan"]["tier"], "max_20x");
         assert_eq!(json["entries"][1]["accountKey"], serde_json::Value::Null);
+        assert_eq!(json["entries"][1]["plan"], serde_json::Value::Null);
         assert_eq!(json["entries"][1]["lane"], serde_json::Value::Null);
         assert_eq!(json["entries"][1]["laneLabel"], serde_json::Value::Null);
         assert_eq!(json["entries"][1]["period"], serde_json::Value::Null);

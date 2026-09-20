@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { QuotaAccountPayload, QuotaUsagePayload } from "../../../lib/providerUsageIpc"
 import { QUOTA_USAGE_CACHE_TTL_MS, QuotaSession, type QuotaAdapter } from "./QuotaSession"
 import { rangeForPreset } from "./quotaSeries"
+import { readQuotaViewPrefs, writeQuotaViewPrefs } from "./quotaViewPrefs"
 
 const NOW = 1_000_000
 const WEEK = 604800
@@ -67,7 +68,10 @@ function deferred<T>() {
 }
 
 const sessions: QuotaSession[] = []
-afterEach(() => sessions.splice(0).forEach((session) => session.dispose()))
+afterEach(() => {
+  sessions.splice(0).forEach((session) => session.dispose())
+  localStorage.clear()
+})
 
 describe("QuotaSession", () => {
   it("on first active subscribe, picks the weekly lane and loads this week's usage", async () => {
@@ -388,6 +392,96 @@ describe("QuotaSession", () => {
       { startEpoch: 3000, endEpoch: 4000 },
     )
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-custom2"))
+    stop()
+  })
+
+  it("restores the saved account, lane, and range preset when they exist in the accounts payload", async () => {
+    writeQuotaViewPrefs({
+      provider: "anthropic",
+      accountKey: "acct-1",
+      lane: "fiveHour",
+      rangePreset: "last30Days",
+    })
+    const { session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(session.getSnapshot().selection).toEqual({
+      provider: "anthropic",
+      accountKey: "acct-1",
+      lane: "fiveHour",
+    })
+    expect(session.getSnapshot().range).toBe("last30Days")
+    stop()
+  })
+
+  it("ignores a saved account, lane, or preset absent from the accounts payload, keeping today's default", async () => {
+    writeQuotaViewPrefs({
+      provider: "openai",
+      accountKey: "does-not-exist",
+      lane: "weekly",
+      rangePreset: "notAPreset" as never,
+    })
+    const { session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(session.getSnapshot().selection).toEqual({
+      provider: "anthropic",
+      accountKey: "acct-1",
+      lane: "weekly",
+    })
+    expect(session.getSnapshot().range).toBe("thisWeek")
+    stop()
+  })
+
+  it("writes the account, lane, and range as the reader changes them", async () => {
+    const secondAccount = account({ provider: "openai", accountKey: "acct-2" })
+    const { session } = setup({
+      getAccounts: vi
+        .fn()
+        .mockResolvedValue({ accounts: [account(), secondAccount], generatedAt: "g" }),
+    })
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    session.selectLane("fiveHour")
+    await vi.waitFor(() => expect(session.getSnapshot().selection?.lane).toBe("fiveHour"))
+    expect(readQuotaViewPrefs()).toMatchObject({
+      provider: "anthropic",
+      accountKey: "acct-1",
+      lane: "fiveHour",
+    })
+
+    session.selectRange("last30Days")
+    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last30Days"))
+    expect(readQuotaViewPrefs().rangePreset).toBe("last30Days")
+
+    session.selectAccount("openai", "acct-2")
+    await vi.waitFor(() => expect(session.getSnapshot().selection?.accountKey).toBe("acct-2"))
+    expect(readQuotaViewPrefs()).toMatchObject({ provider: "openai", accountKey: "acct-2" })
+    stop()
+  })
+
+  it("does not persist a custom range from open()", async () => {
+    const { session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    session.open(
+      { provider: "anthropic", accountKey: "acct-1", lane: "fiveHour" },
+      { startEpoch: 1000, endEpoch: 2000 },
+    )
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().range).toEqual({
+        kind: "custom",
+        startEpoch: 1000,
+        endEpoch: 2000,
+      }),
+    )
+    expect(readQuotaViewPrefs().rangePreset).toBeUndefined()
     stop()
   })
 })

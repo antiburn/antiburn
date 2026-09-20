@@ -26,7 +26,7 @@ fn prerelease_upgrade_preserves_incarnations_and_applies_main_migrations() {
         )
         .unwrap();
     let store = Store::from_connection(connection, Path::new("/tmp/legacy-v49").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 52);
+    assert_eq!(store.schema_version().unwrap(), 53);
     assert_eq!(counter(&store), 57);
     let key = SessionKey {
         environment_key: "native".into(),
@@ -85,5 +85,5 @@ fn prerelease_repair_rolls_back_if_a_main_migration_fails() {
         .execute_batch("DROP TRIGGER fail_history_delete")
         .unwrap();
     store.migrate().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 52);
+    assert_eq!(store.schema_version().unwrap(), 53);
 }

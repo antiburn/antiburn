@@ -98,9 +98,11 @@ export interface SessionLimitAllocationSummaryPayload {
 /** One quota window's derived start or end. `reported` came from the
  * provider directly, `derived` was computed from the other boundary and the
  * lane's nominal duration, `cadence` was extrapolated from another observed
- * weekly reset, and `turnGap` was inferred from a gap in local turn
- * activity. Mirrors Rust `QuotaBoundarySource`. */
-type QuotaBoundarySourcePayload = "reported" | "derived" | "cadence" | "turnGap"
+ * weekly reset, `turnGap` was inferred from a gap in local turn activity,
+ * and `truncated` marks a reset moved earlier because the next window began
+ * before the provider's stated reset for this one. Mirrors Rust
+ * `QuotaBoundarySource`. */
+type QuotaBoundarySourcePayload = "reported" | "derived" | "cadence" | "turnGap" | "truncated"
 
 /** A lane's currently open window, when one exists. Mirrors Rust
  * `QuotaCurrentPeriodPayload`. */
@@ -224,8 +226,27 @@ export interface QuotaPeriodPayload {
    * row, so a chart can plot unattributed spend over time instead of a
    * single period total. */
   unattributedBuckets: QuotaBucketTotalPayload[]
-  /** The sum of every bound session's estimated percent. */
+  /** The sum of every bound session's, unattributed's, and unexplained
+   * percent, so at the period's last reading it equals the meter. A closed
+   * period never exceeds 100: its factor-priced tail scales down to fit
+   * under that cap instead of overshooting a value the meter cannot reach.
+   * An open period can still overshoot, since it may gather more readings
+   * before it closes. */
   estimatedPercent: number | null
+  /** One entry per meter-rise segment that had no local dollars to share it
+   * across: the whole segment's rise, at its own end (the reading that
+   * closed it), so the chart can ramp up to it. `usd` is always `0`;
+   * `percent` is always non-null. */
+  unexplainedBuckets: QuotaBucketTotalPayload[]
+  /** The sum of every unexplained segment's percent. `null` only when the
+   * period carries no meter reading at all. */
+  unexplainedPercent: number | null
+  /** The last meter reading's own time this period shared its rise from,
+   * `null` when the period carries no reading. */
+  meterCoverageUntil: number | null
+  /** How many meter-rise segments closed on a reading lower than the one
+   * that opened them. */
+  meterRegressions: number
 }
 
 /** Response for `get_quota_usage`. Mirrors Rust `QuotaUsagePayload`. */
@@ -275,9 +296,14 @@ export interface SessionQuotaEntryPayload {
   period: SessionQuotaPeriodPayload | null
   usd: number
   percent: number | null
-  /** `"learned"`, `"seeded"`, or `"unbound"` when the session has no
-   * resolved account for the provider its usage attributes to. */
-  confidence: "learned" | "seeded" | "unbound"
+  /** `"measured"` when every one of the session's buckets fell in a shared
+   * meter segment, `"learned"` or `"seeded"` from the factor otherwise, or
+   * `"unbound"` when the session has no resolved account for the provider
+   * its usage attributes to. */
+  confidence: "measured" | "learned" | "seeded" | "unbound"
+  /** The plan the account's newest observation reported, or `null` before
+   * any reading names one. */
+  plan: LiveUsagePlanPayload | null
 }
 
 /** Response for `get_session_quota`. Mirrors Rust `SessionQuotaPayload`. */

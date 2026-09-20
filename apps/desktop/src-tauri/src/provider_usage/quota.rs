@@ -26,6 +26,9 @@ pub enum BoundarySource {
     /// Inferred from the first local turn after a gap of at least the
     /// lane's duration.
     TurnGap,
+    /// The next observed window began before this one's stated reset, so
+    /// the provider ended this window early.
+    Truncated,
 }
 
 /// One quota window: a span with a source for each end.
@@ -64,10 +67,16 @@ pub fn resolve_periods(
     range_end: i64,
     now: i64,
 ) -> Vec<QuotaPeriod> {
-    let resolved_observed: Vec<QuotaPeriod> = observed
+    let mut resolved_observed: Vec<QuotaPeriod> = observed
         .iter()
         .filter_map(|period| resolve_observed(period, lane))
         .collect();
+
+    let is_weekly_like =
+        lane == crate::store::provider_limit::LANE_WEEKLY || lane.starts_with(MODEL_LANE_PREFIX);
+    if is_weekly_like {
+        resolved_observed = clip_truncated_weekly_windows(resolved_observed);
+    }
 
     let mut periods: Vec<QuotaPeriod> = resolved_observed
         .iter()
@@ -83,8 +92,6 @@ pub fn resolve_periods(
                 .filter(|period| in_range_or_open(period, range_start, range_end, now)),
         );
     } else {
-        let is_weekly_like = lane == crate::store::provider_limit::LANE_WEEKLY
-            || lane.starts_with(MODEL_LANE_PREFIX);
         let anchor_reset = resolved_observed
             .iter()
             .map(|period| period.resets_at_epoch)
@@ -129,6 +136,46 @@ fn resolve_observed(period: &ProviderUsagePeriod, lane: &str) -> Option<QuotaPer
         start_source,
         reset_source,
     })
+}
+
+/// Merge duplicate weekly readings, and cut short a window the provider
+/// ended early.
+///
+/// A weekly lane can restart before its stated reset. Codex does this: it
+/// never reports a window's start, so the resolver derives one from that
+/// window's own reset, seven days back. When Codex ends a window early, the
+/// next window's own start, derived the same way, falls before the old
+/// window's stated reset. That next start marks where the old window really
+/// ended, so this function moves the old window's reset there and marks it
+/// [`BoundarySource::Truncated`]. It also merges two readings of the same
+/// window whose reported reset drifted by at most [`RESET_JITTER_SECS`],
+/// keeping the one with the later reset as the more complete reading.
+fn clip_truncated_weekly_windows(periods: Vec<QuotaPeriod>) -> Vec<QuotaPeriod> {
+    let mut sorted = periods;
+    sorted.sort_by_key(|period| (period.starts_at_epoch, period.resets_at_epoch));
+
+    let mut merged: Vec<QuotaPeriod> = Vec::with_capacity(sorted.len());
+    for period in sorted {
+        if let Some(last) = merged.last_mut()
+            && (period.starts_at_epoch - last.starts_at_epoch).abs() <= RESET_JITTER_SECS
+        {
+            if period.resets_at_epoch > last.resets_at_epoch {
+                *last = period;
+            }
+            continue;
+        }
+        merged.push(period);
+    }
+
+    for index in 0..merged.len().saturating_sub(1) {
+        let next_start = merged[index + 1].starts_at_epoch;
+        if next_start < merged[index].resets_at_epoch {
+            merged[index].resets_at_epoch = next_start;
+            merged[index].reset_source = BoundarySource::Truncated;
+        }
+    }
+    merged.retain(|period| period.resets_at_epoch > period.starts_at_epoch);
+    merged
 }
 
 /// Whether a period belongs in the resolver's output: it overlaps the
@@ -265,6 +312,11 @@ pub fn factor_point_at_or_earliest(points: &[FactorPoint], at_epoch: i64) -> Opt
         &points[split - 1]
     })
 }
+
+/// The pure algorithm that shares a period's meter rise across its buckets.
+/// Kept in its own module since `commands::quota` and this module's own
+/// tests both need it.
+pub(crate) mod share;
 
 #[cfg(test)]
 mod tests;

@@ -5,12 +5,12 @@ import {
   labeledIndices,
   pillGeometry,
 } from "../../../components/session/analysis/chartLabels"
-import type { QuotaPeriodPayload, QuotaUsagePayload } from "../../../lib/providerUsageIpc"
+import type { QuotaPeriodPayload } from "../../../lib/providerUsageIpc"
 import { axisDayLabel } from "../../../lib/presentation/overviewChart"
 import { traceEvent } from "../../../lib/perfTrace"
 import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
 import { rowsInWindow, windowSlots, type QuotaWindowSlot } from "./quotaLayout"
-import { quotaBandPath, quotaBandSpecs, quotaMeterPath } from "./quotaPaths"
+import { quotaBandPath, quotaBandSpecs, quotaStackTopPath } from "./quotaPaths"
 import type { QuotaSeries, QuotaSeriesRow } from "./quotaSeries"
 
 const DAY_SECS = 24 * 60 * 60
@@ -23,23 +23,23 @@ const CHART_MIN_HEIGHT = 200
 const MARGIN_TOP = 6
 const MARGIN_RIGHT = 12
 const TIME_AXIS_HEIGHT = 16
-// Wider than a plain value axis (44px): this axis also carries a rotated
-// title in the same column. The extra room keeps the "100%" tick clear of
-// the title instead of crowding it off the left edge.
+// Wider than a plain value axis (44px): the extra room keeps the "100%"
+// tick clear of the plot's left edge.
 const VALUE_AXIS_WIDTH = 56
-/** How close two reset labels may sit, as a share of the visible x-domain. */
-const RESET_LABEL_MIN_GAP_FRACTION = 0.04
 /** The least a reader needs between two window-tick labels to read both. */
 const WINDOW_TICK_MIN_GAP_PX = 64
 const Y_TICKS = [0, 25, 50, 75, 100]
+/** Horizontal gridlines: every tick but 0%, which the plot's own bottom
+ *  edge already marks. */
+const GRID_TICKS = [25, 50, 75, 100]
 
-/** A layer of the burnup chart: `"meter"`, `"other"`, `"unattributed"`, or a top session's key. */
+/** A layer of the burnup chart: `"meter"`, `"other"`, `"unattributed"`,
+ *  `"unexplained"`, or a top session's key. */
 type QuotaChartSeries = string
 
 export type QuotaChartAxisMode = "window" | "date"
 
 export interface QuotaBurnupChartProps {
-  usage: QuotaUsagePayload
   rangeStartEpoch: number
   rangeEndEpoch: number
   nowEpoch: number
@@ -111,12 +111,7 @@ function windowTickLabel(period: QuotaPeriodPayload): string {
   return long ? day : `${day} ${localHourLabel(start)}`
 }
 
-/** True when any period's reset in range was not stated directly by the provider. */
-function hasInferredReset(periods: readonly QuotaPeriodPayload[]): boolean {
-  return periods.some((period) => period.resetSource !== "reported")
-}
-
-/** A pill-backed label drawn inside the plot, for a reset or now line. Plain
+/** A pill-backed label drawn inside the plot, for the "now" line. Plain
  *  SVG, not recharts: this chart never renders a recharts `Text`, the cost
  *  the dev trace found in the entrance animation and stacked-area redraw. */
 function LinePill({ x, y, text }: { x: number; y: number; text: string }) {
@@ -147,8 +142,11 @@ interface BandLayerPath {
 }
 
 /**
- * The Quota screen's burnup chart: the provider's own meter line over the
- * device's stacked estimate. `axisMode="date"` draws one shared wall-clock x
+ * The Quota screen's burnup chart: a heavy line across the top of the
+ * device's stacked estimate, tracing the stack's own sum. Under the
+ * shared-meter model this sum equals the provider's own meter at every row
+ * with a reading, and the device's estimate elsewhere, so one line carries
+ * both. `axisMode="date"` draws one shared wall-clock x
  * axis across every window in `periods`; `axisMode="window"` instead gives
  * each window its own equal-width slot, back to back, so a short five-hour
  * window and a long weekly window compare at the same width instead of the
@@ -178,7 +176,6 @@ interface BandLayerPath {
  * above-pace highlight appears.
  */
 function QuotaBurnupChartImpl({
-  usage,
   rangeStartEpoch,
   rangeEndEpoch,
   nowEpoch,
@@ -188,7 +185,6 @@ function QuotaBurnupChartImpl({
   series,
   onHighlight,
 }: QuotaBurnupChartProps) {
-  const hasFactor = usage.factor != null
   const { rows, topSessions } = series
   const containerRef = useRef<HTMLDivElement | null>(null)
   const width = useElementWidth(containerRef)
@@ -197,8 +193,7 @@ function QuotaBurnupChartImpl({
   const idBase = rawId.replace(/:/g, "")
   const clipId = `quota-clip-${idBase}`
   const aboveClipId = `quota-above-${idBase}`
-
-  const showInferredCaption = hasInferredReset(periods)
+  const hatchId = `quota-hatch-${idBase}`
 
   const plotLeft = VALUE_AXIS_WIDTH
   const plotRight = Math.max(plotLeft, width - MARGIN_RIGHT)
@@ -236,7 +231,7 @@ function QuotaBurnupChartImpl({
       ? slots.map((slot) => ({ rows: rowsInWindow(rows, slot.period), x: slot.x }))
       : [{ rows, x: sharedX }]
 
-  const bandSpecs = hasFactor ? quotaBandSpecs(topSessions) : []
+  const bandSpecs = quotaBandSpecs(topSessions, `url(#${hatchId})`)
   const bandKeys = bandSpecs.map((spec) => spec.key)
   const bandLayerPaths = new Map<string, BandLayerPath[]>()
   let totalBandVertices = 0
@@ -254,12 +249,14 @@ function QuotaBurnupChartImpl({
     })
     bandLayerPaths.set(spec.key, paths)
   })
-  const meterPaths = bandLayers.map((layer) => quotaMeterPath(layer.rows, layer.x, y))
-  const meterVertices = meterPaths.reduce((total, meter) => total + meter.vertices, 0)
+  const stackTopPaths = bandLayers.map((layer) =>
+    quotaStackTopPath(layer.rows, bandKeys, layer.x, y),
+  )
+  const lineVertices = stackTopPaths.reduce((total, line) => total + line.vertices, 0)
   // Every drawn band draws twice with a pace line (faded under it, full
   // above it); without one it draws once.
   const areas = [...bandLayerPaths.values()].reduce((total, paths) => total + paths.length, 0)
-  const vertices = totalBandVertices * (showPace ? 2 : 1) + meterVertices
+  const vertices = totalBandVertices * (showPace ? 2 : 1) + lineVertices
 
   traceEvent("quota.chart.render", { rows: rows.length, areas, vertices })
 
@@ -273,27 +270,6 @@ function QuotaBurnupChartImpl({
         )
       : new Set<number>()
 
-  // Reset labels are thinned in whatever domain their own x lives in: wall
-  // clock seconds for the shared date-mode axis, plot pixels for each
-  // window's own slot.
-  const labeledResetEpochs =
-    axisMode === "date"
-      ? labeledIndices(
-          periods
-            .map((period) => period.resetsAtEpoch)
-            .filter((t) => t >= rangeStartEpoch && t <= rangeEndEpoch),
-          Math.max(1, rangeEndEpoch - rangeStartEpoch),
-          RESET_LABEL_MIN_GAP_FRACTION,
-        )
-      : new Set<number>()
-  const labeledResetSlotRights =
-    axisMode === "window"
-      ? labeledIndices(
-          slots.map((slot) => slot.right),
-          Math.max(1, plotWidth),
-          RESET_LABEL_MIN_GAP_FRACTION,
-        )
-      : new Set<number>()
   const dateTicks = axisMode === "date" ? xAxisTicks(rangeStartEpoch, rangeEndEpoch) : []
   const dateTickLabels = new Map(dateTicks.map((t) => [t, axisDayLabel(localDateOf(t))]))
 
@@ -321,11 +297,32 @@ function QuotaBurnupChartImpl({
         style={{ minHeight: CHART_MIN_HEIGHT }}
       >
         {width > 0 && height > 0 && (
-          <svg width={width} height={height} role="img" aria-label="Quota burnup">
+          <svg width={width} height={height} role="img" aria-label="Limits burnup">
             <defs>
               <clipPath id={clipId}>
                 <rect x={plotLeft} y={plotTop} width={plotWidth} height={plotHeight} />
               </clipPath>
+              {/* A diagonal hatch, not a new hue, marks the "unexplained"
+                  band: the maintainer has a colour-vision deficiency, so the
+                  band must read apart from "unattributed" by shape, not
+                  color alone. */}
+              <pattern
+                id={hatchId}
+                width={6}
+                height={6}
+                patternUnits="userSpaceOnUse"
+                patternTransform="rotate(45)"
+              >
+                <rect width={6} height={6} fill="transparent" />
+                <line
+                  x1={0}
+                  y1={0}
+                  x2={0}
+                  y2={6}
+                  stroke="var(--color-quota-unexplained)"
+                  strokeWidth={2}
+                />
+              </pattern>
               {showPace && (
                 // The region on or above each window's pace line, up to the
                 // plot top. Nested inside the plot clip, so it also bounds a
@@ -382,49 +379,37 @@ function QuotaBurnupChartImpl({
                 {value}%
               </text>
             ))}
-            <text
-              x={12}
-              y={plotTop + plotHeight / 2}
-              textAnchor="middle"
-              dominantBaseline="hanging"
-              transform={`rotate(-90, 12, ${plotTop + plotHeight / 2})`}
-              {...AXIS_TICK}
-            >
-              % of limit
-            </text>
 
-            <line
-              data-quota-line="limit"
-              x1={plotLeft}
-              x2={plotRight}
-              y1={y(100)}
-              y2={y(100)}
-              stroke="var(--color-context-critical)"
-              strokeDasharray="2 2"
-            />
+            {/* Gridlines draw under the bands: this block sits before every
+                band path below it in document order. Reuses the reset
+                line's own grey — the same light, CVD-safe tone reads right
+                for a structural gridline too, so the chart needs no second
+                grey token. */}
+            {GRID_TICKS.map((value) => (
+              <line
+                key={`grid-${value}`}
+                data-quota-line="grid"
+                x1={plotLeft}
+                x2={plotRight}
+                y1={y(value)}
+                y2={y(value)}
+                stroke="var(--color-quota-reset)"
+              />
+            ))}
 
             {slots.map((slot) => {
               const t = slot.period.resetsAtEpoch
               if (t < rangeStartEpoch || t > rangeEndEpoch) return null
-              const inferred = slot.period.resetSource !== "reported"
-              const labeled =
-                axisMode === "date"
-                  ? labeledResetEpochs.has(t)
-                  : labeledResetSlotRights.has(slot.right)
               return (
-                <g key={`reset-${slot.period.periodId ?? t}`}>
-                  <line
-                    data-quota-line="reset"
-                    data-inferred={inferred ? "" : undefined}
-                    x1={slot.right}
-                    x2={slot.right}
-                    y1={plotTop}
-                    y2={plotBottom}
-                    stroke="var(--color-chart-rest-mark)"
-                    {...(inferred ? { strokeDasharray: "4 3" } : {})}
-                  />
-                  {labeled && <LinePill x={slot.right} y={plotTop} text="reset" />}
-                </g>
+                <line
+                  key={`reset-${slot.period.periodId ?? t}`}
+                  data-quota-line="reset"
+                  x1={slot.right}
+                  x2={slot.right}
+                  y1={plotTop}
+                  y2={plotBottom}
+                  stroke="var(--color-quota-reset)"
+                />
               )
             })}
 
@@ -484,11 +469,11 @@ function QuotaBurnupChartImpl({
                 </g>
               )),
             )}
-            {meterPaths.map((meterPath, index) => (
+            {stackTopPaths.map((stackTopPath, index) => (
               <path
                 key={index}
-                className="quota-area-meter"
-                d={meterPath.d}
+                className="quota-line-top"
+                d={stackTopPath.d}
                 fill="none"
                 stroke="var(--color-quota-meter)"
                 strokeWidth={1.5}
@@ -515,11 +500,6 @@ function QuotaBurnupChartImpl({
           </svg>
         )}
       </div>
-      {showInferredCaption && (
-        <p className="type-caption text-label-tertiary">
-          Dashed reset lines are inferred, not stated by the provider.
-        </p>
-      )}
     </div>
   )
 }

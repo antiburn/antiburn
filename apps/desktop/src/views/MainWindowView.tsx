@@ -173,7 +173,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     },
     {
       id: "quota",
-      label: "Quota",
+      label: "Limits",
       icon: Gauge,
       render: ({ active }) => (
         <QuotaView

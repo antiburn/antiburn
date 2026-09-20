@@ -41,9 +41,21 @@
      since it names an absence of local evidence, not a session's own use. */
   --color-quota-unattributed: var(--color-quota-unattributed-val);
 
+  /* Spend the provider's meter reports that no local reading, bound or
+     unattributed, explains at all. Drawn as a hatch, not a new hue, since
+     the maintainer has a colour-vision deficiency: this token colors the
+     hatch's stroke, reusing the meter's own blue at low opacity so the
+     band still reads as "the provider's own fact", not a session's use. */
+  --color-quota-unexplained: var(--color-quota-unexplained-val);
+
   /* The pace line for a window. It marks even spend through the window,
      from 0% at the start to 100% at the reset. */
   --color-quota-pace: var(--color-quota-pace-val);
+
+  /* A reset boundary, and the chart's own horizontal gridlines. Lighter than
+     the axis and grid text (`--color-label-tertiary`), so it never competes
+     with the tick labels; achromatic, so it is CVD-safe. */
+  --color-quota-reset: var(--color-quota-reset-val);
 }
 
 /* --- Light (default and explicit) --- */
@@ -60,7 +72,9 @@
   --color-quota-session-8-val: hsl(265 32% 43.8%); /* deep purple, for a light surface */
   --color-quota-other-val: hsl(240 5.5% 25% / 0.3);
   --color-quota-unattributed-val: hsl(240 5.5% 25% / 0.12);
+  --color-quota-unexplained-val: hsl(221.2 83% 53.3% / 0.5);
   --color-quota-pace-val: hsl(240 5.5% 25% / 0.7);
+  --color-quota-reset-val: hsl(240 5.5% 25% / 0.15);
 }
 
 /* --- Dark ---
@@ -80,7 +94,9 @@
     --color-quota-session-8-val: hsl(261 46% 73.7%); /* lavender, for a dark surface */
     --color-quota-other-val: hsl(240 33% 94% / 0.28);
     --color-quota-unattributed-val: hsl(240 33% 94% / 0.1);
+    --color-quota-unexplained-val: hsl(221 89% 59.8% / 0.5);
     --color-quota-pace-val: hsl(240 33% 94% / 0.7);
+    --color-quota-reset-val: hsl(240 33% 94% / 0.32);
   }
 }
 
@@ -96,7 +112,9 @@
   --color-quota-session-8-val: hsl(261 46% 73.7%); /* lavender, for a dark surface */
   --color-quota-other-val: hsl(240 33% 94% / 0.28);
   --color-quota-unattributed-val: hsl(240 33% 94% / 0.1);
+  --color-quota-unexplained-val: hsl(221 89% 59.8% / 0.5);
   --color-quota-pace-val: hsl(240 33% 94% / 0.7);
+  --color-quota-reset-val: hsl(240 33% 94% / 0.32);
 }
 
 /* ==========================================================================
@@ -132,6 +150,10 @@
 }
 
 [data-quota-highlight="unattributed"] .quota-area-unattributed {
+  opacity: 1;
+}
+
+[data-quota-highlight="unexplained"] .quota-area-unexplained {
   opacity: 1;
 }
 
@@ -258,7 +280,22 @@
   opacity: 1;
 }
 
-/* The meter line states a fact, not an estimate layer, so it never dims. */
-.quota-area-meter {
+/* The stack-top line states the provider's own reading wherever one
+   exists, not an estimate layer, so it never dims. */
+.quota-line-top {
   opacity: 1;
+}
+
+/* The Quota session list's swatch for the "Unexplained" row: a diagonal
+   hatch, not a solid fill, so the row reads apart from "Unattributed"
+   without relying on hue (the maintainer has a colour-vision deficiency).
+   Mirrors the chart's own SVG hatch pattern in plain CSS, since the list's
+   dot is too small and too far from the chart to share one SVG pattern id
+   with it. */
+.quota-swatch-hatch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--color-quota-unexplained) 0 1px,
+    transparent 1px 3px
+  );
 }

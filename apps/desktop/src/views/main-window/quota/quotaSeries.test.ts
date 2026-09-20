@@ -7,6 +7,7 @@ import type {
 } from "../../../lib/providerUsageIpc"
 import {
   assignQuotaHues,
+  isQuotaRangePreset,
   isWeeklyLane,
   isWindowPreset,
   quotaBurnupSeries,
@@ -52,6 +53,10 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     unattributed: { usd: 0, percent: 0, sessionCount: 0 },
     unattributedBuckets: [],
     estimatedPercent: null,
+    unexplainedBuckets: [],
+    unexplainedPercent: null,
+    meterCoverageUntil: null,
+    meterRegressions: 0,
     ...over,
   }
 }
@@ -253,6 +258,19 @@ describe("isWindowPreset", () => {
   })
 })
 
+describe("isQuotaRangePreset", () => {
+  it("is true for every window and date preset literal, false for anything else", () => {
+    expect(isQuotaRangePreset("thisWindow")).toBe(true)
+    expect(isQuotaRangePreset("last10Windows")).toBe(true)
+    expect(isQuotaRangePreset("thisWeek")).toBe(true)
+    expect(isQuotaRangePreset("lastWeek")).toBe(true)
+    expect(isQuotaRangePreset("last30Days")).toBe(true)
+    expect(isQuotaRangePreset("notAPreset")).toBe(false)
+    expect(isQuotaRangePreset(undefined)).toBe(false)
+    expect(isQuotaRangePreset(42)).toBe(false)
+  })
+})
+
 describe("selectQuotaPeriods", () => {
   const now = 10 * WEEK
   const fetched: QuotaRange = { startEpoch: 0, endEpoch: 4 * WEEK }
@@ -369,7 +387,9 @@ describe("quotaBurnupSeries", () => {
 
   it("emits a final-total row just before the reset that matches the last bucket", () => {
     const start = 0
-    const reset = 2 * BUCKET
+    // One second past the last bucket's own end, so the final row lands
+    // where that bucket has finished ramping in, not partway through it.
+    const reset = 2 * BUCKET + 1
     const p = period({
       startsAtEpoch: start,
       resetsAtEpoch: reset,
@@ -443,8 +463,9 @@ describe("quotaBurnupSeries", () => {
     // "at-threshold" has more dollars but never exceeds the minimum, so it
     // folds into "other" despite outranking "above" by spend.
     expect(series.topSessions.map((s) => s.sessionId)).toEqual(["above"])
-    const row = series.rows.find((r) => r.t === 0)!
-    // "other" accumulates the folded session's contributed percent, not its dollars.
+    // At the bucket's own end, once it has fully ramped in: "other"
+    // accumulates the folded session's contributed percent, not its dollars.
+    const row = series.rows.find((r) => r.t === BUCKET)!
     expect(row.other).toBe(QUOTA_OWN_SERIES_MIN_PERCENT)
   })
 
@@ -510,6 +531,67 @@ describe("quotaBurnupSeries", () => {
     expect(series.topSessions.map((s) => s.sessionId)).toEqual(["s0", "s1", "s2", "s3", "s4"])
   })
 
+  it("stacks own-series sessions by first appearance, bottom to top, not by dollars", () => {
+    const start = 0
+    const reset = 4 * BUCKET
+    // Dollars run opposite to start order: "late" earns the most but starts
+    // last, "early" earns the least but starts first.
+    const early = {
+      agent: "claude",
+      sessionId: "early",
+      wslDistro: null,
+      title: null,
+      usd: 1,
+      percent: QUOTA_OWN_SERIES_MIN_PERCENT + 1,
+    }
+    const mid = { ...early, sessionId: "mid", usd: 2 }
+    const late = { ...early, sessionId: "late", usd: 3 }
+    const sessions = [early, mid, late]
+    const contributions = [
+      { ...early, bucketStartEpoch: 0 },
+      { ...mid, bucketStartEpoch: BUCKET },
+      { ...late, bucketStartEpoch: 2 * BUCKET },
+    ]
+    const p = period({ startsAtEpoch: start, resetsAtEpoch: reset, sessions, contributions })
+    const series = quotaBurnupSeries(usage([p]), start, reset, FAR_FUTURE)
+    expect(series.topSessions.map((s) => s.sessionId)).toEqual(["early", "mid", "late"])
+    // The list under the chart keeps dollars-descending order regardless.
+    const rows = quotaTopSessionRows([p])
+    expect(rows.map((r) => r.sessionId)).toEqual(["late", "mid", "early"])
+  })
+
+  it("keeps a session's earlier window in place once it reappears in a later window", () => {
+    // "returning" first appears in window 1. "newcomer" appears only in
+    // window 2, but at a bucket earlier than "returning"'s window-2 bucket.
+    // "returning" still stacks first: its window-1 appearance decides.
+    const returning = {
+      agent: "claude",
+      sessionId: "returning",
+      wslDistro: null,
+      title: null,
+      usd: 1,
+      percent: QUOTA_OWN_SERIES_MIN_PERCENT + 1,
+    }
+    const newcomer = { ...returning, sessionId: "newcomer", usd: 100 }
+    const window1 = period({
+      startsAtEpoch: 0,
+      resetsAtEpoch: WEEK,
+      sessions: [returning],
+      contributions: [{ ...returning, bucketStartEpoch: 0 }],
+    })
+    const window2 = period({
+      startsAtEpoch: WEEK,
+      resetsAtEpoch: 2 * WEEK,
+      sessions: [returning, newcomer],
+      contributions: [
+        { ...returning, bucketStartEpoch: WEEK + 2 * BUCKET },
+        { ...newcomer, bucketStartEpoch: WEEK },
+      ],
+    })
+    const series = quotaBurnupSeries(usage([window1, window2]), 0, 2 * WEEK, FAR_FUTURE)
+    expect(series.topSessions.map((s) => s.sessionId)).toEqual(["returning", "newcomer"])
+  })
+
   it("accumulates the unattributed column from its per-bucket buckets", () => {
     const start = 0
     const reset = 4 * BUCKET
@@ -527,6 +609,57 @@ describe("quotaBurnupSeries", () => {
     expect(beforeSecondBucket.unattributed).toBe(2)
     const finalRow = series.rows.find((row) => row.t === reset - 1)!
     expect(finalRow.unattributed).toBe(8)
+  })
+
+  it("ramps a contribution's own bucket in linearly across its own 15 minutes", () => {
+    const start = 0
+    const reset = 2 * BUCKET
+    const p = period({
+      startsAtEpoch: start,
+      resetsAtEpoch: reset,
+      contributions: [
+        {
+          agent: "claude",
+          sessionId: "s1",
+          wslDistro: null,
+          bucketStartEpoch: 0,
+          usd: 1,
+          percent: 30,
+        },
+      ],
+      // Forces a row five minutes into the bucket; the bucket's own start
+      // and end already land as rows on their own.
+      samples: [{ observedAtEpoch: 300, usedPercent: 1, fresh: true, authoritative: true }],
+    })
+    const series = quotaBurnupSeries(usage([p]), start, reset, FAR_FUTURE)
+    // At the bucket's own start, none of it has elapsed: the row excludes it.
+    const atStart = series.rows.find((row) => row.t === 0)!
+    expect(atStart.other).toBe(0)
+    // Five minutes into the 15-minute bucket, a third of it has elapsed.
+    const fiveMinutesIn = series.rows.find((row) => row.t === 300)!
+    expect(fiveMinutesIn.other).toBeCloseTo(10, 5)
+    // At the bucket's own end, the whole contribution has landed.
+    const atBucketEnd = series.rows.find((row) => row.t === BUCKET)!
+    expect(atBucketEnd.other).toBe(30)
+  })
+
+  it("keeps the step rule for unexplained buckets: the whole rise lands at its own stamped time", () => {
+    const start = 0
+    const reset = 2 * BUCKET
+    const p = period({
+      startsAtEpoch: start,
+      resetsAtEpoch: reset,
+      // The backend stamps an unexplained segment at its own end, so this
+      // row's time is where the segment's reading closed it, not a bucket
+      // start; the frontend still adds it in full there, unramped.
+      unexplainedBuckets: [{ bucketStartEpoch: 300, usd: 0, percent: 12 }],
+      samples: [{ observedAtEpoch: 299, usedPercent: 1, fresh: true, authoritative: true }],
+    })
+    const series = quotaBurnupSeries(usage([p]), start, reset, FAR_FUTURE)
+    const justBefore = series.rows.find((row) => row.t === 299)!
+    expect(justBefore.unexplained).toBe(0)
+    const atStamp = series.rows.find((row) => row.t === 300)!
+    expect(atStamp.unexplained).toBe(12)
   })
 
   it("interpolates the meter between two readings ten minutes apart", () => {
@@ -576,7 +709,7 @@ describe("quotaBurnupSeries", () => {
     expect(series.rows.every((row) => row.meter === null)).toBe(true)
   })
 
-  it("nulls every percent column when the lane has no factor", () => {
+  it("still accumulates band values from a no-factor payload that carries percents", () => {
     const start = 0
     const reset = WEEK
     const p = period({
@@ -589,7 +722,7 @@ describe("quotaBurnupSeries", () => {
           wslDistro: null,
           bucketStartEpoch: 0,
           usd: 1,
-          percent: null,
+          percent: 30,
         },
       ],
       sessions: [
@@ -599,18 +732,20 @@ describe("quotaBurnupSeries", () => {
           wslDistro: null,
           title: null,
           usd: 1,
-          percent: null,
+          percent: 30,
         },
       ],
-      unattributed: { usd: 0, percent: null, sessionCount: 0 },
+      unattributed: { usd: 0.2, percent: 5, sessionCount: 1 },
+      unattributedBuckets: [{ bucketStartEpoch: 0, usd: 0.2, percent: 5 }],
     })
+    // A lane with meter readings but no learned factor still carries shared
+    // percents from the backend: a band's value is the accumulated percent,
+    // not gated on `usage.factor`.
     const series = quotaBurnupSeries(usage([p], false), start, reset, FAR_FUTURE)
     const key = quotaSessionKey("claude", "s1", null)
-    for (const row of series.rows) {
-      expect(row.other).toBeNull()
-      expect(row.unattributed).toBeNull()
-      expect(row[key]).toBeNull()
-    }
+    const finalRow = series.rows.find((row) => row.t === reset - 1)!
+    expect(finalRow[key]).toBe(30)
+    expect(finalRow.unattributed).toBe(5)
   })
 
   it("fills a gap between periods with a null row so the line breaks", () => {
@@ -621,6 +756,36 @@ describe("quotaBurnupSeries", () => {
     expect(gapRow).toBeDefined()
     expect(gapRow!.other).toBeNull()
     expect(gapRow!.meter).toBeNull()
+  })
+
+  it("keeps a bucket-aligned reset from spiking into the next period's opening row", () => {
+    const start = 0
+    const mid = 2 * BUCKET
+    const end = 4 * BUCKET
+    const first = period({
+      startsAtEpoch: start,
+      resetsAtEpoch: mid,
+      contributions: [
+        {
+          agent: "claude",
+          sessionId: "s1",
+          wslDistro: null,
+          bucketStartEpoch: 0,
+          usd: 1,
+          percent: 50,
+        },
+      ],
+    })
+    const second = period({ startsAtEpoch: mid, resetsAtEpoch: end })
+    const series = quotaBurnupSeries(usage([first, second]), start, end, FAR_FUTURE)
+    // The boundary is bucket-aligned: with no fix, the first period's own
+    // grid-fill would still add a row at `t === mid` (its own `reset`),
+    // carrying its full accumulated total, one row before the second
+    // period's own zero row at that same time.
+    const rowsAtBoundary = series.rows.filter((row) => row.t === mid)
+    expect(rowsAtBoundary).toHaveLength(1)
+    expect(rowsAtBoundary[0]!.other).toBe(0)
+    expect(series.rows.filter((row) => row.t < mid).some((row) => row.other === 50)).toBe(true)
   })
 
   it("stops a period's rows at now and draws nothing between now and the reset", () => {
@@ -672,6 +837,24 @@ describe("quotaBurnupSeries", () => {
     const lastRow = series.rows[series.rows.length - 1]!
     expect(lastRow.t).toBe(now)
     expect(lastRow.meter).toBeNull()
+  })
+
+  it("accumulates the unexplained column from its per-bucket buckets", () => {
+    const start = 0
+    const reset = 4 * BUCKET
+    const p = period({
+      startsAtEpoch: start,
+      resetsAtEpoch: reset,
+      unexplainedBuckets: [
+        { bucketStartEpoch: 0, usd: 0, percent: 3 },
+        { bucketStartEpoch: 2 * BUCKET, usd: 0, percent: 5 },
+      ],
+    })
+    const series = quotaBurnupSeries(usage([p]), start, reset, FAR_FUTURE)
+    const beforeSecondBucket = series.rows.find((row) => row.t === BUCKET)!
+    expect(beforeSecondBucket.unexplained).toBe(3)
+    const finalRow = series.rows.find((row) => row.t === reset - 1)!
+    expect(finalRow.unexplained).toBe(8)
   })
 })
 
@@ -791,7 +974,15 @@ describe("assignQuotaHues", () => {
   /** A minimal series row: `t` and any session values the test needs, with
    *  every other field defaulting to null. */
   function seriesRow(t: number, values: Record<string, number | null> = {}): QuotaSeriesRow {
-    return { t, index: 0, meter: null, other: null, unattributed: null, ...values }
+    return {
+      t,
+      index: 0,
+      meter: null,
+      other: null,
+      unattributed: null,
+      unexplained: null,
+      ...values,
+    }
   }
 
   it("gives two sessions different hues once the first is still cumulative when the second starts, even though their own contributions never overlap in time", () => {

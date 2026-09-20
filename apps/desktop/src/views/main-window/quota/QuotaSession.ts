@@ -12,11 +12,13 @@ import { traceEvent } from "../../../lib/perfTrace"
 import { SurfaceExposureTracker } from "../../../lib/surfaceExposure"
 import {
   isCustomRange,
+  isQuotaRangePreset,
   resolveQuotaRange,
   type QuotaRange,
   type QuotaRangePreset,
   type QuotaRangeSelection,
 } from "./quotaSeries"
+import { readQuotaViewPrefs, writeQuotaViewPrefs } from "./quotaViewPrefs"
 
 /** How long a cached usage reading stays fresh. The Quota screen does not
  *  live-update, so a reading this fresh is as good as a new query. An
@@ -149,9 +151,17 @@ export class QuotaSession {
   private usageDirty = false
   private readonly usageCache = new Map<string, QuotaUsageCacheEntry>()
   private readonly exposure = new SurfaceExposureTracker()
+  /** The reader's saved account, lane, and range, read once at construction.
+   *  `resolveSelection` applies the account and lane the first time accounts
+   *  load with no selection yet; the constructor below applies the range
+   *  preset directly to the initial snapshot. */
+  private readonly savedPrefs = readQuotaViewPrefs()
 
   constructor(adapter: QuotaAdapter = productionAdapter) {
     this.adapter = adapter
+    if (isQuotaRangePreset(this.savedPrefs.rangePreset)) {
+      this.snapshot = { ...this.snapshot, range: this.savedPrefs.rangePreset }
+    }
   }
 
   getSnapshot = (): QuotaSnapshot => this.snapshot
@@ -226,13 +236,26 @@ export class QuotaSession {
 
   /** Resolve the account and lane to use after accounts load: keep the current
    *  selection when it still exists, falling back to its account's default
-   *  lane, else the first account's default lane. */
+   *  lane. With no current selection yet (the very first resolution), prefer
+   *  the reader's saved account and lane when the payload still carries
+   *  them; otherwise fall back to the first account's default lane. */
   private resolveSelection(accounts: readonly QuotaAccountPayload[]): QuotaSelection | null {
     const current = this.snapshot.selection
     if (current) {
       const account = findAccount(accounts, current.provider, current.accountKey)
       if (account) {
         const lane = findLane(account, current.lane) ?? defaultLane(account)
+        if (lane)
+          return { provider: account.provider, accountKey: account.accountKey, lane: lane.lane }
+      }
+    } else if (this.savedPrefs.provider != null && this.savedPrefs.accountKey != null) {
+      const account = findAccount(
+        accounts,
+        this.savedPrefs.provider,
+        this.savedPrefs.accountKey,
+      )
+      if (account) {
+        const lane = findLane(account, this.savedPrefs.lane ?? null) ?? defaultLane(account)
         if (lane)
           return { provider: account.provider, accountKey: account.accountKey, lane: lane.lane }
       }
@@ -252,6 +275,7 @@ export class QuotaSession {
       findLane(account, this.snapshot.selection?.lane ?? null) ?? defaultLane(account)
     if (!lane) return
     this.update({ selection: { provider, accountKey, lane: lane.lane } })
+    writeQuotaViewPrefs({ provider, accountKey, lane: lane.lane })
     traceEvent("quota.refresh", { trigger: "selectAccount" })
     this.loadUsage()
   }
@@ -260,12 +284,20 @@ export class QuotaSession {
     const selection = this.snapshot.selection
     if (!selection) return
     this.update({ selection: { ...selection, lane } })
+    // Written together with the account: a lane saved on its own, with no
+    // account beside it, could never be restored later.
+    writeQuotaViewPrefs({
+      provider: selection.provider,
+      accountKey: selection.accountKey,
+      lane,
+    })
     traceEvent("quota.refresh", { trigger: "selectLane" })
     this.loadUsage()
   }
 
   selectRange = (range: QuotaRangePreset): void => {
     this.update({ range })
+    writeQuotaViewPrefs({ rangePreset: range })
     traceEvent("quota.refresh", { trigger: "selectRange" })
     this.loadUsage()
   }
@@ -273,7 +305,8 @@ export class QuotaSession {
   /**
    * Open a specific account, lane, and explicit range, as a session detail's
    * Quota row does. The range shows as "Custom" until the reader picks a
-   * preset of their own.
+   * preset of their own. Never persisted: a custom range is only ever the
+   * one a caller hands in, not a reader's own choice to restore.
    */
   open = (selection: QuotaSelection, range: QuotaRange): void => {
     this.update({

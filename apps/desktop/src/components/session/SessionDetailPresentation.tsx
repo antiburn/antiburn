@@ -972,14 +972,14 @@ export function SessionDetailPresentation({
   )
 
   const efficiencySection = efficiencyCard && (
-    <section className={cn("shrink-0", sessionQuota == null && "mt-auto")}>
+    <section className="mt-auto shrink-0">
       <TabSectionHeading>Efficiency</TabSectionHeading>
       <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
     </section>
   )
 
   const quotaSection = onOpenQuota && (
-    <div className="mt-auto shrink-0">
+    <div className="shrink-0">
       <SessionQuotaSection
         sessionQuota={sessionQuota}
         sessionQuotaError={sessionQuotaError}
@@ -1158,8 +1158,8 @@ export function SessionDetailPresentation({
                     </section>
                   )}
 
-                  {efficiencySection}
                   {quotaSection}
+                  {efficiencySection}
                 </div>
               )}
 

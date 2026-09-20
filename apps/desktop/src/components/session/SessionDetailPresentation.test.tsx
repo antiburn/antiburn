@@ -15,6 +15,7 @@ import type {
 import { subagentsExpandedStore } from "./analysis/subagentsExpandedStore"
 import { unusedContextExpandedStore } from "./analysis/unusedContextExpandedStore"
 import type * as CostBurnupChartModule from "./analysis/CostBurnupChart"
+import { limitsExpandedStore } from "./limitsExpandedStore"
 import {
   SessionDetailPresentation,
   type SessionDetailPresentationProps,
@@ -43,6 +44,7 @@ vi.mock("./analysis/CostBurnupChart", async (importOriginal) => {
 beforeEach(() => {
   subagentsExpandedStore.set(false)
   unusedContextExpandedStore.set(false)
+  limitsExpandedStore.set(false)
 })
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
@@ -356,6 +358,56 @@ describe("SessionDetailPresentation — chrome", () => {
     view({ cost: null, efficiency: null })
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.queryByText("$/MTOK")).toBeNull()
+  })
+
+  it("places the Limits card before the Efficiency heading on the Cost tab", () => {
+    view({
+      cost: cost(),
+      efficiency: {
+        totalUsd: 10,
+        newWorkUsd: 3.4,
+        carryUsd: 5.4,
+        rewriteUsd: 1.2,
+        growthTokens: 200_000,
+        outputTokens: 50_000,
+        pricedTurns: 12,
+        unpricedTurns: 3,
+      },
+      sessionQuota: {
+        entries: [
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            accountKey: "acct-1",
+            lane: "weekly",
+            laneLabel: "Weekly",
+            period: {
+              periodId: 1,
+              startsAtEpoch: 1_000_000,
+              resetsAtEpoch: 1_604_800,
+              startSource: "reported",
+              resetSource: "reported",
+              peakPercent: 40,
+            },
+            usd: 2.5,
+            percent: 12,
+            confidence: "learned",
+            plan: null,
+          },
+        ],
+        generatedAt: "g",
+      },
+      sessionQuotaError: false,
+      onOpenQuota: () => undefined,
+    })
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    const limitsHeader = screen.getByRole("button", { name: /^Limits/ })
+    const efficiencyHeading = screen.getByText("Efficiency")
+    // DOCUMENT_POSITION_FOLLOWING: the heading comes after the header in the DOM.
+    expect(
+      limitsHeader.compareDocumentPosition(efficiencyHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
   })
 
   it("keeps the session title on one line", () => {

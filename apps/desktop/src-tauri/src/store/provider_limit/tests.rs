@@ -738,6 +738,34 @@ fn forever_retention_keeps_every_provider_usage_row() {
     );
 }
 
+/// A period reports at most once, ever: marking it is idempotent, and the
+/// marker is what a later pass checks before deciding to report it again.
+#[test]
+#[cfg(feature = "analytics")]
+fn marking_a_quota_window_reported_is_idempotent_and_durable() {
+    let store = memory_store();
+    let account_key = account('a');
+    let period_id = insert_period(&store, &account_key, 0, 18_000, 18_000);
+
+    assert!(!store.quota_window_already_reported(period_id).unwrap());
+
+    store.mark_quota_window_reported(period_id, 20_000).unwrap();
+    assert!(store.quota_window_already_reported(period_id).unwrap());
+
+    // A second mark of the same period does not error and does not
+    // duplicate the row.
+    store.mark_quota_window_reported(period_id, 30_000).unwrap();
+    let count: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM quota_window_reported WHERE period_id = ?1",
+            [period_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
 #[test]
 fn finite_retention_prunes_the_residual_and_learn_cursor_with_their_period() {
     let store = memory_store();
@@ -763,6 +791,10 @@ fn finite_retention_prunes_the_residual_and_learn_cursor_with_their_period() {
     store
         .upsert_limit_residual(period_id, old, 5.0, 4.0)
         .expect("stores the residual");
+    #[cfg(feature = "analytics")]
+    store
+        .mark_quota_window_reported(period_id, old)
+        .expect("marks the window reported");
 
     // PRAGMA foreign_keys is on for the store; a residual or cursor row left
     // dangling on a deleted period would raise an error here, not just a
@@ -792,6 +824,11 @@ fn finite_retention_prunes_the_residual_and_learn_cursor_with_their_period() {
         count("provider_limit_learn_cursor"),
         0,
         "the cursor is pruned with its period"
+    );
+    assert_eq!(
+        count("quota_window_reported"),
+        0,
+        "the quota-window-closed marker is pruned with its period"
     );
 }
 
@@ -1052,7 +1089,7 @@ fn v52_widens_the_lane_check_and_resets_the_model_lane_cursor() {
 
     let store = Store::from_connection(connection, Path::new("/tmp/antiburn-v52-test").into())
         .expect("migration reaches the head");
-    assert_eq!(store.schema_version().unwrap(), 52);
+    assert_eq!(store.schema_version().unwrap(), 53);
 
     let connection = store.lock();
     let samples: i64 = connection

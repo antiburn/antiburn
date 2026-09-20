@@ -349,9 +349,15 @@ colors:
   quota-unattributed: # spend this app could not credit to any session
     light: "hsl(240 5.5% 25% / 0.12)"
     dark: "hsl(240 33% 94% / 0.1)"
+  quota-unexplained: # meter spend no local reading explains; hatch stroke, reuses the meter blue at low opacity so it needs no new hue
+    light: "hsl(221.2 83% 53.3% / 0.5)"
+    dark: "hsl(221 89% 59.8% / 0.5)"
   quota-pace: # even spend through a window: 0% at the start, 100% at the reset
     light: "hsl(240 5.5% 25% / 0.7)"
     dark: "hsl(240 33% 94% / 0.7)"
+  quota-reset: # a reset boundary line, lighter than the axis/grid text; also draws the chart's 25/50/75/100% gridlines
+    light: "hsl(240 5.5% 25% / 0.15)"
+    dark: "hsl(240 33% 94% / 0.32)"
 fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`

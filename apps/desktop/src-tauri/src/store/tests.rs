@@ -2597,6 +2597,43 @@ fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
     }
 }
 
+/// v53 review step: confirm the new table's shape. Delete after merge; the
+/// ladder test above is the durable coverage for this migration.
+#[test]
+fn v53_creates_the_quota_window_reported_marker_table() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in super::schema::MIGRATIONS {
+        connection.execute_batch(sql).unwrap();
+    }
+    let columns: Vec<(String, i64)> = connection
+        .prepare("SELECT name, pk FROM pragma_table_info('quota_window_reported')")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        columns,
+        vec![
+            ("period_id".to_string(), 1),
+            ("reported_at_epoch".to_string(), 0),
+        ]
+    );
+
+    // A period referenced by the marker must already exist: the column is a
+    // real foreign key, not just a same-named integer.
+    let foreign_keys: Vec<String> = connection
+        .prepare("SELECT \"table\" FROM pragma_foreign_key_list('quota_window_reported')")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(foreign_keys, vec!["provider_usage_period".to_string()]);
+}
+
 #[test]
 fn the_generation_increments_only_when_the_fingerprint_changes() {
     let store = store();

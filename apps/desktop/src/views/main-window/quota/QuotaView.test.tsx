@@ -8,6 +8,7 @@ import type * as QuotaBurnupChartModule from "./QuotaBurnupChart"
 import { QuotaSession, type QuotaAdapter } from "./QuotaSession"
 import { QuotaView } from "./QuotaView"
 import { quotaSessionKey } from "./quotaSeries"
+import { writeQuotaViewPrefs } from "./quotaViewPrefs"
 
 // The real chart needs a measured layout that jsdom never supplies, and
 // highlighting is now a CSS attribute on the wrapper div QuotaView renders
@@ -102,6 +103,10 @@ function usage(over: Partial<QuotaUsagePayload> = {}): QuotaUsagePayload {
         unattributed: { usd: 1, percent: 10, sessionCount: 1 },
         unattributedBuckets: [{ bucketStartEpoch: NOW - WEEK, usd: 1, percent: 10 }],
         estimatedPercent: 30,
+        unexplainedBuckets: [],
+        unexplainedPercent: null,
+        meterCoverageUntil: null,
+        meterRegressions: 0,
       },
     ],
     generatedAt: "g",
@@ -137,6 +142,10 @@ function manySessionsUsage(): QuotaUsagePayload {
         unattributed: { usd: 1, percent: 10, sessionCount: 1 },
         unattributedBuckets: [{ bucketStartEpoch: NOW - WEEK, usd: 1, percent: 10 }],
         estimatedPercent: 30,
+        unexplainedBuckets: [],
+        unexplainedPercent: null,
+        meterCoverageUntil: null,
+        meterRegressions: 0,
       },
     ],
   })
@@ -170,6 +179,7 @@ afterEach(() => {
   sessions.splice(0).forEach((s) => s.dispose())
   chartRenders.count = 0
   chart.onHighlight = null
+  localStorage.clear()
   cleanup()
 })
 
@@ -194,7 +204,7 @@ describe("QuotaView", () => {
   it("shows a loading state before the first accounts load resolves", () => {
     const { session } = setup()
     sessions.push(session)
-    expect(screen.getByRole("status")).toHaveTextContent("Loading Quota.")
+    expect(screen.getByRole("status")).toHaveTextContent("Loading Limits.")
   })
 
   it("shows the empty copy when there are no accounts", async () => {
@@ -202,7 +212,7 @@ describe("QuotaView", () => {
       getAccounts: vi.fn().mockResolvedValue({ accounts: [], generatedAt: "g" }),
     })
     sessions.push(session)
-    await screen.findByText(/No quota readings yet/)
+    await screen.findByText(/No limit readings yet/)
   })
 
   it("shows an error with a retry button when accounts fail to load", async () => {
@@ -211,7 +221,7 @@ describe("QuotaView", () => {
     })
     sessions.push(session)
     await screen.findByRole("alert")
-    expect(screen.getByRole("alert")).toHaveTextContent("Quota accounts are unavailable.")
+    expect(screen.getByRole("alert")).toHaveTextContent("Limit accounts are unavailable.")
     vi.mocked(adapter.getAccounts).mockResolvedValueOnce({
       accounts: [account()],
       generatedAt: "g2",
@@ -224,6 +234,145 @@ describe("QuotaView", () => {
     const { session } = setup({ getUsage: vi.fn().mockResolvedValue(usage({ periods: [] })) })
     sessions.push(session)
     await screen.findByText("No windows in this range.")
+  })
+
+  it("shows Maximum, P90, Median, and Current limit usage from the closed and open windows", async () => {
+    const base = usage().periods[0]!
+    const multiWindow = usage({
+      rangeStartEpoch: NOW - 2 * WEEK,
+      rangeEndEpoch: NOW + WEEK,
+      periods: [
+        {
+          ...base,
+          periodId: 1,
+          startsAtEpoch: NOW - 2 * WEEK,
+          resetsAtEpoch: NOW - WEEK,
+          estimatedPercent: 20,
+        },
+        {
+          ...base,
+          periodId: 2,
+          startsAtEpoch: NOW - WEEK,
+          resetsAtEpoch: NOW,
+          estimatedPercent: 40,
+        },
+        {
+          ...base,
+          periodId: 3,
+          startsAtEpoch: NOW,
+          resetsAtEpoch: NOW + WEEK,
+          estimatedPercent: 15,
+        },
+      ],
+    })
+    const { session, view } = setup({ getUsage: vi.fn().mockResolvedValue(multiWindow) })
+    sessions.push(session)
+    await screen.findByText("This week")
+    // All three windows count: 20%, 40% and the open window at 15% now.
+    // Sorted they are 15, 20, 40: Maximum is 40%, the median is 20%, and
+    // the interpolated P90 sits at rank 1.8, so 20 + 0.8 * 20 = 36%. The
+    // third window is still open (its reset is after `now`), so Current
+    // reads its own value, 15%. The figures round to whole percents.
+    expect(view.container.textContent).toContain("Maximum Limit Usage")
+    expect(view.container.textContent).toContain("40%")
+    expect(view.container.textContent).toContain("P90 Limit Usage")
+    expect(view.container.textContent).toContain("36%")
+    expect(view.container.textContent).toContain("Median Limit Usage")
+    expect(view.container.textContent).toContain("20%")
+    expect(view.container.textContent).toContain("Current Limit Usage")
+    expect(view.container.textContent).toContain("15%")
+    expect(view.container.textContent).not.toContain("40.0%")
+    expect(view.container.textContent).toContain("Last reading")
+    expect(view.container.textContent).not.toContain("Meter ·")
+    expect(view.container.textContent).not.toContain("Local sessions ·")
+  })
+
+  it("reads Maximum, P90, and Median from the open window when it is the only one", async () => {
+    const base = usage().periods[0]!
+    const onlyOpen = usage({
+      rangeEndEpoch: NOW + WEEK,
+      periods: [
+        {
+          ...base,
+          periodId: 1,
+          startsAtEpoch: NOW,
+          resetsAtEpoch: NOW + WEEK,
+          estimatedPercent: 25,
+        },
+      ],
+    })
+    const { session, view } = setup({ getUsage: vi.fn().mockResolvedValue(onlyOpen) })
+    sessions.push(session)
+    await screen.findByText("This week")
+    expect(view.container.textContent).toContain("Current Limit Usage")
+    // The open window is the only data point, so all four figures read
+    // its value now and nothing shows an em dash.
+    expect((view.container.textContent!.match(/25%/g) ?? []).length).toBe(4)
+    expect(view.container.textContent).not.toContain("—")
+  })
+
+  it("clamps a window's value at 100 percent, since the provider's own meter can never pass it", async () => {
+    const base = usage().periods[0]!
+    const overshootWindows = usage({
+      rangeStartEpoch: NOW - 2 * WEEK,
+      rangeEndEpoch: NOW + WEEK,
+      periods: [
+        {
+          ...base,
+          periodId: 1,
+          startsAtEpoch: NOW - 2 * WEEK,
+          resetsAtEpoch: NOW - WEEK,
+          estimatedPercent: 130,
+        },
+        {
+          ...base,
+          periodId: 2,
+          startsAtEpoch: NOW - WEEK,
+          resetsAtEpoch: NOW,
+          estimatedPercent: 50,
+        },
+        {
+          ...base,
+          periodId: 3,
+          startsAtEpoch: NOW,
+          resetsAtEpoch: NOW + WEEK,
+          estimatedPercent: 120,
+        },
+      ],
+    })
+    const { session, view } = setup({ getUsage: vi.fn().mockResolvedValue(overshootWindows) })
+    sessions.push(session)
+    await screen.findByText("This week")
+    // An estimated tail with no meter readings can price a window past 100,
+    // but the provider's own meter never passes it: 130 and 120 both clamp
+    // to 100 before the figures read them. Sorted the windows are 50, 100,
+    // 100, so Maximum, P90, Median, and Current all read 100% (four times,
+    // total) and nothing reads past it.
+    expect(view.container.textContent).toContain("Maximum Limit Usage")
+    expect(view.container.textContent).toContain("P90 Limit Usage")
+    expect(view.container.textContent).toContain("Median Limit Usage")
+    expect(view.container.textContent).toContain("Current Limit Usage")
+    expect((view.container.textContent!.match(/100%/g) ?? []).length).toBe(4)
+    expect(view.container.textContent).not.toContain("130%")
+    expect(view.container.textContent).not.toContain("120%")
+  })
+
+  it("shows the Unexplained row in the sessions list once the latest period carries unexplained spend", async () => {
+    const basePeriod = usage().periods[0]!
+    const withUnexplained = usage({
+      periods: [
+        {
+          ...basePeriod,
+          estimatedPercent: 33.1,
+          unexplainedPercent: 8.9,
+          unexplainedBuckets: [{ bucketStartEpoch: NOW - WEEK, usd: 0, percent: 8.9 }],
+        },
+      ],
+    })
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(withUnexplained) })
+    sessions.push(session)
+    await screen.findByText("This week")
+    expect(screen.getByText("Unexplained")).toBeInTheDocument()
   })
 
   it("changing the range control reloads usage for the new range", async () => {
@@ -301,6 +450,15 @@ describe("QuotaView", () => {
     expect(chart.props?.showPace).toBe(false)
   })
 
+  it("restores the axis mode and the pace switch from saved prefs", async () => {
+    writeQuotaViewPrefs({ axisMode: "date", showPace: false })
+    const { session } = setup()
+    sessions.push(session)
+    await screen.findByTestId("chart")
+    expect(chart.props?.axisMode).toBe("date")
+    expect(chart.props?.showPace).toBe(false)
+  })
+
   it("passes the display periods to the chart", async () => {
     const { session } = setup()
     sessions.push(session)
@@ -346,6 +504,11 @@ describe("QuotaView", () => {
     expect(within(list).queryByRole("button", { name: /Session 6/ })).not.toBeInTheDocument()
     const row = within(list).getByText(/other session/).parentElement!
     expect(row).toHaveTextContent("1 other session")
+    // Every share names the window it is a share of, by provider and lane.
+    expect(row).toHaveTextContent("of a Claude weekly window")
+    expect(within(list).getByRole("button", { name: /Session 1/ })).toHaveTextContent(
+      "of a Claude weekly window",
+    )
     fireEvent.mouseEnter(row)
     expect(wrapperHighlight()).toBe("other")
     fireEvent.mouseLeave(row)

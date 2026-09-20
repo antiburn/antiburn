@@ -35,17 +35,24 @@ import {
   isCustomRange,
   quotaBurnupSeries,
   quotaDisplayRange,
-  quotaLatestPeriod,
   quotaLatestSampleEpoch,
   quotaOtherSessionsTotal,
   quotaSwatchClasses,
   quotaTopSessionRows,
   quotaUnattributedTotal,
+  quotaUnexplainedTotal,
   selectQuotaPeriods,
   type QuotaRangePreset,
   type QuotaRangeSelection,
   type QuotaTopSessionRow,
 } from "./quotaSeries"
+import { readQuotaViewPrefs, writeQuotaViewPrefs } from "./quotaViewPrefs"
+
+/** Whether a percent is large enough to show as at least "0.1%" once
+ *  rounded to one decimal, the same precision `formatQuotaPercent` shows. */
+function roundsToAtLeastOneDecimal(value: number | null): boolean {
+  return value != null && Math.round(value * 10) / 10 >= 0.1
+}
 
 const WINDOW_RANGE_OPTIONS: ReadonlyArray<{ value: QuotaRangePreset; label: string }> = [
   { value: "thisWindow", label: "This window" },
@@ -74,6 +81,25 @@ function accountId(account: Pick<QuotaAccountPayload, "provider" | "accountKey">
 }
 
 /** The provider's display name, plus "account n" only when this provider has more than one. */
+/** The window a row's percent is a share of, named by provider and lane,
+ *  such as "a Claude weekly window" or "a Claude Fable weekly window". */
+function windowNoun(
+  account: QuotaAccountPayload | null,
+  lane: QuotaLanePayload | null,
+): string {
+  const provider = account?.displayName ?? ""
+  const kind =
+    lane == null
+      ? ""
+      : lane.lane === "weekly"
+        ? "weekly"
+        : lane.lane === "fiveHour"
+          ? "5-hour"
+          : `${lane.label} weekly`
+  const words = [provider, kind, "window"].filter((word) => word !== "").join(" ")
+  return `${/^[aeiou]/i.test(words) ? "an" : "a"} ${words}`
+}
+
 function accountLabel(
   account: QuotaAccountPayload,
   accounts: readonly QuotaAccountPayload[],
@@ -289,6 +315,30 @@ function GroupRow({
   )
 }
 
+/** One figure in the header's prominent row: a labelled percent, an em dash
+ *  with no value. */
+/** The `fraction` percentile of ascending `sorted`, with linear
+ *  interpolation between the two nearest values, so a handful of windows
+ *  still gives a value between them instead of one of them. */
+function percentileOf(sorted: readonly number[], fraction: number): number | null {
+  if (sorted.length === 0) return null
+  const rank = fraction * (sorted.length - 1)
+  const lower = Math.floor(rank)
+  const upper = Math.min(sorted.length - 1, lower + 1)
+  return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (rank - lower)
+}
+
+function QuotaLimitFigure({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <dt className="type-callout text-label-secondary">{label}</dt>
+      <dd className="type-large-title font-semibold! font-mono tabular-nums text-label">
+        {value == null ? "—" : `${Math.round(value)}%`}
+      </dd>
+    </div>
+  )
+}
+
 /**
  * The main window's Quota section: a header for the account, lane, and range,
  * a summary strip for the most recent period, the burnup chart, and the
@@ -309,8 +359,14 @@ export function QuotaView({
     session.getSnapshot,
   )
   const [hovered, setHovered] = useState<string | null>(null)
-  const [axisMode, setAxisMode] = useState<QuotaChartAxisMode>("window")
-  const [showPace, setShowPace] = useState(true)
+  // Read once per render as the initial value only: a `useState` initializer
+  // runs once at mount, so a later save (from the change handlers below)
+  // never fights this read.
+  const savedViewPrefs = readQuotaViewPrefs()
+  const [axisMode, setAxisMode] = useState<QuotaChartAxisMode>(
+    savedViewPrefs.axisMode ?? "window",
+  )
+  const [showPace, setShowPace] = useState(savedViewPrefs.showPace ?? true)
   // Each top-sessions row's own DOM node, keyed the same way as the chart's
   // series keys. A ref, not state: registering a row must never trigger a
   // render, and a chart hover reads the current map without depending on it.
@@ -329,6 +385,7 @@ export function QuotaView({
     ) ?? null
   const selectedLane: QuotaLanePayload | null =
     selectedAccount?.lanes.find((lane) => lane.lane === state.selection?.lane) ?? null
+  const shareOf = `of ${windowNoun(selectedAccount, selectedLane)}`
 
   const loading = state.accounts == null && !state.accountsError
   const accountsEmpty = state.accounts != null && state.accounts.length === 0
@@ -364,16 +421,33 @@ export function QuotaView({
   }, [usage, state.range, state.now])
   const usageEmpty = usage != null && displayPeriods.length === 0
 
-  // The summary strip and the session list read the same windows the chart
-  // draws, so "Last window" does not chart one window and list another.
-  const latestPeriod = quotaLatestPeriod(displayPeriods)
+  // The header's three figures and the session list read the same windows
+  // the chart draws, so "Last window" does not chart one window and list
+  // another. A window's own end value is its stack top at the reset:
+  // `estimatedPercent` already sums sessions, unattributed, and unexplained
+  // spend. Maximum, P90 and Median read every displayed window, and the
+  // open window counts at its value now, so one open window still gives
+  // all four figures. Current reads the one window still open, if the
+  // display holds one. The provider's own meter never passes 100 percent,
+  // so a window clamps at 100 here: an estimated tail with no meter
+  // readings can price a window past 100, and that overshoot shows as full
+  // instead of a value the meter itself could never reach.
+  const endValues = displayPeriods
+    .map((period) => period.estimatedPercent)
+    .filter((value): value is number => value != null)
+    .map((value) => Math.min(100, value))
+    .sort((a, b) => a - b)
+  const maxLimitUsage = endValues.length > 0 ? endValues[endValues.length - 1]! : null
+  const p90LimitUsage = percentileOf(endValues, 0.9)
+  const medianLimitUsage = percentileOf(endValues, 0.5)
+  const openPeriod = displayPeriods.find((period) => period.resetsAtEpoch > state.now) ?? null
+  const currentLimitUsage =
+    openPeriod?.estimatedPercent != null ? Math.min(100, openPeriod.estimatedPercent) : null
   const latestSampleEpoch = quotaLatestSampleEpoch(displayPeriods)
-  const meterPeak = latestPeriod?.peakPercent ?? null
-  const estimateTotal = latestPeriod?.estimatedPercent ?? null
-  const gap = meterPeak != null && estimateTotal != null ? meterPeak - estimateTotal : null
   const topRows = quotaTopSessionRows(displayPeriods)
   const otherSessions = quotaOtherSessionsTotal(displayPeriods)
   const unattributed = quotaUnattributedTotal(displayPeriods)
+  const unexplained = quotaUnexplainedTotal(displayPeriods)
   const topSessionKeys = useMemo(
     () => new Set((series?.topSessions ?? []).map((session) => session.key)),
     [series],
@@ -428,23 +502,35 @@ export function QuotaView({
     [scrollRowIntoView],
   )
 
+  /** Change and persist the chart's own axis mode. */
+  const handleAxisModeChange = (mode: QuotaChartAxisMode) => {
+    setAxisMode(mode)
+    writeQuotaViewPrefs({ axisMode: mode })
+  }
+
+  /** Change and persist the pace-line switch. */
+  const handleShowPaceChange = (value: boolean) => {
+    setShowPace(value)
+    writeQuotaViewPrefs({ showPace: value })
+  }
+
   return (
     <div
       className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window"
       data-quota-active={active ? "" : undefined}
     >
-      <h1 className="sr-only">Quota</h1>
+      <h1 className="sr-only">Limits</h1>
       {loading ? (
         <p role="status" aria-busy="true" className="p-8 type-body text-label-secondary">
-          Loading Quota.
+          Loading Limits.
         </p>
       ) : fullPageError ? (
         <div className="flex flex-1 items-center justify-center text-center">
           <div>
             <p role="alert" className="type-body text-label-secondary">
               {state.accountsError && !accounts.length
-                ? "Quota accounts are unavailable."
-                : "Quota usage is unavailable."}
+                ? "Limit accounts are unavailable."
+                : "Limit usage is unavailable."}
             </p>
             <button type="button" onClick={session.refresh} className="ui-push-button mt-3">
               Retry
@@ -453,13 +539,13 @@ export function QuotaView({
         </div>
       ) : accountsEmpty ? (
         <p className="p-8 type-body text-label-secondary">
-          No quota readings yet. Turn on live usage in Settings to start recording provider
+          No limit readings yet. Turn on live usage in Settings to start recording provider
           limits.
         </p>
       ) : (
         <div
           role="region"
-          aria-label="Quota"
+          aria-label="Limits"
           className="flex min-h-0 w-full flex-1 flex-col gap-[var(--space-lg)] px-8 py-6"
         >
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
@@ -488,13 +574,13 @@ export function QuotaView({
                 ariaLabel="Time axis"
                 options={AXIS_MODE_OPTIONS}
                 value={axisMode}
-                onChange={setAxisMode}
+                onChange={handleAxisModeChange}
               />
               <label className="flex items-center gap-2 type-caption text-label-secondary">
                 Pace line
                 <ToggleSwitch
                   checked={showPace}
-                  onCheckedChange={setShowPace}
+                  onCheckedChange={handleShowPaceChange}
                   aria-label="Pace line"
                 />
               </label>
@@ -508,38 +594,32 @@ export function QuotaView({
               refreshing && "opacity-60",
             )}
           >
-            {usage && latestPeriod && (
-              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 type-callout text-label-secondary">
-                <span>
-                  Meter peak ·{" "}
-                  <span className="tabular-nums">{formatQuotaPercent(meterPeak)}</span>
-                </span>
-                <span>
-                  Estimated total ·{" "}
-                  <span className="tabular-nums">{formatQuotaPercent(estimateTotal)}</span>
-                </span>
-                {gap != null && (
-                  <span>
-                    {gap >= 0
-                      ? `${Math.round(gap)}% from other devices or unattributed`
-                      : `Estimate exceeds meter by ${Math.round(-gap)}%`}
-                  </span>
-                )}
-                {latestSampleEpoch != null && (
-                  <span>
-                    Last reading{" "}
-                    {relativeTime(new Date(latestSampleEpoch * 1000).toISOString(), {
-                      compact: true,
-                    })}{" "}
-                    ago
-                  </span>
-                )}
-                {state.usageError && <span role="alert">Could not refresh. </span>}
-                {state.usageError && (
-                  <button type="button" onClick={session.refresh} className="underline">
-                    Retry
-                  </button>
-                )}
+            {usage && displayPeriods.length > 0 && (
+              <div className="flex items-end justify-between gap-2">
+                <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
+                  <QuotaLimitFigure label="Maximum Limit Usage" value={maxLimitUsage} />
+                  <QuotaLimitFigure label="P90 Limit Usage" value={p90LimitUsage} />
+                  <QuotaLimitFigure label="Median Limit Usage" value={medianLimitUsage} />
+                  <QuotaLimitFigure label="Current Limit Usage" value={currentLimitUsage} />
+                </dl>
+
+                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 type-callout text-label-secondary">
+                  {latestSampleEpoch != null && (
+                    <span>
+                      Last reading{" "}
+                      {relativeTime(new Date(latestSampleEpoch * 1000).toISOString(), {
+                        compact: true,
+                      })}{" "}
+                      ago
+                    </span>
+                  )}
+                  {state.usageError && <span role="alert">Could not refresh. </span>}
+                  {state.usageError && (
+                    <button type="button" onClick={session.refresh} className="underline">
+                      Retry
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -555,7 +635,6 @@ export function QuotaView({
                 >
                   <Profiler id="quota-chart" onRender={onRenderChart}>
                     <QuotaBurnupChart
-                      usage={usage}
                       rangeStartEpoch={displayRange.startEpoch}
                       rangeEndEpoch={displayRange.endEpoch}
                       nowEpoch={state.now}
@@ -570,7 +649,10 @@ export function QuotaView({
               )
             )}
 
-            {(topRows.length > 0 || otherSessions.count > 0 || unattributed.usd > 0) && (
+            {(topRows.length > 0 ||
+              otherSessions.count > 0 ||
+              unattributed.usd > 0 ||
+              roundsToAtLeastOneDecimal(unexplained.percent)) && (
               <section className="flex min-h-0 flex-1 flex-col gap-[var(--space-sm)]">
                 <ScrollPane
                   className="min-h-0 flex-1"
@@ -587,7 +669,7 @@ export function QuotaView({
                           key={row.key}
                           ref={(element) => registerRow(seriesKey, element)}
                           className={cn(
-                            "col-span-full grid grid-cols-subgrid items-center gap-2 rounded-control -mx-2 px-2 py-2.5 text-center type-body text-label hover:bg-surface-hover",
+                            "col-span-full grid grid-cols-subgrid items-center gap-x-4 rounded-control -mx-2 px-2 py-2.5 text-center type-body text-label hover:bg-surface-hover",
                             hovered === seriesKey && "bg-surface-hover",
                           )}
                           onMouseEnter={() => setHovered(seriesKey)}
@@ -611,7 +693,7 @@ export function QuotaView({
                             )}
                           />
                           <span className="tabular-nums font-semibold">
-                            {formatQuotaPercent(row.percent)} of window
+                            {formatQuotaPercent(row.percent)} {shareOf}
                           </span>
                           <span className="tabular-nums text-label-secondary">
                             {formatSpendFigure(row.usd)}
@@ -622,7 +704,7 @@ export function QuotaView({
                           <span className="type-callout text-label-secondary">
                             [{agentDisplayName(row.agent)}]
                           </span>
-                          <span className="truncate text-left">
+                          <span className="truncate text-left font-semibold">
                             {sessionRowTitle(row.title, row.agent, row.sessionId)}
                           </span>
                         </button>
@@ -638,7 +720,7 @@ export function QuotaView({
                         registerRow={registerRow}
                       >
                         <span className="tabular-nums font-semibold">
-                          {formatQuotaPercent(otherSessions.percent)} of window
+                          {formatQuotaPercent(otherSessions.percent)} {shareOf}
                         </span>
                         <span className="tabular-nums text-label-secondary">
                           {formatSpendFigure(otherSessions.usd)}
@@ -668,6 +750,24 @@ export function QuotaView({
                         <span className="tabular-nums">
                           {formatSpendFigure(unattributed.usd)}
                         </span>
+                        <span />
+                      </GroupRow>
+                    )}
+
+                    {roundsToAtLeastOneDecimal(unexplained.percent) && (
+                      <GroupRow
+                        rowKey="unexplained"
+                        swatchClass="quota-swatch-hatch"
+                        hovered={hovered}
+                        onHover={setHovered}
+                        registerRow={registerRow}
+                      >
+                        <span />
+                        <span className="min-w-0 flex-1 truncate">Unexplained</span>
+                        <span className="tabular-nums">
+                          {formatQuotaPercent(unexplained.percent)}
+                        </span>
+                        <span />
                         <span />
                       </GroupRow>
                     )}

@@ -3,10 +3,13 @@
  * line. No React, no recharts: every function here takes plain rows and
  * scales and returns a `d` string plus the vertex count the caller traces.
  *
- * A band's path must equal what recharts drew with `stackId` + a
- * `type="stepAfter"` `Area` + `connectNulls={false}`: a stepped top edge at
- * the band's own cumulative height, a stepped bottom edge at the stack
- * beneath it, and a break wherever the band's own value is null or zero.
+ * A band's path draws a trapezoid, not a step: each retained row's own
+ * cumulative height sits at its own time, and both the top and bottom
+ * edges run as straight lines between rows, so a value ramps across the
+ * time between rows instead of jumping in at the later row. A run breaks
+ * wherever the band's own value is null or zero, and closes to a point at
+ * the next row's own height there, drawing the reset drop; a run that
+ * reaches the series' end has no closing point.
  */
 
 import { QUOTA_HUE_COUNT, type QuotaSeriesRow, type QuotaTopSession } from "./quotaSeries"
@@ -50,39 +53,25 @@ function stackAt(row: QuotaSeriesRow, bandKeys: readonly string[], bandIndex: nu
 }
 
 /**
- * One edge (top or bottom) of a run, as scaled coordinate strings: for each
- * row kept after thinning, a point at its own value, then a point at the
- * next kept row's time — or, for the run's last row, the row that ends the
- * run (`nextRowIndex`), or nothing when the run reaches the series' end.
+ * One edge (top or bottom) of a run, as scaled coordinate strings: one
+ * point per retained row, at its own time and its own value, drawing a
+ * straight line from each point to the next.
  */
 function edgeCoords(
   rows: readonly QuotaSeriesRow[],
   retained: readonly number[],
-  nextRowIndex: number | undefined,
   x: (t: number) => number,
   y: (v: number) => number,
   valueAt: (index: number) => number,
 ): string[] {
-  const coords: string[] = []
-  for (let p = 0; p < retained.length; p++) {
-    const k = retained[p]!
-    const v = valueAt(k)
-    coords.push(point(x(rows[k]!.t), y(v)))
-    const nextT =
-      p + 1 < retained.length
-        ? rows[retained[p + 1]!]!.t
-        : nextRowIndex != null
-          ? rows[nextRowIndex]!.t
-          : undefined
-    if (nextT != null) coords.push(point(x(nextT), y(v)))
-  }
-  return coords
+  return retained.map((k) => point(x(rows[k]!.t), y(valueAt(k))))
 }
 
 /**
  * One band's fill path: every maximal run of consecutive active rows becomes
- * its own `M ... Z` subpath in the returned `d`, stepped on top at the
- * band's cumulative height and on the bottom at the stack beneath it.
+ * its own `M ... Z` subpath in the returned `d`, a straight-edged trapezoid
+ * on top at the band's cumulative height and on the bottom at the stack
+ * beneath it.
  */
 export function quotaBandPath(
   rows: readonly QuotaSeriesRow[],
@@ -103,20 +92,33 @@ export function quotaBandPath(
     let j = i
     while (j + 1 < rows.length && stacks[j + 1]!.active) j += 1
 
-    // Thin an interior row whose top and below both repeat the row before
-    // it: the horizontal step already covers the plateau. The run's first
-    // and last rows always stay, so the shape's extent never changes.
+    // Keep an interior row only where it differs from its previous or its
+    // next row: a flat plateau needs just its two endpoints, but a row
+    // where a plateau ends and a ramp begins is a real vertex the straight
+    // edge must pass through. The run's first and last rows always stay,
+    // so the shape's extent never changes.
     const retained: number[] = [i]
     for (let k = i + 1; k < j; k++) {
-      if (stacks[k]!.top !== stacks[k - 1]!.top || stacks[k]!.below !== stacks[k - 1]!.below) {
-        retained.push(k)
-      }
+      const differsFromPrev =
+        stacks[k]!.top !== stacks[k - 1]!.top || stacks[k]!.below !== stacks[k - 1]!.below
+      const differsFromNext =
+        stacks[k]!.top !== stacks[k + 1]!.top || stacks[k]!.below !== stacks[k + 1]!.below
+      if (differsFromPrev || differsFromNext) retained.push(k)
     }
     if (j > i) retained.push(j)
 
+    const topCoords = edgeCoords(rows, retained, x, y, (k) => stacks[k]!.top)
+    const bottomCoords = edgeCoords(rows, retained, x, y, (k) => stacks[k]!.below)
+
+    // The run ends before the series' end: close the shape to a point at
+    // the next row's own height, drawing the reset drop. A run that
+    // reaches the series' end has nothing to close to.
     const nextRowIndex = j + 1 < rows.length ? j + 1 : undefined
-    const topCoords = edgeCoords(rows, retained, nextRowIndex, x, y, (k) => stacks[k]!.top)
-    const bottomCoords = edgeCoords(rows, retained, nextRowIndex, x, y, (k) => stacks[k]!.below)
+    if (nextRowIndex != null) {
+      topCoords.push(point(x(rows[nextRowIndex]!.t), y(stacks[nextRowIndex]!.top)))
+      bottomCoords.push(point(x(rows[nextRowIndex]!.t), y(stacks[nextRowIndex]!.below)))
+    }
+
     const outline = [...topCoords, ...bottomCoords.reverse()]
     subpaths.push(`M${outline[0]}L${outline.slice(1).join("L")}Z`)
     vertices += outline.length
@@ -126,12 +128,16 @@ export function quotaBandPath(
 }
 
 /**
- * The meter's own line: a linear polyline through every row with a
- * non-null reading, broken into a new `M` at each null so a gap in the
- * meter's own samples stays a visible gap instead of a guessed line.
+ * The stack's own top edge: a linear polyline through the per-row sum of
+ * `bandKeys`, broken into a new `M` at each row where every one of
+ * `bandKeys` is null (a gap row); a row where at least one band holds a
+ * value sums the rest as zero. Under the shared-meter model this sum
+ * equals the provider's own meter at a row with a reading, and the
+ * device's estimate everywhere else.
  */
-export function quotaMeterPath(
+export function quotaStackTopPath(
   rows: readonly QuotaSeriesRow[],
+  bandKeys: readonly string[],
   x: (t: number) => number,
   y: (v: number) => number,
 ): PathResult {
@@ -139,11 +145,12 @@ export function quotaMeterPath(
   let vertices = 0
   let open = false
   for (const row of rows) {
-    if (row.meter == null) {
+    if (bandKeys.every((key) => row[key] == null)) {
       open = false
       continue
     }
-    const coord = point(x(row.t), y(row.meter))
+    const sum = bandKeys.reduce((total, key) => total + (row[key] ?? 0), 0)
+    const coord = point(x(row.t), y(sum))
     commands.push(open ? `L${coord}` : `M${coord}`)
     vertices += 1
     open = true
@@ -153,11 +160,19 @@ export function quotaMeterPath(
 
 /**
  * The chart's bands in stack order — each top session, then the shared
- * "other" and "unattributed" bands — with the class and fill each one draws
- * with. One source, so `quotaBandPath`'s `bandKeys` and the chart's
- * rendered `<path>`s always agree on stack order.
+ * "other", "unattributed", and "unexplained" bands — with the class and
+ * fill each one draws with. One source, so `quotaBandPath`'s `bandKeys` and
+ * the chart's rendered `<path>`s always agree on stack order.
+ *
+ * `unexplainedFill` is the caller's own hatch `<pattern>` reference
+ * (`url(#...)`), so two chart instances never share one SVG pattern id; it
+ * defaults to the plain token for a caller (such as a test) that has no
+ * pattern to point at.
  */
-export function quotaBandSpecs(topSessions: readonly QuotaTopSession[]): QuotaBandSpec[] {
+export function quotaBandSpecs(
+  topSessions: readonly QuotaTopSession[],
+  unexplainedFill: string = "var(--color-quota-unexplained)",
+): QuotaBandSpec[] {
   return [
     ...topSessions.map((session, index) => ({
       key: session.key,
@@ -173,6 +188,11 @@ export function quotaBandSpecs(topSessions: readonly QuotaTopSession[]): QuotaBa
       key: "unattributed",
       className: "quota-area quota-area-unattributed",
       fill: "var(--color-quota-unattributed)",
+    },
+    {
+      key: "unexplained",
+      className: "quota-area quota-area-unexplained",
+      fill: unexplainedFill,
     },
   ]
 }

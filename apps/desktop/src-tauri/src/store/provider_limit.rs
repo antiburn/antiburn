@@ -16,7 +16,7 @@
 //! [`session_provider_account`]: super::schema
 //! [`provider_account_seen`]: super::schema
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -1197,6 +1197,42 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// Whether one closed quota window already reported its
+    /// `antiburn.quota_window_closed` accuracy event.
+    ///
+    /// A period reports at most once, ever: this is the durable half of that
+    /// promise, checked before analytics decides to report a period again.
+    #[cfg(feature = "analytics")]
+    pub(crate) fn quota_window_already_reported(&self, period_id: i64) -> Result<bool> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT 1 FROM quota_window_reported WHERE period_id = ?1",
+                [period_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Mark one closed quota window as reported. `period_id` is the table's
+    /// primary key, so a marker already present from an earlier pass is left
+    /// alone rather than duplicated.
+    #[cfg(feature = "analytics")]
+    pub(crate) fn mark_quota_window_reported(
+        &self,
+        period_id: i64,
+        reported_at_epoch: i64,
+    ) -> Result<()> {
+        let connection = self.lock();
+        connection.execute(
+            "INSERT OR IGNORE INTO quota_window_reported (period_id, reported_at_epoch)
+                VALUES (?1, ?2)",
+            params![period_id, reported_at_epoch],
+        )?;
+        Ok(())
+    }
 }
 
 /// One `(provider, account, lane)` factor for the diagnostics export: its
@@ -1435,13 +1471,15 @@ fn latest_residuals_by_lane(
 }
 
 /// Null a sample's `period_id`, delete its learn cursor, and delete its
-/// residual, before its period is deleted by retention.
+/// residual and its quota-window-closed marker, before its period is deleted
+/// by retention.
 ///
 /// The period-deletion query in [`super::provider_usage_history`] stays
 /// exactly as it was before samples existed: this runs first, in the same
 /// transaction, against the identical set of about-to-be-removed periods.
-/// `provider_limit_residual` keys its row on `period_id` alone, so a pending
-/// period never leaves one behind: it is deleted here, not nulled.
+/// `provider_limit_residual` and `quota_window_reported` both key their row
+/// on `period_id` alone, so a pending period never leaves one behind: each is
+/// deleted here, not nulled.
 pub(crate) fn detach_samples_pending_period_deletion_in(connection: &Connection) -> Result<()> {
     const PENDING_DELETION: &str = "
               SELECT id FROM provider_usage_period p
@@ -1462,6 +1500,12 @@ pub(crate) fn detach_samples_pending_period_deletion_in(connection: &Connection)
     )?;
     connection.execute(
         &format!("DELETE FROM provider_limit_residual WHERE period_id IN ({PENDING_DELETION})"),
+        [],
+    )?;
+    // The quota-window-closed marker keys on `period_id` too, so it goes with
+    // its period the same way the residual row does.
+    connection.execute(
+        &format!("DELETE FROM quota_window_reported WHERE period_id IN ({PENDING_DELETION})"),
         [],
     )?;
     Ok(())
@@ -1777,9 +1821,6 @@ fn attributed_turn_dollars_by_bucket_in(
         provider,
     ])?;
     let mut by_bucket: HashMap<(SessionKey, i64), (f64, i64, Resolved)> = HashMap::new();
-    let mut bound_sessions: HashSet<SessionKey> = HashSet::new();
-    let mut unbound_sessions: HashSet<SessionKey> = HashSet::new();
-    let mut other_account_sessions: HashSet<SessionKey> = HashSet::new();
     let mut group_count = 0usize;
     while let Some(row) = rows.next()? {
         group_count += 1;
@@ -1824,18 +1865,9 @@ fn attributed_turn_dollars_by_bucket_in(
             continue;
         };
         let resolved = match &priced.resolved_account {
-            Some(resolved) if resolved == account_key => {
-                bound_sessions.insert(key.clone());
-                Resolved::Bound(resolved.clone())
-            }
-            Some(_) => {
-                other_account_sessions.insert(key.clone());
-                continue;
-            }
-            None => {
-                unbound_sessions.insert(key.clone());
-                Resolved::Unbound
-            }
+            Some(resolved) if resolved == account_key => Resolved::Bound(resolved.clone()),
+            Some(_) => continue,
+            None => Resolved::Unbound,
         };
         let total_usd =
             priced.input_usd + priced.output_usd + priced.cache_read_usd + priced.cache_write_usd;
@@ -1846,12 +1878,6 @@ fn attributed_turn_dollars_by_bucket_in(
         entry.0 += total_usd;
         entry.1 += priced.turn_count;
     }
-    ::tracing::info!(
-        event = "quota_contribution_bind_rate",
-        bound = bound_sessions.len(),
-        unbound = unbound_sessions.len(),
-        other_account = other_account_sessions.len(),
-    );
     Ok(Some(
         by_bucket
             .into_iter()

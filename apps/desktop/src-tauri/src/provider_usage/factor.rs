@@ -64,6 +64,20 @@ pub struct LearnedFactor {
     pub residual: Option<(f64, f64)>,
 }
 
+/// One `(provider, account, lane)` pair a learning pass touched this run.
+///
+/// Kept separate from [`LearnedFactor`], which never names an account so
+/// several accounts on one provider and lane collapse onto a single
+/// analytics observation. The quota-window-closed analytics pass needs the
+/// account key to load that account's own closed periods, so it gets this
+/// narrower, Rust-internal record instead; nothing here reaches the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TouchedLane {
+    pub provider: String,
+    pub account_key: String,
+    pub lane: String,
+}
+
 /// Whether a turn's model id belongs to a provider's named model scope, such
 /// as Anthropic's supplemental "Fable" weekly window.
 ///
@@ -101,15 +115,17 @@ pub(crate) fn model_matches_scope(model_id: &str, scope_label: &str) -> bool {
 /// pairs caps the work. Call this wherever `ledger::reconcile` runs today.
 ///
 /// Returns the `(provider, account, lane)` groups this pass touched, with plan
-/// and tier values for analytics, without querying the store a second time.
-pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
+/// and tier values for analytics, without querying the store a second time,
+/// alongside the same groups named with their account key for the caller's
+/// own closed-window analytics pass.
+pub fn learn(store: &Store, now_epoch: i64) -> (Vec<LearnedFactor>, Vec<TouchedLane>) {
     let Some(_in_flight) = store.try_begin_limit_factor_learn() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let recompute_since = now_epoch - RECOMPUTE_WINDOW_SECS;
     let Ok(periods) = store.provider_limit_candidate_periods(recompute_since) else {
         ::tracing::warn!(event = "limit_factor_candidate_periods_failed");
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
 
     let mut pairs_used = 0usize;
@@ -172,10 +188,16 @@ pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
     }
 
     let mut learned = Vec::new();
+    let mut touched = Vec::new();
     for ((provider, account_key, lane), period_id) in current_period {
         recompute_point(store, &provider, &account_key, &lane, now_epoch);
         let residual =
             compute_residual(store, &provider, &account_key, &lane, period_id, now_epoch);
+        touched.push(TouchedLane {
+            provider: provider.clone(),
+            account_key: account_key.clone(),
+            lane: lane.clone(),
+        });
         if let Ok(Some(point)) = store.latest_factor_point(&provider, &account_key, &lane) {
             learned.push(LearnedFactor {
                 provider,
@@ -187,7 +209,7 @@ pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
             });
         }
     }
-    learned
+    (learned, touched)
 }
 
 /// The state one call to [`build_period_samples`] needs beyond the period

@@ -7,12 +7,13 @@
 
 use super::*;
 use crate::dto::{
-    QuotaAccountPayload, QuotaAccountsPayload, QuotaBucketTotalPayload, QuotaContributionPayload,
-    QuotaCurrentPeriodPayload, QuotaFactorPayload, QuotaLanePayload, QuotaPeriodPayload,
-    QuotaSamplePayload, QuotaSessionTotalPayload, QuotaUnattributedPayload, QuotaUsagePayload,
-    QuotaUsageRequest, SessionQuotaEntryPayload, SessionQuotaPayload, SessionQuotaPeriodPayload,
-    SessionQuotaRequest,
+    LiveProviderPlan, QuotaAccountPayload, QuotaAccountsPayload, QuotaBucketTotalPayload,
+    QuotaContributionPayload, QuotaCurrentPeriodPayload, QuotaFactorPayload, QuotaLanePayload,
+    QuotaPeriodPayload, QuotaSamplePayload, QuotaSessionTotalPayload, QuotaUnattributedPayload,
+    QuotaUsagePayload, QuotaUsageRequest, SessionQuotaEntryPayload, SessionQuotaPayload,
+    SessionQuotaPeriodPayload, SessionQuotaRequest,
 };
+use crate::provider_usage::quota::share::{ShareInput, share_period_capped};
 
 /// A quota query's range may not exceed this many days: enough for ten
 /// weekly windows, bounded so one request cannot force an unbounded
@@ -70,6 +71,7 @@ fn boundary_source_str(source: crate::provider_usage::quota::BoundarySource) -> 
         BoundarySource::Derived => "derived",
         BoundarySource::Cadence => "cadence",
         BoundarySource::TurnGap => "turnGap",
+        BoundarySource::Truncated => "truncated",
     }
 }
 
@@ -203,7 +205,6 @@ fn quota_usage_for_store(
     let points = store
         .factor_points_for_lane(&provider, &account_key, &lane)
         .map_err(fail)?;
-    let has_factor = !points.is_empty();
     let factor = points.last().map(|point| QuotaFactorPayload {
         usd_per_percent: point.usd_per_percent,
         confidence: factor_confidence(point).to_string(),
@@ -261,17 +262,49 @@ fn quota_usage_for_store(
                 Some(max.map_or(value, |max| max.max(value)))
             });
 
+        // The period's authoritative readings, inside its own bounds and
+        // sorted ascending: `share_period`'s own contract. Truncation can
+        // move a period's reset earlier than a reading tied to its
+        // `period_id`, so this filters by the period's current bounds
+        // rather than trusting every stored observation.
+        let readings: Vec<(i64, f64)> = samples
+            .iter()
+            .filter(|sample| sample.authoritative)
+            .filter_map(|sample| {
+                sample
+                    .used_percent
+                    .map(|percent| (sample.observed_at_epoch, percent))
+            })
+            .filter(|&(observed_at_epoch, _)| {
+                observed_at_epoch >= period.starts_at_epoch
+                    && observed_at_epoch < period.resets_at_epoch
+            })
+            .collect();
+        let bucket_dollars: Vec<(i64, f64)> = rows
+            .iter()
+            .map(|&row| (row.bucket_start_epoch, row.usd))
+            .collect();
+        let shared = share_period_capped(
+            &ShareInput {
+                start: period.starts_at_epoch,
+                reset: period.resets_at_epoch,
+                readings: &readings,
+                buckets: &bucket_dollars,
+                points: &points,
+            },
+            now,
+        );
+
         let mut contributions = Vec::new();
-        let mut per_session_bound: HashMap<SessionKey, (f64, f64)> = HashMap::new();
+        let mut per_session_bound: HashMap<SessionKey, (f64, f64, bool)> = HashMap::new();
         let mut unattributed_usd = 0.0;
         let mut unattributed_sessions: HashSet<SessionKey> = HashSet::new();
-        let mut unattributed_by_bucket: BTreeMap<i64, f64> = BTreeMap::new();
-        for row in rows {
-            let bucket_end =
-                row.bucket_start_epoch + crate::store::provider_limit::CONTRIBUTION_BUCKET_SECS;
-            let percent =
-                crate::provider_usage::quota::factor_point_at_or_earliest(&points, bucket_end)
-                    .map(|point| row.usd / point.usd_per_percent);
+        let mut unattributed_by_bucket: BTreeMap<i64, (f64, f64, bool)> = BTreeMap::new();
+        for (row, percent) in rows
+            .iter()
+            .copied()
+            .zip(shared.bucket_percent.iter().copied())
+        {
             match &row.account {
                 crate::store::provider_limit::Resolved::Bound(_) => {
                     let wsl_distro = session_titles
@@ -287,37 +320,40 @@ fn quota_usage_for_store(
                     });
                     let entry = per_session_bound
                         .entry(row.key.clone())
-                        .or_insert((0.0, 0.0));
+                        .or_insert((0.0, 0.0, false));
                     entry.0 += row.usd;
-                    entry.1 += percent.unwrap_or(0.0);
+                    if let Some(p) = percent {
+                        entry.1 += p;
+                        entry.2 = true;
+                    }
                 }
                 crate::store::provider_limit::Resolved::Unbound => {
                     unattributed_usd += row.usd;
                     unattributed_sessions.insert(row.key.clone());
-                    *unattributed_by_bucket
+                    let entry = unattributed_by_bucket
                         .entry(row.bucket_start_epoch)
-                        .or_insert(0.0) += row.usd;
+                        .or_insert((0.0, 0.0, false));
+                    entry.0 += row.usd;
+                    if let Some(p) = percent {
+                        entry.1 += p;
+                        entry.2 = true;
+                    }
                 }
             }
         }
         let unattributed_buckets: Vec<QuotaBucketTotalPayload> = unattributed_by_bucket
             .into_iter()
-            .map(|(bucket_start_epoch, usd)| {
-                let bucket_end =
-                    bucket_start_epoch + crate::store::provider_limit::CONTRIBUTION_BUCKET_SECS;
-                let percent =
-                    crate::provider_usage::quota::factor_point_at_or_earliest(&points, bucket_end)
-                        .map(|point| usd / point.usd_per_percent);
-                QuotaBucketTotalPayload {
+            .map(
+                |(bucket_start_epoch, (usd, percent_sum, any_percent))| QuotaBucketTotalPayload {
                     bucket_start_epoch,
                     usd,
-                    percent,
-                }
-            })
+                    percent: any_percent.then_some(percent_sum),
+                },
+            )
             .collect();
         let mut sessions: Vec<QuotaSessionTotalPayload> = per_session_bound
             .into_iter()
-            .map(|(key, (usd, percent))| {
+            .map(|(key, (usd, percent_sum, any_percent))| {
                 let (title, wsl_distro) = session_titles.get(&key).cloned().unwrap_or_default();
                 QuotaSessionTotalPayload {
                     agent: key.agent.clone(),
@@ -325,22 +361,53 @@ fn quota_usage_for_store(
                     wsl_distro,
                     title,
                     usd,
-                    percent: has_factor.then_some(percent),
+                    percent: any_percent.then_some(percent_sum),
                 }
             })
             .collect();
         sessions.sort_by(|left, right| right.usd.total_cmp(&left.usd));
-        let estimated_percent =
-            has_factor.then(|| sessions.iter().filter_map(|session| session.percent).sum());
-        let unattributed_percent = has_factor
+        let unattributed_percent = unattributed_buckets
+            .iter()
+            .any(|bucket| bucket.percent.is_some())
             .then(|| {
-                crate::provider_usage::quota::factor_point_at_or_earliest(
-                    &points,
-                    period.resets_at_epoch,
-                )
-                .map(|point| unattributed_usd / point.usd_per_percent)
+                unattributed_buckets
+                    .iter()
+                    .filter_map(|bucket| bucket.percent)
+                    .sum()
+            });
+
+        let unexplained_buckets: Vec<QuotaBucketTotalPayload> = shared
+            .unexplained
+            .iter()
+            .map(|&(bucket_start_epoch, percent)| QuotaBucketTotalPayload {
+                bucket_start_epoch,
+                usd: 0.0,
+                percent: Some(percent),
             })
-            .flatten();
+            .collect();
+        // `None` only when the period has no reading at all: with a
+        // reading, every segment's rise is accounted somewhere, even a
+        // fully unexplained one, so the sum is always defined.
+        let unexplained_percent = shared.coverage_until.map(|_| {
+            unexplained_buckets
+                .iter()
+                .filter_map(|bucket| bucket.percent)
+                .sum()
+        });
+
+        let estimated_percent = {
+            let any = sessions.iter().any(|session| session.percent.is_some())
+                || unattributed_percent.is_some()
+                || unexplained_percent.is_some();
+            any.then(|| {
+                sessions
+                    .iter()
+                    .filter_map(|session| session.percent)
+                    .sum::<f64>()
+                    + unattributed_percent.unwrap_or(0.0)
+                    + unexplained_percent.unwrap_or(0.0)
+            })
+        };
 
         period_payloads.push(QuotaPeriodPayload {
             period_id: period.period_id,
@@ -359,6 +426,10 @@ fn quota_usage_for_store(
             },
             unattributed_buckets,
             estimated_percent,
+            unexplained_buckets,
+            unexplained_percent,
+            meter_coverage_until: shared.coverage_until,
+            meter_regressions: shared.meter_regressions,
         });
     }
 
@@ -469,6 +540,7 @@ fn session_quota_for_store(
                     usd,
                     percent: None,
                     confidence: "unbound".to_string(),
+                    plan: None,
                 });
             }
             continue;
@@ -480,6 +552,20 @@ fn session_quota_for_store(
         else {
             continue;
         };
+
+        // A plan is per account, not per lane: the first lane whose newest
+        // observation names one speaks for the whole account.
+        let mut plan: Option<LiveProviderPlan> = None;
+        for lane in &account.lanes {
+            if let Some((Some(name), tier)) = store
+                .latest_observation_plan(provider, &account_key, &lane.lane)
+                .map_err(fail)?
+            {
+                plan = Some(LiveProviderPlan { name, tier });
+                break;
+            }
+        }
+
         for lane in &account.lanes {
             let lane_duration = crate::store::provider_limit::lane_duration_seconds(&lane.lane);
             let range_start = min_epoch - lane_duration;
@@ -513,37 +599,75 @@ fn session_quota_for_store(
                 period.starts_at_epoch < range_end && period.resets_at_epoch > min_epoch
             }) {
                 let Some(dollars) = store
-                    .attributed_turn_dollars_between(
+                    .attributed_turn_dollars_by_bucket(
                         provider,
                         &account_key,
+                        model_scope,
                         period.starts_at_epoch,
                         period.resets_at_epoch,
-                        model_scope,
                     )
                     .map_err(fail)?
                 else {
-                    continue;
-                };
-                let Some(session_dollars) = dollars.iter().find(|row| row.key == key) else {
-                    continue;
-                };
-                let usd = session_dollars.input_usd
-                    + session_dollars.output_usd
-                    + session_dollars.cache_read_usd
-                    + session_dollars.cache_write_usd;
-                if usd <= 0.0 {
-                    continue;
-                }
-                let Some(point) = crate::provider_usage::quota::factor_point_at_or_earliest(
-                    &points,
-                    period.resets_at_epoch.min(now),
-                ) else {
                     continue;
                 };
                 let samples = match period.period_id {
                     Some(period_id) => store.quota_period_samples(period_id).map_err(fail)?,
                     None => Vec::new(),
                 };
+                let readings: Vec<(i64, f64)> = samples
+                    .iter()
+                    .filter(|observation| observation.is_authoritative)
+                    .filter_map(|observation| {
+                        observation
+                            .used_percent
+                            .map(|percent| (observation.observed_at_epoch, percent))
+                    })
+                    .filter(|&(observed_at_epoch, _)| {
+                        observed_at_epoch >= period.starts_at_epoch
+                            && observed_at_epoch < period.resets_at_epoch
+                    })
+                    .collect();
+                let bucket_dollars: Vec<(i64, f64)> = dollars
+                    .iter()
+                    .map(|row| (row.bucket_start_epoch, row.usd))
+                    .collect();
+                let shared = share_period_capped(
+                    &ShareInput {
+                        start: period.starts_at_epoch,
+                        reset: period.resets_at_epoch,
+                        readings: &readings,
+                        buckets: &bucket_dollars,
+                        points: &points,
+                    },
+                    now,
+                );
+
+                let mut usd = 0.0;
+                let mut percent_sum = 0.0;
+                let mut any_percent = false;
+                let mut has_own_bucket = false;
+                let mut all_shared = true;
+                for (row, percent) in dollars.iter().zip(shared.bucket_percent.iter().copied()) {
+                    if row.key != key {
+                        continue;
+                    }
+                    has_own_bucket = true;
+                    usd += row.usd;
+                    if let Some(p) = percent {
+                        percent_sum += p;
+                        any_percent = true;
+                    }
+                    let in_shared_segment = shared
+                        .coverage_until
+                        .is_some_and(|coverage_until| row.bucket_start_epoch < coverage_until);
+                    if !in_shared_segment {
+                        all_shared = false;
+                    }
+                }
+                if !has_own_bucket || usd <= 0.0 {
+                    continue;
+                }
+
                 let peak_percent = samples
                     .iter()
                     .filter(|observation| observation.is_authoritative)
@@ -551,6 +675,34 @@ fn session_quota_for_store(
                     .fold(None, |max: Option<f64>, value| {
                         Some(max.map_or(value, |max| max.max(value)))
                     });
+
+                // Every one of this session's own buckets fell in a shared
+                // meter segment: report the shared percent directly, with
+                // no need for a factor point at all. Otherwise fall back to
+                // today's single factor division over the session's whole
+                // usd, skipping the entry only when the lane has no factor
+                // point to price it from.
+                // `share_period` already priced the tail buckets with the
+                // factor, so the shared sum is the session's percent in both
+                // cases. Only the confidence differs: a session with a bucket
+                // past the last reading reports the factor's confidence, and
+                // one whose tail has no factor point to price it is skipped.
+                if !any_percent {
+                    continue;
+                }
+                let confidence = if all_shared {
+                    "measured".to_string()
+                } else {
+                    let Some(point) = crate::provider_usage::quota::factor_point_at_or_earliest(
+                        &points,
+                        period.resets_at_epoch.min(now),
+                    ) else {
+                        continue;
+                    };
+                    factor_confidence(point).to_string()
+                };
+                let percent = Some(percent_sum);
+
                 entries.push(SessionQuotaEntryPayload {
                     provider: provider.to_string(),
                     display_name: display_name.clone(),
@@ -566,8 +718,9 @@ fn session_quota_for_store(
                         peak_percent,
                     }),
                     usd,
-                    percent: Some(usd / point.usd_per_percent),
-                    confidence: factor_confidence(point).to_string(),
+                    percent,
+                    confidence,
+                    plan: plan.clone(),
                 });
             }
         }
@@ -586,7 +739,7 @@ mod tests {
 
     use super::*;
     use crate::store::AnalysisRecord;
-    use crate::store::provider_limit::{FactorPoint, LANE_FIVE_HOUR};
+    use crate::store::provider_limit::{FactorPoint, LANE_FIVE_HOUR, LANE_WEEKLY};
 
     const PROVIDER: &str = "anthropic";
     const AGENT: &str = "claude-code";
@@ -734,6 +887,24 @@ mod tests {
         connection.last_insert_rowid()
     }
 
+    /// A weekly period that, like Codex's own reports, states only a reset:
+    /// its start is left for the resolver to derive.
+    fn insert_weekly_period(store: &Store, account_key: &str, resets_at_epoch: i64) -> i64 {
+        let connection = store.lock();
+        connection
+            .execute(
+                "INSERT INTO provider_usage_period (
+                     provider, account_key, window_id, window_kind, window_role,
+                     scope_key, scope_label, duration_seconds, starts_at_epoch,
+                     resets_at_epoch, first_observed_epoch, last_observed_epoch
+                 ) VALUES (?1, ?2, 'weekly', 'weekly', 'primaryLong',
+                           'account', 'account', NULL, NULL, ?3, ?3, ?3)",
+                params![PROVIDER, account_key, resets_at_epoch],
+            )
+            .expect("inserts a synthetic weekly period");
+        connection.last_insert_rowid()
+    }
+
     fn insert_observation(
         store: &Store,
         period_id: i64,
@@ -741,21 +912,45 @@ mod tests {
         observed_at_epoch: i64,
         used_percent: f64,
     ) {
+        insert_observation_with_plan(
+            store,
+            period_id,
+            account_key,
+            observed_at_epoch,
+            used_percent,
+            None,
+            None,
+        );
+    }
+
+    /// Like [`insert_observation`], additionally naming the plan the
+    /// synthetic reading reports.
+    fn insert_observation_with_plan(
+        store: &Store,
+        period_id: i64,
+        account_key: &str,
+        observed_at_epoch: i64,
+        used_percent: f64,
+        plan: Option<&str>,
+        plan_tier: Option<&str>,
+    ) {
         store
             .lock()
             .execute(
                 "INSERT INTO provider_usage_observation (
                      period_id, provider, account_key, window_id, window_kind, window_role,
                      scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
-                     is_authoritative, confidence, source_id
+                     is_authoritative, confidence, source_id, plan, plan_tier
                  ) VALUES (?1, ?2, ?3, 'five-hour', 'rolling', 'primaryShort',
-                           'account', 'account', ?4, ?5, 1, 1, 'high', 'test')",
+                           'account', 'account', ?4, ?5, 1, 1, 'high', 'test', ?6, ?7)",
                 params![
                     period_id,
                     PROVIDER,
                     account_key,
                     observed_at_epoch,
-                    used_percent
+                    used_percent,
+                    plan,
+                    plan_tier,
                 ],
             )
             .expect("inserts a synthetic observation");
@@ -863,22 +1058,44 @@ mod tests {
         let bound2_usd = cost_for(200_000);
         let unbound_usd = cost_for(50_000);
 
+        // The three readings (0%, 10%, 20 points later, then another 20
+        // points later) turn this period's whole span into two shared
+        // segments: [0, 9_000) with a 10-point rise, covering both bound
+        // sessions' buckets, and [9_000, 17_000) with a 20-point rise,
+        // covering the unbound bucket alone. The new shared-meter model
+        // (spec-quota-shared-meter.md) splits each segment's rise by dollars
+        // within it, replacing the old flat `usd / factor` division these
+        // assertions used before: this is the one existing test the new
+        // model actually changes, since it is the only one with readings
+        // inside its period.
+        let seg1_total_usd = bound1_usd + bound2_usd;
         assert_eq!(period.sessions.len(), 2);
         assert_eq!(period.sessions[0].session_id, "bound2", "descending by usd");
         assert!((period.sessions[0].usd - bound2_usd).abs() < 1e-9);
-        assert_eq!(period.sessions[0].percent, Some(bound2_usd / 0.5));
+        assert_eq!(
+            period.sessions[0].percent,
+            Some(10.0 * bound2_usd / seg1_total_usd)
+        );
         assert_eq!(period.sessions[0].title.as_deref(), Some("Session bound2"));
         assert!((period.sessions[1].usd - bound1_usd).abs() < 1e-9);
-        assert_eq!(period.sessions[1].percent, Some(bound1_usd / 0.5));
+        assert_eq!(
+            period.sessions[1].percent,
+            Some(10.0 * bound1_usd / seg1_total_usd)
+        );
 
         assert!((period.unattributed.usd - unbound_usd).abs() < 1e-9);
-        assert_eq!(period.unattributed.percent, Some(unbound_usd / 0.5));
+        // The unbound bucket is the only spend in the second segment, so it
+        // carries that segment's whole 20-point rise.
+        assert_eq!(period.unattributed.percent, Some(20.0));
         assert_eq!(period.unattributed.session_count, 1);
 
-        assert_eq!(
-            period.estimated_percent,
-            Some(bound1_usd / 0.5 + bound2_usd / 0.5)
-        );
+        // Both segments are fully explained by local dollars, so the total
+        // is exactly their combined rise (10 + 20), with nothing unexplained.
+        assert_eq!(period.estimated_percent, Some(30.0));
+        assert_eq!(period.meter_coverage_until, Some(17_000));
+        assert_eq!(period.meter_regressions, 0);
+        assert!(period.unexplained_buckets.is_empty());
+        assert_eq!(period.unexplained_percent, Some(0.0));
         assert_eq!(
             payload.factor.as_ref().map(|factor| factor.usd_per_percent),
             Some(0.5)
@@ -910,7 +1127,113 @@ mod tests {
         let unbound_bucket = &period.unattributed_buckets[0];
         assert_eq!(unbound_bucket.bucket_start_epoch, 9_900);
         assert!((unbound_bucket.usd - unbound_usd).abs() < 1e-9);
-        assert_eq!(unbound_bucket.percent, Some(unbound_usd / 0.5));
+        assert_eq!(unbound_bucket.percent, Some(20.0));
+    }
+
+    /// Two weekly readings that, like Codex's own reports, state only a
+    /// reset: the first window's provider-stated reset would run a full
+    /// week, but the second window actually began 22 hours in, so the
+    /// resolver must cut the first window short there. A bucket that falls
+    /// after that cut must credit to the second period, not the first, even
+    /// though the first period's unclipped span would also have contained
+    /// it.
+    #[test]
+    fn get_quota_usage_credits_a_bucket_to_the_later_weekly_period_after_truncation() {
+        let store = memory_store();
+        let account_key = account('w');
+        let day = 86_400;
+        let first_reset = 7 * day;
+        let second_start = 22 * 3_600;
+        let second_reset = second_start + 7 * day;
+        let first_period_id = insert_weekly_period(&store, &account_key, first_reset);
+        let second_period_id = insert_weekly_period(&store, &account_key, second_reset);
+        insert_point(&store, &account_key, LANE_WEEKLY, 0, 0.5);
+
+        let session = insert_session(&store, "session");
+        bind_account(&store, &session, &account_key);
+        let bucket_start = second_start + 8 * 3_600; // the first window's start plus 30h
+        insert_turn(&store, &session, bucket_start * 1_000, 100_000);
+
+        let payload = quota_usage_for_store(
+            &store,
+            second_reset,
+            QuotaUsageRequest {
+                provider: PROVIDER.to_string(),
+                account_key: account_key.clone(),
+                lane: LANE_WEEKLY.to_string(),
+                range_start_epoch: 0,
+                range_end_epoch: second_reset,
+            },
+        )
+        .expect("computes the payload");
+
+        let first = payload
+            .periods
+            .iter()
+            .find(|period| period.period_id == Some(first_period_id))
+            .expect("the truncated first period survives");
+        assert_eq!(first.reset_source, "truncated");
+        assert_eq!(first.resets_at_epoch, second_start);
+        assert!(
+            first.sessions.is_empty(),
+            "the bucket past the cut is not credited to the first period"
+        );
+        assert!(first.contributions.is_empty());
+
+        let second = payload
+            .periods
+            .iter()
+            .find(|period| period.period_id == Some(second_period_id))
+            .expect("the second period is present");
+        assert_eq!(
+            second.sessions.len(),
+            1,
+            "the bucket is credited to the second period instead"
+        );
+        assert_eq!(second.sessions[0].session_id, "session");
+        assert!(!second.contributions.is_empty());
+    }
+
+    /// A meter rise with no local turns behind it at all: the period has no
+    /// factor point either, proving the shared regime needs none. The
+    /// whole rise lands in `unexplained_buckets` and `unexplained_percent`
+    /// instead of a session or unattributed total.
+    #[test]
+    fn get_quota_usage_reports_unexplained_for_a_rise_with_no_turns() {
+        let store = memory_store();
+        let account_key = account('u');
+        let period_id = insert_five_hour_period(&store, &account_key, 0, 18_000);
+        insert_observation(&store, period_id, &account_key, 0, 0.0);
+        insert_observation(&store, period_id, &account_key, 9_000, 15.0);
+
+        let payload = quota_usage_for_store(
+            &store,
+            18_000,
+            QuotaUsageRequest {
+                provider: PROVIDER.to_string(),
+                account_key: account_key.clone(),
+                lane: LANE_FIVE_HOUR.to_string(),
+                range_start_epoch: 0,
+                range_end_epoch: 18_000,
+            },
+        )
+        .expect("computes the payload");
+
+        assert_eq!(payload.factor, None, "no factor point exists for this lane");
+        let period = &payload.periods[0];
+        assert!(period.sessions.is_empty());
+        assert_eq!(period.unattributed.usd, 0.0);
+        assert_eq!(
+            period.unexplained_buckets.len(),
+            1,
+            "the whole rise becomes one unexplained bucket at the segment's end"
+        );
+        assert_eq!(period.unexplained_buckets[0].bucket_start_epoch, 9_000);
+        assert_eq!(period.unexplained_buckets[0].usd, 0.0);
+        assert_eq!(period.unexplained_buckets[0].percent, Some(15.0));
+        assert_eq!(period.unexplained_percent, Some(15.0));
+        assert_eq!(period.estimated_percent, Some(15.0));
+        assert_eq!(period.meter_coverage_until, Some(9_000));
     }
 
     #[test]
@@ -966,6 +1289,58 @@ mod tests {
         }
     }
 
+    /// One period whose readings cover the session's own turn end to end
+    /// reports `"measured"`; a second period with no readings at all, where
+    /// the same session's turn falls in the estimated tail, keeps today's
+    /// factor confidence.
+    #[test]
+    fn get_session_quota_returns_measured_inside_coverage_and_the_factor_confidence_in_the_tail() {
+        let store = memory_store();
+        let account_key = account('m');
+        let key = insert_session(&store, "measured-session");
+        bind_account(&store, &key, &account_key);
+        save_breakdown(&store, &key, 1_000_000);
+
+        insert_turn(&store, &key, 100_000, 100_000); // inside [0, 18_000), bucket 0
+        insert_turn(&store, &key, 19_000_000, 100_000); // inside [18_000, 36_000), no readings
+
+        let covered_period_id = insert_five_hour_period(&store, &account_key, 0, 18_000);
+        insert_observation(&store, covered_period_id, &account_key, 0, 0.0);
+        insert_observation(&store, covered_period_id, &account_key, 9_000, 20.0);
+        insert_five_hour_period(&store, &account_key, 18_000, 36_000);
+        insert_point(&store, &account_key, LANE_FIVE_HOUR, 0, 0.5);
+
+        let payload = session_quota_for_store(
+            &store,
+            40_000,
+            SessionQuotaRequest {
+                agent: AGENT.to_string(),
+                session_id: "measured-session".to_string(),
+                wsl_distro: None,
+            },
+        )
+        .expect("computes the payload");
+
+        assert_eq!(payload.entries.len(), 2);
+        let covered = payload
+            .entries
+            .iter()
+            .find(|entry| entry.period.as_ref().unwrap().resets_at_epoch == 18_000)
+            .expect("the covered period's entry");
+        assert_eq!(covered.confidence, "measured");
+        // The session is the only spend in its segment, so it carries the
+        // segment's whole 20-point rise.
+        assert_eq!(covered.percent, Some(20.0));
+
+        let tail = payload
+            .entries
+            .iter()
+            .find(|entry| entry.period.as_ref().unwrap().resets_at_epoch == 36_000)
+            .expect("the tail period's entry");
+        assert_eq!(tail.confidence, "learned");
+        assert!(tail.percent.is_some());
+    }
+
     #[test]
     fn get_session_quota_for_an_unbound_session_reports_one_unbound_entry() {
         let store = memory_store();
@@ -995,5 +1370,266 @@ mod tests {
         assert_eq!(entry.percent, None);
         assert!(entry.period.is_none());
         assert!(entry.usd > 0.0);
+    }
+
+    /// The account's newest observation names its plan; every bound entry
+    /// for that account carries it, since a plan applies to the whole
+    /// account, not to one lane.
+    #[test]
+    fn get_session_quota_names_the_accounts_plan_from_its_newest_observation() {
+        let store = memory_store();
+        let account_key = account('p');
+        let key = insert_session(&store, "plan-session");
+        bind_account(&store, &key, &account_key);
+        save_breakdown(&store, &key, 1_000_000);
+
+        insert_turn(&store, &key, 100_000, 100_000); // inside [0, 18_000)
+        let period_id = insert_five_hour_period(&store, &account_key, 0, 18_000);
+        insert_observation_with_plan(
+            &store,
+            period_id,
+            &account_key,
+            0,
+            0.0,
+            Some("max"),
+            Some("max_20x"),
+        );
+        insert_observation_with_plan(
+            &store,
+            period_id,
+            &account_key,
+            9_000,
+            20.0,
+            Some("max"),
+            Some("max_20x"),
+        );
+
+        let payload = session_quota_for_store(
+            &store,
+            20_000,
+            SessionQuotaRequest {
+                agent: AGENT.to_string(),
+                session_id: "plan-session".to_string(),
+                wsl_distro: None,
+            },
+        )
+        .expect("computes the payload");
+
+        assert_eq!(payload.entries.len(), 1);
+        let plan = payload.entries[0].plan.as_ref().expect("names the plan");
+        assert_eq!(plan.name, "max");
+        assert_eq!(plan.tier.as_deref(), Some("max_20x"));
+    }
+
+    /// An account with no observation naming a plan yet reports `None`,
+    /// rather than guessing one.
+    #[test]
+    fn get_session_quota_leaves_the_plan_none_before_any_observation_names_one() {
+        let store = memory_store();
+        let account_key = account('q');
+        let key = insert_session(&store, "no-plan-session");
+        bind_account(&store, &key, &account_key);
+        save_breakdown(&store, &key, 1_000_000);
+
+        insert_turn(&store, &key, 100_000, 100_000); // inside [0, 18_000)
+        insert_five_hour_period(&store, &account_key, 0, 18_000);
+        insert_point(&store, &account_key, LANE_FIVE_HOUR, 0, 0.5);
+
+        let payload = session_quota_for_store(
+            &store,
+            20_000,
+            SessionQuotaRequest {
+                agent: AGENT.to_string(),
+                session_id: "no-plan-session".to_string(),
+                wsl_distro: None,
+            },
+        )
+        .expect("computes the payload");
+
+        assert_eq!(payload.entries.len(), 1);
+        assert_eq!(payload.entries[0].plan, None);
+    }
+
+    /// A closed period with no readings at all, whose factor prices its two
+    /// sessions' turns to a combined 120 percent: the period caps at exactly
+    /// 100, and the two sessions' 3:1 dollar ratio still holds, so they land
+    /// at 75 and 25.
+    #[test]
+    fn get_quota_usage_caps_a_closed_period_with_no_readings_and_scales_sessions_by_dollars() {
+        let store = memory_store();
+        let account_key = account('c');
+        insert_five_hour_period(&store, &account_key, 0, 18_000);
+        insert_point(&store, &account_key, LANE_FIVE_HOUR, 0, 0.01);
+
+        let bound1 = insert_session(&store, "cap-bound1");
+        bind_account(&store, &bound1, &account_key);
+        insert_turn(&store, &bound1, 100_000, 300_000); // bucket 0, 3 parts
+
+        let bound2 = insert_session(&store, "cap-bound2");
+        bind_account(&store, &bound2, &account_key);
+        insert_turn(&store, &bound2, 5_000_000, 100_000); // bucket 4_500, 1 part
+
+        let payload = quota_usage_for_store(
+            &store,
+            20_000, // now: past the reset, so the period is closed
+            QuotaUsageRequest {
+                provider: PROVIDER.to_string(),
+                account_key: account_key.clone(),
+                lane: LANE_FIVE_HOUR.to_string(),
+                range_start_epoch: 0,
+                range_end_epoch: 18_000,
+            },
+        )
+        .expect("computes the payload");
+
+        let period = &payload.periods[0];
+        assert_eq!(
+            period.estimated_percent,
+            Some(100.0),
+            "the closed period's overshoot caps at exactly 100"
+        );
+        assert_eq!(period.sessions.len(), 2);
+        let bound1_session = period
+            .sessions
+            .iter()
+            .find(|session| session.session_id == "cap-bound1")
+            .expect("the first session's entry");
+        let bound2_session = period
+            .sessions
+            .iter()
+            .find(|session| session.session_id == "cap-bound2")
+            .expect("the second session's entry");
+        assert!((bound1_session.percent.unwrap() - 75.0).abs() < 1e-6);
+        assert!((bound2_session.percent.unwrap() - 25.0).abs() < 1e-6);
+    }
+
+    /// The same period and sessions as above, but still open (its reset
+    /// falls after `now`): the raw factor overshoot returns unchanged, since
+    /// an open period can still gather more readings before it closes.
+    #[test]
+    fn get_quota_usage_leaves_an_open_periods_overshoot_uncapped() {
+        let store = memory_store();
+        let account_key = account('o');
+        insert_five_hour_period(&store, &account_key, 0, 18_000);
+        insert_point(&store, &account_key, LANE_FIVE_HOUR, 0, 0.01);
+
+        let bound1 = insert_session(&store, "open-bound1");
+        bind_account(&store, &bound1, &account_key);
+        insert_turn(&store, &bound1, 100_000, 300_000);
+
+        let bound2 = insert_session(&store, "open-bound2");
+        bind_account(&store, &bound2, &account_key);
+        insert_turn(&store, &bound2, 5_000_000, 100_000);
+
+        let cost_for = |input_tokens: u64| {
+            price_breakdown(&std::collections::HashMap::from([(
+                MODEL.to_string(),
+                ModelTokens {
+                    input_tokens,
+                    ..Default::default()
+                },
+            )]))
+            .expect("the fixture model is priced")
+            .total_usd
+        };
+        let expected_overshoot = (cost_for(300_000) + cost_for(100_000)) / 0.01;
+        assert!(expected_overshoot > 100.0, "the fixture must overshoot 100");
+
+        let payload = quota_usage_for_store(
+            &store,
+            10_000, // now: before the reset, so the period is still open
+            QuotaUsageRequest {
+                provider: PROVIDER.to_string(),
+                account_key: account_key.clone(),
+                lane: LANE_FIVE_HOUR.to_string(),
+                range_start_epoch: 0,
+                range_end_epoch: 18_000,
+            },
+        )
+        .expect("computes the payload");
+
+        let period = &payload.periods[0];
+        assert!(
+            (period.estimated_percent.unwrap() - expected_overshoot).abs() < 1e-6,
+            "an open period keeps its raw overshoot past 100"
+        );
+    }
+
+    /// A closed period with no readings at all, where a single session is
+    /// the sole dollar source: capping scales its own stack to exactly 100,
+    /// but the session still reports the factor's own confidence, not
+    /// `"measured"`, since nothing here came from a real meter reading.
+    #[test]
+    fn get_session_quota_reports_factor_confidence_not_measured_in_a_capped_tail() {
+        let store = memory_store();
+        let account_key = account('n');
+        let key = insert_session(&store, "capped-session");
+        bind_account(&store, &key, &account_key);
+        save_breakdown(&store, &key, 1_000_000);
+
+        insert_turn(&store, &key, 100_000, 300_000); // inside [0, 18_000), no readings
+        insert_five_hour_period(&store, &account_key, 0, 18_000);
+        insert_point(&store, &account_key, LANE_FIVE_HOUR, 0, 0.001);
+
+        let payload = session_quota_for_store(
+            &store,
+            20_000, // now: past the reset, so the period is closed
+            SessionQuotaRequest {
+                agent: AGENT.to_string(),
+                session_id: "capped-session".to_string(),
+                wsl_distro: None,
+            },
+        )
+        .expect("computes the payload");
+
+        assert_eq!(payload.entries.len(), 1);
+        let entry = &payload.entries[0];
+        assert_eq!(
+            entry.confidence, "learned",
+            "a capped tail reports the factor's confidence, not measured"
+        );
+        assert!((entry.percent.unwrap() - 100.0).abs() < 1e-6);
+    }
+
+    /// A closed five-hour window that starts at 1,020 (a 7:27-style offset,
+    /// not on a 15-minute boundary) instead of 0: its last absolute
+    /// 15-minute bucket, 18,900 to 19,800, straddles the reset at 19,020,
+    /// so only 120 of its 900 seconds belong to the window. The window's
+    /// sole spend lands in that bucket, and the factor prices it well past
+    /// 100. With the bucket's tail correctly stopping at the reset instead
+    /// of running past it, the session's own percent still lands at 100,
+    /// not above it.
+    #[test]
+    fn get_session_quota_caps_a_session_whose_start_is_off_the_bucket_grid() {
+        let store = memory_store();
+        let account_key = account('o');
+        let key = insert_session(&store, "offset-start-session");
+        bind_account(&store, &key, &account_key);
+        save_breakdown(&store, &key, 1_000_000);
+
+        // ts 19,000s falls in the absolute bucket started at 18,900s, which
+        // straddles the window's reset at 19,020s.
+        insert_turn(&store, &key, 19_000_000, 300_000);
+        insert_five_hour_period(&store, &account_key, 1_020, 19_020);
+        insert_point(&store, &account_key, LANE_FIVE_HOUR, 0, 0.001);
+
+        let payload = session_quota_for_store(
+            &store,
+            20_000, // now: past the reset, so the window is closed
+            SessionQuotaRequest {
+                agent: AGENT.to_string(),
+                session_id: "offset-start-session".to_string(),
+                wsl_distro: None,
+            },
+        )
+        .expect("computes the payload");
+
+        assert_eq!(payload.entries.len(), 1);
+        let entry = &payload.entries[0];
+        assert!(
+            entry.percent.unwrap() <= 100.0 + 1e-6,
+            "a straddling tail bucket must not push the session's percent past 100, got {}",
+            entry.percent.unwrap()
+        );
     }
 }

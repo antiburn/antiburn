@@ -289,6 +289,32 @@ fn delta_sample_arithmetic_prices_turns_between_two_readings() {
     assert_eq!(point.sample_count, 1);
 }
 
+/// `learn` names every `(provider, account, lane)` group it touched, with
+/// the account key `LearnedFactor` deliberately omits, so a caller past this
+/// module's boundary can load that account's own closed periods without a
+/// second scan of the candidate table.
+#[test]
+fn learn_names_every_touched_provider_account_and_lane() {
+    let store = memory_store();
+    observe_account(&store);
+    let key = insert_session(&store, "s1");
+    insert_turn(&store, &key, 150_000, 200_000, MODEL);
+    let period_id = insert_period(&store, 0, 18_000);
+    push_observation(&store, period_id, 100, 10.0, None);
+    push_observation(&store, period_id, 200, 15.0, None);
+
+    let (_learned, touched) = learn(&store, 300);
+
+    assert_eq!(
+        touched,
+        vec![TouchedLane {
+            provider: PROVIDER.to_string(),
+            account_key: account(),
+            lane: LANE_FIVE_HOUR.to_string(),
+        }]
+    );
+}
+
 #[test]
 fn two_rollout_observations_produce_a_rollout_sample_and_a_delta_method_point() {
     let store = memory_store();
@@ -698,7 +724,7 @@ fn a_plan_tier_change_with_the_same_plan_drops_earlier_samples_and_appends_a_poi
     insert_turn(&store, &key, 150_000, 200_000, MODEL); // $1.00
     insert_turn(&store, &key, 250_000, 200_000, MODEL); // $1.00
     insert_turn(&store, &key, 350_000, 200_000, MODEL); // $1.00
-    let learned = learn(&store, 450);
+    let (learned, _touched) = learn(&store, 450);
     assert_eq!(learned.len(), 1);
     assert_eq!(learned[0].plan.as_deref(), Some("max"));
     assert_eq!(
@@ -728,7 +754,7 @@ fn a_plan_tier_change_with_the_same_plan_drops_earlier_samples_and_appends_a_poi
         Some("default_claude_max_20x"),
     );
     insert_turn(&store, &key, 450_000, 400_000, MODEL); // $2.00
-    let learned = learn(&store, 600);
+    let (learned, _touched) = learn(&store, 600);
     assert_eq!(learned.len(), 1);
     assert_eq!(learned[0].plan.as_deref(), Some("max"));
     assert_eq!(

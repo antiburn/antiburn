@@ -112,6 +112,9 @@ pub enum EventName {
     /// incident within the last two hours that its previous published
     /// evidence did not carry.
     ProviderIncidentsIngested,
+    /// A closed quota window reported its coarse estimate-accuracy facts.
+    #[cfg(feature = "analytics")]
+    QuotaWindowClosed,
 }
 
 /// Every event this application may send.
@@ -153,6 +156,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
     EventName::ProviderIncidentsIngested,
+    EventName::QuotaWindowClosed,
 ];
 
 #[cfg(feature = "analytics")]
@@ -188,6 +192,7 @@ impl EventName {
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
             EventName::ProviderIncidentsIngested => "antiburn.provider_incidents_ingested",
+            EventName::QuotaWindowClosed => "antiburn.quota_window_closed",
         }
     }
 }
@@ -297,6 +302,20 @@ pub struct Properties {
     /// How far the meter and the factor's own estimate disagree, banded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub residual_band: Option<&'static str>,
+    /// A closed window's dollars-only estimate against its last reading,
+    /// banded and signed. Optional and present only on
+    /// `antiburn.quota_window_closed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimate_bias: Option<&'static str>,
+    /// A closed window's unexplained meter rise as a share of its last
+    /// reading, banded. Optional and present only on
+    /// `antiburn.quota_window_closed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unexplained_band: Option<&'static str>,
+    /// Whether a closed window's last reading covered its own end. Optional
+    /// and present only on `antiburn.quota_window_closed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reading_coverage: Option<&'static str>,
     /// These bands describe process and local-store resource use for one bounded window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
@@ -339,6 +358,9 @@ pub struct Facts {
     pub plan: Option<&'static str>,
     pub factor_band: Option<&'static str>,
     pub residual_band: Option<&'static str>,
+    pub estimate_bias: Option<&'static str>,
+    pub unexplained_band: Option<&'static str>,
+    pub reading_coverage: Option<&'static str>,
     #[cfg(feature = "analytics")]
     pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
     /// Sanitized transcript record type names. See [`Properties::unrecognized_types`].
@@ -1044,6 +1066,93 @@ pub fn residual_band(residual: Option<(f64, f64)>) -> &'static str {
     }
 }
 
+/// Reduce a closed quota window's dollars-only estimate against its last
+/// reading to a signed, coarse band.
+///
+/// `residual` is `(meter_percent, estimated_percent)` for the window's last
+/// reading, the same pair shape [`residual_band`] takes. `None` (no reading,
+/// or no factor point to price the estimate from) is `unknown`. Otherwise the
+/// band names the *direction* of the disagreement as well as its size: `low`
+/// means the dollars-only estimate landed below the meter, `high` means it
+/// landed above.
+#[cfg(feature = "analytics")]
+pub fn estimate_bias(residual: Option<(f64, f64)>) -> &'static str {
+    let Some((meter_percent, estimated_percent)) = residual else {
+        return "unknown";
+    };
+    let difference = estimated_percent - meter_percent;
+    let magnitude = difference.abs();
+    if magnitude <= 5.0 {
+        "within_5"
+    } else if magnitude <= 20.0 {
+        if difference < 0.0 {
+            "low_5_to_20"
+        } else {
+            "high_5_to_20"
+        }
+    } else if difference < 0.0 {
+        "low_over_20"
+    } else {
+        "high_over_20"
+    }
+}
+
+/// Reduce a closed quota window's unexplained meter rise to a coarse band,
+/// as a share of the window's last reading.
+///
+/// `unexplained_total_percent` is the sum of every
+/// `SharedPeriod::unexplained` entry's own percent. `last_reading_percent`
+/// is `None` when the window carries no reading at all, which bands as
+/// `unknown` rather than `none`: a share of nothing is not a clean window,
+/// it is an unmeasured one. A reading of exactly zero percent bands as
+/// `none`: nothing rose, so nothing can be unexplained either.
+#[cfg(feature = "analytics")]
+pub fn unexplained_band(
+    unexplained_total_percent: f64,
+    last_reading_percent: Option<f64>,
+) -> &'static str {
+    let Some(last_reading_percent) = last_reading_percent else {
+        return "unknown";
+    };
+    if last_reading_percent <= 0.0 {
+        return "none";
+    }
+    let share_percent = (unexplained_total_percent / last_reading_percent) * 100.0;
+    if share_percent < 1.0 {
+        "none"
+    } else if share_percent < 10.0 {
+        "under_10"
+    } else if share_percent < 30.0 {
+        "10_to_under_30"
+    } else {
+        "30_and_over"
+    }
+}
+
+/// One hour, in seconds: how close a closed window's last reading must sit
+/// to the window's own end to count as [covering][reading_coverage] it.
+#[cfg(feature = "analytics")]
+const READING_COVERAGE_TOLERANCE_SECS: i64 = 3_600;
+
+/// Whether a closed quota window's last reading covered its own end.
+///
+/// `coverage_until` is [`crate::provider_usage::quota::share::SharedPeriod::coverage_until`],
+/// `None` when the window carries no reading at all. `window_end_epoch` is
+/// the window's own (possibly truncated) reset. A reading within
+/// [`READING_COVERAGE_TOLERANCE_SECS`] of that reset is `covered`; an older
+/// one is `stale`.
+#[cfg(feature = "analytics")]
+pub fn reading_coverage(coverage_until: Option<i64>, window_end_epoch: i64) -> &'static str {
+    let Some(coverage_until) = coverage_until else {
+        return "none";
+    };
+    if window_end_epoch - coverage_until <= READING_COVERAGE_TOLERANCE_SECS {
+        "covered"
+    } else {
+        "stale"
+    }
+}
+
 /// The surface class the collector partitions on. antiburn is a desktop
 /// application, and the contract's vocabulary has one value for that.
 #[cfg(feature = "analytics")]
@@ -1112,6 +1221,9 @@ mod tests {
                 plan: Some("max"),
                 factor_band: Some("2_to_under_4"),
                 residual_band: Some("within_5"),
+                estimate_bias: Some("within_5"),
+                unexplained_band: Some("none"),
+                reading_coverage: Some("covered"),
                 resource_usage: Some(resource_summary()),
                 unrecognized_types: Some(vec!["custom_event".to_string()]),
             },
@@ -1247,6 +1359,47 @@ mod tests {
         assert_eq!(residual_band(Some((29.9, 50.0))), "over_20");
     }
 
+    #[test]
+    fn the_estimate_bias_bands_are_signed_and_symmetric_around_the_meter() {
+        assert_eq!(estimate_bias(None), "unknown");
+        // Estimate matches the meter, and the two boundary cases either side.
+        assert_eq!(estimate_bias(Some((50.0, 50.0))), "within_5");
+        assert_eq!(estimate_bias(Some((50.0, 55.0))), "within_5");
+        assert_eq!(estimate_bias(Some((50.0, 45.0))), "within_5");
+        // The estimate under-shoots the meter: "low".
+        assert_eq!(estimate_bias(Some((50.0, 44.9))), "low_5_to_20");
+        assert_eq!(estimate_bias(Some((50.0, 30.0))), "low_5_to_20");
+        assert_eq!(estimate_bias(Some((50.0, 29.9))), "low_over_20");
+        // The estimate over-shoots the meter: "high".
+        assert_eq!(estimate_bias(Some((50.0, 55.1))), "high_5_to_20");
+        assert_eq!(estimate_bias(Some((50.0, 70.0))), "high_5_to_20");
+        assert_eq!(estimate_bias(Some((50.0, 70.1))), "high_over_20");
+    }
+
+    #[test]
+    fn the_unexplained_band_is_a_share_of_the_last_readings_percent() {
+        assert_eq!(unexplained_band(5.0, None), "unknown");
+        // A reading of exactly zero cannot have a positive share.
+        assert_eq!(unexplained_band(0.0, Some(0.0)), "none");
+        // Boundaries, expressed as a percent of a 50-point reading.
+        assert_eq!(unexplained_band(0.0, Some(50.0)), "none");
+        assert_eq!(unexplained_band(0.49, Some(50.0)), "none"); // 0.98%
+        assert_eq!(unexplained_band(0.5, Some(50.0)), "under_10"); // 1.0%
+        assert_eq!(unexplained_band(4.9, Some(50.0)), "under_10"); // 9.8%
+        assert_eq!(unexplained_band(5.0, Some(50.0)), "10_to_under_30"); // 10.0%
+        assert_eq!(unexplained_band(14.9, Some(50.0)), "10_to_under_30"); // 29.8%
+        assert_eq!(unexplained_band(15.0, Some(50.0)), "30_and_over"); // 30.0%
+        assert_eq!(unexplained_band(50.0, Some(50.0)), "30_and_over");
+    }
+
+    #[test]
+    fn reading_coverage_is_covered_within_an_hour_of_the_windows_end() {
+        assert_eq!(reading_coverage(None, 10_000), "none");
+        assert_eq!(reading_coverage(Some(10_000 - 3_600), 10_000), "covered");
+        assert_eq!(reading_coverage(Some(10_000), 10_000), "covered");
+        assert_eq!(reading_coverage(Some(10_000 - 3_601), 10_000), "stale");
+    }
+
     /// The complete wire surface, pinned.
     ///
     /// This test cannot read the Privacy pane, so it does not pretend to: it
@@ -1259,7 +1412,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_twenty_eight_fields() {
+    fn the_wire_payload_is_exactly_these_thirty_one_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -1292,6 +1445,7 @@ mod tests {
                 "bucket",
                 "detail",
                 "eligibility",
+                "estimateBias",
                 "experiment",
                 "factorBand",
                 "ineligibleReason",
@@ -1299,12 +1453,14 @@ mod tests {
                 "nextResetAvailable",
                 "origin",
                 "plan",
+                "readingCoverage",
                 "resetArm",
                 "resetAvailability",
                 "resetsPerWeek",
                 "residualBand",
                 "resourceUsage",
                 "responseShape",
+                "unexplainedBand",
                 "unrecognizedTypes",
                 "usageBand",
             ]
@@ -1360,6 +1516,9 @@ mod tests {
         event.properties.plan = None;
         event.properties.factor_band = None;
         event.properties.residual_band = None;
+        event.properties.estimate_bias = None;
+        event.properties.unexplained_band = None;
+        event.properties.reading_coverage = None;
         event.properties.resource_usage = None;
         event.properties.unrecognized_types = None;
         let json = serde_json::to_string(&event).expect("serializes");
@@ -1370,6 +1529,9 @@ mod tests {
         assert!(!json.contains("\"plan\""), "{json}");
         assert!(!json.contains("factorBand"), "{json}");
         assert!(!json.contains("residualBand"), "{json}");
+        assert!(!json.contains("estimateBias"), "{json}");
+        assert!(!json.contains("unexplainedBand"), "{json}");
+        assert!(!json.contains("readingCoverage"), "{json}");
         assert!(!json.contains("resourceUsage"), "{json}");
         assert!(!json.contains("unrecognizedTypes"), "{json}");
     }
@@ -1466,12 +1628,13 @@ mod tests {
                 | EventName::SessionFilterSelected
                 | EventName::QuotaIncidentsObserved
                 | EventName::ProviderIncidentsObserved
-                | EventName::ProviderIncidentsIngested => true,
+                | EventName::ProviderIncidentsIngested
+                | EventName::QuotaWindowClosed => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            29,
+            30,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -1530,6 +1693,7 @@ mod tests {
             23 => "twenty-three",
             27 => "twenty-seven",
             28 => "twenty-eight",
+            31 => "thirty-one",
             other => panic!("no word for {other} fields; add one and update the documents"),
         };
 

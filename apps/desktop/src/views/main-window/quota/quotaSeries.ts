@@ -76,6 +76,19 @@ export function isWindowPreset(range: QuotaRangeSelection): boolean {
   return !isCustomRange(range) && WINDOW_PRESETS.has(range)
 }
 
+const ALL_RANGE_PRESETS: ReadonlySet<QuotaRangePreset> = new Set<QuotaRangePreset>([
+  "thisWeek",
+  "lastWeek",
+  "last30Days",
+  ...WINDOW_PRESETS,
+])
+
+/** True when `value` is one of the fixed `QuotaRangePreset` literals, for a
+ *  value read out of untyped storage (persisted view prefs). */
+export function isQuotaRangePreset(value: unknown): value is QuotaRangePreset {
+  return typeof value === "string" && ALL_RANGE_PRESETS.has(value as QuotaRangePreset)
+}
+
 /** True for the weekly lane and every model-scoped weekly lane, such as Claude's "Fable" window. */
 export function isWeeklyLane(lane: string): boolean {
   return lane === "weekly" || lane.startsWith("model:")
@@ -358,6 +371,30 @@ interface QualifyingSession {
   periodCount: number
   /** Exceeded `QUOTA_OWN_SERIES_MIN_PERCENT` in at least one period. */
   qualifies: boolean
+  /** The earliest `bucketStartEpoch` this session contributes to, across
+   *  every given period. `POSITIVE_INFINITY` for a session with no
+   *  contribution rows, so it sorts last in stack order. */
+  firstBucketEpoch: number
+}
+
+/** The earliest `bucketStartEpoch` each session's contributions reach,
+ *  across every given period, keyed the same way as `qualifyingSessionsAcross`. */
+function firstBucketEpochsAcross(periods: readonly QuotaPeriodPayload[]): Map<string, number> {
+  const firstBucketEpochs = new Map<string, number>()
+  for (const period of periods) {
+    for (const contribution of period.contributions) {
+      const key = quotaSessionKey(
+        contribution.agent,
+        contribution.sessionId,
+        contribution.wslDistro,
+      )
+      const existing = firstBucketEpochs.get(key)
+      if (existing == null || contribution.bucketStartEpoch < existing) {
+        firstBucketEpochs.set(key, contribution.bucketStartEpoch)
+      }
+    }
+  }
+  return firstBucketEpochs
 }
 
 /** Every bound session merged across periods, with its own-series
@@ -395,9 +432,14 @@ function qualifyingSessionsAcross(periods: readonly QuotaPeriodPayload[]): {
           percent: session.percent,
           periodCount: 1,
           qualifies,
+          firstBucketEpoch: Number.POSITIVE_INFINITY,
         })
       }
     }
+  }
+  const firstBucketEpochs = firstBucketEpochsAcross(periods)
+  for (const session of totals.values()) {
+    session.firstBucketEpoch = firstBucketEpochs.get(session.key) ?? Number.POSITIVE_INFINITY
   }
   return {
     sessions: [...totals.values()].sort((left, right) => right.usd - left.usd),
@@ -418,17 +460,32 @@ function selectOwnSeriesSessions(periods: readonly QuotaPeriodPayload[]): Qualif
   return sessions.filter((session) => session.qualifies).slice(0, QUOTA_OWN_SERIES_CAP)
 }
 
-/** The sessions selected for their own series, in chart order (by dollars). */
+/**
+ * The sessions selected for their own series, in stack order: first
+ * appearance at the bottom. The session whose contributions start earliest
+ * across the displayed range sorts first (bottom of the stack), and the
+ * session that starts last sorts last (top, just under "other" /
+ * "unattributed" / "unexplained"). Ties break by dollars descending, then
+ * by key, so the order stays deterministic.
+ */
 function topSessionsAcross(periods: readonly QuotaPeriodPayload[]): QuotaTopSession[] {
-  return selectOwnSeriesSessions(periods).map((session) => ({
-    key: session.key,
-    agent: session.agent,
-    sessionId: session.sessionId,
-    wslDistro: session.wslDistro,
-    title: session.title,
-    usd: session.usd,
-    hue: 0,
-  }))
+  return selectOwnSeriesSessions(periods)
+    .slice()
+    .sort(
+      (left, right) =>
+        left.firstBucketEpoch - right.firstBucketEpoch ||
+        right.usd - left.usd ||
+        (left.key < right.key ? -1 : left.key > right.key ? 1 : 0),
+    )
+    .map((session) => ({
+      key: session.key,
+      agent: session.agent,
+      sessionId: session.sessionId,
+      wslDistro: session.wslDistro,
+      title: session.title,
+      usd: session.usd,
+      hue: 0,
+    }))
 }
 
 /**
@@ -465,9 +522,9 @@ function stackConflicts(
  * from the series rows: two bands that never touch in the stack may share a
  * hue, however long each is visible for on its own.
  *
- * Sessions are visited in stack order (`topSessions`, roughly biggest to
- * smallest), so a session's already-colored neighbors are the ones above it
- * in the stack. Each session takes the lowest hue none of those neighbors
+ * Sessions are visited in stack order (`topSessions`, first appearance at
+ * the bottom), so a session's already-colored neighbors are the ones above
+ * it in the stack. Each session takes the lowest hue none of those neighbors
  * hold. When every hue is taken, the session touches more distinct
  * neighbors than there are hues and a clash is unavoidable; it then takes
  * the hue whose neighbors' edge weight (rows touched) is smallest, so the
@@ -517,6 +574,9 @@ export interface QuotaSeriesRow {
   meter: number | null
   other: number | null
   unattributed: number | null
+  /** Cumulative spend the meter's own rise credits to no local session:
+   *  a meter-rise segment with no dollars behind it at all. */
+  unexplained: number | null
   [sessionKey: string]: number | null
 }
 
@@ -530,24 +590,28 @@ function ceilToBucket(t: number): number {
   return Math.ceil(t / QUOTA_BUCKET_SECS) * QUOTA_BUCKET_SECS
 }
 
-function zeroRow(
-  t: number,
-  hasFactor: boolean,
-  topSessions: readonly QuotaTopSession[],
-): QuotaSeriesRow {
+function zeroRow(t: number, topSessions: readonly QuotaTopSession[]): QuotaSeriesRow {
   const row: QuotaSeriesRow = {
     t,
     index: 0,
     meter: null,
-    other: hasFactor ? 0 : null,
-    unattributed: hasFactor ? 0 : null,
+    other: 0,
+    unattributed: 0,
+    unexplained: 0,
   }
-  for (const session of topSessions) row[session.key] = hasFactor ? 0 : null
+  for (const session of topSessions) row[session.key] = 0
   return row
 }
 
 function gapRow(t: number, topSessions: readonly QuotaTopSession[]): QuotaSeriesRow {
-  const row: QuotaSeriesRow = { t, index: 0, meter: null, other: null, unattributed: null }
+  const row: QuotaSeriesRow = {
+    t,
+    index: 0,
+    meter: null,
+    other: null,
+    unattributed: null,
+    unexplained: null,
+  }
   for (const session of topSessions) row[session.key] = null
   return row
 }
@@ -582,15 +646,17 @@ function interpolateMeter(
  * that carries a contribution or unattributed spend, a final-total row just
  * before the reset, and an authoritative meter reading wherever one was
  * observed. Contributions and unattributed spend both accumulate from the
- * period's own start, never the range's. No row lands after `nowEpoch`: the
- * chart has no estimate for a time that has not happened yet.
+ * period's own start, never the range's, and a bucket still in progress at
+ * a row's own time contributes only the fraction of its own 15 minutes
+ * already elapsed, so its value ramps in rather than jumping in whole at
+ * the bucket's start. No row lands after `nowEpoch`: the chart has no
+ * estimate for a time that has not happened yet.
  */
 function periodRows(
   period: QuotaPeriodPayload,
   rangeStart: number,
   rangeEnd: number,
   nowEpoch: number,
-  hasFactor: boolean,
   topKeys: ReadonlySet<string>,
   topSessions: readonly QuotaTopSession[],
 ): QuotaSeriesRow[] {
@@ -600,7 +666,14 @@ function periodRows(
   const visibleEnd = Math.min(reset, rangeEnd)
   if (visibleEnd <= visibleStart) return []
   if (visibleStart > nowEpoch) return []
-  const clampedVisibleEnd = Math.min(visibleEnd, nowEpoch)
+  // Capped one second short of the reset, the same half-open bound
+  // `finalRowTime` below uses: a bucket-aligned reset would otherwise let
+  // the grid-fill loop add a point at `t === reset`, and the next period
+  // starts at that very instant, so its own slot (`rowsInWindow` keeps
+  // `t >= start`) would pick up this period's full closing row one row
+  // before its own zero row at the same time, drawing a zero-width
+  // full-height spike at the window start.
+  const clampedVisibleEnd = Math.min(visibleEnd, nowEpoch, reset - 1)
 
   const byBucket = new Map<number, QuotaContributionPayload[]>()
   for (const contribution of period.contributions) {
@@ -615,6 +688,9 @@ function periodRows(
   const unattributedBuckets = period.unattributedBuckets
     .filter((bucket) => bucket.bucketStartEpoch >= start && bucket.bucketStartEpoch < reset)
     .sort((left, right) => left.bucketStartEpoch - right.bucketStartEpoch)
+  const unexplainedBuckets = period.unexplainedBuckets
+    .filter((bucket) => bucket.bucketStartEpoch >= start && bucket.bucketStartEpoch < reset)
+    .sort((left, right) => left.bucketStartEpoch - right.bucketStartEpoch)
 
   const points = new Set<number>()
   if (start >= rangeStart) points.add(start)
@@ -624,6 +700,14 @@ function periodRows(
     if (bucketTime >= visibleStart && bucketTime <= clampedVisibleEnd) points.add(bucketTime)
   }
   for (const bucket of unattributedBuckets) {
+    if (
+      bucket.bucketStartEpoch >= visibleStart &&
+      bucket.bucketStartEpoch <= clampedVisibleEnd
+    ) {
+      points.add(bucket.bucketStartEpoch)
+    }
+  }
+  for (const bucket of unexplainedBuckets) {
     if (
       bucket.bucketStartEpoch >= visibleStart &&
       bucket.bucketStartEpoch <= clampedVisibleEnd
@@ -647,8 +731,10 @@ function periodRows(
   const topCumulative = new Map(topSessions.map((session) => [session.key, 0]))
   let otherCumulative = 0
   let unattributedCumulative = 0
+  let unexplainedCumulative = 0
   let bucketPointer = 0
   let unattributedPointer = 0
+  let unexplainedPointer = 0
   let samplePointer = -1
   const authoritativeSamples: MeterSample[] = period.samples
     .filter(
@@ -662,7 +748,15 @@ function periodRows(
 
   const rows: QuotaSeriesRow[] = []
   for (const t of sortedPoints) {
-    while (bucketPointer < bucketTimes.length && bucketTimes[bucketPointer]! <= t) {
+    // A completed bucket (its own 15 minutes fully behind `t`) adds fully
+    // and advances past. Buckets are 15-minute aligned, so at most one
+    // bucket can still be in progress at `t`; that one ramps in below by
+    // the fraction of its own window already elapsed, without advancing
+    // the pointer, so the next row can still see it complete.
+    while (
+      bucketPointer < bucketTimes.length &&
+      bucketTimes[bucketPointer]! + QUOTA_BUCKET_SECS <= t
+    ) {
       const bucketTime = bucketTimes[bucketPointer]!
       for (const contribution of byBucket.get(bucketTime) ?? []) {
         const key = quotaSessionKey(
@@ -679,12 +773,55 @@ function periodRows(
       }
       bucketPointer += 1
     }
+    let inProgressOther = 0
+    const inProgressTop = new Map<string, number>()
+    if (bucketPointer < bucketTimes.length && bucketTimes[bucketPointer]! <= t) {
+      const bucketTime = bucketTimes[bucketPointer]!
+      const fraction = Math.min(1, Math.max(0, (t - bucketTime) / QUOTA_BUCKET_SECS))
+      for (const contribution of byBucket.get(bucketTime) ?? []) {
+        const key = quotaSessionKey(
+          contribution.agent,
+          contribution.sessionId,
+          contribution.wslDistro,
+        )
+        const percent = (contribution.percent ?? 0) * fraction
+        if (topKeys.has(key)) {
+          inProgressTop.set(key, (inProgressTop.get(key) ?? 0) + percent)
+        } else {
+          inProgressOther += percent
+        }
+      }
+    }
     while (
       unattributedPointer < unattributedBuckets.length &&
-      unattributedBuckets[unattributedPointer]!.bucketStartEpoch <= t
+      unattributedBuckets[unattributedPointer]!.bucketStartEpoch + QUOTA_BUCKET_SECS <= t
     ) {
       unattributedCumulative += unattributedBuckets[unattributedPointer]!.percent ?? 0
       unattributedPointer += 1
+    }
+    let inProgressUnattributed = 0
+    if (
+      unattributedPointer < unattributedBuckets.length &&
+      unattributedBuckets[unattributedPointer]!.bucketStartEpoch <= t
+    ) {
+      const bucket = unattributedBuckets[unattributedPointer]!
+      const fraction = Math.min(
+        1,
+        Math.max(0, (t - bucket.bucketStartEpoch) / QUOTA_BUCKET_SECS),
+      )
+      inProgressUnattributed = (bucket.percent ?? 0) * fraction
+    }
+    // Unexplained segments keep the step rule: the backend stamps each one
+    // at the segment's own end (the reading that closes it), since its
+    // rise is not known any earlier, so the row before that time already
+    // ramps toward it via the meter line, and this only needs to add the
+    // full amount once that time arrives.
+    while (
+      unexplainedPointer < unexplainedBuckets.length &&
+      unexplainedBuckets[unexplainedPointer]!.bucketStartEpoch <= t
+    ) {
+      unexplainedCumulative += unexplainedBuckets[unexplainedPointer]!.percent ?? 0
+      unexplainedPointer += 1
     }
     while (
       samplePointer + 1 < authoritativeSamples.length &&
@@ -697,15 +834,18 @@ function periodRows(
       samplePointer + 1 < authoritativeSamples.length
         ? authoritativeSamples[samplePointer + 1]!
         : null
+    const meter = interpolateMeter(prevSample, nextSample, t)
     const row: QuotaSeriesRow = {
       t,
       index: 0,
-      meter: interpolateMeter(prevSample, nextSample, t),
-      other: hasFactor ? otherCumulative : null,
-      unattributed: hasFactor ? unattributedCumulative : null,
+      meter,
+      other: otherCumulative + inProgressOther,
+      unattributed: unattributedCumulative + inProgressUnattributed,
+      unexplained: unexplainedCumulative,
     }
     for (const session of topSessions) {
-      row[session.key] = hasFactor ? (topCumulative.get(session.key) ?? 0) : null
+      row[session.key] =
+        (topCumulative.get(session.key) ?? 0) + (inProgressTop.get(session.key) ?? 0)
     }
     rows.push(row)
   }
@@ -725,7 +865,6 @@ export function quotaBurnupSeries(
   rangeEnd: number,
   nowEpoch: number,
 ): QuotaSeries {
-  const hasFactor = usage.factor != null
   const periods = [...usage.periods].sort(
     (left, right) => left.startsAtEpoch - right.startsAtEpoch,
   )
@@ -740,9 +879,7 @@ export function quotaBurnupSeries(
       Math.max(period.startsAtEpoch, rangeStart),
       Math.min(period.resetsAtEpoch, rangeEnd),
     ])
-    rows.push(
-      ...periodRows(period, rangeStart, rangeEnd, nowEpoch, hasFactor, topKeys, topSessions),
-    )
+    rows.push(...periodRows(period, rangeStart, rangeEnd, nowEpoch, topKeys, topSessions))
   }
 
   // A reset row at each boundary still inside the range and not after now.
@@ -753,7 +890,7 @@ export function quotaBurnupSeries(
     if (t < rangeStart || t > rangeEnd || t > nowEpoch) continue
     const opensNextPeriod = periods.some((candidate) => candidate.startsAtEpoch === t)
     if (opensNextPeriod) continue
-    rows.push(zeroRow(t, hasFactor, topSessions))
+    rows.push(zeroRow(t, topSessions))
   }
 
   // Fill every 15-minute mark the range holds that no period covers, so the
@@ -792,20 +929,28 @@ export interface QuotaTopSessionRow {
   periodCount: number
 }
 
-/** Every session with its own chart series, in chart order (by dollars). */
+/**
+ * Every session with its own chart series, in dollars-descending order.
+ * The chart itself stacks these bands by first appearance instead (see
+ * `topSessionsAcross`), so this list sorts independently rather than
+ * relying on `selectOwnSeriesSessions`'s incidental order.
+ */
 export function quotaTopSessionRows(
   periods: readonly QuotaPeriodPayload[],
 ): QuotaTopSessionRow[] {
-  return selectOwnSeriesSessions(periods).map((session) => ({
-    key: session.key,
-    agent: session.agent,
-    sessionId: session.sessionId,
-    wslDistro: session.wslDistro,
-    title: session.title,
-    usd: session.usd,
-    percent: session.percent,
-    periodCount: session.periodCount,
-  }))
+  return selectOwnSeriesSessions(periods)
+    .slice()
+    .sort((left, right) => right.usd - left.usd)
+    .map((session) => ({
+      key: session.key,
+      agent: session.agent,
+      sessionId: session.sessionId,
+      wslDistro: session.wslDistro,
+      title: session.title,
+      usd: session.usd,
+      percent: session.percent,
+      periodCount: session.periodCount,
+    }))
 }
 
 export interface QuotaOtherSessionsTotal {
@@ -863,6 +1008,27 @@ function addUnattributed(
       total.percent == null || next.percent == null ? null : total.percent + next.percent,
     sessionCount: total.sessionCount + next.sessionCount,
   }
+}
+
+export interface QuotaUnexplainedTotal {
+  percent: number | null
+}
+
+/** The "not explained by local sessions" spend merged across every period
+ *  in range: null once any period in range carries no meter reading at all,
+ *  the same contagion rule `quotaUnattributedTotal` uses for its percent. */
+export function quotaUnexplainedTotal(
+  periods: readonly QuotaPeriodPayload[],
+): QuotaUnexplainedTotal {
+  return periods.reduce<QuotaUnexplainedTotal>(
+    (total, period) => ({
+      percent:
+        total.percent == null || period.unexplainedPercent == null
+          ? null
+          : total.percent + period.unexplainedPercent,
+    }),
+    { percent: 0 },
+  )
 }
 
 /** The most recently opened period in range, or null when the range holds none. */

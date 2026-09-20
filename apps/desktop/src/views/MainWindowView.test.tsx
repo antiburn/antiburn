@@ -176,10 +176,10 @@ describe("MainWindowView", () => {
   it("opens Overview by default and keeps Checks and Sessions in the sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
-    // Overview, Quota, Checks, Sessions, and Sessions' five fixed filter
+    // Overview, Limits, Checks, Sessions, and Sessions' five fixed filter
     // children (no harness rows yet, since no entries have loaded).
     expect(screen.getAllByRole("tab")).toHaveLength(9)
-    expect(screen.getByRole("tab", { name: "Quota" })).toBeVisible()
+    expect(screen.getByRole("tab", { name: "Limits" })).toBeVisible()
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -368,11 +368,11 @@ describe("MainWindowView", () => {
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
     })
 
-    it("selects Quota, which has no cross-window target, and leaves it on a fresh cross-window request", async () => {
+    it("selects Limits, which has no cross-window target, and leaves it on a fresh cross-window request", async () => {
       render(<MainWindowView />)
-      fireEvent.click(tab("Quota"))
-      expect(tab("Quota")).toHaveAttribute("aria-selected", "true")
-      expect(screen.getByRole("tabpanel", { name: "Quota" })).toBeVisible()
+      fireEvent.click(tab("Limits"))
+      expect(tab("Limits")).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
       await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
       act(() => {
         ipcMocks.sectionTarget!({ revision: 1, section: "burnChecks" })
@@ -383,12 +383,12 @@ describe("MainWindowView", () => {
       )
     })
 
-    it("keeps Quota mounted after navigating away, instead of unmounting it", () => {
+    it("keeps Limits mounted after navigating away, instead of unmounting it", () => {
       render(<MainWindowView />)
-      fireEvent.click(tab("Quota"))
+      fireEvent.click(tab("Limits"))
       expect(document.querySelector("#quota-panel h1")).not.toBeNull()
       fireEvent.click(tab("Checks"))
-      // Quota is hidden, not selected, but its content stays in the DOM: a
+      // Limits is hidden, not selected, but its content stays in the DOM: a
       // return visit must not tear it down and refetch.
       expect(document.querySelector("#quota-panel h1")).not.toBeNull()
     })
