@@ -65,7 +65,7 @@ const PROVIDER_LOADING_LABELS: Record<string, string> = {
   mistral: "Mistral",
   openai: "Codex",
   openrouter: "OpenRouter",
-  windsurf: "Windsurf",
+  windsurf: "Devin",
   xai: "xAI",
 }
 

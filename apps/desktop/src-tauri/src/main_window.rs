@@ -1294,6 +1294,7 @@ pub fn take_main_window_section_target(
     Ok(window.state::<MainWindowState>().take_section_target())
 }
 
+/// Builds the hidden main window and applies the saved placement.
 fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
     let state = app.state::<MainWindowState>();
     let placement = state.placement();
@@ -1314,6 +1315,7 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
             window_lifecycle::trace_page_load::<MainWindowState>(window, payload, LABEL);
         },
     )?;
+    crate::wayland_titlebar::repair(&built.window);
     let applied = built
         .placement
         .or_else(|| antiburn_main_window::capture(&built.window, None));

@@ -27,6 +27,9 @@ CI changes, and documentation that no user acts on stay out — see
   middle of the screen instead of under the tray icon. antiburn now runs
   through XWayland there and anchors correctly; set
   `ANTIBURN_GDK_BACKEND=wayland` to keep a native Wayland run instead.
+- On a native Wayland run (`ANTIBURN_GDK_BACKEND=wayland`, or a session
+  without an X server), the title-bar Close and Minimize buttons of the
+  main, Settings, and setup windows did nothing. They work now.
 
 ## [0.6.2] - 2026-09-17
 

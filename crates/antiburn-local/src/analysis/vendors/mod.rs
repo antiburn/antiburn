@@ -4,12 +4,14 @@
 //! known or not, resolves to *some* reader (generic JSONL by default), so no
 //! vendor is ever silently dropped from analysis.
 
+mod amp;
 mod antigravity;
 pub mod claude;
 mod cline;
 mod codex;
 mod copilot;
 mod cursor;
+mod devin;
 mod generic_jsonl;
 mod kiro;
 mod opencode;
@@ -28,14 +30,20 @@ static ANTIGRAVITY: antigravity::AntigravitySessionReader = antigravity::Antigra
 static COPILOT: copilot::CopilotSessionReader = copilot::CopilotSessionReader;
 static CLINE: cline::ClineSessionReader = cline::ClineSessionReader;
 static KIRO: kiro::KiroSessionReader = kiro::KiroSessionReader;
-static AMP: passive::PassiveSessionReader = passive::PassiveSessionReader {
-    agent: "amp-code",
-    format: crate::analysis::SourceFormat::AmpThreadJson,
-};
+static AMP: amp::AmpSessionReader = amp::AmpSessionReader;
 static WINDSURF: passive::PassiveSessionReader = passive::PassiveSessionReader {
     agent: "windsurf",
     format: crate::analysis::SourceFormat::WindsurfWorkspaceJson,
 };
+static DEVIN: devin::DevinLocalSessionReader = devin::DevinLocalSessionReader;
+
+pub fn reader_for_input(input: &crate::analysis::SessionInput) -> &'static dyn SessionReader {
+    if input.source_format == crate::analysis::SourceFormat::DevinLocalSqlite {
+        &DEVIN
+    } else {
+        reader_for(&input.agent)
+    }
+}
 
 /// Resolve the reader for an agent label, without case sensitivity.
 pub fn reader_for(agent: &str) -> &'static dyn SessionReader {
@@ -69,6 +77,7 @@ pub fn has_dedicated_reader(agent: &str) -> bool {
             | "antigravity"
             | "copilot"
             | "cline"
+            | "amp-code"
             | "kiro"
     )
 }
@@ -90,6 +99,12 @@ pub(crate) fn read_source(source: &RawSource) -> anyhow::Result<std::borrow::Cow
         }
         RawSource::KiroCliV2Bundle { .. } => {
             anyhow::bail!("Kiro CLI V2 bundle must be handled by the Kiro adapter")
+        }
+        RawSource::KiroCliV3Bundle { .. } => {
+            anyhow::bail!("Kiro CLI V3 bundle must be handled by the Kiro adapter")
+        }
+        RawSource::CopilotCliBundle { .. } => {
+            anyhow::bail!("Copilot bundle must be handled by the Copilot adapter")
         }
     }
 }
@@ -119,6 +134,7 @@ mod tests {
             "copilot",
             "cline",
             "kiro",
+            "amp-code",
         ] {
             assert!(has_dedicated_reader(agent));
             assert!(has_dedicated_reader(&agent.to_uppercase()));
@@ -134,13 +150,10 @@ mod tests {
 
     #[test]
     fn passive_readers_keep_agent_specific_source_formats() {
-        let cases = [
-            ("amp-code", crate::analysis::SourceFormat::AmpThreadJson),
-            (
-                "windsurf",
-                crate::analysis::SourceFormat::WindsurfWorkspaceJson,
-            ),
-        ];
+        let cases = [(
+            "windsurf",
+            crate::analysis::SourceFormat::WindsurfWorkspaceJson,
+        )];
         for (agent, expected) in cases {
             assert_eq!(reader_for(agent).agent(), agent);
             assert_eq!(reader_for(&agent.to_uppercase()).agent(), agent);
@@ -161,5 +174,21 @@ mod tests {
                 "{agent} must fail closed"
             );
         }
+    }
+
+    #[test]
+    fn devin_sqlite_uses_the_dedicated_reader() {
+        let input = crate::analysis::SessionInput {
+            agent: "windsurf".to_owned(),
+            session_id: "test".to_owned(),
+            source: RawSource::Sqlite(std::path::PathBuf::from("/tmp/sessions.db")),
+            source_format: crate::analysis::SourceFormat::DevinLocalSqlite,
+            fork_parent_session_id: None,
+        };
+        assert!(
+            reader_for_input(&input)
+                .capabilities(&input)
+                .tool_invocations
+        );
     }
 }

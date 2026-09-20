@@ -26,6 +26,7 @@
     "allow-get-quota-usage",
     "allow-get-checks-report",
     "allow-get-burn-check-aggregate-wins",
+    "allow-get-burn-check-remediation-progress",
     "allow-get-main-window-visible",
     "allow-get-session-analysis",
     "allow-get-session-hygiene",

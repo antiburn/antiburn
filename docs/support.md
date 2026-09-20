@@ -29,12 +29,12 @@ described in [Network](#network).
 | OpenCode       | Supported                | Supported                               | Supported                | Supported     | WSL discovery uses bounded OpenCode CLI export. It is not disk-only access.                                         |
 | Cursor         | Supported                | Supported on characterized surfaces     | Finding-only O support   | Not supported | Other surfaces fail closed.                                                                                         |
 | GitHub Copilot | Supported                | Supported for completed CLI v1 sessions | Supported for S/O        | Not supported | IDE chat remains fail closed. Prompts, content, and tool arguments are not read.                                    |
-| Cline          | Supported                | Partial                                 | Unavailable              | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                 |
+| Cline          | Supported                | Partial                                 | Finding-only S/O         | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                 |
 | Kiro           | Supported                | Safe V2 CLI facts only                  | Unavailable              | Not supported | V2 requires exact local `.json` and `.jsonl` siblings. V3, IDE stores, and manual `/chat save` exports fail closed. |
-| Amp            | Supported                | Not supported                           | Unavailable              | Not supported | Registered sources fail closed.                                                                                     |
+| Amp            | Supported                | Partial                                 | Finding-only D/O         | Not supported | Thread JSON supports bounded depth and model findings; file-change records fail closed.                             |
 | Pi             | macOS and Linux only     | Supported for Pi V3 CLI sessions        | Supported                | Not supported | Includes `PI_AGENT_DIR`; excluded on native Windows and WSL.                                                        |
 | Antigravity    | Supported, **disk-only** | Supported on characterized surfaces     | Finding-only D/O support | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis.                                          |
-| Windsurf       | Supported, **disk-only** | Not supported                           | Unavailable              | Not supported | Registered sources fail closed.                                                                                     |
+| Devin          | Supported, **disk-only** | Finding-only S                          | Finding-only S           | Not supported | Uses Devin Local migration-17 SQLite; legacy Windsurf roots keep the stable `windsurf` identity. Desktop ACP is child-only and optional. |
 
 **Disk-only** means sessions come from the agent's own documented local files; the
 live language-server APIs those two editors expose aren't read, so a session that
@@ -52,14 +52,14 @@ bounded prompts cover the exact check matrix in
 | Claude Code    | Supported         | Model and reasoning         | Prompts for all nine checks   |
 | Codex          | Supported         | Model and reasoning         | Prompts for all nine checks   |
 | OpenCode       | Supported         | Model                       | Prompts for D, S, K, O, and C |
-| Cursor         | Finding-only O    | None                        | No remediation prompt         |
-| GitHub Copilot | Supported S/O     | None                        | No remediation prompt         |
-| Cline          | Unavailable       | None                        | No remediation prompt         |
-| Kiro           | Unavailable       | None                        | No remediation prompt         |
-| Amp            | Unavailable       | None                        | No remediation prompt         |
+| Cursor         | Finding-only O    | None                        | Current M/K inventory; no remediation prompt |
+| GitHub Copilot | Supported S/O     | None                        | Current M/K inventory; no remediation prompt |
+| Cline          | Finding-only S/O  | None                        | Current M/K inventory; no remediation prompt |
+| Kiro           | Unavailable       | None                        | Current M/K inventory; no remediation prompt |
+| Amp            | Finding-only D/O  | None                        | Current M/K inventory; no remediation prompt |
 | Pi             | Supported         | Model and reasoning         | Prompts for D, T, S, O, and C |
-| Antigravity    | Finding-only D/O  | None                        | Prompts for D and O           |
-| Windsurf       | Unavailable       | None                        | No remediation prompt         |
+| Antigravity    | Finding-only D/O  | None                        | Current M/K inventory; prompts for D and O |
+| Devin          | Finding-only S    | None                        | Current M/K inventory; no remediation prompt |
 
 Each Auto Fix changes one winning control after a separate review and
 confirmation. It changes a global or user control when projects inherit it, and
@@ -295,5 +295,5 @@ rather than staying silent.
 If an agent on this list is not discovered on a supported platform, that is a bug —
 please open an issue with the agent, its version, your platform, and where its
 session files live. Not sure it is a bug? Ask in the
-[antiburn Slack](https://antiburn.ai/slack) first. Security issues go to the
+[antiburn Slack](https://antiburn.com/slack) first. Security issues go to the
 private channel in [`SECURITY.md`](../SECURITY.md) instead.

@@ -1,0 +1,8 @@
+{"family":"copilot","case":"missing_parent"}
+{"family":"cline","case":"conflicting_model"}
+{"family":"amp","case":"duplicate_usage"}
+{"family":"devin_local","case":"duplicate_tool_call"}
+{"family":"devin_local","case":"acp_conflicting"}
+{"family":"antigravity","case":"malformed_proto"}
+{"family":"kiro","case":"changed_companion"}
+{"family":"cursor","case":"task_without_usage"}

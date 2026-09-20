@@ -85,6 +85,12 @@ impl SessionReader for OpenCodeSessionReader {
             RawSource::KiroCliV2Bundle { .. } => {
                 anyhow::bail!("Kiro bundle is not an OpenCode source")
             }
+            RawSource::KiroCliV3Bundle { .. } => {
+                anyhow::bail!("Kiro bundle is not an OpenCode source")
+            }
+            RawSource::CopilotCliBundle { .. } => {
+                anyhow::bail!("Copilot bundle is not an OpenCode source")
+            }
         };
         if input.fork_parent_session_id.is_some() {
             summary

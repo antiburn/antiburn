@@ -8,7 +8,7 @@ use antiburn_local::analysis::{
 use antiburn_local::insights::{
     BadgeStatus, CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport,
     EfficiencyReportAccumulator, ReportCatalogs, ReportContext, ReportWindow, clean_facts_complete,
-    session_badges,
+    eligible, session_badges,
 };
 
 macro_rules! source_formats {
@@ -54,6 +54,7 @@ source_formats! {
     WindsurfWorkspaceJson => "windsurf_workspace_json",
     WindsurfMirrorJson => "windsurf_mirror_json",
     WindsurfCascadeProtobuf => "windsurf_cascade_protobuf",
+    DevinLocalSqlite => "devin_local_sqlite",
     Uncharacterized => "uncharacterized",
 }
 
@@ -104,8 +105,7 @@ fn source_capabilities(format: SourceFormat) -> SourceCapabilities {
         | SourceFormat::AntigravityCascadeJson
         | SourceFormat::AntigravityWorkspaceChatJson
         | SourceFormat::AntigravitySqlite => SourceCapabilities::antigravity(),
-        SourceFormat::CopilotCliJsonl
-        | SourceFormat::CopilotIdeChatJson
+        SourceFormat::CopilotIdeChatJson
         | SourceFormat::ClineSessionJson
         | SourceFormat::KiroSessionJson
         | SourceFormat::KiroChat
@@ -117,7 +117,9 @@ fn source_capabilities(format: SourceFormat) -> SourceCapabilities {
         | SourceFormat::WindsurfWorkspaceJson
         | SourceFormat::WindsurfMirrorJson
         | SourceFormat::WindsurfCascadeProtobuf
+        | SourceFormat::DevinLocalSqlite
         | SourceFormat::Uncharacterized => SourceCapabilities::uncharacterized(format),
+        SourceFormat::CopilotCliJsonl => SourceCapabilities::copilot(),
         SourceFormat::ClineMessagesContractV1 => SourceCapabilities::cline_messages_contract_v1(),
     };
     capabilities.source_format = format;
@@ -225,6 +227,104 @@ fn source_formats_outside_the_clean_allowlist_deny_clean_with_synthetic_complete
 }
 
 #[test]
+fn approved_clean_gates_require_complete_facts() {
+    let mut row = complete_evidence(SourceFormat::CopilotCliJsonl);
+    row.capabilities = SourceCapabilities::copilot();
+    row.capabilities.source_format = SourceFormat::CopilotCliJsonl;
+    for detector in [
+        DetectorId::SessionsOverDepth,
+        DetectorId::OverpoweredSubagents,
+    ] {
+        assert!(clean_facts_complete(detector, &row), "{detector:?}");
+    }
+    row.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
+    for detector in [
+        DetectorId::SessionsOverDepth,
+        DetectorId::OverpoweredSubagents,
+    ] {
+        assert!(!clean_facts_complete(detector, &row), "{detector:?}");
+    }
+}
+
+#[test]
+fn approved_finding_only_limits_never_turn_complete_facts_into_clean() {
+    for format in [
+        SourceFormat::ClineMessagesContractV1,
+        SourceFormat::AmpThreadJson,
+        SourceFormat::DevinLocalSqlite,
+    ] {
+        let row = complete_evidence(format);
+        for detector in DetectorId::ALL {
+            assert!(
+                !clean_facts_complete(detector, &row),
+                "{format:?}/{detector:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn approved_unavailable_limits_remain_unavailable() {
+    for (format, capabilities, detectors) in [
+        (
+            SourceFormat::CursorJsonl,
+            SourceCapabilities::cursor(),
+            vec![
+                DetectorId::SessionsOverDepth,
+                DetectorId::OverpoweredSubagents,
+                DetectorId::CacheChurn,
+            ],
+        ),
+        (
+            SourceFormat::AntigravityBrainJsonl,
+            SourceCapabilities::antigravity(),
+            vec![DetectorId::OverpoweredSubagents, DetectorId::CacheChurn],
+        ),
+        (
+            SourceFormat::KiroCliV2Bundle,
+            SourceCapabilities::uncharacterized(SourceFormat::KiroCliV2Bundle),
+            vec![
+                DetectorId::SessionsOverDepth,
+                DetectorId::OverpoweredSubagents,
+                DetectorId::CacheChurn,
+            ],
+        ),
+    ] {
+        let mut row = complete_evidence(format);
+        row.capabilities = capabilities;
+        row.capabilities.source_format = format;
+        for detector in detectors {
+            assert!(!eligible(detector, &row), "{format:?}/{detector:?}");
+        }
+    }
+}
+
+#[test]
+fn non_core_control_and_cache_checks_do_not_gain_clean_applicability() {
+    for format in [
+        SourceFormat::CursorJsonl,
+        SourceFormat::ClineMessagesContractV1,
+        SourceFormat::KiroCliV2Bundle,
+        SourceFormat::AmpThreadJson,
+        SourceFormat::AntigravityBrainJsonl,
+        SourceFormat::DevinLocalSqlite,
+        SourceFormat::WindsurfWorkspaceJson,
+    ] {
+        let row = complete_evidence(format);
+        for detector in [
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::OveruseOfFastMode,
+            DetectorId::CacheChurn,
+        ] {
+            assert!(
+                !clean_facts_complete(detector, &row),
+                "{format:?}/{detector:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     const CHECK_COVERAGE: &str = include_str!("../../../docs/check-coverage.md");
     const SESSION_COVERAGE: &str = include_str!("../../../docs/session-coverage.md");
@@ -272,13 +372,10 @@ fn public_burn_check_table_keeps_fail_closed_readers_unavailable() {
         })
         .collect();
 
-    for agent in ["Cline", "Kiro", "Amp", "Windsurf"] {
-        assert_eq!(
-            results.get(agent),
-            Some(&"Unavailable".to_owned()),
-            "{agent}"
-        );
-    }
+    assert_eq!(results.get("Kiro"), Some(&"Unavailable".to_owned()));
+    assert_eq!(results.get("Cline"), Some(&"Finding-only S/O".to_owned()));
+    assert_eq!(results.get("Amp"), Some(&"Finding-only D/O".to_owned()));
+    assert_eq!(results.get("Devin"), Some(&"Finding-only S".to_owned()));
     assert_eq!(
         results.get("GitHub Copilot"),
         Some(&"Supported S/O".to_owned())

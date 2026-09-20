@@ -137,6 +137,12 @@ impl SessionReader for CodexSessionReader {
                 RawSource::KiroCliV2Bundle { .. } => {
                     anyhow::bail!("Kiro bundle is not a Codex source")
                 }
+                RawSource::KiroCliV3Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a Codex source")
+                }
+                RawSource::CopilotCliBundle { .. } => {
+                    anyhow::bail!("Copilot bundle is not a Codex source")
+                }
             };
             let summary = state.finish(sink);
             sink.finish(summary);
@@ -1178,6 +1184,7 @@ const CODEX_DISPATCHED_TYPES: &[&str] = &[
     "compaction",
     "context_compaction",
     "context_compacted",
+    "thread_rolled_back",
     "token_count",
     "token_usage_record",
     "compacted",
@@ -1492,7 +1499,7 @@ fn record_to_event(record: &Value) -> Option<NormalizedEvent> {
         ("response_item", _) if payload.contains_key("name") => function_call_event(payload, ts),
         ("event_msg", "token_count") => token_count_event(payload, ts),
         ("token_usage_record", _) => token_usage_record_event(payload, ts),
-        ("event_msg", "context_compacted") => Some(compaction_event(ts)),
+        ("event_msg", "context_compacted" | "thread_rolled_back") => Some(compaction_event(ts)),
         ("compacted", _) => Some(compaction_event(ts)),
         _ => None,
     }
@@ -2506,7 +2513,7 @@ mod tests {
         // variants' `http_status_code` to a `ServerError` or `Connection`
         // provider incident, through the new `transport_incident_kind`
         // helper; this changed the fingerprinted byte range.
-        const EXPECTED_FINGERPRINT: u64 = 5_782_876_435_163_781_937;
+        const EXPECTED_FINGERPRINT: u64 = 4_585_503_107_976_151_855;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -3020,6 +3027,24 @@ mod tests {
         assert_eq!(coverage, crate::analysis::RecordCoverage::Partial);
         assert_eq!(streamed.events, legacy_events);
         assert!(streamed.events.is_empty());
+    }
+
+    #[test]
+    fn thread_rollback_is_a_request_history_boundary() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-09-01T05:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T05:00:01Z","type":"event_msg","payload":{"type":"thread_rolled_back"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-01T05:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#,
+            "\n",
+        );
+        let (coverage, session) = collect_synthetic_codex(jsonl);
+        assert_eq!(coverage, crate::analysis::RecordCoverage::Complete);
+        assert_eq!(session.events.len(), 3);
+        assert!(session.events[1].is_compaction_boundary);
+        assert_eq!(session.events[0].role, Role::Assistant);
+        assert_eq!(session.events[2].role, Role::Assistant);
     }
 
     #[test]

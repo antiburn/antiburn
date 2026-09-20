@@ -134,12 +134,12 @@
     },
     "provenance": {
       "analyzerRevision": 24,
-      "evidenceSchemaRevision": 19,
+      "evidenceSchemaRevision": 20,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 38,
+      "parserRevision": 39,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -149,7 +149,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 19,
+    "schemaRevision": 20,
     "subagents": {
       "state": "unsupported"
     },

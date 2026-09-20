@@ -109,6 +109,7 @@ export type BurnCheckSourceFormat =
   | "windsurfWorkspaceJson"
   | "windsurfMirrorJson"
   | "windsurfCascadeProtobuf"
+  | "devinLocalSqlite"
   | "uncharacterized"
 
 export interface BurnCheckFindingPayload {

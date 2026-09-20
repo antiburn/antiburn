@@ -39,6 +39,16 @@ pub enum RawSource {
         metadata_path: PathBuf,
         messages_path: PathBuf,
     },
+    /// Kiro CLI V3 session metadata and its matching messages journal.
+    KiroCliV3Bundle {
+        metadata_path: PathBuf,
+        messages_path: PathBuf,
+    },
+    /// Copilot CLI events and the matching request-usage database snapshot.
+    CopilotCliBundle {
+        events_path: PathBuf,
+        db_path: PathBuf,
+    },
 }
 
 /// One unit of work handed to the analysis pipeline: a single live session.

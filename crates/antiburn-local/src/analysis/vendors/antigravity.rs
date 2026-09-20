@@ -655,24 +655,34 @@ struct ChatMetadata<'a> {
     model: &'a str,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct UsageInvocation {
     usage: Usage,
-    identity: u64,
+    identity: Vec<u8>,
 }
 
 #[derive(Default)]
 struct DatabaseUsageState {
-    models: HashMap<u64, String>,
-    seen: HashSet<u64>,
+    models: HashMap<Vec<u8>, String>,
+    seen: HashSet<Vec<u8>>,
     model_saturated: bool,
     seen_saturated: bool,
     reported_limit: bool,
+    model_conflict_reported: bool,
 }
 
 impl DatabaseUsageState {
-    fn record_model(&mut self, identity: u64, model: &str, sink: &mut dyn RecordSink) {
-        if self.models.contains_key(&identity) || self.model_saturated {
+    fn record_model(&mut self, identity: Vec<u8>, model: &str, sink: &mut dyn RecordSink) {
+        if let Some(previous) = self.models.get(&identity) {
+            if previous != model && !self.model_conflict_reported {
+                self.model_conflict_reported = true;
+                sink.record(NormalizedRecord::Unusable(
+                    PartialReason::AttributionIncomplete,
+                ));
+            }
+            return;
+        }
+        if self.model_saturated {
             return;
         }
         if self.models.len() == MAX_TRACKED_RESPONSE_IDS {
@@ -699,10 +709,19 @@ impl DatabaseUsageState {
             self.report_limit(sink);
             return;
         }
-        self.seen.insert(invocation.identity);
+        self.seen.insert(invocation.identity.clone());
         let model = direct_model
             .map(str::to_owned)
             .or_else(|| self.models.get(&invocation.identity).cloned());
+        if let (Some(direct), Some(joined)) = (direct_model, self.models.get(&invocation.identity))
+            && direct != joined
+            && !self.model_conflict_reported
+        {
+            self.model_conflict_reported = true;
+            sink.record(NormalizedRecord::Unusable(
+                PartialReason::AttributionIncomplete,
+            ));
+        }
         let mut event = NormalizedEvent::new(Role::Assistant);
         event.ts_ms = ts_ms;
         event.usage = invocation.usage;
@@ -1057,14 +1076,7 @@ fn decode_usage(data: &[u8]) -> Option<UsageInvocation> {
             // Antigravity does not report a one-hour cache-write split.
             cache_creation_1h_tokens: 0,
         },
-        identity: identity_hash(identity),
-    })
-}
-
-/// A collision suppresses one usage event. It cannot cause duplicate accounting.
-fn identity_hash(identity: &[u8]) -> u64 {
-    identity.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        identity: identity.to_vec(),
     })
 }
 
@@ -2710,6 +2722,8 @@ mod tests {
             RawSource::Jsonl(_) => crate::analysis::SourceFormat::AntigravityBrainJsonl,
             RawSource::ClineBundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
             RawSource::KiroCliV2Bundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
+            RawSource::KiroCliV3Bundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
+            RawSource::CopilotCliBundle { .. } => crate::analysis::SourceFormat::Uncharacterized,
         };
         SessionInput {
             agent: "antigravity".to_owned(),
@@ -3389,17 +3403,17 @@ mod tests {
     fn protobuf_decoder_handles_output_rules_and_identity_fallbacks() {
         let split = decode_usage(&usage_blob(12, "provider", 5, None, 4, 3)).unwrap();
         assert_eq!(split.usage.output_tokens, 7);
-        assert_eq!(split.identity, identity_hash(b"provider"));
+        assert_eq!(split.identity, b"provider".to_vec());
 
         let message = decode_usage(&usage_blob(7, "message", 5, Some(7), 4, 3)).unwrap();
-        assert_eq!(message.identity, identity_hash(b"message"));
+        assert_eq!(message.identity, b"message".to_vec());
 
         let mut all_identities = usage_blob(7, "message", 5, Some(7), 4, 3);
         protobuf_field_bytes(12, b"provider", &mut all_identities);
         protobuf_field_bytes(11, b"response", &mut all_identities);
         assert_eq!(
             decode_usage(&all_identities).unwrap().identity,
-            identity_hash(b"response")
+            b"response".to_vec()
         );
 
         assert!(decode_usage(&usage_blob(11, "drift", 5, Some(8), 4, 3)).is_none());
@@ -3650,7 +3664,11 @@ mod tests {
         let mut state = DatabaseUsageState::default();
         let mut collector = SessionCollector::new("antigravity", "bounded-identities");
         for identity in 0..=MAX_TRACKED_RESPONSE_IDS as u64 {
-            state.record_model(identity, "gemini-3.6-flash", &mut collector);
+            state.record_model(
+                identity.to_be_bytes().to_vec(),
+                "gemini-3.6-flash",
+                &mut collector,
+            );
         }
 
         assert_eq!(state.models.len(), MAX_TRACKED_RESPONSE_IDS);
