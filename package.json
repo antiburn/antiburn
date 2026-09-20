@@ -25,6 +25,6 @@
     "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
     "aislop": "^0.16.1",
     "secretlint": "13.0.5",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.1"
   }
 }
