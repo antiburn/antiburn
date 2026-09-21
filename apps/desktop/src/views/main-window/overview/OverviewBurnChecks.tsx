@@ -4,6 +4,7 @@ import type { ChecksCategoryPayload, ChecksReportPayload } from "../../../lib/in
 import { checksPresentation } from "../../../lib/presentation/checks"
 import { sessionCountLabel } from "../../../lib/presentation/providerUsage"
 import { checkRowPresentation } from "../../checks/checkUi"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
 
 import { Skeleton } from "../../../components/ui/Skeleton"
 
@@ -38,10 +39,16 @@ function rankedFailures(failures: readonly ChecksCategoryPayload[]): ChecksCateg
  * evidence in flight and no finding yet reads as pending, never as a clean
  * pass: an unsettled zero is not a result.
  */
-function overviewChecksSummary(report: ChecksReportPayload): OverviewChecksSummary {
-  const presentation = checksPresentation(report)
+function overviewChecksSummary(
+  report: ChecksReportPayload,
+  snoozed: ReadonlySet<ChecksCategoryPayload["id"]>,
+): OverviewChecksSummary {
+  const presentation = checksPresentation(report, false, snoozed)
   const failures = rankedFailures(presentation.failures)
+  const awaiting = presentation.awaiting ?? []
   const passed = presentation.wins.length
+  const activeCount =
+    failures.length + awaiting.length + passed + presentation.unavailable.length
   if (failures.length > 0) {
     return {
       state: "findings",
@@ -53,13 +60,22 @@ function overviewChecksSummary(report: ChecksReportPayload): OverviewChecksSumma
       rows: failures.slice(0, OVERVIEW_FINDING_ROWS),
     }
   }
+  if (awaiting.length > 0) {
+    return {
+      state: "pending",
+      footer: `${awaiting.length} check${awaiting.length === 1 ? "" : "s"} awaiting verification.`,
+      rows: [],
+    }
+  }
   if (report.evidenceSettled && passed > 0) {
     return { state: "passed", footer: "Nothing to review right now.", rows: [] }
   }
   return {
     state: "pending",
     footer: report.evidenceSettled
-      ? "Findings appear after the first scan."
+      ? activeCount === 0
+        ? "No active checks."
+        : "Findings appear after the first scan."
       : "Results appear when the scan finishes.",
     rows: [],
   }
@@ -81,7 +97,8 @@ export function OverviewBurnChecks({
   loading?: boolean
   onOpen: () => void
 }) {
-  const summary = report ? overviewChecksSummary(report) : null
+  const snoozed = snoozedDetectorIds(useSnoozedBurnChecks())
+  const summary = report ? overviewChecksSummary(report, snoozed) : null
   const FooterIcon = summary?.state === "passed" ? CheckCircle2 : CircleDashed
   return (
     <section

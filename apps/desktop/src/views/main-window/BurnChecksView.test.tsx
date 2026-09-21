@@ -67,6 +67,7 @@ const report: ChecksReportPayload = {
       clean: 2,
       unavailable: 0,
       estimatedTokenBurnBasisPoints: 800,
+      lifecycle: "failing",
     },
     {
       id: "unusedSkills",
@@ -74,6 +75,7 @@ const report: ChecksReportPayload = {
       clean: 3,
       unavailable: 0,
       estimatedTokenBurnBasisPoints: 0,
+      lifecycle: "passing",
     },
     {
       id: "cacheChurn",
@@ -81,6 +83,7 @@ const report: ChecksReportPayload = {
       clean: 0,
       unavailable: 3,
       estimatedTokenBurnBasisPoints: null,
+      lifecycle: null,
     },
   ],
 }
@@ -89,6 +92,14 @@ const namedTargetReport: ChecksReportPayload = {
   ...report,
   categories: [
     { ...report.categories[0]!, id: "unusedMcpServers" },
+    ...report.categories.slice(1),
+  ],
+}
+
+const passedTargetReport: ChecksReportPayload = {
+  ...report,
+  categories: [
+    { ...report.categories[0]!, lifecycle: "passing" },
     ...report.categories.slice(1),
   ],
 }
@@ -151,6 +162,7 @@ const aggregate: AggregateWinsPayload = {
   wins: [
     {
       findingId: "win-1",
+      remediationCycleId: "cycle-1",
       detector: "oldModelUsage",
       origin: "action",
       display: target.display,
@@ -322,6 +334,7 @@ describe("BurnChecksView", () => {
           clean: 1,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 400,
+          lifecycle: "failing",
         },
         report.categories[1]!,
       ],
@@ -377,6 +390,7 @@ describe("BurnChecksView", () => {
           clean: 1,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 400,
+          lifecycle: "failing",
         },
       ],
     })
@@ -406,7 +420,7 @@ describe("BurnChecksView", () => {
     ).toHaveAttribute("aria-pressed", "true")
     vi.mocked(adapter.getReport).mockResolvedValue({
       ...report,
-      categories: [{ ...report.categories[0]!, finding: 0, clean: 4 }],
+      categories: [{ ...report.categories[0]!, finding: 0, clean: 4, lifecycle: "passing" }],
     })
     act(() => session.refresh())
 
@@ -419,7 +433,7 @@ describe("BurnChecksView", () => {
       "burn-checks-passed-body",
     )
     expect(document.getElementById("burn-checks-passed-body")).toBeVisible()
-    expect(screen.getByRole("button", { name: /Old model usage.*0 failed/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /Old model usage.*Passed/ })).toHaveAttribute(
       "aria-pressed",
       "true",
     )
@@ -435,12 +449,12 @@ describe("BurnChecksView", () => {
     expect(screen.queryByText("1 check not assessed.")).not.toBeInTheDocument()
     vi.mocked(adapter.getReport).mockResolvedValue({
       ...report,
-      categories: [{ ...report.categories[1]!, finding: 0, clean: 3 }],
+      categories: [{ ...report.categories[1]!, finding: 0, clean: 3, lifecycle: "passing" }],
     })
     act(() => session.refresh())
 
     expect(
-      await screen.findByRole("button", { name: /Unused skills.*0 failed/ }),
+      await screen.findByRole("button", { name: /Unused skills.*Passed/ }),
     ).toHaveAttribute("aria-pressed", "true")
   })
 
@@ -456,6 +470,7 @@ describe("BurnChecksView", () => {
           clean: 1,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 400,
+          lifecycle: "failing",
         },
       ],
     }
@@ -542,6 +557,12 @@ describe("BurnChecksView", () => {
         savings: { status: "pending" },
       },
     }
+    const awaitingReport: ChecksReportPayload = {
+      ...report,
+      categories: report.categories.map((check) =>
+        check.id === "oldModelUsage" ? { ...check, lifecycle: "awaitingVerification" } : check,
+      ),
+    }
 
     function mockSnoozes(initial: readonly SnoozedBurnChecks.SnoozedBurnCheck[]) {
       let records = initial
@@ -566,15 +587,11 @@ describe("BurnChecksView", () => {
 
     afterEach(() => vi.restoreAllMocks())
 
-    it("shows awaiting in the header and collection once target details load", async () => {
+    it("shows awaiting from the report before target details load", async () => {
       const pending = deferred<BurnCheckTargetPayload[]>()
-      setup(pending.promise, false, aggregate, report)
+      setup(pending.promise, false, aggregate, awaitingReport)
       const heading = await screen.findByRole("heading", { name: "Old model usage", level: 2 })
       const header = heading.closest("header")!
-      expect(within(header).queryByText("Awaiting verification")).not.toBeInTheDocument()
-
-      await act(async () => pending.resolve([watchingTarget]))
-
       const badge = await within(header).findByText("Awaiting verification")
       expect(badge.closest("button")).toBeNull()
       expect(header).toHaveTextContent("1 failed")
@@ -589,6 +606,7 @@ describe("BurnChecksView", () => {
       expect(
         screen.queryByText("A later complete session confirms each change."),
       ).not.toBeInTheDocument()
+      await act(async () => pending.resolve([watchingTarget]))
     })
 
     it.each([
@@ -614,7 +632,7 @@ describe("BurnChecksView", () => {
       async (until) => {
         const setSnoozes = mockSnoozes([{ detector: "oldModelUsage", scope: "check", until }])
         const unsnooze = vi.spyOn(SnoozedBurnChecks, "unsnoozeBurnCheck").mockResolvedValue()
-        const { session } = setup(watchingTarget, false, aggregate, report)
+        const { session } = setup(watchingTarget, false, aggregate, awaitingReport)
         fireEvent.click(await screen.findByRole("button", { name: "Snoozed 1" }))
         fireEvent.click(screen.getByRole("button", { name: /Old model usage/ }))
         await waitFor(() =>
@@ -663,6 +681,21 @@ describe("BurnChecksView", () => {
         "aria-pressed",
         "true",
       )
+    })
+
+    it("shows no active checks when every assessed check is snoozed", async () => {
+      mockSnoozes([
+        { detector: "oldModelUsage", scope: "check", until: null },
+        { detector: "unusedSkills", scope: "check", until: null },
+      ])
+      setup(target, false, aggregate, report)
+
+      expect(await screen.findByRole("button", { name: "Snoozed 2" })).toBeVisible()
+      expect(screen.queryByRole("button", { name: /Old model usage/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /Unused skills/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole("heading", { name: "Failed checks 1" })).not.toBeInTheDocument()
+      expect(screen.queryByRole("region", { name: "Savings" })).not.toBeInTheDocument()
+      expect(screen.getByText("No active checks.")).toBeVisible()
     })
 
     it("keeps ordinary passed checks free of state badges", async () => {
@@ -756,6 +789,7 @@ describe("BurnChecksView", () => {
             clean: 4,
             unavailable: 0,
             estimatedTokenBurnBasisPoints: 0,
+            lifecycle: "passing",
           },
         ],
       },
@@ -785,11 +819,7 @@ describe("BurnChecksView", () => {
     expect(screen.queryByText("Excess cache rehydration")).not.toBeInTheDocument()
     expect(screen.queryByText(/check results are assessed/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Evidence work is still in progress/)).not.toBeInTheDocument()
-    expect(
-      within(screen.getByRole("region", { name: "Your savings" })).getByText(
-        "2 improvements across 1 check",
-      ),
-    ).toBeVisible()
+    expect(screen.queryByRole("region", { name: "Your savings" })).not.toBeInTheDocument()
     expect(
       await screen.findByText(
         "Some sessions used an older model when a newer one was available.",
@@ -903,6 +933,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 800,
+          lifecycle: "failing",
         },
         {
           id: "modelOverthinking",
@@ -910,6 +941,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 350,
+          lifecycle: "failing",
         },
         {
           id: "overpoweredSubagents",
@@ -917,6 +949,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 880,
+          lifecycle: "failing",
         },
         {
           id: "unusedMcpServers",
@@ -924,6 +957,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 100,
+          lifecycle: "failing",
         },
         {
           id: "unusedBuiltInTools",
@@ -931,6 +965,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 1,
+          lifecycle: "failing",
         },
         {
           id: "unusedSkills",
@@ -938,6 +973,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 100,
+          lifecycle: "failing",
         },
         {
           id: "oldModelUsage",
@@ -945,6 +981,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 400,
+          lifecycle: "failing",
         },
         {
           id: "overuseOfFastMode",
@@ -952,6 +989,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 333,
+          lifecycle: "failing",
         },
         {
           id: "cacheChurn",
@@ -959,6 +997,7 @@ describe("BurnChecksView", () => {
           clean: 0,
           unavailable: 0,
           estimatedTokenBurnBasisPoints: 700,
+          lifecycle: "failing",
         },
       ],
     }
@@ -1160,18 +1199,22 @@ describe("BurnChecksView", () => {
   })
 
   it("confirms an applied change", async () => {
-    commands.apply.mockResolvedValueOnce({ outcome: "applied" })
+    commands.apply.mockResolvedValueOnce({
+      outcome: "appliedAwaitingVerification",
+      watchId: "watch-1",
+    })
     setup()
 
     fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
     const dialog = await screen.findByRole("dialog", { name: "Review change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Change applied.")
-    expect(commands.noteInteraction).toHaveBeenCalledWith({
-      kind: "burnCheckAutoFixCompleted",
-      outcome: "applied_verification_unavailable",
-    })
+    await waitFor(() =>
+      expect(commands.noteInteraction).toHaveBeenCalledWith({
+        kind: "burnCheckAutoFixCompleted",
+        outcome: "applied_awaiting_verification",
+      }),
+    )
   })
 
   it("reviews and applies all selected automatic fixes", async () => {
@@ -1672,6 +1715,11 @@ describe("BurnChecksView", () => {
   })
 
   it("retries clipboard failure without creating a second backend action", async () => {
+    const prompt = "Batch backend prompt\n\nRemediation reference: ABR-shared-group"
+    commands.copyBatch.mockResolvedValueOnce({
+      outcome: "promptReady",
+      prompt,
+    })
     commands.writeClipboardText
       .mockRejectedValueOnce(new Error("Denied"))
       .mockResolvedValueOnce(undefined)
@@ -1683,6 +1731,8 @@ describe("BurnChecksView", () => {
     await screen.findByRole("button", { name: "Copied" })
     expect(commands.copyBatch).toHaveBeenCalledOnce()
     expect(commands.writeClipboardText).toHaveBeenCalledTimes(2)
+    expect(commands.writeClipboardText).toHaveBeenNthCalledWith(1, prompt)
+    expect(commands.writeClipboardText).toHaveBeenNthCalledWith(2, prompt)
     expect(screen.queryByText(/clipboard access/i)).not.toBeInTheDocument()
     expect(commands.noteInteraction.mock.calls).toEqual(
       expect.arrayContaining([
@@ -2095,50 +2145,98 @@ describe("BurnChecksView", () => {
     expect(screen.queryByText(/ opportunity$/)).not.toBeInTheDocument()
   })
 
-  it("groups aggregate wins and states partial metric coverage", async () => {
-    setup(target, false, {
-      wins: [
-        aggregate.wins[0]!,
-        {
-          ...aggregate.wins[0]!,
-          findingId: "win-2",
-          savings: {
-            tokenSavings: 1200,
-            apiEquivalentCostAvoidedUsd: null,
-            improvementCount: null,
-            method: null,
+  it("shows aggregate savings for a passed check", async () => {
+    setup(
+      target,
+      false,
+      {
+        wins: [
+          aggregate.wins[0]!,
+          {
+            ...aggregate.wins[0]!,
+            findingId: "win-2",
+            display: {
+              ...aggregate.wins[0]!.display,
+              estimatedOpportunity: { value: 400, unit: "literalInputTokens" },
+            },
+            savings: {
+              tokenSavings: 1200,
+              apiEquivalentCostAvoidedUsd: null,
+              improvementCount: null,
+              method: null,
+            },
           },
-        },
-      ],
-    })
+        ],
+      },
+      passedTargetReport,
+    )
 
-    const savings = await screen.findByRole("region", { name: "Your savings" })
-    expect(within(savings).getByText("2 verified wins")).toBeVisible()
-    expect(within(savings).getAllByText("~1,200 saved from 1 of 2 wins")).toHaveLength(2)
-    expect(within(savings).getAllByText("~$1.25 saved from 1 of 2 wins")).toHaveLength(2)
-    expect(within(savings).getByText("Count known for 1 of 2 wins")).toBeVisible()
+    const savings = await screen.findByRole("region", { name: "Savings" })
+    expect(within(savings).getByText("2 active passed checks")).toBeVisible()
+    expect(within(savings).getAllByText("~400 input tokens projected")).toHaveLength(2)
+    expect(
+      within(savings).getAllByText("~1,200 tokens confirmed from 1 of 2 passed checks"),
+    ).toHaveLength(2)
+    expect(
+      within(savings).getAllByText("~$1.25 confirmed from 1 of 2 passed checks"),
+    ).toHaveLength(2)
+    expect(within(savings).getByRole("button", { name: "Details" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    )
   })
 
   it("pairs authoritative token and cost totals that cover the same wins", async () => {
-    setup(target, false, {
-      wins: [
-        {
-          ...aggregate.wins[0]!,
-          savings: {
-            tokenSavings: 1200,
-            apiEquivalentCostAvoidedUsd: 1.25,
-            improvementCount: 2,
-            method: "oldModelPriceDifference",
+    setup(
+      target,
+      false,
+      {
+        wins: [
+          {
+            ...aggregate.wins[0]!,
+            savings: {
+              tokenSavings: 1200,
+              apiEquivalentCostAvoidedUsd: 1.25,
+              improvementCount: 2,
+              method: "oldModelPriceDifference",
+            },
           },
-        },
-      ],
-    })
+        ],
+      },
+      passedTargetReport,
+    )
 
-    const savings = await screen.findByRole("region", { name: "Your savings" })
-    const total = within(savings).getByText("~1,200 · ~$1.25 saved")
-    expect(total).toBeVisible()
-    expect(total).toHaveClass("text-label-secondary")
+    const savings = await screen.findByRole("region", { name: "Savings" })
+    expect(within(savings).getAllByText("~1,200 tokens confirmed")).toHaveLength(2)
+    expect(within(savings).getAllByText("~$1.25 confirmed")).toHaveLength(2)
+    expect(within(savings).getAllByText("Unavailable for this check.")).toHaveLength(2)
+    fireEvent.click(within(savings).getByRole("button", { name: "Details" }))
     expect(within(savings).getByText("Old model usage")).toHaveClass("text-label")
-    expect(within(savings).getByText("2 improvements across 1 check")).toBeVisible()
+  })
+
+  it("removes savings when a passed check regresses", async () => {
+    const { adapter, session } = setup(target, false, aggregate, passedTargetReport)
+
+    expect(await screen.findByRole("region", { name: "Savings" })).toBeVisible()
+
+    vi.mocked(adapter.getReport).mockResolvedValue(report)
+    act(() => session.refresh())
+
+    await screen.findByRole("heading", { name: "Failed checks 1" })
+    expect(screen.getByRole("region", { name: "Savings" })).toBeVisible()
+    expect(screen.queryByText("~$1.25 confirmed")).not.toBeInTheDocument()
+  })
+
+  it("shows pending confirmed savings and the approved tooltip text", async () => {
+    setup(target, false, { wins: [] }, passedTargetReport)
+
+    const savings = await screen.findByRole("region", { name: "Savings" })
+    expect(within(savings).getByText("Pending recent usage.")).toBeVisible()
+    fireEvent.focus(within(savings).getByRole("button", { name: "About confirmed savings" }))
+    expect(
+      await screen.findByText(
+        "Savings observed across sessions that passed after remediation. This is still an estimate and may not match provider billing exactly.",
+      ),
+    ).toBeVisible()
   })
 })

@@ -3,6 +3,7 @@ import {
   snoozedDetectorIds,
   useSnoozedBurnChecks,
   visibleSessionHygieneChecks,
+  visibleUnusedContextRows,
 } from "../../lib/snoozedBurnChecks"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
@@ -722,7 +723,11 @@ export function SessionDetailPresentation({
     snoozedDetectorIds(useSnoozedBurnChecks()),
   )
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
-  const unusedContextRows = unusedContextRowsFor(hygiene)
+  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
+  const unusedContextRows = visibleUnusedContextRows(
+    unusedContextRowsFor(hygiene),
+    snoozedDetectors,
+  )
 
   const handleAdjacentKey = (event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>) => {
     if (!active || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey)

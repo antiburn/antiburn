@@ -9,12 +9,15 @@ import {
 } from "./checks"
 
 function category(overrides: Partial<ChecksCategoryPayload> = {}): ChecksCategoryPayload {
+  const finding = overrides.finding ?? 5
+  const clean = overrides.clean ?? 5
   return {
     id: "cacheChurn",
-    finding: 5,
-    clean: 5,
+    finding,
+    clean,
     unavailable: 0,
     estimatedTokenBurnBasisPoints: 1_250,
+    lifecycle: finding > 0 ? "failing" : clean > 0 ? "passing" : null,
     ...overrides,
   }
 }
@@ -107,6 +110,34 @@ describe("Checks presentation", () => {
       "oldModelUsage",
     ])
     expect(presentation.unavailable).toHaveLength(1)
+  })
+
+  it("keeps a historically failing category in failures even when it also has clean evidence", () => {
+    const presentation = checksPresentation(
+      report([category({ finding: 1, clean: 8, unavailable: 0 })]),
+    )
+
+    expect(presentation.failures.map((item) => item.id)).toEqual(["cacheChurn"])
+    expect(presentation.wins).toEqual([])
+  })
+
+  it("uses the report lifecycle instead of historical counts for check groups", () => {
+    const presentation = checksPresentation(
+      report([
+        category({ id: "cacheChurn", finding: 0, clean: 8, lifecycle: "failing" }),
+        category({
+          id: "modelOverthinking",
+          finding: 4,
+          clean: 0,
+          lifecycle: "awaitingVerification",
+        }),
+        category({ id: "oldModelUsage", finding: 2, clean: 0, lifecycle: "passing" }),
+      ]),
+    )
+
+    expect(presentation.failures.map((item) => item.id)).toEqual(["cacheChurn"])
+    expect(presentation.awaiting?.map((item) => item.id)).toEqual(["modelOverthinking"])
+    expect(presentation.wins.map((item) => item.id)).toEqual(["oldModelUsage"])
   })
 
   it("does not synthesize an estimate when cohort token totals are incomplete", () => {

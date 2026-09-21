@@ -1652,7 +1652,7 @@ pub async fn get_checks_report(
     let request = insights_report_request(epoch_now());
     let reduced = app
         .state::<InsightsController>()
-        .checks_report(data_dir, request, consumer_id)
+        .checks_report(data_dir, request.clone(), consumer_id)
         .await?;
     // The report carries three measurements that no other command reduces:
     // unknown record vocabulary, quota incidents, and provider incidents.
@@ -1661,7 +1661,17 @@ pub async fn get_checks_report(
     crate::analytics::record_unrecognized_records(app, &reduced.report.unrecognized_records);
     crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
     crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
-    let payload = ChecksReportPayload::from_reduced_report(&reduced);
+    let mut payload = ChecksReportPayload::from_reduced_report(&reduced);
+    app.state::<RemediationController>()
+        .apply_category_lifecycles(
+            &app.state::<Store>(),
+            &mut payload,
+            BurnCheckTargetContext {
+                environment_key: request.environment_key,
+                window: request.window,
+            },
+        )
+        .map_err(fail)?;
     #[cfg(debug_assertions)]
     let payload = {
         let mut payload = payload;
@@ -1848,13 +1858,11 @@ fn apply_prepared_outcome(
     use crate::agent_config::ApplyError;
 
     match result {
-        Ok(result) => Ok(if result.verification_available {
+        Ok(result) => Ok(
             ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification {
                 watch_id: result.watch_id,
-            }
-        } else {
-            ApplyPreparedBurnCheckOperationOutcome::Applied
-        }),
+            },
+        ),
         Err(ControllerError::RecoveryNeeded { watch_id }) => {
             Ok(ApplyPreparedBurnCheckOperationOutcome::RecoveryNeeded { watch_id })
         }
@@ -3120,23 +3128,17 @@ mod tests {
     }
 
     #[test]
-    fn auto_fix_success_distinguishes_verifiable_changes() {
-        assert!(matches!(
-            apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
-                watch_id: "watch".into(),
-                verification_available: true,
-            }))
-            .unwrap(),
-            ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
-        ));
-        assert!(matches!(
-            apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
-                watch_id: "watch".into(),
-                verification_available: false,
-            }))
-            .unwrap(),
-            ApplyPreparedBurnCheckOperationOutcome::Applied
-        ));
+    fn every_auto_fix_success_awaits_verification() {
+        for verification_available in [true, false] {
+            assert!(matches!(
+                apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+                    watch_id: "watch".into(),
+                    verification_available,
+                }))
+                .unwrap(),
+                ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
+            ));
+        }
     }
 
     #[test]

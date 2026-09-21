@@ -150,6 +150,44 @@ fn insert_waiting_prompt(store: &Store, remediation_id: &str, target_key: &str) 
         .unwrap();
 }
 
+fn insert_waiting_prompt_group(
+    store: &Store,
+    remediation_id: &str,
+    target_key: &str,
+    prompt_group_id: &str,
+) {
+    store
+        .lock()
+        .execute(
+            "INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                origin, prompt_group_id)
+             VALUES (?1, ?2, 'native', 'claude-code', 'project', 'scope',
+                'waitingForPromptUse', '{\"version\":1}', '{\"version\":1}', 1, 1,
+                'action', ?3)",
+            params![remediation_id, target_key, prompt_group_id],
+        )
+        .unwrap();
+}
+
+fn insert_waiting_prompt_group_with_snapshot(
+    store: &Store,
+    remediation_id: &str,
+    target_key: &str,
+    prompt_group_id: &str,
+) {
+    insert_waiting_prompt_group(store, remediation_id, target_key, prompt_group_id);
+    store
+        .lock()
+        .execute(
+            "UPDATE remediation SET origin = 'action', display_snapshot_json = ?2
+              WHERE remediation_id = ?1",
+            params![remediation_id, r#"{"version":1,"findingId":"finding"}"#],
+        )
+        .unwrap();
+}
+
 /// Advances the session's source generation past the given claim, the same
 /// way a concurrent, faster pass would before this pass tries to publish.
 fn advance_source_generation_past(store: &Store, key: &SessionKey) {
@@ -605,6 +643,91 @@ fn a_winning_ready_publication_activates_only_exact_markers_from_new_user_conten
             RemediationState::WaitingForPromptUse
         );
     }
+}
+
+#[test]
+fn a_prompt_group_marker_activates_every_selected_action_without_using_other_content() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "prompt-group-marker", 100, 60);
+    let key = record.key.clone();
+    insert_waiting_prompt_group(&store, "group-one", "target-one", "shared-group");
+    insert_waiting_prompt_group(&store, "group-two", "target-two", "shared-group");
+    insert_waiting_prompt_group(
+        &store,
+        "group-extended",
+        "target-three",
+        "shared-group-extra",
+    );
+    let writer = FencedTurnRowStore::new(store.clone(), key, claim.claim_fence);
+    writer
+        .write_turn_rows(&[
+            user_turn_with_content(0, "Remediation reference: ABR-shared-group"),
+            TurnRow {
+                content: vec![ContentPart::new(
+                    ContentKind::AssistantText,
+                    "Remediation reference: ABR-shared-group-extra",
+                )],
+                ..turn_row(1)
+            },
+        ])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    for remediation_id in ["group-one", "group-two"] {
+        assert_eq!(
+            store.remediation(remediation_id).unwrap().unwrap().state,
+            RemediationState::Watching
+        );
+    }
+    assert_eq!(
+        store.remediation("group-extended").unwrap().unwrap().state,
+        RemediationState::WaitingForPromptUse
+    );
+}
+
+#[test]
+fn prompt_activation_sets_the_action_boundary_and_dirties_only_the_activated_cycle() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "prompt-activation-boundary", 100, 60);
+    let key = record.key.clone();
+    insert_waiting_prompt_group_with_snapshot(&store, "activated", "target", "shared-group");
+    insert_waiting_prompt_group(&store, "untouched", "other-target", "other-group");
+    let writer = FencedTurnRowStore::new(store.clone(), key, claim.claim_fence);
+    writer
+        .write_turn_rows(&[user_turn_with_content(
+            0,
+            "Remediation reference: ABR-shared-group",
+        )])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+
+    let activated = store.remediation("activated").unwrap().unwrap();
+    assert_eq!(activated.state, RemediationState::Watching);
+    assert!(activated.effective_boundary_ms.is_some());
+    assert!(activated.dirty_revision > activated.evaluated_revision);
+    assert_eq!(
+        store.remediation("untouched").unwrap().unwrap().state,
+        RemediationState::WaitingForPromptUse
+    );
 }
 
 /* R6: `published_fence` itself — a winning publish stamps it, a lost race

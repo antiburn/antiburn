@@ -473,8 +473,8 @@ fn recommendation_support(
             detector,
             DetectorId::SessionsOverDepth | DetectorId::OldModelUsage
         ),
-        AgentKind::Cursor
-        | AgentKind::Copilot
+        AgentKind::Cursor => detector == DetectorId::OldModelUsage,
+        AgentKind::Copilot
         | AgentKind::Cline
         | AgentKind::Kiro
         | AgentKind::AmpCode
@@ -493,7 +493,13 @@ fn remediation_agent(agent: &str) -> Option<AgentKind> {
         "codex" => Some(AgentKind::Codex),
         "opencode" => Some(AgentKind::OpenCode),
         "pi" => Some(AgentKind::Pi),
+        "cursor" => Some(AgentKind::Cursor),
+        "copilot" | "github-copilot" => Some(AgentKind::Copilot),
+        "cline" => Some(AgentKind::Cline),
+        "kiro" => Some(AgentKind::Kiro),
+        "amp" | "amp-code" => Some(AgentKind::AmpCode),
         "antigravity" => Some(AgentKind::Antigravity),
+        "windsurf" | "devin" => Some(AgentKind::Windsurf),
         _ => None,
     }
 }
@@ -514,12 +520,41 @@ fn source_matches_agent(agent: AgentKind, source: SourceFormat) -> bool {
                 | SourceFormat::AntigravityCascadeJson
                 | SourceFormat::AntigravitySqlite
         ),
-        AgentKind::Cursor
-        | AgentKind::Copilot
-        | AgentKind::Cline
-        | AgentKind::Kiro
-        | AgentKind::AmpCode
-        | AgentKind::Windsurf => false,
+        AgentKind::Cursor => matches!(
+            source,
+            SourceFormat::CursorJsonl
+                | SourceFormat::CursorCliAgentJsonl
+                | SourceFormat::CursorCliStoreDb
+                | SourceFormat::CursorChatStoreDb
+                | SourceFormat::CursorIdeComposer
+        ),
+        AgentKind::Copilot => matches!(
+            source,
+            SourceFormat::CopilotCliJsonl | SourceFormat::CopilotIdeChatJson
+        ),
+        AgentKind::Cline => matches!(
+            source,
+            SourceFormat::ClineSessionJson | SourceFormat::ClineMessagesContractV1
+        ),
+        AgentKind::Kiro => matches!(
+            source,
+            SourceFormat::KiroSessionJson
+                | SourceFormat::KiroChat
+                | SourceFormat::KiroCliV2Bundle
+                | SourceFormat::KiroCliV3Bundle
+                | SourceFormat::KiroChatSaveExport
+        ),
+        AgentKind::AmpCode => matches!(
+            source,
+            SourceFormat::AmpThreadJson | SourceFormat::AmpFileChanges
+        ),
+        AgentKind::Windsurf => matches!(
+            source,
+            SourceFormat::WindsurfWorkspaceJson
+                | SourceFormat::WindsurfMirrorJson
+                | SourceFormat::WindsurfCascadeProtobuf
+                | SourceFormat::DevinLocalSqlite
+        ),
     }
 }
 

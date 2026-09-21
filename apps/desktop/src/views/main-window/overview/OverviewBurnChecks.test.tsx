@@ -10,7 +10,14 @@ function category(
   clean: number,
   basisPoints: number | null = null,
 ): ChecksCategoryPayload {
-  return { id, finding, clean, unavailable: 0, estimatedTokenBurnBasisPoints: basisPoints }
+  return {
+    id,
+    finding,
+    clean,
+    unavailable: 0,
+    estimatedTokenBurnBasisPoints: basisPoints,
+    lifecycle: finding > 0 ? "failing" : clean > 0 ? "passing" : null,
+  }
 }
 
 function report(

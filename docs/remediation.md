@@ -373,9 +373,26 @@ report denominator are available. Skill estimates include listing frontmatter,
 not the skill body. MCP estimates require measured indexed definitions. Other
 methods stay unknown when their inputs are absent.
 
-`Verified savings` describes a verified later transition. Every verified transition
-can store one improvement count. O can also store cumulative API-equivalent USD
-for eligible replacement activity. A rate is not a cumulative saving.
+The Passed section separates two estimates. `Estimated savings` projects the
+pre-remediation opportunity from the finding snapshot and recent usage.
+`Confirmed savings` describes eligible sessions observed after the remediation
+passes. Confirmation is pending until such usage exists. Every verified
+transition can store one improvement count. O can also store cumulative
+API-equivalent USD for eligible replacement activity. A rate is not a
+cumulative saving.
+
+The app shows both labels only for active Passed checks. Failing, Awaiting, and
+Snoozed checks do not show savings. A recurrence removes the current check from
+both totals and stops confirmed accumulation at its evidence time.
+
+## Snoozed Checks
+
+A snooze keeps the stored check state but removes that detector from active
+check groups, counts, burn totals, savings, session badges, session filters,
+session detail, and discussion prompts. The main Burn Checks page keeps snoozed
+checks in its collapsed management group, where Unsnooze restores the underlying
+state. When every assessed check is snoozed, active surfaces show `No active
+checks` instead of a passing or unassessed result.
 
 All nine estimate methods are implemented as typed calculations:
 

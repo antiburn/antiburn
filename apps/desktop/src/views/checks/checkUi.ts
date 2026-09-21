@@ -86,8 +86,12 @@ const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
 }
 
 function failedSessionSummary(category: ChecksCategoryPayload): string {
+  if (category.lifecycle === "awaitingVerification") return "Awaiting verification"
+  if (category.lifecycle === "passing") return "Passed"
   const assessed = category.finding + category.clean
-  return `${category.finding}/${assessed} session${assessed === 1 ? "" : "s"} failed`
+  return assessed > 0
+    ? `${category.finding}/${assessed} session${assessed === 1 ? "" : "s"} failed`
+    : "Check failed"
 }
 
 function tokenBurnLabel(category: ChecksCategoryPayload): string | null {
@@ -115,17 +119,26 @@ export function checkRowPresentation(
   category: ChecksCategoryPayload,
   targets?: readonly BurnCheckTargetPayload[],
 ) {
-  const failed = category.finding > 0
+  const failed = category.lifecycle === "failing"
   const metric = failed ? tokenBurnLabel(category) : null
   return {
     Icon: CHECK_ICONS[category.id],
     label: CHECK_LABELS[category.id],
-    summary: failed ? failedSessionSummary(category) : `${category.clean} passed`,
+    summary: failed
+      ? failedSessionSummary(category)
+      : category.lifecycle === "passing"
+        ? "Passed"
+        : category.lifecycle === "awaitingVerification"
+          ? "Awaiting verification"
+          : "Not assessed",
     metric,
     costLine: failed ? summedCostLine(targets) : null,
-    iconTone: failed
-      ? "bg-system-red/10 text-system-red-text"
-      : "bg-system-green/10 text-system-green",
+    iconTone:
+      category.lifecycle === "failing"
+        ? "bg-system-red/10 text-system-red-text"
+        : category.lifecycle === "passing"
+          ? "bg-system-green/10 text-system-green"
+          : "bg-surface-card text-label-secondary",
     metricTone:
       metric && category.estimatedTokenBurnBasisPoints != null
         ? tokenBurnTone(category.estimatedTokenBurnBasisPoints)

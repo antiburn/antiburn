@@ -31,6 +31,7 @@ import {
   type PopoverPeekTarget,
 } from "../lib/popoverPeekIpc"
 import { checksPresentation } from "../lib/presentation/checks"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../lib/snoozedBurnChecks"
 import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
 import { PopoverSession } from "./popover/PopoverSession"
 import { ChecksSummary } from "./popover/ChecksView"
@@ -120,8 +121,9 @@ export function PopoverView() {
   const peekPresentation: PopoverPeekData | undefined = state.usage
     ? { kind: "provider", summary: state.usage, live: state.liveUsage }
     : undefined
+  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
   const checks = state.checksReport
-    ? checksPresentation(state.checksReport, state.checksUnavailable)
+    ? checksPresentation(state.checksReport, state.checksUnavailable, snoozedDetectors)
     : null
 
   const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
@@ -271,6 +273,7 @@ export function PopoverView() {
           ) : (
             <SessionList
               entries={state.entries}
+              snoozedDetectors={snoozedDetectors}
               days={windowDays}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return

@@ -271,7 +271,7 @@ fn token_burn_estimates_use_measured_avoidable_tokens() {
     );
     assert_eq!(
         report.detector_estimated_token_burn_basis_points[DetectorId::ModelOverthinking.index()],
-        None
+        Some(1_000)
     );
     assert_eq!(
         report.detector_estimated_token_burn_basis_points[DetectorId::UnusedSkills.index()],
@@ -456,7 +456,7 @@ fn idle_sessions_exclude_built_in_tools_without_source_attribution() {
 }
 
 #[test]
-fn findings_without_a_denominator_have_no_estimate() {
+fn findings_without_a_denominator_use_a_bounded_fallback() {
     let complete = evidence_with_work("complete");
     let mut unattributed = evidence_with_work("unattributed");
     unattributed.context = EvidenceValue::Complete(ContextEvidence {
@@ -479,10 +479,18 @@ fn findings_without_a_denominator_have_no_estimate() {
 
     assert_eq!(
         report.detector_estimated_token_burn_basis_points[DetectorId::SessionsOverDepth.index()],
-        None
+        Some(500)
     );
-    assert_eq!(report.estimated_token_burn_basis_points, None);
+    assert_eq!(report.estimated_token_burn_basis_points, Some(500));
     assert_eq!(report.estimated_token_burn_for_attributed_tokens(1), None);
+}
+
+#[test]
+fn fallback_estimates_cover_each_detector_and_stay_bounded() {
+    for detector in DetectorId::ALL {
+        let estimate = fallback_token_burn_basis_points(detector, u64::MAX, 1).unwrap();
+        assert!((1..=MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS).contains(&estimate));
+    }
 }
 
 #[test]
@@ -651,7 +659,7 @@ fn token_cost_prices_one_hour_cache_writes_at_double_the_input_rate() {
 }
 
 #[test]
-fn findings_without_supported_prices_remain_unknown() {
+fn findings_without_supported_prices_use_fallbacks() {
     let all_findings = DetectorId::ALL;
     let mut token_burn = TokenBurnAccumulator::new();
     let mut token_evidence = turn_evidence(
@@ -696,7 +704,7 @@ fn findings_without_supported_prices_remain_unknown() {
         [
             Some(800),
             Some(350),
-            None,
+            Some(2_500),
             Some(100),
             Some(100),
             Some(100),
@@ -808,7 +816,7 @@ fn source_estimate_overflow_does_not_hide_other_known_estimates() {
         estimates[DetectorId::SessionsOverDepth.index()],
         Some(1_000)
     );
-    assert_eq!(estimates[DetectorId::UnusedBuiltInTools.index()], None);
+    assert_eq!(estimates[DetectorId::UnusedBuiltInTools.index()], Some(500));
 }
 
 #[test]
@@ -1224,8 +1232,8 @@ fn any_window_invocation_suppresses_the_exact_source_estimate() {
 
     let (combined, estimates, _) = token_burn.finish(&statuses);
 
-    assert_eq!(combined, None);
-    assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], None);
+    assert_eq!(combined, Some(500));
+    assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(500));
 }
 
 #[test]

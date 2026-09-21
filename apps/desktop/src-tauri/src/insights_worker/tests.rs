@@ -68,9 +68,11 @@ fn seed_dirty_remediation(store: &Store) {
     };
     assert!(store.create_or_reuse_remediation(&Remediation {
         remediation_id: "worker-remediation".into(), target_key: "worker-target".into(),
-        environment_key: "native".into(), agent: "claude-code".into(),
-        scope_kind: "session".into(), scope_key: "scope".into(), state: RemediationState::Watching,
-        definition_json: r#"{"version":1,"detector":"unused_skills","canonicalIdentity":"target","sourceFormat":"ClaudeJsonl","workspaceKey":null,"provider":null,"api":null,"oldModel":null,"replacement":null,"physicalTargetKey":null,"verificationMethodRevision":1,"savingsMethodRevision":1,"pricingRevision":null,"oldPricing":null,"replacementPricing":null}"#.into(),
+         environment_key: "native".into(), agent: "claude-code".into(),
+         scope_kind: "session".into(), scope_key: "scope".into(), state: RemediationState::Watching,
+         origin: "action".into(),
+         prompt_group_id: None,
+         definition_json: r#"{"version":1,"detector":"unused_skills","canonicalIdentity":"target","sourceFormat":"ClaudeJsonl","workspaceKey":null,"provider":null,"api":null,"oldModel":null,"replacement":null,"physicalTargetKey":null,"verificationMethodRevision":1,"savingsMethodRevision":1,"pricingRevision":null,"oldPricing":null,"replacementPricing":null}"#.into(),
         result_json: r#"{"version":1}"#.into(), created_at_epoch: 10, effective_boundary_ms: Some(10_000),
     }, &[guard]).unwrap().is_some());
 }

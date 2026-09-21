@@ -4,9 +4,11 @@ import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks
 import type { ChecksReportPayload } from "../../../lib/insightsIpc"
 import { isMacOS } from "../../../lib/platform"
 import { checksPresentation } from "../../../lib/presentation/checks"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
 
 export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {
-  const failures = report ? checksPresentation(report).failures.length : 0
+  const snoozed = snoozedDetectorIds(useSnoozedBurnChecks())
+  const failures = report ? checksPresentation(report, false, snoozed).failures.length : 0
   const FailureIcon = BURN_CHECK_MARKS.finding.Icon
   return (
     <header

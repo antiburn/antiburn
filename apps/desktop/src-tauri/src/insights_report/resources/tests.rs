@@ -24,6 +24,26 @@ fn evidence(agent: AgentKind, session_id: &str) -> SessionEvidence {
     .evidence(&TurnFacts::default())
 }
 
+#[test]
+fn resource_assessment_agents_include_every_supported_inventory_agent() {
+    assert_eq!(
+        resource_assessment_agents(),
+        [
+            AgentKind::Claude,
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::Copilot,
+            AgentKind::Cline,
+            AgentKind::OpenCode,
+            AgentKind::Kiro,
+            AgentKind::AmpCode,
+            AgentKind::Antigravity,
+            AgentKind::Windsurf,
+            AgentKind::Pi,
+        ]
+    );
+}
+
 fn inventory(agent: AgentKind, resources: Vec<AdvisoryResource>) -> ResourceInventory {
     ResourceInventory {
         agent,
@@ -783,7 +803,7 @@ fn measured_resource_session_retention_is_bounded() {
     let assessment = builder.finish(&report_with_tokens(100_000));
     let detector = assessment.detector(DetectorId::UnusedMcpServers).unwrap();
     assert_eq!(detector.targets[0].replicated_tokens, None);
-    assert_eq!(detector.estimated_token_burn_basis_points, None);
+    assert_eq!(detector.estimated_token_burn_basis_points, Some(500));
 }
 
 #[test]

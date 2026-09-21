@@ -133,6 +133,7 @@ export interface SessionFilterCounts {
 export function sessionFilterCounts(
   entries: readonly SessionListEntry[],
   hygieneSnapshot: SessionHygieneSnapshot,
+  snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
 ): SessionFilterCounts {
   let notable = 0
   let material = 0
@@ -143,7 +144,7 @@ export function sessionFilterCounts(
   for (const entry of entries) {
     if (matchesSessionFilter(entry, hygieneSnapshot, { kind: "notable" })) notable += 1
     if (matchesSessionFilter(entry, hygieneSnapshot, { kind: "material" })) material += 1
-    const counts = hygieneCountsFor(hygieneSnapshot, entry)
+    const counts = hygieneCountsFor(hygieneSnapshot, entry, snoozed)
     if (counts.failed >= 1) failing += 1
     else if (counts.passed >= 1) passing += 1
     agentCounts.set(entry.agent, (agentCounts.get(entry.agent) ?? 0) + 1)

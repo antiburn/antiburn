@@ -2,9 +2,14 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { useSyncExternalStore } from "react"
 
-import type { BurnCheckDetectorId } from "./insightsIpc"
+import type {
+  BurnCheckDetectorId,
+  ChecksCategoryPayload,
+  ChecksReportPayload,
+} from "./insightsIpc"
 import { hasShell } from "./ipc"
 import type { SessionHygieneCheck } from "./presentation/sessionHygiene"
+import type { UnusedContextRow } from "./presentation/unusedContext"
 
 const SNOOZES_CHANGED_EVENT = "checks:snoozes-changed"
 
@@ -53,7 +58,7 @@ function scheduleExpiry(): void {
 }
 
 function publish(next: SnoozedBurnCheck[]): void {
-  snapshot = next
+  snapshot = next ?? []
   scheduleExpiry()
   for (const listener of listeners) listener()
 }
@@ -78,9 +83,35 @@ export async function unsnoozeBurnCheck(detector: BurnCheckDetectorId): Promise<
 }
 
 export function snoozedDetectorIds(
-  records: readonly SnoozedBurnCheck[],
+  records: readonly SnoozedBurnCheck[] | null | undefined,
 ): ReadonlySet<BurnCheckDetectorId> {
-  return new Set(records.map((record) => record.detector))
+  return new Set((records ?? []).map((record) => record.detector))
+}
+
+/** Remove detector-level snoozes before deriving any report state. */
+export function visibleCheckCategories(
+  categories: readonly ChecksCategoryPayload[],
+  snoozed: ReadonlySet<BurnCheckDetectorId>,
+): ChecksCategoryPayload[] {
+  return categories.filter((category) => !snoozed.has(category.id))
+}
+
+export function activeChecksReport(
+  report: ChecksReportPayload,
+  snoozed: ReadonlySet<BurnCheckDetectorId>,
+): ChecksReportPayload {
+  if (snoozed.size === 0) return report
+  const categories = visibleCheckCategories(report.categories, snoozed)
+  const estimates = categories.flatMap((category) =>
+    category.finding > 0 && category.estimatedTokenBurnBasisPoints != null
+      ? [category.estimatedTokenBurnBasisPoints]
+      : [],
+  )
+  return {
+    ...report,
+    categories,
+    estimatedTokenBurnBasisPoints: estimates.length > 0 ? Math.max(...estimates) : null,
+  }
 }
 
 export function visibleSessionHygieneChecks(
@@ -90,6 +121,22 @@ export function visibleSessionHygieneChecks(
   return checks.filter((check) => {
     const detector = sessionDetectorIds[check.id]
     return !detector || !snoozed.has(detector)
+  })
+}
+
+/** Remove unused-resource rows whose detector is snoozed. */
+export function visibleUnusedContextRows(
+  rows: readonly UnusedContextRow[],
+  snoozed: ReadonlySet<BurnCheckDetectorId>,
+): UnusedContextRow[] {
+  return rows.filter((row) => {
+    const detector =
+      row.kind === "MCP server"
+        ? "unusedMcpServers"
+        : row.kind === "Built-in tool"
+          ? "unusedBuiltInTools"
+          : "unusedSkills"
+    return !snoozed.has(detector)
   })
 }
 

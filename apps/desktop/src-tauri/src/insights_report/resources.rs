@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use antiburn_local::analysis::{
     EvidenceValue, InitialContextBreakdown, SessionEvidence, SourceOrigin, ToolClass,
 };
-use antiburn_local::insights::{DetectorId, EfficiencyReport, SessionTokenBurnEvidence};
+use antiburn_local::insights::{
+    DetectorId, EfficiencyReport, SessionTokenBurnEvidence, fallback_token_burn_basis_points,
+};
 use antiburn_local::model::AgentKind;
 
 use crate::agent_config::{
@@ -181,7 +183,7 @@ pub(crate) struct ResourceAssessmentBuilder {
 
 impl ResourceAssessmentBuilder {
     pub(crate) fn mark_window_incomplete(&mut self) {
-        for agent in first_tier_agents() {
+        for agent in resource_assessment_agents() {
             for kind in resource_kinds() {
                 self.limited.insert((agent, kind));
             }
@@ -505,8 +507,15 @@ impl ResourceAssessmentBuilder {
                 .and_then(|tokens| tokens.values().copied().try_fold(0_u128, u128::checked_add));
             assessment.estimated_token_burn_basis_points = assessment
                 .replicated_tokens
-                .and_then(|tokens| report.estimated_token_burn_for_attributed_tokens(tokens));
-            let relevant_agents = first_tier_agents()
+                .and_then(|tokens| report.estimated_token_burn_for_attributed_tokens(tokens))
+                .or_else(|| {
+                    fallback_token_burn_basis_points(
+                        detector,
+                        assessment.unused_count,
+                        report.assessed_sessions,
+                    )
+                });
+            let relevant_agents = resource_assessment_agents()
                 .into_iter()
                 .filter(|agent| {
                     self.cohort_agents.contains(agent)
@@ -1198,7 +1207,10 @@ const fn resource_kinds() -> [ResourceKind; 3] {
     ]
 }
 
-pub(crate) const fn first_tier_agents() -> [AgentKind; 11] {
+/// Agents with resource evidence and inventory support.
+///
+/// Product tiers do not limit evidence assessment or remediation.
+pub(crate) const fn resource_assessment_agents() -> [AgentKind; 11] {
     [
         AgentKind::Claude,
         AgentKind::Codex,

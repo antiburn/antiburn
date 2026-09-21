@@ -56,7 +56,6 @@ function applyAnalytics(
   if (outcome.outcome === "appliedAwaitingVerification") {
     return "applied_awaiting_verification"
   }
-  if (outcome.outcome === "applied") return "applied_verification_unavailable"
   return outcome.outcome === "recoveryNeeded" ? "recovery_needed" : outcome.outcome
 }
 
@@ -144,7 +143,6 @@ function applyMessage(
   if (!outcome) return `${progress}The next change could not be applied.`
   switch (outcome.outcome) {
     case "appliedAwaitingVerification":
-    case "applied":
       return ""
     case "recoveryNeeded":
       return `${progress}The last write has an uncertain result. Review the config before another change.`
@@ -231,7 +229,6 @@ export function BurnCheckTargetChooserDialog({
     setStep("applying")
     setStatus(null)
     let applied = 0
-    let verificationUnavailable = false
     let failed: ApplyPreparedBurnCheckOperationOutcome | null = null
     try {
       for (const item of prepared) {
@@ -248,14 +245,10 @@ export function BurnCheckTargetChooserDialog({
         const outcome = await applyPreparedBurnCheckOperation(
           refreshed.review.preparedOperationId,
         )
-        if (
-          !outcome ||
-          (outcome.outcome !== "appliedAwaitingVerification" && outcome.outcome !== "applied")
-        ) {
+        if (!outcome || outcome.outcome !== "appliedAwaitingVerification") {
           failed = outcome
           break
         }
-        verificationUnavailable ||= outcome.outcome === "applied"
         applied += 1
         setAppliedCount(applied)
       }
@@ -267,16 +260,14 @@ export function BurnCheckTargetChooserDialog({
       outcome: failed
         ? applyAnalytics(failed)
         : applied === prepared.length
-          ? verificationUnavailable
-            ? "applied_verification_unavailable"
-            : "applied_awaiting_verification"
+          ? "applied_awaiting_verification"
           : "failed",
     })
     setAppliedCount(applied)
     setStatus(
       failed
         ? applyMessage(failed, applied, prepared.length)
-        : `${applied} ${applied === 1 ? "change" : "changes"} applied.${verificationUnavailable ? " Current evidence cannot verify one or more fixes." : ""}`,
+        : `${applied} ${applied === 1 ? "change" : "changes"} applied.`,
     )
     setStep("result")
     refresh()

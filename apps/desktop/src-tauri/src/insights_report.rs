@@ -35,8 +35,8 @@ pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedRe
 #[cfg(test)]
 pub(crate) use findings::reduce_report_blocking_with_home;
 pub(crate) use findings::{
-    CurrentDetectorAssessment, ensure_not_cancelled, old_model_remediation_evidence,
-    publication_findings_in, remediation_assessments,
+    CurrentDetectorAssessment, RemediationAssessments, ensure_not_cancelled,
+    old_model_remediation_evidence, publication_findings_in, remediation_assessments,
 };
 #[allow(unused_imports)]
 pub use findings::{ReportCancelled, is_cancelled, reduce_report, reduce_report_blocking};
@@ -369,8 +369,8 @@ fn reduce_with_state_on_snapshot(
                 depth_cap,
             };
             let mut resource_turn_probe = |context_tokens| {
-                if let Some(agent_kind) =
-                    agent_kind.filter(|agent| resources::first_tier_agents().contains(agent))
+                if let Some(agent_kind) = agent_kind
+                    .filter(|agent| resources::resource_assessment_agents().contains(agent))
                 {
                     resource_builder.observe_turn(
                         agent_kind,
@@ -400,7 +400,7 @@ fn reduce_with_state_on_snapshot(
                 &mut probes,
             )?;
             if let Some(agent_kind) =
-                agent_kind.filter(|agent| resources::first_tier_agents().contains(agent))
+                agent_kind.filter(|agent| resources::resource_assessment_agents().contains(agent))
             {
                 if project_root.is_none() {
                     resource_builder.mark_scan_failed(agent_kind);
@@ -454,7 +454,7 @@ fn reduce_with_state_on_snapshot(
                 .context("stored resource-use evidence is invalid")?;
             let agent: String = row.get(1)?;
             let Some(agent_kind) = crate::agents::kind_from_slug(&agent)
-                .filter(|agent| resources::first_tier_agents().contains(agent))
+                .filter(|agent| resources::resource_assessment_agents().contains(agent))
             else {
                 continue;
             };
@@ -504,7 +504,7 @@ fn reduce_with_state_on_snapshot(
     if let Some(home) = resource_home {
         scan_resource_inventories(&mut resource_builder, home, inventory_contexts);
     } else {
-        for agent in resources::first_tier_agents() {
+        for agent in resources::resource_assessment_agents() {
             resource_builder.mark_scan_failed(agent);
         }
     }
@@ -570,7 +570,7 @@ fn scan_resource_inventories(
     home: &Path,
     contexts: BTreeSet<(AgentKind, PathBuf, PathBuf)>,
 ) {
-    for agent in resources::first_tier_agents() {
+    for agent in resources::resource_assessment_agents() {
         let mut context = crate::agent_config::ConfigContext::native(agent, home, None);
         context.runtime_override_present = crate::remediation::runtime_override_present(agent);
         context.managed_configuration_present =
@@ -1851,6 +1851,8 @@ mod tests {
                 effective_boundary_ms: Some(100_000),
                 verified_at_epoch: None,
                 recurred_at_epoch: None,
+                origin: Some("action".into()),
+                prompt_group_id: None,
                 action_joined_at_ms: None,
             };
             let replacement = old_model_remediation_evidence(
@@ -2007,6 +2009,8 @@ mod tests {
             effective_boundary_ms: Some(100_000),
             verified_at_epoch: None,
             recurred_at_epoch: None,
+            origin: Some("action".into()),
+            prompt_group_id: None,
             action_joined_at_ms: None,
         };
         let replacement =
@@ -2711,7 +2715,7 @@ mod tests {
             .lock()
             .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -2893,7 +2897,7 @@ mod tests {
     }
 
     #[test]
-    fn controller_action_joins_the_attempt_created_by_publication() {
+    fn controller_action_creates_a_distinct_attempt_from_publication() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         let project = data_dir.path().join("project");
@@ -2930,18 +2934,37 @@ mod tests {
             .copy_prompt_fix_burn_check_target(&store, &listed.targets[0].action_id)
             .unwrap();
         assert!(action.prompt.contains("Remediation reference: ABR-"));
-        assert_eq!(action.watch.as_ref().unwrap().watch_id, passive_id);
+        assert_eq!(
+            action.prompt.matches("Remediation reference: ABR-").count(),
+            1
+        );
+        let action_id = action.watch.as_ref().unwrap().watch_id.clone();
+        assert_ne!(action_id, passive_id);
         assert_eq!(
             action.watch.as_ref().unwrap().origin,
-            crate::remediation::RemediationOrigin::Passive
+            crate::remediation::RemediationOrigin::Action
         );
-        let joined = store.remediation(&passive_id).unwrap().unwrap();
-        assert_eq!(joined.action_joined_at_ms, None);
+        assert_eq!(
+            store.remediation(&passive_id).unwrap().unwrap().state,
+            crate::store::RemediationState::Watching
+        );
+        assert_eq!(
+            store.remediation(&action_id).unwrap().unwrap().state,
+            crate::store::RemediationState::WaitingForPromptUse
+        );
+        assert!(
+            store
+                .remediation(&action_id)
+                .unwrap()
+                .unwrap()
+                .prompt_group_id
+                .is_some()
+        );
         let count: i64 = store
             .lock()
             .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -2977,18 +3000,31 @@ mod tests {
             .prompt;
 
         assert!(prompt.contains("Unused targets"));
+        assert_eq!(prompt.matches("Remediation reference: ABR-").count(), 1);
         for resource in resources {
             assert!(prompt.contains(resource), "{prompt}");
         }
-        assert!(!prompt.contains("Remediation reference: ABR-"));
         assert_eq!(
             store
                 .lock()
                 .query_row("SELECT COUNT(*) FROM remediation", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            0
+            4
         );
+        let groups: Vec<Option<String>> = store
+            .lock()
+            .prepare(
+                "SELECT prompt_group_id FROM remediation
+                  WHERE origin = 'action' ORDER BY remediation_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], groups[1]);
         assert_eq!(
             controller.copy_prompt_fix_burn_check_targets(&store, &[]),
             Err(crate::remediation::ControllerError::CheckPromptUnavailable)
@@ -2996,7 +3032,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_prompt_does_not_claim_detector_level_verification() {
+    fn resource_prompt_has_a_durable_group_marker_without_verification_claims() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "baseline", 120, &["server-a"]);
@@ -3014,15 +3050,18 @@ mod tests {
         let action = controller
             .copy_prompt_fix_burn_check_target(&store, &listed.targets[0].action_id)
             .unwrap();
-        assert!(action.watch.is_none());
-        assert!(!action.prompt.contains("Remediation reference: ABR-"));
+        assert!(action.watch.is_some());
+        assert_eq!(
+            action.prompt.matches("Remediation reference: ABR-").count(),
+            1
+        );
         assert_eq!(
             store
                 .lock()
                 .query_row("SELECT COUNT(*) FROM remediation", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            0
+            2
         );
         assert!(store.remediation_contributions(1_000).unwrap().is_empty());
     }
@@ -3120,7 +3159,7 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn verifiable_action_watch_blocks_prepare_while_unverifiable_watch_can_upgrade() {
+    fn any_active_action_watch_blocks_a_second_auto_fix() {
         let data_dir = TempDir::new().unwrap();
         let home = data_dir.path().join("home");
         let case = ReasoningFixture {
@@ -3166,16 +3205,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             listed.targets[0].auto_fix,
-            crate::remediation::AutoFixAvailability::Available
+            crate::remediation::AutoFixAvailability::Unavailable(
+                crate::remediation::AutoFixUnavailableReason::ActiveWatch
+            )
         );
-        let review = controller
-            .prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id)
-            .unwrap();
-        controller
-            .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
-            .unwrap();
         assert!(
-            std::fs::read_to_string(config_path)
+            !std::fs::read_to_string(config_path)
                 .unwrap()
                 .contains("medium")
         );
@@ -3219,9 +3254,11 @@ mod tests {
             )
             .unwrap();
         assert!(fallback.prompt.contains("Failed check\nUnused MCP servers"));
-        assert!(fallback.prompt.contains(
-            "Representative session evidence (inspect only; not configuration edit targets):\n- \"/home/avery/.claude/older-finding.jsonl\""
-        ));
+        assert!(
+            !fallback
+                .prompt
+                .contains("/home/avery/.claude/older-finding.jsonl")
+        );
 
         let assessments = remediation_assessments(
             data_dir.path(),
@@ -3608,7 +3645,7 @@ mod tests {
             assert_eq!(category.clean, 0);
             assert_eq!(category.unavailable, 0);
             assert_eq!(category.agents, vec!["claude-code"]);
-            assert_eq!(category.estimated_token_burn_basis_points, None);
+            assert_eq!(category.estimated_token_burn_basis_points, Some(500));
         }
     }
 

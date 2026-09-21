@@ -17,6 +17,7 @@ pub(crate) struct CurrentDetectorAssessment {
 
 pub(crate) struct RemediationAssessments {
     pub assessments: Vec<CurrentDetectorAssessment>,
+    pub named_resource_assessments: Vec<antiburn_local::remediation::NamedResourceAssessment>,
     pub truncated: bool,
 }
 
@@ -61,6 +62,7 @@ pub(crate) fn remediation_assessments(
     ])?;
     let cancel = AtomicBool::new(false);
     let mut result = Vec::new();
+    let mut named_resource_assessments = Vec::new();
     let mut sessions_scanned = 0;
     let mut truncated = false;
     while let Some(row) = rows.next()? {
@@ -75,7 +77,30 @@ pub(crate) fn remediation_assessments(
         }
         let observed_at_ms = match &session.evidence.time_range {
             antiburn_local::analysis::EvidenceValue::Complete(range) => range.last_ts_ms,
-            _ => continue,
+            antiburn_local::analysis::EvidenceValue::Partial {
+                observed: range, ..
+            } => {
+                if matches!(
+                    detector,
+                    DetectorId::UnusedMcpServers
+                        | DetectorId::UnusedBuiltInTools
+                        | DetectorId::UnusedSkills
+                ) {
+                    truncated = true;
+                }
+                range.last_ts_ms
+            }
+            antiburn_local::analysis::EvidenceValue::Unsupported => {
+                if matches!(
+                    detector,
+                    DetectorId::UnusedMcpServers
+                        | DetectorId::UnusedBuiltInTools
+                        | DetectorId::UnusedSkills
+                ) {
+                    truncated = true;
+                }
+                continue;
+            }
         };
         if observed_at_ms <= boundary_ms {
             continue;
@@ -103,6 +128,11 @@ pub(crate) fn remediation_assessments(
                 .collect(),
             _ => Vec::new(),
         };
+        named_resource_assessments.extend(named_resource_assessments_for_session(
+            detector,
+            &session,
+            observed_at_ms,
+        ));
         result.push(CurrentDetectorAssessment {
             assessment,
             clean_for_verification,
@@ -125,8 +155,211 @@ pub(crate) fn remediation_assessments(
     }
     Ok(RemediationAssessments {
         assessments: result,
+        named_resource_assessments,
         truncated,
     })
+}
+
+fn named_resource_assessments_for_session(
+    detector: DetectorId,
+    session: &CurrentFindingSession,
+    observed_at_ms: i64,
+) -> Vec<antiburn_local::remediation::NamedResourceAssessment> {
+    use antiburn_local::analysis::{CoverageReason, SourceOrigin, ToolClass};
+    use antiburn_local::remediation::{NamedResourceEvidence, NamedResourceObservation};
+
+    if !matches!(
+        detector,
+        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools | DetectorId::UnusedSkills
+    ) {
+        return Vec::new();
+    }
+
+    let scopes = [
+        Some("global".to_owned()),
+        session
+            .workspace_candidate
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+    ];
+    let mut statuses = vec![None, None];
+    let mut resources = vec![Vec::new(), Vec::new()];
+    let mut merge_status = |status: antiburn_local::remediation::NamedResourceEvidence| {
+        for current in &mut statuses {
+            let replace = match current {
+                None => true,
+                Some(NamedResourceEvidence::Partial) => {
+                    !matches!(status, NamedResourceEvidence::Partial)
+                }
+                Some(NamedResourceEvidence::Capped) => false,
+                Some(NamedResourceEvidence::Ambiguous) => false,
+                Some(NamedResourceEvidence::Complete { .. }) => true,
+            };
+            if replace {
+                *current = Some(status.clone());
+            }
+        }
+    };
+    let status_for_reason = |reason: CoverageReason| match reason {
+        CoverageReason::CapExceeded => NamedResourceEvidence::Capped,
+        CoverageReason::AttributionIncomplete => NamedResourceEvidence::Ambiguous,
+        _ => NamedResourceEvidence::Partial,
+    };
+    let context_sources = match &session.evidence.context_sources {
+        antiburn_local::analysis::EvidenceValue::Unsupported => {
+            merge_status(NamedResourceEvidence::Partial);
+            None
+        }
+        antiburn_local::analysis::EvidenceValue::Partial { observed, reason } => {
+            merge_status(status_for_reason(*reason));
+            Some(observed)
+        }
+        antiburn_local::analysis::EvidenceValue::Complete(observed) => Some(observed),
+    };
+
+    match detector {
+        DetectorId::UnusedBuiltInTools => {
+            if let Some(status) = named_resource_status(&session.evidence.tools) {
+                merge_status(status);
+            }
+            let definitions = context_sources.and_then(|sources| match &sources.tool_definitions {
+                antiburn_local::analysis::EvidenceValue::Unsupported => {
+                    merge_status(NamedResourceEvidence::Partial);
+                    None
+                }
+                antiburn_local::analysis::EvidenceValue::Partial { observed, reason } => {
+                    merge_status(status_for_reason(*reason));
+                    Some(observed)
+                }
+                antiburn_local::analysis::EvidenceValue::Complete(observed) => Some(observed),
+            });
+            if let Some(definitions) = definitions {
+                for (name, definition) in definitions {
+                    resources[0].push(NamedResourceObservation {
+                        resource: name.clone(),
+                        used: definition.invoked,
+                    });
+                }
+            }
+        }
+        DetectorId::UnusedMcpServers | DetectorId::UnusedSkills => {
+            if let Some(status) = named_resource_status(&session.evidence.tools) {
+                merge_status(status);
+            }
+            let Some(sources) = context_sources else {
+                return named_resource_assessments_from_parts(
+                    session,
+                    observed_at_ms,
+                    scopes,
+                    statuses,
+                    resources,
+                );
+            };
+            let (kind, coverage) = if detector == DetectorId::UnusedMcpServers {
+                ("mcp", &sources.mcp_coverage)
+            } else {
+                ("skill", &sources.skill_coverage)
+            };
+            if let Some(status) = named_resource_status(coverage) {
+                merge_status(status);
+            }
+            let values = if kind == "mcp" {
+                &sources.mcp_servers
+            } else {
+                &sources.skills
+            };
+            for (name, source) in values {
+                let scope_index = match &source.origin {
+                    antiburn_local::analysis::EvidenceValue::Complete(SourceOrigin::Bundled)
+                    | antiburn_local::analysis::EvidenceValue::Complete(SourceOrigin::User) => 0,
+                    antiburn_local::analysis::EvidenceValue::Complete(SourceOrigin::Project) => 1,
+                    antiburn_local::analysis::EvidenceValue::Partial { reason, .. } => {
+                        merge_status(status_for_reason(*reason));
+                        continue;
+                    }
+                    antiburn_local::analysis::EvidenceValue::Unsupported
+                    | antiburn_local::analysis::EvidenceValue::Complete(
+                        SourceOrigin::Plugin | SourceOrigin::Unknown,
+                    ) => {
+                        merge_status(NamedResourceEvidence::Ambiguous);
+                        continue;
+                    }
+                };
+                if scopes[scope_index].is_none() {
+                    continue;
+                }
+                resources[scope_index].push(NamedResourceObservation {
+                    resource: name.clone(),
+                    used: source.invoked,
+                });
+            }
+            if let antiburn_local::analysis::EvidenceValue::Complete(tools) =
+                &session.evidence.tools
+                && tools
+                    .by_name
+                    .values()
+                    .any(|tool| tool.calls > 0 && matches!(tool.class, ToolClass::Unclassified))
+            {
+                merge_status(NamedResourceEvidence::Ambiguous);
+            }
+        }
+        _ => {}
+    }
+
+    named_resource_assessments_from_parts(session, observed_at_ms, scopes, statuses, resources)
+}
+
+fn named_resource_assessments_from_parts(
+    session: &CurrentFindingSession,
+    observed_at_ms: i64,
+    scopes: [Option<String>; 2],
+    statuses: Vec<Option<antiburn_local::remediation::NamedResourceEvidence>>,
+    resources: Vec<Vec<antiburn_local::remediation::NamedResourceObservation>>,
+) -> Vec<antiburn_local::remediation::NamedResourceAssessment> {
+    use antiburn_local::analysis::SourceFormat;
+    use antiburn_local::remediation::{NamedResourceAssessment, NamedResourceEvidence};
+
+    scopes
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, project_scope)| {
+            project_scope.map(|project_scope| NamedResourceAssessment {
+                observed_at_ms,
+                source_format: session.evidence.capabilities.source_format,
+                agent: session.agent.clone(),
+                project_scope,
+                evidence: statuses[index].clone().unwrap_or_else(|| {
+                    NamedResourceEvidence::Complete {
+                        resources: resources[index].clone(),
+                    }
+                }),
+            })
+        })
+        .filter(|assessment| {
+            assessment.source_format != SourceFormat::Uncharacterized
+                || !matches!(assessment.evidence, NamedResourceEvidence::Complete { .. })
+        })
+        .collect()
+}
+
+fn named_resource_status<T>(
+    value: &antiburn_local::analysis::EvidenceValue<T>,
+) -> Option<antiburn_local::remediation::NamedResourceEvidence> {
+    use antiburn_local::remediation::NamedResourceEvidence;
+
+    match value {
+        antiburn_local::analysis::EvidenceValue::Unsupported => {
+            Some(NamedResourceEvidence::Partial)
+        }
+        antiburn_local::analysis::EvidenceValue::Partial { reason, .. } => Some(match reason {
+            antiburn_local::analysis::CoverageReason::CapExceeded => NamedResourceEvidence::Capped,
+            antiburn_local::analysis::CoverageReason::AttributionIncomplete => {
+                NamedResourceEvidence::Ambiguous
+            }
+            _ => NamedResourceEvidence::Partial,
+        }),
+        antiburn_local::analysis::EvidenceValue::Complete(_) => None,
+    }
 }
 
 fn scoped_resource_clean_for_verification(
@@ -910,4 +1143,279 @@ pub(crate) fn freshness_matches(cached: &CurrentFinding, session: &CurrentFindin
         && cached.metrics_schema_revision == session.metrics_schema_revision
         && Some(cached.started_at_epoch) == session.started_at_epoch
         && cached.workspace_candidate == session.workspace_candidate
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use antiburn_local::analysis::{
+        ContextSourceEvidence, EvidenceSource, EvidenceValue, LoadedSource,
+        SessionEvidenceAccumulator, SessionTimeRange, SourceCapabilities, SourceKind, SourceOrigin,
+        ToolDefinition, TurnFacts,
+    };
+    use antiburn_local::remediation::{
+        NamedResourceEvidence, NamedResourceVerificationTarget, VerificationOutcome,
+        VerificationStage, VerificationUnknownReason, verify_named_resource_watch,
+    };
+
+    use super::*;
+
+    fn session_with_resource(
+        detector: DetectorId,
+        resource: &str,
+        evidence_state: Option<NamedResourceEvidence>,
+    ) -> CurrentFindingSession {
+        let mut evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude-code".into(),
+            session_id: "later".into(),
+            kind: SourceKind::File,
+            capabilities: SourceCapabilities::claude(),
+        })
+        .evidence(&TurnFacts::default());
+        evidence.time_range = EvidenceValue::Complete(SessionTimeRange {
+            first_ts_ms: 101,
+            last_ts_ms: 101,
+            timestamped_turns: 1,
+        });
+        if let EvidenceValue::Complete(sources) = &mut evidence.context_sources {
+            sources.mcp_coverage = EvidenceValue::Complete(());
+            sources.skill_coverage = EvidenceValue::Complete(());
+            sources.tool_definitions = EvidenceValue::Complete(BTreeMap::from([(
+                resource.to_owned(),
+                ToolDefinition {
+                    tokens: 100,
+                    invoked: false,
+                    deferred: false,
+                },
+            )]));
+            let loaded = LoadedSource {
+                description: None,
+                configured: true,
+                available: true,
+                injected: true,
+                invoked: false,
+                token_count: None,
+                origin: EvidenceValue::Complete(SourceOrigin::User),
+            };
+            sources
+                .mcp_servers
+                .insert(resource.to_owned(), loaded.clone());
+            sources.skills.insert(resource.to_owned(), loaded);
+        }
+        if let Some(state) = evidence_state {
+            match state {
+                NamedResourceEvidence::Partial => {
+                    evidence.context_sources = EvidenceValue::Partial {
+                        observed: match evidence.context_sources {
+                            EvidenceValue::Complete(value) => value,
+                            _ => unreachable!(),
+                        },
+                        reason: antiburn_local::analysis::CoverageReason::IncompleteTail,
+                    };
+                }
+                NamedResourceEvidence::Capped => {
+                    if detector == DetectorId::UnusedBuiltInTools {
+                        let EvidenceValue::Complete(ContextSourceEvidence {
+                            skills,
+                            mcp_servers,
+                            skill_coverage,
+                            mcp_coverage,
+                            ..
+                        }) = evidence.context_sources
+                        else {
+                            unreachable!()
+                        };
+                        evidence.context_sources = EvidenceValue::Complete(ContextSourceEvidence {
+                            skills,
+                            mcp_servers,
+                            skill_coverage,
+                            mcp_coverage,
+                            tool_definitions: EvidenceValue::Partial {
+                                observed: BTreeMap::from([(
+                                    resource.to_owned(),
+                                    ToolDefinition {
+                                        tokens: 100,
+                                        invoked: false,
+                                        deferred: false,
+                                    },
+                                )]),
+                                reason: antiburn_local::analysis::CoverageReason::CapExceeded,
+                            },
+                        });
+                    } else {
+                        evidence.context_sources = match evidence.context_sources {
+                            EvidenceValue::Complete(value) => EvidenceValue::Partial {
+                                observed: value,
+                                reason: antiburn_local::analysis::CoverageReason::CapExceeded,
+                            },
+                            _ => unreachable!(),
+                        };
+                    }
+                }
+                NamedResourceEvidence::Ambiguous => {
+                    evidence.context_sources = EvidenceValue::Partial {
+                        observed: match evidence.context_sources {
+                            EvidenceValue::Complete(value) => value,
+                            _ => unreachable!(),
+                        },
+                        reason: antiburn_local::analysis::CoverageReason::AttributionIncomplete,
+                    };
+                }
+                NamedResourceEvidence::Complete { .. } => {}
+            }
+        }
+        if !matches!(detector, DetectorId::UnusedBuiltInTools) {
+            evidence.context_sources = match evidence.context_sources {
+                EvidenceValue::Complete(mut sources) => {
+                    sources.tool_definitions = EvidenceValue::Unsupported;
+                    EvidenceValue::Complete(sources)
+                }
+                partial => partial,
+            };
+        }
+        CurrentFindingSession {
+            evidence,
+            environment_key: "native".into(),
+            agent: "claude-code".into(),
+            session_id: "later".into(),
+            source_generation: 1,
+            published_fence: 1,
+            source_fingerprint: None,
+            processed_fingerprint: None,
+            parser_revision: PARSER_REVISION,
+            analyzer_revision: ANALYZER_REVISION,
+            evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+            metrics_schema_revision: METRICS_SCHEMA_REVISION,
+            started_at_epoch: Some(1),
+            workspace_candidate: None,
+            initial_context: None,
+            effective_model_target_hash: None,
+            effective_model_scope: None,
+            effective_model: None,
+            effective_reasoning_target_hash: None,
+            effective_reasoning_scope: None,
+            effective_reasoning: None,
+        }
+    }
+
+    fn target(detector: DetectorId, resource: &str) -> NamedResourceVerificationTarget {
+        NamedResourceVerificationTarget {
+            detector,
+            source_format: antiburn_local::analysis::SourceFormat::ClaudeJsonl,
+            agent: "claude-code".into(),
+            project_scope: "global".into(),
+            resource: resource.into(),
+        }
+    }
+
+    #[test]
+    fn named_desktop_evidence_passes_complete_absence_for_m_b_and_k() {
+        for detector in [
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::UnusedSkills,
+        ] {
+            let session = session_with_resource(detector, "other-resource", None);
+            let assessments = named_resource_assessments_for_session(detector, &session, 101);
+            let result = verify_named_resource_watch(
+                &target(detector, "target-resource"),
+                VerificationStage::Watching,
+                100,
+                &assessments,
+            );
+            assert_eq!(result.outcome, VerificationOutcome::Fixed);
+        }
+    }
+
+    #[test]
+    fn named_desktop_evidence_finds_and_recurres_the_exact_name_only() {
+        for detector in [
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::UnusedSkills,
+        ] {
+            let session = session_with_resource(detector, "target-resource", None);
+            let assessments = named_resource_assessments_for_session(detector, &session, 101);
+            let watching = verify_named_resource_watch(
+                &target(detector, "target-resource"),
+                VerificationStage::Watching,
+                100,
+                &assessments,
+            );
+            assert_eq!(watching.outcome, VerificationOutcome::StillUnresolved);
+            let fixed = verify_named_resource_watch(
+                &target(detector, "target-resource"),
+                VerificationStage::Fixed,
+                100,
+                &assessments,
+            );
+            assert_eq!(fixed.outcome, VerificationOutcome::Recurred);
+            let different = verify_named_resource_watch(
+                &target(detector, "different-resource"),
+                VerificationStage::Fixed,
+                100,
+                &assessments,
+            );
+            assert_eq!(different.outcome, VerificationOutcome::Fixed);
+        }
+    }
+
+    #[test]
+    fn named_desktop_evidence_rejects_wrong_identity_and_incomplete_coverage() {
+        let session = session_with_resource(DetectorId::UnusedMcpServers, "target-resource", None);
+        let assessment =
+            named_resource_assessments_for_session(DetectorId::UnusedMcpServers, &session, 101);
+        for (source_format, agent, project_scope) in [
+            (
+                antiburn_local::analysis::SourceFormat::CodexRolloutJsonl,
+                "claude-code",
+                "global",
+            ),
+            (
+                antiburn_local::analysis::SourceFormat::ClaudeJsonl,
+                "codex",
+                "global",
+            ),
+            (
+                antiburn_local::analysis::SourceFormat::ClaudeJsonl,
+                "claude-code",
+                "other-project",
+            ),
+        ] {
+            let mut wrong = assessment[0].clone();
+            wrong.source_format = source_format;
+            wrong.agent = agent.into();
+            wrong.project_scope = project_scope.into();
+            let result = verify_named_resource_watch(
+                &target(DetectorId::UnusedMcpServers, "target-resource"),
+                VerificationStage::Watching,
+                100,
+                &[wrong],
+            );
+            assert_eq!(
+                result.outcome,
+                VerificationOutcome::Unknown(
+                    VerificationUnknownReason::MissingPostBoundaryEvidence
+                )
+            );
+        }
+        for state in [
+            NamedResourceEvidence::Partial,
+            NamedResourceEvidence::Capped,
+            NamedResourceEvidence::Ambiguous,
+        ] {
+            let session =
+                session_with_resource(DetectorId::UnusedMcpServers, "target-resource", Some(state));
+            let assessments =
+                named_resource_assessments_for_session(DetectorId::UnusedMcpServers, &session, 101);
+            let result = verify_named_resource_watch(
+                &target(DetectorId::UnusedMcpServers, "target-resource"),
+                VerificationStage::Watching,
+                100,
+                &assessments,
+            );
+            assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
+        }
+    }
 }

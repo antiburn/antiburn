@@ -1290,8 +1290,17 @@ impl TokenBurnAccumulator {
 
         let percentage =
             |numerator| denominator.and_then(|total| token_burn_basis_points(numerator, total));
+        let assessed_sessions = self.sessions.len() as u64;
         let estimates = core::array::from_fn(|index| match &statuses[index] {
-            DetectorStatus::Findings(_) => numerators[index].and_then(percentage),
+            DetectorStatus::Findings(findings) => {
+                numerators[index].and_then(percentage).or_else(|| {
+                    fallback_token_burn_basis_points(
+                        DetectorId::ALL[index],
+                        findings.finding_sessions,
+                        assessed_sessions,
+                    )
+                })
+            }
             DetectorStatus::Clean => Some(0),
             DetectorStatus::NotAssessed(_) => None,
         });
@@ -1304,10 +1313,38 @@ impl TokenBurnAccumulator {
                 .try_fold(0_u128, u128::checked_add)
                 .and_then(percentage)
         } else {
-            None
+            estimates.iter().flatten().copied().max()
         };
         (combined, estimates, non_resource_token_burn_by_session)
     }
+}
+
+/// Returns a conservative proxy when a finding has no attributable token or pricing evidence.
+/// The proxy scales a detector-specific workload share by the finding rate.
+pub fn fallback_token_burn_basis_points(
+    detector: DetectorId,
+    finding_sessions: u64,
+    assessed_sessions: u64,
+) -> Option<u16> {
+    if finding_sessions == 0 || assessed_sessions == 0 {
+        return None;
+    }
+    let detector_share: u16 = match detector {
+        DetectorId::SessionsOverDepth => 1_000,
+        DetectorId::ModelOverthinking => 2_000,
+        DetectorId::OverpoweredSubagents => 2_500,
+        DetectorId::UnusedMcpServers
+        | DetectorId::UnusedBuiltInTools
+        | DetectorId::UnusedSkills => 500,
+        DetectorId::OldModelUsage => 1_500,
+        DetectorId::OveruseOfFastMode => 1_000,
+        DetectorId::CacheChurn => 1_000,
+    };
+    let scaled = u128::from(detector_share)
+        .checked_mul(u128::from(finding_sessions))?
+        .checked_add(u128::from(assessed_sessions / 2))?
+        / u128::from(assessed_sessions);
+    Some(scaled.min(u128::from(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS)) as u16)
 }
 
 fn token_burn_basis_points(numerator: u128, denominator: u128) -> Option<u16> {

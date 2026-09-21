@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest"
 
-import { snoozeUntil, visibleSessionHygieneChecks } from "./snoozedBurnChecks"
+import {
+  activeChecksReport,
+  snoozeUntil,
+  visibleCheckCategories,
+  visibleSessionHygieneChecks,
+  visibleUnusedContextRows,
+} from "./snoozedBurnChecks"
 import { sessionHygieneChecks } from "./presentation/sessionHygiene"
 
 const payload = {
@@ -33,5 +39,55 @@ describe("snoozed burn checks", () => {
     )
     expect(checks.map((check) => check.id)).not.toContain("sessionOverdepth")
     expect(checks.map((check) => check.id)).toContain("modelOverthinking")
+  })
+
+  it("removes snoozed categories and resource rows before totals are derived", () => {
+    const snoozed = new Set(["oldModelUsage", "unusedSkills"] as const)
+    const categories = [
+      {
+        id: "oldModelUsage" as const,
+        finding: 2,
+        clean: 0,
+        unavailable: 0,
+        estimatedTokenBurnBasisPoints: 900,
+      },
+      {
+        id: "unusedSkills" as const,
+        finding: 1,
+        clean: 0,
+        unavailable: 0,
+        estimatedTokenBurnBasisPoints: 700,
+      },
+      {
+        id: "cacheChurn" as const,
+        finding: 1,
+        clean: 0,
+        unavailable: 0,
+        estimatedTokenBurnBasisPoints: 300,
+      },
+    ]
+    expect(visibleCheckCategories(categories, snoozed).map((category) => category.id)).toEqual([
+      "cacheChurn",
+    ])
+    expect(
+      visibleUnusedContextRows(
+        [
+          { name: "server", kind: "MCP server", costUsd: 1 },
+          { name: "skill", kind: "Skill", costUsd: 1 },
+        ],
+        snoozed,
+      ),
+    ).toEqual([{ name: "server", kind: "MCP server", costUsd: 1 }])
+    expect(
+      activeChecksReport(
+        {
+          evidenceSettled: true,
+          pendingEvidence: 0,
+          estimatedTokenBurnBasisPoints: 900,
+          categories,
+        },
+        snoozed,
+      ).estimatedTokenBurnBasisPoints,
+    ).toBe(300)
   })
 })

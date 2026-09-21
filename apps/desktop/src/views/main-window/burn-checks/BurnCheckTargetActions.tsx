@@ -68,7 +68,6 @@ function applyAnalytics(
   if (outcome.outcome === "appliedAwaitingVerification") {
     return "applied_awaiting_verification"
   }
-  if (outcome.outcome === "applied") return "applied_verification_unavailable"
   return outcome.outcome === "recoveryNeeded" ? "recovery_needed" : outcome.outcome
 }
 
@@ -197,19 +196,15 @@ export function BurnCheckTargetActions({
           : null
       noteInteraction({ kind: "burnCheckAutoFixCompleted", outcome: applyAnalytics(outcome) })
       if (clearStaleApply(startedAttemptKey, completedWatchId)) return
-      if (
-        outcome?.outcome === "appliedAwaitingVerification" ||
-        outcome?.outcome === "applied"
-      ) {
-        const watchId =
-          outcome.outcome === "appliedAwaitingVerification" ? outcome.watchId : null
+      if (outcome?.outcome === "appliedAwaitingVerification") {
+        const watchId = outcome.watchId
         flushSync(() => {
           setAction((value) => ({
             ...value,
             acceptedWatchId: watchId,
             busy: null,
             review: null,
-            status: outcome.outcome === "applied" ? "Change applied." : null,
+            status: null,
           }))
         })
         trigger.current?.focus()

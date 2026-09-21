@@ -351,7 +351,7 @@ fn indexed_resource_target_enables_auto_fix_for_the_exact_effective_entry() {
     assert!(resolved.config.is_some());
     assert!(resolved.physical_target_key.is_some());
     let watch = controller
-        .start_watch(&store, &resolved, RemediationState::Reserved, None, 1)
+        .start_watch(&store, &resolved, RemediationState::Reserved, None, 1, None)
         .unwrap();
     assert_eq!(watch.state, RemediationState::Reserved);
 }
@@ -474,6 +474,76 @@ fn resource_targets_do_not_expose_supporting_sessions_as_samples() {
     };
 
     assert!(cached.sample_sessions().is_empty());
+}
+
+#[test]
+fn a_new_prompt_cycle_does_not_reuse_a_recurred_prompt_group() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store
+        .lock()
+        .execute(
+            "INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                effective_boundary_ms, verified_at_epoch, recurred_at_epoch,
+                origin, prompt_group_id)
+             VALUES ('recurred', 'target', 'native', 'claude-code', 'global', 'scope',
+                'recurred', '{\"version\":1}', '{\"version\":1}', 1, 3,
+                1000, 2, 3, 'action', 'old-group')",
+            [],
+        )
+        .unwrap();
+    let target = CachedTarget {
+        findings: Vec::new(),
+        resource: Some(CachedResourceTarget {
+            target: insights_report::UnusedResourceTarget {
+                agent: AgentKind::Claude,
+                kind: crate::agent_config::ResourceKind::Skill,
+                canonical_name: "review".into(),
+                scope: insights_report::ResourceAssessmentScope::Global,
+                observations: 1,
+                indexed: false,
+                replicated_tokens: Some(10),
+                estimated_token_burn_basis_points: Some(100),
+                supporting_sessions: Vec::new(),
+            },
+            context: BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 1,
+                },
+            },
+            finding: Finding::advisory_resource(
+                AgentKind::Claude,
+                SourceFormat::ClaudeJsonl,
+                FindingCause::UnusedSkill {
+                    skill: "review".into(),
+                    tokens: Some(10),
+                    cost_usd: None,
+                    pricing_revision: None,
+                },
+            )
+            .unwrap(),
+        }),
+        target_key: "target".into(),
+        canonical_identity: String::new(),
+        workspace_key: None,
+        agent: AgentKind::Claude,
+        scope_kind: "global".into(),
+        scope_key: "scope".into(),
+        physical_target_key: None,
+        config: None,
+    };
+    let controller = RemediationController::new(directory.path().to_owned());
+
+    let (reference, group) = controller
+        .prompt_reference_for_targets(&store, &[target])
+        .unwrap();
+
+    assert_ne!(reference, "old-group");
+    assert_eq!(group.as_deref(), Some(reference.as_str()));
 }
 
 #[cfg(not(windows))]
@@ -960,7 +1030,17 @@ fn verification_availability_matches_all_documented_source_cells() {
                 SourceFormat::PiV3Jsonl => AgentKind::Pi,
                 _ => AgentKind::Claude,
             };
-            let expected = verification_evidence_supported(detector, source_format);
+            let expected = if matches!(
+                detector,
+                DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedBuiltInTools
+                    | DetectorId::UnusedSkills
+            ) {
+                named_resource_verification_supported(detector, source_format)
+                    && verification_source_matches_agent(agent.slug(), source_format)
+            } else {
+                verification_evidence_supported(detector, source_format)
+            };
             assert_eq!(
                 watch_verification_available(
                     &definition(detector, source_format),
@@ -1096,6 +1176,97 @@ fn a_truncated_assessment_cannot_prove_a_fix() {
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
+}
+
+#[test]
+fn authoritative_lifecycle_rejects_unavailable_and_mixed_target_states() {
+    let awaiting = WatchStatus {
+        watch_id: "watch".into(),
+        origin: RemediationOrigin::Action,
+        lifecycle: RemediationState::Watching,
+        verification: VerificationStatus::Watching {
+            reason: None,
+            method_revision: None,
+            evidence_revision: None,
+        },
+        savings: SavingsStatus::Pending {
+            method_revision: None,
+        },
+    };
+    let unavailable = WatchStatus {
+        verification: VerificationStatus::VerificationUnavailable,
+        ..awaiting.clone()
+    };
+    let recovery = WatchStatus {
+        lifecycle: RemediationState::RecoveryNeeded,
+        ..awaiting.clone()
+    };
+    let passive = WatchStatus {
+        origin: RemediationOrigin::Passive,
+        ..awaiting.clone()
+    };
+    let fixed = WatchStatus {
+        lifecycle: RemediationState::Fixed,
+        verification: VerificationStatus::Fixed {
+            method_revision: 1,
+            evidence_revision: "evidence".into(),
+        },
+        ..awaiting.clone()
+    };
+    let waiting = WatchStatus {
+        lifecycle: RemediationState::WaitingForPromptUse,
+        ..awaiting.clone()
+    };
+
+    assert_eq!(
+        action_attempt_lifecycle(awaiting.lifecycle, &awaiting.verification, Some(100),),
+        crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification
+    );
+    assert_eq!(
+        action_attempt_lifecycle(unavailable.lifecycle, &unavailable.verification, Some(100),),
+        crate::dto::ChecksCategoryLifecyclePayload::Failing
+    );
+    assert_eq!(
+        action_attempt_lifecycle(recovery.lifecycle, &recovery.verification, Some(100)),
+        crate::dto::ChecksCategoryLifecyclePayload::Failing
+    );
+    assert_eq!(
+        current_target_lifecycle(Some(&passive), None),
+        crate::dto::ChecksCategoryLifecyclePayload::Failing
+    );
+    assert_eq!(
+        current_target_lifecycle(Some(&waiting), None),
+        crate::dto::ChecksCategoryLifecyclePayload::Failing
+    );
+    assert_eq!(
+        current_target_lifecycle(Some(&fixed), None),
+        crate::dto::ChecksCategoryLifecyclePayload::Failing
+    );
+    assert_eq!(
+        action_attempt_lifecycle(fixed.lifecycle, &fixed.verification, Some(100)),
+        crate::dto::ChecksCategoryLifecyclePayload::Passing
+    );
+    assert_eq!(
+        resolve_category_lifecycle(
+            1,
+            0,
+            false,
+            &[
+                crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification,
+                crate::dto::ChecksCategoryLifecyclePayload::Failing,
+            ],
+        ),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
+    );
+    assert_eq!(
+        resolve_category_lifecycle(
+            1,
+            0,
+            true,
+            &[crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification],
+        ),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
+    );
 }
 
 #[test]

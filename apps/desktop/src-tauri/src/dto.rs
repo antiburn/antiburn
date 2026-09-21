@@ -492,6 +492,8 @@ pub struct SessionLimitAllocationSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
+    /// The current remediation state. `None` means the category has no complete assessment.
+    pub lifecycle: Option<ChecksCategoryLifecyclePayload>,
     pub finding: u64,
     /// Agents with findings, or complete clean results when no finding exists.
     pub agents: Vec<String>,
@@ -499,6 +501,14 @@ pub struct ChecksCategoryPayload {
     pub unavailable: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChecksCategoryLifecyclePayload {
+    Failing,
+    AwaitingVerification,
+    Passing,
 }
 
 /// The bounded subset of the local report needed by the Checks feature.
@@ -964,7 +974,9 @@ pub enum BurnCheckRemediationOutcomePayload {
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckRemediationAttemptPayload {
     pub detector: BurnCheckDetectorId,
+    pub finding_id: String,
     pub watch_id: String,
+    pub remediation_cycle_id: String,
     pub display: BurnCheckDisplayFactsPayload,
     pub origin: AggregateWinOrigin,
     pub lifecycle: BurnCheckWatchLifecycle,
@@ -1060,7 +1072,6 @@ pub enum AutoFixSideEffect {
 )]
 pub enum ApplyPreparedBurnCheckOperationOutcome {
     AppliedAwaitingVerification { watch_id: String },
-    Applied,
     RecoveryNeeded { watch_id: String },
     Stale,
     Expired,
@@ -1078,6 +1089,7 @@ pub struct AggregateWinsPayload {
 #[serde(rename_all = "camelCase")]
 pub struct AggregateWinPayload {
     pub finding_id: String,
+    pub remediation_cycle_id: String,
     pub detector: BurnCheckDetectorId,
     pub origin: AggregateWinOrigin,
     pub display: BurnCheckDisplayFactsPayload,
@@ -2060,6 +2072,7 @@ impl From<crate::remediation::AggregateWins> for AggregateWinsPayload {
                 .into_iter()
                 .map(|win| AggregateWinPayload {
                     finding_id: win.finding_id,
+                    remediation_cycle_id: win.remediation_cycle_id,
                     detector: win.detector.into(),
                     origin: match win.origin.as_str() {
                         "passive" => AggregateWinOrigin::Passive,
@@ -2103,7 +2116,9 @@ impl From<crate::remediation::BurnCheckRemediationProgress>
                 .into_iter()
                 .map(|attempt| BurnCheckRemediationAttemptPayload {
                     detector: attempt.detector.into(),
+                    finding_id: attempt.finding_id,
                     watch_id: attempt.watch_id,
+                    remediation_cycle_id: attempt.remediation_cycle_id,
                     display: attempt.display.into(),
                     origin: match attempt.origin {
                         crate::remediation::RemediationOrigin::Passive => {
@@ -2168,13 +2183,15 @@ impl ChecksReportPayload {
             .iter()
             .cloned()
             .collect();
-            category.estimated_token_burn_basis_points =
-                assessment.estimated_token_burn_basis_points;
+            category.estimated_token_burn_basis_points = assessment
+                .estimated_token_burn_basis_points
+                .or(category.estimated_token_burn_basis_points);
         }
         let resource_tokens = report.resources.measured_finding_tokens_by_session();
         payload.estimated_token_burn_basis_points = report
             .report
-            .estimated_token_burn_with_resource_tokens_by_session(resource_tokens.as_deref());
+            .estimated_token_burn_with_resource_tokens_by_session(resource_tokens.as_deref())
+            .or(payload.estimated_token_burn_basis_points);
         payload
     }
 
@@ -2189,6 +2206,7 @@ impl ChecksReportPayload {
                 let counts = report.detectors[id.index()];
                 ChecksCategoryPayload {
                     id: id.into(),
+                    lifecycle: None,
                     finding: counts.finding,
                     agents: if counts.finding > 0 {
                         &report.finding_agents[id.index()]
@@ -2628,6 +2646,7 @@ mod tests {
             assert_eq!(value["pendingEvidence"], 0);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
             assert_eq!(value["categories"][0]["estimatedTokenBurnBasisPoints"], 500);
+            assert!(value["categories"][0]["lifecycle"].is_null());
             assert_eq!(
                 value["categories"][1]["estimatedTokenBurnBasisPoints"],
                 serde_json::Value::Null
@@ -2662,6 +2681,7 @@ mod tests {
                     "estimatedTokenBurnBasisPoints",
                     "finding",
                     "id",
+                    "lifecycle",
                     "unavailable",
                 ]
             );
@@ -2721,10 +2741,6 @@ mod tests {
                     "outcome": "appliedAwaitingVerification",
                     "watchId": "opaque-watch"
                 })
-            );
-            assert_eq!(
-                serde_json::to_value(ApplyPreparedBurnCheckOperationOutcome::Applied).unwrap(),
-                serde_json::json!({"outcome": "applied"})
             );
         }
 
@@ -3273,7 +3289,9 @@ mod tests {
             crate::remediation::BurnCheckRemediationProgress {
                 attempts: vec![crate::remediation::BurnCheckRemediationAttempt {
                     detector: DetectorId::OldModelUsage,
+                    finding_id: "finding".into(),
                     watch_id: "attempt".into(),
+                    remediation_cycle_id: "attempt".into(),
                     display: crate::remediation::BurnCheckDisplayFacts {
                         resource_kind: crate::remediation::BurnCheckResourceKind::Model,
                         resource_identity: Some("old".into()),
@@ -3308,6 +3326,8 @@ mod tests {
         assert_eq!(value["attempts"][0]["lifecycle"], "waitingForPromptUse");
         assert_eq!(value["attempts"][0]["outcome"], "failed");
         assert_eq!(value["attempts"][0]["origin"], "action");
+        assert_eq!(value["attempts"][0]["findingId"], "finding");
+        assert_eq!(value["attempts"][0]["remediationCycleId"], "attempt");
         assert!(value["attempts"][0]["effectiveBoundaryMs"].is_null());
     }
 

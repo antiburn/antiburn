@@ -285,7 +285,7 @@ fn evaluate_generic_remediation(
         boundary_ms,
     )?;
     let mut assessments = Vec::new();
-    for assessment in page.assessments {
+    for assessment in &page.assessments {
         if !session_starts_after_boundary(assessment.started_at_ms, boundary_ms) {
             continue;
         }
@@ -339,8 +339,7 @@ fn evaluate_generic_remediation(
             }
         }
         if !target_present {
-            let positive_resolution =
-                positive_control_resolution(detector, definition, &assessment);
+            let positive_resolution = positive_control_resolution(detector, definition, assessment);
             let positive_control_only = matches!(
                 detector,
                 DetectorId::ModelOverthinking
@@ -356,7 +355,7 @@ fn evaluate_generic_remediation(
                 {
                     FindingAssessment::Unavailable(FindingUnavailableReason::IncompleteEvidence)
                 } else {
-                    assessment.assessment
+                    assessment.assessment.clone()
                 },
                 clean_for_verification: !page.truncated
                     && (!positive_control_only || positive_resolution.is_some())
@@ -364,23 +363,25 @@ fn evaluate_generic_remediation(
             });
         }
     }
-    let verification = verify_prompt_watch(
+    let verification = verify_watch_target(
+        store,
+        record,
+        definition,
         detector,
-        definition.source_format.value(),
-        &definition.canonical_identity,
         stage,
         verification_boundary,
-        &assessments,
-    );
+        (&page, &assessments),
+    )?;
     if terminal && verification.outcome != VerificationOutcome::Recurred {
-        let proof = verify_prompt_watch(
+        let proof = verify_watch_target(
+            store,
+            record,
+            definition,
             detector,
-            definition.source_format.value(),
-            &definition.canonical_identity,
             VerificationStage::Watching,
             boundary_ms,
-            &assessments,
-        );
+            (&page, &assessments),
+        )?;
         match proof.outcome {
             VerificationOutcome::Unknown(_) => {
                 return store.mark_remediation_evaluated(
@@ -477,6 +478,92 @@ fn evaluate_generic_remediation(
         )?;
     }
     Ok(updated)
+}
+
+fn verify_watch_target(
+    store: &Store,
+    record: &RemediationRecord,
+    definition: &WatchDefinition,
+    detector: DetectorId,
+    stage: VerificationStage,
+    boundary_ms: i64,
+    evidence: (
+        &insights_report::RemediationAssessments,
+        &[TargetAssessment],
+    ),
+) -> Result<antiburn_local::remediation::VerificationResult> {
+    let (page, generic_assessments) = evidence;
+    if matches!(
+        detector,
+        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools | DetectorId::UnusedSkills
+    ) {
+        let target = NamedResourceVerificationTarget {
+            detector,
+            source_format: definition.source_format.value(),
+            agent: record.agent.clone(),
+            project_scope: named_resource_scope(record, definition).unwrap_or_default(),
+            resource: definition.resource.clone().unwrap_or_default(),
+        };
+        if page.truncated {
+            return Ok(verify_named_resource_watch(
+                &target,
+                stage,
+                boundary_ms,
+                &[],
+            ));
+        }
+        let assessments = page
+            .named_resource_assessments
+            .iter()
+            .filter_map(|assessment| normalize_named_resource_assessment(store, assessment).ok())
+            .filter(|assessment| {
+                assessment.source_format == target.source_format
+                    && assessment.agent.eq_ignore_ascii_case(&target.agent)
+                    && assessment.project_scope == target.project_scope
+            })
+            .collect::<Vec<_>>();
+        return Ok(verify_named_resource_watch(
+            &target,
+            stage,
+            boundary_ms,
+            &assessments,
+        ));
+    }
+    Ok(verify_prompt_watch(
+        detector,
+        definition.source_format.value(),
+        &definition.canonical_identity,
+        stage,
+        boundary_ms,
+        generic_assessments,
+    ))
+}
+
+fn named_resource_scope(
+    record: &RemediationRecord,
+    definition: &WatchDefinition,
+) -> Option<String> {
+    match record.scope_kind.as_str() {
+        "global" => Some("global".to_owned()),
+        "project" => definition.workspace_key.clone(),
+        _ => None,
+    }
+}
+
+fn normalize_named_resource_assessment(
+    store: &Store,
+    assessment: &NamedResourceAssessment,
+) -> Result<NamedResourceAssessment> {
+    if assessment.project_scope == "global" {
+        return Ok(assessment.clone());
+    }
+    let workspace = trusted_workspace(store, Path::new(&assessment.project_scope))?
+        .ok_or_else(|| anyhow::anyhow!("named-resource evidence has no trusted project scope"))?;
+    let project_scope = hashed_workspace_key(store, &workspace)?;
+    Ok(NamedResourceAssessment {
+        project_scope,
+        ..assessment.clone()
+    })
 }
 
 fn revoke_terminal_proof(store: &Store, record: &RemediationRecord, now: i64) -> Result<bool> {

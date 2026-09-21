@@ -223,6 +223,7 @@ const CHECKS_REPORT = {
       clean: 7,
       unavailable: 0,
       estimatedTokenBurnBasisPoints: 1_250,
+      lifecycle: "failing",
     },
     {
       id: "sessionsOverDepth",
@@ -230,6 +231,7 @@ const CHECKS_REPORT = {
       clean: 14,
       unavailable: 0,
       estimatedTokenBurnBasisPoints: 0,
+      lifecycle: "passing",
     },
   ],
 }

@@ -10,12 +10,15 @@ function category(
   id: BurnCheckDetectorId,
   overrides: Partial<ChecksCategoryPayload> = {},
 ): ChecksCategoryPayload {
+  const finding = overrides.finding ?? 0
+  const clean = overrides.clean ?? 12
   return {
     id,
-    finding: 0,
-    clean: 12,
+    finding,
+    clean,
     unavailable: 0,
     estimatedTokenBurnBasisPoints: 0,
+    lifecycle: finding > 0 ? "failing" : clean > 0 ? "passing" : null,
     ...overrides,
   }
 }
@@ -362,8 +365,7 @@ describe("Checks", () => {
       expect(row).toBeInTheDocument()
       expect(row.firstElementChild).toHaveClass("bg-system-green/10", "text-system-green")
     }
-    expect(screen.queryByText("Passed")).not.toBeInTheDocument()
-    expect(screen.getAllByText("12 passed")).toHaveLength(4)
+    expect(screen.getAllByText("Passed")).toHaveLength(4)
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
   })
 
@@ -534,10 +536,10 @@ describe("Checks", () => {
     )
     expect(screen.getByText("No issues found")).toBeInTheDocument()
     expect(screen.queryByText("More evidence is needed")).not.toBeInTheDocument()
-    expect(screen.queryByText("Passed")).not.toBeInTheDocument()
+    expect(screen.getAllByText("Passed")).toHaveLength(1)
     expect(screen.queryByText("Passed where assessed")).not.toBeInTheDocument()
     const row = screen.getByText("Session overdepth").closest(".grid")
-    expect(row).toHaveTextContent("8 passed")
+    expect(row).toHaveTextContent("Passed")
     expect(row).not.toHaveTextContent("need evidence")
   })
 

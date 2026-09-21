@@ -250,7 +250,7 @@ pub struct BurnCheckTargetList {
     pub truncated: bool,
 }
 
-/// The latest retained remediation attempt for one detector.
+/// One retained remediation attempt for one exact target and cycle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BurnCheckRemediationProgress {
     pub attempts: Vec<BurnCheckRemediationAttempt>,
@@ -259,7 +259,10 @@ pub struct BurnCheckRemediationProgress {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BurnCheckRemediationAttempt {
     pub detector: DetectorId,
+    pub finding_id: String,
     pub watch_id: String,
+    /// The durable remediation ID that identifies this remediation cycle.
+    pub remediation_cycle_id: String,
     pub display: BurnCheckDisplayFacts,
     pub origin: RemediationOrigin,
     pub lifecycle: RemediationState,
@@ -354,6 +357,8 @@ pub struct AggregateWins {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateWin {
     pub finding_id: String,
+    /// The durable remediation ID that produced this savings contribution.
+    pub remediation_cycle_id: String,
     pub detector: DetectorId,
     pub origin: String,
     pub display: BurnCheckDisplayFacts,

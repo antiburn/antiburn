@@ -4,12 +4,15 @@ import type { BurnCheckTargetPayload, ChecksCategoryPayload } from "../../lib/in
 import { CHECK_UI, checkRowPresentation } from "./checkUi"
 
 function category(overrides: Partial<ChecksCategoryPayload> = {}): ChecksCategoryPayload {
+  const finding = overrides.finding ?? 2
+  const clean = overrides.clean ?? 3
   return {
     id: "oldModelUsage",
-    finding: 2,
-    clean: 3,
+    finding,
+    clean,
     unavailable: 0,
     estimatedTokenBurnBasisPoints: 800,
+    lifecycle: finding > 0 ? "failing" : clean > 0 ? "passing" : null,
     ...overrides,
   }
 }
@@ -48,7 +51,7 @@ describe("check row presentation", () => {
       ),
     ).toMatchObject({
       label: "Old model usage",
-      summary: "5 passed",
+      summary: "Passed",
       metric: null,
       iconTone: "bg-system-green/10 text-system-green",
       metricTone: null,

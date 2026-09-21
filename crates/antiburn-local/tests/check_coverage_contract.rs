@@ -342,7 +342,7 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     let check_matrix = markdown_table_rows(
         CHECK_COVERAGE,
         "## Coverage Matrix",
-        "## Evidence Boundaries",
+        "## First-Tier Product Matrix",
     );
     assert_table_source_formats(&check_matrix, &expected, "check coverage matrix");
     for row in check_matrix {
@@ -358,6 +358,59 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     let session_matrix =
         markdown_table_rows(SESSION_COVERAGE, "## Source Matrix", "## Provider Routes");
     assert_table_source_formats(&session_matrix, &expected, "session source matrix");
+}
+
+#[test]
+fn first_tier_product_matrix_has_six_documented_agents_and_valid_cells() {
+    const CHECK_COVERAGE: &str = include_str!("../../../docs/check-coverage.md");
+    const AGENTS: &[&str] = &[
+        "Claude Code",
+        "Codex",
+        "OpenCode",
+        "Pi",
+        "Cursor",
+        "Antigravity",
+    ];
+    const FINDINGS: &[&str] = &["Y", "FO", "N"];
+    const PROMPTS: &[&str] = &["Y", "N"];
+    const AUTO_FIXES: &[&str] = &["Y", "C", "P", "N"];
+    const VERIFICATIONS: &[&str] = &["Y", "N"];
+    const BURN_ESTIMATES: &[&str] = &["Y", "N"];
+
+    let rows = markdown_table_rows(
+        CHECK_COVERAGE,
+        "## First-Tier Product Matrix",
+        "## Second-Tier Product Coverage",
+    );
+    let documented: BTreeSet<_> = rows.iter().map(|row| row[0].as_str()).collect();
+    let expected: BTreeSet<_> = AGENTS.iter().copied().collect();
+    assert_eq!(documented, expected, "first-tier product agents");
+    assert_eq!(rows.len(), AGENTS.len(), "first-tier product agent count");
+
+    for row in rows {
+        assert_eq!(row.len(), 10, "first-tier matrix has nine check cells");
+        for cell in &row[1..] {
+            let values: Vec<_> = cell.split('/').collect();
+            assert_eq!(values.len(), 5, "product cell has five values: {cell}");
+            assert!(
+                FINDINGS.contains(&values[0]),
+                "invalid finding value: {cell}"
+            );
+            assert!(PROMPTS.contains(&values[1]), "invalid prompt value: {cell}");
+            assert!(
+                AUTO_FIXES.contains(&values[2]),
+                "invalid Auto Fix value: {cell}"
+            );
+            assert!(
+                VERIFICATIONS.contains(&values[3]),
+                "invalid verification value: {cell}"
+            );
+            assert!(
+                BURN_ESTIMATES.contains(&values[4]),
+                "invalid burn estimate value: {cell}"
+            );
+        }
+    }
 }
 
 #[test]

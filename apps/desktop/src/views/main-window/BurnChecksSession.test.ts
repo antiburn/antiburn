@@ -267,6 +267,7 @@ describe("BurnChecksSession", () => {
       wins: [
         {
           findingId: "private-win",
+          remediationCycleId: "private-cycle",
           detector: "oldModelUsage",
           origin: "passive",
           display: {

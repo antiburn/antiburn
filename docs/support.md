@@ -43,22 +43,32 @@ exists only in memory will not appear.
 ## Burn Check remediation
 
 The main Burn checks workspace shows supported findings only for the agents and
-checks listed below. `Finding-only` means it cannot report a clean result. Safe
-bounded prompts cover the exact check matrix in
+checks listed below. The first-tier grouping is product documentation only; it
+does not change parsing, findings, prompts, Auto Fix, or verification. Those
+behaviors depend on the evidence and capabilities of each agent. `Finding-only`
+means it cannot report a clean result. Safe bounded prompts cover the exact
+check matrix in
 [Burn Check Source Coverage](check-coverage.md#automatic-editor-support).
+
+### First-tier product coverage
 
 | Agent          | Burn Check result | Auto Fix on macOS and Linux | Other current support         |
 | -------------- | ----------------- | --------------------------- | ----------------------------- |
 | Claude Code    | Supported         | Model and reasoning         | Prompts for all nine checks   |
 | Codex          | Supported         | Model and reasoning         | Prompts for all nine checks   |
-| OpenCode       | Supported         | Model                       | Prompts for D, S, K, O, and C |
-| Cursor         | Finding-only O    | None                        | Current M/K inventory; no remediation prompt |
+| OpenCode       | Supported         | Model                       | Prompts for D, S, M, B, K, O, and C |
+| Cursor         | Finding-only O    | None                        | Current M/K inventory; prompts for characterized O findings |
+| Pi             | Supported         | Model and reasoning         | Prompts for D, T, S, M, B, K, O, and C |
+| Antigravity    | Finding-only D/O  | None                        | Current M/K inventory; prompts for D and O |
+
+### Second-tier product coverage
+
+| Agent          | Burn Check result | Auto Fix on macOS and Linux | Other current support         |
+| -------------- | ----------------- | --------------------------- | ----------------------------- |
 | GitHub Copilot | Supported S/O     | None                        | Current M/K inventory; no remediation prompt |
 | Cline          | Finding-only S/O  | None                        | Current M/K inventory; no remediation prompt |
 | Kiro           | Unavailable       | None                        | Current M/K inventory; no remediation prompt |
 | Amp            | Finding-only D/O  | None                        | Current M/K inventory; no remediation prompt |
-| Pi             | Supported         | Model and reasoning         | Prompts for D, T, S, O, and C |
-| Antigravity    | Finding-only D/O  | None                        | Current M/K inventory; prompts for D and O |
 | Devin          | Finding-only S    | None                        | Current M/K inventory; no remediation prompt |
 
 Each Auto Fix changes one winning control after a separate review and

@@ -124,6 +124,37 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `DevinLocalSqlite`             | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 | `Uncharacterized`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 
+## First-Tier Product Matrix
+
+This is a documentation-only grouping. It does not gate parsing, findings,
+prompts, Auto Fix, verification, or burn estimates at runtime. Each cell is
+`Finding/Prompt/Auto Fix/Verification/Burn estimate`: `Y` is supported, `FO`
+is finding-only, `N` is unavailable, `C` is conditional Auto Fix, and `P` is
+prompt-only remediation. A `Y` burn estimate uses the detector's existing
+estimate method when its required evidence and pricing inputs are available;
+it does not promise a numeric value.
+
+| Agent | D | T | S | M | B | K | O | F | C |
+| ----- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | Y/Y/Y/N/Y | Y/Y/Y/Y/Y | Y/Y/Y/N/Y | Y/Y/C/N/Y | Y/Y/Y/N/Y | Y/Y/C/N/Y | Y/Y/Y/Y/Y | Y/Y/Y/Y/Y | Y/Y/N/N/Y |
+| Codex | Y/Y/Y/N/Y | Y/Y/Y/Y/Y | Y/Y/Y/N/Y | Y/Y/C/N/Y | Y/Y/N/N/Y | Y/Y/C/N/Y | Y/Y/Y/Y/Y | Y/Y/Y/Y/Y | Y/Y/N/N/Y |
+| OpenCode | Y/Y/Y/N/Y | N/N/N/N/N | Y/Y/Y/N/Y | Y/Y/P/N/Y | Y/Y/P/N/Y | Y/Y/C/N/Y | Y/Y/Y/Y/Y | N/N/N/N/N | Y/Y/N/N/Y |
+| Pi | Y/Y/Y/N/Y | Y/Y/Y/Y/Y | FO/Y/N/N/Y | Y/Y/P/N/Y | Y/Y/P/N/Y | Y/Y/P/N/Y | Y/Y/Y/Y/Y | N/N/N/N/N | Y/Y/N/N/Y |
+| Cursor | N/N/N/N/N | N/N/N/N/N | N/N/N/N/N | FO/N/N/N/Y | N/N/N/N/N | FO/N/N/N/Y | FO/Y/N/N/Y | N/N/N/N/N | N/N/N/N/N |
+| Antigravity | FO/Y/N/N/Y | N/N/N/N/N | N/N/N/N/N | FO/N/N/N/Y | N/N/N/N/N | FO/N/N/N/Y | FO/Y/P/N/Y | N/N/N/N/N | N/N/N/N/N |
+
+`FO` for Cursor and Antigravity remains subject to the accepted source shapes
+and source limits above. Cursor M/K and Antigravity M/K are current inventory
+targets, not a claim of complete historical exposure. Pi S remains limited to
+the reviewed example-extension evidence.
+
+## Second-Tier Product Coverage
+
+GitHub Copilot, Cline, Kiro, Amp, and Devin remain second-tier in product
+documentation. This defers no implemented parser, finding path, prompt, Auto
+Fix, verification, or burn-estimate behavior. Their current source and check
+limits remain the source inventory and coverage matrix above.
+
 ## Evidence Boundaries
 
 Lifecycle provider sweeps use same-turn published provider/model evidence and
@@ -189,9 +220,10 @@ targets; required shell, read, write, edit, search, and subagent tools remain
 measured but never become findings. OpenCode 1.2.15 and Pi 0.52.12 use pinned
 default catalog captures. A matching positive use removes the target and its
 estimate. A missing definition, missing denominator, cap, truncation, or
-arithmetic failure omits the percentage. Category percentages sum the same
-remaining target token values, so an incomplete target estimate also makes the
-category estimate unavailable.
+arithmetic failure uses the detector's bounded finding-rate fallback instead
+of presenting no percentage. Measured token attribution always replaces that
+fallback. The fallback is an estimated workload share, not measured tokens or
+price data. It stays within the 0% to 100% display range.
 
 B tool eligibility is a product safety policy, not a claim that vendors make
 other tools impossible to disable. The only eligible names are Claude Code

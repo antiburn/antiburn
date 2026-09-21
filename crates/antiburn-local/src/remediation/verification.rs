@@ -136,6 +136,153 @@ pub struct TargetAssessment {
     pub clean_for_verification: bool,
 }
 
+/// The exact named resource target of an M/B/K verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedResourceVerificationTarget {
+    pub detector: DetectorId,
+    pub source_format: SourceFormat,
+    pub agent: String,
+    pub project_scope: String,
+    pub resource: String,
+}
+
+/// One resource observed in a complete later inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedResourceObservation {
+    pub resource: String,
+    pub used: bool,
+}
+
+/// Completeness of a later named-resource inventory and its use evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedResourceEvidence {
+    Complete {
+        resources: Vec<NamedResourceObservation>,
+    },
+    Partial,
+    Capped,
+    Ambiguous,
+}
+
+/// One later named-resource inventory snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedResourceAssessment {
+    pub observed_at_ms: i64,
+    pub source_format: SourceFormat,
+    pub agent: String,
+    pub project_scope: String,
+    pub evidence: NamedResourceEvidence,
+}
+
+/// Verifies an M/B/K target against complete, later named-resource evidence.
+///
+/// Presence of the exact normalized target remains unresolved. Absence from a
+/// complete inventory proves the target fixed. The `used` flag is retained in
+/// the evidence contract because complete use coverage is required, but it
+/// does not make a present target pass.
+pub fn verify_named_resource_watch(
+    target: &NamedResourceVerificationTarget,
+    stage: VerificationStage,
+    boundary_ms: i64,
+    assessments: &[NamedResourceAssessment],
+) -> VerificationResult {
+    let unknown = || VerificationResult {
+        method_revision: VERIFICATION_METHOD_REVISION,
+        outcome: VerificationOutcome::Unknown(
+            VerificationUnknownReason::MissingPostBoundaryEvidence,
+        ),
+        observed_at_ms: None,
+    };
+    if !matches!(
+        target.detector,
+        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools | DetectorId::UnusedSkills
+    ) {
+        return unknown();
+    }
+    let Some(target_resource) = normalized_resource_name(target.detector, &target.resource) else {
+        return unknown();
+    };
+    if target.agent.trim().is_empty() || target.project_scope.trim().is_empty() {
+        return unknown();
+    }
+
+    let mut matching = assessments
+        .iter()
+        .filter(|assessment| {
+            assessment.observed_at_ms > boundary_ms
+                && assessment.source_format == target.source_format
+                && same_agent(&assessment.agent, &target.agent)
+                && assessment.project_scope == target.project_scope
+        })
+        .collect::<Vec<_>>();
+    matching.sort_by_key(|assessment| assessment.observed_at_ms);
+    if matching.is_empty() {
+        return unknown();
+    }
+
+    if stage == VerificationStage::Fixed
+        && let Some(recurrence) = matching.iter().find_map(|assessment| {
+            let NamedResourceEvidence::Complete { resources } = &assessment.evidence else {
+                return None;
+            };
+            named_target_present(target.detector, &target_resource, resources)
+                .and_then(|present| present.then_some(assessment.observed_at_ms))
+        })
+    {
+        return VerificationResult {
+            method_revision: VERIFICATION_METHOD_REVISION,
+            outcome: VerificationOutcome::Recurred,
+            observed_at_ms: Some(recurrence),
+        };
+    }
+
+    let Some(latest) = matching.last() else {
+        return unknown();
+    };
+    let NamedResourceEvidence::Complete { resources } = &latest.evidence else {
+        return unknown();
+    };
+    let Some(target_present) = named_target_present(target.detector, &target_resource, resources)
+    else {
+        return unknown();
+    };
+    VerificationResult {
+        method_revision: VERIFICATION_METHOD_REVISION,
+        outcome: if target_present {
+            VerificationOutcome::StillUnresolved
+        } else {
+            VerificationOutcome::Fixed
+        },
+        observed_at_ms: Some(latest.observed_at_ms),
+    }
+}
+
+fn same_agent(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+fn normalized_resource_name(detector: DetectorId, resource: &str) -> Option<String> {
+    let normalized = if detector == DetectorId::UnusedBuiltInTools {
+        crate::analysis::tool_catalog::comparable_tool_name(resource)
+    } else {
+        resource.trim().to_ascii_lowercase()
+    };
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn named_target_present(
+    detector: DetectorId,
+    target_resource: &str,
+    resources: &[NamedResourceObservation],
+) -> Option<bool> {
+    let mut present = false;
+    for resource in resources {
+        let normalized = normalized_resource_name(detector, &resource.resource)?;
+        present |= normalized == target_resource;
+    }
+    Some(present)
+}
+
 /// Verifies a prompt watch from complete, fresh detector assessments.
 pub fn verify_prompt_watch(
     detector: DetectorId,
