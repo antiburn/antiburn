@@ -1277,8 +1277,8 @@ describe("OverlayWindow", () => {
       expect(island?.getAttribute("data-island")).toBe("collapsed")
       expect(island?.classList.contains("hud-island-fillets")).toBe(true)
       expect(screen.getByTestId("island-live-led")).toBeTruthy()
-      // No priced spend in the summary, so the right wing shows the usage LED.
-      expect(screen.getByTestId("island-usage-led")).toBeTruthy()
+      // No priced spend in the summary, so the right wing shows the antiburn mark.
+      expect(screen.getByTestId("island-mark")).toBeTruthy()
       expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(0)
 
       act(() => hover.emit(true))

@@ -993,6 +993,12 @@ pub fn show_detail(app: &AppHandle, state: serde_json::Value) {
         if !RESIZE_STATE.wants_visible() {
             return;
         }
+        // The island carries its own detail. A request that lands while the
+        // HUD sits in the notch comes from a webview that has not learned the
+        // island yet, so it shows nothing.
+        if !matches!(island::island_state().island, island::IslandPhase::Off) {
+            return;
+        }
         if let Ok(mut slot) = DETAIL_STATE.lock() {
             *slot = Some(state.clone());
         }

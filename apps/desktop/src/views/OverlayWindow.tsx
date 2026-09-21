@@ -1,5 +1,6 @@
 import { useCallback, useState, useSyncExternalStore, type CSSProperties } from "react"
 
+import markUrl from "../assets/antiburn-mark.svg"
 import { LedBar } from "../components/ui/LedBar"
 import { Confetti } from "../components/ui/Confetti"
 import { TokenMap } from "../components/ui/TokenMap"
@@ -142,11 +143,16 @@ function IslandPanel({
         paddingLeft: islandContentPad(island.wing),
         paddingRight: islandContentPad(island.wing),
       }
-  const liveColor = state.tokenMap.liveMode
-    ? `var(--color-mode-${state.tokenMap.liveMode})`
-    : "var(--color-brand-tint)"
-  const topBar = state.bars[0] ?? null
-  const figure = state.spendFigure
+  // The mark held the live agent's mode colour. That is off for now: one
+  // colour beside the notch, until the modes earn a place there.
+  // const liveColor = state.tokenMap.liveMode
+  //   ? `var(--color-mode-${state.tokenMap.liveMode})`
+  //   : "var(--color-brand-tint)"
+  const liveColor = "var(--color-brand-tint)"
+  // The spend-rate figure is off for now: the right wing holds the mark
+  // until a figure earns the place.
+  // const figure = state.spendFigure
+  const figure: string | null = null
 
   return (
     <div
@@ -192,9 +198,19 @@ function IslandPanel({
             </span>
           ) : (
             <span
-              data-testid="island-usage-led"
-              className={`h-1 w-3.5 rounded-full ${topBar ? "led-lit" : "led-off bg-led-off"}`}
-              style={topBar ? { backgroundColor: topBar.color } : undefined}
+              data-testid="island-mark"
+              aria-label="antiburn"
+              // The mark, cut from the island ink: no burn to price, so the
+              // wing says whose island this is.
+              className="size-3 bg-hud-island-ink opacity-60"
+              style={{
+                maskImage: `url(${markUrl})`,
+                WebkitMaskImage: `url(${markUrl})`,
+                maskSize: "contain",
+                WebkitMaskSize: "contain",
+                maskRepeat: "no-repeat",
+                WebkitMaskRepeat: "no-repeat",
+              }}
             />
           )}
         </div>
