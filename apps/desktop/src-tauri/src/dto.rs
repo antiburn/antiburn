@@ -2526,6 +2526,14 @@ pub struct LiveUsageWindow {
     pub starts_at: Option<String>,
     /// ISO-8601 reset, when the provider stated one.
     pub resets_at: Option<String>,
+    /// How far into its own period this window has travelled, from 0 to 1.
+    ///
+    /// This is what the marker on each bar shows. `None` when the period is
+    /// unknown, and the views then draw no marker.
+    ///
+    /// A weekly window measures this against the days the reader works, so a
+    /// five-day week reads 100% from Friday midnight until the reset.
+    pub elapsed_fraction: Option<f64>,
     /// Whether trustworthy history shows non-zero usage anywhere in this
     /// window's current allowance period. The views consult this only for a
     /// supplemental, model-scoped window — most readers never touch that

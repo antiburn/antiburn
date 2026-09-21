@@ -156,7 +156,6 @@ export function UsageLimitsBar({
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 status={liveProviderStatus(live, reading)}
-                now={at}
                 onHover={onHoverProvider}
                 live={liveProviders.includes(reading.provider)}
                 activation={
@@ -368,7 +367,6 @@ function ProviderRadial({
   provider,
   displayName,
   status,
-  now,
   onHover,
   activation,
   live = false,
@@ -376,7 +374,6 @@ function ProviderRadial({
   provider: LiveProviderUsagePayload
   displayName: string
   status: LiveProviderStatus
-  now: number
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
   /** Sweep the ring while a session is live. */
@@ -387,7 +384,7 @@ function ProviderRadial({
     percent == null
       ? undefined
       : liveWindows(provider).find((window) => window.usedPercent === percent)
-  const expectedFraction = window ? liveWindowElapsed(window, now) : null
+  const expectedFraction = window ? liveWindowElapsed(window) : null
   const windowLabel = window ? liveWindowLabel(window) : null
   const elapsedPercent = expectedFraction == null ? null : Math.round(expectedFraction * 100)
   const roundedPercent = percent == null ? null : Math.round(percent)
@@ -593,7 +590,7 @@ export function WindowMeterRow({
       </div>
       <SegmentedMeter
         percent={percent ?? null}
-        expectedFraction={liveWindowElapsed(window, now)}
+        expectedFraction={liveWindowElapsed(window)}
         live={live}
         row={row}
         {...(segments != null ? { segments } : {})}

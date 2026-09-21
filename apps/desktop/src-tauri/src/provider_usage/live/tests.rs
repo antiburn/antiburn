@@ -1202,3 +1202,118 @@ fn collection_and_summary_preserve_optional_error_details() {
     assert_eq!(SourceOutcome::absent().detail, None);
     assert_eq!(SourceOutcome::found(vec![]).detail, None);
 }
+
+/// The period rules the payload's `elapsed_fraction` rests on.
+///
+/// These moved here from `liveUsage.test.ts` when the shell took over the
+/// measurement. The frontend now reads the field, so this is the only place
+/// the rules are checked.
+mod elapsed_marker {
+    use time::{Duration, OffsetDateTime, UtcOffset};
+
+    use super::super::model::{UsageScope, UsageWindow, UsageWindowKind, WindowRole};
+    use super::super::working_week::WorkingClock;
+    use super::super::{elapsed_fraction, implied_period};
+
+    const NOW: i64 = 1_800_000_000;
+
+    fn at(offset_secs: i64) -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(NOW + offset_secs).expect("valid timestamp")
+    }
+
+    fn clock() -> WorkingClock {
+        WorkingClock::every_day(UtcOffset::UTC)
+    }
+
+    fn window(id: &str, kind: UsageWindowKind) -> UsageWindow {
+        UsageWindow {
+            id: id.to_string(),
+            role: WindowRole::PrimaryShort,
+            kind,
+            scope: UsageScope::Account,
+            used_percent: Some(50.0),
+            starts_at: None,
+            resets_at: Some(at(0)),
+            authoritative: true,
+        }
+    }
+
+    #[test]
+    fn an_id_states_a_period_the_provider_did_not() {
+        // The provider states a reset but no start. Without the id there would
+        // be no marker. `five-hour` is not a guess: the id states the period.
+        for id in [
+            "five-hour",
+            "antigravity-gemini-5h",
+            "antigravity-claude-gpt-5h",
+        ] {
+            assert_eq!(
+                implied_period(&window(id, UsageWindowKind::Rolling)),
+                Some(Duration::hours(5)),
+                "{id}"
+            );
+        }
+        let mut five_hour = window("five-hour", UsageWindowKind::Rolling);
+        five_hour.resets_at = Some(at(2 * 3_600));
+        assert_eq!(
+            elapsed_fraction(&five_hour, at(0), clock()),
+            Some(0.6),
+            "three of five hours gone"
+        );
+    }
+
+    #[test]
+    fn a_kind_states_a_week_and_a_day() {
+        assert_eq!(
+            implied_period(&window("seven-day", UsageWindowKind::Weekly)),
+            Some(Duration::days(7))
+        );
+        assert_eq!(
+            implied_period(&window("daily", UsageWindowKind::Other("daily".into()))),
+            Some(Duration::days(1))
+        );
+    }
+
+    #[test]
+    fn a_name_that_states_no_period_gets_no_marker() {
+        // "Seven days before the reset" would be a guess dressed as a
+        // measurement when nothing says this window is weekly.
+        let rolling = window("seven-day", UsageWindowKind::Rolling);
+        assert_eq!(implied_period(&rolling), None);
+        assert_eq!(elapsed_fraction(&rolling, at(0), clock()), None);
+
+        // A month runs 28 to 31 days and a billing cycle can be shorter.
+        for kind in ["monthly", "billingCycle"] {
+            let window = window(kind, UsageWindowKind::Other(kind.into()));
+            assert_eq!(implied_period(&window), None, "{kind}");
+            assert_eq!(elapsed_fraction(&window, at(0), clock()), None, "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_window_with_no_reset_gets_no_marker() {
+        let mut window = window("five-hour", UsageWindowKind::Rolling);
+        window.resets_at = None;
+        assert_eq!(elapsed_fraction(&window, at(0), clock()), None);
+    }
+
+    #[test]
+    fn a_stated_start_wins_over_an_implied_one() {
+        let mut window = window("five-hour", UsageWindowKind::Rolling);
+        window.starts_at = Some(at(-3_600));
+        window.resets_at = Some(at(3_600));
+        assert_eq!(elapsed_fraction(&window, at(0), clock()), Some(0.5));
+    }
+
+    #[test]
+    fn the_marker_stops_at_the_end_and_refuses_a_backwards_span() {
+        let mut window = window("seven-day", UsageWindowKind::Weekly);
+        window.starts_at = Some(at(-7_200));
+        window.resets_at = Some(at(-3_600));
+        assert_eq!(elapsed_fraction(&window, at(0), clock()), Some(1.0));
+
+        window.starts_at = Some(at(3_600));
+        window.resets_at = Some(at(-3_600));
+        assert_eq!(elapsed_fraction(&window, at(0), clock()), None);
+    }
+}

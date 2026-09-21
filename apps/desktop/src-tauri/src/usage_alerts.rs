@@ -24,6 +24,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::dto::{LiveUsageFreshness, LiveUsageSummary};
 use crate::provider_usage;
 use crate::provider_usage::codex_rollout_history::{self, RolloutImportBatch};
+use crate::provider_usage::live::working_week::WorkingClock;
 use crate::store::Store;
 
 /// Emitted after a provider refresh replaces the cached live-usage snapshot.
@@ -372,8 +373,18 @@ pub(crate) fn refresh_publish_and_evaluate(
     let detection = provider_usage::live::detect_all(&live.sources, online);
     live.store_detection(detection.clone());
     let collected = provider_usage::live::sources::collect(&live.sources, online, &hidden, max_age);
-    let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
-        collected.snapshots.iter().map(milestone_snapshot).collect();
+    // An unreadable preference counts every day, which is the behaviour before
+    // this setting existed.
+    let week = settings
+        .as_ref()
+        .map(|settings| settings.working_week)
+        .unwrap_or_default();
+    let offset = provider_usage::live::working_week::offset_from_minutes(live.utc_offset_minutes());
+    let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> = collected
+        .snapshots
+        .iter()
+        .map(|snapshot| milestone_snapshot(snapshot, week, offset))
+        .collect();
     // Every provider this pass actually published a snapshot for, not only
     // Claude — `collected.snapshots` already excludes a hidden or offline
     // provider (see `sources::collect`), and a provider that failed this
@@ -503,19 +514,21 @@ fn evaluate_milestones(
 ///
 /// A stated start defines the span. Without one, the known five-hour or
 /// seven-day duration is measured backward from the reset.
+///
+/// `clock` decides which time inside that span counts. The milestone tone
+/// compares this against the percentage used, so a weekend that the reader
+/// does not work must not make a normal Friday read as a warning.
 fn window_elapsed_percent(
     observed_at: time::OffsetDateTime,
     starts_at: Option<time::OffsetDateTime>,
     resets_at: time::OffsetDateTime,
     fallback_duration: time::Duration,
+    clock: WorkingClock,
 ) -> Option<f64> {
     let starts_at = starts_at.unwrap_or(resets_at - fallback_duration);
-    let span_seconds = (resets_at - starts_at).whole_seconds();
-    if span_seconds <= 0 {
-        return None;
-    }
-    let elapsed_seconds = (observed_at - starts_at).whole_seconds();
-    Some((elapsed_seconds as f64 / span_seconds as f64 * 100.0).clamp(0.0, 100.0))
+    clock
+        .elapsed_fraction(starts_at, resets_at, observed_at)
+        .map(|fraction| fraction * 100.0)
 }
 
 /// Narrow a collected snapshot down to what the milestone engine needs.
@@ -532,6 +545,8 @@ fn window_elapsed_percent(
 ///   rather than forced into the nearer of two classes it does not belong to.
 fn milestone_snapshot(
     snapshot: &provider_usage::live::ProviderUsageSnapshot,
+    week: crate::store::WorkingWeek,
+    offset: time::UtcOffset,
 ) -> provider_usage::live::milestones::LiveUsageSnapshot {
     use provider_usage::live::milestones::{LiveUsageSnapshot, LiveUsageWindow, UsageWindowClass};
     use provider_usage::live::{Freshness, UsageScope, UsageWindowKind, WindowRole};
@@ -554,15 +569,22 @@ fn milestone_snapshot(
                     _ => return None,
                 };
                 let resets_at = window.resets_at?;
-                let duration = match class {
-                    UsageWindowClass::Short => time::Duration::hours(5),
-                    UsageWindowClass::Weekly => time::Duration::days(7),
+                // The reader's week applies to a weekly allowance only. A
+                // five-hour period rolls several times in one day.
+                let (duration, clock) = match class {
+                    UsageWindowClass::Short => {
+                        (time::Duration::hours(5), WorkingClock::every_day(offset))
+                    }
+                    UsageWindowClass::Weekly => {
+                        (time::Duration::days(7), WorkingClock::new(week, offset))
+                    }
                 };
                 let elapsed_percent = window_elapsed_percent(
                     snapshot.observed_at,
                     window.starts_at,
                     resets_at,
                     duration,
+                    clock,
                 )?;
                 Some(LiveUsageWindow {
                     id: window.id.clone(),
@@ -622,7 +644,13 @@ mod tests {
     fn elapsed_window_percentage_uses_a_stated_start_or_the_known_duration() {
         let reset = at(10 * 60 * 60);
         assert_eq!(
-            window_elapsed_percent(at(7 * 60 * 60), None, reset, time::Duration::hours(5)),
+            window_elapsed_percent(
+                at(7 * 60 * 60),
+                None,
+                reset,
+                time::Duration::hours(5),
+                WorkingClock::every_day(time::UtcOffset::UTC),
+            ),
             Some(40.0)
         );
         assert_eq!(
@@ -631,6 +659,7 @@ mod tests {
                 Some(at(0)),
                 reset,
                 time::Duration::hours(5),
+                WorkingClock::every_day(time::UtcOffset::UTC),
             ),
             Some(40.0)
         );

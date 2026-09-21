@@ -41,7 +41,7 @@ export function LiveUsageWindowRows({
     <div className={cn("space-y-1.5", className)}>
       {windows.map((window) => {
         const used = window.usedPercent
-        const elapsed = liveWindowElapsed(window, now)
+        const elapsed = liveWindowElapsed(window)
         return (
           <div key={window.id} className="group">
             <div className="flex items-baseline justify-between gap-x-2">

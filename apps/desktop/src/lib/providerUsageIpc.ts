@@ -383,6 +383,14 @@ export interface LiveUsageWindowPayload {
   usedPercent: number | null
   startsAt: string | null
   resetsAt: string | null
+  /**
+   * How far into its own period this window has travelled, 0-1, or null when
+   * the period is unknown. This is what the marker on each bar shows.
+   *
+   * The shell measures it, because a weekly window counts only the days the
+   * reader works (Settings -> Usage -> your working week).
+   */
+  elapsedFraction: number | null
   /** Whether history shows non-zero usage in this allowance period. */
   hasNonzeroUsageInCurrentPeriod: boolean
   forecast: LiveUsageForecastPayload

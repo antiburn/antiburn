@@ -32,6 +32,7 @@ function liveWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageW
     usedPercent: 42,
     startsAt: null,
     resetsAt: null,
+    elapsedFraction: null,
     hasNonzeroUsageInCurrentPeriod: false,
     forecast: FORECAST,
     ...overrides,
@@ -109,10 +110,13 @@ function filledSegments(): number {
 }
 
 describe("UsageLimitsBar — the ring row", () => {
+  // Three of five hours gone, and half a week gone: the shell measures these
+  // and sends them, so the fixtures state them rather than imply them.
   const shortWindow = liveWindow({
     usedPercent: 42,
     startsAt: "2027-01-15T09:00:00Z",
     resetsAt: "2027-01-15T14:00:00Z",
+    elapsedFraction: 0.6,
   })
   const longWindow = liveWindow({
     id: "weekly",
@@ -120,6 +124,7 @@ describe("UsageLimitsBar — the ring row", () => {
     usedPercent: 75,
     startsAt: "2027-01-12T00:00:00Z",
     resetsAt: "2027-01-19T00:00:00Z",
+    elapsedFraction: 0.5,
   })
 
   it("marks the highest-usage window for each account independently", () => {
@@ -165,7 +170,10 @@ describe("UsageLimitsBar — the ring row", () => {
     bar({
       live: liveSummary({
         providers: [
-          liveProvider({ windows: [shortWindow, { ...longWindow, resetsAt: null }] }),
+          liveProvider({
+            // No reset means the shell has no span to measure, so no notch.
+            windows: [shortWindow, { ...longWindow, resetsAt: null, elapsedFraction: null }],
+          }),
         ],
       }),
     })
@@ -660,6 +668,7 @@ describe("UsageLimitsBar — the meter", () => {
               liveWindow({
                 startsAt: "2027-01-15T09:00:00Z",
                 resetsAt: "2027-01-15T14:00:00Z",
+                elapsedFraction: 0.6,
               }),
             ],
           }),

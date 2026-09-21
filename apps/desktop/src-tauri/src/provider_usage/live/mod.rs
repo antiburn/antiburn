@@ -50,6 +50,7 @@ pub mod milestones;
 pub mod model;
 pub mod normalize;
 pub mod sources;
+pub mod working_week;
 
 #[cfg(test)]
 mod tests;
@@ -414,6 +415,13 @@ pub fn summarize_collected(
     let at =
         time::OffsetDateTime::from_unix_timestamp(now).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
     let samples_since_epoch = now - SAMPLE_LOOKBACK_SECONDS;
+    // An unreadable preference counts every day, which is the behaviour before
+    // this setting existed.
+    let working_week = store
+        .and_then(|store| store.settings().ok())
+        .map(|settings| settings.working_week)
+        .unwrap_or_default();
+    let offset = working_week::offset_from_minutes(utc_offset_minutes);
 
     let mut providers: Vec<LiveProviderUsage> = collected
         .snapshots
@@ -434,7 +442,15 @@ pub fn summarize_collected(
                 .iter()
                 .map(|entry| {
                     let samples = window_samples(store, &snapshot, &entry.id, samples_since_epoch);
-                    window(entry.clone(), &samples, &snapshot, at, midnight)
+                    window(
+                        entry.clone(),
+                        &samples,
+                        &snapshot,
+                        at,
+                        midnight,
+                        working_week,
+                        offset,
+                    )
                 })
                 .collect(),
             extra_usage: snapshot.supplemental.clone().map(|extra| LiveExtraUsage {
@@ -518,13 +534,65 @@ fn source_agent(source: &str) -> Option<&'static str> {
     }
 }
 
+/// The length of the period a window's own identity states.
+///
+/// An id-keyed period wins, because it is the more specific fact. Without one,
+/// the `kind` still names a recurrence for two kinds: a week is seven days and
+/// a day is twenty-four hours.
+///
+/// `monthly` and `billingCycle` get nothing on purpose. A month is 28 to 31
+/// days and a billing cycle can be shorter, so a fixed length would be a guess
+/// that looks like a measurement.
+fn implied_period(window: &UsageWindow) -> Option<time::Duration> {
+    match window.id.as_str() {
+        "five-hour" | "antigravity-gemini-5h" | "antigravity-claude-gpt-5h" => {
+            return Some(time::Duration::hours(5));
+        }
+        _ => {}
+    }
+    match &window.kind {
+        UsageWindowKind::Weekly => Some(time::Duration::days(7)),
+        UsageWindowKind::Other(kind) if kind == "daily" => Some(time::Duration::days(1)),
+        _ => None,
+    }
+}
+
+/// How far into its own period a window has travelled, from 0 to 1.
+///
+/// The provider states the reset but seldom the start, so an absent start comes
+/// from [`implied_period`]. A window with neither gets no marker, because a
+/// marker from an assumed period is worse than no marker.
+fn elapsed_fraction(
+    window: &UsageWindow,
+    now: time::OffsetDateTime,
+    clock: working_week::WorkingClock,
+) -> Option<f64> {
+    let end = window.resets_at?;
+    let start = match window.starts_at {
+        Some(start) => start,
+        None => end - implied_period(window)?,
+    };
+    clock.elapsed_fraction(start, end, now)
+}
+
 fn window(
     window: UsageWindow,
     samples: &[metrics::UsageSample],
     snapshot: &ProviderUsageSnapshot,
     now: time::OffsetDateTime,
     local_midnight: time::OffsetDateTime,
+    working_week: crate::store::WorkingWeek,
+    offset: time::UtcOffset,
 ) -> LiveUsageWindow {
+    // The reader's week applies to a weekly allowance only. A five-hour period
+    // rolls several times in one day, so the days they work say nothing about
+    // it.
+    let clock = if matches!(window.kind, UsageWindowKind::Weekly) {
+        working_week::WorkingClock::new(working_week, offset)
+    } else {
+        working_week::WorkingClock::every_day(offset)
+    };
+    let elapsed_fraction = elapsed_fraction(&window, now, clock);
     let forecast = metrics::usage_forecast(
         samples,
         window.used_percent,
@@ -532,6 +600,7 @@ fn window(
         now,
         snapshot.source.freshness,
         snapshot.source.confidence,
+        clock,
     );
     let has_nonzero_usage_in_current_period =
         metrics::has_nonzero_usage_in_current_period(samples, window.resets_at, now);
@@ -562,6 +631,7 @@ fn window(
         used_percent: window.used_percent,
         starts_at: window.starts_at.map(iso),
         resets_at: window.resets_at.map(iso),
+        elapsed_fraction,
         has_nonzero_usage_in_current_period,
         forecast: LiveUsageForecast {
             unavailable_reason: forecast
