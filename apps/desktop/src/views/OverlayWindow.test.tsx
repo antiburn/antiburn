@@ -376,6 +376,8 @@ describe("OverlayWindow", () => {
     outerPosition.mockReset()
     outerPosition.mockResolvedValue({ x: 600, y: 40 })
     stored.clear()
+    // The map is off by default. Most of these tests exercise it, so turn it on.
+    stored.set("antiburn.showHudTokenMap", "1")
     rectSpy = vi
       .spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockImplementation(function (this: HTMLElement) {
@@ -1108,8 +1110,8 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("draws no map when the preference is off", async () => {
-    stored.set("antiburn.showHudTokenMap", "0")
+  it("draws no map by default", async () => {
+    stored.delete("antiburn.showHudTokenMap")
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     expect(getHudTokenMap).not.toHaveBeenCalled()
