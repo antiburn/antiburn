@@ -244,7 +244,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   the promise below stops being true.
 
                   The list lets a reader count every field. */}
-              <p>The schema has twenty-eight fields, and these are all of them:</p>
+              <p>The schema has thirty-one fields, and these are all of them:</p>
               {/* `pl-7`, not the `pl-4` this started as. Root font-size here
                   is 13px, so `pl-4` is 13px of padding — less than the disc
                   marker's own 17.5px advance, which left the bullets painting
@@ -291,6 +291,19 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 <li>
                   How far that factor&rsquo;s estimate and the provider&rsquo;s own meter
                   disagree, also reduced to a coarse band.
+                </li>
+                <li>
+                  For one finished usage window, whether a dollars-only estimate landed above or
+                  below the provider&rsquo;s own meter, and by how much, reduced to a coarse
+                  band.
+                </li>
+                <li>
+                  How much of that window&rsquo;s meter rise no local session could explain,
+                  reduced to a coarse band.
+                </li>
+                <li>
+                  Whether a reading covered that window&rsquo;s own end, or only an older one
+                  existed, or none did.
                 </li>
                 <li>
                   An hourly summary of antiburn&rsquo;s own CPU, memory, process I/O, local

@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../lib/ipc"
-import { providerBarColor } from "../lib/usageBars"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
+import type * as HudIpc from "../lib/hudIpc"
+import type { HudDetailState } from "../lib/hudIpc"
 import { OverlayWindow } from "./OverlayWindow"
 
 const REFRESH_TEST_MS = 60_000
@@ -11,7 +12,9 @@ const REFRESH_TEST_MS = 60_000
 const getLiveUsage = vi.hoisted(() => vi.fn())
 const getLiveSessions = vi.hoisted(() => vi.fn())
 const isOverlayWorkActive = vi.hoisted(() => vi.fn())
-const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
+const getHudTokenMap = vi.hoisted(() => vi.fn())
+const refreshLiveUsage = vi.hoisted(() => vi.fn())
+const showHudDetail = vi.hoisted(() => vi.fn(async (_state: HudDetailState) => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const resizeOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
 const livePush = vi.hoisted(() => ({
@@ -32,14 +35,20 @@ vi.mock("../lib/ipc", async () => {
     getLiveUsage,
     getLiveSessions,
     isOverlayWorkActive,
-    showHudDetail,
+    refreshLiveUsage,
     hideHudDetail,
     resizeOverlayWindow,
     onLiveUsageChanged,
   }
 })
+vi.mock("../lib/hudIpc", async () => {
+  const actual = await vi.importActual<typeof HudIpc>("../lib/hudIpc")
+  return { ...actual, getHudTokenMap, showHudDetail }
+})
 
-const invoke = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}))
+const invoke = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
+)
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 const takeHudAnalyticsOrigin = vi.hoisted(() => vi.fn())
@@ -198,6 +207,15 @@ function summary(): LiveUsageSummaryPayload {
   }
 }
 
+/** A summary whose one limit is used up, resetting in `resetInMs`. */
+function blocked(resetInMs: number): LiveUsageSummaryPayload {
+  const payload = summary()
+  const window = payload.providers[0]!.windows[0]!
+  window.usedPercent = 100
+  window.resetsAt = new Date(Date.now() + resetInMs).toISOString()
+  return payload
+}
+
 function withSecondBar(): LiveUsageSummaryPayload {
   const payload = summary()
   payload.providers[0]!.windows.push({
@@ -205,16 +223,6 @@ function withSecondBar(): LiveUsageSummaryPayload {
     id: "weekly",
     role: "primaryLong",
   })
-  return payload
-}
-
-function withScopedBar(): LiveUsageSummaryPayload {
-  const payload = withSecondBar()
-  payload.providers[0]!.windows[1] = {
-    ...payload.providers[0]!.windows[1]!,
-    id: "weekly-fable",
-    scopeModel: "Fable",
-  }
   return payload
 }
 
@@ -226,6 +234,8 @@ function panel(container: HTMLElement): HTMLElement {
   return frame(container).firstElementChild as HTMLElement
 }
 
+// The close control is commented out for now. Its tests below are skipped
+// with it, so they come back with the button.
 function closeButton(): HTMLElement {
   return screen.getByRole("button", { name: "Close overlay" })
 }
@@ -333,6 +343,10 @@ describe("OverlayWindow", () => {
     lifecycle.seq = 0
     isOverlayWorkActive.mockReset()
     isOverlayWorkActive.mockResolvedValue(true)
+    getHudTokenMap.mockReset()
+    getHudTokenMap.mockResolvedValue(null)
+    refreshLiveUsage.mockReset()
+    refreshLiveUsage.mockResolvedValue(null)
     showHudDetail.mockClear()
     hideHudDetail.mockClear()
     resizeOverlayWindow.mockClear()
@@ -520,7 +534,7 @@ describe("OverlayWindow", () => {
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+      expect(container.querySelector(".led-blink")).not.toBeNull()
 
       // The snapshot already carries sequence 1; the delta must be newer.
       lifecycle.seq = 1
@@ -536,7 +550,7 @@ describe("OverlayWindow", () => {
           { working: 0, total: 1, anonymous: 0 },
         ),
       )
-      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(container.querySelector(".led-blink")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -566,7 +580,7 @@ describe("OverlayWindow", () => {
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+      expect(container.querySelector(".led-blink")).not.toBeNull()
 
       lifecycle.seq = 1
       // A stamped delta about a session the rows never named still moves
@@ -582,7 +596,7 @@ describe("OverlayWindow", () => {
           { working: 1, total: 300, anonymous: 0 },
         ),
       )
-      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+      expect(container.querySelector(".led-blink")).not.toBeNull()
       act(() =>
         emitLifecycle(
           {
@@ -598,7 +612,7 @@ describe("OverlayWindow", () => {
           { working: 0, total: 300, anonymous: 0 },
         ),
       )
-      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(container.querySelector(".led-blink")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -629,12 +643,12 @@ describe("OverlayWindow", () => {
           { working: 0, total: 0, anonymous: 1 },
         ),
       )
-      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+      expect(container.querySelector(".led-blink")).not.toBeNull()
 
       // No renderer timer ends anonymous activity: past the registry's
       // window the bar still blinks until the canonical clear arrives.
       await advance(30_000)
-      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+      expect(container.querySelector(".led-blink")).not.toBeNull()
 
       act(() =>
         emitLifecycle(
@@ -647,7 +661,7 @@ describe("OverlayWindow", () => {
           { working: 0, total: 0, anonymous: 0 },
         ),
       )
-      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(container.querySelector(".led-blink")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -670,7 +684,7 @@ describe("OverlayWindow", () => {
         { working: 1, total: 1, anonymous: 0 },
       ),
     )
-    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
 
     act(() => emitNative("overlay_work_changed", false))
     expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
@@ -681,139 +695,6 @@ describe("OverlayWindow", () => {
     expect(nativeEvents.get("overlay_work_changed")?.size ?? 0).toBe(0)
   })
 
-  it("marks the first segment when usage is too low to light one", async () => {
-    const low = summary()
-    low.providers[0]!.windows[0]!.usedPercent = 1
-    getLiveUsage.mockResolvedValue(low)
-    getLiveSessions.mockResolvedValue(liveSnapshot())
-    const { container } = render(<OverlayWindow />)
-
-    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
-    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
-    expect(dots).toHaveLength(20)
-    // Nothing is lit, so the first segment flashes alone, in the brand tint.
-    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
-    expect(dots[0]).toHaveClass("led-sweep-dot", "bg-led-off")
-    expect(dots[0]).not.toHaveAttribute("data-led-lit")
-    expect(container.querySelectorAll("[data-led-next]")).toHaveLength(1)
-    expect(dots[0]).toHaveAttribute("data-led-next", "true")
-  })
-
-  it("sweeps the one empty bar when there are no bars", async () => {
-    const empty = summary()
-    empty.providers = []
-    getLiveUsage.mockResolvedValue(empty)
-    getLiveSessions.mockResolvedValue(liveSnapshot())
-    const { container } = render(<OverlayWindow />)
-
-    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
-    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
-    expect(dots).toHaveLength(20)
-    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
-    expect(dots[0]).toHaveClass("led-sweep-dot")
-    expect(dots[0]).toHaveAttribute("data-led-next", "true")
-    expect(container.querySelector("[data-led-lit]")).toBeNull()
-  })
-
-  it("sweeps every bar of the live provider, one row apart from the top", async () => {
-    getLiveUsage.mockResolvedValue(withSecondBar())
-    getLiveSessions.mockResolvedValue(liveSnapshot())
-    const { container } = render(<OverlayWindow />)
-
-    // 81% lights 16 of 20 on each bar; only the lit segments move.
-    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
-    const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
-    expect(bars.map((bar) => bar.style.getPropertyValue("--led-row"))).toEqual(["0", "1"])
-    expect(bars[0]?.style.getPropertyValue("--led-segments")).toBe("20")
-  })
-
-  it("follows Pi route switches without new activity and rejects stale provider counts", async () => {
-    getLiveUsage.mockResolvedValue(withScopedBar())
-    getLiveSessions.mockResolvedValue(
-      liveSnapshot(liveSession("pi-live", "pi", "gpt-6-astra", "openai")),
-    )
-    const { container } = render(<OverlayWindow />)
-    await waitFor(() => expect(getLiveSessions).toHaveBeenCalledTimes(1))
-    expect(container.querySelector(".led-sweep-dot")).toBeNull()
-    const metadata = (seq: number, route: string) =>
-      emitNative("session:lifecycle", {
-        seq,
-        kind: "sweep_changed",
-        aggregate: {
-          working: 1,
-          total: 1,
-          anonymous: 0,
-          sweep: sweep(1, 0, "pi", "claude-fable-5", route),
-        },
-      })
-    act(() => metadata(2, "anthropic"))
-    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
-    act(() => metadata(3, "openrouter"))
-    expect(container.querySelector(".led-sweep-dot")).toBeNull()
-    act(() => metadata(1, "anthropic"))
-    expect(container.querySelector(".led-sweep-dot")).toBeNull()
-    expect(getLiveSessions).toHaveBeenCalledTimes(1)
-  })
-
-  it("holds a model-scoped bar still while the session runs another model", async () => {
-    getLiveUsage.mockResolvedValue(withScopedBar())
-    getLiveSessions.mockResolvedValue(
-      liveSnapshot(liveSession("session-1", "claude-code", "claude-opus-4-6")),
-    )
-    const { container } = render(<OverlayWindow />)
-
-    // Only the first bar sweeps. The Fable bar shows a model that the
-    // session does not run, so it holds still.
-    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(16))
-    const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
-    expect(bars).toHaveLength(1)
-    expect(bars[0]?.style.getPropertyValue("--led-row")).toBe("0")
-  })
-
-  it("sweeps a model-scoped bar while the session runs that model", async () => {
-    getLiveUsage.mockResolvedValue(withScopedBar())
-    getLiveSessions.mockResolvedValue(
-      liveSnapshot(liveSession("session-1", "claude-code", "claude-fable-5")),
-    )
-    const { container } = render(<OverlayWindow />)
-
-    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
-  })
-
-  it("runs one sweep clock for every bar, and only while a session is live", async () => {
-    getLiveUsage.mockResolvedValue(withSecondBar())
-    getLiveSessions.mockResolvedValue(liveSnapshot())
-    const { container } = render(<OverlayWindow />)
-
-    // One animation drives every bar, so the bars stay in phase however
-    // late a bar joined the sweep.
-    await waitFor(() => expect(container.querySelector(".led-clock")).not.toBeNull())
-    expect(container.querySelectorAll(".led-clock")).toHaveLength(1)
-    // The HUD floats over the reader's work, so its gleam runs softer.
-    expect(container.querySelector(".led-clock")).toHaveClass("led-clock-soft")
-    // The view writes no phase, because `installLivePhase` owns it. A delay
-    // from a render would move the sweep on every later render.
-    const clock = container.querySelector<HTMLElement>(".led-clock")
-    expect(clock?.style.getPropertyValue("--led-sweep-delay")).toBe("")
-    expect(clock?.style.animationDelay).toBe("")
-    expect(
-      container.querySelector(".led-clock")?.querySelectorAll(".led-sweep-dot"),
-    ).toHaveLength(32)
-  })
-
-  it("keeps the bars dark while the live session draws on another provider", async () => {
-    getLiveSessions.mockResolvedValue(
-      liveSnapshot(liveSession("session-1", "cursor", "claude-opus-4-6", "cursor")),
-    )
-    const { container } = render(<OverlayWindow />)
-
-    await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
-    await waitFor(() =>
-      expect(container.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20),
-    )
-    expect(container.querySelector(".led-sweep-dot")).toBeNull()
-  })
-
   it("keeps a low-usage bar dark without a live session", async () => {
     const low = summary()
     low.providers[0]!.windows[0]!.usedPercent = 1
@@ -821,32 +702,7 @@ describe("OverlayWindow", () => {
     const { container } = render(<OverlayWindow />)
 
     await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
-    expect(container.querySelector(".led-sweep-dot")).toBeNull()
-    expect(container.querySelector(".led-clock")).toBeNull()
-  })
-
-  it("marks the next segment to light, and gives the lit ones the gleam", async () => {
-    getLiveSessions.mockResolvedValue(liveSnapshot())
-    const { container } = render(<OverlayWindow />)
-
-    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
-    const dots = container.querySelectorAll<HTMLElement>(".pointer-events-none .rounded-full")
-    // 81% of 20 segments rounds to 16 lit, so the mark sits on index 16.
-    expect(dots[15]).toHaveAttribute("data-led-lit", "true")
-    expect(dots[15]).not.toHaveAttribute("data-led-next")
-    expect(dots[15]?.style.backgroundColor).not.toBe("")
-    expect(dots[15]?.style.getPropertyValue("--led-index")).toBe("15")
-    expect(dots[15]).toHaveClass("led-sweep-dot")
-    // The stylesheet derives the gleam from the segment's own colour. jsdom
-    // normalises the background to rgb; the custom property keeps the source.
-    expect(dots[15]?.style.getPropertyValue("--led-color")).toBe(providerBarColor("anthropic"))
-    // The unlit segment does not move. It keeps the unlit colour and only
-    // holds the still mark under reduced motion.
-    expect(dots[16]).toHaveAttribute("data-led-next", "true")
-    expect(dots[16]).not.toHaveAttribute("data-led-lit")
-    expect(dots[16]).not.toHaveClass("led-sweep-dot")
-    expect(dots[16]).toHaveClass("bg-led-off")
-    expect(dots[16]?.style.backgroundColor).toBe("")
+    expect(container.querySelector(".led-blink")).toBeNull()
   })
 
   it("rests with bars only and a hidden close control", async () => {
@@ -854,7 +710,7 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
     expect(screen.queryByText("81%")).not.toBeInTheDocument()
-    expect(closeButton()).toHaveClass("opacity-0", "pointer-events-none")
+    expect(screen.queryByRole("button", { name: "Close overlay" })).toBeNull()
     expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
   })
 
@@ -1012,6 +868,254 @@ describe("OverlayWindow", () => {
     expect(resizeOverlayWindow).toHaveBeenCalledTimes(resizeCount)
   })
 
+  function mapSession(sessionId: string, tokensPerMin: number) {
+    return {
+      agent: "claude-code",
+      sessionId,
+      title: null,
+      lastTurnEpoch: 990,
+      tokensPerMin,
+      modes: {
+        looking: tokensPerMin * 5,
+        running: 0,
+        changing: 0,
+        delegating: 0,
+        thinking: 0,
+        talking: 0,
+        other: 0,
+      },
+      subagents: [],
+    }
+  }
+
+  it("draws the token map above the bars when two sessions are live", async () => {
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: null,
+      sessions: [mapSession("s1", 1_000), mapSession("s2", 250)],
+    })
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() =>
+      expect(container.querySelectorAll("svg[data-dot-value] circle")).toHaveLength(5),
+    )
+    const svg = container.querySelector("svg[data-dot-value]")!
+    const bars = container.querySelector(".hud-leds")
+    expect(svg.compareDocumentPosition(bars!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("pins the blink period to a spend rate from the HUD Dev menu", async () => {
+    getLiveSessions.mockResolvedValue(liveSnapshot())
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    const led = container.querySelector<HTMLElement>(".led-blink")!
+    expect(led.style.getPropertyValue("--led-period")).toBe("3000ms")
+    await act(async () => {
+      emitNative("hud_dev", { kind: "spend", usdPerMinute: 2 })
+    })
+    expect(led.style.getPropertyValue("--led-period")).toBe("300ms")
+  })
+
+  it("celebrates a reset on demand from the HUD Dev menu", async () => {
+    render(<OverlayWindow />)
+    await waitFor(() => expect(nativeEvents.get("hud_dev")?.size ?? 0).toBe(1))
+    await act(async () => {
+      emitNative("hud_dev", { kind: "celebrate" })
+    })
+    expect(screen.getByTestId("hud-celebration").textContent).toContain("usage reset")
+  })
+
+  it("leaves the map off for one session and lets the live LED carry it", async () => {
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: null,
+      sessions: [mapSession("s1", 1_000)],
+    })
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getHudTokenMap).toHaveBeenCalled())
+    await act(async () => {})
+    expect(container.querySelector("svg[data-dot-value]")).toBeNull()
+  })
+
+  it("retargets the open detail card to the agent box under the pointer", async () => {
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: null,
+      sessions: [mapSession("s1", 1_000), mapSession("s2", 250)],
+    })
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector("svg[data-dot-value]")).not.toBeNull()
+      fireEvent.mouseEnter(frame(container))
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+      expect(showHudDetail.mock.calls[0]?.[0]).toMatchObject({
+        reason: "show",
+        target: "usage",
+      })
+
+      const box = container.querySelector('g[data-blob="claude-code:s2"]')!
+      fireEvent.mouseEnter(box)
+      expect(showHudDetail).toHaveBeenCalledTimes(2)
+      expect(showHudDetail.mock.calls[1]?.[0]).toMatchObject({
+        reason: "show",
+        target: "claude-code:s2",
+      })
+      expect(showHudDetail.mock.calls[1]?.[0].map?.sessions[1]).toMatchObject({
+        key: "claude-code:s2",
+        agent: "claude-code",
+        tokensPerMin: 250,
+      })
+
+      fireEvent.mouseLeave(box)
+      expect(showHudDetail).toHaveBeenCalledTimes(3)
+      expect(showHudDetail.mock.calls[2]?.[0]).toMatchObject({ target: "usage" })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("tears a docked HUD off when a drag starts", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseDown(panel(container), { clientX: 10, clientY: 10 })
+      expect(invoke).toHaveBeenCalledWith("tear_off_overlay")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("wakes the HUD after two polls of hot spend, then waits for a drop", async () => {
+    const hot = { usdPerMinute: 3, windowSecs: 300, pricedShare: 1 }
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: hot,
+      sessions: [],
+    })
+    vi.useFakeTimers()
+    try {
+      render(<OverlayWindow />)
+      await advance(0)
+      const wakes = () => invoke.mock.calls.filter(([command]) => command === "wake_overlay")
+      expect(wakes()).toHaveLength(0)
+      await advance(5_000)
+      expect(wakes()).toEqual([["wake_overlay", { reason: "burn" }]])
+      await advance(5_000)
+      expect(wakes()).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("blinks the live LED at the spend rate in the live session's mode colour", async () => {
+    getLiveSessions.mockResolvedValue(liveSnapshot())
+    getHudTokenMap.mockResolvedValue({
+      nowEpoch: 1_000,
+      windowSecs: 300,
+      spend: { usdPerMinute: 5, windowSecs: 300, pricedShare: 1 },
+      sessions: [
+        {
+          agent: "claude-code",
+          sessionId: "s1",
+          title: null,
+          lastTurnEpoch: 990,
+          tokensPerMin: 1_000,
+          modes: {
+            looking: 0,
+            running: 0,
+            changing: 5_000,
+            delegating: 0,
+            thinking: 0,
+            talking: 0,
+            other: 0,
+          },
+          subagents: [],
+        },
+      ],
+    })
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => {
+      const led = container.querySelector<HTMLElement>(".led-blink")
+      expect(led).not.toBeNull()
+      expect(led!.style.getPropertyValue("--led-period")).toBe("300ms")
+      expect(led!.style.getPropertyValue("--led-on")).toBe("var(--color-mode-changing)")
+    })
+    expect(showHudDetail).not.toHaveBeenCalled()
+  })
+
+  it("blinks at the quiet period with no spend and no forecast", async () => {
+    getLiveSessions.mockResolvedValue(liveSnapshot())
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    const led = container.querySelector<HTMLElement>(".led-blink")!
+    expect(led.style.getPropertyValue("--led-period")).toBe("3000ms")
+  })
+
+  it("spells the map out in the detail payload", async () => {
+    vi.useFakeTimers()
+    try {
+      getHudTokenMap.mockResolvedValue({
+        nowEpoch: 1_000,
+        windowSecs: 300,
+        spend: null,
+        sessions: [
+          {
+            agent: "claude-code",
+            sessionId: "s1",
+            title: "HUD token map",
+            lastTurnEpoch: 990,
+            tokensPerMin: 1_000,
+            modes: {
+              looking: 5_000,
+              running: 0,
+              changing: 0,
+              delegating: 0,
+              thinking: 0,
+              talking: 0,
+              other: 0,
+            },
+            subagents: [],
+          },
+        ],
+      })
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(frame(container))
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          map: {
+            dotValue: 250,
+            sessions: [
+              expect.objectContaining({
+                label: "HUD token map",
+                tokensPerMin: 1_000,
+                topMode: "looking",
+              }),
+            ],
+          },
+        }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("draws no map when the preference is off", async () => {
+    stored.set("antiburn.showHudTokenMap", "0")
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    expect(getHudTokenMap).not.toHaveBeenCalled()
+    expect(container.querySelector("svg[data-dot-value]")).toBeNull()
+  })
+
   it("reveals at the measured collapsed height", async () => {
     render(<OverlayWindow />)
     await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(28, false, false))
@@ -1023,14 +1127,16 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(44, false, true))
   })
 
-  it("takes a surface on hover and drops it on leave", async () => {
-    // At rest the bars sit on the desktop with nothing behind them. The
-    // surface arrives with the pointer and groups them into one object.
+  it("paints the same translucent frame at rest and on hover", async () => {
+    // The frame groups the bars into one object without hiding the desktop.
+    // The pointer does not change it.
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    expect(panel(container).classList.contains("bg-hud-frame")).toBe(true)
+    expect(panel(container).classList.contains("hud-frame")).toBe(true)
     expect(panel(container).style.backgroundColor).toBe("")
     fireEvent.mouseEnter(frame(container))
-    expect(panel(container).style.backgroundColor).toBe("var(--color-bg-hud-hover)")
+    expect(panel(container).style.backgroundColor).toBe("")
     fireEvent.mouseLeave(frame(container))
     expect(panel(container).style.backgroundColor).toBe("")
   })
@@ -1044,13 +1150,12 @@ describe("OverlayWindow", () => {
     expect(offset).toBeCloseTo(60, 3)
   })
 
-  it("shows the close control at once and the detail window after the delay", async () => {
+  it("shows the detail window after the hover delay", async () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
       fireEvent.mouseEnter(frame(container))
-      expect(closeButton()).toHaveClass("opacity-100")
       await advance(399)
       expect(showHudDetail).not.toHaveBeenCalled()
       await advance(1)
@@ -1118,7 +1223,6 @@ describe("OverlayWindow", () => {
       await advance(400)
       fireEvent.mouseLeave(frame(container))
       expect(hideHudDetail).toHaveBeenCalledTimes(1)
-      expect(closeButton()).toHaveClass("opacity-0")
     } finally {
       vi.useRealTimers()
     }
@@ -1155,13 +1259,79 @@ describe("OverlayWindow", () => {
     }
   })
 
+  it("draws the collapsed island as the notch row alone and keeps the detail shut", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector("[data-island]")).toBeNull()
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "collapsed",
+          wing: 30,
+          fillet: 6,
+          notch: 200,
+          height: 32,
+        }),
+      )
+      const island = container.querySelector("[data-island]")
+      expect(island?.getAttribute("data-island")).toBe("collapsed")
+      expect(island?.classList.contains("hud-island-fillets")).toBe(true)
+      expect(screen.getByTestId("island-live-led")).toBeTruthy()
+      // The right wing holds the antiburn mark.
+      expect(screen.getByTestId("island-mark")).toBeTruthy()
+      expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(0)
+
+      act(() => hover.emit(true))
+      await advance(400)
+      expect(showHudDetail).not.toHaveBeenCalled()
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "expanded",
+          wing: 30,
+          fillet: 19,
+          notch: 200,
+          height: 32,
+        }),
+      )
+      expect(
+        container.querySelector("[data-island]")?.classList.contains("hud-island-open"),
+      ).toBe(true)
+      expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+      // The island names and dates its bars; the floating frame leaves that to the detail.
+      expect(screen.getByTestId("hud-bar-label").textContent).toBe("5-hour limit81%")
+      expect(screen.getByTestId("hud-bar-reset")).toBeTruthy()
+      expect(screen.queryByTestId("hud-countdown")).toBeNull()
+      // The island has no detail card, so the pointer on it opens nothing.
+      await advance(400)
+      expect(showHudDetail).not.toHaveBeenCalled()
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "off",
+          wing: 0,
+          fillet: 0,
+          notch: 0,
+          height: 0,
+        }),
+      )
+      expect(container.querySelector("[data-island]")).toBeNull()
+      expect(container.querySelector(".hud-frame")).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("keeps hover active inside the transparent frame margin", async () => {
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(nativeEvents.get("overlay_hover")?.size).toBe(1))
     act(() => hover.emit(true))
-    await waitFor(() => expect(closeButton()).toHaveClass("opacity-100"))
     fireEvent.mouseLeave(panel(container), { relatedTarget: frame(container) })
-    expect(closeButton()).toHaveClass("opacity-100")
+    // Hover intent survives the leave, so the detail window still opens.
+    await waitFor(() => expect(showHudDetail).toHaveBeenCalledTimes(1))
+    expect(hideHudDetail).not.toHaveBeenCalled()
   })
 
   it("cancels the detail timer for a drag and restarts it on mouse up", async () => {
@@ -1297,7 +1467,7 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("closes the visible detail window with the HUD", async () => {
+  it.skip("closes the visible detail window with the HUD", async () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<OverlayWindow />)
@@ -1319,5 +1489,139 @@ describe("OverlayWindow", () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("counts down to the reset while a limit blocks the tool", async () => {
+    vi.useFakeTimers()
+    try {
+      getLiveUsage.mockResolvedValue(blocked(90 * 60_000))
+      render(<OverlayWindow />)
+      await advance(0)
+      expect(screen.getByTestId("hud-countdown").textContent).toBe(
+        "resets in 1h 30m · 5-hour limit",
+      )
+      await advance(65_000)
+      expect(screen.getByTestId("hud-countdown").textContent).toBe(
+        "resets in 1h 29m · 5-hour limit",
+      )
+      expect(refreshLiveUsage).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("asks for a fresh read once the reset time passes, then celebrates", async () => {
+    vi.useFakeTimers()
+    try {
+      getLiveUsage.mockResolvedValue(blocked(7_000))
+      refreshLiveUsage.mockResolvedValue(summary())
+      render(<OverlayWindow />)
+      await advance(0)
+      expect(screen.getByTestId("hud-countdown")).toBeTruthy()
+
+      await advance(10_000)
+      expect(refreshLiveUsage).toHaveBeenCalledTimes(1)
+      expect(screen.queryByTestId("hud-countdown")).toBeNull()
+      expect(screen.getByTestId("hud-celebration").textContent).toBe("anthropic usage reset")
+      expect(invoke).toHaveBeenCalledWith("wake_overlay", { reason: "reset" })
+
+      await advance(6_000)
+      expect(screen.queryByTestId("hud-celebration")).toBeNull()
+      // The next ticks do not ask again for a reset that was read.
+      await advance(10_000)
+      expect(refreshLiveUsage).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  describe("island drag", () => {
+    const COLLAPSED = { island: "collapsed", wing: 30, fillet: 6, notch: 200, height: 32 }
+    const tearOffs = () =>
+      invoke.mock.calls.filter(([command]) => command === "tear_off_overlay")
+
+    async function mountIsland() {
+      const { container } = render(<OverlayWindow />)
+      await waitFor(() => expect(nativeEvents.get("hud-island:state")?.size).toBe(1))
+      act(() => emitNative("hud-island:state", COLLAPSED))
+      const island = container.querySelector<HTMLElement>("[data-island]")
+      if (!island) throw new Error("no island")
+      return island
+    }
+
+    it("ghosts the island on a press and tears nothing off for a click", async () => {
+      const island = await mountIsland()
+      fireEvent.mouseDown(island, { screenX: 700, screenY: 10 })
+      expect(island.getAttribute("data-drag-armed")).toBe("true")
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("expand_hud_island"))
+      // A wobble under the threshold is still a click.
+      fireEvent.mouseMove(window, { screenX: 704, screenY: 14, buttons: 1 })
+      expect(tearOffs()).toHaveLength(0)
+      fireEvent.mouseUp(window)
+      await act(async () => {})
+      expect(island.getAttribute("data-drag-armed")).toBeNull()
+      expect(tearOffs()).toHaveLength(0)
+      expect(outerPosition).not.toHaveBeenCalled()
+      expect(invoke).not.toHaveBeenCalledWith("record_hud_position")
+    })
+
+    it("tears the island off once the pointer travels, and reads the origin after", async () => {
+      let freeWindow!: (torn: boolean) => void
+      invoke.mockImplementation(async (command: unknown) => {
+        if (command !== "tear_off_overlay") return undefined
+        return new Promise<boolean>((resolve) => {
+          freeWindow = resolve
+        })
+      })
+      setPosition.mockClear()
+      try {
+        const island = await mountIsland()
+        fireEvent.mouseDown(island, { screenX: 700, screenY: 10 })
+        fireEvent.mouseMove(window, { screenX: 712, screenY: 10, buttons: 1 })
+        await waitFor(() => expect(tearOffs()).toHaveLength(1))
+        expect(island.getAttribute("data-drag-armed")).toBeNull()
+        // The shell moves the window under the pointer as it frees it, so
+        // the origin waits for the tear-off.
+        expect(outerPosition).not.toHaveBeenCalled()
+        await act(async () => freeWindow(true))
+        await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(1))
+
+        fireEvent.mouseMove(window, { screenX: 722, screenY: 30, buttons: 1 })
+        await waitFor(() => expect(setPosition).toHaveBeenCalled())
+        expect(setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 610, y: 60 }))
+        fireEvent.mouseUp(window)
+        await waitFor(() => expect(invoke).toHaveBeenCalledWith("record_hud_position"))
+      } finally {
+        invoke.mockImplementation(async () => {})
+      }
+    })
+
+    it("keeps a drag through a blur while the button stays down", async () => {
+      vi.useFakeTimers()
+      try {
+        const { container } = render(<OverlayWindow />)
+        await advance(0)
+        fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
+        await advance(0)
+        expect(outerPosition).toHaveBeenCalledTimes(1)
+
+        // The tear-off's window reshape can read as a blur. The button is
+        // still down, so the next move keeps the drag.
+        fireEvent.blur(window)
+        await advance(100)
+        fireEvent.mouseMove(window, { screenX: 710, screenY: 110, buttons: 1 })
+        await advance(300)
+        expect(invoke).not.toHaveBeenCalledWith("record_hud_position")
+
+        // A blur with no move after it is a release the webview missed.
+        fireEvent.blur(window)
+        await advance(249)
+        expect(invoke).not.toHaveBeenCalledWith("record_hud_position")
+        await advance(1)
+        expect(invoke).toHaveBeenCalledWith("record_hud_position")
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })

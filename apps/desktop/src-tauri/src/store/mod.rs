@@ -464,6 +464,23 @@ impl Store {
             tx.commit()?;
             current = 51;
         }
+        // Branch builds assigned v52 to the refusal column before main used
+        // v52 for model lanes. Apply the main migrations to that shape.
+        if (current == 52 || current == 53)
+            && guard.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('provider_usage_observation')
+                    WHERE name = 'refusal_kind')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let tx = guard.transaction()?;
+            tx.execute_batch(schema::MIGRATIONS[51])?;
+            tx.execute_batch(schema::MIGRATIONS[52])?;
+            tx.pragma_update(None, "user_version", 54)?;
+            tx.commit()?;
+            current = 54;
+        }
         for (index, sql) in schema::MIGRATIONS.iter().enumerate() {
             let version = index as i64 + 1;
             if version <= current {
@@ -1942,7 +1959,6 @@ impl Store {
         tx.execute("DELETE FROM provider_limit_factor_sample", [])?;
         tx.execute("DELETE FROM provider_limit_factor_point", [])?;
         tx.execute("DELETE FROM provider_usage_observation", [])?;
-        tx.execute("DELETE FROM provider_usage_period_rollup", [])?;
         tx.execute("DELETE FROM provider_usage_period", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM provider_account_seen", [])?;

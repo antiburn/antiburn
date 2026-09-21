@@ -22,13 +22,10 @@ import "./overview.css"
  * with utilization on the left and the limit hits that account met on the
  * right.
  *
- * Utilization is supply consumed and overage is demand refused. The meter
- * stops at 100%, so a reader who meets the limit at noon and a reader who
- * finished their day both read the same meter. Only the limit hits tell
- * them apart, which is why the two figures sit side by side.
+ * Utilization estimates supply consumed across quota periods. Limit hits
+ * count refused requests, so the two figures sit side by side.
  *
- * An account with no meter history shows no utilization figure. A gap is
- * never drawn as a zero.
+ * An account with no quota evidence shows no utilization figure.
  *
  * Each caption names what the figure over it measures, so a label above the
  * figure would say the same thing twice. The label stays for a screen
@@ -45,11 +42,13 @@ import "./overview.css"
 export function OverviewAllowanceTotals({
   accounts,
   spanDays,
+  utilizationSpanDays,
   loading = false,
   error = false,
 }: {
   accounts: readonly AllowanceUsageAccountPayload[]
   spanDays: number
+  utilizationSpanDays: number
   loading?: boolean
   error?: boolean
 }) {
@@ -77,8 +76,8 @@ export function OverviewAllowanceTotals({
     return (
       <section aria-label="Allowance">
         <p className="type-body text-label-secondary">
-          antiburn has no allowance readings yet. A provider states its meter while you work,
-          and the figures appear here.
+          antiburn has no allowance history yet. Figures appear when a provider reports usage or
+          local sessions provide an estimate.
         </p>
       </section>
     )
@@ -91,6 +90,7 @@ export function OverviewAllowanceTotals({
             key={`${account.provider}:${account.accountKey}`}
             account={account}
             spanDays={spanDays}
+            utilizationSpanDays={utilizationSpanDays}
           />
         ))}
       </div>
@@ -101,9 +101,11 @@ export function OverviewAllowanceTotals({
 function AllowanceAccount({
   account,
   spanDays,
+  utilizationSpanDays,
 }: {
   account: AllowanceUsageAccountPayload
   spanDays: number
+  utilizationSpanDays: number
 }) {
   const utilization = account.utilization
   const note = limitHitsNote(account.overage)
@@ -113,7 +115,7 @@ function AllowanceAccount({
       <p className="type-callout text-label-secondary">{account.displayName}</p>
       <dl className="overview-allowance-pair mt-[var(--space-sm)]">
         {utilization && (
-          <Tooltip label={utilizationTooltip(utilization)}>
+          <Tooltip label={utilizationTooltip(utilization, utilizationSpanDays)}>
             <div className="min-w-0" tabIndex={0}>
               <dt className="sr-only">{UTILIZATION_LABEL}</dt>
               <dd className="type-hero-figure whitespace-nowrap font-mono text-measure">

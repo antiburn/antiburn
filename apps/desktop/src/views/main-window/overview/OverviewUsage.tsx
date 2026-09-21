@@ -24,8 +24,8 @@ const METRICS: ReadonlyArray<{ value: OverviewMetric; label: string }> = [
  * The Overview's usage block, in one of two units.
  *
  * Cost states what the local sessions would cost at list price.
- * Subscription states how much of each plan the provider's own meter
- * reports, and how often the provider refused a request. A subscriber pays
+ * Subscription estimates how much of each plan the reader used from the
+ * same quota periods as Limits, and counts provider refusals. A subscriber pays
  * one price whatever the token count, so the dollar figure answers a
  * question they do not have.
  *
@@ -104,6 +104,7 @@ export function OverviewUsage({
           <OverviewAllowanceTotals
             accounts={allowanceAccounts(allowance)}
             spanDays={allowance?.overageSpanDays ?? 0}
+            utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
             loading={allowanceLoading}
             error={allowanceError}
           />

@@ -15,7 +15,7 @@ use crate::provider_usage::live::model::{
 
 use super::Store;
 
-const RESET_JITTER_SECS: i64 = 5;
+pub(crate) const RESET_JITTER_SECS: i64 = 5;
 
 /// A provider-stated allowance period.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,43 +59,6 @@ pub struct ProviderUsageObservation {
     pub plan_tier: Option<String>,
     /// The refusal the provider stated on this observation, if it stated one.
     pub refusal_kind: Option<String>,
-}
-
-/// One closed-over allowance period, reduced to the figures the usage
-/// numbers need.
-///
-/// This row outlives the readings it came from. Retention prunes the raw
-/// observations at 90 days, but the utilization history must reach further
-/// back than that.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProviderUsagePeriodRollup {
-    pub period_id: i64,
-    pub provider: String,
-    pub account_key: String,
-    pub window_kind: String,
-    pub window_role: String,
-    pub scope_key: String,
-    pub starts_at_epoch: Option<i64>,
-    pub resets_at_epoch: Option<i64>,
-    pub first_observed_epoch: i64,
-    pub last_observed_epoch: i64,
-    /// The highest figure the provider reported inside this period.
-    pub peak_used_percent: Option<f64>,
-    /// The last figure the provider reported inside this period.
-    pub last_used_percent: Option<f64>,
-    pub observation_count: i64,
-    /// How many readings inside this period state a refusal.
-    pub refusal_count: i64,
-}
-
-/// One meter reading, reduced to what a daily series needs.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProviderUsageReading {
-    pub provider: String,
-    pub account_key: String,
-    pub period_id: i64,
-    pub observed_at_epoch: i64,
-    pub used_percent: f64,
 }
 
 /// A complete period and its ordered readings.
@@ -185,9 +148,6 @@ impl Store {
 
         changed_periods.sort_unstable();
         changed_periods.dedup();
-        for period_id in &changed_periods {
-            refresh_period_rollup(&tx, *period_id)?;
-        }
         tx.commit()?;
         Ok(changed_periods)
     }
@@ -243,118 +203,6 @@ impl Store {
             periods,
             next_after_id,
         })
-    }
-
-    /// Every period rollup whose last reading is at or after `since_epoch`.
-    ///
-    /// The rows come newest first, so a bounded page keeps the recent
-    /// periods. The caller groups them by account and window.
-    pub fn provider_usage_period_rollups(
-        &self,
-        since_epoch: i64,
-        limit: usize,
-    ) -> Result<Vec<ProviderUsagePeriodRollup>> {
-        let connection = self.lock();
-        let limit = i64::try_from(limit.clamp(1, 5_000)).expect("bounded page fits i64");
-        let mut statement = connection.prepare(&format!(
-            "SELECT {ROLLUP_COLUMNS}
-               FROM provider_usage_period_rollup AS rollup
-               JOIN provider_usage_period AS period
-                 ON period.id = rollup.period_id
-              WHERE period.last_observed_epoch >= ?1
-              ORDER BY period.last_observed_epoch DESC, period.id DESC
-              LIMIT ?2"
-        ))?;
-        let rollups = statement
-            .query_map(params![since_epoch, limit], row_to_rollup)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rollups)
-    }
-
-    /// Every whole-account reading in one window role since `since_epoch`.
-    ///
-    /// The rows come in time order inside each period. A daily series needs
-    /// that order, because what a day consumed is the rise from the reading
-    /// before it.
-    ///
-    /// The read pages through every matching row. `page` bounds one query and
-    /// not the answer. A cap on the answer drops the readings that sort last,
-    /// which takes whole accounts off the series, and the caller cannot see
-    /// that it happened.
-    ///
-    /// The pages run in time order, because the observation table indexes
-    /// that order. The rows are then put in account and period order for the
-    /// caller.
-    ///
-    /// A reading with no figure and a reading outside a period are both left
-    /// out. Neither states how much the reader consumed.
-    pub fn provider_usage_readings(
-        &self,
-        since_epoch: i64,
-        window_role: &str,
-        page: usize,
-    ) -> Result<Vec<ProviderUsageReading>> {
-        let connection = self.lock();
-        let page = i64::try_from(page.clamp(1, 200_000)).expect("bounded page fits i64");
-        let mut statement = connection.prepare(
-            "SELECT id, provider, account_key, period_id, observed_at_epoch, used_percent
-               FROM provider_usage_observation
-              WHERE observed_at_epoch >= ?1
-                AND window_role = ?2
-                AND scope_key = 'account'
-                AND period_id IS NOT NULL
-                AND used_percent IS NOT NULL
-                AND (?3 IS NULL OR (observed_at_epoch, id) > (?3, ?4))
-              ORDER BY observed_at_epoch, id
-              LIMIT ?5",
-        )?;
-        let mut readings: Vec<ProviderUsageReading> = Vec::new();
-        // The row the last page ended on, as the observation time and the row
-        // id. Two observations can share a time, so the id breaks the tie and
-        // keeps a page from reading the same row twice.
-        let mut cursor: Option<(i64, i64)> = None;
-        loop {
-            let rows = statement.query_map(
-                params![
-                    since_epoch,
-                    window_role,
-                    cursor.map(|(at_epoch, _)| at_epoch),
-                    cursor.map(|(_, id)| id),
-                    page
-                ],
-                |row| {
-                    let id: i64 = row.get(0)?;
-                    Ok((
-                        id,
-                        ProviderUsageReading {
-                            provider: row.get(1)?,
-                            account_key: row.get(2)?,
-                            period_id: row.get(3)?,
-                            observed_at_epoch: row.get(4)?,
-                            used_percent: row.get(5)?,
-                        },
-                    ))
-                },
-            )?;
-            let mut count: i64 = 0;
-            for row in rows {
-                let (id, reading) = row?;
-                cursor = Some((reading.observed_at_epoch, id));
-                readings.push(reading);
-                count += 1;
-            }
-            if count < page {
-                break;
-            }
-        }
-        readings.sort_by(|left, right| {
-            left.provider
-                .cmp(&right.provider)
-                .then_with(|| left.account_key.cmp(&right.account_key))
-                .then_with(|| left.period_id.cmp(&right.period_id))
-                .then_with(|| left.observed_at_epoch.cmp(&right.observed_at_epoch))
-        });
-        Ok(readings)
     }
 
     /// Readings for one window, oldest first, at or after `since_epoch`.
@@ -428,18 +276,11 @@ impl Store {
         // reference before the period disappears, so the deletion below stays
         // exactly the query it was before samples existed.
         super::provider_limit::detach_samples_pending_period_deletion_in(connection)?;
-        // A period that carries a rollup stays. The rollup holds only the
-        // figures, so the period row is what still names the window and its
-        // boundaries after the readings expire.
         connection.execute(
             "DELETE FROM provider_usage_period
               WHERE NOT EXISTS (
                     SELECT 1 FROM provider_usage_observation
                      WHERE provider_usage_observation.period_id = provider_usage_period.id
-              )
-                AND NOT EXISTS (
-                    SELECT 1 FROM provider_usage_period_rollup
-                     WHERE provider_usage_period_rollup.period_id = provider_usage_period.id
               )",
             [],
         )?;
@@ -470,90 +311,6 @@ impl Store {
         let retention_days = self.settings()?.session_data_retention_days;
         Ok(retention_cutoff(retention_days, now_epoch))
     }
-}
-
-/// The columns [`row_to_rollup`] reads, in order.
-const ROLLUP_COLUMNS: &str = "period.id, period.provider, period.account_key,
-     period.window_kind, period.window_role, period.scope_key,
-     period.starts_at_epoch, period.resets_at_epoch,
-     period.first_observed_epoch, period.last_observed_epoch,
-     rollup.peak_used_percent, rollup.last_used_percent,
-     rollup.observation_count, rollup.refusal_count";
-
-/// Recompute one period's rollup from the readings that remain.
-///
-/// The figures never fall. Retention removes old readings, so a later
-/// recompute sees fewer of them. The peak and the counts therefore keep the
-/// larger of the stored value and the recomputed one.
-///
-/// A period whose readings are all gone gets no write at all, so an expired
-/// period keeps the figures it had.
-fn refresh_period_rollup(connection: &Transaction<'_>, period_id: i64) -> Result<()> {
-    connection.execute(
-        "INSERT INTO provider_usage_period_rollup (
-             period_id, peak_used_percent, last_used_percent, observation_count,
-             refusal_count
-         )
-         SELECT ?1,
-                MAX(used_percent),
-                (
-                    SELECT last.used_percent
-                      FROM provider_usage_observation AS last
-                     WHERE last.period_id = ?1
-                       AND last.used_percent IS NOT NULL
-                     ORDER BY last.observed_at_epoch DESC
-                     LIMIT 1
-                ),
-                COUNT(*),
-                COUNT(refusal_kind)
-           FROM provider_usage_observation
-          WHERE period_id = ?1
-         HAVING COUNT(*) > 0
-         ON CONFLICT(period_id) DO UPDATE SET
-             peak_used_percent = MAX(
-                 COALESCE(
-                     excluded.peak_used_percent,
-                     provider_usage_period_rollup.peak_used_percent
-                 ),
-                 COALESCE(
-                     provider_usage_period_rollup.peak_used_percent,
-                     excluded.peak_used_percent
-                 )
-             ),
-             last_used_percent = COALESCE(
-                 excluded.last_used_percent,
-                 provider_usage_period_rollup.last_used_percent
-             ),
-             observation_count = MAX(
-                 excluded.observation_count,
-                 provider_usage_period_rollup.observation_count
-             ),
-             refusal_count = MAX(
-                 excluded.refusal_count,
-                 provider_usage_period_rollup.refusal_count
-             )",
-        params![period_id],
-    )?;
-    Ok(())
-}
-
-fn row_to_rollup(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderUsagePeriodRollup> {
-    Ok(ProviderUsagePeriodRollup {
-        period_id: row.get(0)?,
-        provider: row.get(1)?,
-        account_key: row.get(2)?,
-        window_kind: row.get(3)?,
-        window_role: row.get(4)?,
-        scope_key: row.get(5)?,
-        starts_at_epoch: row.get(6)?,
-        resets_at_epoch: row.get(7)?,
-        first_observed_epoch: row.get(8)?,
-        last_observed_epoch: row.get(9)?,
-        peak_used_percent: row.get(10)?,
-        last_used_percent: row.get(11)?,
-        observation_count: row.get(12)?,
-        refusal_count: row.get(13)?,
-    })
 }
 
 /// The retention setting turned into a cutoff epoch, or `None` when the
@@ -785,7 +542,7 @@ fn is_more_complete(reading: &Reading<'_>, existing: &ProviderUsageObservation) 
             && reading.resets_at_epoch.is_some()
             && existing.reported_resets_at_epoch != reading.resets_at_epoch
         // A reading that adds a refusal to a stored one that has none is more
-        // complete. Without this, the refusal never reaches the rollup.
+        // complete. Store the refusal with that observation.
         || existing.refusal_kind.is_none() && reading.refusal_kind.is_some()
 }
 

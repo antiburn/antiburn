@@ -297,8 +297,9 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) -> RolloutImportBatch 
     // provider network collection, and after the rollout import so a
     // freshly imported reading can seed a sample the same pass it lands.
     let now = crate::scan::unix_now();
-    let learned = crate::provider_usage::factor::learn(store.inner(), now);
+    let (learned, touched) = crate::provider_usage::factor::learn(store.inner(), now);
     crate::analytics::record_limit_factor_observed(app, &learned);
+    crate::analytics::record_quota_window_closed(app, store.inner(), &touched, now);
     // Read fresh each pass, and default to not acting: an unreadable
     // preference is not permission (same rule as every notifier).
     let Ok(settings) = store.settings() else {

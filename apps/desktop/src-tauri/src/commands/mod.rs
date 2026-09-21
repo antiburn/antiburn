@@ -10,18 +10,20 @@
 //! returns an empty success instead, because the views have states for those and
 //! an error banner would be a lie.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionEvidence, SourceAcceptance,
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, ProviderHint, SessionEvidence,
+    SourceAcceptance, price_breakdown,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, NotAssessedReason, ReportCatalogs, session_badges,
 };
 use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::paths::{home_dir, protected};
+use antiburn_local::pricing::ModelTokens;
 use antiburn_local::repositories as repositories_engine;
 use antiburn_local::repositories::platform::{PlatformDiscovery as _, platform};
 use tauri::{Emitter, Manager};
@@ -35,14 +37,19 @@ use crate::dto::{
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
     BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
     ChecksReportPayload, CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome,
-    DeferredPermissionDir, HygieneSummaryPayload, OrchestrationStatus,
-    PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, RepositoryItem, ScanStatus,
-    SessionAnalysis, SessionHygienePayload, SessionHygieneRequest, SessionIdentity,
-    SessionRelation, SessionRelations, SubagentMember,
+    DeferredPermissionDir, HygieneSummaryPayload, LiveUsageSummary, OrchestrationStatus,
+    PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
+    SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
+    SessionRelations, SubagentMember,
 };
+pub(crate) mod local_usage;
+pub(crate) mod quota;
+
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
 use crate::popover;
+use crate::provider_usage;
 use crate::remediation::{BurnCheckTargetContext, ControllerError, RemediationController};
 use crate::repositories;
 use crate::scan::{self, ScanController, ScanTrigger};
@@ -53,13 +60,13 @@ use crate::store::{
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
-type CommandResult<T> = Result<T, String>;
+pub(crate) type CommandResult<T> = Result<T, String>;
 
-fn fail(error: impl std::fmt::Display) -> String {
+pub(crate) fn fail(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-async fn run_blocking<T, F>(operation: F) -> CommandResult<T>
+pub(crate) async fn run_blocking<T, F>(operation: F) -> CommandResult<T>
 where
     T: Send + 'static,
     F: FnOnce() -> CommandResult<T> + Send + 'static,
@@ -68,6 +75,11 @@ where
         .await
         .map_err(fail)?
 }
+
+#[cfg(test)]
+pub(crate) use local_usage::session_limit_allocations;
+pub(crate) use local_usage::{cached_live_usage, provider_priced_models, provider_usage_summary};
+pub(crate) mod usage;
 
 /// Version stamp of the active runtime pricing catalog.
 #[tauri::command]
@@ -227,134 +239,6 @@ pub fn begin_popover_hold(app: tauri::AppHandle) {
 #[tauri::command]
 pub fn end_popover_hold(app: tauri::AppHandle) {
     popover::end_focus_hold(&app);
-}
-
-/* -------------------------------------------------------------------------
- * Overlay window
- * ---------------------------------------------------------------------- */
-
-/// Open or re-show the always-on-top usage HUD.
-#[tauri::command]
-pub async fn open_overlay_window(
-    app: tauri::AppHandle,
-    origin: crate::analytics::event::Origin,
-) -> CommandResult<()> {
-    let store = app.state::<Store>().inner().clone();
-    let entries = run_blocking(move || Ok(crate::hud::load_placements(&store))).await?;
-    let needs_exposure = hud_needs_exposure(&app);
-    if needs_exposure {
-        crate::analytics::prepare_hud_exposure(origin);
-    }
-    if let Err(error) = antiburn_hud::open(&app, &entries) {
-        if needs_exposure {
-            crate::analytics::cancel_hud_exposure();
-        }
-        return Err(fail(error));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn hud_needs_exposure(app: &tauri::AppHandle) -> bool {
-    !hud_is_exposed(app)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn hud_needs_exposure(_app: &tauri::AppHandle) -> bool {
-    false
-}
-
-#[cfg(target_os = "macos")]
-fn hud_is_exposed(app: &tauri::AppHandle) -> bool {
-    app.get_webview_window(antiburn_hud::OVERLAY_LABEL)
-        .is_some_and(|window| window.is_visible().unwrap_or(false))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn hud_is_exposed(_app: &tauri::AppHandle) -> bool {
-    false
-}
-
-/// Take the origin after the HUD confirms that it reached the screen.
-#[tauri::command]
-pub fn take_hud_analytics_origin(app: tauri::AppHandle) -> Option<crate::analytics::event::Origin> {
-    crate::analytics::take_hud_exposure_origin(hud_is_exposed(&app))
-}
-
-/// Remember where the HUD is, after a drag moved it.
-///
-/// No argument: the webview knows a drag ended, the shell knows where the
-/// window is, and that split keeps geometry out of the IPC payload.
-#[tauri::command]
-pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
-    let placement =
-        crate::main_window::on_main_value(&app, antiburn_hud::current_placement).await?;
-    let Some(placement) = placement else {
-        return Ok(());
-    };
-    let store = app.state::<Store>().inner().clone();
-    run_blocking(move || {
-        crate::hud::save_placement(&store, placement);
-        Ok(())
-    })
-    .await
-}
-
-/// Hide the usage HUD and cancel any pending reveal.
-#[tauri::command]
-pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
-    crate::analytics::cancel_hud_exposure();
-    antiburn_hud::hide(&app).map_err(fail)
-}
-
-/// Return whether the HUD should run while its retained renderer mounts.
-#[tauri::command]
-pub fn is_overlay_work_active() -> bool {
-    antiburn_hud::work_is_active()
-}
-
-/// Match the native HUD frame to the rendered panel.
-#[tauri::command]
-pub fn resize_overlay_window(
-    app: tauri::AppHandle,
-    height: f64,
-    anchor_bottom: bool,
-    animate: bool,
-) -> CommandResult<()> {
-    antiburn_hud::resize(&app, height, anchor_bottom, animate).map_err(fail)
-}
-
-/// Request the hover detail window with the newest usage payload.
-///
-/// The payload passes through opaque on purpose: the HUD webview produces it
-/// and the detail webview consumes it, so the shell does not model its shape.
-#[tauri::command]
-pub fn show_hud_detail(app: tauri::AppHandle, state: serde_json::Value) {
-    antiburn_hud::show_detail(&app, state);
-}
-
-/// Hide the hover detail window.
-#[tauri::command]
-pub fn hide_hud_detail(app: tauri::AppHandle) {
-    antiburn_hud::hide_detail(&app);
-}
-
-/// Hide the detail window now that its webview cleared the card.
-#[tauri::command]
-pub fn conceal_hud_detail(app: tauri::AppHandle) {
-    antiburn_hud::conceal_detail(&app);
-}
-
-/// Return the newest detail payload for a detail webview that mounts late.
-#[tauri::command]
-pub fn get_hud_detail_state() -> serde_json::Value {
-    antiburn_hud::detail_state()
-}
-
-/// Size and place the detail window from its webview's measured height.
-#[tauri::command]
-pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
-    antiburn_hud::apply_detail_size(&app, height);
 }
 
 /// Read bounded live rows with exact registry counts. Readers must subscribe before
@@ -799,13 +683,6 @@ pub async fn list_recent_sessions(
 /// popover's first paint unbounded.
 const MAX_ACTIVITY_ROWS: usize = 500;
 
-/// The most period rollups one allowance snapshot reads.
-///
-/// One row for each period. A weekly window over three years is about 160
-/// rows, and a five-hour window over the same span is about 5,000. The cap
-/// keeps the newest of them, which is what the figures describe.
-const MAX_ALLOWANCE_PERIODS: usize = 5_000;
-
 pub(crate) fn activity_entry(
     store: &Store,
     repositories: &[RepositoryRecord],
@@ -908,20 +785,6 @@ fn path_is_under(path: &str, root: &str) -> bool {
     let root = root.trim_end_matches('/');
     path == root || path.starts_with(&format!("{root}/"))
 }
-
-/* -------------------------------------------------------------------------
- * Local provider usage
- * ---------------------------------------------------------------------- */
-
-/// The local provider usage, allowance, and live limit commands. They are
-/// one surface: every one of them answers from the store and the engine's
-/// pricing snapshot, and none of them contacts a provider.
-mod usage;
-
-// The commands stay reachable under `commands::` so the handler list and the
-// command-name table do not have to name the module. A glob carries the
-// hidden items `#[tauri::command]` generates beside each function.
-pub(crate) use usage::*;
 
 /* -------------------------------------------------------------------------
  * Session analysis
@@ -3351,7 +3214,7 @@ mod tests {
 
     #[test]
     fn get_live_sessions_keeps_its_signature() {
-        let source = include_str!("../src/commands.rs").replace("\r\n", "\n");
+        let source = include_str!("mod.rs").replace("\r\n", "\n");
         for checkout in [source.clone(), source.replace('\n', "\r\n")] {
             assert_live_sessions_source_contract(&checkout);
         }

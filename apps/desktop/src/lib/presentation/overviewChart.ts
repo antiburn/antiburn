@@ -98,9 +98,9 @@ function pointsFigure(points: number): string {
   return points < 10 ? `${points.toFixed(1)}` : `${Math.round(points)}`
 }
 
-/** Points of the allowance one day consumed, or the word for no reading. */
+/** Estimated allowance points for one day, or the missing-data label. */
 export function allowancePointsLabel(usedPercent: number | null): string {
-  if (usedPercent == null) return "no reading"
+  if (usedPercent == null) return "no quota data"
   return `${pointsFigure(usedPercent)} points`
 }
 

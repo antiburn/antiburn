@@ -77,7 +77,9 @@ import { UnusedContext } from "./analysis/UnusedContext"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
 import { SubagentBadge } from "./orchestration/SubagentBadge"
+import { SessionQuotaSection, type SessionQuotaOpenTarget } from "./SessionQuotaSection"
 import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
+import type { SessionQuotaPayload } from "../../lib/ipc"
 
 /**
  * Skeleton anti-flash timing. A fast load finishes before the delay elapses,
@@ -143,6 +145,11 @@ export interface SessionDetailPresentationProps {
   modelRuns: PresentableModelRun[]
   /** Direct fork relations resolved from local transcripts. */
   relations: LocalSessionRelations | null
+  /** This session's quota contributions, for the Cost tab's Quota block. */
+  sessionQuota?: SessionQuotaPayload | null
+  /** Open one quota window on the Quota screen. Omitted where there is no
+   *  Quota screen to open, such as the popover. */
+  onOpenQuota?: (target: SessionQuotaOpenTarget) => void
   /** Return to the previous session when navigation history exists. */
   onBack?: (() => void) | undefined
   /** Navigate to the newer adjacent session; omit when none exists. */
@@ -677,6 +684,8 @@ export function SessionDetailPresentation({
   subagentCount,
   modelRuns,
   relations,
+  sessionQuota = null,
+  onOpenQuota,
   onBack,
   onPrev,
   onNext,
@@ -966,6 +975,12 @@ export function SessionDetailPresentation({
     </section>
   )
 
+  const quotaSection = onOpenQuota && (
+    <div className="shrink-0">
+      <SessionQuotaSection sessionQuota={sessionQuota} onOpenQuota={onOpenQuota} />
+    </div>
+  )
+
   return (
     <div
       ref={(node) => {
@@ -1136,6 +1151,7 @@ export function SessionDetailPresentation({
                     </section>
                   )}
 
+                  {quotaSection}
                   {efficiencySection}
                 </div>
               )}

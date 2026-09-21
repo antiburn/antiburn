@@ -368,6 +368,7 @@ export type Surface =
   | "hud_detail"
   | "settings"
   | "burn_checks"
+  | "quota"
 
 export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
@@ -488,6 +489,7 @@ export async function getAllowanceUsage(): Promise<AllowanceUsageSummaryPayload>
 
 const EMPTY_ALLOWANCE_USAGE: AllowanceUsageSummaryPayload = {
   accounts: [],
+  utilizationSpanDays: 60,
   overageSpanDays: 30,
   generatedAt: "",
 }

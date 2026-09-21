@@ -8,8 +8,8 @@ import type {
 /**
  * How the Overview states one account's two allowance numbers.
  *
- * Utilization is supply consumed: the share of the plan the provider's own
- * meter reports. Overage is demand refused: how often the provider blocked
+ * Utilization estimates supply consumed from the same quota periods shown
+ * in Limits. Overage is demand refused: how often the provider blocked
  * a request. Neither follows from the other, so no function here derives
  * one from the other.
  *
@@ -30,8 +30,8 @@ function percentFigure(percent: number): string {
 }
 
 /**
- * The utilization hero figure: the average share of the subscription the
- * provider's meter reports, across every period antiburn holds.
+ * The utilization hero figure: the average estimated share of the
+ * subscription across the selected quota periods.
  *
  * One figure answers "am I paying for room I never use". A range of two
  * figures asked the reader to hold two ideas to read one cell.
@@ -56,9 +56,7 @@ function periodNoun(windowKind: string, count: number): string {
 /**
  * What the utilization figure measures.
  *
- * The figure covers every period antiburn holds, so no count of periods
- * belongs in these words. A count told the reader the size of the sample
- * and nothing about the number over it.
+ * The figure covers quota periods in the selected span.
  */
 export const UTILIZATION_LABEL = "Average subscription utilization"
 
@@ -69,15 +67,18 @@ export const UTILIZATION_LABEL = "Average subscription utilization"
  * A reader who doubts a number wants the method and the span it covers,
  * and neither fits under a hero figure.
  */
-export function utilizationTooltip(utilization: AllowanceUtilizationPayload): string {
+export function utilizationTooltip(
+  utilization: AllowanceUtilizationPayload,
+  spanDays: number,
+): string {
   const count = utilization.periodCount
   const periods = `${count} ${periodNoun(utilization.windowKind, count)}`
   const one = periodNoun(utilization.windowKind, 1)
   return (
-    `The average share of your plan used in one ${one}, read from the ` +
-    `provider's own meter. It covers all ${periods} antiburn has readings ` +
-    `for. The meter stops at 100%, so it never counts the demand the ` +
-    `provider refused.`
+    `The average estimated share of your plan used in one ${one}, across ${periods} ` +
+    `in the last ${spanDays} days. Antiburn shares meter changes across local sessions ` +
+    `and estimates usage where readings are missing. The current ${one} can be incomplete. ` +
+    `Limit hits separately count requests the provider refused.`
   )
 }
 
@@ -90,7 +91,7 @@ export function utilizationTooltip(utilization: AllowanceUtilizationPayload): st
  */
 export function limitHitsTooltip(overage: AllowanceOveragePayload, spanDays: number): string {
   if (overage.blockCount === 0) {
-    return `How many times the provider refused a request in the last ${spanDays} days. It refused none.`
+    return `How many times the provider refused a request in the last ${spanDays} days. No refusals were recorded.`
   }
   const hits = overage.blockCount === 1 ? "limit hit" : "limit hits"
   const span = `${overage.blockCount} ${hits} in the last ${spanDays} days`
@@ -150,17 +151,13 @@ export function limitHitsNote(overage: AllowanceOveragePayload): string | null {
 }
 
 /**
- * Why the limit hits happened, from the short rolling window.
- *
- * A refusal happens at 100% and at nothing less. Across the five-hour
- * windows antiburn has recorded, windows peaking at 96% and 99% refused
- * nothing, so this line names no threshold below the ceiling.
+ * Which short rolling windows reached the estimated limit.
  */
 export function causeLine(burst: AllowanceUtilizationPayload | null): string | null {
   if (!burst || burst.periodCount === 0) return null
   if (burst.maxedPeriodCount === 0) return null
   const windows = periodNoun(burst.windowKind, burst.periodCount)
-  return `${burst.maxedPeriodCount} of ${burst.periodCount} ${windows} reached ${MAXED_PERCENT}%`
+  return `${burst.maxedPeriodCount} of ${burst.periodCount} ${windows} estimated at ${MAXED_PERCENT}%`
 }
 
 /** True when an account has a number worth a cell of its own. */

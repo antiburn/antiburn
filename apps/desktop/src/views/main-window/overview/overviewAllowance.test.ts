@@ -72,19 +72,22 @@ describe("utilizationFigure", () => {
 })
 
 describe("utilizationTooltip", () => {
-  it("names the window, the span it covers, and what the meter leaves out", () => {
-    expect(utilizationTooltip(utilization())).toBe(
-      "The average share of your plan used in one week, read from the " +
-        "provider's own meter. It covers all 9 weeks antiburn has readings " +
-        "for. The meter stops at 100%, so it never counts the demand the " +
-        "provider refused.",
+  it("names the quota method, selected span, and incomplete current period", () => {
+    expect(utilizationTooltip(utilization(), 60)).toBe(
+      "The average estimated share of your plan used in one week, across 9 weeks " +
+        "in the last 60 days. Antiburn shares meter changes across local sessions " +
+        "and estimates usage where readings are missing. The current week can be incomplete. " +
+        "Limit hits separately count requests the provider refused.",
     )
   })
 
   it("follows the window the store names", () => {
-    const rolling = utilizationTooltip(utilization({ windowKind: "rolling", periodCount: 18 }))
+    const rolling = utilizationTooltip(
+      utilization({ windowKind: "rolling", periodCount: 18 }),
+      60,
+    )
     expect(rolling).toContain("used in one window")
-    expect(rolling).toContain("all 18 windows")
+    expect(rolling).toContain("across 18 windows")
   })
 })
 
@@ -160,9 +163,9 @@ describe("limitHitsTooltip", () => {
     )
   })
 
-  it("says the provider refused nothing rather than describing a wait", () => {
+  it("states that no refusals were recorded", () => {
     expect(limitHitsTooltip(overage({ blockCount: 0, waitedSeconds: 0 }), 30)).toBe(
-      "How many times the provider refused a request in the last 30 days. It refused none.",
+      "How many times the provider refused a request in the last 30 days. No refusals were recorded.",
     )
   })
 })
@@ -170,7 +173,7 @@ describe("limitHitsTooltip", () => {
 describe("causeLine", () => {
   it("counts only the windows that reached the ceiling", () => {
     const burst = utilization({ windowKind: "rolling", periodCount: 18, maxedPeriodCount: 1 })
-    expect(causeLine(burst)).toBe("1 of 18 windows reached 100%")
+    expect(causeLine(burst)).toBe("1 of 18 windows estimated at 100%")
   })
 
   it("says nothing when no window reached the ceiling", () => {
@@ -188,6 +191,7 @@ describe("causeLine", () => {
 describe("allowanceAccounts", () => {
   it("drops an account with neither figure and keeps one with either", () => {
     const summary: AllowanceUsageSummaryPayload = {
+      utilizationSpanDays: 60,
       accounts: [
         account({ accountKey: "empty", utilization: null }),
         account({ accountKey: "metered" }),

@@ -180,211 +180,202 @@ fn a_refusal_before_the_span_leaves_the_one_inside_it_counted() {
     assert_eq!(overage.last_block_at_ms, Some(REFUSED_AT_MS + hour_ms));
 }
 
-fn rollup(last_observed_epoch: i64, peak_used_percent: Option<f64>) -> ProviderUsagePeriodRollup {
-    kinded_rollup(last_observed_epoch, peak_used_percent, "rolling")
-}
-
-fn kinded_rollup(
-    last_observed_epoch: i64,
-    peak_used_percent: Option<f64>,
-    window_kind: &str,
-) -> ProviderUsagePeriodRollup {
-    ProviderUsagePeriodRollup {
-        period_id: last_observed_epoch,
-        provider: "anthropic".to_string(),
-        account_key: "account".to_string(),
-        window_kind: window_kind.to_string(),
-        window_role: "primaryLong".to_string(),
-        scope_key: "account".to_string(),
-        starts_at_epoch: Some(last_observed_epoch - 604_800),
-        resets_at_epoch: Some(last_observed_epoch),
-        first_observed_epoch: last_observed_epoch - 604_800,
-        last_observed_epoch,
-        peak_used_percent,
-        last_used_percent: peak_used_percent,
-        observation_count: 1,
-        refusal_count: 0,
+fn period(start: i64, estimated: Option<f64>) -> QuotaPeriodPayload {
+    QuotaPeriodPayload {
+        period_id: None,
+        starts_at_epoch: start,
+        resets_at_epoch: start + 7 * 86_400,
+        start_source: "turnGap".to_string(),
+        reset_source: "derived".to_string(),
+        samples: Vec::new(),
+        contributions: Vec::new(),
+        sessions: Vec::new(),
+        unattributed: crate::dto::QuotaUnattributedPayload {
+            usd: 0.0,
+            percent: None,
+            session_count: 0,
+        },
+        unattributed_buckets: Vec::new(),
+        estimated_percent: estimated,
+        unexplained_buckets: Vec::new(),
+        unexplained_percent: None,
     }
 }
 
-fn weeks(peaks: &[Option<f64>]) -> Vec<ProviderUsagePeriodRollup> {
-    peaks
-        .iter()
+#[test]
+fn shared_estimates_include_inferred_periods_and_exclude_unknown_periods() {
+    let periods = vec![
+        period(0, Some(12.0)),
+        period(604_800, None),
+        period(1_209_600, Some(80.0)),
+    ];
+    let result = utilization(&periods, "weekly").expect("two known periods");
+    assert_eq!(result.period_count, 2);
+    assert_eq!(result.average_percent, 46.0);
+    assert_eq!(result.peak_percent, 80.0);
+    assert_eq!(result.first_period_at_epoch, 0);
+    assert_eq!(result.last_period_at_epoch, 1_209_600);
+    assert_eq!(utilization(&[period(0, None)], "weekly"), None);
+}
+
+#[test]
+fn six_shared_periods_state_a_typical_and_maxed_count() {
+    let periods: Vec<_> = [18.0, 40.0, 44.0, 50.0, 60.0, 100.0]
+        .into_iter()
         .enumerate()
-        .map(|(index, peak)| rollup(1_800_000_000 + (index as i64) * 604_800, *peak))
-        .collect()
-}
-
-#[test]
-fn a_single_period_states_a_peak_and_no_typical_figure() {
-    let utilization = utilization(&weeks(&[Some(62.0)])).expect("one period is enough for a peak");
-    assert_eq!(utilization.peak_percent, 62.0);
-    assert_eq!(utilization.typical_percent, None);
-    assert_eq!(utilization.period_count, 1);
-}
-
-#[test]
-fn six_periods_state_the_median_as_the_typical_figure() {
-    let peaks = [
-        Some(18.0),
-        Some(40.0),
-        Some(44.0),
-        Some(50.0),
-        Some(60.0),
-        Some(62.0),
-    ];
-    let utilization = utilization(&weeks(&peaks)).expect("six periods reduce");
-    assert_eq!(utilization.period_count, 6);
-    assert_eq!(utilization.typical_percent, Some(47.0));
-    assert_eq!(utilization.peak_percent, 62.0);
-    assert_eq!(utilization.maxed_period_count, 0);
-}
-
-/// The median and the mean disagree whenever idle periods sit near zero.
-/// The median is the one that describes a period the reader recognizes.
-#[test]
-fn idle_periods_move_the_median_far_less_than_a_mean() {
-    let peaks = [
-        Some(0.0),
-        Some(0.0),
-        Some(1.0),
-        Some(29.0),
-        Some(90.0),
-        Some(100.0),
-        Some(100.0),
-    ];
-    let utilization = utilization(&weeks(&peaks)).expect("seven periods reduce");
-    assert_eq!(utilization.typical_percent, Some(29.0));
-    assert_eq!(utilization.peak_percent, 100.0);
-    assert_eq!(utilization.maxed_period_count, 2);
-}
-
-#[test]
-fn a_period_with_no_reported_figure_is_left_out_and_never_read_as_zero() {
-    let utilization =
-        utilization(&weeks(&[Some(80.0), None, Some(60.0)])).expect("two periods reduce");
-    assert_eq!(utilization.period_count, 2);
-    assert_eq!(utilization.peak_percent, 80.0);
-}
-
-#[test]
-fn periods_with_no_reported_figure_reduce_to_nothing() {
-    assert_eq!(utilization(&weeks(&[None, None])), None);
-}
-
-/// The window a figure covers must follow the provider's newest word for it.
-///
-/// A weekly window and a rolling window answer different questions. A reader
-/// who sees the older name against the newer figures reads the wrong
-/// question.
-#[test]
-fn the_newest_period_names_the_window() {
-    let rollups = vec![
-        kinded_rollup(1_000, Some(40.0), "other:fortnightly"),
-        kinded_rollup(2_000, Some(62.0), "weekly"),
-    ];
-
-    let reduced = utilization(&rollups).expect("two periods report a figure");
-
-    assert_eq!(reduced.window_kind, "weekly");
-    assert_eq!(reduced.peak_percent, 62.0);
-}
-
-#[test]
-fn the_average_covers_every_period_the_store_holds() {
-    // The average reads across all of them, so one busy period does not
-    // speak for the rest and one idle period is not left out.
-    let rollups = vec![
-        kinded_rollup(1_000, Some(90.0), "weekly"),
-        kinded_rollup(2_000, Some(55.0), "weekly"),
-        kinded_rollup(3_000, Some(20.0), "weekly"),
-    ];
-
-    let reduced = utilization(&rollups).expect("three periods report a figure");
-
-    assert_eq!(reduced.average_percent, 55.0);
-    assert_eq!(reduced.peak_percent, 90.0);
-}
-
-fn reading(period_id: i64, observed_at_epoch: i64, used_percent: f64) -> ProviderUsageReading {
-    ProviderUsageReading {
-        provider: "openai".to_string(),
-        account_key: "account".to_string(),
-        period_id,
-        observed_at_epoch,
-        used_percent,
-    }
-}
-
-fn only_consumption(readings: &[ProviderUsageReading]) -> AccountConsumption {
-    consumption(readings)
-        .into_values()
-        .next()
-        .expect("the readings name one account")
-}
-
-/// The provider states a running total. What a day consumed is the rise.
-#[test]
-fn a_reading_consumes_the_rise_since_the_reading_before_it() {
-    let readings = vec![
-        reading(1, 1_000, 12.0),
-        reading(1, 2_000, 30.0),
-        reading(1, 3_000, 41.0),
-    ];
-
-    let consumed = only_consumption(&readings);
-
-    let percents: Vec<f64> = consumed
-        .consumed
-        .iter()
-        .map(|entry| entry.percent)
+        .map(|(i, percent)| period(i as i64 * 604_800, Some(percent)))
         .collect();
-    assert_eq!(percents, vec![12.0, 18.0, 11.0]);
+    let result = utilization(&periods, "rolling").expect("six known periods");
+    assert_eq!(result.typical_percent, Some(47.0));
+    assert_eq!(result.maxed_period_count, 1);
+    assert_eq!(result.window_kind, "rolling");
 }
 
-/// A new period restarts the total. Its first reading is a rise from zero,
-/// not a fall from the period before it.
 #[test]
-fn a_new_period_restarts_the_total() {
-    let readings = vec![
-        reading(1, 1_000, 80.0),
-        reading(2, 2_000, 5.0),
-        reading(2, 3_000, 9.0),
-    ];
-
-    let consumed = only_consumption(&readings);
-
-    let percents: Vec<f64> = consumed
-        .consumed
-        .iter()
-        .map(|entry| entry.percent)
-        .collect();
-    assert_eq!(percents, vec![80.0, 5.0, 4.0]);
+fn open_period_overshoot_is_capped_for_utilization_statistics() {
+    let result = utilization(&[period(0, Some(130.0))], "weekly").expect("known period");
+    assert_eq!(result.peak_percent, 100.0);
+    assert_eq!(result.average_percent, 100.0);
+    assert_eq!(result.maxed_period_count, 1);
 }
 
-/// A restated lower figure consumes nothing. The reader did not give
-/// allowance back.
 #[test]
-fn a_fall_inside_a_period_consumes_nothing() {
-    let readings = vec![reading(1, 1_000, 40.0), reading(1, 2_000, 38.0)];
-
-    let consumed = only_consumption(&readings);
-
-    assert_eq!(consumed.consumed[1].percent, 0.0);
-}
-
-/// Two readings that bracket a day speak for it. A day outside every span
-/// does not, and reads as unknown rather than as idle.
-#[test]
-fn readings_speak_for_the_days_between_them_and_for_no_others() {
+fn daily_consumption_sums_the_shared_buckets_on_their_own_days() {
     let day = 86_400;
-    let readings = vec![reading(1, 10 * day, 10.0), reading(1, 13 * day, 25.0)];
+    let mut period = period(0, Some(60.0));
+    period.samples.push(crate::dto::QuotaSamplePayload {
+        observed_at_epoch: 3 * day,
+        used_percent: Some(60.0),
+        fresh: true,
+        authoritative: true,
+    });
+    period
+        .contributions
+        .push(crate::dto::QuotaContributionPayload {
+            agent: "claude".to_string(),
+            session_id: "one".to_string(),
+            wsl_distro: None,
+            bucket_start_epoch: day,
+            usd: 1.0,
+            percent: Some(20.0),
+        });
+    period
+        .unattributed_buckets
+        .push(crate::dto::QuotaBucketTotalPayload {
+            bucket_start_epoch: day,
+            usd: 1.0,
+            percent: Some(10.0),
+        });
+    period
+        .unexplained_buckets
+        .push(crate::dto::QuotaBucketTotalPayload {
+            bucket_start_epoch: 3 * day,
+            usd: 0.0,
+            percent: Some(30.0),
+        });
+    let result = consumption(&[period]);
+    assert_eq!(
+        result
+            .consumed
+            .iter()
+            .filter(|entry| entry.at_epoch == day)
+            .map(|entry| entry.percent)
+            .sum::<f64>(),
+        30.0
+    );
+    assert_eq!(
+        result
+            .consumed
+            .iter()
+            .filter(|entry| entry.at_epoch == 3 * day)
+            .map(|entry| entry.percent)
+            .sum::<f64>(),
+        30.0
+    );
+    assert!(!result.covers(2 * day, 3 * day - 1));
+    assert!(!result.covers(4 * day, 5 * day - 1));
+}
 
-    let consumed = only_consumption(&readings);
+#[test]
+fn sparse_inferred_buckets_leave_days_between_them_unknown() {
+    let day = 86_400;
+    let mut inferred = period(0, Some(30.0));
+    for at in [day, 6 * day] {
+        inferred
+            .contributions
+            .push(crate::dto::QuotaContributionPayload {
+                agent: "codex".to_string(),
+                session_id: "sparse".to_string(),
+                wsl_distro: None,
+                bucket_start_epoch: at,
+                usd: 1.0,
+                percent: Some(15.0),
+            });
+    }
+    let result = consumption(&[inferred]);
+    assert!(result.covers(day, 2 * day - 1));
+    assert!(!result.covers(3 * day, 4 * day - 1));
+    assert!(result.covers(6 * day, 7 * day - 1));
+}
 
-    assert!(consumed.covers(11 * day, 12 * day - 1));
-    assert!(!consumed.covers(14 * day, 15 * day - 1));
-    assert!(!consumed.covers(8 * day, 9 * day - 1));
+#[test]
+fn authoritative_sample_span_does_not_join_a_later_estimated_bucket() {
+    let day = 86_400;
+    let mut observed = period(0, Some(35.0));
+    for at in [day, 3 * day] {
+        observed.samples.push(crate::dto::QuotaSamplePayload {
+            observed_at_epoch: at,
+            used_percent: Some(20.0),
+            fresh: true,
+            authoritative: true,
+        });
+    }
+    observed
+        .contributions
+        .push(crate::dto::QuotaContributionPayload {
+            agent: "claude".to_string(),
+            session_id: "tail".to_string(),
+            wsl_distro: None,
+            bucket_start_epoch: 6 * day,
+            usd: 1.0,
+            percent: Some(15.0),
+        });
+    let result = consumption(&[observed]);
+    assert!(result.covers(2 * day, 3 * day - 1));
+    assert!(!result.covers(4 * day, 5 * day - 1));
+    assert!(result.covers(6 * day, 7 * day - 1));
+}
+
+#[test]
+fn inferred_period_bucket_estimate_makes_its_day_known() {
+    let mut inferred = period(0, Some(15.0));
+    inferred
+        .contributions
+        .push(crate::dto::QuotaContributionPayload {
+            agent: "codex".to_string(),
+            session_id: "two".to_string(),
+            wsl_distro: None,
+            bucket_start_epoch: 86_400,
+            usd: 2.0,
+            percent: Some(15.0),
+        });
+    let result = consumption(&[inferred]);
+    assert!(result.covers(86_400, 2 * 86_400 - 1));
+    assert!(!result.covers(0, 86_399));
+    assert_eq!(result.consumed[0].percent, 15.0);
+}
+
+#[test]
+fn truncated_period_sample_outside_its_bounds_does_not_cover_a_day() {
+    let mut truncated = period(0, None);
+    truncated.resets_at_epoch = 86_400;
+    truncated.samples.push(crate::dto::QuotaSamplePayload {
+        observed_at_epoch: 2 * 86_400,
+        used_percent: Some(50.0),
+        fresh: true,
+        authoritative: true,
+    });
+    assert_eq!(consumption(&[truncated]), AccountConsumption::default());
 }
 
 /// The chart marks a day the reader met a refusal on, even when a refusal

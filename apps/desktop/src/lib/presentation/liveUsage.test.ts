@@ -29,6 +29,7 @@ import {
   liveWindowSweeps,
   livePlanAccountLabel,
   livePlanLabel,
+  planLabel,
   liveMetricRows,
   orderedLiveAccounts,
   liveWindowValueLabel,
@@ -219,6 +220,15 @@ describe("plan labels", () => {
 
   it("reads a missing plan as null, not as a guess", () => {
     expect(livePlanLabel(provider({ plan: null }))).toBeNull()
+  })
+
+  it("planLabel gives livePlanLabel's answer from a bare provider id and plan", () => {
+    expect(planLabel("anthropic", { name: "max", tier: "default_claude_max_20x" })).toBe(
+      "Max 20x",
+    )
+    expect(planLabel("openai", { name: "plus", tier: null })).toBe("Plus")
+    expect(planLabel("some-future-provider", { name: "raw-name", tier: null })).toBe("raw-name")
+    expect(planLabel("anthropic", null)).toBeNull()
   })
 
   it("shows the email only when multiple accounts are visible", () => {

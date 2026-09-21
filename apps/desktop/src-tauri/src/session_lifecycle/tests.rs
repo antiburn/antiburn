@@ -1901,7 +1901,7 @@ fn the_registry_never_publishes_resync() {
 #[test]
 fn sync_report_callers_are_the_pinned_list() {
     let sync_callers = [
-        ("commands.rs", include_str!("../commands.rs"), 5),
+        ("commands.rs", include_str!("../commands/mod.rs"), 5),
         (
             "insights_worker.rs",
             include_str!("../insights_worker.rs"),
@@ -1915,7 +1915,14 @@ fn sync_report_callers_are_the_pinned_list() {
         ),
     ];
     for (name, source, expected) in sync_callers {
-        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        // Split on the test module marker, not a bare `#[cfg(test)]`: a
+        // module can gate a single test-only re-export the same way well
+        // before its real test module, and that would truncate production
+        // too early.
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .unwrap_or(source);
         assert_eq!(
             production.matches("session_lifecycle::report(").count(),
             expected,
@@ -1931,7 +1938,10 @@ fn sync_report_callers_are_the_pinned_list() {
         ("scan/scoped.rs", include_str!("../scan/scoped.rs")),
     ];
     for (name, source) in async_callers {
-        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .unwrap_or(source);
         if name == "scan/mod.rs" {
             assert!(production.contains("session_lifecycle::report_async("));
         } else {
@@ -2112,7 +2122,7 @@ fn source_contract_body_accepts_both_checkout_line_endings() {
 /// pass is asked for.
 #[test]
 fn clear_local_index_reports_a_broad_deletion_before_the_pass() {
-    let body = function_body(include_str!("../commands.rs"), "clear_local_index");
+    let body = function_body(include_str!("../commands/mod.rs"), "clear_local_index");
     let removal = body.find("RemovalScope::Broad").expect("a broad removal");
     assert!(body[..removal].contains("let (removed, revision) = run_blocking("));
     assert!(body[removal..].contains("RemovalReason::Deleted,\n            revision,"));
@@ -2130,7 +2140,7 @@ fn clear_local_index_reports_a_broad_deletion_before_the_pass() {
 
 #[test]
 fn opt_out_reports_a_broad_purge_then_invalidated() {
-    let body = function_body(include_str!("../commands.rs"), "set_repository_enabled");
+    let body = function_body(include_str!("../commands/mod.rs"), "set_repository_enabled");
     let purge = body.find("RemovalScope::Broad").expect("a broad removal");
     assert!(
         body[..purge].contains("if !enabled {"),
@@ -2159,7 +2169,7 @@ fn retention_reports_a_broad_purge_with_a_revision() {
         cleanup.contains("Ok((removed, revision)) => note_removed(app, removed, revision)"),
         "the retention commit's own revision travels with the purge"
     );
-    let settings = function_body(include_str!("../commands.rs"), "set_settings");
+    let settings = function_body(include_str!("../commands/mod.rs"), "set_settings");
     assert!(
         settings.contains("let revision = store.revision();\n        crate::retention::note_removed(&database_app, removed, revision);"),
         "the settings path reads the revision after the commit"

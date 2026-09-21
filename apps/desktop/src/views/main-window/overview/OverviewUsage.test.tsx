@@ -68,7 +68,12 @@ function account(
 function summary(
   accounts: AllowanceUsageAccountPayload[] = [account()],
 ): AllowanceUsageSummaryPayload {
-  return { accounts, overageSpanDays: 30, generatedAt: "2026-09-15T00:00:00Z" }
+  return {
+    accounts,
+    utilizationSpanDays: 60,
+    overageSpanDays: 30,
+    generatedAt: "2026-09-15T00:00:00Z",
+  }
 }
 
 function renderTotals(
@@ -139,7 +144,7 @@ describe("OverviewUsage", () => {
     expect(within(cell).getByText("average subscription utilization")).toBeInTheDocument()
     expect(within(cell).getByText("11h")).toBeInTheDocument()
     expect(within(cell).getByText(/8 limit hits in 30 days/)).toBeInTheDocument()
-    expect(within(cell).getByText("1 of 18 windows reached 100%")).toBeInTheDocument()
+    expect(within(cell).getByText("1 of 18 windows estimated at 100%")).toBeInTheDocument()
   })
 
   it("says how antiburn makes each hero figure", () => {
@@ -150,7 +155,8 @@ describe("OverviewUsage", () => {
 
     const utilization = within(cell).getByText("41%").closest("[tabindex]")
     fireEvent.focus(utilization!)
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/covers all 9 weeks/)
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/across 9 weeks in the last 60 days/)
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/current week can be incomplete/)
     fireEvent.blur(utilization!)
 
     const limitHits = within(cell).getByText("11h").closest("[tabindex]")
@@ -194,21 +200,21 @@ describe("OverviewUsage", () => {
 
   it("says the readings have not arrived rather than showing an empty meter", () => {
     renderTotals({ allowance: summary([]) })
-    expect(screen.getByText(/no allowance readings yet/)).toBeInTheDocument()
+    expect(screen.getByText(/no allowance history yet/)).toBeInTheDocument()
   })
 
   it("states a failed read rather than calling it an account with no history", () => {
     // The two states look the same on the page, so each one names its cause.
     renderTotals({ allowance: null, allowanceError: true })
     expect(screen.getByRole("alert")).toHaveTextContent(/cannot read the allowance figures/)
-    expect(screen.queryByText(/no allowance readings yet/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/no allowance history yet/)).not.toBeInTheDocument()
   })
 
   it("draws no chart after a failed allowance read", () => {
     // The totals state the failed read. A chart that says it has no readings
     // yet states a different thing about the same account.
     renderTotals({ allowance: null, allowanceError: true })
-    expect(screen.queryByText(/no meter readings to chart yet/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/no allowance history to chart yet/)).not.toBeInTheDocument()
     expect(screen.queryByRole("region", { name: "Allowance by day" })).not.toBeInTheDocument()
   })
 

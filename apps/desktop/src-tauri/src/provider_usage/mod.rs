@@ -30,6 +30,7 @@ pub(crate) mod codex_rollout_history;
 pub(crate) mod factor;
 pub mod live;
 pub mod providers;
+pub(crate) mod quota;
 
 #[cfg(test)]
 mod tests;

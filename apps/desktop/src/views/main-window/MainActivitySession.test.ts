@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   acknowledgeMainWindowSessionTarget: vi.fn(),
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
+  getSessionQuota: vi.fn(),
   loadSessionAnalysis: vi.fn(),
   noteInteraction: vi.fn(),
   stops: [] as ReturnType<typeof vi.fn>[],
@@ -102,6 +103,12 @@ function start(active = true) {
   const stop = (active ? session.subscribe : session.subscribeInactive)(() => {})
   return { session, stop }
 }
+function startList() {
+  const session = new MainActivitySession()
+  sessions.push(session)
+  const stop = session.subscribeList(() => {})
+  return { session, stop }
+}
 async function ready(session: MainActivitySession) {
   await vi.waitFor(() => expect(session.getSnapshot().entries).not.toBeNull())
 }
@@ -123,10 +130,120 @@ beforeEach(() => {
   mocks.loadSessionAnalysis.mockResolvedValue(payload("Loaded"))
   mocks.getLiveUsage.mockResolvedValue(null)
   mocks.getSessionLimitAllocations.mockResolvedValue(null)
+  mocks.getSessionQuota.mockResolvedValue({ entries: [], generatedAt: "g" })
 })
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
 describe("MainActivitySession", () => {
+  it("loads the shared list for a visible window without starting detail work", async () => {
+    const { session } = startList()
+
+    await ready(session)
+
+    expect(session.getSnapshot().active).toBe(false)
+    expect(session.getSnapshot().entries?.map((item) => item.sessionId)).toEqual(["one", "two"])
+    expect(mocks.loadSessionAnalysis).not.toHaveBeenCalled()
+    expect(mocks.getLiveUsage).not.toHaveBeenCalled()
+    expect(mocks.getSessionQuota).not.toHaveBeenCalled()
+    expect(mocks.noteInteraction).not.toHaveBeenCalled()
+  })
+
+  it("keeps one list request when the detail pane is added while it is pending", async () => {
+    const pending = deferred<ActivityEntryPayload[]>()
+    mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
+    const { session } = startList()
+    await vi.waitFor(() => expect(mocks.listRecentSessions).toHaveBeenCalledOnce())
+
+    session.subscribe(() => {})
+    expect(mocks.listRecentSessions).toHaveBeenCalledOnce()
+    pending.resolve([entry("shared")])
+
+    await vi.waitFor(() => expect(session.getSnapshot().entries?.[0]?.sessionId).toBe("shared"))
+    expect(mocks.loadSessionAnalysis).toHaveBeenCalledOnce()
+  })
+
+  it("loads default detail data once when the detail pane joins a loaded list", async () => {
+    const { session } = startList()
+    await ready(session)
+    mocks.loadSessionAnalysis.mockClear()
+    mocks.getSessionQuota.mockClear()
+
+    session.subscribe(() => {})
+
+    await vi.waitFor(() => expect(mocks.loadSessionAnalysis).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledOnce())
+  })
+
+  it("pauses and rejects a pending list while hidden, then reloads on resume", async () => {
+    const pending = deferred<ActivityEntryPayload[]>()
+    mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
+    const { session } = startList()
+    await vi.waitFor(() => expect(mocks.listRecentSessions).toHaveBeenCalledOnce())
+
+    mocks.events.get("visibility")!(false)
+    pending.resolve([entry("stale")])
+    await Promise.resolve()
+    expect(session.getSnapshot().entries).toBeNull()
+
+    mocks.listRecentSessions.mockResolvedValueOnce([entry("fresh")])
+    mocks.events.get("visibility")!(true)
+    await vi.waitFor(() => expect(session.getSnapshot().entries?.[0]?.sessionId).toBe("fresh"))
+    expect(mocks.listRecentSessions).toHaveBeenCalledTimes(2)
+    expect(mocks.loadSessionAnalysis).not.toHaveBeenCalled()
+  })
+
+  it("rejects a pending list after its last subscriber is disposed", async () => {
+    const pending = deferred<ActivityEntryPayload[]>()
+    mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
+    const { session, stop } = startList()
+    await vi.waitFor(() => expect(mocks.listRecentSessions).toHaveBeenCalledOnce())
+
+    stop()
+    pending.resolve([entry("disposed")])
+    await Promise.resolve()
+    expect(session.getSnapshot().entries).toBeNull()
+  })
+
+  it("patches a list row without analyzing it when detail is not active", async () => {
+    const { session } = startList()
+    await ready(session)
+    mocks.events.get("update")!(update(entry("one", { title: "Updated" })))
+
+    await vi.waitFor(() => expect(session.getSnapshot().entries?.[0]?.title).toBe("Updated"))
+    expect(mocks.loadSessionAnalysis).not.toHaveBeenCalled()
+  })
+
+  it("keeps a pending list response across a filter-only settings update", async () => {
+    const pending = deferred<ActivityEntryPayload[]>()
+    mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
+    const { session } = startList()
+    await vi.waitFor(() => expect(mocks.listRecentSessions).toHaveBeenCalledOnce())
+
+    mocks.events.get("settings")!({ ...DEFAULT_SETTINGS, sessionFilter: "failing" })
+    pending.resolve([entry("after-filter")])
+
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().entries?.[0]?.sessionId).toBe("after-filter"),
+    )
+    expect(mocks.listRecentSessions).toHaveBeenCalledOnce()
+  })
+
+  it("keeps list refreshes alive when the detail subscriber leaves", async () => {
+    const { session } = startList()
+    await ready(session)
+    const detailStop = session.subscribe(() => {})
+    await vi.waitFor(() => expect(mocks.loadSessionAnalysis).toHaveBeenCalledOnce())
+    const usageCalls = mocks.getLiveUsage.mock.calls.length
+    detailStop()
+    mocks.listRecentSessions.mockResolvedValueOnce([entry("refreshed")])
+    mocks.events.get("index")!({ seq: 2, cause: "invalidated" })
+
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().entries?.[0]?.sessionId).toBe("refreshed"),
+    )
+    expect(mocks.getLiveUsage).toHaveBeenCalledTimes(usageCalls)
+  })
+
   it("records automatic default-session exposure without sending identity", async () => {
     const { session } = start()
     await ready(session)
@@ -571,6 +688,81 @@ describe("MainActivitySession", () => {
     expect(orderedActivityEntries(session.getSnapshot()).map((item) => item.sessionId)).toEqual(
       ["one", "two"],
     )
+  })
+
+  it("loads quota contributions alongside the analysis for the open subject", async () => {
+    mocks.getSessionQuota.mockResolvedValue({
+      entries: [
+        {
+          provider: "anthropic",
+          displayName: "Claude",
+          accountKey: "acct-1",
+          lane: "weekly",
+          laneLabel: "Weekly",
+          period: {
+            periodId: 1,
+            startsAtEpoch: 1,
+            resetsAtEpoch: 2,
+            startSource: "reported",
+            resetSource: "reported",
+          },
+          usd: 1.5,
+          percent: 5,
+          confidence: "learned",
+        },
+      ],
+      generatedAt: "q1",
+    })
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() => expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("q1"))
+    expect(mocks.getSessionQuota).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "claude", sessionId: "one", wslDistro: null }),
+    )
+  })
+
+  it("keeps the last quota payload and leaves the analysis untouched when a later quota load fails", async () => {
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() => expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("g"))
+
+    mocks.getSessionQuota.mockRejectedValueOnce(new Error("no"))
+    mocks.events.get("update")!(update(entry("one")))
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(2))
+
+    expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("g")
+    expect(session.getSnapshot().analysis?.payload?.title).toBe("Loaded")
+    expect(session.getSnapshot().analysis?.error).toBe(false)
+  })
+
+  it("clears quota when the selection changes and reloads for the new subject", async () => {
+    mocks.getSessionQuota.mockResolvedValueOnce({
+      entries: [],
+      generatedAt: "q-one",
+    })
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("q-one"),
+    )
+    mocks.getSessionQuota.mockResolvedValueOnce({ entries: [], generatedAt: "q-two" })
+    session.selectEntry(session.getSnapshot().entries![1]!)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("q-two"),
+    )
+    expect(mocks.getSessionQuota).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: "two" }),
+    )
+  })
+
+  it("refreshes quota when the open subject's entry changes and on a live-usage push", async () => {
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(1))
+    mocks.events.get("update")!(update(entry("one")))
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(2))
+    mocks.events.get("usage")!(null)
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(3))
   })
 
   it("releases listeners and ignores late results after disposal", async () => {

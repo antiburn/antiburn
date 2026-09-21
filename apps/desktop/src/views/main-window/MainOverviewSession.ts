@@ -1,5 +1,4 @@
 import type { SessionListEntry } from "../../components/session/SessionList"
-import { toActivityEntries } from "../../lib/activityEntries"
 import {
   cancelChecksReport,
   getChecksReport,
@@ -10,11 +9,10 @@ import {
   getAllowanceUsage,
   getMainWindowVisible,
   getProviderUsage,
-  listRecentSessions,
+  onLiveUsageChanged,
   onMainWindowVisibilityChanged,
   onSessionIndexChanged,
   onSessionUpdated,
-  type ActivityEntryPayload,
   type SessionIndexChangedPayload,
   type SessionUpdatedPayload,
 } from "../../lib/ipc"
@@ -22,28 +20,25 @@ import type {
   AllowanceUsageSummaryPayload,
   ProviderUsageSummaryPayload,
 } from "../../lib/providerUsageIpc"
-import {
-  listInterests,
-  liveSessions,
-  withRegistryActivity,
-  type LiveSessionsSource,
-} from "../../lib/sessionLifecycle"
 
 export interface MainOverviewAdapter {
   getUsage(): Promise<ProviderUsageSummaryPayload>
   getAllowanceUsage(): Promise<AllowanceUsageSummaryPayload>
   getChecksReport(consumerId: string): Promise<ChecksReportPayload | null>
   cancelChecksReport(consumerId: string): Promise<void>
-  listRecentSessions(): Promise<ActivityEntryPayload[]>
   getVisible(): Promise<boolean>
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
+  onLiveUsageChanged(handler: () => void): Promise<() => void>
   onChecksReportChanged(handler: () => void): Promise<() => void>
   onSessionIndexChanged(
     handler: (change: SessionIndexChangedPayload) => void,
   ): Promise<() => void>
   onSessionUpdated(handler: (update: SessionUpdatedPayload) => void): Promise<() => void>
-  /** The window's live registry tracker. Active pills come from it alone. */
-  liveSessions: LiveSessionsSource
+}
+
+export interface MainOverviewSessionListSource {
+  getSnapshot(): { entries: SessionListEntry[] | null }
+  subscribeList(listener: () => void): () => void
 }
 
 const productionAdapter: MainOverviewAdapter = {
@@ -51,13 +46,12 @@ const productionAdapter: MainOverviewAdapter = {
   getAllowanceUsage: () => getAllowanceUsage(),
   getChecksReport: (consumerId) => getChecksReport(consumerId),
   cancelChecksReport: (consumerId) => cancelChecksReport(consumerId),
-  listRecentSessions: () => listRecentSessions(),
   getVisible: () => getMainWindowVisible(),
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
+  onLiveUsageChanged: (handler) => onLiveUsageChanged(handler),
   onChecksReportChanged: (handler) => onChecksReportChanged(handler),
   onSessionIndexChanged: (handler) => onSessionIndexChanged(handler),
   onSessionUpdated: (handler) => onSessionUpdated(handler),
-  liveSessions,
 }
 
 /**
@@ -84,7 +78,6 @@ export interface MainOverviewSnapshot {
   usage: ProviderUsageSummaryPayload | null
   /** True when the newest local usage read failed and nothing replaced it. */
   usageError: boolean
-  /** The provider limit snapshot, or null before the first successful read. */
   /** Utilization and overage for each account, or null before the first
    *  successful read. */
   allowance: AllowanceUsageSummaryPayload | null
@@ -102,28 +95,23 @@ export interface MainOverviewSnapshot {
   refreshing: boolean
 }
 
-/** The newest sessions first, cut to the Overview page's row count. */
-function overviewRecentSessions(payloads: readonly ActivityEntryPayload[]): SessionListEntry[] {
-  return toActivityEntries(payloads)
+function overviewRecentEntries(entries: readonly SessionListEntry[]): SessionListEntry[] {
+  return [...entries]
     .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
     .slice(0, OVERVIEW_RECENT_SESSION_COUNT)
 }
 
 /**
  * Own the Overview section's reads: local provider usage, the live provider
- * limits, the Burn checks report, and the newest sessions. The section is
- * the main window's landing page, so the store loads only while the window
- * is visible and a viewer is active. It refreshes the whole page on every
- * `session:index-changed` event and on a row update that can move its
- * totals; a row update re-reads the recent rows in every case.
+ * limits, and the Burn checks report. The main window supplies the newest
+ * sessions through the shared list source, so this store does not start a
+ * second session-list read. It refreshes the page while the section is
+ * visible and on every `session:index-changed` event or row update that can
+ * move its totals.
  *
  * The checks report is read under a consumer id of its own. The backend
  * keeps that report warm until the store cancels the consumer, which it does
  * whenever the section goes inactive.
- *
- * The recent rows' active pills come from the lifecycle registry: the rows
- * are registered as this section's interest after each load, so the
- * registry names them even when the bounded snapshot omits them.
  */
 export class MainOverviewSession {
   private readonly adapter: MainOverviewAdapter
@@ -145,16 +133,21 @@ export class MainOverviewSession {
   private generation = 0
   private workVersion = 0
   private refreshVersion = 0
-  private allowanceVersion = 0
+  private allowanceTask: Promise<void> | null = null
+  private allowanceDirty = false
   private reportVersion = 0
-  private recentVersion = 0
   private visible = false
   private initialized = false
   private refreshTask: Promise<void> | null = null
   private refreshDirty = false
   private consumerId: string | null = null
+  private readonly sessionList: MainOverviewSessionListSource
 
-  constructor(adapter: MainOverviewAdapter = productionAdapter) {
+  constructor(
+    sessionList: MainOverviewSessionListSource,
+    adapter: MainOverviewAdapter = productionAdapter,
+  ) {
+    this.sessionList = sessionList
     this.adapter = adapter
   }
 
@@ -205,6 +198,19 @@ export class MainOverviewSession {
       ),
       this.listen(
         generation,
+        Promise.resolve(
+          this.sessionList.subscribeList(() => {
+            if (generation !== this.generation || !this.snapshot.active) return
+            this.refreshRecentSessions()
+          }),
+        ),
+      ),
+      this.listen(
+        generation,
+        this.adapter.onLiveUsageChanged(whenCurrent(this.refreshAllowance)),
+      ),
+      this.listen(
+        generation,
         this.adapter.onChecksReportChanged(whenCurrent(this.refreshReport)),
       ),
       this.listen(generation, this.adapter.onSessionIndexChanged(whenCurrent(this.refresh))),
@@ -217,16 +223,6 @@ export class MainOverviewSession {
         }),
       ),
     ])
-    if (generation === this.generation) {
-      // The registry, not row data, decides which recent rows show as active.
-      this.stops.push(
-        this.adapter.liveSessions.subscribe(() => {
-          if (generation !== this.generation || !this.snapshot.active) return
-          const rows = this.snapshot.recentSessions
-          if (rows) this.update({ recentSessions: this.withRegistryActivity(rows) })
-        }),
-      )
-    }
     const revision = visibilityRevision
     const visible = await this.adapter.getVisible().catch(() => false)
     if (generation !== this.generation) return
@@ -241,14 +237,8 @@ export class MainOverviewSession {
     this.workVersion += 1
     this.update({ active, loading: active && !this.snapshot.usage, refreshing: false })
     if (!active) {
-      this.adapter.liveSessions.clearInterest(this)
       this.releaseConsumer()
       return
-    }
-    const rows = this.snapshot.recentSessions
-    if (rows) {
-      this.update({ recentSessions: this.withRegistryActivity(rows) })
-      this.adapter.liveSessions.setInterest(this, listInterests(rows))
     }
     this.consumerId = `main-home-${++nextConsumer}`
     this.refresh()
@@ -276,7 +266,7 @@ export class MainOverviewSession {
       const work = this.workVersion
       const version = this.refreshVersion
       this.update({ loading: !this.snapshot.usage, refreshing: !!this.snapshot.usage })
-      void this.loadAllowance(work, ++this.allowanceVersion)
+      this.refreshAllowance()
       this.refreshReport()
       this.refreshRecentSessions()
       try {
@@ -291,19 +281,31 @@ export class MainOverviewSession {
     }
   }
 
-  private async loadAllowance(work: number, version: number): Promise<void> {
-    this.update({ allowanceLoading: !this.snapshot.allowance })
-    try {
-      const allowance = await this.adapter.getAllowanceUsage()
-      if (work === this.workVersion && version === this.allowanceVersion) {
-        this.update({ allowance, allowanceLoading: false, allowanceError: false })
-      }
-    } catch {
-      // The allowance panels state the failure themselves. A failed read must
-      // not hide the cost totals beside them, and it must not read as an
-      // account with no meter history.
-      if (work === this.workVersion && version === this.allowanceVersion) {
-        this.update({ allowanceLoading: false, allowanceError: true })
+  /** Keep one quota read in flight while changes queue a single later read. */
+  refreshAllowance = (): void => {
+    this.allowanceDirty = true
+    if (!this.snapshot.active || this.allowanceTask) return
+    this.allowanceTask = this.runAllowanceRefresh().finally(() => {
+      this.allowanceTask = null
+      if (this.allowanceDirty && this.snapshot.active) this.refreshAllowance()
+    })
+  }
+
+  private async runAllowanceRefresh(): Promise<void> {
+    while (this.allowanceDirty && this.snapshot.active) {
+      this.allowanceDirty = false
+      const work = this.workVersion
+      this.update({ allowanceLoading: !this.snapshot.allowance })
+      try {
+        const allowance = await this.adapter.getAllowanceUsage()
+        if (work === this.workVersion && !this.allowanceDirty) {
+          this.update({ allowance, allowanceLoading: false, allowanceError: false })
+        }
+      } catch {
+        // A failed read must not hide the cost totals beside the allowance.
+        if (work === this.workVersion && !this.allowanceDirty) {
+          this.update({ allowanceLoading: false, allowanceError: true })
+        }
       }
     }
   }
@@ -327,28 +329,14 @@ export class MainOverviewSession {
     }
   }
 
-  /** Re-read the newest sessions alone. The newest read wins. */
+  /** Refresh the newest sessions from the shared main-window list. */
   refreshRecentSessions = (): void => {
     if (!this.snapshot.active) return
-    void this.loadRecentSessions(this.workVersion, ++this.recentVersion)
-  }
-
-  private async loadRecentSessions(work: number, version: number): Promise<void> {
-    try {
-      const payloads = await this.adapter.listRecentSessions()
-      if (work === this.workVersion && version === this.recentVersion) {
-        const rows = overviewRecentSessions(payloads)
-        this.update({ recentSessions: this.withRegistryActivity(rows) })
-        this.adapter.liveSessions.setInterest(this, listInterests(rows))
-      }
-    } catch {
-      // The sessions panel keeps its last rows.
+    const entries = this.sessionList.getSnapshot().entries
+    if (entries) {
+      const rows = overviewRecentEntries(entries)
+      this.update({ recentSessions: rows })
     }
-  }
-
-  /** Active pills come from the lifecycle registry, never from row timestamps. */
-  private withRegistryActivity(rows: SessionListEntry[]): SessionListEntry[] {
-    return withRegistryActivity(this.adapter.liveSessions.getSnapshot(), rows)
   }
 
   dispose = (): void => {
@@ -357,9 +345,9 @@ export class MainOverviewSession {
     this.initialized = false
     this.visible = false
     this.refreshTask = null
+    this.allowanceDirty = false
     this.releaseConsumer()
     for (const stop of this.stops.splice(0)) stop()
-    this.adapter.liveSessions.clearInterest(this)
     this.update({ active: false, loading: false, refreshing: false, allowanceLoading: false })
   }
 }

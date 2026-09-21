@@ -70,6 +70,9 @@ pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Fa
         facts.plan,
         facts.factor_band,
         facts.residual_band,
+        facts.estimate_bias,
+        facts.unexplained_band,
+        facts.reading_coverage,
         facts.unrecognized_types,
     );
 }
@@ -197,6 +200,15 @@ pub fn record_limit_factor_observed(
 }
 
 #[cfg(not(feature = "analytics"))]
+pub fn record_quota_window_closed(
+    _app: &tauri::AppHandle,
+    _store: &crate::store::Store,
+    _touched: &[crate::provider_usage::factor::TouchedLane],
+    _now: i64,
+) {
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn handle_settings_transition(
     _app: &tauri::AppHandle,
     _previous: &crate::store::AppSettings,
@@ -236,8 +248,10 @@ mod enabled {
     use antiburn_local::model::AgentKind;
     use tauri::Manager as _;
 
-    use crate::provider_usage::factor::LearnedFactor;
+    use crate::provider_usage::factor::{LearnedFactor, TouchedLane};
     use crate::provider_usage::live::{ProviderUsageSnapshot, WindowRole, band_for_percent};
+    use crate::provider_usage::quota::share::{ShareInput, share_period};
+    use crate::provider_usage::quota::{QuotaPeriod, factor_point_at_or_earliest, resolve_periods};
 
     use super::delivery::{DeliverySchedule, FlushOutcome};
     use super::event::{
@@ -356,6 +370,9 @@ mod enabled {
                 plan: None,
                 factor_band: None,
                 residual_band: None,
+                estimate_bias: None,
+                unexplained_band: None,
+                reading_coverage: None,
                 resource_usage: None,
                 unrecognized_types: None,
             },
@@ -454,6 +471,9 @@ mod enabled {
                 plan: facts.plan,
                 factor_band: facts.factor_band,
                 residual_band: facts.residual_band,
+                estimate_bias: facts.estimate_bias,
+                unexplained_band: facts.unexplained_band,
+                reading_coverage: facts.reading_coverage,
                 resource_usage: facts.resource_usage,
                 unrecognized_types: facts.unrecognized_types,
             },
@@ -605,11 +625,13 @@ mod enabled {
 
     /// The lane detail `antiburn.limit_factor_observed` reports, matching the
     /// vocabulary `antiburn.usage_observed` already uses for the same window
-    /// roles.
+    /// roles. Every model-scoped weekly lane collapses to the single value
+    /// `model`, never the model name or its slug.
     fn limit_factor_lane_detail(lane: &str) -> Option<&'static str> {
         match lane {
             crate::store::provider_limit::LANE_FIVE_HOUR => Some("short"),
             crate::store::provider_limit::LANE_WEEKLY => Some("long"),
+            lane if lane.starts_with("model:") => Some("model"),
             _ => None,
         }
     }
@@ -626,7 +648,7 @@ mod enabled {
             .filter_map(|factor| {
                 let provider = LiveUsageProvider::from_provider_id(&factor.provider)?;
                 let label = provider.as_str();
-                let detail = limit_factor_lane_detail(factor.lane)?;
+                let detail = limit_factor_lane_detail(&factor.lane)?;
                 Some(LimitFactorObservation {
                     label,
                     detail,
@@ -713,6 +735,217 @@ mod enabled {
                 last.insert(key, (tuple, now));
             }
         }
+    }
+
+    /// How far back a closed quota window may have reset and still be
+    /// eligible for `antiburn.quota_window_closed`. Bounds a fresh install
+    /// with a long local history to a handful of events per lane on its
+    /// first pass, rather than its whole history.
+    const QUOTA_WINDOW_CLOSED_LOOKBACK_SECS: i64 = 14 * 24 * 60 * 60;
+
+    /// Record `antiburn.quota_window_closed` for every closed,
+    /// not-yet-reported window under a `(provider, account, lane)` pair the
+    /// factor-learning pass just touched.
+    ///
+    /// [`quota_window_closed_reports`] does the store work and writes the
+    /// durable per-period marker; this only gates consent and hands each
+    /// decided report to [`record_event_locked`].
+    pub fn record_quota_window_closed(
+        app: &tauri::AppHandle,
+        store: &Store,
+        touched: &[TouchedLane],
+        now: i64,
+    ) {
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (name, facts) in quota_window_closed_reports(store, touched, now, allowed(app)) {
+            record_event_locked(app, name, facts);
+        }
+    }
+
+    /// The store-level half of [`record_quota_window_closed`], kept apart so
+    /// it stays testable against a bare [`Store`]: `allowed` stands in for
+    /// the consent gate the public function reads from the app handle.
+    ///
+    /// Returns nothing and marks nothing when `allowed` is `false`.
+    /// Otherwise, for each touched pair, finds every window that closed
+    /// within [`QUOTA_WINDOW_CLOSED_LOOKBACK_SECS`] of `now`, carries an
+    /// observed `period_id` (never a cadence-extrapolated or
+    /// turn-gap-inferred one), and has no `quota_window_reported` marker yet.
+    /// A window whose facts cannot be computed (a store read failed, or its
+    /// turn activity overflowed the bounded query) is left unmarked, so a
+    /// later pass can retry it; every other qualifying window is marked
+    /// reported before this returns, so the same window cannot be handed
+    /// back on a later pass even if the caller never delivers the event.
+    fn quota_window_closed_reports(
+        store: &Store,
+        touched: &[TouchedLane],
+        now: i64,
+        allowed: bool,
+    ) -> Vec<(EventName, Facts)> {
+        if !allowed {
+            return Vec::new();
+        }
+        let mut reports = Vec::new();
+        for lane in touched {
+            let Some(provider) = LiveUsageProvider::from_provider_id(&lane.provider) else {
+                continue;
+            };
+            let Some(detail) = limit_factor_lane_detail(&lane.lane) else {
+                continue;
+            };
+            for period in closed_quota_windows(store, lane, now) {
+                let Some(period_id) = period.period_id else {
+                    continue;
+                };
+                if store
+                    .quota_window_already_reported(period_id)
+                    .unwrap_or(true)
+                {
+                    continue;
+                }
+                let Some(facts) = quota_window_closed_facts(store, provider, detail, lane, period)
+                else {
+                    continue;
+                };
+                if store.mark_quota_window_reported(period_id, now).is_err() {
+                    continue;
+                }
+                reports.push((EventName::QuotaWindowClosed, facts));
+            }
+        }
+        reports
+    }
+
+    /// Every window `lane` ran through that has already closed, within
+    /// [`QUOTA_WINDOW_CLOSED_LOOKBACK_SECS`] of `now`, carrying an observed
+    /// `period_id`.
+    ///
+    /// `turn_epochs` is always empty: a turn-gap-inferred window never
+    /// carries a `period_id`, so it cannot pass the caller's filter, and
+    /// there is no need to load turns just to build one.
+    fn closed_quota_windows(store: &Store, lane: &TouchedLane, now: i64) -> Vec<QuotaPeriod> {
+        let cutoff = now - QUOTA_WINDOW_CLOSED_LOOKBACK_SECS;
+        let lane_duration = crate::store::provider_limit::lane_duration_seconds(&lane.lane);
+        let Ok(observed) = store.quota_periods_for_lane(
+            &lane.provider,
+            &lane.account_key,
+            &lane.lane,
+            cutoff,
+            now,
+        ) else {
+            return Vec::new();
+        };
+        resolve_periods(&lane.lane, lane_duration, &observed, &[], cutoff, now, now)
+            .into_iter()
+            .filter(|period| period.period_id.is_some())
+            .filter(|period| period.resets_at_epoch <= now && period.resets_at_epoch > cutoff)
+            .collect()
+    }
+
+    /// One closed window's `antiburn.quota_window_closed` facts, from its own
+    /// readings, bucketed dollars, and factor points. `None` when a store
+    /// read failed or the window's turn activity overflowed the bounded
+    /// bucket query.
+    fn quota_window_closed_facts(
+        store: &Store,
+        provider: LiveUsageProvider,
+        detail: &'static str,
+        lane: &TouchedLane,
+        period: QuotaPeriod,
+    ) -> Option<Facts> {
+        let period_id = period.period_id?;
+        let points = store
+            .factor_points_for_lane(&lane.provider, &lane.account_key, &lane.lane)
+            .ok()?;
+        let samples = store.quota_period_samples(period_id).ok()?;
+        // The period's latest observation, whether or not it is
+        // authoritative: the same plan and tier `limit_factor_observed`
+        // would report for a live pass over this window.
+        let (plan, plan_tier) = samples
+            .last()
+            .map(|sample| (sample.plan.clone(), sample.plan_tier.clone()))
+            .unwrap_or((None, None));
+        let readings: Vec<(i64, f64)> = samples
+            .iter()
+            .filter(|sample| sample.is_authoritative)
+            .filter_map(|sample| {
+                sample
+                    .used_percent
+                    .map(|percent| (sample.observed_at_epoch, percent))
+            })
+            .filter(|&(observed_at_epoch, _)| {
+                observed_at_epoch >= period.starts_at_epoch
+                    && observed_at_epoch < period.resets_at_epoch
+            })
+            .collect();
+        let model_scope = lane
+            .lane
+            .strip_prefix(crate::store::provider_limit::MODEL_LANE_PREFIX);
+        let bucket_dollars: Vec<(i64, f64)> = store
+            .attributed_turn_dollars_by_bucket(
+                &lane.provider,
+                &lane.account_key,
+                model_scope,
+                period.starts_at_epoch,
+                period.resets_at_epoch,
+            )
+            .ok()??
+            .into_iter()
+            .map(|row| (row.bucket_start_epoch, row.usd))
+            .collect();
+
+        let shared = share_period(&ShareInput {
+            start: period.starts_at_epoch,
+            reset: period.resets_at_epoch,
+            readings: &readings,
+            buckets: &bucket_dollars,
+            points: &points,
+        });
+        let peak_percent = readings
+            .iter()
+            .map(|&(_, percent)| percent)
+            .reduce(f64::max);
+        let last_reading = readings.last().copied();
+        // The dollars-only estimate the badge and forecast would have shown
+        // at the last reading: every bucket's own dollars up to that
+        // reading, priced at the factor point in effect then. `None` with no
+        // reading or no factor point yet to price it from.
+        let estimate_residual = last_reading.and_then(|(last_epoch, meter_percent)| {
+            let total: f64 = bucket_dollars
+                .iter()
+                .filter(|&&(bucket_start, _)| bucket_start < last_epoch)
+                .map(|&(_, usd)| usd)
+                .sum();
+            factor_point_at_or_earliest(&points, last_epoch)
+                .filter(|point| point.usd_per_percent > 0.0)
+                .map(|point| (meter_percent, total / point.usd_per_percent))
+        });
+        let unexplained_total: f64 = shared.unexplained.iter().map(|&(_, percent)| percent).sum();
+
+        Some(Facts {
+            label: Some(provider.as_str()),
+            detail: Some(detail),
+            plan: Some(event::map_plan(
+                provider,
+                plan.as_deref(),
+                plan_tier.as_deref(),
+            )),
+            usage_band: Some(band_for_percent(peak_percent)),
+            bucket: Some(event::bucket(shared.meter_regressions as u64)),
+            estimate_bias: Some(event::estimate_bias(estimate_residual)),
+            unexplained_band: Some(event::unexplained_band(
+                unexplained_total,
+                last_reading.map(|(_, percent)| percent),
+            )),
+            reading_coverage: Some(event::reading_coverage(
+                shared.coverage_until,
+                period.resets_at_epoch,
+            )),
+            ..Facts::default()
+        })
     }
 
     /// Record an interaction reported by the renderer.
@@ -1855,6 +2088,7 @@ mod enabled {
     #[cfg(test)]
     mod tests {
         use antiburn_local::insights::{ProviderIncidentFindings, QuotaPressureFindings};
+        use rusqlite::params;
 
         use super::*;
 
@@ -2138,7 +2372,7 @@ mod enabled {
         ) -> LearnedFactor {
             LearnedFactor {
                 provider: provider.to_string(),
-                lane,
+                lane: lane.to_string(),
                 usd_per_percent,
                 plan: plan.map(str::to_string),
                 plan_tier: plan_tier.map(str::to_string),
@@ -2166,6 +2400,21 @@ mod enabled {
                     residual_band: "within_5",
                 }]
             );
+        }
+
+        #[test]
+        fn a_model_scoped_lane_reports_the_single_detail_value_model_never_the_slug() {
+            let learned = vec![learned_factor(
+                crate::provider_usage::providers::ANTHROPIC,
+                "model:fable",
+                5.0,
+                None,
+                None,
+                None,
+            )];
+            let candidates = limit_factor_observed_candidates(&learned);
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].detail, "model");
         }
 
         #[test]
@@ -2292,6 +2541,186 @@ mod enabled {
                 tuple_a,
                 start
             ));
+        }
+
+        const QUOTA_WINDOW_TEST_PROVIDER: &str = "anthropic";
+
+        fn quota_window_test_account() -> String {
+            "a".repeat(64)
+        }
+
+        fn quota_window_test_store() -> Store {
+            Store::open_in_memory(std::path::Path::new(
+                "/tmp/antiburn-quota-window-closed-test",
+            ))
+            .expect("opens store")
+        }
+
+        /// A synthetic five-hour period, closed or open depending on
+        /// `resets_at_epoch`, in the shape [`closed_quota_windows`] reads.
+        fn quota_window_insert_period(
+            store: &Store,
+            starts_at_epoch: i64,
+            resets_at_epoch: i64,
+        ) -> i64 {
+            let connection = store.lock();
+            connection
+                .execute(
+                    "INSERT INTO provider_usage_period (
+                         provider, account_key, window_id, window_kind, window_role,
+                         scope_key, scope_label, duration_seconds, starts_at_epoch,
+                         resets_at_epoch, first_observed_epoch, last_observed_epoch
+                     ) VALUES (?1, ?2, 'five-hour', 'rolling', 'primaryShort',
+                               'account', 'account', ?3, ?4, ?5, ?6, ?6)",
+                    params![
+                        QUOTA_WINDOW_TEST_PROVIDER,
+                        quota_window_test_account(),
+                        resets_at_epoch - starts_at_epoch,
+                        starts_at_epoch,
+                        resets_at_epoch,
+                        resets_at_epoch
+                    ],
+                )
+                .expect("inserts a synthetic period");
+            connection.last_insert_rowid()
+        }
+
+        fn quota_window_insert_observation(
+            store: &Store,
+            period_id: i64,
+            observed_at_epoch: i64,
+            used_percent: f64,
+        ) {
+            store
+                .lock()
+                .execute(
+                    "INSERT INTO provider_usage_observation (
+                         period_id, provider, account_key, window_id, window_kind, window_role,
+                         scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                         is_authoritative, confidence, source_id
+                     ) VALUES (?1, ?2, ?3, 'five-hour', 'rolling', 'primaryShort',
+                               'account', 'account', ?4, ?5, 1, 1, 'high', 'test')",
+                    params![
+                        period_id,
+                        QUOTA_WINDOW_TEST_PROVIDER,
+                        quota_window_test_account(),
+                        observed_at_epoch,
+                        used_percent
+                    ],
+                )
+                .expect("inserts a synthetic observation");
+        }
+
+        fn quota_window_touched() -> Vec<TouchedLane> {
+            vec![TouchedLane {
+                provider: QUOTA_WINDOW_TEST_PROVIDER.to_string(),
+                account_key: quota_window_test_account(),
+                lane: crate::store::provider_limit::LANE_FIVE_HOUR.to_string(),
+            }]
+        }
+
+        /// A closed window with one authoritative reading reports once, and
+        /// the durable marker survives it.
+        #[test]
+        fn a_closed_window_reports_once_and_the_marker_row_exists() {
+            let store = quota_window_test_store();
+            let period_id = quota_window_insert_period(&store, 0, 18_000);
+            quota_window_insert_observation(&store, period_id, 9_000, 50.0);
+            let now = 20_000;
+
+            let reports = quota_window_closed_reports(&store, &quota_window_touched(), now, true);
+
+            assert_eq!(reports.len(), 1);
+            let (name, facts) = &reports[0];
+            assert_eq!(*name, EventName::QuotaWindowClosed);
+            assert_eq!(facts.label, Some("anthropic"));
+            assert_eq!(facts.detail, Some("short"));
+            assert_eq!(facts.plan, Some("unknown"));
+            assert_eq!(facts.usage_band, Some("below_80"));
+            assert_eq!(facts.bucket, Some("0"));
+            // No factor point exists yet, so the dollars-only estimate has
+            // nothing to price itself from.
+            assert_eq!(facts.estimate_bias, Some("unknown"));
+            // The one reading's whole rise has no local dollars behind it.
+            assert_eq!(facts.unexplained_band, Some("30_and_over"));
+            // The only reading is well over an hour before the window's end.
+            assert_eq!(facts.reading_coverage, Some("stale"));
+            assert!(
+                store
+                    .quota_window_already_reported(period_id)
+                    .expect("reads the marker")
+            );
+        }
+
+        /// The durable marker, not an in-memory hint, suppresses a second
+        /// pass over the same closed window.
+        #[test]
+        fn a_second_pass_over_the_same_closed_window_reports_nothing() {
+            let store = quota_window_test_store();
+            let period_id = quota_window_insert_period(&store, 0, 18_000);
+            quota_window_insert_observation(&store, period_id, 9_000, 50.0);
+            let now = 20_000;
+            let touched = quota_window_touched();
+
+            assert_eq!(
+                quota_window_closed_reports(&store, &touched, now, true).len(),
+                1
+            );
+            assert_eq!(
+                quota_window_closed_reports(&store, &touched, now, true).len(),
+                0,
+                "the marker from the first pass suppresses the second"
+            );
+        }
+
+        /// A window whose reset has not yet passed is not a closed window.
+        #[test]
+        fn an_open_window_reports_nothing() {
+            let store = quota_window_test_store();
+            let now = 20_000;
+            let period_id = quota_window_insert_period(&store, now - 1_000, now + 1_000);
+            quota_window_insert_observation(&store, period_id, now - 500, 50.0);
+
+            let reports = quota_window_closed_reports(&store, &quota_window_touched(), now, true);
+
+            assert!(reports.is_empty());
+        }
+
+        /// A window that closed more than the lookback ago is too old to
+        /// report, even though it is otherwise a perfectly ordinary closed
+        /// window.
+        #[test]
+        fn a_window_closed_more_than_the_lookback_ago_reports_nothing() {
+            let store = quota_window_test_store();
+            let now = 20 * 24 * 60 * 60;
+            let resets_at_epoch = now - (QUOTA_WINDOW_CLOSED_LOOKBACK_SECS + 3_600);
+            let period_id =
+                quota_window_insert_period(&store, resets_at_epoch - 18_000, resets_at_epoch);
+            quota_window_insert_observation(&store, period_id, resets_at_epoch - 9_000, 50.0);
+
+            let reports = quota_window_closed_reports(&store, &quota_window_touched(), now, true);
+
+            assert!(reports.is_empty());
+        }
+
+        /// Disabled analytics reports nothing, and — because the marker is
+        /// only written once a report is decided — leaves no marker behind
+        /// either, so a later pass with consent restored still reports it.
+        #[test]
+        fn a_disabled_pass_reports_nothing_and_writes_no_marker() {
+            let store = quota_window_test_store();
+            let period_id = quota_window_insert_period(&store, 0, 18_000);
+            quota_window_insert_observation(&store, period_id, 9_000, 50.0);
+            let now = 20_000;
+
+            let reports = quota_window_closed_reports(&store, &quota_window_touched(), now, false);
+
+            assert!(reports.is_empty());
+            assert!(
+                !store
+                    .quota_window_already_reported(period_id)
+                    .expect("reads the marker")
+            );
         }
 
         #[test]

@@ -2,8 +2,8 @@
 //!
 //! # Two numbers, neither derived from the other
 //!
-//! **Utilization** is supply consumed: the share of the plan's allowance the
-//! provider's own meter reports. **Overage** is demand refused: how often the
+//! **Utilization** is supply consumed: the shared quota period estimate from
+//! meter observations and local turn spend. **Overage** is demand refused: how often the
 //! provider turned a request away, and how long the reader then waited. A
 //! week can close at 62% and still contain a refusal, because the refusal
 //! came from a different, shorter window. So the surface states both.
@@ -19,8 +19,8 @@ use std::collections::BTreeMap;
 use antiburn_local::analysis::{QuotaIncident, QuotaLimitKind, QuotaResetClock};
 use serde::Deserialize;
 
+use crate::dto::QuotaPeriodPayload;
 use crate::store::QuotaIncidentRecord;
-use crate::store::provider_usage_history::{ProviderUsagePeriodRollup, ProviderUsageReading};
 
 /// The gap that separates two refusals.
 ///
@@ -218,22 +218,19 @@ pub fn overage(incidents: &[QuotaIncident], since_ms: i64) -> Overage {
 /// the peak stands on its own, which is honest at any sample size.
 pub const TYPICAL_MIN_PERIODS: usize = 6;
 
-/// The figure a window reaches when the provider has nothing left to give.
-///
-/// A refusal happens here and at nothing less. Across the five-hour windows
-/// antiburn has recorded, windows peaking at 96% and 99% refused nothing. So
-/// this surface names no warning threshold below it.
+/// The maximum percentage shown in utilization statistics.
+/// A shared estimate can reach this value without a provider refusal.
 pub const MAXED_PERCENT: f64 = 100.0;
 
 /// How much of the allowance the reader consumed, across whole periods.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Utilization {
-    /// The median peak across the periods, or `None` while the sample is
+    /// The median estimate across the periods, or `None` while the sample is
     /// too small for a median to mean anything.
     pub typical_percent: Option<f64>,
-    /// The highest figure any one period reached.
+    /// The highest shared estimate any one period reached.
     pub peak_percent: f64,
-    /// The mean peak across every period the store holds. It answers "how
+    /// The mean estimate across every known period in the span. It answers "how
     /// much of the plan do I use", where the peak answers "can the plan
     /// hold me". An idle period pulls this figure down and moves the
     /// median above far less.
@@ -241,8 +238,8 @@ pub struct Utilization {
     pub period_count: usize,
     /// How many periods reached [`MAXED_PERCENT`].
     pub maxed_period_count: usize,
-    /// The window the periods measure, as the store names it: `weekly`,
-    /// `rolling`, or the provider's own word. The reader must know which
+    /// The account-wide window the periods measure: `weekly` or `rolling`.
+    /// The reader must know which
     /// window a figure covers, because the windows answer different
     /// questions.
     pub window_kind: String,
@@ -250,39 +247,28 @@ pub struct Utilization {
     pub last_period_at_epoch: i64,
 }
 
-/// Reduce one account's periods in one window to its utilization.
-///
-/// A period the provider never reported a figure for is left out. It is not
-/// a zero: an unknown period reads as unknown, never as idle.
-pub fn utilization(rollups: &[ProviderUsagePeriodRollup]) -> Option<Utilization> {
-    let mut peaks: Vec<(i64, f64, &str)> = rollups
+/// Reduce the shared quota periods in one account-wide lane.
+/// Unknown periods have no percentage and do not count as idle.
+pub fn utilization(periods: &[QuotaPeriodPayload], window_kind: &str) -> Option<Utilization> {
+    let mut peaks: Vec<(i64, f64)> = periods
         .iter()
-        .filter_map(|rollup| {
+        .filter_map(|period| {
             Some((
-                rollup.last_observed_epoch,
-                rollup.peak_used_percent?,
-                rollup.window_kind.as_str(),
+                period.starts_at_epoch,
+                period.estimated_percent?.min(MAXED_PERCENT),
             ))
         })
         .collect();
     if peaks.is_empty() {
         return None;
     }
-    // The newest period names the window. A provider that renames a window
-    // must not make the older name outlive it.
-    let window_kind = peaks
-        .iter()
-        .max_by_key(|entry| entry.0)
-        .expect("the list is not empty")
-        .2
-        .to_owned();
     let total: f64 = peaks.iter().map(|entry| entry.1).sum();
     peaks.sort_by(|left, right| left.1.total_cmp(&right.1));
     let period_count = peaks.len();
     let typical_percent =
         (period_count >= TYPICAL_MIN_PERIODS).then(|| median(&peaks[..], |entry| entry.1));
     Some(Utilization {
-        window_kind,
+        window_kind: window_kind.to_owned(),
         typical_percent,
         peak_percent: peaks[period_count - 1].1,
         average_percent: total / period_count as f64,
@@ -291,16 +277,8 @@ pub fn utilization(rollups: &[ProviderUsagePeriodRollup]) -> Option<Utilization>
             .iter()
             .filter(|entry| entry.1 >= MAXED_PERCENT)
             .count(),
-        first_period_at_epoch: peaks
-            .iter()
-            .map(|entry| entry.0)
-            .min()
-            .expect("the list is not empty"),
-        last_period_at_epoch: peaks
-            .iter()
-            .map(|entry| entry.0)
-            .max()
-            .expect("the list is not empty"),
+        first_period_at_epoch: peaks.iter().map(|entry| entry.0).min().expect("not empty"),
+        last_period_at_epoch: peaks.iter().map(|entry| entry.0).max().expect("not empty"),
     })
 }
 
@@ -318,28 +296,8 @@ fn median<T>(sorted: &[T], value: impl Fn(&T) -> f64) -> f64 {
     }
 }
 
-/// The window that measures plan fit: the long one, usually weekly.
-const PRIMARY_LONG: &str = "primaryLong";
-
-/// The window that refuses the reader: the short rolling one.
-const PRIMARY_SHORT: &str = "primaryShort";
-
-/// The whole-account window. A per-model window measures something else.
-const ACCOUNT_SCOPE: &str = "account";
-
 /// One provider account, named the way the store names it.
 pub type AccountId = (String, String);
-
-/// Everything one account's allowance numbers rest on.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct AccountAllowance {
-    /// The long window across periods: how well the plan fits.
-    pub utilization: Option<Utilization>,
-    /// The short window across periods: what refuses the reader. It is the
-    /// cause of the blocks, not a second plan-fit figure.
-    pub burst: Option<Utilization>,
-    pub overage: Overage,
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -348,71 +306,21 @@ struct AccountObservation {
     account_key: String,
 }
 
-/// Reduce the stored rollups and incidents to one figure for each account.
-///
-/// `since_ms` bounds the blocks only. The utilization figures cover every
-/// period the rollups still hold, because "your busiest week" means the
-/// busiest week there is, not the busiest inside a trailing window.
-pub fn account_allowances(
-    rollups: &[ProviderUsagePeriodRollup],
-    incidents: &[QuotaIncidentRecord],
-    since_ms: i64,
-) -> BTreeMap<AccountId, AccountAllowance> {
-    let mut accounts: BTreeMap<AccountId, AccountAllowance> = BTreeMap::new();
-    let mut lanes: BTreeMap<(AccountId, &str), Vec<ProviderUsagePeriodRollup>> = BTreeMap::new();
-    for rollup in rollups
-        .iter()
-        .filter(|rollup| rollup.scope_key == ACCOUNT_SCOPE)
-    {
-        let role = match rollup.window_role.as_str() {
-            PRIMARY_LONG => PRIMARY_LONG,
-            PRIMARY_SHORT => PRIMARY_SHORT,
-            _ => continue,
-        };
-        let id = (rollup.provider.clone(), rollup.account_key.clone());
-        lanes.entry((id, role)).or_default().push(rollup.clone());
-    }
-    for ((id, role), lane) in lanes {
-        let entry = accounts.entry(id).or_default();
-        match role {
-            PRIMARY_LONG => entry.utilization = utilization(&lane),
-            _ => entry.burst = utilization(&lane),
-        }
-    }
-
-    for (id, incidents) in incidents_by_account(incidents) {
-        accounts.entry(id).or_default().overage = overage(&incidents, since_ms);
-    }
-    accounts
-}
-
-/// What one reading added to its period, and when the provider stated it.
+/// What the shared quota bucket estimates assign to a day.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Consumed {
     pub at_epoch: i64,
-    /// Percentage points of the allowance the reader consumed since the
-    /// reading before this one.
     pub percent: f64,
 }
 
-/// The span one account's readings cover, and what each reading consumed.
-///
-/// A day inside the span but without a reading of its own consumed nothing:
-/// the meter stood still between two readings that bracket it. A day outside
-/// the span is unknown, because no reading speaks for it.
+/// The span one account's shared quota evidence covers and its daily shares.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AccountConsumption {
     pub consumed: Vec<Consumed>,
-    /// The spans the readings cover, as inclusive epoch pairs. One span for
-    /// each period, because a period with one reading covers one instant.
     pub covered: Vec<(i64, i64)>,
 }
 
 impl AccountConsumption {
-    /// True when a reading speaks for any part of this span.
-    ///
-    /// The provider states a running total, so two readings that bracket a
-    /// day say what that day consumed even when neither falls inside it.
     pub fn covers(&self, from_epoch: i64, to_epoch: i64) -> bool {
         self.covered
             .iter()
@@ -420,41 +328,57 @@ impl AccountConsumption {
     }
 }
 
-/// Turn ordered meter readings into what each one consumed.
-///
-/// The provider states a running total for the period, not a per-day figure.
-/// What a day consumed is the rise from the reading before it. The first
-/// reading of a period carries the whole rise from the period's start.
-///
-/// A fall inside a period counts as nothing consumed. The provider restated
-/// a lower figure; the reader did not give allowance back.
-pub fn consumption(readings: &[ProviderUsageReading]) -> BTreeMap<AccountId, AccountConsumption> {
-    let mut by_account: BTreeMap<AccountId, AccountConsumption> = BTreeMap::new();
-    let mut previous: Option<(i64, f64)> = None;
-    for reading in readings {
-        let id = (reading.provider.clone(), reading.account_key.clone());
-        let entry = by_account.entry(id).or_default();
-        let percent = match previous {
-            Some((period_id, before)) if period_id == reading.period_id => {
-                (reading.used_percent - before).max(0.0)
-            }
-            _ => reading.used_percent,
-        };
-        let starts_period = previous.is_none_or(|(period_id, _)| period_id != reading.period_id);
-        if starts_period {
-            entry
-                .covered
-                .push((reading.observed_at_epoch, reading.observed_at_epoch));
-        } else if let Some(span) = entry.covered.last_mut() {
-            span.1 = reading.observed_at_epoch;
+/// Sum the same buckets used by the Limits period total.
+/// The meter's unexplained rise belongs to its reading day; estimated turn
+/// spend belongs to its bucket day.
+pub fn consumption(periods: &[QuotaPeriodPayload]) -> AccountConsumption {
+    let mut result = AccountConsumption::default();
+    for period in periods {
+        let sample_epochs: Vec<i64> = period
+            .samples
+            .iter()
+            .filter(|sample| {
+                sample.authoritative
+                    && sample.used_percent.is_some()
+                    && sample.observed_at_epoch >= period.starts_at_epoch
+                    && sample.observed_at_epoch < period.resets_at_epoch
+            })
+            .map(|sample| sample.observed_at_epoch)
+            .collect();
+        if let (Some(first), Some(last)) = (
+            sample_epochs.iter().min().copied(),
+            sample_epochs.iter().max().copied(),
+        ) {
+            result.covered.push((first, last));
         }
-        entry.consumed.push(Consumed {
-            at_epoch: reading.observed_at_epoch,
-            percent,
-        });
-        previous = Some((reading.period_id, reading.used_percent));
+        for bucket in &period.contributions {
+            if let Some(percent) = bucket.percent {
+                result
+                    .covered
+                    .push((bucket.bucket_start_epoch, bucket.bucket_start_epoch));
+                result.consumed.push(Consumed {
+                    at_epoch: bucket.bucket_start_epoch,
+                    percent,
+                });
+            }
+        }
+        for bucket in period
+            .unattributed_buckets
+            .iter()
+            .chain(&period.unexplained_buckets)
+        {
+            if let Some(percent) = bucket.percent {
+                result
+                    .covered
+                    .push((bucket.bucket_start_epoch, bucket.bucket_start_epoch));
+                result.consumed.push(Consumed {
+                    at_epoch: bucket.bucket_start_epoch,
+                    percent,
+                });
+            }
+        }
     }
-    by_account
+    result
 }
 
 /// The blocks each account met inside the span, in the order they happened.
@@ -468,6 +392,17 @@ pub fn account_blocks(
     incidents_by_account(incidents)
         .into_iter()
         .map(|(id, incidents)| (id, blocks_since(&incidents, since_ms)))
+        .collect()
+}
+
+/// Reduce the provider refusal history for every observed account.
+pub fn account_overages(
+    incidents: &[QuotaIncidentRecord],
+    since_ms: i64,
+) -> BTreeMap<AccountId, Overage> {
+    incidents_by_account(incidents)
+        .into_iter()
+        .map(|(id, incidents)| (id, overage(&incidents, since_ms)))
         .collect()
 }
 

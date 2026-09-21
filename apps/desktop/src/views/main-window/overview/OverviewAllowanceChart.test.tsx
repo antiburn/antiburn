@@ -48,10 +48,13 @@ describe("OverviewAllowanceChart", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent(today)
   })
 
-  it("calls a day with no reading unknown, never zero", () => {
+  it("calls a day with no quota data unknown, never zero", () => {
     render(<OverviewAllowanceChart accounts={[account()]} />)
     // The gap states no figure rather than a zero.
-    expect(dayButtons()[3]).toHaveAttribute("aria-label", expect.stringContaining("no reading"))
+    expect(dayButtons()[3]).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("no quota data"),
+    )
   })
 
   it("marks a day that carried a limit hit", () => {
@@ -101,14 +104,14 @@ describe("OverviewAllowanceChart", () => {
     expect(buttons).toHaveLength(30)
     expect(buttons[0]).toHaveAttribute(
       "aria-label",
-      expect.stringContaining("Claude no reading"),
+      expect.stringContaining("Claude no quota data"),
     )
   })
 
   it("says antiburn has no readings rather than drawing an empty chart", () => {
     render(<OverviewAllowanceChart accounts={[account({ days: [], previousDays: [] })]} />)
     expect(screen.getByRole("region", { name: "Allowance by day" }).textContent).toContain(
-      "no meter readings",
+      "no allowance history",
     )
   })
 

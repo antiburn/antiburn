@@ -66,7 +66,7 @@ function barGeometry(day: AllowanceDayPayload | undefined, ceiling: number) {
 /**
  * Every date any account charts, oldest first.
  *
- * Two accounts can start metering on different days. The chart draws one
+ * Two accounts can have quota evidence on different days. The chart draws one
  * column for each date either account knows, so a column always holds the
  * same date in every series.
  */
@@ -103,17 +103,14 @@ function dayDetail(
 /**
  * Thirty days of allowance, every provider account on one scale.
  *
- * The bars read the provider's own meter, not the local dollar estimate. A
- * session's whole usage lands on the date of its last activity, so the dollar
- * series spikes one day for work spread over several. A meter reading carries
- * the time the provider stated it, so it does not.
+ * The bars sum the same quota buckets as Limits. Antiburn shares meter
+ * changes across local sessions and estimates usage between readings.
  *
  * Both accounts read in percent of their own plan, so one scale holds them
  * both. Color names the account, and the key is the only place that says
  * which color is which.
  *
- * A day no reading speaks for draws an outlined dot and says "no reading". A
- * gap is unknown, never zero.
+ * A day with no quota evidence draws an outlined dot. A gap is unknown.
  */
 export function OverviewAllowanceChart({
   accounts,
@@ -139,8 +136,8 @@ export function OverviewAllowanceChart({
     return (
       <section className="overview-chart" aria-label="Allowance by day">
         <p className="type-body text-label-secondary">
-          antiburn has no meter readings to chart yet. A reading arrives the next time an agent
-          states an account&apos;s allowance.
+          antiburn has no allowance history to chart yet. Usage appears after a provider reports
+          allowance data or local sessions provide an estimate.
         </p>
       </section>
     )

@@ -76,8 +76,8 @@ describe("allowance scale", () => {
     expect(allowanceSeriesMax([allowanceDay(null)])).toBe(0)
   })
 
-  it("names a day with no reading rather than calling it zero", () => {
-    expect(allowancePointsLabel(null)).toBe("no reading")
+  it("names a day with no quota evidence rather than calling it zero", () => {
+    expect(allowancePointsLabel(null)).toBe("no quota data")
     expect(allowancePointsLabel(0)).toBe("0.0 points")
     expect(allowancePointsLabel(4.25)).toBe("4.3 points")
     expect(allowancePointsLabel(31.4)).toBe("31 points")
