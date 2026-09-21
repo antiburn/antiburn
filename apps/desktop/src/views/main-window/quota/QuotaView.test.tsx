@@ -269,7 +269,7 @@ describe("QuotaView", () => {
   it("shows an empty state naming the range when usage has no periods, and says readings began later once any fetched window has a sample", async () => {
     const { session } = setup({ getUsage: vi.fn().mockResolvedValue(usage({ periods: [] })) })
     sessions.push(session)
-    const title = await screen.findByText("No readings for this week.")
+    const title = await screen.findByText("No readings for last 3 weeks.")
     const status = title.closest('[role="status"]')!
     expect(status).toHaveTextContent("antiburn records a meter only while the app is running.")
     expect(screen.queryByRole("region", { name: "Limit usage" })).toBeNull()
@@ -451,7 +451,7 @@ describe("QuotaView", () => {
       "Last 5 weeks",
       "Last 10 weeks",
     ])
-    expect(menu.getByRole("menuitemradio", { name: "This week" })).toHaveAttribute(
+    expect(menu.getByRole("menuitemradio", { name: "Last 3 weeks" })).toHaveAttribute(
       "aria-checked",
       "true",
     )
@@ -490,12 +490,12 @@ describe("QuotaView", () => {
     })
     sessions.push(session)
     await loaded()
-    expect(rangeTrigger()).toHaveTextContent("This week")
+    expect(rangeTrigger()).toHaveTextContent("Last 3 weeks")
 
     openJumpMenu("Lane")
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "5-hour" }))
     await vi.waitFor(() => expect(session.getSnapshot().selection?.lane).toBe("fiveHour"))
-    expect(rangeTrigger()).toHaveTextContent("This window")
+    expect(rangeTrigger()).toHaveTextContent("Last 3 windows")
     const figures = screen.getByRole("region", { name: "Limit usage" })
     expect(within(figures).getByText("This window")).toBeInTheDocument()
     openJumpMenu("Range")
@@ -511,7 +511,7 @@ describe("QuotaView", () => {
     expect(scope.queryByRole("button", { name: /^Lane: / })).not.toBeInTheDocument()
     expect(scope.getByText("Claude")).toBeInTheDocument()
     expect(scope.getByText("Weekly")).toBeInTheDocument()
-    expect(scope.getByRole("button", { name: "Range: This week" })).toBeInTheDocument()
+    expect(scope.getByRole("button", { name: "Range: Last 3 weeks" })).toBeInTheDocument()
   })
 
   it("offers an account menu once a provider has two accounts", async () => {

@@ -83,7 +83,7 @@ describe("QuotaSession", () => {
       accountKey: "acct-1",
       lane: "weekly",
     })
-    expect(session.getSnapshot().range).toBe("thisWindow")
+    expect(session.getSnapshot().range).toBe("last3Windows")
     stop()
   })
 
@@ -108,7 +108,7 @@ describe("QuotaSession", () => {
     session.selectLane("fiveHour")
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u2"))
     expect(session.getSnapshot().selection?.lane).toBe("fiveHour")
-    expect(session.getSnapshot().range).toBe("thisWindow")
+    expect(session.getSnapshot().range).toBe("last3Windows")
     const request = vi.mocked(adapter.getUsage).mock.calls.at(-1)![0]
     expect(request.lane).toBe("fiveHour")
     stop()
@@ -237,21 +237,21 @@ describe("QuotaSession", () => {
     const stop = session.subscribe(() => undefined)
     await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
     vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-window"))
-    session.selectRange("last3Windows")
+    session.selectRange("last5Windows")
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-window"))
-    expect(session.getSnapshot().range).toBe("last3Windows")
+    expect(session.getSnapshot().range).toBe("last5Windows")
     const request = vi.mocked(adapter.getUsage).mock.calls.at(-1)![0]
     // The weekly lane carries no current period in this fixture, so the
-    // preset falls back to a trailing three weeks ending now — exactly what
+    // preset falls back to a trailing five weeks ending now — exactly what
     // `rangeForPreset` itself computes for the same inputs.
     const expected = rangeForPreset(
-      "last3Windows",
+      "last5Windows",
       { lane: "weekly", label: "Weekly", currentPeriod: null, firstObservedEpoch: 0 },
       NOW,
     )
     expect(request.rangeStartEpoch).toBe(expected.startEpoch)
     expect(request.rangeEndEpoch).toBe(expected.endEpoch)
-    expect(request.rangeStartEpoch).toBe(NOW - 3 * WEEK)
+    expect(request.rangeStartEpoch).toBe(NOW - 5 * WEEK)
     expect(request.rangeEndEpoch).toBe(NOW)
     stop()
   })
@@ -430,7 +430,7 @@ describe("QuotaSession", () => {
       accountKey: "acct-1",
       lane: "weekly",
     })
-    expect(session.getSnapshot().range).toBe("thisWindow")
+    expect(session.getSnapshot().range).toBe("last3Windows")
     stop()
   })
 
