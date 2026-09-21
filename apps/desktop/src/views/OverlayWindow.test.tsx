@@ -1277,9 +1277,8 @@ describe("OverlayWindow", () => {
       expect(island?.getAttribute("data-island")).toBe("collapsed")
       expect(island?.classList.contains("hud-island-fillets")).toBe(true)
       expect(screen.getByTestId("island-live-led")).toBeTruthy()
-      // The right wing counts down to the soonest reset: two hours in the fixture.
-      expect(screen.getByTestId("island-reset").textContent).toBe("2hreset")
-      expect(screen.queryByTestId("island-mark")).toBeNull()
+      // The right wing holds the antiburn mark.
+      expect(screen.getByTestId("island-mark")).toBeTruthy()
       expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(0)
 
       act(() => hover.emit(true))

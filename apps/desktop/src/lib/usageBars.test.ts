@@ -10,7 +10,6 @@ import {
   blockedBars,
   deriveUsageBars,
   limitsReset,
-  nearestResetFigure,
   providerBarColor,
   resetDue,
   resetsIn,
@@ -209,21 +208,6 @@ describe("reset labels", () => {
     expect(resetsIn(new Date(NOW + (3 * 60 + 38) * 60_000), NOW)).toBe("resets in 3h 38m")
     expect(resetsIn(new Date(NOW + (5 * 24 + 2) * 3_600_000), NOW)).toBe("resets in 5d 2h")
     expect(resetsIn(null, NOW)).toBe("reset unknown")
-  })
-
-  it("counts down to the soonest reset in wing-sized figures", () => {
-    const bar = (minutes: number | null): UsageBarItem =>
-      ({ resetsAt: minutes === null ? null : new Date(NOW + minutes * 60_000) }) as UsageBarItem
-    expect(nearestResetFigure([], NOW)).toBeNull()
-    expect(nearestResetFigure([bar(null)], NOW)).toBeNull()
-    expect(nearestResetFigure([bar(-1)], NOW)).toBe("soon")
-    expect(nearestResetFigure([bar(42)], NOW)).toBe("42m")
-    expect(nearestResetFigure([bar(120)], NOW)).toBe("2h")
-    expect(nearestResetFigure([bar(3 * 60 + 5)], NOW)).toBe("3h05")
-    expect(nearestResetFigure([bar(6 * 24 * 60 + 6 * 60)], NOW)).toBe("6d6h")
-    expect(nearestResetFigure([bar(7 * 24 * 60)], NOW)).toBe("7d")
-    // The soonest wins, wherever it sits, and unknown resets do not block it.
-    expect(nearestResetFigure([bar(7 * 24 * 60), bar(null), bar(42)], NOW)).toBe("42m")
   })
 })
 

@@ -5,7 +5,7 @@ import { LedBar } from "../components/ui/LedBar"
 import { Confetti } from "../components/ui/Confetti"
 import { TokenMap } from "../components/ui/TokenMap"
 import { formatRate, frameColor } from "../lib/tokenMap"
-import { blockedBars, nearestResetFigure, resetsIn } from "../lib/usageBars"
+import { blockedBars, resetsIn } from "../lib/usageBars"
 import { OverlaySession, type OverlaySnapshot } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
@@ -149,10 +149,9 @@ function IslandPanel({
   //   ? `var(--color-mode-${state.tokenMap.liveMode})`
   //   : "var(--color-brand-tint)"
   const liveColor = "var(--color-brand-tint)"
-  // The spend-rate figure is off for now. The right wing counts down to the
-  // soonest reset instead: the number the reader opens the island for.
+  // The spend-rate figure is off for now: the wing holds four characters,
+  // and no figure tried there has read well at that size. The mark stays.
   // const figure = state.spendFigure
-  const reset = nearestResetFigure(state.bars, state.now)
 
   return (
     <div
@@ -187,32 +186,21 @@ function IslandPanel({
           style={preview ? undefined : { width: island.notch }}
         />
         <div className="flex shrink-0 items-center justify-center" style={wing}>
-          {reset ? (
-            <span
-              data-testid="island-reset"
-              // The word sits under the figure: alone, "3h20" names no event.
-              className="led-caption type-footnote text-hud-island-ink flex flex-col items-center gap-0.5 leading-none"
-            >
-              <span>{reset}</span>
-              <span className="opacity-60">reset</span>
-            </span>
-          ) : (
-            <span
-              data-testid="island-mark"
-              aria-label="antiburn"
-              // The mark, cut from the island ink: no reset to count down to,
-              // so the wing says whose island this is.
-              className="size-3 bg-hud-island-ink opacity-60"
-              style={{
-                maskImage: `url(${markUrl})`,
-                WebkitMaskImage: `url(${markUrl})`,
-                maskSize: "contain",
-                WebkitMaskSize: "contain",
-                maskRepeat: "no-repeat",
-                WebkitMaskRepeat: "no-repeat",
-              }}
-            />
-          )}
+          <span
+            data-testid="island-mark"
+            aria-label="antiburn"
+            // The mark, cut from the island ink and kept faint: it says whose
+            // island this is without competing with the live mark.
+            className="size-2.5 bg-hud-island-ink opacity-35"
+            style={{
+              maskImage: `url(${markUrl})`,
+              WebkitMaskImage: `url(${markUrl})`,
+              maskSize: "contain",
+              WebkitMaskSize: "contain",
+              maskRepeat: "no-repeat",
+              WebkitMaskRepeat: "no-repeat",
+            }}
+          />
         </div>
       </div>
       {open && (
