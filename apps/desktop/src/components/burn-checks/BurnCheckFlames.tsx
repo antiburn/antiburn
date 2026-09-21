@@ -14,7 +14,7 @@ export function BurnCheckFlames({
   size?: "row" | "summary"
 }) {
   const value = Math.max(0, Math.min(10_000, basisPoints))
-  const label = `${formatTokenBurnPercent(value)} token burn`
+  const label = `${formatTokenBurnPercent(value)} estimated token burn`
 
   return (
     <Tooltip
@@ -29,7 +29,7 @@ export function BurnCheckFlames({
             Estimated share of tokens spent on avoidable work.
           </span>
           <span className="block type-footnote text-label-tertiary">
-            Each full flame represents 25% token burn.
+            Each full flame represents 25% estimated token burn.
           </span>
         </span>
       }

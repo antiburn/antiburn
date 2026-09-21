@@ -202,7 +202,7 @@ pub enum VerificationReason {
     PhysicalTargetChanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(
     tag = "status",
     rename_all = "camelCase",
@@ -213,6 +213,7 @@ pub enum SavingsStatus {
         #[serde(default)]
         method_revision: Option<u32>,
     },
+    #[default]
     Unavailable,
     Unknown {
         reason: SavingsUnknownReason,
@@ -371,6 +372,8 @@ pub struct AggregateWin {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AggregateSavings {
     pub version: u32,
+    #[serde(default)]
+    pub status: SavingsStatus,
     pub token_savings: Option<u64>,
     pub api_equivalent_cost_avoided_usd: Option<f64>,
     pub improvement_count: Option<u64>,

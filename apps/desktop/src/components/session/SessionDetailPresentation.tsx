@@ -718,12 +718,12 @@ export function SessionDetailPresentation({
     [],
   )
   const modelPairs = modelRunShortPairs(modelRuns)
+  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
   const hygieneChecks = visibleSessionHygieneChecks(
     sessionHygieneChecks(hygiene),
-    snoozedDetectorIds(useSnoozedBurnChecks()),
+    snoozedDetectors,
   )
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
-  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
   const unusedContextRows = visibleUnusedContextRows(
     unusedContextRowsFor(hygiene),
     snoozedDetectors,

@@ -38,7 +38,7 @@ describe("check row presentation", () => {
     expect(checkRowPresentation(category())).toMatchObject({
       label: "Old model usage",
       summary: "2/5 sessions failed",
-      metric: "8% token burn",
+      metric: "8% estimated burn",
       iconTone: "bg-system-red/10 text-system-red-text",
       metricTone: "text-system-red-text",
     })
@@ -52,23 +52,23 @@ describe("check row presentation", () => {
     ).toMatchObject({
       label: "Old model usage",
       summary: "Passed",
-      metric: null,
+      metric: "0% estimated burn",
       iconTone: "bg-system-green/10 text-system-green",
-      metricTone: null,
+      metricTone: "text-system-green",
     })
   })
 
   it("keeps an independent token burn metric for every failed check", () => {
     const estimates = [
-      ["sessionsOverDepth", 800, "8% token burn"],
-      ["modelOverthinking", 350, "3% token burn"],
-      ["overpoweredSubagents", 880, "8% token burn"],
-      ["unusedMcpServers", 100, "1% token burn"],
-      ["unusedBuiltInTools", 1, "<1% token burn"],
-      ["unusedSkills", 100, "1% token burn"],
-      ["oldModelUsage", 400, "4% token burn"],
-      ["overuseOfFastMode", 333, "3% token burn"],
-      ["cacheChurn", 700, "7% token burn"],
+      ["sessionsOverDepth", 800, "8% estimated burn"],
+      ["modelOverthinking", 350, "3% estimated burn"],
+      ["overpoweredSubagents", 880, "8% estimated burn"],
+      ["unusedMcpServers", 100, "1% estimated burn"],
+      ["unusedBuiltInTools", 1, "<1% estimated burn"],
+      ["unusedSkills", 100, "1% estimated burn"],
+      ["oldModelUsage", 400, "4% estimated burn"],
+      ["overuseOfFastMode", 333, "3% estimated burn"],
+      ["cacheChurn", 700, "7% estimated burn"],
     ] as const
 
     for (const [id, estimatedTokenBurnBasisPoints, metric] of estimates) {

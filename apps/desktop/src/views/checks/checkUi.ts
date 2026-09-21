@@ -97,7 +97,7 @@ function failedSessionSummary(category: ChecksCategoryPayload): string {
 function tokenBurnLabel(category: ChecksCategoryPayload): string | null {
   return category.estimatedTokenBurnBasisPoints == null
     ? null
-    : `${formatTokenBurnPercent(category.estimatedTokenBurnBasisPoints)} token burn`
+    : `${formatTokenBurnPercent(category.estimatedTokenBurnBasisPoints)} estimated burn`
 }
 
 /** Sums `estimatedOpportunity` across every loaded target, the way
@@ -120,7 +120,10 @@ export function checkRowPresentation(
   targets?: readonly BurnCheckTargetPayload[],
 ) {
   const failed = category.lifecycle === "failing"
-  const metric = failed ? tokenBurnLabel(category) : null
+  const metric =
+    failed || (category.lifecycle === "passing" && category.estimatedTokenBurnBasisPoints === 0)
+      ? tokenBurnLabel(category)
+      : null
   return {
     Icon: CHECK_ICONS[category.id],
     label: CHECK_LABELS[category.id],

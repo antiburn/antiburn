@@ -184,10 +184,12 @@ impl Store {
             i64::try_from(limit.min(MAX_AGGREGATE_WINS)).expect("the aggregate win limit fits i64");
         let connection = self.lock();
         let mut statement = connection.prepare(
-            "SELECT owner_key, remediation_id, detector_id, origin, display_snapshot_json,
+            "SELECT c.owner_key, c.remediation_id, c.detector_id, c.origin, c.display_snapshot_json,
                     facts_json, starts_at_ms, ends_at_ms, updated_at_ms
-               FROM remediation_contribution
-              ORDER BY ends_at_ms DESC, owner_key DESC
+               FROM remediation_contribution c
+               JOIN remediation r ON r.remediation_id = c.remediation_id
+              WHERE r.state = 'fixed'
+              ORDER BY c.ends_at_ms DESC, c.owner_key DESC
               LIMIT ?1",
         )?;
         Ok(statement

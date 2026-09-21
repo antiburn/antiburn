@@ -95,6 +95,14 @@ describe("OverviewBurnChecks", () => {
     expect(within(panel).queryByText(/0 findings|passed/)).toBeNull()
   })
 
+  it("shows no active checks when only unassessed categories remain", () => {
+    render(
+      <OverviewBurnChecks report={report([category("unusedSkills", 0, 0)])} onOpen={vi.fn()} />,
+    )
+
+    expect(screen.getByText("No active checks.")).toBeVisible()
+  })
+
   it("marks the panel busy and shows no result while the report loads", () => {
     render(<OverviewBurnChecks report={null} loading onOpen={vi.fn()} />)
     const panel = screen.getByRole("region", { name: "Burn checks" })

@@ -18,6 +18,20 @@ const report = (burn: number): ChecksReportPayload => ({
   categories: [],
 })
 
+const passingReport = (detector: "oldModelUsage" = "oldModelUsage"): ChecksReportPayload => ({
+  ...report(100),
+  categories: [
+    {
+      id: detector,
+      lifecycle: "passing",
+      finding: 0,
+      clean: 1,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: null,
+    },
+  ],
+})
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason: unknown) => void
@@ -261,7 +275,9 @@ describe("BurnChecksSession", () => {
 
   it("records only visible Burn Checks outcomes and deduplicates coarse results", async () => {
     noteInteraction.mockClear()
-    const { adapter, session, setVisible } = setup(false)
+    const { adapter, session, setVisible } = setup(false, {
+      getReport: vi.fn().mockResolvedValue(passingReport()),
+    })
     sessions.push(session)
     vi.mocked(adapter.getAggregateWins).mockResolvedValue({
       wins: [
@@ -287,6 +303,7 @@ describe("BurnChecksSession", () => {
             verificationLimit: "freshEvidenceFromSameSourceAndTarget",
           },
           savings: {
+            status: { status: "unavailable" },
             tokenSavings: null,
             apiEquivalentCostAvoidedUsd: null,
             improvementCount: 1,
@@ -318,5 +335,100 @@ describe("BurnChecksSession", () => {
     expect(
       noteInteraction.mock.calls.flatMap(([interaction]) => Object.keys(interaction)),
     ).not.toContain("findingId")
+  })
+
+  it("records verified outcomes only for visible active unsnoozed Passed checks", async () => {
+    noteInteraction.mockClear()
+    const { session } = setup(true, {
+      getReport: vi.fn().mockResolvedValue(passingReport()),
+      getSnoozedDetectors: vi.fn().mockResolvedValue(new Set(["modelOverthinking"])),
+      getAggregateWins: vi.fn().mockResolvedValue({
+        wins: [
+          {
+            findingId: "active-finding",
+            remediationCycleId: "active-cycle",
+            detector: "oldModelUsage",
+            origin: "action",
+            display: {} as never,
+            savings: {
+              status: { status: "unavailable" },
+              tokenSavings: null,
+              apiEquivalentCostAvoidedUsd: null,
+              improvementCount: null,
+              method: null,
+            },
+            startsAtMs: 1,
+            endsAtMs: 2,
+          },
+          {
+            findingId: "snoozed-finding",
+            remediationCycleId: "snoozed-cycle",
+            detector: "modelOverthinking",
+            origin: "passive",
+            display: {} as never,
+            savings: {
+              status: { status: "unavailable" },
+              tokenSavings: null,
+              apiEquivalentCostAvoidedUsd: null,
+              improvementCount: null,
+              method: null,
+            },
+            startsAtMs: 1,
+            endsAtMs: 2,
+          },
+        ],
+      }),
+    })
+    sessions.push(session)
+
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+    await vi.waitFor(() =>
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "burnCheckOutcomeObserved",
+        outcome: "verified",
+        origin: "action",
+      }),
+    )
+    expect(
+      noteInteraction.mock.calls.filter(
+        ([interaction]) => interaction.kind === "burnCheckOutcomeObserved",
+      ),
+    ).toHaveLength(1)
+    expect(noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "verified", origin: "passive" }),
+    )
+  })
+
+  it("does not report a Passed pair from a hidden or non-passing check", async () => {
+    noteInteraction.mockClear()
+    const { session } = setup(true, {
+      getReport: vi.fn().mockResolvedValue(report(100)),
+      getAggregateWins: vi.fn().mockResolvedValue({
+        wins: [
+          {
+            findingId: "finding",
+            remediationCycleId: "cycle",
+            detector: "oldModelUsage",
+            origin: "passive",
+            display: {} as never,
+            savings: {
+              tokenSavings: null,
+              apiEquivalentCostAvoidedUsd: null,
+              improvementCount: null,
+              method: null,
+            },
+            startsAtMs: 1,
+            endsAtMs: 2,
+          },
+        ],
+      }),
+    })
+    sessions.push(session)
+
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+    await Promise.resolve()
+    expect(noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "burnCheckOutcomeObserved" }),
+    )
   })
 })

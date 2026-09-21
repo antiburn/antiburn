@@ -34,10 +34,6 @@ function metricCoverage(known: number, total: number): string {
   return known === total ? "" : ` from ${known} of ${total} passed checks`
 }
 
-function tokenTotal(value: number): string {
-  return `~${value.toLocaleString()} tokens`
-}
-
 function costTotal(value: number): string {
   return `${value < 0 ? "-" : ""}~$${Math.abs(value).toFixed(2)}`
 }
@@ -59,7 +55,7 @@ function SavingsLabel({ label, tooltip }: { label: string; tooltip: string }) {
         <button
           type="button"
           aria-label={`About ${label.toLowerCase()}`}
-          className="rounded-control text-label-tertiary hover:text-label focus-visible:outline-none"
+          className="rounded-control text-label-tertiary hover:text-label"
         >
           <Info size={14} aria-hidden="true" />
         </button>
@@ -89,28 +85,31 @@ function EstimatedValue({ wins }: { wins: readonly AggregateWinPayload[] }) {
 }
 
 function ConfirmedValue({ wins }: { wins: readonly AggregateWinPayload[] }) {
-  const tokenSavings = wins.reduce((sum, win) => sum + (win.savings.tokenSavings ?? 0), 0)
-  const costSavings = wins.reduce(
-    (sum, win) => sum + (win.savings.apiEquivalentCostAvoidedUsd ?? 0),
-    0,
+  const knownCosts = wins.flatMap((win) =>
+    win.savings.status.status === "known"
+      ? [win.savings.status.apiEquivalentCostAvoidedUsd]
+      : [],
   )
-  const tokenWins = wins.filter((win) => win.savings.tokenSavings != null).length
-  const costWins = wins.filter((win) => win.savings.apiEquivalentCostAvoidedUsd != null).length
-  if (tokenWins === 0 && costWins === 0) {
-    return <p className="type-callout text-label-tertiary">Pending recent usage.</p>
-  }
+  const costSavings = knownCosts.reduce((sum, value) => sum + value, 0)
+  const costWins = knownCosts.length
+  const pending = wins.some((win) => win.savings.status.status === "pending")
+  const unavailable = wins.some((win) => win.savings.status.status === "unavailable")
+  const unknown = wins.some((win) => win.savings.status.status === "unknown")
+  const messages: string[] = []
+  if (pending) messages.push("Pending recent usage.")
+  if (unavailable) messages.push("Unavailable for this check.")
+  if (unknown) messages.push("Savings are unknown for this check.")
+  if (costWins === 0 && messages.length === 0) messages.push("Unavailable for this check.")
   return (
     <div className="type-callout tabular-nums text-label">
-      {tokenWins > 0 && (
-        <p>
-          {tokenTotal(tokenSavings)} confirmed{metricCoverage(tokenWins, wins.length)}
-        </p>
-      )}
       {costWins > 0 && (
         <p>
           {costTotal(costSavings)} confirmed{metricCoverage(costWins, wins.length)}
         </p>
       )}
+      {messages.map((message) => (
+        <p key={message}>{message}</p>
+      ))}
     </div>
   )
 }

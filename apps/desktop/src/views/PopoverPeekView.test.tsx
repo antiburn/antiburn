@@ -76,6 +76,24 @@ const PROVIDER_DATA: PopoverPeekData = {
 const CHECKS_DATA: PopoverPeekData = {
   kind: "checks",
   presentation: {
+    activeAssessed: [
+      {
+        id: "cacheChurn",
+        finding: 7,
+        clean: 7,
+        unavailable: 0,
+        estimatedTokenBurnBasisPoints: 1_250,
+      },
+      {
+        id: "sessionsOverDepth",
+        finding: 0,
+        clean: 12,
+        unavailable: 0,
+        estimatedTokenBurnBasisPoints: 0,
+      },
+    ],
+    activeUnavailable: [],
+    snoozed: [],
     failures: [
       {
         id: "cacheChurn",

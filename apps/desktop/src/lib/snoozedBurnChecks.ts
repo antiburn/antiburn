@@ -54,11 +54,20 @@ function scheduleExpiry(): void {
     .flatMap((snooze) => (snooze.until === null ? [] : [snooze.until]))
     .sort((left, right) => left - right)[0]
   if (next === undefined) return
-  expiryTimer = setTimeout(() => void refresh(), Math.max(0, next - Date.now()))
+  expiryTimer = setTimeout(
+    () => {
+      if (!hasShell()) {
+        publish(snapshot)
+        return
+      }
+      void refresh()
+    },
+    Math.max(0, next - Date.now()),
+  )
 }
 
 function publish(next: SnoozedBurnCheck[]): void {
-  snapshot = next ?? []
+  snapshot = (next ?? []).filter((snooze) => snooze.until === null || snooze.until > Date.now())
   scheduleExpiry()
   for (const listener of listeners) listener()
 }
@@ -107,10 +116,12 @@ export function activeChecksReport(
       ? [category.estimatedTokenBurnBasisPoints]
       : [],
   )
+  const activeEstimate = estimates.reduce((total, estimate) => total + estimate, 0)
   return {
     ...report,
     categories,
-    estimatedTokenBurnBasisPoints: estimates.length > 0 ? Math.max(...estimates) : null,
+    estimatedTokenBurnBasisPoints:
+      estimates.length > 0 ? Math.min(activeEstimate, 10_000) : null,
   }
 }
 

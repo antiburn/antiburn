@@ -23,6 +23,9 @@ interface ChecksEstimate {
 }
 
 export interface ChecksPresentation {
+  activeAssessed: ChecksCategoryPayload[]
+  activeUnavailable: ChecksCategoryPayload[]
+  snoozed: ChecksCategoryPayload[]
   failures: ChecksCategoryPayload[]
   awaiting?: ChecksCategoryPayload[]
   wins: ChecksCategoryPayload[]
@@ -50,17 +53,27 @@ export function checksPresentation(
   snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
 ): ChecksPresentation {
   const activeReport = activeChecksReport(report, snoozed)
-  const noActiveChecks = report.categories.length > 0 && activeReport.categories.length === 0
+  const activeAssessed = activeReport.categories.filter(
+    (category) => category.lifecycle != null,
+  )
+  const activeUnavailable = activeReport.categories.filter(
+    (category) => category.lifecycle == null,
+  )
+  const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
+  const noActiveChecks = activeAssessed.length === 0
   const burnChecks = aggregateBurnCheckPresentation(activeReport, refreshUnavailable)
   return {
-    failures: activeReport.categories
+    activeAssessed,
+    activeUnavailable,
+    snoozed: snoozedCategories,
+    failures: activeAssessed
       .filter((category) => category.lifecycle === "failing")
       .sort((left, right) => estimateOrder(right) - estimateOrder(left)),
-    awaiting: activeReport.categories.filter(
+    awaiting: activeAssessed.filter(
       (category) => category.lifecycle === "awaitingVerification",
     ),
-    wins: activeReport.categories.filter((category) => category.lifecycle === "passing"),
-    unavailable: activeReport.categories.filter((category) => category.lifecycle == null),
+    wins: activeAssessed.filter((category) => category.lifecycle === "passing"),
+    unavailable: activeUnavailable,
     refreshUnavailable,
     noActiveChecks,
     burnChecks: noActiveChecks
@@ -88,7 +101,9 @@ export function checksHeroPresentation(
     const basisPoints = presentation.estimate.tokenBurnBasisPoints
     return {
       result:
-        basisPoints == null ? failed : `${formatTokenBurnPercent(basisPoints)} token burn`,
+        basisPoints == null
+          ? failed
+          : `${formatTokenBurnPercent(basisPoints)} estimated token burn`,
       summary: basisPoints == null ? null : failed,
       state: "failed",
       tone: basisPoints == null ? "text-system-red-text" : tokenBurnTone(basisPoints),

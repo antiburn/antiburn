@@ -19,7 +19,7 @@ function summaryEstimate(presentation: ChecksPresentation): string | null {
   const basisPoints = presentation.estimate.tokenBurnBasisPoints
   return basisPoints == null || presentation.failures.length === 0
     ? null
-    : `${formatTokenBurnPercent(basisPoints)} token burn`
+    : `${formatTokenBurnPercent(basisPoints)} estimated token burn`
 }
 
 export function ChecksSummary({

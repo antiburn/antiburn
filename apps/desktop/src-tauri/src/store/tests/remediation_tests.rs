@@ -59,6 +59,17 @@ fn remediation(id: &str, target: &str, state: RemediationState, now: i64) -> Rem
     }
 }
 
+fn mark_fixed(store: &Store, remediation_id: &str) {
+    store
+        .lock()
+        .execute(
+            "UPDATE remediation SET state = 'fixed', verified_at_epoch = 11,
+             updated_at_epoch = 11 WHERE remediation_id = ?1",
+            [remediation_id],
+        )
+        .unwrap();
+}
+
 fn display_snapshot(remediation_id: &str) -> crate::store::remediation::RemediationDisplaySnapshot {
     crate::store::remediation::RemediationDisplaySnapshot {
         remediation_id: remediation_id.into(),
@@ -347,6 +358,7 @@ fn contribution_upsert_is_idempotent_and_rejects_stale_or_cross_watch_replays() 
         )
         .unwrap()
         .unwrap();
+    mark_fixed(&store, "watch");
     let first = contribution("owner", "watch", 20_002);
     assert!(store.upsert_remediation_contribution(&first).unwrap());
     assert!(store.upsert_remediation_contribution(&first).unwrap());
@@ -378,6 +390,7 @@ fn aggregate_win_reads_are_bounded_and_ordered() {
         )
         .unwrap()
         .unwrap();
+    mark_fixed(&store, "watch");
     for index in 0..105 {
         store
             .upsert_remediation_contribution(&contribution(
@@ -622,6 +635,7 @@ fn session_retention_does_not_erase_durable_contributions() {
         )
         .unwrap()
         .unwrap();
+    mark_fixed(&store, "watch");
     let saved = contribution("owner", &watch.remediation_id, 20_000);
     store.upsert_remediation_contribution(&saved).unwrap();
     store
@@ -1308,7 +1322,7 @@ fn correction_replay_replaces_recurred_facts_without_reopening_the_attempt() {
         );
     }
     assert!(store.next_dirty_remediation().unwrap().is_none());
-    assert_eq!(store.remediation_contributions(10).unwrap(), vec![recurred]);
+    assert!(store.remediation_contributions(10).unwrap().is_empty());
 
     {
         let connection = store.lock();
@@ -1348,10 +1362,7 @@ fn correction_replay_replaces_recurred_facts_without_reopening_the_attempt() {
             )
             .unwrap()
     );
-    assert_eq!(
-        store.remediation_contributions(10).unwrap(),
-        vec![corrected]
-    );
+    assert!(store.remediation_contributions(10).unwrap().is_empty());
     assert_eq!(
         store
             .remediation(&watch.remediation_id)

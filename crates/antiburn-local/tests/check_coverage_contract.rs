@@ -10,6 +10,161 @@ use antiburn_local::insights::{
     EfficiencyReportAccumulator, ReportCatalogs, ReportContext, ReportWindow, clean_facts_complete,
     eligible, session_badges,
 };
+use antiburn_local::model::AgentKind;
+use antiburn_local::remediation::{SavingsEstimateMethod, verification_evidence_supported};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindingSupport {
+    Supported,
+    FindingOnly,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptSupport {
+    Supported,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoFixSupport {
+    Supported,
+    Conditional,
+    PromptOnly,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerificationSupport {
+    Supported,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BurnEstimateSupport {
+    Supported,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProductSupport {
+    finding: FindingSupport,
+    prompt: PromptSupport,
+    auto_fix: AutoFixSupport,
+    verification: VerificationSupport,
+    burn_estimate: BurnEstimateSupport,
+}
+
+const fn support(
+    finding: FindingSupport,
+    prompt: PromptSupport,
+    auto_fix: AutoFixSupport,
+    verification: VerificationSupport,
+    burn_estimate: BurnEstimateSupport,
+) -> ProductSupport {
+    ProductSupport {
+        finding,
+        prompt,
+        auto_fix,
+        verification,
+        burn_estimate,
+    }
+}
+
+const Y: FindingSupport = FindingSupport::Supported;
+const FO: FindingSupport = FindingSupport::FindingOnly;
+const N_FINDING: FindingSupport = FindingSupport::Unavailable;
+const P: PromptSupport = PromptSupport::Supported;
+const N_PROMPT: PromptSupport = PromptSupport::Unavailable;
+const AF: AutoFixSupport = AutoFixSupport::Supported;
+const C: AutoFixSupport = AutoFixSupport::Conditional;
+const PO: AutoFixSupport = AutoFixSupport::PromptOnly;
+const N_AUTO_FIX: AutoFixSupport = AutoFixSupport::Unavailable;
+const V: VerificationSupport = VerificationSupport::Supported;
+const N_VERIFICATION: VerificationSupport = VerificationSupport::Unavailable;
+const E: BurnEstimateSupport = BurnEstimateSupport::Supported;
+const N_ESTIMATE: BurnEstimateSupport = BurnEstimateSupport::Unavailable;
+
+const ESTIMATE_METHODS: [SavingsEstimateMethod; DetectorId::COUNT] = [
+    SavingsEstimateMethod::RepeatedContextAboveDepthCap,
+    SavingsEstimateMethod::AssumedOutputReduction,
+    SavingsEstimateMethod::WorkerModelPriceDifference,
+    SavingsEstimateMethod::McpDefinitionExposure,
+    SavingsEstimateMethod::BuiltInDefinitionReplication,
+    SavingsEstimateMethod::InjectedSkillDocument,
+    SavingsEstimateMethod::OldModelPriceDifference,
+    SavingsEstimateMethod::FastTierPricePremium,
+    SavingsEstimateMethod::CacheRehydrationPriceDifference,
+];
+
+const FIRST_TIER_PRODUCT_SUPPORT: [[ProductSupport; DetectorId::COUNT]; 6] = [
+    [
+        support(Y, P, AF, N_VERIFICATION, E),
+        support(Y, P, AF, V, E),
+        support(Y, P, AF, N_VERIFICATION, E),
+        support(Y, P, C, N_VERIFICATION, E),
+        support(Y, P, AF, N_VERIFICATION, E),
+        support(Y, P, C, N_VERIFICATION, E),
+        support(Y, P, AF, V, E),
+        support(Y, P, AF, V, E),
+        support(Y, P, N_AUTO_FIX, N_VERIFICATION, E),
+    ],
+    [
+        support(Y, P, AF, N_VERIFICATION, E),
+        support(Y, P, AF, V, E),
+        support(Y, P, AF, N_VERIFICATION, E),
+        support(Y, P, C, N_VERIFICATION, E),
+        support(Y, P, N_AUTO_FIX, N_VERIFICATION, E),
+        support(Y, P, C, N_VERIFICATION, E),
+        support(Y, P, AF, V, E),
+        support(Y, P, AF, V, E),
+        support(Y, P, N_AUTO_FIX, N_VERIFICATION, E),
+    ],
+    [
+        support(Y, P, AF, N_VERIFICATION, E),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(Y, P, AF, N_VERIFICATION, E),
+        support(Y, P, PO, N_VERIFICATION, E),
+        support(Y, P, PO, N_VERIFICATION, E),
+        support(Y, P, C, N_VERIFICATION, E),
+        support(Y, P, AF, V, E),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(Y, P, N_AUTO_FIX, N_VERIFICATION, E),
+    ],
+    [
+        support(Y, P, AF, N_VERIFICATION, E),
+        support(Y, P, AF, V, E),
+        support(FO, P, N_AUTO_FIX, N_VERIFICATION, E),
+        support(Y, P, PO, N_VERIFICATION, E),
+        support(Y, P, PO, N_VERIFICATION, E),
+        support(Y, P, PO, N_VERIFICATION, E),
+        support(Y, P, AF, V, E),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(Y, P, N_AUTO_FIX, N_VERIFICATION, E),
+    ],
+    [
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(FO, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, E),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(FO, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, E),
+        support(FO, P, N_AUTO_FIX, N_VERIFICATION, E),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+    ],
+    [
+        support(FO, P, N_AUTO_FIX, N_VERIFICATION, E),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(FO, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, E),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(FO, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, E),
+        support(FO, P, PO, N_VERIFICATION, E),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+        support(N_FINDING, N_PROMPT, N_AUTO_FIX, N_VERIFICATION, N_ESTIMATE),
+    ],
+];
 
 macro_rules! source_formats {
     ($($variant:ident => $wire:literal),+ $(,)?) => {
@@ -414,6 +569,75 @@ fn first_tier_product_matrix_has_six_documented_agents_and_valid_cells() {
 }
 
 #[test]
+fn first_tier_matrix_values_are_typed_and_match_engine_gates() {
+    const CHECK_COVERAGE: &str = include_str!("../../../docs/check-coverage.md");
+    let rows = markdown_table_rows(
+        CHECK_COVERAGE,
+        "## First-Tier Product Matrix",
+        "## Second-Tier Product Coverage",
+    );
+    let agents = [
+        ("Claude Code", AgentKind::Claude, SourceFormat::ClaudeJsonl),
+        ("Codex", AgentKind::Codex, SourceFormat::CodexRolloutJsonl),
+        ("OpenCode", AgentKind::OpenCode, SourceFormat::OpenCodeJsonl),
+        ("Pi", AgentKind::Pi, SourceFormat::PiV3Jsonl),
+        ("Cursor", AgentKind::Cursor, SourceFormat::CursorJsonl),
+        (
+            "Antigravity",
+            AgentKind::Antigravity,
+            SourceFormat::AntigravityBrainJsonl,
+        ),
+    ];
+
+    for (agent_index, (label, _agent, source)) in agents.into_iter().enumerate() {
+        let row = rows
+            .iter()
+            .find(|row| row[0] == label)
+            .unwrap_or_else(|| panic!("missing first-tier row {label}"));
+        for (detector_index, detector) in DetectorId::ALL.into_iter().enumerate() {
+            let documented = parse_product_support(&row[detector_index + 1]);
+            assert_eq!(
+                documented, FIRST_TIER_PRODUCT_SUPPORT[agent_index][detector_index],
+                "typed matrix value for {label}/{detector:?}"
+            );
+
+            let evidence = complete_evidence(source);
+            // M/B/K product cells can be supplied by the desktop's current
+            // inventory. The engine session gate covers the other checks.
+            if !matches!(
+                detector,
+                DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedBuiltInTools
+                    | DetectorId::UnusedSkills
+            ) && !(agent_index == 3
+                && matches!(
+                    detector,
+                    DetectorId::OverpoweredSubagents | DetectorId::CacheChurn
+                ))
+            {
+                assert_eq!(
+                    eligible(detector, &evidence),
+                    !matches!(documented.finding, FindingSupport::Unavailable),
+                    "finding gate for {label}/{detector:?}"
+                );
+            }
+            assert_eq!(
+                verification_evidence_supported(detector, source),
+                documented.verification == VerificationSupport::Supported,
+                "verification gate for {label}/{detector:?}"
+            );
+            assert_eq!(
+                documented.burn_estimate == BurnEstimateSupport::Supported,
+                documented.finding != FindingSupport::Unavailable
+                    && SavingsEstimateMethod::for_detector(detector)
+                        == ESTIMATE_METHODS[detector_index],
+                "burn estimate gate for {label}/{detector:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn public_burn_check_table_keeps_fail_closed_readers_unavailable() {
     const SUPPORT: &str = include_str!("../../../docs/support.md");
     let rows = markdown_table_rows(SUPPORT, "## Burn Check remediation", "## Cost estimates");
@@ -464,4 +688,39 @@ fn assert_table_source_formats(rows: &[Vec<String>], expected: &BTreeSet<&str>, 
         expected.len(),
         "{table} has duplicate source formats"
     );
+}
+
+fn parse_product_support(cell: &str) -> ProductSupport {
+    let values: Vec<_> = cell.split('/').collect();
+    assert_eq!(values.len(), 5, "product cell has five values: {cell}");
+    support(
+        match values[0] {
+            "Y" => FindingSupport::Supported,
+            "FO" => FindingSupport::FindingOnly,
+            "N" => FindingSupport::Unavailable,
+            value => panic!("invalid finding support {value}"),
+        },
+        match values[1] {
+            "Y" => PromptSupport::Supported,
+            "N" => PromptSupport::Unavailable,
+            value => panic!("invalid prompt support {value}"),
+        },
+        match values[2] {
+            "Y" => AutoFixSupport::Supported,
+            "C" => AutoFixSupport::Conditional,
+            "P" => AutoFixSupport::PromptOnly,
+            "N" => AutoFixSupport::Unavailable,
+            value => panic!("invalid Auto Fix support {value}"),
+        },
+        match values[3] {
+            "Y" => VerificationSupport::Supported,
+            "N" => VerificationSupport::Unavailable,
+            value => panic!("invalid verification support {value}"),
+        },
+        match values[4] {
+            "Y" => BurnEstimateSupport::Supported,
+            "N" => BurnEstimateSupport::Unavailable,
+            value => panic!("invalid burn estimate support {value}"),
+        },
+    )
 }

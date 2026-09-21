@@ -38,6 +38,9 @@ const wins = [
 ]
 
 const presentation: ChecksPresentation = {
+  activeAssessed: [failure, ...wins],
+  activeUnavailable: [],
+  snoozed: [],
   failures: [failure],
   wins,
   unavailable: [],
@@ -64,11 +67,14 @@ describe("Checks", () => {
       />,
     )
 
-    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuetext", "16% token burn")
+    expect(screen.getByRole("meter")).toHaveAttribute(
+      "aria-valuetext",
+      "16% estimated token burn",
+    )
     expect(screen.queryByText("Last 30 days")).not.toBeInTheDocument()
     const trigger = screen.getByTestId("burn-check-headline").closest("button")!
     expect(trigger).toHaveAccessibleName(
-      `All burn checks. Last 30 days. ${presentation.burnChecks.accessibleDescription} 16% token burn.`,
+      `All burn checks. Last 30 days. ${presentation.burnChecks.accessibleDescription} 16% estimated token burn.`,
     )
     fireEvent.mouseEnter(trigger)
     fireEvent.focus(trigger)
@@ -118,6 +124,9 @@ describe("Checks", () => {
   it("uses failure, pass, and neutral border tones from assessed outcomes", () => {
     const passedCategory = category("sessionsOverDepth")
     const passedPresentation: ChecksPresentation = {
+      activeAssessed: [passedCategory],
+      activeUnavailable: [],
+      snoozed: [],
       failures: [],
       wins: [passedCategory],
       unavailable: [],
@@ -133,6 +142,7 @@ describe("Checks", () => {
     const partialCategory = category("sessionsOverDepth", { clean: 8, unavailable: 4 })
     const partialPresentation: ChecksPresentation = {
       ...passedPresentation,
+      activeAssessed: [partialCategory],
       wins: [partialCategory],
       burnChecks: aggregateBurnCheckPresentation({
         pendingEvidence: 0,
@@ -147,6 +157,9 @@ describe("Checks", () => {
       estimatedTokenBurnBasisPoints: null,
     })
     const unassessedPresentation: ChecksPresentation = {
+      activeAssessed: [],
+      activeUnavailable: [unassessedCategory],
+      snoozed: [],
       failures: [],
       wins: [],
       unavailable: [unassessedCategory],
@@ -234,7 +247,10 @@ describe("Checks", () => {
       />,
     )
 
-    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuetext", "<1% token burn")
+    expect(screen.getByRole("meter")).toHaveAttribute(
+      "aria-valuetext",
+      "<1% estimated token burn",
+    )
     expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "0.01")
   })
 
@@ -264,13 +280,13 @@ describe("Checks", () => {
     expect(onPreview).toHaveBeenCalledOnce()
     expect(onLeave).toHaveBeenCalledTimes(2)
     const tooltip = await screen.findByRole("tooltip")
-    expect(within(tooltip).getByText("16% token burn")).toHaveClass(
+    expect(within(tooltip).getByText("16% estimated token burn")).toHaveClass(
       "text-burn-check-failure-text",
       "font-mono",
       "type-callout",
     )
     expect(tooltip).toHaveTextContent("Estimated share of tokens spent on avoidable work.")
-    expect(tooltip).toHaveTextContent("Each full flame represents 25% token burn.")
+    expect(tooltip).toHaveTextContent("Each full flame represents 25% estimated token burn.")
   })
 
   it("conceals only after both hover and focus leave", () => {
@@ -341,9 +357,8 @@ describe("Checks", () => {
 
   it("shows floored token burn estimates and every confirmed pass in preview mode", () => {
     const { container } = render(<ChecksPeek presentation={presentation} />)
-    expect(screen.getByText("16% token burn")).toBeInTheDocument()
-    expect(screen.getByText("12% token burn")).toBeInTheDocument()
-    expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
+    expect(screen.getByText("16% estimated token burn")).toBeInTheDocument()
+    expect(container.querySelectorAll(".text-roll")).toHaveLength(6)
     expect(screen.getByText(/1 check failed/)).toBeInTheDocument()
     expect(screen.getByText("7/11 sessions failed")).toBeInTheDocument()
     expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
@@ -424,15 +439,15 @@ describe("Checks", () => {
     )
 
     for (const metric of [
-      "8% token burn",
-      "3% token burn",
-      "8% token burn",
-      "1% token burn",
-      "<1% token burn",
-      "1% token burn",
-      "4% token burn",
-      "3% token burn",
-      "7% token burn",
+      "8% estimated burn",
+      "3% estimated burn",
+      "8% estimated burn",
+      "1% estimated burn",
+      "<1% estimated burn",
+      "1% estimated burn",
+      "4% estimated burn",
+      "3% estimated burn",
+      "7% estimated burn",
     ]) {
       expect(screen.getAllByText(metric).length).toBeGreaterThan(0)
     }
@@ -448,7 +463,10 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuetext", "16% token burn")
+    expect(screen.getByRole("meter")).toHaveAttribute(
+      "aria-valuetext",
+      "16% estimated token burn",
+    )
 
     rerender(
       <ChecksSummary
@@ -459,7 +477,10 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuetext", "15% token burn")
+    expect(screen.getByRole("meter")).toHaveAttribute(
+      "aria-valuetext",
+      "15% estimated token burn",
+    )
     expect(container.querySelectorAll(".text-roll-in")).toHaveLength(0)
 
     rerender(
@@ -471,10 +492,10 @@ describe("Checks", () => {
         }}
       />,
     )
-    expect(screen.getByText("7% token burn")).toBeInTheDocument()
-    expect(screen.getByText("5% token burn")).toBeInTheDocument()
+    expect(screen.getByText("7% estimated token burn")).toBeInTheDocument()
+    expect(screen.getByText("5% estimated burn")).toBeInTheDocument()
     expect(screen.getByText("1/1 session failed")).toBeInTheDocument()
-    expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
+    expect(container.querySelectorAll(".text-roll")).toHaveLength(6)
 
     rerender(
       <ChecksPeek
@@ -485,17 +506,18 @@ describe("Checks", () => {
         }}
       />,
     )
-    expect(screen.getByText("8% token burn")).toBeInTheDocument()
-    expect(screen.getByText("6% token burn")).toBeInTheDocument()
-    for (const estimate of container.querySelectorAll(".text-roll")) {
-      expect(estimate.querySelector(".text-roll-in")).not.toBeNull()
-    }
+    expect(screen.getByText("8% estimated token burn")).toBeInTheDocument()
+    expect(screen.getByText("6% estimated burn")).toBeInTheDocument()
+    expect(container.querySelectorAll(".text-roll-in")).toHaveLength(2)
   })
 
   it("uses passed wording for complete and partial results", () => {
     const { container, rerender } = render(
       <ChecksPeek
         presentation={{
+          activeAssessed: wins,
+          activeUnavailable: [],
+          snoozed: [],
           failures: [],
           wins,
           unavailable: [],
@@ -520,6 +542,9 @@ describe("Checks", () => {
     rerender(
       <ChecksPeek
         presentation={{
+          activeAssessed: [category("sessionsOverDepth", { clean: 8, unavailable: 4 })],
+          activeUnavailable: [],
+          snoozed: [],
           failures: [],
           wins: [category("sessionsOverDepth", { clean: 8, unavailable: 4 })],
           unavailable: [],

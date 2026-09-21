@@ -839,6 +839,18 @@ fn complete_scan_and_use_permit_a_clean_result() {
     assert!(!detector.unavailable);
 }
 
+#[test]
+fn a_clean_resource_detector_has_no_fallback_burn_estimate() {
+    let mut builder = ResourceAssessmentBuilder::default();
+    observe_complete_session(&mut builder, AgentKind::Claude, "clean", None);
+    builder.observe_inventory(inventory(AgentKind::Claude, Vec::new()), None);
+
+    let assessment = builder.finish(&report_with_tokens(1_000));
+    let detector = assessment.detector(DetectorId::UnusedMcpServers).unwrap();
+    assert_eq!(detector.unused_count, 0);
+    assert_eq!(detector.estimated_token_burn_basis_points, None);
+}
+
 trait CompleteMut<T> {
     fn as_complete_mut(&mut self) -> Option<&mut T>;
 }

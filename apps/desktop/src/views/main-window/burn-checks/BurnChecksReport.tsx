@@ -351,12 +351,14 @@ function CheckMetadata({
       </span>
       {(check.estimatedTokenBurnBasisPoints != null || presentation.costLine) && (
         <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          {check.estimatedTokenBurnBasisPoints != null && check.finding > 0 && (
-            <span className="inline-flex items-center gap-1 type-footnote tabular-nums text-label-tertiary">
-              <BurnCheckFlame basisPoints={check.estimatedTokenBurnBasisPoints} />
-              {formatTokenBurnPercent(check.estimatedTokenBurnBasisPoints)} burn
-            </span>
-          )}
+          {check.estimatedTokenBurnBasisPoints != null &&
+            (check.finding > 0 ||
+              (check.lifecycle === "passing" && check.estimatedTokenBurnBasisPoints === 0)) && (
+              <span className="inline-flex items-center gap-1 type-footnote tabular-nums text-label-tertiary">
+                <BurnCheckFlame basisPoints={check.estimatedTokenBurnBasisPoints} />
+                {formatTokenBurnPercent(check.estimatedTokenBurnBasisPoints)} estimated burn
+              </span>
+            )}
           {presentation.costLine && (
             <span className="type-footnote tabular-nums text-label-tertiary">
               {presentation.costLine} wasted
@@ -464,17 +466,12 @@ export function BurnChecksReport({
 }) {
   const snoozed = useSnoozedBurnChecks()
   const snoozedIds = snoozedDetectorIds(snoozed)
-  const allPresentation = checksPresentation(report)
   const presentation = checksPresentation(report, false, snoozedIds)
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
   const activeAwaiting = presentation.awaiting ?? []
   const activeFailures = presentation.failures
   const activeWins = presentation.wins
-  const snoozedChecks = [
-    ...allPresentation.failures,
-    ...(allPresentation.awaiting ?? []),
-    ...allPresentation.wins,
-  ].filter((check) => snoozedIds.has(check.id))
+  const snoozedChecks = presentation.snoozed
   const checks = [...activeFailures, ...activeAwaiting, ...activeWins, ...snoozedChecks]
   const reportKey = checks.map((check) => check.id).join(":")
   const initialId =
@@ -701,10 +698,8 @@ export function BurnChecksReport({
                 wins={state.aggregate?.wins ?? []}
                 passedDetectors={new Set(activeWins.map((check) => check.id))}
               />
-              {activeFailures.length + activeAwaiting.length + activeWins.length === 0 && (
-                <p className="type-body text-label-secondary">
-                  {snoozedChecks.length > 0 ? "No active checks." : "No assessed checks yet."}
-                </p>
+              {presentation.noActiveChecks && (
+                <p className="type-body text-label-secondary">No active checks.</p>
               )}
             </div>
           </ScrollPane>

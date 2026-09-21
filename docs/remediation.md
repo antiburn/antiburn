@@ -248,9 +248,11 @@ agents. Source coverage can still block a finding for one session.
 | OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
 | Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No  | Yes |
 | Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
+| Cursor, characterized Cursor JSONL and store sources                                                        | No  | No  | No  | No  | No  | No  | Yes | No  | No  |
 
 `AntigravityWorkspaceChatJson` is uncharacterized and has no prompt support.
-Cursor and the other source formats have no remediation prompt support.
+Other source formats have no remediation prompt support. Cursor prompt support
+is limited to characterized O findings and remains source-gated.
 
 ### Auto Fix
 
@@ -311,17 +313,17 @@ the native host config.
 
 ### Verification And Savings
 
-| Check | Claude Code                          | Codex                                | OpenCode                             | Pi                                   | Antigravity |
-| ----- | ------------------------------------ | ------------------------------------ | ------------------------------------ | ------------------------------------ | ----------- |
-| D     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable |
-| T     | Verified improvement                 | Verified improvement                 | Unavailable                          | Verified improvement                 | Unavailable |
-| S     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable |
-| M     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable |
-| B     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable |
-| K     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable |
-| O     | Verified improvement and USD savings | Verified improvement and USD savings | Verified improvement and USD savings | Verified improvement and USD savings | Unavailable |
-| F     | Verified improvement                 | Verified improvement                 | Unavailable                          | Unavailable                          | Unavailable |
-| C     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable |
+| Check | Claude Code                          | Codex                                | OpenCode                             | Pi                                   | Cursor      | Antigravity |
+| ----- | ------------------------------------ | ------------------------------------ | ------------------------------------ | ------------------------------------ | ----------- | ----------- |
+| D     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
+| T     | Verified improvement                 | Verified improvement                 | Unavailable                          | Verified improvement                 | Unavailable | Unavailable |
+| S     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
+| M     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
+| B     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
+| K     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
+| O     | Verified improvement and USD savings | Verified improvement and USD savings | Verified improvement and USD savings | Verified improvement and USD savings | Unavailable | Unavailable |
+| F     | Verified improvement                 | Verified improvement                 | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
+| C     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
 
 D is tied to one historical session. S is tied to one call and worker. Later
 work has a different identity. M, B, and K expose only observed subsets, so

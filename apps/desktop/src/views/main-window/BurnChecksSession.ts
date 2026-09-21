@@ -11,6 +11,8 @@ import {
   type BurnCheckTargetListPayload,
   type ChecksReportPayload,
 } from "../../lib/insightsIpc"
+import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
 import {
   getMainWindowVisible,
   noteInteraction,
@@ -27,6 +29,8 @@ export interface BurnChecksAdapter {
   getVisible(): Promise<boolean>
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
   onChanged(handler: () => void): Promise<() => void>
+  getSnoozedDetectors?(): Promise<ReadonlySet<BurnCheckDetectorId>>
+  onSnoozesChanged?(handler: () => void): Promise<() => void>
 }
 
 const productionAdapter: BurnChecksAdapter = {
@@ -38,6 +42,13 @@ const productionAdapter: BurnChecksAdapter = {
   getVisible: () => getMainWindowVisible(),
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
   onChanged: (handler) => onChecksReportChanged(handler),
+  getSnoozedDetectors: async () => {
+    const snoozes = await invoke<Array<{ detector: BurnCheckDetectorId }>>(
+      "list_burn_check_snoozes",
+    )
+    return new Set(snoozes.map((snooze) => snooze.detector))
+  },
+  onSnoozesChanged: (handler) => listen("checks:snoozes-changed", handler),
 }
 
 interface BurnCheckTargetState {
@@ -90,6 +101,8 @@ export class BurnChecksSession {
   private readonly visibleTargets = new Set<BurnCheckDetectorId>()
   private readonly observedTargets = new Set<BurnCheckDetectorId>()
   private readonly observedOutcomes = new Set<string>()
+  private snoozedDetectors = new Set<BurnCheckDetectorId>()
+  private snoozesLoaded = false
 
   constructor(adapter: BurnChecksAdapter = productionAdapter) {
     this.adapter = adapter
@@ -140,9 +153,21 @@ export class BurnChecksSession {
       this.listen(
         generation,
         this.adapter.onChanged(() => {
-          if (generation === this.generation) this.refresh()
+          if (generation !== this.generation) return
+          this.reloadSnoozes()
+          this.refresh()
         }),
       ),
+      ...(this.adapter.onSnoozesChanged
+        ? [
+            this.listen(
+              generation,
+              this.adapter.onSnoozesChanged(() => {
+                if (generation === this.generation) this.reloadSnoozes()
+              }),
+            ),
+          ]
+        : []),
     ])
     const revision = visibilityRevision
     const visible = await this.adapter.getVisible().catch(() => false)
@@ -172,6 +197,7 @@ export class BurnChecksSession {
       origin: "user",
       state: this.reportState(),
     })
+    this.reloadSnoozes()
     this.observeOutcomes()
     this.consumerId = `main-burn-checks-${++nextConsumer}`
     this.refresh()
@@ -341,6 +367,32 @@ export class BurnChecksSession {
     }
   }
 
+  private async loadSnoozes(): Promise<void> {
+    let loaded = false
+    try {
+      const snoozedDetectors = await this.adapter.getSnoozedDetectors?.()
+      if (!this.snapshot.active) return
+      this.snoozedDetectors = new Set(snoozedDetectors ?? [])
+      loaded = true
+    } catch {
+      // Do not report outcomes when the active snooze state is unknown.
+    } finally {
+      if (this.snapshot.active) {
+        this.snoozesLoaded = loaded
+        if (loaded) this.observeOutcomes()
+      }
+    }
+  }
+
+  private reloadSnoozes(): void {
+    if (!this.adapter.getSnoozedDetectors) {
+      this.snoozesLoaded = true
+      return
+    }
+    this.snoozesLoaded = false
+    void this.loadSnoozes()
+  }
+
   dispose = (): void => {
     this.generation += 1
     this.workVersion += 1
@@ -351,6 +403,8 @@ export class BurnChecksSession {
     this.visibleTargets.clear()
     this.observedTargets.clear()
     this.observedOutcomes.clear()
+    this.snoozedDetectors = new Set()
+    this.snoozesLoaded = false
     this.exposure.conceal("burn_checks", this.exposureGeneration ?? undefined)
     this.exposureGeneration = null
     for (const stop of this.stops.splice(0)) stop()
@@ -369,11 +423,21 @@ export class BurnChecksSession {
   }
 
   private observeOutcomes(): void {
-    if (!this.snapshot.active) return
+    if (!this.snapshot.active || !this.snoozesLoaded) return
+    const passedDetectors = new Set(
+      (this.snapshot.report?.categories ?? [])
+        .filter(
+          (category) =>
+            category.lifecycle === "passing" && !this.snoozedDetectors.has(category.id),
+        )
+        .map((category) => category.id),
+    )
     for (const win of this.snapshot.aggregate?.wins ?? []) {
+      if (!passedDetectors.has(win.detector)) continue
       this.observeOutcome("verified", win.origin)
     }
     for (const detector of this.observedTargets) {
+      if (this.snoozedDetectors.has(detector)) continue
       for (const target of this.snapshot.targets[detector]?.data?.targets ?? []) {
         const watch = target.watch
         if (!watch) continue

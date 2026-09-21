@@ -1344,7 +1344,7 @@ pub fn fallback_token_burn_basis_points(
         .checked_mul(u128::from(finding_sessions))?
         .checked_add(u128::from(assessed_sessions / 2))?
         / u128::from(assessed_sessions);
-    Some(scaled.min(u128::from(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS)) as u16)
+    Some(scaled.clamp(1, u128::from(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS)) as u16)
 }
 
 fn token_burn_basis_points(numerator: u128, denominator: u128) -> Option<u16> {

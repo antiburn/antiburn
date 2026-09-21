@@ -373,6 +373,7 @@ export interface AggregateWinPayload {
   origin: "passive" | "action"
   display: BurnCheckDisplayFactsPayload
   savings: {
+    status: BurnCheckSavingsPayload
     tokenSavings: number | null
     apiEquivalentCostAvoidedUsd: number | null
     improvementCount: number | null

@@ -1693,6 +1693,14 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
     .unwrap();
     let savings = serde_json::to_string(&AggregateSavings {
         version: 1,
+        status: SavingsStatus::Known {
+            method: SavingsMethod::OldModelPriceDifference,
+            method_revision: SAVINGS_METHOD_REVISION,
+            pricing_revision: "pricing".into(),
+            api_equivalent_cost_avoided_usd: 0.25,
+            measured_through_ms: 2_000,
+            recurrence_ms: None,
+        },
         token_savings: None,
         api_equivalent_cost_avoided_usd: Some(0.25),
         improvement_count: None,
@@ -1709,7 +1717,7 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
             rusqlite::params![DetectorId::OldModelUsage.key(), snapshot, savings],
         )
         .unwrap();
-    for index in 1..1_000 {
+    for index in 1..=1_000 {
         store
             .upsert_remediation_contribution(&RemediationContribution {
                 owner_key: format!("owner-{index:03}"),
@@ -1724,9 +1732,34 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
             })
             .unwrap();
     }
+    store
+        .lock()
+        .execute(
+            "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms, verified_at_epoch, recurred_at_epoch)
+                 VALUES ('recurred-attempt', 'target', 'native', 'claude-code', 'project', 'scope',
+                         'recurred', '{\"version\":1}', '{\"version\":1}', 3, 4, 1000, 3, 4)",
+            [],
+        )
+        .unwrap();
+    store
+        .upsert_remediation_contribution(&RemediationContribution {
+            owner_key: "recurred-owner".into(),
+            remediation_id: "recurred-attempt".into(),
+            detector_id: DetectorId::OldModelUsage.key().into(),
+            origin: "action".into(),
+            display_snapshot_json: snapshot.clone(),
+            facts_json: savings.clone(),
+            starts_at_ms: 1_000,
+            ends_at_ms: 9_999,
+            updated_at_ms: 9_999,
+        })
+        .unwrap();
     let controller = RemediationController::new(directory.path().to_owned());
     let aggregate = controller.aggregate_wins(&store).unwrap();
-    assert_eq!(aggregate.wins.len(), 1_000);
+    assert_eq!(aggregate.wins.len(), 999);
     assert!(
         aggregate
             .wins
@@ -1739,7 +1772,7 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
         .execute(
             "UPDATE remediation_contribution
                     SET facts_json = '{\"version\":1,\"path\":\"private\"}'
-                  WHERE owner_key = 'owner'",
+                  WHERE owner_key = 'owner-999'",
             [],
         )
         .unwrap();

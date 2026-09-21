@@ -167,6 +167,15 @@ const aggregate: AggregateWinsPayload = {
       origin: "action",
       display: target.display,
       savings: {
+        status: {
+          status: "known",
+          method: "oldModelPriceDifference",
+          methodRevision: 1,
+          pricingRevision: "pricing-1",
+          apiEquivalentCostAvoidedUsd: 1.25,
+          measuredThroughMs: 2,
+          recurrenceMs: null,
+        },
         tokenSavings: null,
         apiEquivalentCostAvoidedUsd: 1.25,
         improvementCount: 2,
@@ -806,9 +815,11 @@ describe("BurnChecksView", () => {
   it("renders assessed checks and concise failed details", async () => {
     setup(target, false, aggregate, report)
     expect(await screen.findByText("1 session affected")).toBeVisible()
-    const row = await screen.findByRole("button", { name: /Old model usage.*8% burn/ })
+    const row = await screen.findByRole("button", {
+      name: /Old model usage.*8% estimated burn/,
+    })
     expect(row).toBeVisible()
-    expect(within(row).getByText("8% burn")).toBeVisible()
+    expect(within(row).getByText("8% estimated burn")).toBeVisible()
     expect(row.querySelector(".lucide-flame")).toBeInTheDocument()
     expect(row.querySelector('[role="meter"]')).not.toBeInTheDocument()
     expect(within(row).getByText("2 passed")).toHaveClass("text-label-secondary")
@@ -1004,15 +1015,15 @@ describe("BurnChecksView", () => {
     setup(target, false, aggregate, allFailures)
 
     for (const metric of [
-      "8% burn",
-      "3% burn",
-      "8% burn",
-      "1% burn",
-      "Under 1% burn",
-      "1% burn",
-      "4% burn",
-      "3% burn",
-      "7% burn",
+      "8% estimated burn",
+      "3% estimated burn",
+      "8% estimated burn",
+      "1% estimated burn",
+      "Under 1% estimated burn",
+      "1% estimated burn",
+      "4% estimated burn",
+      "3% estimated burn",
+      "7% estimated burn",
     ]) {
       expect(
         (await screen.findAllByRole("button", { name: new RegExp(metric) })).length,
@@ -1037,7 +1048,7 @@ describe("BurnChecksView", () => {
       expect(loadingSummary).toHaveAttribute("data-tauri-drag-region", "deep")
       expect(loadingSummary).not.toHaveAttribute("aria-hidden")
       await act(async () => pending.resolve(report))
-      await screen.findByRole("button", { name: /Old model usage.*8% burn/ })
+      await screen.findByRole("button", { name: /Old model usage.*8% estimated burn/ })
       const header = view.container.querySelector(".burn-checks-collection-header")!
       expect(header).toHaveAttribute("data-tauri-drag-region", "deep")
       const detailHeader = view.container.querySelector(".burn-check-detail-heading")!
@@ -2160,7 +2171,8 @@ describe("BurnChecksView", () => {
               estimatedOpportunity: { value: 400, unit: "literalInputTokens" },
             },
             savings: {
-              tokenSavings: 1200,
+              status: { status: "unavailable" },
+              tokenSavings: null,
               apiEquivalentCostAvoidedUsd: null,
               improvementCount: null,
               method: null,
@@ -2174,9 +2186,7 @@ describe("BurnChecksView", () => {
     const savings = await screen.findByRole("region", { name: "Savings" })
     expect(within(savings).getByText("2 active passed checks")).toBeVisible()
     expect(within(savings).getAllByText("~400 input tokens projected")).toHaveLength(2)
-    expect(
-      within(savings).getAllByText("~1,200 tokens confirmed from 1 of 2 passed checks"),
-    ).toHaveLength(2)
+    expect(within(savings).getAllByText("Unavailable for this check.")).toHaveLength(2)
     expect(
       within(savings).getAllByText("~$1.25 confirmed from 1 of 2 passed checks"),
     ).toHaveLength(2)
@@ -2195,7 +2205,16 @@ describe("BurnChecksView", () => {
           {
             ...aggregate.wins[0]!,
             savings: {
-              tokenSavings: 1200,
+              status: {
+                status: "known",
+                method: "oldModelPriceDifference",
+                methodRevision: 1,
+                pricingRevision: "pricing-1",
+                apiEquivalentCostAvoidedUsd: 1.25,
+                measuredThroughMs: 2,
+                recurrenceMs: null,
+              },
+              tokenSavings: null,
               apiEquivalentCostAvoidedUsd: 1.25,
               improvementCount: 2,
               method: "oldModelPriceDifference",
@@ -2207,9 +2226,7 @@ describe("BurnChecksView", () => {
     )
 
     const savings = await screen.findByRole("region", { name: "Savings" })
-    expect(within(savings).getAllByText("~1,200 tokens confirmed")).toHaveLength(2)
     expect(within(savings).getAllByText("~$1.25 confirmed")).toHaveLength(2)
-    expect(within(savings).getAllByText("Unavailable for this check.")).toHaveLength(2)
     fireEvent.click(within(savings).getByRole("button", { name: "Details" }))
     expect(within(savings).getByText("Old model usage")).toHaveClass("text-label")
   })
@@ -2228,10 +2245,26 @@ describe("BurnChecksView", () => {
   })
 
   it("shows pending confirmed savings and the approved tooltip text", async () => {
-    setup(target, false, { wins: [] }, passedTargetReport)
+    setup(
+      target,
+      false,
+      {
+        wins: [
+          {
+            ...aggregate.wins[0]!,
+            savings: {
+              ...aggregate.wins[0]!.savings,
+              status: { status: "pending", methodRevision: 1 },
+              apiEquivalentCostAvoidedUsd: null,
+            },
+          },
+        ],
+      },
+      passedTargetReport,
+    )
 
     const savings = await screen.findByRole("region", { name: "Savings" })
-    expect(within(savings).getByText("Pending recent usage.")).toBeVisible()
+    expect(within(savings).getAllByText("Pending recent usage.")).toHaveLength(2)
     fireEvent.focus(within(savings).getByRole("button", { name: "About confirmed savings" }))
     expect(
       await screen.findByText(

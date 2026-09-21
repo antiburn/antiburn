@@ -494,6 +494,18 @@ fn fallback_estimates_cover_each_detector_and_stay_bounded() {
 }
 
 #[test]
+fn positive_fallback_estimate_is_at_least_one_basis_point() {
+    assert_eq!(
+        fallback_token_burn_basis_points(DetectorId::SessionsOverDepth, 1, u64::MAX),
+        Some(1)
+    );
+    assert_eq!(
+        fallback_token_burn_basis_points(DetectorId::SessionsOverDepth, 0, u64::MAX),
+        None
+    );
+}
+
+#[test]
 fn token_burn_estimates_use_attributed_tokens_from_an_incomplete_ready_cohort() {
     let mut evidence = evidence_with_work("observed");
     evidence.context = EvidenceValue::Complete(ContextEvidence {

@@ -52,7 +52,7 @@ describe("Checks presentation", () => {
 
   it("presents the same concise failed hero on every checks surface", () => {
     expect(checksHeroPresentation(checksPresentation(report([category()])))).toEqual({
-      result: "16% token burn",
+      result: "16% estimated token burn",
       summary: "1 check failed",
       state: "failed",
       tone: "text-system-red-text",
@@ -146,6 +146,49 @@ describe("Checks presentation", () => {
       estimatedTokenBurnBasisPoints: null,
     })
     expect(presentation.estimate.tokenBurnBasisPoints).toBeNull()
+  })
+
+  it("separates active assessed, unavailable, and stored snoozed categories", () => {
+    const unavailable = category({
+      id: "unusedSkills",
+      finding: 0,
+      clean: 0,
+      unavailable: 4,
+      lifecycle: null,
+    })
+    const passed = category({ id: "oldModelUsage", finding: 0, clean: 4 })
+    const presentation = checksPresentation(
+      report([category(), passed, unavailable]),
+      false,
+      new Set(["unusedSkills"]),
+    )
+
+    expect(presentation.activeAssessed.map((item) => item.id)).toEqual([
+      "cacheChurn",
+      "oldModelUsage",
+    ])
+    expect(presentation.activeUnavailable).toEqual([])
+    expect(presentation.snoozed.map((item) => item.id)).toEqual(["unusedSkills"])
+    expect(presentation.noActiveChecks).toBe(false)
+  })
+
+  it("reports no active checks when only unavailable categories remain", () => {
+    const presentation = checksPresentation(
+      report([
+        category({
+          id: "unusedSkills",
+          finding: 0,
+          clean: 0,
+          unavailable: 4,
+          lifecycle: null,
+        }),
+      ]),
+    )
+
+    expect(presentation.activeAssessed).toEqual([])
+    expect(presentation.activeUnavailable.map((item) => item.id)).toEqual(["unusedSkills"])
+    expect(presentation.noActiveChecks).toBe(true)
+    expect(checksHeroPresentation(presentation).result).toBe("No active checks")
   })
 
   it("floors basis-point estimates to whole percentages", () => {

@@ -63,6 +63,9 @@ function checksData(): PopoverPeekData {
   return {
     kind: "checks",
     presentation: {
+      activeAssessed: [],
+      activeUnavailable: [],
+      snoozed: [],
       failures: [],
       wins: [],
       unavailable: [],

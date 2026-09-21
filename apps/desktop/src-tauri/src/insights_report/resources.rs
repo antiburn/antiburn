@@ -505,16 +505,20 @@ impl ResourceAssessmentBuilder {
                 .replicated_tokens_by_session
                 .as_ref()
                 .and_then(|tokens| tokens.values().copied().try_fold(0_u128, u128::checked_add));
-            assessment.estimated_token_burn_basis_points = assessment
-                .replicated_tokens
-                .and_then(|tokens| report.estimated_token_burn_for_attributed_tokens(tokens))
-                .or_else(|| {
-                    fallback_token_burn_basis_points(
-                        detector,
-                        assessment.unused_count,
-                        report.assessed_sessions,
-                    )
-                });
+            assessment.estimated_token_burn_basis_points = if assessment.unused_count > 0 {
+                assessment
+                    .replicated_tokens
+                    .and_then(|tokens| report.estimated_token_burn_for_attributed_tokens(tokens))
+                    .or_else(|| {
+                        fallback_token_burn_basis_points(
+                            detector,
+                            assessment.unused_count,
+                            report.assessed_sessions,
+                        )
+                    })
+            } else {
+                None
+            };
             let relevant_agents = resource_assessment_agents()
                 .into_iter()
                 .filter(|agent| {

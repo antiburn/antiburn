@@ -128,11 +128,17 @@ vocabulary; behavior tests separately check finding and clean gates.
 
 This is a documentation-only grouping. It does not gate parsing, findings,
 prompts, Auto Fix, verification, or burn estimates at runtime. Each cell is
-`Finding/Prompt/Auto Fix/Verification/Burn estimate`: `Y` is supported, `FO`
-is finding-only, `N` is unavailable, `C` is conditional Auto Fix, and `P` is
-prompt-only remediation. A `Y` burn estimate uses the detector's existing
-estimate method when its required evidence and pricing inputs are available;
-it does not promise a numeric value.
+`Finding/Prompt/Auto Fix/Verification/Burn estimate`. The typed values are:
+`Y` supported, `FO` finding-only, and `N` unavailable for findings; `Y` or `N`
+for prompts, verification, and burn estimates; and `Y`, `C` conditional,
+`P` prompt-only, or `N` unavailable for Auto Fix. A `Y` burn estimate uses the
+detector's existing estimate method when its required evidence and pricing
+inputs are available; it does not promise a numeric value. Source coverage
+still gates a product cell for an individual session. The contract test in
+`crates/antiburn-local/tests/check_coverage_contract.rs` keeps these typed
+values aligned with the engine's finding, verification, and estimate gates;
+prompt and Auto Fix behavior remains covered by their dedicated fixtures and
+desktop tests.
 
 | Agent | D | T | S | M | B | K | O | F | C |
 | ----- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -454,17 +460,17 @@ does not enroll a passive attempt and cannot prove the initial fix from the
 accepted passive evidence. An explicit action can store
 `verificationUnavailable`. Source coverage from the main matrix still applies.
 
-| Check | Claude Code | Codex       | OpenCode    | Pi          | Antigravity | Proof or blocker                                                                                                                                                                  |
-| ----- | ----------- | ----------- | ----------- | ----------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | The finding identity is one historical session. A later session is not positive proof that the original session changed.                                                          |
-| T     | Supported   | Supported   | Unavailable | Supported   | Unavailable | A complete later assessment plus an explicit same-route, same-model lower control proves the transition. Pi proves only its agent-selected policy.                                |
-| S     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | A later worker or call has a different identity. No accepted source records a durable worker-setting transition.                                                                  |
-| M     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a server was removed or disabled. |
-| B     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a tool was removed or disabled. |
-| K     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a skill was removed or disabled. |
-| O     | Supported   | Supported   | Supported   | Supported   | Unavailable | The strict verifier requires actual replacement use on the same publication-attributed physical target, scope, provider, and API. Antigravity has no physical target attribution. |
-| F     | Supported   | Supported   | Unavailable | Unavailable | Unavailable | A complete later assessment plus an explicit same-route, same-model standard-tier delegated request proves the transition.                                                        |
-| C     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | A later request pair is not the same session-route target and does not prove a durable cache-policy transition.                                                                   |
+| Check | Claude Code | Codex       | OpenCode    | Pi          | Cursor      | Antigravity | Proof or blocker                                                                                                                                                                  |
+| ----- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | The finding identity is one historical session. A later session is not positive proof that the original session changed.                                                          |
+| T     | Supported   | Supported   | Unavailable | Supported   | Unavailable | Unavailable | A complete later assessment plus an explicit same-route, same-model lower control proves the transition. Pi proves only its agent-selected policy.                                |
+| S     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | A later worker or call has a different identity. No accepted source records a durable worker-setting transition.                                                                  |
+| M     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a server was removed or disabled. |
+| B     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a tool was removed or disabled. |
+| K     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Observed resource subsets cannot prove that a skill was removed or disabled. |
+| O     | Supported   | Supported   | Supported   | Supported   | Unavailable | Unavailable | The strict verifier requires actual replacement use on the same publication-attributed physical target, scope, provider, and API. Cursor and Antigravity have no physical target attribution. |
+| F     | Supported   | Supported   | Unavailable | Unavailable | Unavailable | Unavailable | A complete later assessment plus an explicit same-route, same-model standard-tier delegated request proves the transition.                                                        |
+| C     | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | Unavailable | A later request pair is not the same session-route target and does not prove a durable cache-policy transition.                                                                   |
 
 Truncated assessment sets, sessions that start at or before the boundary,
 missing controls, changed detector or catalog policy, stale projections, and

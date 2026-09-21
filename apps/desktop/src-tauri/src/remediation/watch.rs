@@ -596,15 +596,6 @@ fn evaluation_contribution(
     if !matches!(state, RemediationState::Fixed | RemediationState::Recurred) {
         return Ok(None);
     }
-    if matches!(
-        savings,
-        SavingsStatus::Unknown {
-            reason: SavingsUnknownReason::MissingEvidence,
-            ..
-        }
-    ) {
-        return Ok(None);
-    }
     let Some(snapshot) = store.remediation_display_snapshot(&record.remediation_id)? else {
         return Ok(None);
     };
@@ -619,6 +610,7 @@ fn evaluation_contribution(
     };
     let facts = AggregateSavings {
         version: 1,
+        status: savings.clone(),
         token_savings: None,
         api_equivalent_cost_avoided_usd,
         improvement_count: Some(1),
@@ -759,7 +751,12 @@ fn old_model_savings(
             method_revision: SAVINGS_METHOD_REVISION,
         };
     }
-    let estimate = measured
+    let Some(measured_through_ms) = measured else {
+        return SavingsStatus::Pending {
+            method_revision: Some(SAVINGS_METHOD_REVISION),
+        };
+    };
+    let estimate = Some(measured_through_ms)
         .map(|measured_through_ms| {
             estimate_old_model_savings(&OldModelSavingsInput {
                 interval: SavingsInterval {

@@ -47,8 +47,7 @@ function overviewChecksSummary(
   const failures = rankedFailures(presentation.failures)
   const awaiting = presentation.awaiting ?? []
   const passed = presentation.wins.length
-  const activeCount =
-    failures.length + awaiting.length + passed + presentation.unavailable.length
+  const activeCount = presentation.activeAssessed.length
   if (failures.length > 0) {
     return {
       state: "findings",

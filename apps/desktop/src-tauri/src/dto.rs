@@ -1108,6 +1108,7 @@ pub enum AggregateWinOrigin {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateSavingsPayload {
+    pub status: BurnCheckSavingsPayload,
     pub token_savings: Option<u64>,
     pub api_equivalent_cost_avoided_usd: Option<f64>,
     pub improvement_count: Option<u64>,
@@ -2081,6 +2082,7 @@ impl From<crate::remediation::AggregateWins> for AggregateWinsPayload {
                     },
                     display: win.display.into(),
                     savings: AggregateSavingsPayload {
+                        status: win.savings.status.into(),
                         token_savings: win.savings.token_savings,
                         api_equivalent_cost_avoided_usd: win
                             .savings

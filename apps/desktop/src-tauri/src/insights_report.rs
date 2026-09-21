@@ -2346,7 +2346,7 @@ mod tests {
             20.0
         );
         let retained_contribution = store.remediation_contributions(1_000).unwrap();
-        assert_eq!(retained_contribution.len(), 1);
+        assert!(retained_contribution.is_empty());
         for session_id in ["old-before-fix", "fix", "more-savings", "recurrence"] {
             assert!(
                 store
@@ -2888,7 +2888,7 @@ mod tests {
             assert_eq!(corrected.state, terminal_state);
             if terminal_state == crate::store::RemediationState::Recurred {
                 assert_eq!(result["verification"]["status"], "recurred");
-                assert_eq!(store.remediation_contributions(1_000).unwrap().len(), 1);
+                assert!(store.remediation_contributions(1_000).unwrap().is_empty());
             } else {
                 assert_eq!(result["verification"]["status"], "verificationUnavailable");
                 assert!(store.remediation_contributions(1_000).unwrap().is_empty());
