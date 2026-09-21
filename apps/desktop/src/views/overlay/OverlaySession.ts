@@ -22,6 +22,7 @@ import {
 } from "../../lib/hudIpc"
 import { devSpendRate, withDevBlock, type HudDevOverride } from "../../lib/hudDev"
 import {
+  expandHudIsland,
   getHudIslandState,
   HUD_ISLAND_OFF,
   islandSpendFigure,
@@ -69,6 +70,10 @@ import {
 
 const REFRESH_MS = 60_000
 const SHOW_DELAY_MS = 400
+/** Travel in screen pixels before a mouse-down on the island becomes a drag. */
+const ISLAND_DRAG_THRESHOLD_PX = 10
+/** How long a drag outlives a window blur while the button may still be down. */
+const DRAG_BLUR_GRACE_MS = 250
 const TOKEN_MAP_WINDOW_SECS = 300
 const TOKEN_MAP_POLL_MS = 5_000
 /** How long the reset message and its confetti stay. */
@@ -79,7 +84,13 @@ const EMPTY_TOKEN_MAP = deriveTokenMap(null)
 export type OverlaySnapshot = {
   bars: UsageBarItem[]
   hovered: boolean
+  /** True while the window follows the pointer. */
   dragging: boolean
+  /**
+   * True from a mouse-down on the island until the pointer travels far
+   * enough to tear it off, or lets go. The island shows as a ghost.
+   */
+  dragArmed: boolean
   /** Whether any session is live, from the shell's lifecycle bus. */
   sessionLive: boolean
   /** The providers a live session draws on, sorted. Their bars blink. */
@@ -109,6 +120,7 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   bars: [],
   hovered: false,
   dragging: false,
+  dragArmed: false,
   sessionLive: false,
   liveProviders: [],
   liveModels: {},
@@ -192,6 +204,9 @@ export class OverlaySession {
   private lastEventActivity: number | null = null
   private burnWake = new BurnWakeTracker()
   private dragOrigin: DragOrigin | null = null
+  /** The pointer at a mouse-down on the island, until the drag begins. */
+  private dragArm: { pointerX: number; pointerY: number } | null = null
+  private blurGrace = 0
   private pendingMove: MouseEvent | null = null
   private moveFrame = 0
   private readonly hudExposure = new SurfaceExposureTracker()
@@ -255,11 +270,24 @@ export class OverlaySession {
     if (
       !this.active ||
       (event.target as HTMLElement).closest("button") ||
-      this.snapshot.dragging
+      this.snapshot.dragging ||
+      this.dragArm
     )
       return
     const { screenX, screenY } = event
-    void this.beginDrag(screenX, screenY, this.activityGeneration)
+    if (this.snapshot.island.island === "off") {
+      void this.beginDrag(screenX, screenY, this.activityGeneration)
+      return
+    }
+    // A press on the island tears nothing off: a click is not a drag. The
+    // open island at reduced opacity shows what a drag would carry away, and
+    // `moveDrag` begins the drag once the pointer travels far enough.
+    this.clearShowTimer()
+    this.hideDetail()
+    this.dragArm = { pointerX: screenX, pointerY: screenY }
+    this.update({ dragArmed: true })
+    this.addDragListeners()
+    void expandHudIsland().catch(() => {})
   }
 
   close = (): void => {
@@ -545,13 +573,16 @@ export class OverlaySession {
     this.devBlockUntil = 0
     this.resetAskedFor = 0
     this.removeDragListeners()
+    this.clearBlurGrace()
     this.observer?.disconnect()
     this.observer = null
     this.dragOrigin = null
+    this.dragArm = null
     this.pendingMove = null
     this.update({
       hovered: false,
       dragging: false,
+      dragArmed: false,
       sessionLive: false,
       liveProviders: [],
       liveModels: {},
@@ -614,7 +645,13 @@ export class OverlaySession {
     if (this.snapshot.island.island !== "off") return
     this.showTimer = window.setTimeout(() => {
       this.showTimer = null
-      if (!this.active || !this.snapshot.hovered || this.snapshot.dragging) return
+      if (
+        !this.active ||
+        !this.snapshot.hovered ||
+        this.snapshot.dragging ||
+        this.snapshot.dragArmed
+      )
+        return
       this.detailShown = true
       const revision = ++this.detailRevision
       const state = this.detailState("show")
@@ -829,6 +866,7 @@ export class OverlaySession {
       sameBars(this.snapshot.bars, next.bars) &&
       this.snapshot.hovered === next.hovered &&
       this.snapshot.dragging === next.dragging &&
+      this.snapshot.dragArmed === next.dragArmed &&
       this.snapshot.sessionLive === next.sessionLive &&
       sameList(this.snapshot.liveProviders, next.liveProviders) &&
       sameProviderModels(this.snapshot.liveModels, next.liveModels) &&
@@ -876,16 +914,20 @@ export class OverlaySession {
   private async beginDrag(screenX: number, screenY: number, generation: number): Promise<void> {
     this.clearShowTimer()
     this.hideDetail()
-    this.update({ dragging: true })
+    this.update({ dragging: true, dragArmed: false })
     this.dragOrigin = null
     this.addDragListeners()
     // A drag on a docked HUD tears it off. The drop decides whether it docks
     // again, in `recordHudPosition`. The tear pop is off for now.
-    void tearOffOverlayWindow()
-      // .then((torn) => {
-      //   if (torn) playPop()
-      // })
-      .catch(() => {})
+    // The tear-off moves an island window under the pointer, so the origin
+    // read below waits for it.
+    try {
+      await tearOffOverlayWindow()
+      // if (torn) playPop()
+    } catch {
+      // The shell had nothing to free. The drag goes on from where it is.
+    }
+    if (!this.isCurrent(generation) || !this.snapshot.dragging) return
     await this.syncWindow(false, generation)
     if (!this.isCurrent(generation) || !this.snapshot.dragging) return
 
@@ -907,24 +949,38 @@ export class OverlaySession {
       windowX: position.x / scale,
       windowY: position.y / scale,
     }
+    // A move that arrived during the setup applies now.
+    if (this.pendingMove && !this.moveFrame) {
+      this.moveFrame = window.requestAnimationFrame(this.applyDragMove)
+    }
   }
 
   private addDragListeners(): void {
     window.addEventListener("mousemove", this.moveDrag)
     window.addEventListener("mouseup", this.stopDrag, true)
-    window.addEventListener("blur", this.stopDrag)
+    window.addEventListener("blur", this.blurDrag)
   }
 
   private removeDragListeners(): void {
     window.removeEventListener("mousemove", this.moveDrag)
     window.removeEventListener("mouseup", this.stopDrag, true)
-    window.removeEventListener("blur", this.stopDrag)
+    window.removeEventListener("blur", this.blurDrag)
     if (this.moveFrame) window.cancelAnimationFrame(this.moveFrame)
     this.moveFrame = 0
     this.pendingMove = null
   }
 
   private moveDrag = (event: MouseEvent): void => {
+    // The button is still down, so a blur before this was not a release.
+    if (event.buttons & 1) this.clearBlurGrace()
+    const arm = this.dragArm
+    if (arm) {
+      const travel = Math.hypot(event.screenX - arm.pointerX, event.screenY - arm.pointerY)
+      if (travel < ISLAND_DRAG_THRESHOLD_PX) return
+      this.dragArm = null
+      void this.beginDrag(event.screenX, event.screenY, this.activityGeneration)
+      return
+    }
     this.pendingMove = event
     if (!this.moveFrame) this.moveFrame = window.requestAnimationFrame(this.applyDragMove)
   }
@@ -944,18 +1000,46 @@ export class OverlaySession {
   }
 
   private stopDrag = (event: Event): void => {
-    if (!this.snapshot.dragging) return
-    void reportHudDragEnded(event.type, this.dragOrigin != null).catch(() => {})
+    this.endDrag(event.type)
+  }
+
+  /**
+   * Keep the drag through a blur for a grace period.
+   *
+   * The tear-off flips the window's resizable flag, and the shell can take
+   * first responder from the webview as it does, which reads as a blur. A
+   * move with the button down inside the grace cancels it.
+   */
+  private blurDrag = (): void => {
+    if ((!this.snapshot.dragging && !this.dragArm) || this.blurGrace) return
+    this.blurGrace = window.setTimeout(() => {
+      this.blurGrace = 0
+      this.endDrag("blur")
+    }, DRAG_BLUR_GRACE_MS)
+  }
+
+  private clearBlurGrace(): void {
+    if (this.blurGrace) window.clearTimeout(this.blurGrace)
+    this.blurGrace = 0
+  }
+
+  private endDrag(reason: string): void {
+    if (!this.snapshot.dragging && !this.dragArm) return
+    const moved = this.snapshot.dragging
+    if (moved) void reportHudDragEnded(reason, this.dragOrigin != null).catch(() => {})
     this.settleDrag()
     // The drag is what makes this display the preferred one, so the record
     // happens here and not in `settleDrag`, which a failed drag start shares.
-    void recordHudPosition().catch(() => {})
+    // A press that never travelled moved nothing, so it records nothing.
+    if (moved) void recordHudPosition().catch(() => {})
   }
 
   private settleDrag(): void {
     this.removeDragListeners()
+    this.clearBlurGrace()
+    this.dragArm = null
     this.dragOrigin = null
-    this.update({ dragging: false })
+    this.update({ dragging: false, dragArmed: false })
     if (this.snapshot.hovered) this.armShowTimer()
   }
 }

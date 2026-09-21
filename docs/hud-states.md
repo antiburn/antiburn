@@ -98,9 +98,11 @@ are doing" turns the map off. Reduced motion stops the pulse.
 - A mouse down clears the pending show timer and hides a visible detail window.
   The timer stays suppressed until mouse up. After mouse up, a fresh 400ms count
   starts only when the pointer still rests on the HUD.
-- Dragging starts anywhere on the panel. Only mouse release or window
-  blur ends the drag. The drag moves the window manually at most once per
-  animation frame.
+- Dragging starts anywhere on the panel. Mouse release ends the drag. A
+  window blur ends it too, after a 250ms grace: the tear-off reshapes the
+  window, and that can read as a blur, so a move with the button still down
+  inside the grace keeps the drag. The drag moves the window manually at most
+  once per animation frame.
 - The detail window fades in over 100ms (`--duration-quick`). It hides with no
   transition. Reduced motion disables the fade.
 
@@ -173,6 +175,12 @@ crate stores it with the dock state.
   says what it will do. Dragging back out restores the frame. A drop above
   the notch row, overlapping the notch, sits the HUD in the notch. A drop on a
   display without a notch docks or floats as before.
+- **Tearing off.** A press on the island is not a tear-off. It opens the
+  island at reduced opacity, a ghost of what a drag would carry away, and
+  the island tears off only once the pointer travels 10 logical px. The HUD
+  then takes the floating width under the pointer and follows it for the
+  rest of the gesture, one drag from the notch to the drop. A release before
+  that leaves the island open, and it collapses on the peek linger.
 - **A display change.** The island belongs to the display with the notch. When
   that display leaves, the HUD parks at the top edge of the display it lands
   on and keeps the wish for the notch. The watcher reads the notch again every

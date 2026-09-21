@@ -52,6 +52,11 @@ export function setHudIsland(on: boolean): Promise<HudDockSettings> {
   return invoke<HudDockSettings>("set_hud_island", { on })
 }
 
+/** Open a collapsed island now: a mouse-down on it. It lingers as a peek does. */
+export function expandHudIsland(): Promise<void> {
+  return invoke("expand_hud_island")
+}
+
 /** Follow the island as it previews, collapses, and expands. */
 export function onHudIslandState(
   handler: (state: HudIslandState) => void,

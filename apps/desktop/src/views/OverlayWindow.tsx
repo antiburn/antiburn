@@ -169,8 +169,12 @@ function IslandPanel({
   const open = !collapsed
   const shape = [
     "hud-island relative select-none bg-hud-island",
+    "transition-opacity duration-[var(--duration-fast)] ease-out",
     open ? "hud-island-open" : "hud-island-closed",
     preview ? "mx-2" : "hud-island-fillets",
+    // A press on the island ghosts it: the drag has not begun, and this is
+    // what it would carry away.
+    state.dragArmed ? "opacity-60" : "",
   ].join(" ")
   const gutter: CSSProperties | undefined = preview
     ? undefined
@@ -198,6 +202,7 @@ function IslandPanel({
       className={shape}
       style={gutter}
       data-island={island.island}
+      data-drag-armed={state.dragArmed || undefined}
       onMouseDown={(event) => session.startDrag(event)}
     >
       <div className="flex items-center" style={{ height: island.height }}>

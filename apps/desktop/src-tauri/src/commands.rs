@@ -302,6 +302,12 @@ pub fn hud_island_state() -> antiburn_hud::IslandState {
     antiburn_hud::island_state()
 }
 
+/// Open a collapsed island now: a mouse-down on it. It lingers as a peek does.
+#[tauri::command]
+pub fn expand_hud_island(app: tauri::AppHandle) {
+    antiburn_hud::expand_island(&app);
+}
+
 /// Put the HUD in the notch, or take it out and float it at its last place.
 ///
 /// Returns the dock state after the change, for the webview's toggle.

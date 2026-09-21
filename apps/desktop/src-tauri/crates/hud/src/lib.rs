@@ -18,8 +18,8 @@ pub use dock::{
     wake_overlay,
 };
 pub use island::{
-    IslandPhase, IslandState, begin_drag, island_overlay, island_state, island_wanted_off_notch,
-    reclaim_island, refresh_notch, set_fake_notch,
+    IslandPhase, IslandState, begin_drag, expand_island, island_overlay, island_state,
+    island_wanted_off_notch, reclaim_island, refresh_notch, set_fake_notch,
 };
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]

@@ -540,6 +540,19 @@ pub(crate) fn expand(app: &AppHandle, window: &WebviewWindow, hold: Duration, li
     );
 }
 
+/// Open a collapsed island now: a mouse-down on it. It lingers as a peek does.
+#[cfg(target_os = "macos")]
+pub fn expand_island(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) {
+        tracing::info!(event = "hud_island_press");
+        expand(app, &window, Duration::ZERO, dock::PEEK_LINGER);
+    }
+}
+
+/// Keep the island inert where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn expand_island(_app: &tauri::AppHandle) {}
+
 /// Fold the island back to the notch row.
 #[cfg(target_os = "macos")]
 fn collapse(app: &AppHandle, window: &WebviewWindow) {

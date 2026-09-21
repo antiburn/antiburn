@@ -93,6 +93,7 @@ macro_rules! with_app_commands {
             commands::set_hud_detail_size => "set_hud_detail_size",
             commands::set_hud_island => "set_hud_island",
             commands::hud_drag_ended => "hud_drag_ended",
+    commands::expand_hud_island => "expand_hud_island",
             commands::tear_off_overlay => "tear_off_overlay",
             commands::wake_overlay => "wake_overlay",
             commands::set_popover_height => "set_popover_height",
