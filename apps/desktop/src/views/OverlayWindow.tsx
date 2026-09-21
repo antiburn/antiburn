@@ -1,6 +1,5 @@
 import { useCallback, useState, useSyncExternalStore, type CSSProperties } from "react"
 
-import markUrl from "../assets/antiburn-mark.svg"
 import { LedBar } from "../components/ui/LedBar"
 import { Confetti } from "../components/ui/Confetti"
 import { TokenMap } from "../components/ui/TokenMap"
@@ -113,6 +112,46 @@ function islandContentPad(wing: number): number {
  * the drag preview, the HUD content hangs below it. The gutters either side
  * hold the top corners, which curve out into the screen edge.
  */
+/** The dots of the antiburn logomark, in the mark's own 44-unit space. */
+const MARK_DOTS: ReadonlyArray<readonly [number, number]> = [
+  [16, 9.3],
+  [22.4, 9.3],
+  [28.8, 9.3],
+  [35.2, 15.7],
+  [16, 22.1],
+  [22.4, 22.1],
+  [28.8, 22.1],
+  [35.2, 22.1],
+  [9.6, 28.5],
+  [35.2, 28.5],
+  [16, 34.9],
+  [22.4, 34.9],
+  [35.2, 34.9],
+]
+
+/**
+ * The antiburn logomark as inline SVG in the current text colour.
+ *
+ * Inline, not a CSS mask of the asset: WebKit drew the wing as a plain
+ * square when the mask came from an inline style.
+ */
+function AntiburnMark({ className }: { className: string }) {
+  return (
+    <svg
+      data-testid="island-mark"
+      role="img"
+      aria-label="antiburn"
+      viewBox="6.2 5.9 32.4 32.4"
+      fill="currentColor"
+      className={className}
+    >
+      {MARK_DOTS.map(([cx, cy]) => (
+        <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r={3.4} />
+      ))}
+    </svg>
+  )
+}
+
 function IslandPanel({
   state,
   panelRef,
@@ -186,21 +225,9 @@ function IslandPanel({
           style={preview ? undefined : { width: island.notch }}
         />
         <div className="flex shrink-0 items-center justify-center" style={wing}>
-          <span
-            data-testid="island-mark"
-            aria-label="antiburn"
-            // The mark, cut from the island ink and kept faint: it says whose
-            // island this is without competing with the live mark.
-            className="size-2.5 bg-hud-island-ink opacity-35"
-            style={{
-              maskImage: `url(${markUrl})`,
-              WebkitMaskImage: `url(${markUrl})`,
-              maskSize: "contain",
-              WebkitMaskSize: "contain",
-              maskRepeat: "no-repeat",
-              WebkitMaskRepeat: "no-repeat",
-            }}
-          />
+          {/* The mark in the island ink, kept faint: it says whose island
+              this is without competing with the live mark. */}
+          <AntiburnMark className="size-2.5 text-hud-island-ink opacity-35" />
         </div>
       </div>
       {open && (
