@@ -1342,6 +1342,22 @@ fn housekeeping_records_keep_complete_coverage_and_no_unrecognized_diagnostics()
 }
 
 #[test]
+fn lifecycle_records_with_evidence_keys_remain_partial() {
+    let input = SessionInput {
+        agent: "claude".to_owned(),
+        session_id: "lifecycle-evidence".to_owned(),
+        source: RawSource::Jsonl(
+            r#"{"type":"system","subtype":"away_summary","timestamp":"2026-08-01T09:00:00Z","model":"hidden-model"}"#.to_owned(),
+        ),
+        fork_parent_session_id: None,
+        source_format: Default::default(),
+    };
+    let (coverage, reasons, _) = collect_claude(&input);
+    assert_eq!(coverage, RecordCoverage::Partial);
+    assert!(reasons.contains(&PartialReason::UnrecognizedRecordType));
+}
+
+#[test]
 fn golden_delegated_models() {
     check_fixture_golden("delegated_models");
 }

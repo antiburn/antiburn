@@ -3,7 +3,7 @@ use std::sync::Arc;
 use antiburn_local::analysis::{
     CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue, MemoryTurnRowStore, RawSource,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceFormat, SourceKind, TurnRowSink, TurnRowStore, reader_for,
+    SourceFormat, SourceKind, ToolCategory, TurnRowSink, TurnRowStore, reader_for,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorCounts, DetectorId, EfficiencyReportAccumulator, ModelRegistry,
@@ -232,4 +232,38 @@ fn companion_parse_gaps_do_not_hide_database_findings() {
         assert_eq!(report.finding, 1);
         assert_eq!(report.clean, 0);
     }
+}
+
+#[test]
+fn cli_transcript_recovers_settings_model_thinking_tools_and_clipped_coverage() {
+    let mut input = input(RawSource::Jsonl(
+        include_str!("fixtures/antigravity_characterization/cli_realistic.jsonl").to_owned(),
+    ));
+    input.source_format = SourceFormat::AntigravityBrainJsonl;
+
+    let session = reader_for("antigravity").normalize(&input).unwrap();
+    assert_eq!(session.model.as_deref(), Some("old-model"));
+    assert!(session.events.iter().any(|event| event.has_thinking));
+    assert_eq!(session.events[2].tools.len(), 1);
+    assert_eq!(session.events[2].tools[0].category, ToolCategory::Read);
+    assert_eq!(session.events[3].role, antiburn_local::analysis::Role::Tool);
+
+    let evidence = evidence(&input);
+    assert!(matches!(evidence.coverage, EvidenceCoverage::Partial(_)));
+    assert_eq!(old_model_report(evidence).finding, 1);
+}
+
+#[test]
+fn cascade_transcript_preserves_thinking_and_nested_tool_calls() {
+    let mut input = input(RawSource::Jsonl(
+        include_str!("fixtures/antigravity_characterization/cascade_thinking.json").to_owned(),
+    ));
+    input.source_format = SourceFormat::AntigravityCascadeJson;
+
+    let session = reader_for("antigravity").normalize(&input).unwrap();
+    assert_eq!(session.events.len(), 2);
+    assert!(session.events[1].has_thinking);
+    assert_eq!(session.events[1].model.as_deref(), Some("gemini-3.6-flash"));
+    assert_eq!(session.events[1].tools.len(), 1);
+    assert_eq!(session.events[1].tools[0].category, ToolCategory::Read);
 }

@@ -70,6 +70,20 @@ fn record_text(value: &Value) -> String {
     }
 }
 
+/// Returns true for Claude lifecycle records that carry no normalized event.
+/// Keep this allowlist local because these records are Claude-specific and
+/// some other JSONL vendors use the same top-level `system` discriminator.
+fn is_claude_eventless(value: &Value) -> bool {
+    match value.get("type").and_then(Value::as_str) {
+        Some("fork-context-ref") => true,
+        Some("system") => matches!(
+            value.get("subtype").and_then(Value::as_str),
+            Some("away_summary" | "stop_hook_summary" | "turn_duration")
+        ),
+        _ => false,
+    }
+}
+
 /// Parses a Claude `uuid` string into a compact `u128`. Reads the hex
 /// digits only and ignores dashes, case-insensitive. Returns `None` when
 /// `uuid` holds anything but exactly 32 hex digits, so a non-standard
@@ -844,8 +858,19 @@ impl ClaudeSessionReader {
                         );
                     }
 
+                    if is_claude_eventless(&value) {
+                        if is_inert_recognized_eventless(&value) {
+                            continue;
+                        }
+                        sink.record(NormalizedRecord::Unusable(
+                            crate::analysis::framing::PartialReason::UnrecognizedRecordType,
+                        ));
+                        continue;
+                    }
+
                     let Some(mut event) = parse_record(&value, RecordShape::Claude) else {
-                        let allowlisted = is_recognized_eventless(&value);
+                        let allowlisted =
+                            is_claude_eventless(&value) || is_recognized_eventless(&value);
                         let structurally_inert = if allowlisted {
                             is_inert_recognized_eventless(&value)
                         } else {

@@ -1,0 +1,4 @@
+{"type":"session","id":"v1-session","timestamp":"2026-01-01T00:00:00Z","cwd":"/synthetic/v1"}
+{"type":"message","timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","timestamp":1000,"content":"old user"}}
+{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","timestamp":2000,"model":"model-v1","provider":"anthropic","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[{"type":"text","text":"old answer"}]}}
+{"type":"compaction","timestamp":"2026-01-01T00:00:03Z","summary":"old summary","firstKeptEntryIndex":2,"tokensBefore":100}

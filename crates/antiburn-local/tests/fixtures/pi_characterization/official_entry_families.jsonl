@@ -1,0 +1,9 @@
+{"type":"session","version":3,"id":"entry-families","timestamp":"2026-01-03T00:00:00Z","cwd":"/synthetic/families"}
+{"type":"model_change","id":"ef-model","parentId":null,"timestamp":"2026-01-03T00:00:01Z","provider":"anthropic","modelId":"model-families"}
+{"type":"message","id":"ef-message","parentId":"ef-model","timestamp":"2026-01-03T00:00:02Z","message":{"role":"assistant","usage":{"input":4,"output":5,"cacheRead":6,"cacheWrite":7},"content":[{"type":"thinking","thinking":"private reasoning"},{"type":"toolCall","name":"read","arguments":{"path":"private.txt"}}]}}
+{"type":"usage","id":"ef-usage","parentId":"ef-message","timestamp":"2026-01-03T00:00:03Z","kind":"cache_warm","provider":"anthropic","model":"model-families","usage":{"input":1,"output":1,"cacheRead":2,"cacheWrite":3}}
+{"type":"branch_summary","id":"ef-branch","parentId":"ef-usage","timestamp":"2026-01-03T00:00:04Z","fromId":"ef-message","summary":"private branch summary","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0}}
+{"type":"custom","id":"ef-custom","parentId":"ef-branch","timestamp":"2026-01-03T00:00:05Z","customType":"private-extension","data":{"private":"payload"}}
+{"type":"custom_message","id":"ef-custom-message","parentId":"ef-custom","timestamp":"2026-01-03T00:00:06Z","customType":"private-message","content":[{"type":"text","text":"private extension message"}],"display":true}
+{"type":"label","id":"ef-label","parentId":"ef-custom-message","timestamp":"2026-01-03T00:00:07Z","targetId":"ef-message","label":"private label"}
+{"type":"compaction","id":"ef-compaction","parentId":"ef-label","timestamp":"2026-01-03T00:00:08Z","summary":"private compaction summary","firstKeptEntryId":"ef-message","tokensBefore":123,"usage":{"input":2,"output":1,"cacheRead":0,"cacheWrite":0}}

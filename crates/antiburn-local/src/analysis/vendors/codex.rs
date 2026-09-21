@@ -388,6 +388,12 @@ enum ForkOwnership {
 struct CodexStreamState {
     ownership: ForkOwnership,
     agent_path: Option<String>,
+    /// Legacy top-level forks replay the parent prefix without per-record
+    /// identities. The parent metadata and the first later writer timestamp
+    /// provide the only bounded boundary available in that format.
+    fork_parent_id: Option<String>,
+    fork_replay_timestamp: Option<i64>,
+    fork_parent_seen: bool,
     /// See [`json_text_codec`]: `postcard` cannot decode a `serde_json::Value`
     /// directly, so this field's wire form is JSON text. Always empty at the
     /// point [`CodexSessionReader::visit_claimed_resumed`] encodes a snapshot (see
@@ -483,6 +489,25 @@ impl CodexStreamState {
                     .and_then(Value::as_str)
                     .map(str::to_owned);
             }
+            if self.fork_parent_id.is_none()
+                && let Some(parent_id) = value
+                    .pointer("/payload/forked_from_id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+            {
+                self.ownership = ForkOwnership::Pending;
+                self.fork_parent_id = Some(parent_id.to_owned());
+                self.fork_replay_timestamp = value.get("timestamp").and_then(parse_ts);
+            }
+            if self.fork_parent_id.as_deref().is_some_and(|parent_id| {
+                value
+                    .pointer("/payload/id")
+                    .or_else(|| value.pointer("/payload/session_id"))
+                    .and_then(Value::as_str)
+                    == Some(parent_id)
+            }) {
+                self.fork_parent_seen = true;
+            }
         }
 
         if self.ownership == ForkOwnership::Pending {
@@ -495,6 +520,23 @@ impl CodexStreamState {
     fn observe_pending(&mut self, value: Value, record_bytes: usize, sink: &mut dyn RecordSink) {
         let record_type = value.get("type").and_then(Value::as_str);
         let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
+
+        if self.fork_parent_id.is_some()
+            && self.fork_parent_seen
+            && self
+                .fork_replay_timestamp
+                .zip(value.get("timestamp").and_then(parse_ts))
+                .is_some_and(|(replay, current)| current > replay)
+        {
+            for pending in std::mem::take(&mut self.pending_rows) {
+                self.process_value(pending, false, sink);
+            }
+            self.pending_bytes = 0;
+            self.pending_owned_start = None;
+            self.ownership = ForkOwnership::Owned;
+            self.process_value(value, true, sink);
+            return;
+        }
 
         if record_type == Some("event_msg") && payload_type == Some("task_started") {
             self.pending_owned_start = Some(
@@ -565,10 +607,7 @@ impl CodexStreamState {
         self.observe_model_and_effort(&value, usage_is_owned);
         if usage_is_owned {
             if self.context_window.is_none() {
-                self.context_window = value
-                    .pointer("/payload/info/model_context_window")
-                    .and_then(Value::as_u64)
-                    .filter(|window| *window > 0);
+                self.context_window = context_window_from_record(&value);
             }
             if !self.cache_write_tokens_available {
                 self.cache_write_tokens_available =
@@ -744,8 +783,12 @@ impl CodexStreamState {
 
     fn finish(mut self, sink: &mut dyn RecordSink) -> SessionSummary {
         if self.ownership == ForkOwnership::Pending {
+            let inherited_only = self.fork_parent_id.is_some();
+            if inherited_only {
+                self.fork_attribution_incomplete = true;
+            }
             for value in std::mem::take(&mut self.pending_rows) {
-                self.process_value(value, true, sink);
+                self.process_value(value, !inherited_only, sink);
             }
         }
         let coverage_gaps =
@@ -931,8 +974,9 @@ fn is_spawn_agent_call(
 /// read by `observe_model_and_effort` / `service_tier_speed` on every record,
 /// before this predicate ever runs, so nothing about them is left unproven.
 ///
-/// `item_completed` and top-level `inter_agent_communication_metadata` are
-/// different: #229-parity measurement (1,034 local rollouts) found
+/// `item_completed`, web-search lifecycle events, and top-level inter-agent
+/// communication records are different: #229-parity measurement (1,034 local
+/// rollouts) found
 /// `item_completed` is a completion echo of a `response_item` this adapter
 /// already models — its `item.type` is one of `Reasoning`, `AgentMessage`,
 /// `CommandExecution`, `FileChange`, `UserMessage`, `Extension`,
@@ -962,7 +1006,11 @@ fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>
     matches!(
         record_type,
         Some(
-            "session_meta" | "turn_context" | "world_state" | "inter_agent_communication_metadata"
+            "session_meta"
+                | "turn_context"
+                | "world_state"
+                | "inter_agent_communication"
+                | "inter_agent_communication_metadata"
         )
     ) || matches!(
         (record_type, payload_type),
@@ -978,6 +1026,8 @@ fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>
                     | "turn_aborted"
                     | "thread_settings_applied"
                     | "item_completed"
+                    | "web_search_begin"
+                    | "web_search_end"
             )
         )
     ) || matches!(
@@ -1124,11 +1174,16 @@ fn transport_incident_kind(fields: &Value) -> Option<ProviderIncidentKind> {
 /// `is_recognized_eventless`'s doc comment for why the rest of the allowlist
 /// does not need this: their fields are already read elsewhere.
 fn is_proven_echo(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
-    record_type == Some("inter_agent_communication_metadata")
-        || matches!(
-            (record_type, payload_type),
-            (Some("event_msg"), Some("item_completed"))
+    matches!(
+        record_type,
+        Some("inter_agent_communication" | "inter_agent_communication_metadata")
+    ) || matches!(
+        (record_type, payload_type),
+        (
+            Some("event_msg"),
+            Some("item_completed" | "web_search_begin" | "web_search_end")
         )
+    )
 }
 
 /// Scalar keys a CODEX reader reads directly, at the top level of a record or
@@ -1144,6 +1199,7 @@ const CODEX_SCALAR_EVIDENCE_KEYS: &[&str] = &[
     "turn_token_usage",
     "thread_token_usage",
     "info",
+    "model_context_window",
     "input_tokens",
     "output_tokens",
     "cached_input_tokens",
@@ -1314,7 +1370,7 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
     // records available to the desktop analysis view, but do not attribute
     // their already-billed token_count events to the child. The first task
     // addressed to the child's agent path marks the owned usage boundary.
-    let owned_usage_start = codex_fork_owned_offset(content);
+    let (owned_usage_start, unresolved_fork) = codex_fork_owned_offset(content);
     // The model's context-window size, reported on each `token_count` event's
     // `info.model_context_window`. Constant per model; take the first seen.
     let mut context_window = None;
@@ -1336,13 +1392,11 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let usage_is_owned = owned_usage_start.is_none_or(|start| line_offset >= start);
+            let usage_is_owned =
+                !unresolved_fork && owned_usage_start.is_none_or(|start| line_offset >= start);
             controls.observe_model_and_effort(&value, usage_is_owned);
             if usage_is_owned && context_window.is_none() {
-                context_window = value
-                    .pointer("/payload/info/model_context_window")
-                    .and_then(Value::as_u64)
-                    .filter(|&w| w > 0);
+                context_window = context_window_from_record(&value);
             }
             if usage_is_owned && !cache_write_tokens_available {
                 cache_write_tokens_available =
@@ -1403,9 +1457,14 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
 /// first task. Those inherited rows are useful context, but their token_count
 /// events describe requests already made by the parent. A task addressed to the
 /// child's agent path ends the replay; include its preceding developer message
-/// when Codex emits one immediately before task_started.
-fn codex_fork_owned_offset(content: &str) -> Option<usize> {
+/// when Codex emits one immediately before task_started. Legacy top-level
+/// reverts have no record identity, so use the copied parent metadata and the
+/// first later envelope timestamp when both are present.
+fn codex_fork_owned_offset(content: &str) -> (Option<usize>, bool) {
     let mut agent_path: Option<String> = None;
+    let mut fork_parent_id: Option<String> = None;
+    let mut fork_replay_timestamp: Option<i64> = None;
+    let mut fork_parent_seen = false;
     let mut last_task_started_offset: Option<usize> = None;
     let mut previous_row: Option<(usize, bool)> = None;
     let mut offset = 0;
@@ -1430,6 +1489,43 @@ fn codex_fork_owned_offset(content: &str) -> Option<usize> {
                     .map(str::to_string);
             }
 
+            if row_type == Some("session_meta") {
+                if fork_parent_id.is_none()
+                    && let Some(parent_id) = value
+                        .pointer("/payload/forked_from_id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                {
+                    fork_parent_id = Some(parent_id.to_owned());
+                    fork_replay_timestamp = value.get("timestamp").and_then(parse_ts);
+                }
+                if fork_parent_id.as_deref().is_some_and(|parent_id| {
+                    value
+                        .pointer("/payload/id")
+                        .or_else(|| value.pointer("/payload/session_id"))
+                        .and_then(Value::as_str)
+                        == Some(parent_id)
+                }) {
+                    fork_parent_seen = true;
+                }
+                if fork_parent_seen
+                    && fork_replay_timestamp
+                        .zip(value.get("timestamp").and_then(parse_ts))
+                        .is_some_and(|(replay, current)| current > replay)
+                {
+                    return (Some(offset), false);
+                }
+            }
+
+            if fork_parent_id.is_some()
+                && fork_parent_seen
+                && fork_replay_timestamp
+                    .zip(value.get("timestamp").and_then(parse_ts))
+                    .is_some_and(|(replay, current)| current > replay)
+            {
+                return (Some(offset), false);
+            }
+
             if row_type == Some("event_msg") && payload_type == Some("task_started") {
                 last_task_started_offset = Some(
                     previous_row
@@ -1447,7 +1543,7 @@ fn codex_fork_owned_offset(content: &str) -> Option<usize> {
                     .zip(agent_path.as_deref())
                     .is_some_and(|(recipient, path)| recipient == path);
             if addressed_to_child {
-                return Some(last_task_started_offset.unwrap_or(offset));
+                return (Some(last_task_started_offset.unwrap_or(offset)), false);
             }
 
             let is_developer_message = row_type == Some("response_item")
@@ -1459,7 +1555,7 @@ fn codex_fork_owned_offset(content: &str) -> Option<usize> {
         offset += line_with_ending.len();
     }
 
-    None
+    (None, fork_parent_id.is_some())
 }
 
 /// Map one rollout envelope record to a normalized event, or `None` for framing
@@ -2242,6 +2338,17 @@ fn is_token_count_record(record_type: Option<&str>, payload_type: Option<&str>) 
     record_type == Some("event_msg") && payload_type == Some("token_count")
 }
 
+fn context_window_from_record(value: &Value) -> Option<u64> {
+    [
+        "/payload/info/model_context_window",
+        "/payload/model_context_window",
+    ]
+    .iter()
+    .find_map(|pointer| value.pointer(pointer))
+    .and_then(Value::as_u64)
+    .filter(|window| *window > 0)
+}
+
 /// Both Codex parsing paths treat compaction records within this window as one compaction.
 /// Distinct compactions have intervening turns and much larger gaps.
 const COMPACTION_DEDUPE_WINDOW_MS: i64 = 5_000;
@@ -2313,6 +2420,10 @@ mod tests {
             false,
         ),
         (r#"{"type":"new_event","payload":{"info":{}}}"#, false),
+        (
+            r#"{"type":"new_event","payload":{"model_context_window":128000}}"#,
+            false,
+        ),
         (
             r#"{"type":"new_event","payload":{"input_tokens":1}}"#,
             false,
@@ -2513,7 +2624,7 @@ mod tests {
         // variants' `http_status_code` to a `ServerError` or `Connection`
         // provider incident, through the new `transport_incident_kind`
         // helper; this changed the fingerprinted byte range.
-        const EXPECTED_FINGERPRINT: u64 = 4_585_503_107_976_151_855;
+        const EXPECTED_FINGERPRINT: u64 = 15_020_827_323_135_020_933;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();

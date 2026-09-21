@@ -118,11 +118,16 @@ fn fixture(name: &str) -> &'static str {
         "excess_cache_rehydration_finding" => {
             include_str!("fixtures/pi_characterization/excess_cache_rehydration_finding.jsonl")
         }
+        "v1_migrated" => include_str!("fixtures/pi_characterization/v1_migrated.jsonl"),
+        "v2_migrated" => include_str!("fixtures/pi_characterization/v2_migrated.jsonl"),
+        "official_entry_families" => {
+            include_str!("fixtures/pi_characterization/official_entry_families.jsonl")
+        }
         _ => panic!("unknown Pi characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 36] {
+fn fixture_names() -> [&'static str; 39] {
     [
         "minimal_session",
         "role_ordering",
@@ -160,6 +165,9 @@ fn fixture_names() -> [&'static str; 36] {
         "session_overdepth_finding",
         "model_overthinking_finding",
         "excess_cache_rehydration_finding",
+        "v1_migrated",
+        "v2_migrated",
+        "official_entry_families",
     ]
 }
 
@@ -183,7 +191,7 @@ fn admitted_jsonl(source: &str) -> String {
         return source.to_owned();
     }
     format!(
-        "{{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{source}"
+        "{{\"type\":\"session\",\"version\":3,\"id\":\"synthetic-admitted\",\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{source}"
     )
 }
 
@@ -679,7 +687,11 @@ fn malformed_incomplete_unsupported_and_header_only_sources_are_honest() {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("active.jsonl");
-    fs::write(&path, admitted_jsonl(fixture("incomplete_final_record"))).unwrap();
+    fs::write(
+        &path,
+        admitted_jsonl(fixture("incomplete_final_record")).trim_end_matches('\n'),
+    )
+    .unwrap();
     let file_input = SessionInput {
         agent: "pi".to_owned(),
         session_id: "active".to_owned(),
@@ -704,6 +716,49 @@ fn malformed_incomplete_unsupported_and_header_only_sources_are_honest() {
     assert_eq!(coverage, RecordCoverage::Complete);
     assert!(reasons.is_empty());
     assert!(session.events.is_empty());
+}
+
+#[test]
+fn official_v1_and_v2_migrations_are_applied_before_analysis() {
+    let (coverage, reasons, v1) = collect(&input("v1_migrated"));
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert_eq!(v1.events.len(), 3);
+    assert_eq!(v1.events[1].usage.input_tokens, 2);
+    assert_eq!(v1.events[0].parent_uuid, None);
+    assert_eq!(v1.events[1].parent_uuid.as_deref(), Some("pi-v1-0"));
+    assert_eq!(v1.events[2].compaction_pre_tokens, Some(100));
+
+    let (coverage, reasons, v2) = collect(&input("v2_migrated"));
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert_eq!(v2.events.len(), 1);
+    assert_eq!(v2.events[0].model.as_deref(), Some("model-v2"));
+    assert_eq!(v2.events[0].usage.output_tokens, 4);
+}
+
+#[test]
+fn official_entry_families_keep_usage_and_compaction_evidence_fail_closed() {
+    let (coverage, reasons, session) = collect(&input("official_entry_families"));
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert_eq!(session.events.len(), 4);
+    assert_eq!(session.events[0].tools[0].name, "read");
+    assert_eq!(
+        session.events[1].role,
+        antiburn_local::analysis::Role::System
+    );
+    assert_eq!(session.events[1].usage.cache_read_tokens, 2);
+    assert_eq!(session.events[2].usage.input_tokens, 1);
+    assert!(session.events[3].is_compaction_boundary);
+    assert_eq!(session.events[3].usage.input_tokens, 2);
+
+    let (evidence, metrics) = composite(&input("official_entry_families"));
+    assert!(matches!(evidence.tools, EvidenceValue::Complete(_)));
+    assert_eq!(metrics.metrics().billable_input_tokens, 8);
+    assert_eq!(metrics.metrics().billable_output_tokens, 8);
+    assert_eq!(metrics.metrics().billable_cache_read_tokens, 8);
+    assert_eq!(metrics.metrics().billable_cache_creation_tokens, 10);
 }
 
 #[test]
@@ -949,7 +1004,7 @@ fn unresolved_fork_ownership_fails_closed_without_guessing() {
         (
             "missing-row-timestamp",
             concat!(
-                r#"{"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z","parentSession":"/synthetic/parent.jsonl"}"#,
+                r#"{"type":"session","version":3,"id":"missing-row-timestamp","timestamp":"2026-01-01T00:00:00Z","parentSession":"/synthetic/parent.jsonl"}"#,
                 "\n",
                 r#"{"type":"message","message":{"role":"assistant","model":"model-a","usage":{"input":9,"output":8,"cacheRead":7,"cacheWrite":6},"content":[]}}"#,
                 "\n"
@@ -958,7 +1013,7 @@ fn unresolved_fork_ownership_fails_closed_without_guessing() {
         (
             "malformed-header-timestamp",
             concat!(
-                r#"{"type":"session","version":3,"timestamp":"not-a-time","parentSession":"/synthetic/parent.jsonl"}"#,
+                r#"{"type":"session","version":3,"id":"malformed-header-timestamp","timestamp":"not-a-time","parentSession":"/synthetic/parent.jsonl"}"#,
                 "\n",
                 r#"{"type":"message","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","model":"model-a","usage":{"input":9,"output":8,"cacheRead":7,"cacheWrite":6},"content":[]}}"#,
                 "\n"
@@ -1060,6 +1115,12 @@ fn pi_v3_file_admission_accepts_only_one_valid_header_and_unique_ids() {
         (
             "unsupported-version",
             fixture("unsupported_version"),
+            RecordCoverage::Partial,
+            0,
+        ),
+        (
+            "invalid-version-type",
+            "{\"type\":\"session\",\"version\":true,\"timestamp\":\"2026-01-01T00:00:00Z\"}\n",
             RecordCoverage::Partial,
             0,
         ),

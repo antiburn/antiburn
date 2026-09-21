@@ -4,7 +4,8 @@ use antiburn_local::analysis::{
     CompositeSink, CoverageReason, EventSource, EvidenceSource, EvidenceValue, MemoryTurnRowStore,
     NormalizedRecord, PartialReason, RawSource, RecordSink, SessionCollector, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, VisitOutcome, reader_for,
+    SourceCapabilities, SourceKind, TurnContent, TurnRowSink, TurnRowStore, VisitOutcome,
+    reader_for,
 };
 use antiburn_local::discovery::Explorers;
 use antiburn_local::insights::{
@@ -115,6 +116,21 @@ fn turn_identities(
             .map(|row| row.expect("row"))
             .collect()
     })
+}
+
+#[derive(Default)]
+struct ContentCapturingSink {
+    contents: Vec<TurnContent>,
+}
+
+impl RecordSink for ContentCapturingSink {
+    fn record(&mut self, record: NormalizedRecord) {
+        if let NormalizedRecord::TurnContent(content) = record {
+            self.contents.push(*content);
+        }
+    }
+
+    fn finish(&mut self, _summary: SessionSummary) {}
 }
 
 fn observed<T: Clone>(value: &EvidenceValue<T>) -> T {
@@ -1203,7 +1219,7 @@ fn malformed_unknown_and_oversized_rows_report_partial_without_payload() {
     );
     insert_part(
         &connection,
-        "unknown",
+        "a-unknown",
         "valid",
         "root",
         31,
@@ -1217,8 +1233,8 @@ fn malformed_unknown_and_oversized_rows_report_partial_without_payload() {
         r#"{{"type":"text","text":"{PRIVATE}{}"}}"#,
         "b".repeat(4 * 1024 * 1024 + 100)
     );
-    insert_part(&connection, "large-a", "valid", "root", 32, &first_part);
-    insert_part(&connection, "large-b", "valid", "root", 33, &second_part);
+    insert_part(&connection, "b-large-a", "valid", "root", 32, &first_part);
+    insert_part(&connection, "c-large-b", "valid", "root", 33, &second_part);
     let oversized = format!(
         r#"{{"role":"assistant","text":"{}"}}"#,
         "x".repeat(8 * 1024 * 1024)
@@ -1391,4 +1407,109 @@ fn metrics_and_evidence_publish_from_the_stream() {
     };
     assert!(models.control_observations.is_empty());
     assert!(!json!(evidence).to_string().contains("PRIVATE_PATH"));
+}
+
+#[test]
+fn minimal_normalized_schema_reads_parts_and_parent_id_lineage() {
+    let directory = TempDir::new().expect("tempdir");
+    let path = directory.path().join("opencode.db");
+    let connection = Connection::open(&path).expect("database");
+    connection
+        .execute_batch(include_str!(
+            "fixtures/opencode_characterization/minimal_normalized_v1.sql"
+        ))
+        .expect("fixture schema");
+    drop(connection);
+
+    let input = sqlite_input(&path, "root");
+    let mut collector = SessionCollector::new("opencode", "root");
+    reader_for("opencode")
+        .visit(&input, &mut collector)
+        .expect("stream minimal normalized schema");
+    let session = collector.into_session().expect("finished session");
+
+    assert_eq!(session.events.len(), 2);
+    let root = session
+        .events
+        .iter()
+        .find(|event| event.thread_id.as_deref() == Some("root"))
+        .expect("root event");
+    let child = session
+        .events
+        .iter()
+        .find(|event| event.thread_id.as_deref() == Some("child"))
+        .expect("child event");
+    assert_eq!(child.source, EventSource::Subagent);
+    assert_eq!(root.tools.len(), 0);
+    assert!(root.usage.input_tokens > 0);
+
+    let (evidence, _) = evidence_and_rows(&input);
+    assert!(matches!(
+        evidence.subagents,
+        EvidenceValue::Partial {
+            reason: CoverageReason::AttributionIncomplete,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn missing_sqlite_session_is_rejected_instead_of_publishing_empty_evidence() {
+    let (_directory, path) = create_database();
+    let input = sqlite_input(&path, "missing");
+    let mut collector = SessionCollector::new("opencode", "missing");
+
+    let error = reader_for("opencode")
+        .visit(&input, &mut collector)
+        .expect_err("missing session must not look clean");
+    assert!(error.to_string().contains("no session missing"));
+}
+
+#[test]
+fn tool_error_parts_retain_the_error_as_result_content() {
+    let mut sink = ContentCapturingSink::default();
+    let input = SessionInput {
+        agent: "opencode".to_owned(),
+        session_id: "tool-error".to_owned(),
+        source: RawSource::Jsonl(
+            [
+                json!({
+                    "type": "message",
+                    "messageID": "m1",
+                    "time": {"created": 1000},
+                    "payload": {"role": "assistant", "modelID": "model-a"}
+                }),
+                json!({
+                    "type": "part",
+                    "messageID": "m1",
+                    "payload": {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {"status": "error", "input": {"command": "false"}, "error": "command failed"}
+                    }
+                }),
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        ),
+        fork_parent_session_id: None,
+        source_format: Default::default(),
+    };
+    reader_for("opencode")
+        .visit(&input, &mut sink)
+        .expect("stream tool error");
+
+    let parts = &sink.contents[0].parts;
+    assert_eq!(parts.len(), 2);
+    assert_eq!(
+        parts[0].kind,
+        antiburn_local::analysis::ContentKind::ToolInput
+    );
+    assert_eq!(
+        parts[1].kind,
+        antiburn_local::analysis::ContentKind::ToolResult
+    );
+    assert_eq!(parts[1].text, "command failed");
 }

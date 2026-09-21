@@ -218,19 +218,71 @@ fn validate_input(input: &SessionInput) -> anyhow::Result<()> {
 
 fn validate_database_schema(connection: &Connection) -> anyhow::Result<()> {
     for (table, columns) in [
-        ("session", &["id", "time_created"] as &[_]),
+        ("session", &["id"] as &[_]),
         ("message", &["id", "session_id", "data"] as &[_]),
         ("part", &["message_id", "data"] as &[_]),
     ] {
-        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
-        let found: HashSet<String> = statement
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<rusqlite::Result<_>>()?;
+        let found = table_columns(connection, table)?;
         if !columns.iter().all(|column| found.contains(*column)) {
             anyhow::bail!("OpenCode SQLite source has an unsupported {table} schema");
         }
     }
     Ok(())
+}
+
+fn table_columns(connection: &Connection, table: &str) -> rusqlite::Result<HashSet<String>> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect()
+}
+
+fn column_or_null(columns: &HashSet<String>, table: &str, column: &str) -> String {
+    if columns.contains(column) {
+        format!("{table}.{column}")
+    } else {
+        "NULL".to_owned()
+    }
+}
+
+fn ordering_expression(columns: &HashSet<String>, table: &str) -> String {
+    let created = column_or_null(columns, table, "time_created");
+    let updated = column_or_null(columns, table, "time_updated");
+    let tie_breaker = if columns.contains("id") {
+        format!("{table}.id")
+    } else {
+        format!("{table}.rowid")
+    };
+    format!("COALESCE({created}, {updated}, 0), {tie_breaker}")
+}
+
+fn part_ordering_expression(columns: &HashSet<String>) -> String {
+    if columns.contains("id") {
+        "part.id".to_owned()
+    } else {
+        ordering_expression(columns, "part")
+    }
+}
+
+fn query_root_timestamp(
+    connection: &Connection,
+    root_session_id: &str,
+    session_columns: &HashSet<String>,
+) -> anyhow::Result<Option<i64>> {
+    let created = column_or_null(session_columns, "session", "time_created");
+    let updated = column_or_null(session_columns, "session", "time_updated");
+    let timestamp = connection.query_row(
+        &format!("SELECT COALESCE({created}, {updated}) FROM session WHERE id = ?1"),
+        [root_session_id],
+        |row| row.get::<_, Option<i64>>(0),
+    );
+    match timestamp {
+        Ok(timestamp) => Ok(timestamp.and_then(parse_db_ts)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            anyhow::bail!("OpenCode SQLite source has no session {root_session_id}")
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn visit_database_connection(
@@ -239,20 +291,18 @@ fn visit_database_connection(
     cancel: &dyn Fn() -> bool,
     sink: &mut dyn RecordSink,
 ) -> anyhow::Result<SessionSummary> {
-    let root_created = conn
-        .query_row(
-            "SELECT time_created FROM session WHERE id = ?1",
-            [root_session_id],
-            |row| row.get::<_, Option<i64>>(0),
-        )?
-        .and_then(parse_db_ts);
+    let session_columns = table_columns(conn, "session")?;
+    let message_columns = table_columns(conn, "message")?;
+    let part_columns = table_columns(conn, "part")?;
+    let root_created = query_root_timestamp(conn, root_session_id, &session_columns)?;
     let mut state = OpenCodeStreamState {
         root_session_id: Some(root_session_id.to_owned()),
         root_created,
         ordering_incomplete: root_created.is_none(),
         ..Default::default()
     };
-    let cluster = if db_session_has_parent_id(conn) {
+    let has_parent_id = db_session_has_parent_id(conn);
+    let cluster = if has_parent_id {
         "WITH RECURSIVE cluster(id) AS (
              SELECT id FROM session WHERE id = ?1
              UNION
@@ -262,17 +312,19 @@ fn visit_database_connection(
         "WITH cluster(id) AS (SELECT id FROM session WHERE id = ?1)"
     };
     state.descendant_sessions = query_db_descendant_sessions(conn, cluster, root_session_id)?;
+    let message_created = column_or_null(&message_columns, "message", "time_created");
+    let message_updated = column_or_null(&message_columns, "message", "time_updated");
+    let message_order = ordering_expression(&message_columns, "message");
     let mut messages = conn.prepare(&format!(
         "{cluster}
-         SELECT message.id, message.time_created, message.time_updated,
+         SELECT message.id, {message_created}, {message_updated},
                 CASE WHEN length(CAST(message.data AS BLOB)) <= ?2 THEN message.data END,
                 length(CAST(message.data AS BLOB)),
                 message.session_id
-         FROM message JOIN cluster ON message.session_id = cluster.id
-         ORDER BY COALESCE(message.time_created, message.time_updated, 0),
-                   message.session_id, message.id"
+          FROM message JOIN cluster ON message.session_id = cluster.id
+          ORDER BY {message_order}, message.session_id, message.id"
     ))?;
-    let mut parts = prepare_db_parts(conn)?;
+    let mut parts = prepare_db_parts(conn, &part_columns)?;
     let mut rows = messages.query(params![root_session_id, MAX_RECORD_BYTES as i64])?;
     while let Some(row) = rows.next()? {
         if cancel() {
@@ -341,11 +393,13 @@ fn query_db_descendant_sessions(
     if !db_session_has_parent_id(conn) {
         return Ok(HashMap::new());
     }
+    let columns = table_columns(conn, "session")?;
+    let title = column_or_null(&columns, "session", "title");
     let mut statement = conn.prepare(&format!(
         "{cluster}
-         SELECT session.id, session.parent_id, session.title
-         FROM session JOIN cluster ON session.id = cluster.id
-         WHERE session.id != ?1"
+         SELECT session.id, session.parent_id, {title}
+          FROM session JOIN cluster ON session.id = cluster.id
+          WHERE session.id != ?1"
     ))?;
     let mut rows = statement.query(params![root_session_id])?;
     let mut out = HashMap::new();
@@ -366,26 +420,37 @@ fn query_db_descendant_sessions(
     Ok(out)
 }
 
-fn prepare_db_parts(conn: &Connection) -> rusqlite::Result<Statement<'_>> {
-    conn.prepare(
-        "SELECT id, time_created, time_updated,
+fn prepare_db_parts<'a>(
+    conn: &'a Connection,
+    columns: &HashSet<String>,
+) -> rusqlite::Result<Statement<'a>> {
+    let id = if columns.contains("id") {
+        "part.id".to_owned()
+    } else {
+        "part.rowid".to_owned()
+    };
+    let created = column_or_null(columns, "part", "time_created");
+    let updated = column_or_null(columns, "part", "time_updated");
+    let order = part_ordering_expression(columns);
+    conn.prepare(&format!(
+        "SELECT {id}, {created}, {updated},
                 CASE
                     WHEN length(CAST(data AS BLOB)) <= ?2
                      AND SUM(length(CAST(data AS BLOB))) OVER (
-                             ORDER BY COALESCE(time_created, time_updated, 0), id
+                             ORDER BY {order}
                              ROWS UNBOUNDED PRECEDING
                          ) <= ?2
                     THEN data
                 END,
                 length(CAST(data AS BLOB)),
                 SUM(length(CAST(data AS BLOB))) OVER (
-                    ORDER BY COALESCE(time_created, time_updated, 0), id
-                    ROWS UNBOUNDED PRECEDING
-                )
-           FROM part
-          WHERE message_id = ?1
-          ORDER BY COALESCE(time_created, time_updated, 0), id",
-    )
+                     ORDER BY {order}
+                     ROWS UNBOUNDED PRECEDING
+                 )
+            FROM part
+           WHERE message_id = ?1
+           ORDER BY {order}"
+    ))
 }
 
 fn visit_db_parts(
@@ -944,6 +1009,14 @@ fn apply_tool_part(
         pending
             .content
             .push(ContentPart::new(ContentKind::ToolResult, output));
+    } else if let Some(error) = state
+        .and_then(|state| state.get("error"))
+        .and_then(Value::as_str)
+        .filter(|error| !error.is_empty())
+    {
+        pending
+            .content
+            .push(ContentPart::new(ContentKind::ToolResult, error));
     }
 }
 

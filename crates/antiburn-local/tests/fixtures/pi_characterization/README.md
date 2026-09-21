@@ -1,13 +1,15 @@
 # Synthetic Pi characterization fixtures
 
 These fixtures are hand-authored synthetic Pi records. They come from
-the pinned Pi V3 session contract and the reviewed example extension. They use
-only invented values and contain no captured session data.
+the pinned Pi session contract, its V1/V2 migrations, and the reviewed example
+extension. They use only invented values and contain no captured session data.
 
-An accepted Pi V3 source starts with one `type: "session"` record with
-`version: 3` and a valid timestamp. The reader rejects headerless, malformed,
-unsupported-version, and duplicate-ID input before it can emit Pi evidence.
-The `headerless_*` fixtures exist only to prove that rejection.
+An accepted source starts with one `type: "session"` record and a valid
+timestamp. The reader accepts the official V1 form with no `version`, V2, and
+V3. It applies Pi's documented V1 linear-ID and V2 `hookMessage` migrations
+in memory. It rejects headerless, malformed, unsupported-version, and
+duplicate-ID input before it can emit Pi evidence. The `headerless_*` fixtures
+exist only to prove that rejection.
 
 The adapter treats the top-level timestamp as authoritative. It accounts for
 only the four disjoint usage buckets. It never reads or stores `customType`
