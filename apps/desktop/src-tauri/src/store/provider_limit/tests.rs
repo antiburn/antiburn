@@ -1465,6 +1465,10 @@ fn quota_accounts_reports_label_has_factor_and_the_current_open_period() {
         Some((0, 10_000)),
         "the period has not reset yet"
     );
+    assert_eq!(
+        lane.first_observed_epoch, 10_000,
+        "the lane's first reading is the earliest across its periods"
+    );
 
     // Once `now` passes the reset, the same period no longer counts as open.
     let accounts_after_reset = store.quota_accounts(20_000).expect("query succeeds");

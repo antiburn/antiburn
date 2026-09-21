@@ -182,12 +182,12 @@ export function quotaBandSpecs(
     {
       key: "other",
       className: "quota-area quota-area-other",
-      fill: "var(--color-quota-other)",
+      fill: "var(--color-chart-rest-strong)",
     },
     {
       key: "unattributed",
       className: "quota-area quota-area-unattributed",
-      fill: "var(--color-quota-unattributed)",
+      fill: "var(--color-chart-rest-faint)",
     },
     {
       key: "unexplained",

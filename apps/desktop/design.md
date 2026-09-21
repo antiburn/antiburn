@@ -17,9 +17,9 @@ sources:
   - src/styles/session-rows.css
   - src/styles/session-detail.css
   - src/components/ui/text-roll.css
+  - src/components/ui/hero-figures.css
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
-  - src/components/ui/hero-figures.css
   - src/views/main-window/quota/quota.css
 colors:
   # Concrete token colors use modern HSL function syntax.
@@ -355,42 +355,29 @@ colors:
   context-critical:
     light: "hsl(0 72% 50.5%)"
     dark: "hsl(0 90% 70.7%)"
-  # Quota sub-palette only (src/views/main-window/quota/quota.css). The eight
-  # session hues are Okabe-Ito, safe for deuteranopia, protanopia and
-  # tritanopia, ordered so consecutive hues differ in both hue and lightness.
+  # Quota sub-palette only (src/views/main-window/quota/quota.css). The five
+  # session steps are one lightness ramp of the meter blue, darkest for the top
+  # spender, so rank reads by tone and is safe for every colour-vision
+  # deficiency. Grouped bands ("other", "unattributed") use chart-rest-strong
+  # and chart-rest-faint, the same resting greys as the session-analysis charts.
   quota-meter: # the provider's own meter reading; matches the context line's blue
     light: "hsl(221.2 83% 53.3%)"
     dark: "hsl(221 89% 59.8%)"
-  quota-session-1: # blue (Okabe-Ito); distinct from quota-meter's brighter, more indigo blue
-    light: "hsl(201.5 100% 34.9%)"
-    dark: "hsl(201.5 100% 34.9%)"
-  quota-session-2: # orange
-    light: "hsl(41.5 100% 45%)"
-    dark: "hsl(41.5 100% 45%)"
-  quota-session-3: # bluish green
-    light: "hsl(163.6 100% 31%)"
-    dark: "hsl(163.6 100% 31%)"
-  quota-session-4: # reddish purple
-    light: "hsl(327 45% 63.7%)"
-    dark: "hsl(327 45% 63.7%)"
-  quota-session-5: # sky blue, darkened for light-surface contrast
-    light: "hsl(202 62.6% 48.2%)"
-    dark: "hsl(201.6 77% 62.5%)"
-  quota-session-6: # vermilion
-    light: "hsl(26.4 100% 41.7%)"
-    dark: "hsl(26.4 100% 41.7%)"
-  quota-session-7: # yellow, darkened for light-surface contrast
-    light: "hsl(55 100% 39.4%)"
-    dark: "hsl(56 85% 60%)"
-  quota-session-8: # deep purple on light, lavender on dark; distinct on both surfaces
-    light: "hsl(265 32% 43.8%)"
-    dark: "hsl(261 46% 73.7%)"
-  quota-other: # every bound session outside the top eight, stacked as one band
-    light: "hsl(240 5.5% 25% / 0.3)"
-    dark: "hsl(240 33% 94% / 0.28)"
-  quota-unattributed: # spend this app could not credit to any session
-    light: "hsl(240 5.5% 25% / 0.12)"
-    dark: "hsl(240 33% 94% / 0.1)"
+  quota-session-1: # ramp step 1, the top spender
+    light: "hsl(221 75% 45%)"
+    dark: "hsl(221 89% 66%)"
+  quota-session-2: # ramp step 2
+    light: "hsl(221 70% 56%)"
+    dark: "hsl(221 75% 56%)"
+  quota-session-3: # ramp step 3
+    light: "hsl(221 65% 67%)"
+    dark: "hsl(221 60% 46%)"
+  quota-session-4: # ramp step 4
+    light: "hsl(221 60% 77%)"
+    dark: "hsl(221 45% 38%)"
+  quota-session-5: # ramp step 5, the fifth spender
+    light: "hsl(221 54% 86%)"
+    dark: "hsl(221 34% 30%)"
   quota-unexplained: # meter spend no local reading explains; hatch stroke, reuses the meter blue at low opacity so it needs no new hue
     light: "hsl(221.2 83% 53.3% / 0.5)"
     dark: "hsl(221 89% 59.8% / 0.5)"
@@ -594,17 +581,31 @@ Notes for what isn't expressible as a token:
   number and a `type-caption text-label-tertiary` caption, with a 1px separator and
   16px inline padding between cells. The cells stack below 540px of container width.
 
-- **Limits page** — the header is a jump bar, not a row of controls: account › lane ›
-  range as `type-footnote` text with `›` in `text-label-tertiary`. A level with more
-  than one choice is a borderless `rounded-control` button whose chevron shows only on
-  hover, focus, or while its menu is open (`quota-jump-chevron`); a level with one
-  choice is plain text. The range reads in the lane's own words ("Last 3 weeks" on a
-  weekly lane, "Last 3 windows" on a 5-hour lane). The pace-line switch floats over the
-  chart's top-right corner on `surface-key` with `shadow-stats-card`, like the Overview
-  legend. Session rows follow the session-card recipe (`bg-session-card`,
+- **Limits page** — the scope picker is a pill that floats over the bottom centre of
+  the page, in the shape of the session detail's section picker and in its selected
+  chip colours for its whole length: `rounded-full`, `bg-selected-fill`,
+  `text-selected-ink`, `shadow-raised`, 2px track padding, and `type-callout` labels.
+  Account › lane › range are its segments, each a `rounded-full` menu button at least
+  24px tall with 12px inline padding, washed with `selected-ink` at 10% on hover and 15%
+  while its menu is open; a `›` at 50% opacity sits between segments. The chevron shows
+  only on hover, focus, or while the menu is open (`quota-jump-chevron`); a level with
+  one choice is plain text. The range menu lists every preset and greys one that ends
+  before the lane's first reading at 40% opacity, with "· no readings" after its label.
+  The range reads in the lane's own words ("Last 3 weeks" on a weekly lane, "Last 3
+  windows" on a 5-hour lane); the "last reading" note at the top right is
+  `type-footnote text-label-tertiary`. The chart always spans the whole window, start
+  to reset, with the open window's data ending at "now" and the pace line ending at the
+  same point; local midnights (or whole hours on a 5-hour lane) label the axis. The
+  pace-line toggle is a small `type-footnote` push button under the chart's right edge,
+  24px tall on `bg-surface-secondary` in secondary ink with `rounded-control` and 8px
+  inline padding, reading "Show pace" or "Hide pace" for what a press does. A range with nothing to show renders a centred `Gauge`
+  icon in tertiary ink over a `type-body` title and a `type-callout` caption that says
+  when readings began. Session rows follow the session-card recipe (`bg-session-card`,
   `rounded-control`, 12px by 8px padding, 6px gaps, `hover:bg-surface-secondary/50`)
-  with the swatch, the agent icon, a semibold title, and right-aligned percent and
-  dollars; the "other", "unattributed" and "unexplained" rows use `surface-card/50` and
+  with the agent icon, a regular-weight `type-body` title, and at the right the colour
+  swatch beside the percent, then the dollars in secondary ink. The swatch sits with the
+  figure it explains, not at the row's edge, so the row starts with the agent icon like
+  a session card; the "other", "unattributed" and "unexplained" rows use `surface-card/50` and
   secondary ink. The list sizes to its rows up to 45% of the column and the chart takes
   the rest (`quota-session-list` in `quota.css`).
 

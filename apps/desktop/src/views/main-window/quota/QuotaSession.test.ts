@@ -14,8 +14,8 @@ function account(over: Partial<QuotaAccountPayload> = {}): QuotaAccountPayload {
     displayName: "Claude",
     accountKey: "acct-1",
     lanes: [
-      { lane: "weekly", label: "Weekly", currentPeriod: null },
-      { lane: "fiveHour", label: "5-hour", currentPeriod: null },
+      { lane: "weekly", label: "Weekly", currentPeriod: null, firstObservedEpoch: 0 },
+      { lane: "fiveHour", label: "5-hour", currentPeriod: null, firstObservedEpoch: 0 },
     ],
     ...over,
   }
@@ -225,7 +225,7 @@ describe("QuotaSession", () => {
     const stop = session.subscribe(() => undefined)
     await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
     vi.mocked(adapter.getUsage).mockRejectedValueOnce(new Error("no"))
-    session.selectRange("last30Days")
+    session.selectRange("last5Windows")
     await vi.waitFor(() => expect(session.getSnapshot().usageError).toBe(true))
     expect(session.getSnapshot().usage?.generatedAt).toBe("u1")
     stop()
@@ -246,7 +246,7 @@ describe("QuotaSession", () => {
     // `rangeForPreset` itself computes for the same inputs.
     const expected = rangeForPreset(
       "last3Windows",
-      { lane: "weekly", label: "Weekly", currentPeriod: null },
+      { lane: "weekly", label: "Weekly", currentPeriod: null, firstObservedEpoch: 0 },
       NOW,
     )
     expect(request.rangeStartEpoch).toBe(expected.startEpoch)
@@ -282,11 +282,11 @@ describe("QuotaSession", () => {
     const callsBefore = vi.mocked(adapter.getUsage).mock.calls.length
 
     vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-A"))
-    session.selectRange("lastWeek")
+    session.selectRange("lastWindow")
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-A"))
 
     vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-B"))
-    session.selectRange("last30Days")
+    session.selectRange("last5Windows")
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-B"))
     expect(vi.mocked(adapter.getUsage).mock.calls.length).toBe(callsBefore + 2)
 
@@ -294,7 +294,7 @@ describe("QuotaSession", () => {
     const stopRecorder = session.subscribe(() =>
       loadingSnapshots.push(session.getSnapshot().loading),
     )
-    session.selectRange("lastWeek")
+    session.selectRange("lastWindow")
     stopRecorder()
 
     expect(session.getSnapshot().usage?.generatedAt).toBe("u-A")
@@ -313,15 +313,15 @@ describe("QuotaSession", () => {
 
     vi.mocked(adapter.now).mockReturnValueOnce(NOW + 500)
     vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-A"))
-    session.selectRange("lastWeek")
+    session.selectRange("lastWindow")
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-A"))
     expect(session.getSnapshot().now).toBe(NOW + 500)
 
     vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-B"))
-    session.selectRange("last30Days")
+    session.selectRange("last5Windows")
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-B"))
 
-    session.selectRange("lastWeek")
+    session.selectRange("lastWindow")
     expect(session.getSnapshot().usage?.generatedAt).toBe("u-A")
     expect(session.getSnapshot().now).toBe(NOW + 500)
     stop()
@@ -334,15 +334,15 @@ describe("QuotaSession", () => {
     await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
 
     vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-A"))
-    session.selectRange("lastWeek")
+    session.selectRange("lastWindow")
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-A"))
 
-    session.selectRange("last30Days")
-    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last30Days"))
+    session.selectRange("last5Windows")
+    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last5Windows"))
 
     vi.mocked(adapter.now).mockReturnValue(NOW + QUOTA_USAGE_CACHE_TTL_MS / 1000 + 1)
     vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage("u-A2"))
-    session.selectRange("lastWeek")
+    session.selectRange("lastWindow")
     // A fresh call, not the stale cache entry, is the only way this resolves.
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u-A2"))
     stop()
@@ -399,7 +399,7 @@ describe("QuotaSession", () => {
       provider: "anthropic",
       accountKey: "acct-1",
       lane: "fiveHour",
-      rangePreset: "last30Days",
+      rangePreset: "last5Windows",
     })
     const { session } = setup()
     sessions.push(session)
@@ -410,7 +410,7 @@ describe("QuotaSession", () => {
       accountKey: "acct-1",
       lane: "fiveHour",
     })
-    expect(session.getSnapshot().range).toBe("last30Days")
+    expect(session.getSnapshot().range).toBe("last5Windows")
     stop()
   })
 
@@ -453,9 +453,9 @@ describe("QuotaSession", () => {
       lane: "fiveHour",
     })
 
-    session.selectRange("last30Days")
-    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last30Days"))
-    expect(readQuotaViewPrefs().rangePreset).toBe("last30Days")
+    session.selectRange("last5Windows")
+    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last5Windows"))
+    expect(readQuotaViewPrefs().rangePreset).toBe("last5Windows")
 
     session.selectAccount("openai", "acct-2")
     await vi.waitFor(() => expect(session.getSnapshot().selection?.accountKey).toBe("acct-2"))

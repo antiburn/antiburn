@@ -129,6 +129,9 @@ describe("quotaBandSpecs", () => {
     // token the palette does not define.
     expect(specs[1]!.fill).toBe("var(--color-quota-session-1)")
     expect(specs[2]!.fill).toBe("var(--color-quota-session-3)")
+    const [other, unattributed] = specs.slice(3)
+    expect(other!.fill).toBe("var(--color-chart-rest-strong)")
+    expect(unattributed!.fill).toBe("var(--color-chart-rest-faint)")
   })
 })
 

@@ -6,7 +6,6 @@ import type {
   QuotaUsagePayload,
 } from "../../../lib/providerUsageIpc"
 import {
-  assignQuotaHues,
   isQuotaRangePreset,
   isWeeklyLane,
   isWindowPreset,
@@ -14,7 +13,6 @@ import {
   quotaDisplayRange,
   quotaLatestPeriod,
   quotaLatestSampleEpoch,
-  QUOTA_HUE_COUNT,
   QUOTA_METER_INTERPOLATION_GAP_SECS,
   QUOTA_OWN_SERIES_CAP,
   QUOTA_OWN_SERIES_MIN_PERCENT,
@@ -22,11 +20,10 @@ import {
   quotaSwatchClasses,
   quotaTopSessionRows,
   quotaUnattributedTotal,
+  presetHasReadings,
   rangeForPreset,
   selectQuotaPeriods,
   type QuotaRange,
-  type QuotaSeriesRow,
-  type QuotaTopSession,
 } from "./quotaSeries"
 
 const DAY = 24 * 60 * 60
@@ -36,7 +33,13 @@ const BUCKET = 15 * 60
 const FAR_FUTURE = Number.MAX_SAFE_INTEGER
 
 function lane(over: Partial<QuotaLanePayload> = {}): QuotaLanePayload {
-  return { lane: "weekly", label: "Weekly", currentPeriod: null, ...over }
+  return {
+    lane: "weekly",
+    label: "Weekly",
+    currentPeriod: null,
+    firstObservedEpoch: 0,
+    ...over,
+  }
 }
 
 function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
@@ -82,52 +85,11 @@ describe("isWeeklyLane", () => {
 describe("rangeForPreset", () => {
   const now = 10 * WEEK
 
-  it("thisWeek uses the weekly lane's current period when present", () => {
-    const weekly = lane({
-      currentPeriod: { startsAtEpoch: now - 1000, resetsAtEpoch: now + 5000 },
-    })
-    const range = rangeForPreset("thisWeek", weekly, now)
-    expect(range).toEqual({ startEpoch: now - 1000, endEpoch: now + 5000 })
-  })
-
-  it("thisWeek falls back to a trailing week with no current period", () => {
-    const range = rangeForPreset("thisWeek", lane(), now)
-    expect(range).toEqual({ startEpoch: now - WEEK, endEpoch: now })
-  })
-
-  it("thisWeek for the five-hour lane borrows the account's weekly current period", () => {
-    const fiveHour = lane({ lane: "fiveHour", label: "5-hour", currentPeriod: null })
-    const weekly = lane({
-      currentPeriod: { startsAtEpoch: now - 2000, resetsAtEpoch: now + 3000 },
-    })
-    const range = rangeForPreset("thisWeek", fiveHour, now, weekly)
-    expect(range).toEqual({ startEpoch: now - 2000, endEpoch: now + 3000 })
-  })
-
-  it("thisWeek for the five-hour lane falls back with no weekly lane current period", () => {
-    const fiveHour = lane({ lane: "fiveHour", label: "5-hour", currentPeriod: null })
-    const range = rangeForPreset("thisWeek", fiveHour, now, lane())
-    expect(range).toEqual({ startEpoch: now - WEEK, endEpoch: now })
-  })
-
-  it("lastWeek is the week before thisWeek's start", () => {
-    const weekly = lane({
-      currentPeriod: { startsAtEpoch: now - 1000, resetsAtEpoch: now + 5000 },
-    })
-    const range = rangeForPreset("lastWeek", weekly, now)
-    expect(range).toEqual({ startEpoch: now - 1000 - WEEK, endEpoch: now - 1000 })
-  })
-
-  it("last30Days is a trailing thirty days regardless of lane", () => {
-    const range = rangeForPreset("last30Days", lane(), now)
-    expect(range).toEqual({ startEpoch: now - 30 * DAY, endEpoch: now })
-  })
-
   it("never spans more than 70 days", () => {
     const weekly = lane({
       currentPeriod: { startsAtEpoch: now - 80 * DAY, resetsAtEpoch: now },
     })
-    const range = rangeForPreset("thisWeek", weekly, now)
+    const range = rangeForPreset("thisWindow", weekly, now)
     expect(range.endEpoch - range.startEpoch).toBe(70 * DAY)
     expect(range.endEpoch).toBe(now)
   })
@@ -245,22 +207,19 @@ describe("rangeForPreset", () => {
 })
 
 describe("isWindowPreset", () => {
-  it("is true only for a window preset, not a date preset or a custom range", () => {
+  it("is true for a window preset, false for a custom range", () => {
     expect(isWindowPreset("thisWindow")).toBe(true)
     expect(isWindowPreset("last10Windows")).toBe(true)
-    expect(isWindowPreset("thisWeek")).toBe(false)
-    expect(isWindowPreset("last30Days")).toBe(false)
     expect(isWindowPreset({ kind: "custom", startEpoch: 0, endEpoch: 1 })).toBe(false)
   })
 })
 
 describe("isQuotaRangePreset", () => {
-  it("is true for every window and date preset literal, false for anything else", () => {
+  it("is true for every window preset literal, false for anything else, including a preset an earlier build saved", () => {
     expect(isQuotaRangePreset("thisWindow")).toBe(true)
     expect(isQuotaRangePreset("last10Windows")).toBe(true)
-    expect(isQuotaRangePreset("thisWeek")).toBe(true)
-    expect(isQuotaRangePreset("lastWeek")).toBe(true)
-    expect(isQuotaRangePreset("last30Days")).toBe(true)
+    expect(isQuotaRangePreset("thisWeek")).toBe(false)
+    expect(isQuotaRangePreset("last30Days")).toBe(false)
     expect(isQuotaRangePreset("notAPreset")).toBe(false)
     expect(isQuotaRangePreset(undefined)).toBe(false)
     expect(isQuotaRangePreset(42)).toBe(false)
@@ -277,25 +236,17 @@ describe("selectQuotaPeriods", () => {
     period({ periodId: 4, startsAtEpoch: 3 * WEEK, resetsAtEpoch: 4 * WEEK }),
   ]
 
-  it("keeps every period overlapping the fetched range for a date preset, sorted by start", () => {
-    const shuffled = [periods[2]!, periods[0]!, periods[3]!, periods[1]!]
-    const selected = selectQuotaPeriods("thisWeek", shuffled, fetched, now)
-    expect(selected.map((p) => p.periodId)).toEqual([1, 2, 3, 4])
-  })
+  const custom = { kind: "custom" as const, startEpoch: 0, endEpoch: 4 * WEEK }
 
-  it("keeps every period overlapping the fetched range for a custom range", () => {
-    const selected = selectQuotaPeriods(
-      { kind: "custom", startEpoch: 0, endEpoch: 4 * WEEK },
-      periods,
-      fetched,
-      now,
-    )
-    expect(selected).toHaveLength(4)
+  it("keeps every period overlapping the fetched range for a custom range, sorted by start", () => {
+    const shuffled = [periods[2]!, periods[0]!, periods[3]!, periods[1]!]
+    const selected = selectQuotaPeriods(custom, shuffled, fetched, now)
+    expect(selected.map((p) => p.periodId)).toEqual([1, 2, 3, 4])
   })
 
   it("drops a period that does not overlap the fetched range at all", () => {
     const outside = period({ periodId: 5, startsAtEpoch: 4 * WEEK, resetsAtEpoch: 5 * WEEK })
-    const selected = selectQuotaPeriods("thisWeek", [...periods, outside], fetched, now)
+    const selected = selectQuotaPeriods(custom, [...periods, outside], fetched, now)
     expect(selected.map((p) => p.periodId)).not.toContain(5)
   })
 
@@ -331,7 +282,7 @@ describe("selectQuotaPeriods", () => {
 
   it("returns nothing for an empty payload", () => {
     expect(selectQuotaPeriods("thisWindow", [], fetched, now)).toEqual([])
-    expect(selectQuotaPeriods("thisWeek", [], fetched, now)).toEqual([])
+    expect(selectQuotaPeriods(custom, [], fetched, now)).toEqual([])
   })
 })
 
@@ -341,10 +292,6 @@ describe("quotaDisplayRange", () => {
     period({ periodId: 2, startsAtEpoch: WEEK, resetsAtEpoch: 2 * WEEK }),
     period({ periodId: 3, startsAtEpoch: 2 * WEEK, resetsAtEpoch: 3 * WEEK }),
   ]
-
-  it("is the fetched range for a date preset", () => {
-    expect(quotaDisplayRange("thisWeek", selected, fetched)).toEqual(fetched)
-  })
 
   it("is the fetched range for a custom range", () => {
     const custom = { kind: "custom" as const, startEpoch: 0, endEpoch: WEEK }
@@ -509,6 +456,26 @@ describe("quotaBurnupSeries", () => {
     // The lowest-dollar qualifying session (s[count - 1], the smallest usd)
     // falls outside the cap and folds into "other".
     expect(series.topSessions.some((s) => s.sessionId === `s${count - 1}`)).toBe(false)
+  })
+
+  it("gives each own-series session the ramp step of its dollar rank, darkest for the top spender", () => {
+    const sessions = [
+      { agent: "claude", sessionId: "mid", wslDistro: null, title: null, usd: 5, percent: 20 },
+      { agent: "claude", sessionId: "top", wslDistro: null, title: null, usd: 9, percent: 20 },
+      { agent: "claude", sessionId: "low", wslDistro: null, title: null, usd: 1, percent: 20 },
+    ]
+    const p = period({ startsAtEpoch: 0, resetsAtEpoch: WEEK, sessions })
+    const series = quotaBurnupSeries(usage([p]), 0, WEEK, FAR_FUTURE)
+    const hueOf = (id: string) => series.topSessions.find((s) => s.sessionId === id)!.hue
+    expect(hueOf("top")).toBe(0)
+    expect(hueOf("mid")).toBe(1)
+    expect(hueOf("low")).toBe(2)
+    const classes = quotaSwatchClasses(series.topSessions)
+    expect(classes[series.topSessions.find((s) => s.sessionId === "top")!.key]).toBe(
+      "bg-quota-session-1",
+    )
+    expect(classes.other).toBe("bg-chart-rest-strong")
+    expect(classes.unattributed).toBe("bg-chart-rest-faint")
   })
 
   it("falls back to the top five sessions by dollars when sessions carry no percent", () => {
@@ -874,7 +841,7 @@ describe("quotaTopSessionRows", () => {
     expect(rows[0]!.periodCount).toBe(2)
   })
 
-  it("returns every own-series session, sorted by dollars, with no ten-row cap", () => {
+  it("returns every own-series session, sorted by dollars, capped like the chart's own bands", () => {
     const sessions = Array.from({ length: 12 }, (_, i) => ({
       agent: "claude",
       sessionId: `s${i}`,
@@ -884,10 +851,13 @@ describe("quotaTopSessionRows", () => {
       percent: i + 2,
     }))
     const rows = quotaTopSessionRows([period({ sessions })])
-    expect(rows).toHaveLength(12)
+    expect(rows).toHaveLength(QUOTA_OWN_SERIES_CAP)
     expect(rows[0]!.sessionId).toBe("s11")
     expect(rows.map((r) => r.sessionId)).toEqual(
-      [...sessions].sort((a, b) => b.usd - a.usd).map((s) => s.sessionId),
+      [...sessions]
+        .sort((a, b) => b.usd - a.usd)
+        .slice(0, QUOTA_OWN_SERIES_CAP)
+        .map((s) => s.sessionId),
     )
   })
 
@@ -954,119 +924,26 @@ describe("quotaLatestPeriod and quotaLatestSampleEpoch", () => {
   })
 })
 
-describe("assignQuotaHues", () => {
-  function topSession(key: string): QuotaTopSession {
-    return {
-      key,
-      agent: "claude",
-      sessionId: key,
-      wslDistro: null,
-      title: null,
-      usd: 0,
-      hue: 0,
-    }
-  }
-
-  /** A minimal series row: `t` and any session values the test needs, with
-   *  every other field defaulting to null. */
-  function seriesRow(t: number, values: Record<string, number | null> = {}): QuotaSeriesRow {
-    return {
-      t,
-      index: 0,
-      meter: null,
-      other: null,
-      unattributed: null,
-      unexplained: null,
-      ...values,
-    }
-  }
-
-  it("gives two sessions different hues once the first is still cumulative when the second starts, even though their own contributions never overlap in time", () => {
-    // "a" contributes only at t=0, then stays cumulative (and so visible)
-    // for the rest of the window. "b" contributes only much later. Their
-    // own contribution buckets never overlap, but the row where "b" starts
-    // still shows "a" active, so the bands touch in the stack.
-    const sessions = [topSession("a"), topSession("b")]
-    const rows = [
-      seriesRow(0, { a: 10, b: null }),
-      seriesRow(BUCKET, { a: 10, b: null }),
-      seriesRow(10 * BUCKET, { a: 10, b: 5 }),
-      seriesRow(11 * BUCKET, { a: 10, b: 5 }),
-    ]
-    const hues = assignQuotaHues(sessions, rows)
-    expect(hues.get("a")).not.toBe(hues.get("b"))
+describe("presetHasReadings", () => {
+  const now = 1_700_000_000
+  const weekly = lane({
+    currentPeriod: { startsAtEpoch: now - 2 * DAY, resetsAtEpoch: now + 5 * DAY },
+    firstObservedEpoch: now - DAY,
   })
 
-  it("lets two sessions that are never stack-adjacent share a hue, when a session between them is active at every row where both are", () => {
-    const sessions = [topSession("a"), topSession("m"), topSession("b")]
-    const rows = [
-      seriesRow(0, { a: 10, m: null, b: null }),
-      seriesRow(BUCKET, { a: 10, m: 5, b: null }),
-      seriesRow(2 * BUCKET, { a: 10, m: 5, b: 3 }),
-      seriesRow(3 * BUCKET, { a: 10, m: 5, b: 3 }),
-    ]
-    const hues = assignQuotaHues(sessions, rows)
-    // "a" and "b" never sit next to each other in the active list: "m" is
-    // always between them, so only a-m and m-b are conflict edges.
-    expect(hues.get("a")).toBe(hues.get("b"))
-    expect(hues.get("m")).not.toBe(hues.get("a"))
+  it("keeps the open window, whose end is after the first reading", () => {
+    expect(presetHasReadings("thisWindow", weekly, now)).toBe(true)
   })
 
-  it("sends a forced clash to the hue whose neighbor touches for the fewest rows", () => {
-    // "a" and "b" touch directly (never coexisting with "x"), so they take
-    // different hues. "x" then touches both, more rows against "a" than
-    // against "b". With only two hues, "x" must clash with one of them —
-    // it should pick "b", the neighbor it touches for fewer rows.
-    const sessions = [topSession("a"), topSession("b"), topSession("x")]
-    const rows = [
-      seriesRow(0, { a: 10, b: 5, x: null }),
-      seriesRow(BUCKET, { a: 10, b: 5, x: null }),
-      seriesRow(2 * BUCKET, { a: 10, b: null, x: 3 }),
-      seriesRow(3 * BUCKET, { a: 10, b: null, x: 3 }),
-      seriesRow(4 * BUCKET, { a: 10, b: null, x: 3 }),
-      seriesRow(5 * BUCKET, { a: 10, b: null, x: 3 }),
-      seriesRow(6 * BUCKET, { a: 10, b: null, x: 3 }),
-      seriesRow(7 * BUCKET, { a: null, b: 5, x: 3 }),
-      seriesRow(8 * BUCKET, { a: null, b: 5, x: 3 }),
-    ]
-    const hues = assignQuotaHues(sessions, rows, 2)
-    expect(hues.get("a")).not.toBe(hues.get("b"))
-    expect(hues.get("x")).toBe(hues.get("b"))
+  it("drops the last window when it closed before the first reading", () => {
+    expect(presetHasReadings("lastWindow", weekly, now)).toBe(false)
   })
 
-  it("keeps every hue in range, and quotaSwatchClasses maps eight hues to eight distinct classes", () => {
-    // A full conflict clique across eight sessions: every pair touches in
-    // its own row, so the greedy assignment needs every one of the eight
-    // hues, processed in `sessions` order.
-    const sessions = Array.from({ length: 8 }, (_, i) => topSession(`s${i}`))
-    const rows: QuotaSeriesRow[] = []
-    let t = 0
-    for (let i = 0; i < sessions.length; i++) {
-      for (let j = i + 1; j < sessions.length; j++) {
-        const values: Record<string, number | null> = {}
-        sessions.forEach((session, k) => {
-          values[session.key] = k === i || k === j ? 10 : null
-        })
-        rows.push(seriesRow(t, values))
-        t += BUCKET
-      }
-    }
-    const hues = assignQuotaHues(sessions, rows)
-    for (const session of sessions) {
-      const hue = hues.get(session.key)!
-      expect(hue).toBeGreaterThanOrEqual(0)
-      expect(hue).toBeLessThan(QUOTA_HUE_COUNT)
-      session.hue = hue
-    }
-    const classes = quotaSwatchClasses(sessions)
-    const distinctClasses = new Set(sessions.map((session) => classes[session.key]))
-    expect(distinctClasses.size).toBe(8)
+  it("keeps a multi-window range that reaches the open window", () => {
+    expect(presetHasReadings("last3Windows", weekly, now)).toBe(true)
   })
 
-  it("gives a session with no rows above zero a hue, without throwing", () => {
-    const sessions = [topSession("a")]
-    expect(() => assignQuotaHues(sessions, [])).not.toThrow()
-    const hues = assignQuotaHues(sessions, [seriesRow(0, { a: null })])
-    expect(hues.get("a")).toBe(0)
+  it("keeps every preset with no lane", () => {
+    expect(presetHasReadings("lastWindow", null, now)).toBe(true)
   })
 })

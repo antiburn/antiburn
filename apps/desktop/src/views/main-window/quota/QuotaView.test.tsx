@@ -74,7 +74,7 @@ function account(over: Partial<QuotaAccountPayload> = {}): QuotaAccountPayload {
     provider: "anthropic",
     displayName: "Claude",
     accountKey: "acct-1",
-    lanes: [{ lane: "weekly", label: "Weekly", currentPeriod: null }],
+    lanes: [{ lane: "weekly", label: "Weekly", currentPeriod: null, firstObservedEpoch: 0 }],
     ...over,
   }
 }
@@ -266,10 +266,36 @@ describe("QuotaView", () => {
     await loaded()
   })
 
-  it("shows 'No windows in this range' when usage has no periods", async () => {
+  it("shows an empty state naming the range when usage has no periods, and says readings began later once any fetched window has a sample", async () => {
     const { session } = setup({ getUsage: vi.fn().mockResolvedValue(usage({ periods: [] })) })
     sessions.push(session)
-    await screen.findByText("No windows in this range.")
+    const title = await screen.findByText("No readings for this week.")
+    const status = title.closest('[role="status"]')!
+    expect(status).toHaveTextContent("antiburn records a meter only while the app is running.")
+    expect(screen.queryByRole("region", { name: "Limit usage" })).toBeNull()
+  })
+
+  it("shows a 'no usage yet' state, without hero figures or chart, when the open window has no reading and no session", async () => {
+    const empty = usage()
+    const openPeriod = empty.periods[0]!
+    empty.periods = [
+      {
+        ...openPeriod,
+        resetsAtEpoch: NOW + 3600,
+        samples: [],
+        sessions: [],
+        unattributed: { usd: 0, percent: 0, sessionCount: 0 },
+        unattributedBuckets: [],
+        estimatedPercent: null,
+      },
+    ]
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(empty) })
+    sessions.push(session)
+    const title = await screen.findByText("No usage recorded yet this week.")
+    const status = title.closest('[role="status"]')!
+    expect(status).toHaveTextContent("resets in")
+    expect(screen.queryByRole("region", { name: "Limit usage" })).toBeNull()
+    expect(screen.queryByTestId("chart")).toBeNull()
   })
 
   it("shows This week with its reset, then Highest, P90 and Median over the windows in range", async () => {
@@ -448,8 +474,8 @@ describe("QuotaView", () => {
   it("words the range and the figures by window on a 5-hour lane", async () => {
     const twoLanes = account({
       lanes: [
-        { lane: "weekly", label: "Weekly", currentPeriod: null },
-        { lane: "fiveHour", label: "5-hour", currentPeriod: null },
+        { lane: "weekly", label: "Weekly", currentPeriod: null, firstObservedEpoch: 0 },
+        { lane: "fiveHour", label: "5-hour", currentPeriod: null, firstObservedEpoch: 0 },
       ],
     })
     // The window is still open, so the figures lead with "This window".
@@ -525,15 +551,18 @@ describe("QuotaView", () => {
     expect(rangeTrigger()).not.toHaveTextContent("–")
   })
 
-  it("draws the window axis with the pace line on, and the pace switch changes what the chart receives", async () => {
+  it("draws the pace line on by default, and the toggle button under the chart changes what the chart receives", async () => {
     const { session } = setup()
     sessions.push(session)
     await screen.findByTestId("chart")
-    expect(chart.props?.axisMode).toBe("window")
     expect(chart.props?.showPace).toBe(true)
 
-    fireEvent.click(screen.getByRole("switch", { name: "Pace line" }))
+    const toggle = screen.getByRole("button", { name: "Hide pace" })
+    expect(toggle).toHaveAttribute("aria-pressed", "true")
+    fireEvent.click(toggle)
     expect(chart.props?.showPace).toBe(false)
+    expect(toggle).toHaveAttribute("aria-pressed", "false")
+    expect(toggle).toHaveTextContent("Show pace")
   })
 
   it("restores the pace switch from saved prefs", async () => {
@@ -541,8 +570,11 @@ describe("QuotaView", () => {
     const { session } = setup()
     sessions.push(session)
     await screen.findByTestId("chart")
-    expect(chart.props?.axisMode).toBe("window")
     expect(chart.props?.showPace).toBe(false)
+    expect(screen.getByRole("button", { name: "Show pace" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    )
   })
 
   it("passes the display periods to the chart", async () => {

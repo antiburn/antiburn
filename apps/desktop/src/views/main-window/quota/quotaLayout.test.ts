@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { QuotaPeriodPayload } from "../../../lib/providerUsageIpc"
-import { rowsInWindow, windowSlots, WINDOW_GAP_PX } from "./quotaLayout"
+import { rowsInWindow, slotPaceEnd, windowSlots, WINDOW_GAP_PX } from "./quotaLayout"
 import type { QuotaSeriesRow } from "./quotaSeries"
 
 const DAY = 24 * 60 * 60
@@ -83,11 +83,39 @@ describe("windowSlots", () => {
     expect(slot!.x(1000 + WEEK / 2)).toBeCloseTo(120, 10)
   })
 
+  it("ends a closed window's slot at its reset, and the open window's at now, each at the slot's right edge", () => {
+    const closed = period({ periodId: 1, startsAtEpoch: 0, resetsAtEpoch: WEEK })
+    const open = period({ periodId: 2, startsAtEpoch: WEEK, resetsAtEpoch: 2 * WEEK })
+    const now = WEEK + 2 * DAY
+    const [closedSlot, openSlot] = windowSlots([closed, open], 0, 206, 6, now)
+    expect(closedSlot!.endsAtEpoch).toBe(WEEK)
+    expect(closedSlot!.x(WEEK)).toBeCloseTo(closedSlot!.right, 10)
+    expect(openSlot!.endsAtEpoch).toBe(now)
+    // The open window stretches its start-to-now span over the whole slot.
+    expect(openSlot!.x(now)).toBeCloseTo(openSlot!.right, 10)
+    expect(openSlot!.x(WEEK + DAY)).toBeCloseTo(openSlot!.left + 50, 10)
+  })
+
+  it("treats every window as closed when no now is given", () => {
+    const [slot] = windowSlots([period()], 0, 100)
+    expect(slot!.endsAtEpoch).toBe(WEEK)
+  })
+
   it("gives a short window and a long window the same slot width", () => {
     const short = period({ periodId: 1, startsAtEpoch: 0, resetsAtEpoch: 5 * 60 * 60 })
     const long = period({ periodId: 2, startsAtEpoch: 5 * 60 * 60, resetsAtEpoch: WEEK })
     const [shortSlot, longSlot] = windowSlots([short, long], 0, 100, 6)
     expect(shortSlot!.right - shortSlot!.left).toBeCloseTo(longSlot!.right - longSlot!.left, 10)
+  })
+})
+
+describe("slotPaceEnd", () => {
+  it("is 100 for a closed window and the elapsed share of the window for the open one", () => {
+    const closed = period({ periodId: 1, startsAtEpoch: 0, resetsAtEpoch: WEEK })
+    const open = period({ periodId: 2, startsAtEpoch: WEEK, resetsAtEpoch: 2 * WEEK })
+    const [closedSlot, openSlot] = windowSlots([closed, open], 0, 100, 6, WEEK + 3.5 * DAY)
+    expect(slotPaceEnd(closedSlot!)).toBe(100)
+    expect(slotPaceEnd(openSlot!)).toBeCloseTo(50, 10)
   })
 })
 

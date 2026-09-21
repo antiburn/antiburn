@@ -438,7 +438,7 @@ export class QuotaSession {
       selection.accountKey,
     )
     const lane = findLane(account, selection.lane)
-    const { startEpoch, endEpoch } = resolveQuotaRange(range, lane, now, weeklyLaneOf(account))
+    const { startEpoch, endEpoch } = resolveQuotaRange(range, lane, now)
     try {
       const usage = await this.adapter.getUsage({
         provider: selection.provider,
