@@ -352,6 +352,7 @@ pub(crate) fn redock_after_placement(app: &AppHandle, window: &WebviewWindow) {
 }
 
 /// What a placement change makes of the HUD. Pure.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Redock {
     /// Back to the notch.
@@ -364,6 +365,7 @@ enum Redock {
 }
 
 /// Decide what a placement change does with a stored island. Pure.
+#[cfg(any(target_os = "macos", test))]
 fn redock_choice(wants_island: bool, has_notch: bool) -> Redock {
     match (wants_island, has_notch) {
         (true, true) => Redock::Island,

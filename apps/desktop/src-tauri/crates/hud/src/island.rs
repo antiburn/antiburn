@@ -342,7 +342,7 @@ pub fn set_fake_notch(app: &AppHandle, on: bool) -> bool {
 
 /// Keep the fake notch inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
-pub fn set_fake_notch(_app: &AppHandle, _on: bool) -> bool {
+pub fn set_fake_notch(_app: &tauri::AppHandle, _on: bool) -> bool {
     false
 }
 

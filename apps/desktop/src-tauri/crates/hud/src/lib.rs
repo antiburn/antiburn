@@ -25,7 +25,8 @@ use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use std::sync::MutexGuard;
 #[cfg(any(target_os = "macos", test))]
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
@@ -866,6 +867,7 @@ pub fn cursor_report(window: &WebviewWindow) -> Option<CursorReport> {
 
 /// The pure part of [`cursor_inside`]: a physical frame at `scale` against a
 /// physical cursor at `cursor_scale`, compared in logical points.
+#[cfg(any(target_os = "macos", test))]
 fn cursor_over_frame(
     position: (f64, f64),
     size: (f64, f64),

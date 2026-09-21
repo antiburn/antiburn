@@ -46,7 +46,9 @@ vi.mock("../lib/hudIpc", async () => {
   return { ...actual, getHudTokenMap, showHudDetail }
 })
 
-const invoke = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}))
+const invoke = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
+)
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 const takeHudAnalyticsOrigin = vi.hoisted(() => vi.fn())
