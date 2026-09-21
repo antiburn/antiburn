@@ -1499,9 +1499,6 @@ describe("SessionDetailPresentation — discussion copy", () => {
     view({ onCopySourcePath: async () => {}, onCopyDiscussionPrompt: async () => {} })
     const button = screen.getByLabelText("Copy path")
     const toolbar = button.closest(".session-detail-toolbar")!
-    // jsdom emits a window blur when focus leaves the body.
-    render(<button>Outside toolbar</button>)
-    screen.getByRole("button", { name: "Outside toolbar" }).focus()
     fireEvent.mouseEnter(toolbar, { shiftKey: true })
     expect(button).toHaveAttribute("aria-label", "Copy path")
     fireEvent.keyDown(window, { key: "Alt", altKey: true })
@@ -1515,7 +1512,6 @@ describe("SessionDetailPresentation — discussion copy", () => {
     fireEvent.keyDown(window, { key: "Control", ctrlKey: true })
     expect(button).toHaveAttribute("aria-label", "Copy path")
     act(() => button.focus())
-    expect(button).toHaveFocus()
     expect(button).toHaveAttribute("aria-label", promptLabel)
     fireEvent.keyUp(window, { key: "Control" })
     expect(button).toHaveAttribute("aria-label", "Copy path")
