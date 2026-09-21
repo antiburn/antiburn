@@ -276,6 +276,7 @@ pub async fn open_overlay_window(
 /// false when the drag ended before the webview read the window position.
 #[tauri::command]
 pub fn hud_drag_ended(reason: String, origin_known: bool) {
+    antiburn_hud::end_drag();
     ::tracing::info!(event = "hud_drag_ended", reason, origin_known);
 }
 

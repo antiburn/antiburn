@@ -619,6 +619,7 @@ fn spawn_hotspot_watcher(app: AppHandle, window: WebviewWindow, generation: u64)
 /// one. Main thread only. Returns true when the HUD was docked or islanded.
 #[cfg(target_os = "macos")]
 pub fn begin_drag(app: &AppHandle) -> bool {
+    super::set_drag_in_progress(true);
     let was_parked = dock::tear_off(app);
     if !refresh_notch() {
         return was_parked;
@@ -633,6 +634,7 @@ pub fn begin_drag(app: &AppHandle) -> bool {
 /// Keep the drag inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
 pub fn begin_drag(app: &tauri::AppHandle) -> bool {
+    super::set_drag_in_progress(true);
     super::dock::tear_off(app)
 }
 

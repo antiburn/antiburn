@@ -102,7 +102,9 @@ are doing" turns the map off. Reduced motion stops the pulse.
   window blur ends it too, after a 250ms grace: the tear-off reshapes the
   window, and that can read as a blur, so a move with the button still down
   inside the grace keeps the drag. The drag moves the window manually at most
-  once per animation frame.
+  once per animation frame. The shell marks the drag from the tear-off to the
+  drop. An app activation inside that span belongs to the drag, so it never
+  restores the main window, wherever the cursor reads at that moment.
 - The detail window fades in over 100ms (`--duration-quick`). It hides with no
   transition. Reduced motion disables the fade.
 

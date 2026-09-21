@@ -179,6 +179,7 @@ pub fn restore_dock(_app: &tauri::AppHandle, _settings: DockSettings) {}
 /// Returns the dock state after the drop, for the shell to store.
 #[cfg(target_os = "macos")]
 pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
+    super::set_drag_in_progress(false);
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
         return dock_settings();
     };
@@ -226,6 +227,7 @@ pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
 /// Keep the drop inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
 pub fn settle_after_drag(_app: &tauri::AppHandle) -> DockSettings {
+    super::set_drag_in_progress(false);
     dock_settings()
 }
 

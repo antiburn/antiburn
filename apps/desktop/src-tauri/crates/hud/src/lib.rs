@@ -198,6 +198,26 @@ static RESIZE_STATE: ResizeState = ResizeState::new(OVERLAY_SEED_HEIGHT);
 #[cfg(target_os = "macos")]
 static RESIZE_APPLY_LOCK: Mutex<()> = Mutex::new(());
 
+/// True from the start of a HUD drag until the drop settles.
+///
+/// The shell reads this when the app becomes active: an activation during a
+/// drag comes from the drag, not from a request for the main window.
+static DRAG_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// True while the pointer drags the HUD window.
+pub fn drag_in_progress() -> bool {
+    DRAG_IN_PROGRESS.load(Ordering::SeqCst)
+}
+
+pub(crate) fn set_drag_in_progress(dragging: bool) {
+    DRAG_IN_PROGRESS.store(dragging, Ordering::SeqCst);
+}
+
+/// Clear the drag flag: the webview reported that its drag ended.
+pub fn end_drag() {
+    set_drag_in_progress(false);
+}
+
 #[cfg(target_os = "macos")]
 fn resize_apply_guard() -> MutexGuard<'static, ()> {
     RESIZE_APPLY_LOCK
@@ -487,6 +507,7 @@ pub fn hide(app: &AppHandle) -> tauri::Result<()> {
     let _guard = resize_apply_guard();
     RESIZE_STATE.request_hide();
     set_overlay_visible(false);
+    set_drag_in_progress(false);
     dock::reset();
     let _ = app.emit(OVERLAY_WORK_EVENT, false);
     hide_detail(app);
@@ -808,18 +829,39 @@ fn spawn_hover_watcher(window: WebviewWindow) {
 /// before the test. The shell reads this when the app becomes active.
 #[cfg(target_os = "macos")]
 pub fn cursor_inside(window: &WebviewWindow) -> Option<bool> {
+    cursor_report(window).map(|report| report.inside)
+}
+
+/// The cursor and the window frame in logical points, for the log.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+pub struct CursorReport {
+    pub cursor: (f64, f64),
+    pub frame: (f64, f64, f64, f64),
+    pub inside: bool,
+}
+
+/// Where the cursor sits against the window, in logical points.
+#[cfg(target_os = "macos")]
+pub fn cursor_report(window: &WebviewWindow) -> Option<CursorReport> {
     let cursor = window.cursor_position().ok()?;
     let primary_scale = window.primary_monitor().ok().flatten()?.scale_factor();
     let scale = window.scale_factor().ok()?;
     let position = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
-    Some(cursor_over_frame(
-        (f64::from(position.x), f64::from(position.y)),
-        (f64::from(size.width), f64::from(size.height)),
-        scale,
-        (cursor.x, cursor.y),
-        primary_scale,
-    ))
+    let position = (f64::from(position.x), f64::from(position.y));
+    let size = (f64::from(size.width), f64::from(size.height));
+    let inside = cursor_over_frame(position, size, scale, (cursor.x, cursor.y), primary_scale);
+    Some(CursorReport {
+        cursor: (cursor.x / primary_scale, cursor.y / primary_scale),
+        frame: (
+            position.0 / scale,
+            position.1 / scale,
+            size.0 / scale,
+            size.1 / scale,
+        ),
+        inside,
+    })
 }
 
 /// The pure part of [`cursor_inside`]: a physical frame at `scale` against a
@@ -839,6 +881,19 @@ fn cursor_over_frame(
         cursor.0 / cursor_scale,
         cursor.1 / cursor_scale,
     )
+}
+
+#[cfg(test)]
+mod drag_flag_tests {
+    use super::{drag_in_progress, end_drag, set_drag_in_progress};
+
+    #[test]
+    fn the_flag_follows_the_drag() {
+        set_drag_in_progress(true);
+        assert!(drag_in_progress());
+        end_drag();
+        assert!(!drag_in_progress());
+    }
 }
 
 #[cfg(test)]
