@@ -7,14 +7,14 @@ import { blockedBars, resetsIn } from "../lib/usageBars"
 import { OverlaySession, type OverlaySnapshot } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
-/** The content padding on each side of the panel, in pixels (`p-2.5`). */
-const PANEL_PAD_PX = 10
 /** The panel content width in the floating frame: the window minus its margins and padding. */
 const FLOATING_CONTENT_PX = 140
 /** The diameter of one LED segment, in pixels (`h-1.5 w-1.5`). */
 const LED_DOT_PX = 6
 /** The smallest gap between bar rows, which the narrow floating frame keeps. */
 const LED_ROW_GAP_MIN_PX = 3
+/** The gap between labelled bar rows on the island. */
+const LED_LABELLED_ROW_GAP_PX = 8
 
 /** Render the content-sized usage HUD. The detail window owns the full stats. */
 export function OverlayWindow() {
@@ -92,7 +92,15 @@ export function OverlayWindow() {
 function islandContentWidth(state: OverlaySnapshot): number {
   const { island } = state
   if (island.island === "preview") return FLOATING_CONTENT_PX
-  return island.notch + island.wing * 2 - PANEL_PAD_PX * 2
+  return island.notch + island.wing * 2 - islandContentPad(island.wing) * 2
+}
+
+/**
+ * The side padding of the island's open content. Half the wing, so the bars
+ * start under the marks in the notch row and not nearer the edge than them.
+ */
+function islandContentPad(wing: number): number {
+  return wing / 2
 }
 
 /**
@@ -127,6 +135,12 @@ function IslandPanel({
     ? undefined
     : { marginLeft: island.fillet, marginRight: island.fillet }
   const wing: CSSProperties = { width: island.wing }
+  const contentPad: CSSProperties | undefined = preview
+    ? undefined
+    : {
+        paddingLeft: islandContentPad(island.wing),
+        paddingRight: islandContentPad(island.wing),
+      }
   const liveColor = state.tokenMap.liveMode
     ? `var(--color-mode-${state.tokenMap.liveMode})`
     : "var(--color-brand-tint)"
@@ -169,9 +183,11 @@ function IslandPanel({
           {figure ? (
             <span
               data-testid="island-spend"
-              className="led-caption type-footnote text-hud-island-ink leading-none"
+              // The unit sits under the figure: alone, "$.26" reads as a total.
+              className="led-caption type-footnote text-hud-island-ink flex flex-col items-center gap-0.5 leading-none"
             >
-              {figure}
+              <span>{figure}</span>
+              <span className="opacity-60">/min</span>
             </span>
           ) : (
             <span
@@ -182,7 +198,11 @@ function IslandPanel({
           )}
         </div>
       </div>
-      {open && <div className="p-2.5">{children}</div>}
+      {open && (
+        <div className="p-2.5" style={contentPad}>
+          {children}
+        </div>
+      )}
     </div>
   )
 }
@@ -200,13 +220,19 @@ function HudContent({
   blink: boolean
 }) {
   const blocked = blockedBars(state.bars)[0] ?? null
+  // The island has the width for a label row over each bar, so it names
+  // them. The floating frame stays bare: the labels live in its detail card.
+  const labelled = !blink
   // The bars sit their segments edge to edge across the content, so a wide
   // frame spreads them. The rows take that same gap, and the dots read as a
-  // grid instead of rows of different pitch.
-  const rowGap = Math.max(
-    LED_ROW_GAP_MIN_PX,
-    (contentWidth - HUD_SEGMENTS * LED_DOT_PX) / (HUD_SEGMENTS - 1),
-  )
+  // grid instead of rows of different pitch. A label row breaks that grid,
+  // so the labelled bars take a fixed gap instead.
+  const rowGap = labelled
+    ? LED_LABELLED_ROW_GAP_PX
+    : Math.max(
+        LED_ROW_GAP_MIN_PX,
+        (contentWidth - HUD_SEGMENTS * LED_DOT_PX) / (HUD_SEGMENTS - 1),
+      )
   const blinkColor = state.tokenMap.liveMode
     ? `var(--color-mode-${state.tokenMap.liveMode})`
     : null
@@ -243,15 +269,30 @@ function HudContent({
           style={{ rowGap: `${rowGap}px` }}
         >
           {state.bars.map((bar, index) => (
-            <LedBar
-              key={bar.key}
-              segments={HUD_SEGMENTS}
-              split={[{ fraction: bar.percent / 100, color: bar.color }]}
-              blinkLast={blink && state.sessionLive && index === 0}
-              blinkPeriodMs={state.blinkPeriodMs}
-              blinkColor={blinkColor}
-              expectedFraction={bar.expectedFraction}
-            />
+            <div key={bar.key}>
+              {labelled && (
+                <div
+                  className={`led-caption type-footnote ${ink} mb-1 flex items-baseline justify-between gap-2`}
+                  data-testid="hud-bar-label"
+                >
+                  <span className="truncate">{bar.label}</span>
+                  {/* A blocked bar swaps its full figure for the time to its reset. */}
+                  <span className="stats-number shrink-0">
+                    {bar.percent >= 100
+                      ? resetsIn(bar.resetsAt, state.now)
+                      : `${Math.round(bar.percent)}%`}
+                  </span>
+                </div>
+              )}
+              <LedBar
+                segments={HUD_SEGMENTS}
+                split={[{ fraction: bar.percent / 100, color: bar.color }]}
+                blinkLast={blink && state.sessionLive && index === 0}
+                blinkPeriodMs={state.blinkPeriodMs}
+                blinkColor={blinkColor}
+                expectedFraction={bar.expectedFraction}
+              />
+            </div>
           ))}
         </div>
       )}
@@ -262,7 +303,10 @@ function HudContent({
           <p className={`led-caption type-footnote ${ink} text-center`}>{state.celebration}</p>
         </div>
       ) : (
-        blocked && (
+        // The labelled bars carry their own reset time, so the island has
+        // no caption to clip.
+        blocked &&
+        !labelled && (
           <p
             // The time leads: the line clips at its tail on a narrow HUD.
             className={`led-caption type-footnote ${inkSecondary} mt-1.5 truncate`}

@@ -148,15 +148,19 @@ crate stores it with the dock state.
 
 - **Collapsed.** The island is the notch row alone, so the notch covers all
   of it but the wings. The left wing holds the live mark. The right wing shows
-  the spend rate as a figure, or the top bar's mark when there is no rate to
-  show. The marks are short bars, not dots, because a round light beside the
+  the spend rate as a figure with `/min` under it, or the top bar's mark when
+  there is no rate to show. The marks are short bars, not dots, because a round light beside the
   lens reads as the camera light. The live mark pulses between three-quarters
   and one-third opacity on the spend-rate period, and holds the dim value
   under reduced motion. The detail window never opens from the collapsed row.
 - **Expanded.** The crate polls the global cursor every 100ms while
   collapsed. The pointer resting for 150ms in the hotspot, the notch plus
   10px either side and 5px below, or on a wing, expands the island: the full
-  HUD hangs below the notch row. It collapses 3s after the pointer leaves
+  HUD hangs below the notch row. Each bar carries a label row, its name on
+  the left and its figure on the right, and a blocked bar shows the time to
+  its reset in place of the figure, so the island has no caption to clip.
+  The content is padded to half the wing, so the bars start under the marks
+  and not nearer the edge than them. It collapses 3s after the pointer leaves
   the island and the hotspot. A wake expands it the same way, for as long as
   a docked HUD peeks.
 - **The detail.** On the island the detail window takes the dark theme,

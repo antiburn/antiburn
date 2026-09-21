@@ -56,7 +56,7 @@ import {
   mapVisible,
   type TokenMapLayout,
 } from "../../lib/tokenMap"
-import { playPop } from "../../lib/hudSounds"
+// import { playPop } from "../../lib/hudSounds"
 import {
   blockedBars,
   deriveUsageBars,
@@ -882,11 +882,11 @@ export class OverlaySession {
     this.dragOrigin = null
     this.addDragListeners()
     // A drag on a docked HUD tears it off. The drop decides whether it docks
-    // again, in `recordHudPosition`. A real tear pops.
+    // again, in `recordHudPosition`. The tear pop is off for now.
     void tearOffOverlayWindow()
-      .then((torn) => {
-        if (torn) playPop()
-      })
+      // .then((torn) => {
+      //   if (torn) playPop()
+      // })
       .catch(() => {})
     await this.syncWindow(false, generation)
     if (!this.isCurrent(generation) || !this.snapshot.dragging) return

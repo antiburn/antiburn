@@ -1298,6 +1298,9 @@ describe("OverlayWindow", () => {
         container.querySelector("[data-island]")?.classList.contains("hud-island-open"),
       ).toBe(true)
       expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+      // The island names its bars; the floating frame leaves that to the detail.
+      expect(screen.getByTestId("hud-bar-label").textContent).toBe("5-hour limit81%")
+      expect(screen.queryByTestId("hud-countdown")).toBeNull()
       // The pointer is still on the island, so the expansion opens the detail.
       await advance(400)
       expect(showHudDetail).toHaveBeenCalledTimes(1)
