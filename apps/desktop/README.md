@@ -237,7 +237,7 @@ Settings teardown, and the memory rules behind those policies.
   window rather than the platform's notification centre: the `antiburn-nudge`
   crate under `src-tauri/crates/nudge/`, applied at the seam in
   `src-tauri/src/nudges.rs`. Nothing about a notification leaves the machine.
-  Usage milestones default to every 10% and compare quota consumed with the
+  Usage milestones default to every 10% and compare limit consumed with the
   share of the current limit window that has elapsed. Settings offers every 5%
   step when a reader wants different milestones. Every successful live reading
   checks for a crossing, and the hidden background monitor checks at most every

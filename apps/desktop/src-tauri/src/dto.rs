@@ -487,6 +487,234 @@ pub struct SessionLimitAllocationSummary {
     pub generated_at: String,
 }
 
+/// One quota window's derived start or end, in terms a reader can trust or
+/// distrust: `"reported"` came from the provider directly, `"derived"` was
+/// computed from the other boundary and the lane's nominal duration,
+/// `"cadence"` was extrapolated from another observed weekly reset,
+/// `"turnGap"` was inferred from a gap in local turn activity, and
+/// `"truncated"` marks a reset moved earlier because the next window began
+/// before the provider's stated reset for this one.
+pub type QuotaBoundarySource = String;
+
+/// A lane's currently open window, when one exists. Mirrors Rust
+/// `store::provider_limit::QuotaAccountLane::current_period`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaCurrentPeriodPayload {
+    pub starts_at_epoch: i64,
+    pub resets_at_epoch: i64,
+}
+
+/// One lane a quota account carries.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaLanePayload {
+    /// `weekly`, `fiveHour`, or `model:<slug>`.
+    pub lane: String,
+    /// `"Weekly"`, `"5-hour"`, or the model-scoped window's own label
+    /// (Anthropic's is currently "Fable").
+    pub label: String,
+    /// The lane's open window, derived the same way the period resolver
+    /// derives a boundary the provider did not state. `None` when every
+    /// known period for the lane has already reset.
+    pub current_period: Option<QuotaCurrentPeriodPayload>,
+}
+
+/// One `(provider, account)` this app has observed at least one quota period
+/// for.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaAccountPayload {
+    pub provider: String,
+    pub display_name: String,
+    pub account_key: String,
+    pub lanes: Vec<QuotaLanePayload>,
+}
+
+/// Response for `get_quota_accounts`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaAccountsPayload {
+    pub accounts: Vec<QuotaAccountPayload>,
+    pub generated_at: String,
+}
+
+/// Request for `get_quota_usage`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaUsageRequest {
+    pub provider: String,
+    pub account_key: String,
+    pub lane: String,
+    pub range_start_epoch: i64,
+    pub range_end_epoch: i64,
+}
+
+/// One meter reading inside a quota period.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaSamplePayload {
+    pub observed_at_epoch: i64,
+    pub used_percent: Option<f64>,
+    pub fresh: bool,
+    pub authoritative: bool,
+}
+
+/// One session's estimated dollars inside one 15-minute bucket of a quota
+/// period.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaContributionPayload {
+    pub agent: String,
+    pub session_id: String,
+    pub wsl_distro: Option<String>,
+    pub bucket_start_epoch: i64,
+    pub usd: f64,
+    pub percent: Option<f64>,
+}
+
+/// One session's estimated total inside a quota period.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaSessionTotalPayload {
+    pub agent: String,
+    pub session_id: String,
+    pub wsl_distro: Option<String>,
+    pub title: Option<String>,
+    pub usd: f64,
+    pub percent: Option<f64>,
+}
+
+/// Spend inside a quota period this app could not credit to any session.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaUnattributedPayload {
+    pub usd: f64,
+    pub percent: Option<f64>,
+    pub session_count: u32,
+}
+
+/// Unattributed spend inside one 15-minute bucket of a quota period.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaBucketTotalPayload {
+    pub bucket_start_epoch: i64,
+    pub usd: f64,
+    pub percent: Option<f64>,
+}
+
+/// One quota window, its meter readings, and the sessions estimated to have
+/// contributed to it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaPeriodPayload {
+    /// `None` for a period this app derived rather than observed directly:
+    /// a cadence-extrapolated or turn-gap-inferred window.
+    pub period_id: Option<i64>,
+    pub starts_at_epoch: i64,
+    pub resets_at_epoch: i64,
+    pub start_source: QuotaBoundarySource,
+    pub reset_source: QuotaBoundarySource,
+    pub samples: Vec<QuotaSamplePayload>,
+    pub contributions: Vec<QuotaContributionPayload>,
+    /// Descending by `usd`.
+    pub sessions: Vec<QuotaSessionTotalPayload>,
+    pub unattributed: QuotaUnattributedPayload,
+    /// Ascending by bucket. Holds one entry for each bucket with an
+    /// unbound row, so a chart can plot unattributed spend over time
+    /// instead of a single period total.
+    pub unattributed_buckets: Vec<QuotaBucketTotalPayload>,
+    /// The sum of every bound session's, unattributed's, and unexplained
+    /// percent, so at the period's last reading it equals the meter. A
+    /// closed period never exceeds 100: its factor-priced tail scales down
+    /// to fit under that cap instead of overshooting a value the meter
+    /// cannot reach. An open period can still overshoot, since it may
+    /// gather more readings before it closes.
+    pub estimated_percent: Option<f64>,
+    /// One entry per meter-rise segment that had no local dollars to share
+    /// it across: the whole segment's rise, at its own end (the reading
+    /// that closed it), so the chart can ramp up to it. `usd` is always
+    /// `0.0`; `percent` is always `Some`.
+    pub unexplained_buckets: Vec<QuotaBucketTotalPayload>,
+    /// The sum of every unexplained segment's percent. `None` only when the
+    /// period carries no meter reading at all.
+    pub unexplained_percent: Option<f64>,
+}
+
+/// Response for `get_quota_usage`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaUsagePayload {
+    pub provider: String,
+    pub account_key: String,
+    pub lane: String,
+    pub lane_label: String,
+    pub range_start_epoch: i64,
+    pub range_end_epoch: i64,
+    pub periods: Vec<QuotaPeriodPayload>,
+    pub generated_at: String,
+}
+
+/// Request for `get_session_quota`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionQuotaRequest {
+    pub agent: String,
+    pub session_id: String,
+    pub wsl_distro: Option<String>,
+}
+
+/// The quota period one [`SessionQuotaEntryPayload`] falls in, without the
+/// per-session breakdown [`QuotaPeriodPayload`] carries: a session already
+/// knows which session it is.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionQuotaPeriodPayload {
+    pub period_id: Option<i64>,
+    pub starts_at_epoch: i64,
+    pub resets_at_epoch: i64,
+    pub start_source: QuotaBoundarySource,
+    pub reset_source: QuotaBoundarySource,
+}
+
+/// One `(provider, lane, period)` a session's turns fell in.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionQuotaEntryPayload {
+    pub provider: String,
+    pub display_name: String,
+    /// `None` when the session has no resolved account for this provider.
+    pub account_key: Option<String>,
+    /// `None` only when `confidence` is `"unbound"`: an entry with no
+    /// resolved account has no lane to name either.
+    pub lane: Option<String>,
+    /// `None` only when `confidence` is `"unbound"`.
+    pub lane_label: Option<String>,
+    /// `None` only when `confidence` is `"unbound"`.
+    pub period: Option<SessionQuotaPeriodPayload>,
+    pub usd: f64,
+    pub percent: Option<f64>,
+    /// `"measured"` when every one of the session's buckets fell in a
+    /// shared meter segment, `"learned"` or `"seeded"` from the factor
+    /// otherwise, or `"unbound"` when the session has no resolved account
+    /// for the provider its usage attributes to. Also `"measured"` when the
+    /// lane has no factor point yet: `percent` then covers only the buckets
+    /// inside a shared meter segment, while `usd` still covers every bucket
+    /// in the window.
+    pub confidence: String,
+    /// The plan the account's newest observation reported, or `None` before
+    /// any reading names one.
+    pub plan: Option<LiveProviderPlan>,
+}
+
+/// Response for `get_session_quota`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionQuotaPayload {
+    pub entries: Vec<SessionQuotaEntryPayload>,
+    pub generated_at: String,
+}
+
 /// One detector rendered by All checks.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2488,6 +2716,144 @@ pub struct LiveUsageSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quota_usage_payload_serializes_camel_case_fields_and_boundary_source_strings() {
+        let payload = QuotaUsagePayload {
+            provider: "anthropic".to_string(),
+            account_key: "a".repeat(64),
+            lane: "fiveHour".to_string(),
+            lane_label: "5-hour".to_string(),
+            range_start_epoch: 0,
+            range_end_epoch: 1_000,
+            periods: vec![QuotaPeriodPayload {
+                period_id: None,
+                starts_at_epoch: 0,
+                resets_at_epoch: 1_000,
+                start_source: "turnGap".to_string(),
+                reset_source: "cadence".to_string(),
+                samples: vec![QuotaSamplePayload {
+                    observed_at_epoch: 500,
+                    used_percent: Some(10.0),
+                    fresh: true,
+                    authoritative: true,
+                }],
+                contributions: vec![QuotaContributionPayload {
+                    agent: "claude-code".to_string(),
+                    session_id: "s1".to_string(),
+                    wsl_distro: None,
+                    bucket_start_epoch: 0,
+                    usd: 1.0,
+                    percent: Some(2.0),
+                }],
+                sessions: vec![QuotaSessionTotalPayload {
+                    agent: "claude-code".to_string(),
+                    session_id: "s1".to_string(),
+                    wsl_distro: None,
+                    title: Some("Fix the bug".to_string()),
+                    usd: 1.0,
+                    percent: Some(2.0),
+                }],
+                unattributed: QuotaUnattributedPayload {
+                    usd: 0.5,
+                    percent: Some(1.0),
+                    session_count: 1,
+                },
+                unattributed_buckets: vec![QuotaBucketTotalPayload {
+                    bucket_start_epoch: 0,
+                    usd: 0.5,
+                    percent: Some(1.0),
+                }],
+                estimated_percent: Some(2.0),
+                unexplained_buckets: vec![QuotaBucketTotalPayload {
+                    bucket_start_epoch: 0,
+                    usd: 0.0,
+                    percent: Some(0.5),
+                }],
+                unexplained_percent: Some(0.5),
+            }],
+            generated_at: "2026-09-16T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["accountKey"], "a".repeat(64));
+        assert_eq!(json["laneLabel"], "5-hour");
+        assert_eq!(json["rangeStartEpoch"], 0);
+        assert_eq!(json["rangeEndEpoch"], 1_000);
+        let period = &json["periods"][0];
+        assert_eq!(period["periodId"], serde_json::Value::Null);
+        assert_eq!(period["startsAtEpoch"], 0);
+        assert_eq!(period["resetsAtEpoch"], 1_000);
+        assert_eq!(period["startSource"], "turnGap");
+        assert_eq!(period["resetSource"], "cadence");
+        assert_eq!(period["contributions"][0]["bucketStartEpoch"], 0);
+        assert_eq!(period["sessions"][0]["sessionId"], "s1");
+        assert_eq!(period["unattributed"]["sessionCount"], 1);
+        assert_eq!(period["unattributedBuckets"][0]["bucketStartEpoch"], 0);
+        assert_eq!(period["unattributedBuckets"][0]["usd"], 0.5);
+        assert_eq!(period["unattributedBuckets"][0]["percent"], 1.0);
+        assert_eq!(period["estimatedPercent"], 2.0);
+        assert_eq!(period["unexplainedBuckets"][0]["usd"], 0.0);
+        assert_eq!(period["unexplainedBuckets"][0]["percent"], 0.5);
+        assert_eq!(period["unexplainedPercent"], 0.5);
+    }
+
+    #[test]
+    fn session_quota_payload_serializes_camel_case_fields_and_confidence_strings() {
+        let payload = SessionQuotaPayload {
+            entries: vec![
+                SessionQuotaEntryPayload {
+                    provider: "anthropic".to_string(),
+                    display_name: "Claude".to_string(),
+                    account_key: Some("a".repeat(64)),
+                    lane: Some("weekly".to_string()),
+                    lane_label: Some("Weekly".to_string()),
+                    period: Some(SessionQuotaPeriodPayload {
+                        period_id: Some(7),
+                        starts_at_epoch: 0,
+                        resets_at_epoch: 604_800,
+                        start_source: "reported".to_string(),
+                        reset_source: "derived".to_string(),
+                    }),
+                    usd: 1.0,
+                    percent: Some(2.0),
+                    confidence: "learned".to_string(),
+                    plan: Some(LiveProviderPlan {
+                        name: "max".to_string(),
+                        tier: Some("max_20x".to_string()),
+                    }),
+                },
+                SessionQuotaEntryPayload {
+                    provider: "openai".to_string(),
+                    display_name: "Codex".to_string(),
+                    account_key: None,
+                    lane: None,
+                    lane_label: None,
+                    period: None,
+                    usd: 0.5,
+                    percent: None,
+                    confidence: "unbound".to_string(),
+                    plan: None,
+                },
+            ],
+            generated_at: "2026-09-16T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["entries"][0]["displayName"], "Claude");
+        assert_eq!(json["entries"][0]["accountKey"], "a".repeat(64));
+        assert_eq!(json["entries"][0]["laneLabel"], "Weekly");
+        assert_eq!(json["entries"][0]["period"]["periodId"], 7);
+        assert_eq!(json["entries"][0]["period"]["startSource"], "reported");
+        assert_eq!(json["entries"][0]["period"]["resetSource"], "derived");
+        assert_eq!(json["entries"][0]["confidence"], "learned");
+        assert_eq!(json["entries"][0]["plan"]["name"], "max");
+        assert_eq!(json["entries"][0]["plan"]["tier"], "max_20x");
+        assert_eq!(json["entries"][1]["accountKey"], serde_json::Value::Null);
+        assert_eq!(json["entries"][1]["plan"], serde_json::Value::Null);
+        assert_eq!(json["entries"][1]["lane"], serde_json::Value::Null);
+        assert_eq!(json["entries"][1]["laneLabel"], serde_json::Value::Null);
+        assert_eq!(json["entries"][1]["period"], serde_json::Value::Null);
+        assert_eq!(json["entries"][1]["confidence"], "unbound");
+    }
 
     #[test]
     fn legacy_live_errors_round_trip_without_a_detail_field() {

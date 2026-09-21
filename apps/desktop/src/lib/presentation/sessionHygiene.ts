@@ -118,7 +118,7 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     cleanTitle: "Cache rehydration under control",
     findingTitle: "Cache rehydration out of control",
     notAssessedTitle: "Cache rehydration not assessed",
-    summary: "Repeated full-price context processing can increase cost and quota use.",
+    summary: "Repeated full-price context processing can increase cost and limit use.",
     guidance: [
       "Avoid long breaks in sessions.",
       "If you have a long break, compact before or even after it.",

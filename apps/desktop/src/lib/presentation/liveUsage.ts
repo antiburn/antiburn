@@ -142,18 +142,25 @@ const PLAN_LABEL_BY_PROVIDER: Readonly<Record<string, (plan: LiveUsagePlanPayloa
   }
 
 /**
- * The plan a provider reports, in words, or null when nothing was reported.
+ * A reported plan, in words, or null when nothing was reported.
  *
- * A provider with no entry in the table below falls back to the raw name
+ * A provider with no entry in the table above falls back to the raw name
  * rather than hiding it: the rule this module lives by is "never fill a
  * gap", and swallowing a real value the app has not learned to word yet
  * would be exactly that, in the other direction.
  */
-export function livePlanLabel(provider: LiveProviderUsagePayload): string | null {
-  const { plan } = provider
+export function planLabel(
+  providerId: string,
+  plan: LiveUsagePlanPayload | null,
+): string | null {
   if (!plan) return null
-  const label = PLAN_LABEL_BY_PROVIDER[provider.provider]
+  const label = PLAN_LABEL_BY_PROVIDER[providerId]
   return label ? label(plan) : plan.name
+}
+
+/** The plan a provider reports, in words, or null when nothing was reported. */
+export function livePlanLabel(provider: LiveProviderUsagePayload): string | null {
+  return planLabel(provider.provider, provider.plan)
 }
 
 /** The plan and account email suffix, when multiple accounts are visible. */

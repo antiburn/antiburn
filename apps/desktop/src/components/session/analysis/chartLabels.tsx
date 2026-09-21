@@ -15,6 +15,42 @@ const PILL_CHAR_WIDTH = 6.1
 /** Gap a rotated label keeps between its near edge and the line it names. */
 const VERTICAL_LABEL_LINE_GAP = 3
 
+/** A pill's rect, sized and placed around its text at the given anchor
+ *  point. Plain numbers, so a recharts label and a hand-drawn SVG label can
+ *  both build the same pill shape from the same rule. */
+export interface PillGeometry {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * The rounded-rect geometry for a label pill of `text` anchored at
+ * `(x, y)`. `textAnchor` and `verticalAnchor` follow the same anchor rules
+ * recharts' own text uses: `verticalAnchor: "start"` puts the text's top
+ * edge on `y`, `"end"` puts its bottom edge there.
+ */
+export function pillGeometry(
+  text: string,
+  x: number,
+  y: number,
+  textAnchor: "start" | "middle" | "end",
+  verticalAnchor: "start" | "end",
+  fontSize = 11,
+): PillGeometry {
+  const width = text.length * PILL_CHAR_WIDTH + PILL_PAD_X * 2
+  const height = fontSize + PILL_PAD_Y * 2
+  const left =
+    textAnchor === "start"
+      ? x - PILL_PAD_X
+      : textAnchor === "end"
+        ? x + PILL_PAD_X - width
+        : x - width / 2
+  const top = verticalAnchor === "start" ? y - PILL_PAD_Y : y + PILL_PAD_Y - height
+  return { x: left, y: top, width, height }
+}
+
 /**
  * Where the text sits relative to the point recharts computes for each label
  * position. Recharts gives a custom label the point but not the anchors, so
@@ -78,26 +114,22 @@ function PillLabel({
   // upright text stays clear of the line.
   const originX = anchors.angle != null ? rawX - VERTICAL_LABEL_LINE_GAP : rawX
   const originY = rawY
-  const width = text.length * PILL_CHAR_WIDTH + PILL_PAD_X * 2
-  const height = size + PILL_PAD_Y * 2
-  const left =
-    anchors.textAnchor === "start"
-      ? originX - PILL_PAD_X
-      : anchors.textAnchor === "end"
-        ? originX + PILL_PAD_X - width
-        : originX - width / 2
-  // A "start" anchor puts the text's top edge on the point, an "end" anchor
-  // puts its bottom edge there.
-  const top =
-    anchors.verticalAnchor === "start" ? originY - PILL_PAD_Y : originY + PILL_PAD_Y - height
+  const rect = pillGeometry(
+    text,
+    originX,
+    originY,
+    anchors.textAnchor,
+    anchors.verticalAnchor,
+    size,
+  )
   const pill = (
     <>
       <rect
-        x={left}
-        y={top + offsetY}
-        width={width}
-        height={height}
-        rx={height / 2}
+        x={rect.x}
+        y={rect.y + offsetY}
+        width={rect.width}
+        height={rect.height}
+        rx={rect.height / 2}
         fill="var(--color-chart-label-pill)"
       />
       <Text

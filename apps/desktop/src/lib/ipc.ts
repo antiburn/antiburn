@@ -607,6 +607,7 @@ export type Surface =
   | "hud_detail"
   | "settings"
   | "burn_checks"
+  | "quota"
 
 export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"

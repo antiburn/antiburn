@@ -6,11 +6,14 @@
 
 use std::collections::BTreeMap;
 
+use antiburn_local::analysis::strip_window_tag;
+
 use super::codex_rollout_history::CODEX_ROLLOUT_SOURCE_ID;
+use super::live::normalize::slugify;
 use crate::store::Store;
 use crate::store::provider_limit::{
-    AttributedSessionDollars, FactorPoint, FactorSample, lane_duration_seconds,
-    lane_for_window_role,
+    AttributedSessionDollars, FactorPoint, FactorSample, lane_duration_seconds, lane_for_period,
+    model_scope_for_period,
 };
 use crate::store::provider_usage_history::{ProviderUsageObservation, ProviderUsagePeriod};
 
@@ -52,13 +55,57 @@ type FactorEstimate = (
 #[derive(Debug, Clone, PartialEq)]
 pub struct LearnedFactor {
     pub provider: String,
-    pub lane: &'static str,
+    pub lane: String,
     pub usd_per_percent: f64,
     pub plan: Option<String>,
     pub plan_tier: Option<String>,
     /// `(meter_percent, estimated_percent)` for the current period, when the
     /// pass could compute one.
     pub residual: Option<(f64, f64)>,
+}
+
+/// One `(provider, account, lane)` pair a learning pass touched this run.
+///
+/// Kept separate from [`LearnedFactor`], which never names an account so
+/// several accounts on one provider and lane collapse onto a single
+/// analytics observation. The quota-window-closed analytics pass needs the
+/// account key to load that account's own closed periods, so it gets this
+/// narrower, Rust-internal record instead; nothing here reaches the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TouchedLane {
+    pub provider: String,
+    pub account_key: String,
+    pub lane: String,
+}
+
+/// Whether a turn's model id belongs to a provider's named model scope, such
+/// as Anthropic's supplemental "Fable" weekly window.
+///
+/// The scope label's slug segments must appear as a contiguous run inside
+/// the model id's own hyphen segments: "claude-fable-5-1" and "gpt-5-fable"
+/// both match "Fable", but "claude-fabled-1" and "claude-opus-4-6" do not. A
+/// trailing context-window tag such as `[1m]` is stripped from the model id
+/// first, the same way pricing lookups strip it.
+pub(crate) fn model_matches_scope(model_id: &str, scope_label: &str) -> bool {
+    let label_slug = slugify(scope_label);
+    let label_segments: Vec<&str> = label_slug
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if label_segments.is_empty() {
+        return false;
+    }
+    let model_lower = strip_window_tag(model_id.trim()).to_ascii_lowercase();
+    let model_segments: Vec<&str> = model_lower
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if label_segments.len() > model_segments.len() {
+        return false;
+    }
+    model_segments
+        .windows(label_segments.len())
+        .any(|window| window == label_segments.as_slice())
 }
 
 /// Learn the dollars-per-percent factor from durable meter readings.
@@ -68,26 +115,28 @@ pub struct LearnedFactor {
 /// pairs caps the work. Call this wherever `ledger::reconcile` runs today.
 ///
 /// Returns the `(provider, account, lane)` groups this pass touched, with plan
-/// and tier values for analytics, without querying the store a second time.
-pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
+/// and tier values for analytics, without querying the store a second time,
+/// alongside the same groups named with their account key for the caller's
+/// own closed-window analytics pass.
+pub fn learn(store: &Store, now_epoch: i64) -> (Vec<LearnedFactor>, Vec<TouchedLane>) {
     let Some(_in_flight) = store.try_begin_limit_factor_learn() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let recompute_since = now_epoch - RECOMPUTE_WINDOW_SECS;
     let Ok(periods) = store.provider_limit_candidate_periods(recompute_since) else {
         ::tracing::warn!(event = "limit_factor_candidate_periods_failed");
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
 
     let mut pairs_used = 0usize;
     // `periods` is ordered by `last_observed_epoch` descending, so the first
     // period seen for a lane is already its current one.
-    let mut current_period: BTreeMap<(String, String, &'static str), i64> = BTreeMap::new();
+    let mut current_period: BTreeMap<(String, String, String), i64> = BTreeMap::new();
     for period in &periods {
         if pairs_used >= MAX_OBSERVATION_PAIRS {
             break;
         }
-        let Some(lane) = lane_for_window_role(&period.window_role) else {
+        let Some(lane) = lane_for_period(period) else {
             continue;
         };
         let Ok(Some(history)) = store.provider_usage_period_history(period.id) else {
@@ -100,7 +149,7 @@ pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
         // plan and tier, so a fresh plan can still seed its own window-start
         // sample instead of being blocked by an older plan's delta history.
         let (plan, plan_tier) = store
-            .latest_observation_plan(&period.provider, &period.account_key, lane)
+            .latest_observation_plan(&period.provider, &period.account_key, &lane)
             .ok()
             .flatten()
             .unwrap_or((None, None));
@@ -108,7 +157,7 @@ pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
             .has_delta_factor_sample(
                 &period.provider,
                 &period.account_key,
-                lane,
+                &lane,
                 plan.as_deref(),
                 plan_tier.as_deref(),
             )
@@ -122,7 +171,7 @@ pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
         let (produced, complete) = build_period_samples(
             store,
             period,
-            lane,
+            &lane,
             &history.observations,
             has_delta_before,
             &pass,
@@ -139,10 +188,17 @@ pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
     }
 
     let mut learned = Vec::new();
+    let mut touched = Vec::new();
     for ((provider, account_key, lane), period_id) in current_period {
-        recompute_point(store, &provider, &account_key, lane, now_epoch);
-        let residual = compute_residual(store, &provider, &account_key, lane, period_id, now_epoch);
-        if let Ok(Some(point)) = store.latest_factor_point(&provider, &account_key, lane) {
+        recompute_point(store, &provider, &account_key, &lane, now_epoch);
+        let residual =
+            compute_residual(store, &provider, &account_key, &lane, period_id, now_epoch);
+        touched.push(TouchedLane {
+            provider: provider.clone(),
+            account_key: account_key.clone(),
+            lane: lane.clone(),
+        });
+        if let Ok(Some(point)) = store.latest_factor_point(&provider, &account_key, &lane) {
             learned.push(LearnedFactor {
                 provider,
                 lane,
@@ -153,7 +209,7 @@ pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
             });
         }
     }
-    learned
+    (learned, touched)
 }
 
 /// The state one call to [`build_period_samples`] needs beyond the period
@@ -174,11 +230,12 @@ struct SamplePass<'a> {
 fn build_period_samples(
     store: &Store,
     period: &ProviderUsagePeriod,
-    lane: &'static str,
+    lane: &str,
     observations: &[ProviderUsageObservation],
     has_delta_before: bool,
     pass: &SamplePass<'_>,
 ) -> (usize, bool) {
+    let model_scope = model_scope_for_period(period);
     let authoritative: Vec<&ProviderUsageObservation> = observations
         .iter()
         .filter(|observation| observation.is_authoritative && observation.used_percent.is_some())
@@ -212,6 +269,7 @@ fn build_period_samples(
             &period.account_key,
             window_start,
             first_positive.observed_at_epoch,
+            model_scope,
         )
     {
         let totals = sum_dollars(&dollars);
@@ -262,6 +320,7 @@ fn build_period_samples(
             &period.account_key,
             base.observed_at_epoch,
             observation.observed_at_epoch,
+            model_scope,
         ) else {
             continue;
         };
@@ -353,7 +412,7 @@ fn should_recompute(
     !existing.contains_key(&(from_epoch, to_epoch)) || to_epoch >= recompute_since
 }
 
-fn window_start_epoch(period: &ProviderUsagePeriod, lane: &str) -> Option<i64> {
+pub(crate) fn window_start_epoch(period: &ProviderUsagePeriod, lane: &str) -> Option<i64> {
     period.starts_at_epoch.or_else(|| {
         period
             .resets_at_epoch
@@ -600,6 +659,7 @@ fn compute_residual(
             account_key,
             window_start,
             latest.observed_at_epoch,
+            model_scope_for_period(&history.period),
         )
         .ok()??;
     let totals = sum_dollars(&dollars);

@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1106,4 +1106,118 @@ DROP INDEX session_recency_coalesced;
 CREATE INDEX session_recency_keyset
     ON session (COALESCE(updated_at_epoch, 0) DESC, session_id DESC,
                 environment_key DESC, agent DESC);
+"#;
+
+/// v52 widens the factor sample and point lanes to admit a model-scoped
+/// weekly lane, such as Anthropic's supplemental "Fable" window, spelled
+/// `model:<slug>`. SQLite cannot alter a `CHECK` constraint in place, so both
+/// tables are rebuilt: a new table with the widened check, a copy of every
+/// row, a drop, and a rename, the same pattern `v8` used. Every column, the
+/// `UNIQUE` constraint, and both lane indexes carry over unchanged.
+///
+/// The migration also deletes the learner's saved progress for
+/// model-scoped periods. A missing cursor row makes the learner walk the
+/// period again from its start, so a model-scoped period that the learner
+/// already finished under the old, narrower check gets a fresh pass under
+/// the widened one. Sample and point upserts are idempotent, so a re-walk
+/// cannot duplicate a row it already wrote.
+const V52: &str = r#"
+CREATE TABLE provider_limit_factor_sample_v52 (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour') OR lane LIKE 'model:%'),
+    kind                TEXT NOT NULL CHECK (kind IN ('delta', 'window_start', 'unattributed', 'rollout')),
+    period_id           INTEGER REFERENCES provider_usage_period(id),
+    from_epoch          INTEGER NOT NULL,
+    to_epoch            INTEGER NOT NULL,
+    from_percent        REAL NOT NULL,
+    to_percent          REAL NOT NULL,
+    input_usd           REAL NOT NULL,
+    output_usd          REAL NOT NULL,
+    cache_read_usd      REAL NOT NULL,
+    cache_write_usd     REAL NOT NULL,
+    turn_count          INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    source_id           TEXT NOT NULL,
+    computed_at_epoch   INTEGER NOT NULL,
+    UNIQUE (provider, account_key, lane, from_epoch, to_epoch)
+) STRICT;
+
+INSERT INTO provider_limit_factor_sample_v52 (
+    id, provider, account_key, lane, kind, period_id, from_epoch, to_epoch,
+    from_percent, to_percent, input_usd, output_usd, cache_read_usd,
+    cache_write_usd, turn_count, plan, plan_tier, source_id, computed_at_epoch
+)
+SELECT id, provider, account_key, lane, kind, period_id, from_epoch, to_epoch,
+       from_percent, to_percent, input_usd, output_usd, cache_read_usd,
+       cache_write_usd, turn_count, plan, plan_tier, source_id, computed_at_epoch
+  FROM provider_limit_factor_sample;
+
+DROP TABLE provider_limit_factor_sample;
+ALTER TABLE provider_limit_factor_sample_v52 RENAME TO provider_limit_factor_sample;
+
+CREATE INDEX provider_limit_factor_sample_lane_recent
+    ON provider_limit_factor_sample (provider, account_key, lane, to_epoch DESC);
+CREATE INDEX provider_limit_factor_sample_period
+    ON provider_limit_factor_sample (period_id);
+
+CREATE TABLE provider_limit_factor_point_v52 (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour') OR lane LIKE 'model:%'),
+    effective_at_epoch  INTEGER NOT NULL,
+    usd_per_percent     REAL NOT NULL,
+    method              TEXT NOT NULL CHECK (method IN ('delta', 'window_start')),
+    sample_count        INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    UNIQUE (provider, account_key, lane, effective_at_epoch)
+) STRICT;
+
+INSERT INTO provider_limit_factor_point_v52 (
+    id, provider, account_key, lane, effective_at_epoch, usd_per_percent,
+    method, sample_count, plan, plan_tier
+)
+SELECT id, provider, account_key, lane, effective_at_epoch, usd_per_percent,
+       method, sample_count, plan, plan_tier
+  FROM provider_limit_factor_point;
+
+DROP TABLE provider_limit_factor_point;
+ALTER TABLE provider_limit_factor_point_v52 RENAME TO provider_limit_factor_point;
+
+CREATE INDEX provider_limit_factor_point_lane_recent
+    ON provider_limit_factor_point (provider, account_key, lane, effective_at_epoch DESC);
+
+-- Forget learning progress for a model-scoped period. The old, narrower
+-- check rejected every sample and point this app tried to write for such a
+-- period, so its cursor row (if any) marks a walk that produced nothing. A
+-- missing cursor row makes the next learning pass walk the period again
+-- from its start; the widened check above now admits the writes.
+DELETE FROM provider_limit_learn_cursor
+ WHERE period_id IN (
+    SELECT id
+      FROM provider_usage_period
+     WHERE window_role = 'supplemental'
+       AND window_kind = 'weekly'
+       AND scope_key LIKE 'model:%'
+);
+"#;
+
+/// v53 adds the durable marker for `antiburn.quota_window_closed` analytics.
+///
+/// One row per period that has already reported its closed-window accuracy
+/// event, so a period reports at most once, ever, across every future pass.
+/// `period_id` is the primary key, so a second insert attempt for the same
+/// period is a no-op rather than a duplicate row. The row is deleted with its
+/// period, in the same retention pass that already deletes
+/// `provider_limit_residual`; see
+/// `provider_limit::detach_samples_pending_period_deletion_in`.
+const V53: &str = r#"
+CREATE TABLE quota_window_reported (
+    period_id          INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    reported_at_epoch  INTEGER NOT NULL
+) STRICT;
 "#;

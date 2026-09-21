@@ -19,6 +19,7 @@ sources:
   - src/components/ui/text-roll.css
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
+  - src/views/main-window/quota/quota.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -353,6 +354,51 @@ colors:
   context-critical:
     light: "hsl(0 72% 50.5%)"
     dark: "hsl(0 90% 70.7%)"
+  # Quota sub-palette only (src/views/main-window/quota/quota.css). The eight
+  # session hues are Okabe-Ito, safe for deuteranopia, protanopia and
+  # tritanopia, ordered so consecutive hues differ in both hue and lightness.
+  quota-meter: # the provider's own meter reading; matches the context line's blue
+    light: "hsl(221.2 83% 53.3%)"
+    dark: "hsl(221 89% 59.8%)"
+  quota-session-1: # blue (Okabe-Ito); distinct from quota-meter's brighter, more indigo blue
+    light: "hsl(201.5 100% 34.9%)"
+    dark: "hsl(201.5 100% 34.9%)"
+  quota-session-2: # orange
+    light: "hsl(41.5 100% 45%)"
+    dark: "hsl(41.5 100% 45%)"
+  quota-session-3: # bluish green
+    light: "hsl(163.6 100% 31%)"
+    dark: "hsl(163.6 100% 31%)"
+  quota-session-4: # reddish purple
+    light: "hsl(327 45% 63.7%)"
+    dark: "hsl(327 45% 63.7%)"
+  quota-session-5: # sky blue, darkened for light-surface contrast
+    light: "hsl(202 62.6% 48.2%)"
+    dark: "hsl(201.6 77% 62.5%)"
+  quota-session-6: # vermilion
+    light: "hsl(26.4 100% 41.7%)"
+    dark: "hsl(26.4 100% 41.7%)"
+  quota-session-7: # yellow, darkened for light-surface contrast
+    light: "hsl(55 100% 39.4%)"
+    dark: "hsl(56 85% 60%)"
+  quota-session-8: # deep purple on light, lavender on dark; distinct on both surfaces
+    light: "hsl(265 32% 43.8%)"
+    dark: "hsl(261 46% 73.7%)"
+  quota-other: # every bound session outside the top eight, stacked as one band
+    light: "hsl(240 5.5% 25% / 0.3)"
+    dark: "hsl(240 33% 94% / 0.28)"
+  quota-unattributed: # spend this app could not credit to any session
+    light: "hsl(240 5.5% 25% / 0.12)"
+    dark: "hsl(240 33% 94% / 0.1)"
+  quota-unexplained: # meter spend no local reading explains; hatch stroke, reuses the meter blue at low opacity so it needs no new hue
+    light: "hsl(221.2 83% 53.3% / 0.5)"
+    dark: "hsl(221 89% 59.8% / 0.5)"
+  quota-pace: # even spend through a window: 0% at the start, 100% at the reset
+    light: "hsl(240 5.5% 25% / 0.7)"
+    dark: "hsl(240 33% 94% / 0.7)"
+  quota-reset: # a reset boundary line, lighter than the axis/grid text; also draws the chart's 25/50/75/100% gridlines
+    light: "hsl(240 5.5% 25% / 0.15)"
+    dark: "hsl(240 33% 94% / 0.32)"
 fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`

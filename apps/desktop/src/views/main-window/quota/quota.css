@@ -1,0 +1,301 @@
+/* ==========================================================================
+   Quota screen sub-palette.
+
+   The burnup chart's own colors: the provider's meter line, up to eight top
+   sessions with their own hues, and two greys for everything else the chart
+   groups together. Kept local to the Quota screen, the same way the
+   session-analysis sub-palette stays in its own stylesheet.
+
+   The eight session hues are the Okabe-Ito palette, safe for deuteranopia,
+   protanopia and tritanopia, ordered so consecutive hues differ in both hue
+   and lightness (greedy hue assignment hands adjacent stack bands adjacent
+   indices). Five of the eight use the same value in both themes; sky blue
+   and yellow are darkened for the light theme to keep them readable there,
+   and the eighth hue swaps a lighter lavender on dark for a deeper purple on
+   light so it stays distinct on both surfaces. The first hue is Okabe-Ito's
+   own blue, chosen because it reads apart from `quota-meter`'s brighter,
+   more indigo blue in both themes.
+   ========================================================================== */
+
+@theme {
+  /* The provider's own meter reading. A calm blue, distinct from every
+     session hue, since it is a fact the provider stated, not an estimate. */
+  --color-quota-meter: var(--color-quota-meter-val);
+
+  /* The eight session hues, in the order the key lists them. Chosen to stay
+     apart from each other and from the meter blue in both themes. */
+  --color-quota-session-1: var(--color-quota-session-1-val);
+  --color-quota-session-2: var(--color-quota-session-2-val);
+  --color-quota-session-3: var(--color-quota-session-3-val);
+  --color-quota-session-4: var(--color-quota-session-4-val);
+  --color-quota-session-5: var(--color-quota-session-5-val);
+  --color-quota-session-6: var(--color-quota-session-6-val);
+  --color-quota-session-7: var(--color-quota-session-7-val);
+  --color-quota-session-8: var(--color-quota-session-8-val);
+
+  /* Every bound session outside the top eight, stacked as one band. A mid
+     grey, quieter than a session hue but still visible against the surface. */
+  --color-quota-other: var(--color-quota-other-val);
+
+  /* Spend this app could not credit to any session. Lighter than `other`,
+     since it names an absence of local evidence, not a session's own use. */
+  --color-quota-unattributed: var(--color-quota-unattributed-val);
+
+  /* Spend the provider's meter reports that no local reading, bound or
+     unattributed, explains at all. Drawn as a hatch, not a new hue, since
+     the maintainer has a colour-vision deficiency: this token colors the
+     hatch's stroke, reusing the meter's own blue at low opacity so the
+     band still reads as "the provider's own fact", not a session's use. */
+  --color-quota-unexplained: var(--color-quota-unexplained-val);
+
+  /* The pace line for a window. It marks even spend through the window,
+     from 0% at the start to 100% at the reset. */
+  --color-quota-pace: var(--color-quota-pace-val);
+
+  /* A reset boundary, and the chart's own horizontal gridlines. Lighter than
+     the axis and grid text (`--color-label-tertiary`), so it never competes
+     with the tick labels; achromatic, so it is CVD-safe. */
+  --color-quota-reset: var(--color-quota-reset-val);
+}
+
+/* --- Light (default and explicit) --- */
+:root,
+:root[data-theme="light"] {
+  --color-quota-meter-val: hsl(221.2 83% 53.3%); /* blue, matches the context line */
+  --color-quota-session-1-val: hsl(201.5 100% 34.9%); /* blue (Okabe-Ito) */
+  --color-quota-session-2-val: hsl(41.5 100% 45%); /* orange */
+  --color-quota-session-3-val: hsl(163.6 100% 31%); /* bluish green */
+  --color-quota-session-4-val: hsl(327 45% 63.7%); /* reddish purple */
+  --color-quota-session-5-val: hsl(202 62.6% 48.2%); /* sky blue, darkened for contrast */
+  --color-quota-session-6-val: hsl(26.4 100% 41.7%); /* vermilion */
+  --color-quota-session-7-val: hsl(55 100% 39.4%); /* yellow, darkened for contrast */
+  --color-quota-session-8-val: hsl(265 32% 43.8%); /* deep purple, for a light surface */
+  --color-quota-other-val: hsl(240 5.5% 25% / 0.3);
+  --color-quota-unattributed-val: hsl(240 5.5% 25% / 0.12);
+  --color-quota-unexplained-val: hsl(221.2 83% 53.3% / 0.5);
+  --color-quota-pace-val: hsl(240 5.5% 25% / 0.7);
+  --color-quota-reset-val: hsl(240 5.5% 25% / 0.15);
+}
+
+/* --- Dark ---
+   `@media` cannot share a selector list with a plain `:root` rule, so the
+   system-preference branch and the explicit [data-theme='dark'] branch are
+   written separately, mirroring session-analysis-colors.css. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-quota-meter-val: hsl(221 89% 59.8%);
+    --color-quota-session-1-val: hsl(201.5 100% 34.9%); /* blue (Okabe-Ito) */
+    --color-quota-session-2-val: hsl(41.5 100% 45%); /* orange */
+    --color-quota-session-3-val: hsl(163.6 100% 31%); /* bluish green */
+    --color-quota-session-4-val: hsl(327 45% 63.7%); /* reddish purple */
+    --color-quota-session-5-val: hsl(201.6 77% 62.5%); /* sky blue */
+    --color-quota-session-6-val: hsl(26.4 100% 41.7%); /* vermilion */
+    --color-quota-session-7-val: hsl(56 85% 60%); /* yellow */
+    --color-quota-session-8-val: hsl(261 46% 73.7%); /* lavender, for a dark surface */
+    --color-quota-other-val: hsl(240 33% 94% / 0.28);
+    --color-quota-unattributed-val: hsl(240 33% 94% / 0.1);
+    --color-quota-unexplained-val: hsl(221 89% 59.8% / 0.5);
+    --color-quota-pace-val: hsl(240 33% 94% / 0.7);
+    --color-quota-reset-val: hsl(240 33% 94% / 0.32);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-quota-meter-val: hsl(221 89% 59.8%);
+  --color-quota-session-1-val: hsl(201.5 100% 34.9%); /* blue (Okabe-Ito) */
+  --color-quota-session-2-val: hsl(41.5 100% 45%); /* orange */
+  --color-quota-session-3-val: hsl(163.6 100% 31%); /* bluish green */
+  --color-quota-session-4-val: hsl(327 45% 63.7%); /* reddish purple */
+  --color-quota-session-5-val: hsl(201.6 77% 62.5%); /* sky blue */
+  --color-quota-session-6-val: hsl(26.4 100% 41.7%); /* vermilion */
+  --color-quota-session-7-val: hsl(56 85% 60%); /* yellow */
+  --color-quota-session-8-val: hsl(261 46% 73.7%); /* lavender, for a dark surface */
+  --color-quota-other-val: hsl(240 33% 94% / 0.28);
+  --color-quota-unattributed-val: hsl(240 33% 94% / 0.1);
+  --color-quota-unexplained-val: hsl(221 89% 59.8% / 0.5);
+  --color-quota-pace-val: hsl(240 33% 94% / 0.7);
+  --color-quota-reset-val: hsl(240 33% 94% / 0.32);
+}
+
+/* ==========================================================================
+   Burnup chart highlight.
+
+   Hovering a top-sessions row or an area on the chart highlights the same
+   layer in both places. The chart itself never re-renders for this: every
+   stacked `Area` in QuotaBurnupChart.tsx carries a stable class, and the
+   caller (QuotaView) only toggles a `data-quota-highlight` attribute on a
+   wrapper div outside the memoized chart. CSS cannot compare the
+   attribute's value to a class name at runtime, so every top-session index
+   gets its own rule below.
+
+   No governed opacity token exists for a "rested" layer (opacity sits
+   outside the token set entirely), so this reuses 0.25, the plain value
+   overview.css already uses for the same day-highlight pattern.
+   ========================================================================== */
+
+[data-quota-highlight] .quota-area {
+  opacity: 0.25;
+  transition: opacity var(--duration-fast);
+}
+
+/* The part of a band that stays under its window's pace line. Faded with
+   `fill-opacity`, not `opacity`, so the highlight rules above, which set
+   `opacity`, still apply to it unchanged. */
+.quota-area-under-pace {
+  fill-opacity: 0.45;
+}
+
+[data-quota-highlight="other"] .quota-area-other {
+  opacity: 1;
+}
+
+[data-quota-highlight="unattributed"] .quota-area-unattributed {
+  opacity: 1;
+}
+
+[data-quota-highlight="unexplained"] .quota-area-unexplained {
+  opacity: 1;
+}
+
+/* One rule per top-session index, s0..s39. Matches QUOTA_OWN_SERIES_CAP
+   (40) in quotaSeries.ts; change both together. */
+[data-quota-highlight="s0"] .quota-area-s0 {
+  opacity: 1;
+}
+[data-quota-highlight="s1"] .quota-area-s1 {
+  opacity: 1;
+}
+[data-quota-highlight="s2"] .quota-area-s2 {
+  opacity: 1;
+}
+[data-quota-highlight="s3"] .quota-area-s3 {
+  opacity: 1;
+}
+[data-quota-highlight="s4"] .quota-area-s4 {
+  opacity: 1;
+}
+[data-quota-highlight="s5"] .quota-area-s5 {
+  opacity: 1;
+}
+[data-quota-highlight="s6"] .quota-area-s6 {
+  opacity: 1;
+}
+[data-quota-highlight="s7"] .quota-area-s7 {
+  opacity: 1;
+}
+[data-quota-highlight="s8"] .quota-area-s8 {
+  opacity: 1;
+}
+[data-quota-highlight="s9"] .quota-area-s9 {
+  opacity: 1;
+}
+[data-quota-highlight="s10"] .quota-area-s10 {
+  opacity: 1;
+}
+[data-quota-highlight="s11"] .quota-area-s11 {
+  opacity: 1;
+}
+[data-quota-highlight="s12"] .quota-area-s12 {
+  opacity: 1;
+}
+[data-quota-highlight="s13"] .quota-area-s13 {
+  opacity: 1;
+}
+[data-quota-highlight="s14"] .quota-area-s14 {
+  opacity: 1;
+}
+[data-quota-highlight="s15"] .quota-area-s15 {
+  opacity: 1;
+}
+[data-quota-highlight="s16"] .quota-area-s16 {
+  opacity: 1;
+}
+[data-quota-highlight="s17"] .quota-area-s17 {
+  opacity: 1;
+}
+[data-quota-highlight="s18"] .quota-area-s18 {
+  opacity: 1;
+}
+[data-quota-highlight="s19"] .quota-area-s19 {
+  opacity: 1;
+}
+[data-quota-highlight="s20"] .quota-area-s20 {
+  opacity: 1;
+}
+[data-quota-highlight="s21"] .quota-area-s21 {
+  opacity: 1;
+}
+[data-quota-highlight="s22"] .quota-area-s22 {
+  opacity: 1;
+}
+[data-quota-highlight="s23"] .quota-area-s23 {
+  opacity: 1;
+}
+[data-quota-highlight="s24"] .quota-area-s24 {
+  opacity: 1;
+}
+[data-quota-highlight="s25"] .quota-area-s25 {
+  opacity: 1;
+}
+[data-quota-highlight="s26"] .quota-area-s26 {
+  opacity: 1;
+}
+[data-quota-highlight="s27"] .quota-area-s27 {
+  opacity: 1;
+}
+[data-quota-highlight="s28"] .quota-area-s28 {
+  opacity: 1;
+}
+[data-quota-highlight="s29"] .quota-area-s29 {
+  opacity: 1;
+}
+[data-quota-highlight="s30"] .quota-area-s30 {
+  opacity: 1;
+}
+[data-quota-highlight="s31"] .quota-area-s31 {
+  opacity: 1;
+}
+[data-quota-highlight="s32"] .quota-area-s32 {
+  opacity: 1;
+}
+[data-quota-highlight="s33"] .quota-area-s33 {
+  opacity: 1;
+}
+[data-quota-highlight="s34"] .quota-area-s34 {
+  opacity: 1;
+}
+[data-quota-highlight="s35"] .quota-area-s35 {
+  opacity: 1;
+}
+[data-quota-highlight="s36"] .quota-area-s36 {
+  opacity: 1;
+}
+[data-quota-highlight="s37"] .quota-area-s37 {
+  opacity: 1;
+}
+[data-quota-highlight="s38"] .quota-area-s38 {
+  opacity: 1;
+}
+[data-quota-highlight="s39"] .quota-area-s39 {
+  opacity: 1;
+}
+
+/* The stack-top line states the provider's own reading wherever one
+   exists, not an estimate layer, so it never dims. */
+.quota-line-top {
+  opacity: 1;
+}
+
+/* The Quota session list's swatch for the "Unexplained" row: a diagonal
+   hatch, not a solid fill, so the row reads apart from "Unattributed"
+   without relying on hue (the maintainer has a colour-vision deficiency).
+   Mirrors the chart's own SVG hatch pattern in plain CSS, since the list's
+   dot is too small and too far from the chart to share one SVG pattern id
+   with it. */
+.quota-swatch-hatch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--color-quota-unexplained) 0 1px,
+    transparent 1px 3px
+  );
+}
