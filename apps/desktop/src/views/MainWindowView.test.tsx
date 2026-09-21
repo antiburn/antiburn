@@ -74,6 +74,10 @@ const activityMocks = vi.hoisted(() => {
       return () => this.listeners.delete(listener)
     }
     subscribeInactive = this.subscribe
+    subscribeList = (listener: () => void) => {
+      activityMocks.listSubscriptions += 1
+      return this.subscribe(listener)
+    }
     setEntries(entries: SessionListEntry[] | null) {
       this.snapshot = { ...this.snapshot, entries }
       this.notify()
@@ -85,6 +89,7 @@ const activityMocks = vi.hoisted(() => {
   return {
     FakeMainActivitySession,
     instances: [] as InstanceType<typeof FakeMainActivitySession>[],
+    listSubscriptions: 0,
   }
 })
 
@@ -145,6 +150,7 @@ function setWindowWidth(value: number): void {
 
 afterEach(() => {
   vi.clearAllMocks()
+  activityMocks.listSubscriptions = 0
   if (userAgent) Object.defineProperty(window.navigator, "userAgent", userAgent)
   if (innerWidth) Object.defineProperty(window, "innerWidth", innerWidth)
 })
@@ -197,6 +203,7 @@ describe("MainWindowView", () => {
     fireEvent(window, new Event("resize"))
     expect(screen.getByRole("tablist", { name: "Main sections" })).toBeVisible()
     expect(screen.queryByRole("button", { name: "Open navigation" })).toBeNull()
+    expect(activityMocks.listSubscriptions).toBe(1)
   })
   it("lands in Sessions with the clicked recent session selected", () => {
     render(<MainWindowView />)

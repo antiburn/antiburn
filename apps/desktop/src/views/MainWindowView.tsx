@@ -118,7 +118,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const [activitySession] = useState(() => new MainActivitySession())
   const [burnChecksSession] = useState(() => new BurnChecksSession())
   const [navigationSession] = useState(() => new MainWindowNavigationSession())
-  const [overviewSession] = useState(() => new MainOverviewSession())
+  const [overviewSession] = useState(() => new MainOverviewSession(activitySession))
   const [quotaSession] = useState(() => new QuotaSession())
   const navigation = useSyncExternalStore(
     navigationSession.subscribe,
@@ -142,11 +142,10 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     setPreviousNavigationRequests(navigation.requests)
     if (localSelectedId) setLocalSelectedId(null)
   }
-  // Read the Sessions list for the sidebar's counts without joining its
-  // active-viewer count, so this alone never starts loading it: the list
-  // still only loads once a viewer visits Sessions.
+  // Read the shared Sessions list for the sidebar's counts. This list is a
+  // main-window dependency, while detail analysis remains pane-scoped.
   const activity = useSyncExternalStore(
-    sections ? neverSubscribe : activitySession.subscribeInactive,
+    sections ? neverSubscribe : activitySession.subscribeList,
     activitySession.getSnapshot,
     activitySession.getSnapshot,
   )
