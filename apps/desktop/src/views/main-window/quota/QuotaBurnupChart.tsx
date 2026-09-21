@@ -37,7 +37,7 @@ const GRID_TICKS = [25, 50, 75, 100]
  *  `"unexplained"`, or a top session's key. */
 type QuotaChartSeries = string
 
-export type QuotaChartAxisMode = "window" | "date"
+type QuotaChartAxisMode = "window" | "date"
 
 export interface QuotaBurnupChartProps {
   rangeStartEpoch: number
