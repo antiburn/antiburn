@@ -337,6 +337,23 @@ fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     let _ = refresh_publish_and_evaluate(app, BACKGROUND_MAX_AGE, None);
 }
 
+/// How stale a reading a preference repaint accepts.
+///
+/// A preference changes the arithmetic, not the readings. Accept any reading
+/// the sources already hold, so a control the reader moves sends no provider
+/// request.
+const REPAINT_MAX_AGE: Duration = Duration::from_secs(86_400);
+
+/// Publish the held readings again after a preference changed their arithmetic.
+///
+/// The working week moves the pace marker, the pace verdict, and the runway on
+/// every weekly window. The shell computes all three, so the tray and each
+/// webview keep the previous figures until the next collection. This repaints
+/// them at once instead.
+pub(crate) fn republish_after_settings_change(app: &AppHandle) {
+    let _ = refresh_publish_and_evaluate(app, REPAINT_MAX_AGE, None);
+}
+
 /// Collect, publish, and evaluate one live-usage reading.
 ///
 /// Every app-level refresh uses this path. This keeps milestone evaluation at

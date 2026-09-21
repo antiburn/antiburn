@@ -199,7 +199,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         <Card>
           <Row
             label="Days you work"
-            description="The pace marker on each weekly bar shows where you should be by now. It spreads your weekly allowance over these days. Pick 5 days and the marker reaches the end on Friday night, so a quiet weekend does not read as falling behind. Weeks start on Monday. This does not change a 5-hour limit, which rolls several times a day."
+            description="Spreads your weekly allowance over these days, so a quiet weekend does not read as falling behind. Weeks start Monday. This does not change 5-hour limits."
             trailing={
               <SegmentedControl
                 options={WORKING_WEEKS}
