@@ -115,6 +115,12 @@ pub enum EventName {
     /// A closed quota window reported its coarse estimate-accuracy facts.
     #[cfg(feature = "analytics")]
     QuotaWindowClosed,
+    #[cfg(feature = "analytics")]
+    NavigationHistoryMoved,
+    #[cfg(feature = "analytics")]
+    AppSearchOpened,
+    #[cfg(feature = "analytics")]
+    AppSearchResultOpened,
 }
 
 /// Every event this application may send.
@@ -157,6 +163,9 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::ProviderIncidentsObserved,
     EventName::ProviderIncidentsIngested,
     EventName::QuotaWindowClosed,
+    EventName::NavigationHistoryMoved,
+    EventName::AppSearchOpened,
+    EventName::AppSearchResultOpened,
 ];
 
 #[cfg(feature = "analytics")]
@@ -193,6 +202,9 @@ impl EventName {
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
             EventName::ProviderIncidentsIngested => "antiburn.provider_incidents_ingested",
             EventName::QuotaWindowClosed => "antiburn.quota_window_closed",
+            EventName::NavigationHistoryMoved => "antiburn.navigation_history_moved",
+            EventName::AppSearchOpened => "antiburn.app_search_opened",
+            EventName::AppSearchResultOpened => "antiburn.app_search_result_opened",
         }
     }
 }
@@ -416,7 +428,9 @@ pub enum Interaction {
         outcome: ProjectFolderOutcome,
     },
     /// A fixed onboarding step became visible.
-    OnboardingStepViewed { step: OnboardingStep },
+    OnboardingStepViewed {
+        step: OnboardingStep,
+    },
     /// A session was opened from the activity list. `agent` deserializes into
     /// the engine's own closed enum, so an unrecognised slug is a rejected
     /// command rather than a new value appearing in the data.
@@ -425,7 +439,10 @@ pub enum Interaction {
         environment: Environment,
     },
     /// A fixed product surface became visible.
-    SurfaceViewed { surface: Surface, origin: Origin },
+    SurfaceViewed {
+        surface: Surface,
+        origin: Origin,
+    },
     /// A visible surface presented a data state.
     SurfaceStateObserved {
         surface: StateSurface,
@@ -433,7 +450,9 @@ pub enum Interaction {
         origin: Origin,
     },
     /// A fixed Settings pane became visible.
-    SettingsPaneViewed { pane: SettingsPane },
+    SettingsPaneViewed {
+        pane: SettingsPane,
+    },
     /// A provider state appeared on a visible usage surface.
     LiveUsageStateObserved {
         provider: LiveUsageProvider,
@@ -441,13 +460,19 @@ pub enum Interaction {
         origin: Origin,
     },
     /// An Auto Fix review request completed.
-    BurnCheckAutoFixReviewed { outcome: AutoFixReviewOutcome },
+    BurnCheckAutoFixReviewed {
+        outcome: AutoFixReviewOutcome,
+    },
     /// The reader confirmed the operation shown in an Auto Fix review.
     BurnCheckAutoFixConfirmed,
     /// A confirmed Auto Fix operation completed.
-    BurnCheckAutoFixCompleted { outcome: AutoFixOutcome },
+    BurnCheckAutoFixCompleted {
+        outcome: AutoFixOutcome,
+    },
     /// A fix prompt request completed.
-    BurnCheckPromptPrepared { outcome: PromptPreparationOutcome },
+    BurnCheckPromptPrepared {
+        outcome: PromptPreparationOutcome,
+    },
     /// A prepared fix prompt reached the clipboard.
     BurnCheckPromptCopied,
     /// A later result appeared in the visible Burn Checks workspace.
@@ -462,6 +487,13 @@ pub enum Interaction {
     SessionFilterSelected {
         filter: SessionFilterKind,
         agent: Option<AgentKind>,
+    },
+    NavigationHistoryMoved {
+        direction: HistoryDirection,
+    },
+    AppSearchOpened {},
+    AppSearchResultOpened {
+        category: SearchCategory,
     },
 }
 
@@ -656,6 +688,21 @@ pub enum SessionFilterKind {
     All,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryDirection {
+    Back,
+    Forward,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchCategory {
+    View,
+    Setting,
+    Check,
+}
+
 #[cfg(feature = "analytics")]
 impl Interaction {
     /// The event and the facts this interaction becomes.
@@ -771,6 +818,21 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::NavigationHistoryMoved { direction } => (
+                EventName::NavigationHistoryMoved,
+                Facts {
+                    label: Some(direction.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::AppSearchOpened {} => (EventName::AppSearchOpened, Facts::default()),
+            Interaction::AppSearchResultOpened { category } => (
+                EventName::AppSearchResultOpened,
+                Facts {
+                    label: Some(category.as_str()),
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
@@ -823,6 +885,10 @@ wire_values!(SessionFilterKind, {
     SessionFilterKind::Passing => "passing",
     SessionFilterKind::All => "all",
 });
+#[cfg(feature = "analytics")]
+wire_values!(HistoryDirection, { HistoryDirection::Back => "back", HistoryDirection::Forward => "forward" });
+#[cfg(feature = "analytics")]
+wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::Check => "check" });
 
 #[cfg(feature = "analytics")]
 wire_values!(AutoFixReviewOutcome, {
@@ -1629,12 +1695,15 @@ mod tests {
                 | EventName::QuotaIncidentsObserved
                 | EventName::ProviderIncidentsObserved
                 | EventName::ProviderIncidentsIngested
-                | EventName::QuotaWindowClosed => true,
+                | EventName::QuotaWindowClosed
+                | EventName::NavigationHistoryMoved
+                | EventName::AppSearchOpened
+                | EventName::AppSearchResultOpened => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            30,
+            33,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -1953,6 +2022,43 @@ mod tests {
     fn every_event_name_sits_in_antiburns_own_namespace() {
         for name in EVERY_EVENT {
             assert!(name.as_str().starts_with("antiburn."), "{}", name.as_str());
+        }
+    }
+
+    #[test]
+    fn navigation_events_have_closed_facts_and_enums() {
+        let cases = [
+            (
+                Interaction::NavigationHistoryMoved {
+                    direction: HistoryDirection::Back,
+                },
+                EventName::NavigationHistoryMoved,
+                Some("back"),
+            ),
+            (
+                Interaction::AppSearchOpened {},
+                EventName::AppSearchOpened,
+                None,
+            ),
+            (
+                Interaction::AppSearchResultOpened {
+                    category: SearchCategory::Check,
+                },
+                EventName::AppSearchResultOpened,
+                Some("check"),
+            ),
+        ];
+        for (interaction, expected_name, expected_label) in cases {
+            let (name, facts) = interaction.resolve();
+            assert_eq!(name, expected_name);
+            assert_eq!(facts.label, expected_label);
+        }
+        for value in [
+            serde_json::json!({"kind":"navigationHistoryMoved","direction":"sideways"}),
+            serde_json::json!({"kind":"appSearchOpened","extra":true}),
+            serde_json::json!({"kind":"appSearchResultOpened","category":"session"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_err());
         }
     }
 }

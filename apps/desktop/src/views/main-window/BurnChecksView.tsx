@@ -1,6 +1,6 @@
+import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
 import { useSyncExternalStore } from "react"
 
-import { isMacOS } from "../../lib/platform"
 import { refreshSnoozedBurnChecks, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 
 import { ScrollPane } from "../../components/ui/ScrollPane"
@@ -12,9 +12,13 @@ import { BurnChecksReport } from "./burn-checks/BurnChecksReport"
 export function BurnChecksView({
   active,
   session,
+  focusedCheck,
+  focusRevision,
 }: {
   active: boolean
   session: BurnChecksSession
+  focusRevision?: number | undefined
+  focusedCheck?: ChecksCategoryPayload["id"] | undefined
 }) {
   const state = useSyncExternalStore(
     active ? session.subscribe : session.subscribeInactive,
@@ -26,14 +30,7 @@ export function BurnChecksView({
   const unavailable = state.error || snoozes.status === "error"
   if (!report || snoozes.status !== "ready")
     return (
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
-        {unavailable && isMacOS() && (
-          <div
-            className="main-window-empty-titlebar"
-            data-tauri-drag-region
-            aria-hidden="true"
-          />
-        )}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
         <h1 className="sr-only">Burn checks</h1>
         {unavailable ? (
           <div className="flex flex-1 items-center justify-center text-center">
@@ -131,7 +128,13 @@ export function BurnChecksView({
           </button>
         </p>
       )}
-      <BurnChecksReport report={report} session={session} state={state} />
+      <BurnChecksReport
+        report={report}
+        session={session}
+        state={state}
+        focusedCheck={active ? focusedCheck : undefined}
+        focusRevision={focusRevision}
+      />
     </div>
   )
 }

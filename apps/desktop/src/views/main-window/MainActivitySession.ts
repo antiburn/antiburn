@@ -13,21 +13,17 @@ import {
   getSessionLimitAllocations,
   getSessionQuota,
   getMainWindowVisible,
-  acknowledgeMainWindowSessionTarget,
   noteInteraction,
-  onMainWindowSessionTarget,
   onMainWindowVisibilityChanged,
   onSettingsChanged,
   onSessionIndexChanged,
   onSessionUpdated,
   onLiveUsageChanged,
-  peekMainWindowSessionTarget,
   type AppSettings,
   type SessionAnalysisPayload,
   type LiveUsageSummaryPayload,
   type SessionLimitAllocationSummaryPayload,
   type SessionQuotaPayload,
-  type MainWindowSessionRequest,
   type SessionUpdatedPayload,
   type SurfaceOrigin,
 } from "../../lib/ipc"
@@ -110,6 +106,34 @@ function analysisSurfaceState(
 
 /** Own main-window requests without changing the popover's session state. */
 export class MainActivitySession {
+  onNavigation?: (origin: SurfaceOrigin) => void
+  onDeleted?: (subject: SessionSubject) => void
+  onSessionInventoryInvalidated?: () => void
+  private restoringNavigation = false
+  private reportRestoredFilterSelection = false
+
+  restoreNavigation(
+    filter: SessionFilter,
+    subject: SessionSubject | null,
+    origin: SurfaceOrigin = "automatic",
+    reportFilterSelection = false,
+  ): void {
+    this.restoringNavigation = true
+    this.reportRestoredFilterSelection = reportFilterSelection
+    try {
+      this.setFilter(filter)
+      if (
+        subject &&
+        (!this.snapshot.subject || sessionKey(subject) !== sessionKey(this.snapshot.subject))
+      )
+        this.open(subject, [], origin)
+      else if (!subject && this.snapshot.subject) this.clearSelection()
+    } finally {
+      this.restoringNavigation = false
+      this.reportRestoredFilterSelection = false
+    }
+  }
+
   private snapshot: MainActivitySnapshot = {
     active: false,
     entries: null,
@@ -155,7 +179,6 @@ export class MainActivitySession {
   private usageTask: Promise<void> | null = null
   private usageDirty = false
   private usageRevision = 0
-  private targetRevision = 0
   private readonly exposure = new SurfaceExposureTracker()
   private exposureOrigin: SurfaceOrigin = "automatic"
 
@@ -223,14 +246,6 @@ export class MainActivitySession {
       ),
       this.listen(
         generation,
-        onMainWindowSessionTarget((request) => {
-          if (generation !== this.generation) return
-          this.applyAndAcknowledgeSessionTarget(request)
-          void this.peekSessionTarget(generation)
-        }),
-      ),
-      this.listen(
-        generation,
         onSettingsChanged((settings) => {
           if (generation !== this.generation) return
           this.settingsVersion += 1
@@ -241,10 +256,10 @@ export class MainActivitySession {
         generation,
         onSessionIndexChanged((change) => {
           if (generation !== this.generation) return
-          // A removal or broad invalidation can take the selected session
-          // with it; `loadList` clears the selection when the refetched
-          // list no longer holds it.
-          if (change.cause !== "scan_pass") this.invalidated = true
+          if (change.cause !== "scan_pass") {
+            this.invalidated = true
+            this.onSessionInventoryInvalidated?.()
+          }
           if (this.listRunning) this.refreshList()
           if (this.snapshot.active) {
             this.refreshUsage()
@@ -283,27 +298,15 @@ export class MainActivitySession {
     if (generation !== this.generation) return
     const settingsVersion = this.settingsVersion
     const revision = visibilityRevision
-    const rendererGeneration = this.rendererGeneration()
-    const [settings, visible, target] = await Promise.all([
+    const [settings, visible] = await Promise.all([
       getSettings().catch(() => DEFAULT_SETTINGS),
       getMainWindowVisible().catch(() => false),
-      rendererGeneration === null
-        ? Promise.resolve(null)
-        : peekMainWindowSessionTarget(rendererGeneration).catch(() => null),
     ])
     if (generation !== this.generation) return
-    if (target) this.applyAndAcknowledgeSessionTarget(target)
     if (settingsVersion === this.settingsVersion) this.applySettings(settings)
     if (revision === visibilityRevision) this.visible = visible
     this.initialized = true
     this.syncActive()
-  }
-
-  private rendererGeneration(): number | null {
-    const generation = window.__ANTIBURN_WINDOW_GENERATION__
-    return typeof generation === "number" && Number.isSafeInteger(generation)
-      ? generation
-      : null
   }
 
   private applySessionUpdate(update: SessionUpdatedPayload): void {
@@ -364,38 +367,16 @@ export class MainActivitySession {
     return withRegistryActivity(liveSessions.getSnapshot(), entries)
   }
 
-  private applySessionTarget(request: MainWindowSessionRequest): void {
-    if (request.revision <= this.targetRevision) return
-    this.targetRevision = request.revision
-    this.open(request.target, [], "user")
-  }
-
-  private applyAndAcknowledgeSessionTarget(request: MainWindowSessionRequest): void {
-    if (request.revision < this.targetRevision) return
-    this.applySessionTarget(request)
-    const generation = this.rendererGeneration()
-    if (generation === null) return
-    void acknowledgeMainWindowSessionTarget(generation, request.revision).catch(() => {
-      console.error("The main window could not acknowledge its session target.")
-    })
-  }
-
-  private async peekSessionTarget(generation: number): Promise<void> {
-    const rendererGeneration = this.rendererGeneration()
-    if (rendererGeneration === null) return
-    const request = await peekMainWindowSessionTarget(rendererGeneration).catch(() => null)
-    if (generation === this.generation && request) {
-      this.applyAndAcknowledgeSessionTarget(request)
-    }
-  }
-
   private applySettings(settings: AppSettings): void {
     const previous = this.snapshot.settings
+    const filter = parseSessionFilterId(settings.sessionFilter)
+    const filterChanged = sessionFilterId(filter) !== sessionFilterId(this.snapshot.filter)
     this.update({
       settings,
       settingsError: false,
-      filter: parseSessionFilterId(settings.sessionFilter),
+      filter,
     })
+    if (filterChanged && !this.restoringNavigation) this.onNavigation?.("automatic")
     if (
       settings.activityWindowDays !== previous.activityWindowDays ||
       settings.disabledAgents.join() !== previous.disabledAgents.join()
@@ -500,21 +481,6 @@ export class MainActivitySession {
         // any of them the bounded snapshot omitted.
         liveSessions.setInterest(this, listInterests(entries))
         if (this.snapshot.active) this.selectDefaultEntry()
-        const subject = this.snapshot.subject
-        if (
-          invalidated &&
-          subject &&
-          !entries.some(
-            (entry) =>
-              localSessionKey(entry.agent, entry.sessionId ?? "", entry.wslDistro) ===
-              localSessionKey(
-                subject.agent,
-                subject.subagent?.parentSessionId ?? subject.sessionId,
-                subject.wslDistro,
-              ),
-          )
-        )
-          this.clearSelection()
       } catch {
         if (version === this.listWorkVersion && listVersion === this.listVersion)
           this.update({ listError: true })
@@ -574,6 +540,7 @@ export class MainActivitySession {
     })
     this.refreshAnalysis()
     this.refreshSessionQuota()
+    if (!this.restoringNavigation) this.onNavigation?.(origin)
   }
 
   clearSelection = (): void => {
@@ -594,8 +561,20 @@ export class MainActivitySession {
     })
   }
 
-  deleted = (): void => {
+  private removeSubject(subject: SessionSubject): void {
     this.clearSelection()
+    this.onDeleted?.(subject)
+  }
+
+  removeDeletedSubject = (subject: SessionSubject): void => {
+    const current = this.snapshot.subject
+    if (!current || sessionKey(current) !== sessionKey(subject)) return
+    this.removeSubject(current)
+  }
+
+  deleted = (): void => {
+    const subject = this.snapshot.subject
+    if (subject) this.removeSubject(subject)
     this.invalidated = true
     this.refreshList()
     this.refreshUsage()
@@ -739,11 +718,14 @@ export class MainActivitySession {
     if (current.sessionFilter === id) return
     const next = { ...current, sessionFilter: id }
     this.update({ settings: next, filter })
+    if (!this.restoringNavigation) this.onNavigation?.("user")
+    const version = ++this.settingsVersion
     void setSettings(next)
-      .then((saved) =>
-        this.update({ settings: saved, filter: parseSessionFilterId(saved.sessionFilter) }),
-      )
+      .then((saved) => {
+        if (version === this.settingsVersion) this.update({ settings: saved })
+      })
       .catch(() => this.update({ settingsError: true }))
+    if (this.restoringNavigation && !this.reportRestoredFilterSelection) return
     noteInteraction(
       filter.kind === "agent"
         ? {

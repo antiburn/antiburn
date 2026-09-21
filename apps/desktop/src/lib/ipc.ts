@@ -1,3 +1,4 @@
+import { settingsSearchRequest, type SettingsControlId } from "./settingsSearchTargets"
 /**
  * Typed shell IPC edge, including re-exported feature edges.
  * Wrappers tolerate a browser without the shell and expose one test boundary.
@@ -12,15 +13,11 @@ import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./type
 import type {
   AppInfo,
   AppSettings,
-  MainWindowSectionId,
-  MainWindowSectionRequest,
-  MainWindowSessionRequest,
   RepositoryItemPayload,
   ScanStatus,
   StorageHealthPayload,
   UpdateStatusPayload,
 } from "./ipcPayloads"
-import type { SessionIdentityPayload } from "./sessionIpc"
 import type {
   AllowanceUsageSummaryPayload,
   LiveUsageSummaryPayload,
@@ -31,7 +28,6 @@ import type {
 export * from "./ipcPayloads"
 export * from "./mainWindowIpc"
 export * from "./nudgeIpc"
-export type { MainWindowSessionRequest } from "./ipcPayloads"
 export * from "./providerUsageIpc"
 export * from "./sessionIpc"
 export type { SettingsPane } from "./settingsPanes"
@@ -97,24 +93,6 @@ export async function getMainWindowVisible(): Promise<boolean> {
   return invoke<boolean>("get_main_window_visible")
 }
 
-/** Open or focus the main window and select one exact local session. */
-export async function openMainWindowSession(target: SessionIdentityPayload): Promise<void> {
-  if (!hasShell()) return
-  await invoke("open_main_window_session", { target })
-}
-
-/** Open or focus the main window and select one top-level section. */
-export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
-  if (!hasShell()) return
-  await invoke("open_main_window_section", { section })
-}
-
-/** Take the latest section that arrived before the main renderer could listen. */
-export async function takeMainWindowSectionTarget(): Promise<MainWindowSectionRequest | null> {
-  if (!hasShell()) return null
-  return invoke<MainWindowSectionRequest | null>("take_main_window_section_target")
-}
-
 /** Tell the shell that the popover's initial activity and usage state settled. */
 export async function popoverContentReady(generation: number): Promise<void> {
   if (!hasShell()) return
@@ -128,9 +106,14 @@ export async function popoverContentReady(generation: number): Promise<void> {
  * reader on the pane that can fix what they were told about. Omitting it keeps
  * an open window on its current pane or opens a new window on General.
  */
-export async function openSettingsWindow(pane?: SettingsPane): Promise<void> {
+export async function openSettingsWindow(
+  pane?: SettingsPane,
+  control?: SettingsControlId,
+): Promise<void> {
   if (!hasShell()) return
-  await invoke("open_settings_window", { pane: pane ?? null })
+  await invoke("open_settings_window", {
+    pane: pane ? settingsSearchRequest(pane, control) : null,
+  })
 }
 
 /**
@@ -318,6 +301,9 @@ export async function openPrivacyPolicy(): Promise<void> {
  * `src-tauri/src/analytics/event.rs`.
  */
 export type Interaction =
+  | { kind: "navigationHistoryMoved"; direction: "back" | "forward" }
+  | { kind: "appSearchOpened" }
+  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "check" }
   | {
       kind: "onboardingStepViewed"
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
@@ -764,38 +750,12 @@ const noShellUnlisten: UnlistenFn = () => undefined
 /** Event the shell emits when the main renderer can start or stop presenting work. */
 const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 
-/** Event carrying a revisioned session target to an existing main renderer. */
-const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
-
-/** Event carrying a revisioned section target to an existing main renderer. */
-const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
-
 /** Subscribe to main-window presentation visibility. */
 export async function onMainWindowVisibilityChanged(
   handler: (visible: boolean) => void,
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<boolean>(MAIN_WINDOW_VISIBILITY_CHANGED_EVENT, (event) =>
-    handler(event.payload),
-  )
-}
-
-/** Subscribe to session targets sent to the retained main renderer. */
-export async function onMainWindowSessionTarget(
-  handler: (request: MainWindowSessionRequest) => void,
-): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen<MainWindowSessionRequest>(MAIN_WINDOW_SESSION_TARGET_EVENT, (event) =>
-    handler(event.payload),
-  )
-}
-
-/** Subscribe to section targets sent to the retained main renderer. */
-export async function onMainWindowSectionTarget(
-  handler: (request: MainWindowSectionRequest) => void,
-): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen<MainWindowSectionRequest>(MAIN_WINDOW_SECTION_TARGET_EVENT, (event) =>
     handler(event.payload),
   )
 }

@@ -1,3 +1,4 @@
+import { SettingsSectionGroup, SettingsToggleRow } from "./SettingsSearchRows"
 import { useState, useSyncExternalStore } from "react"
 
 import { Card } from "../../components/ui/Card"
@@ -178,8 +179,8 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
     <Pane title="Usage">
       <SectionGroup title="Keeping limits current">
         <Card>
-          <ToggleRow
-            label="Keep my plan limits current"
+          <SettingsToggleRow
+            searchId="planLimits"
             description="Asks each provider directly for your current usage every five minutes in the background, and more often while visible, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this off also stops usage milestone notifications, since they need readings that keep moving."
             checked={on}
             onChange={(next) =>
@@ -215,8 +216,8 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
       {isMacOS() && (
         <SectionGroup title="Floating HUD">
           <Card>
-            <ToggleRow
-              label="Show floating usage HUD"
+            <SettingsToggleRow
+              searchId="floatingHud"
               description="A small always-on-top readout of your plan limits. It expands when you hover over it, and you can drag it anywhere on screen. It shows the same figures as this pane, so it is only as current as they are — the refresh switch above is what keeps them moving."
               checked={hudShown}
               onChange={handleHudChange}
@@ -243,7 +244,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         </SectionGroup>
       )}
 
-      <SectionGroup title="Track Limits for">
+      <SettingsSectionGroup searchId="usageMeters">
         <p className="px-1 type-footnote text-label-secondary">
           You need to sign in inside each tool to track its limits.
         </p>
@@ -281,7 +282,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
             )
           })}
         </Card>
-      </SectionGroup>
+      </SettingsSectionGroup>
     </Pane>
   )
 }

@@ -1005,7 +1005,6 @@ export function SessionDetailPresentation({
     >
       <div
         ref={bindModifiers}
-        data-tauri-drag-region={embedded && isMacOS() ? "deep" : undefined}
         className="session-detail-toolbar flex shrink-0 flex-wrap items-center gap-4 border-b border-separator bg-surface/80 px-10 py-3"
       >
         {onBack && (

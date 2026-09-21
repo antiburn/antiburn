@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { NOTICE_TEXT, THIRD_PARTY_NOTICES_TEXT } from "../lib/legalNotices"
 import { SettingsView } from "./SettingsView"
+import { searchApp, resolveSettingsSearchTarget } from "../lib/appSearch"
 
 /**
  * The settings window's persistence, through the mocked command layer.
@@ -18,7 +19,7 @@ const confirmDialog = vi.hoisted(() => vi.fn())
 const saveDialog = vi.hoisted(() => vi.fn())
 const closeWindow = vi.hoisted(() => vi.fn())
 /** Mutable so a test can render the macOS chrome; jsdom itself has no OS. */
-const platform = vi.hoisted(() => ({ mac: false }))
+const platform = vi.hoisted(() => ({ mac: false, other: "windows" as "windows" | "linux" }))
 /** Shell event handlers the view subscribed to, by event name. */
 const listeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>())
 
@@ -39,7 +40,11 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }))
 vi.mock("../lib/platform", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>()
-  return { ...actual, isMacOS: () => platform.mac }
+  return {
+    ...actual,
+    isMacOS: () => platform.mac,
+    detectPlatform: () => (platform.mac ? "macos" : platform.other),
+  }
 })
 
 /** Push a shell event at whatever subscribed to it. */
@@ -172,6 +177,7 @@ describe("SettingsView", () => {
     closeWindow.mockReset()
     listeners.clear()
     platform.mac = false
+    platform.other = "windows"
     delete document.documentElement.dataset["theme"]
     mockCommands()
   })
@@ -1194,6 +1200,94 @@ describe("SettingsView", () => {
       ),
     )
     expect(requests).toBe(1)
+  })
+
+  it("reveals the exact search control without changing its value", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    render(<SettingsView />)
+    await screen.findByRole("switch", { name: "Start at login" })
+    emit("settings:pane", "notifications#sound")
+    const sound = await screen.findByRole("switch", { name: "Sound" })
+    await waitFor(() => expect(sound).toHaveFocus())
+    expect(sound).toHaveAttribute("aria-checked", "true")
+    expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
+    fireEvent.click(screen.getByRole("tab", { name: "General" }))
+    emit("settings:pane", "notifications#sound")
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Sound" })).toHaveFocus())
+    expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
+  })
+
+  it.each(["macos", "windows", "linux"] as const)(
+    "connects every rendered Settings destination to search on %s",
+    async (os) => {
+      platform.mac = os === "macos"
+      platform.other = os === "linux" ? "linux" : "windows"
+      HTMLElement.prototype.scrollIntoView = vi.fn()
+      mockCommands({ app_info: { ...INFO, updatesSupported: true } })
+      const { container } = render(<SettingsView />)
+      await screen.findByRole("switch", { name: "Start at login" })
+      const catalog = searchApp("", os)
+      const seen = new Set<string>()
+      for (const tab of screen.getAllByRole("tab")) {
+        const label = tab.textContent!.trim()
+        const result = searchApp(`${label} settings`, os)[0]!
+        expect(result.target.kind, label).toBe("setting")
+        if (result.target.kind !== "setting") throw new Error("Missing Settings destination")
+        const { pane } = resolveSettingsSearchTarget(result.target)
+        fireEvent.click(tab)
+        expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `${pane}-panel`)
+        emit("settings:pane", pane)
+        await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"))
+        for (const row of container.querySelectorAll<HTMLElement>("[data-settings-control]")) {
+          const control = row.dataset.settingsControl!
+          expect(seen.has(control), control).toBe(false)
+          seen.add(control)
+          const matches = catalog.filter(
+            ({ target }) => target.kind === "setting" && target.control === control,
+          )
+          expect(matches, control).toHaveLength(1)
+          const match = matches[0]!
+          const visibleLabel = row.querySelector(":scope > p, :scope > div > h2")?.textContent
+          expect(match.label, control).toBe(visibleLabel)
+          expect(searchApp(visibleLabel!, os).some(({ id }) => id === match.id)).toBe(true)
+        }
+      }
+      const controls = catalog.filter(
+        ({ target }) => target.kind === "setting" && target.control,
+      )
+      expect([...seen].sort()).toEqual(
+        controls.map(({ target }) => (target.kind === "setting" ? target.control! : "")).sort(),
+      )
+      for (const { target } of controls) {
+        if (target.kind !== "setting") throw new Error("Unexpected target")
+        const { pane, control } = resolveSettingsSearchTarget(target)
+        emit("settings:pane", `${pane}#${control}`)
+        await waitFor(() => {
+          const row = container.querySelector(`[data-settings-control="${control}"]`)
+          expect(row, control).not.toBeNull()
+          expect(row!.contains(document.activeElement), control).toBe(true)
+        })
+      }
+      expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
+      platform.other = "windows"
+    },
+  )
+
+  it("focuses unavailable-build explanations without changing settings", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    mockCommands({ app_info: { ...INFO, analyticsSupported: false, updatesSupported: false } })
+    const { container } = render(<SettingsView />)
+    await screen.findByRole("switch", { name: "Start at login" })
+    for (const [pane, control] of [
+      ["privacy", "analytics"],
+      ["about", "automaticUpdates"],
+    ]) {
+      emit("settings:pane", `${pane}#${control}`)
+      await waitFor(() =>
+        expect(container.querySelector(`[data-settings-control="${control}"]`)).toHaveFocus(),
+      )
+    }
+    expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
   })
 
   it("moves an already-open window to a requested pane", async () => {

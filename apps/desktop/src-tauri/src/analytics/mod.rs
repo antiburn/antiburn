@@ -126,6 +126,13 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::SessionFilterSelected { filter, agent } => {
             let _ = (filter, agent);
         }
+        event::Interaction::NavigationHistoryMoved { direction } => {
+            let _ = direction;
+        }
+        event::Interaction::AppSearchOpened {} => {}
+        event::Interaction::AppSearchResultOpened { category } => {
+            let _ = category;
+        }
     }
 }
 

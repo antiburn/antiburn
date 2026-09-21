@@ -16,8 +16,6 @@ const mocks = vi.hoisted(() => ({
   setSettings: vi.fn(),
   listRecentSessions: vi.fn(),
   getMainWindowVisible: vi.fn(),
-  peekMainWindowSessionTarget: vi.fn(),
-  acknowledgeMainWindowSessionTarget: vi.fn(),
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
   loadSessionAnalysis: vi.fn(),
@@ -35,7 +33,6 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     ...actual,
     ...mocks,
     onMainWindowVisibilityChanged: noListener,
-    onMainWindowSessionTarget: noListener,
     onSettingsChanged: noListener,
     onSessionIndexChanged: noListener,
     onSessionUpdated: noListener,
@@ -97,8 +94,6 @@ beforeEach(() => {
   mocks.getSettings.mockResolvedValue(DEFAULT_SETTINGS)
   mocks.setSettings.mockImplementation(async (settings) => settings)
   mocks.getMainWindowVisible.mockResolvedValue(true)
-  mocks.peekMainWindowSessionTarget.mockResolvedValue(null)
-  mocks.acknowledgeMainWindowSessionTarget.mockResolvedValue(undefined)
   mocks.listRecentSessions.mockResolvedValue([])
   mocks.loadSessionAnalysis.mockResolvedValue(null)
   mocks.getLiveUsage.mockResolvedValue(null)

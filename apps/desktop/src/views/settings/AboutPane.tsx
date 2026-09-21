@@ -1,8 +1,8 @@
+import { SettingsRow } from "./SettingsSearchRows"
 import { lazy, Suspense, useState } from "react"
 
 import { Card } from "../../components/ui/Card"
 import { Pane } from "../../components/ui/Pane"
-import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { revealSource, type AppInfo } from "../../lib/ipc"
 import { detectPlatform, type Platform } from "../../lib/platform"
@@ -104,8 +104,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
 
       <SectionGroup title="Build">
         <Card>
-          <Row
-            label="Pricing catalog"
+          <SettingsRow
+            searchId="pricingCatalog"
             description="Latest models.dev snapshot used for cost estimates. Antiburn refreshes it hourly and keeps the last valid copy locally."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
@@ -113,8 +113,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
               </span>
             }
           />
-          <Row
-            label="Local database"
+          <SettingsRow
+            searchId="localDatabase"
             description="Schema version of antiburn's own store. It keeps local session data needed for visibility and analysis; nothing in it is uploaded. See Privacy."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
@@ -132,8 +132,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
           screen-reader user cannot navigate. */}
       <SectionGroup title="Licence and data handling">
         <Card>
-          <Row
-            label="Licence"
+          <SettingsRow
+            searchId="license"
             // Stated and readable here, never linked. Keeping the full text in
             // the app makes it checkable without a browser — which matters for
             // a local app that a reader may want to check without going
@@ -154,8 +154,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
             }
           />
           {onOpenPane && (
-            <Row
-              label="Privacy and data handling"
+            <SettingsRow
+              searchId="privacyPolicy"
               description="What antiburn reads, what it stores, how long it keeps it, and what it does and doesn't send online. The long form lives in Privacy."
               trailing={
                 <PushButton
@@ -167,8 +167,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
               }
             />
           )}
-          <Row
-            label="Legal notices"
+          <SettingsRow
+            searchId="legalNotices"
             description="Who holds the copyright in antiburn and where to find third-party terms."
             trailing={
               <PushButton
@@ -181,8 +181,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
               </PushButton>
             }
           />
-          <Row
-            label="Third-party attributions"
+          <SettingsRow
+            searchId="thirdParty"
             description="The third-party material bundled with the app, and the terms it is used under."
             trailing={
               <PushButton
@@ -200,8 +200,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
 
       <SectionGroup title="Data">
         <Card>
-          <Row
-            label="Data folder"
+          <SettingsRow
+            searchId="dataFolder"
             description={info?.dataDir ?? "Unavailable outside the antiburn app."}
             trailing={
               <PushButton

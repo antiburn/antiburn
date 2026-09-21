@@ -1,4 +1,6 @@
+import { SettingsTargetFocus } from "./settings/SettingsTargetFocus"
 import {
+  type LucideIcon,
   Bell,
   Info,
   Palette,
@@ -7,14 +9,14 @@ import {
   FolderGit2,
   Gauge,
 } from "lucide-react"
-import { useState, useSyncExternalStore } from "react"
+import { useState, useSyncExternalStore, type ReactNode } from "react"
 
 import { ScrollPane } from "../components/ui/ScrollPane"
-import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
+import { SidebarNav } from "../components/ui/SidebarNav"
 import { closeCurrentWindow } from "../lib/ipc"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { isMacOS } from "../lib/platform"
-import { isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
+import { SETTINGS_PANES, isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
 import { AboutPane } from "./settings/AboutPane"
 import { AppearancePane } from "./settings/AppearancePane"
 import { GeneralPane } from "./settings/GeneralPane"
@@ -49,24 +51,35 @@ import { useAppSettings } from "./settings/useAppSettings"
 // two answers a question about the app instead of changing its behavior.
 // Software update lives inside About, with the build it updates, rather than
 // as a pane of its own.
-const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
-  { id: "general", label: "General", icon: SlidersHorizontal },
-  { id: "sources", label: "Sources", icon: FolderGit2 },
-  { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "usage", label: "Usage", icon: Gauge },
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "privacy", label: "Privacy", icon: ShieldCheck },
-  { id: "about", label: "About", icon: Info },
-]
+const PANE_ICONS: Record<SettingsPane, LucideIcon> = {
+  general: SlidersHorizontal,
+  sources: FolderGit2,
+  notifications: Bell,
+  usage: Gauge,
+  appearance: Palette,
+  privacy: ShieldCheck,
+  about: Info,
+}
+const PANES = SETTINGS_PANES.map((pane) => ({ ...pane, icon: PANE_ICONS[pane.id] }))
 
 export function SettingsView() {
   const [session] = useState(() => new SettingsWindowSession())
-  const { info, pane } = useSyncExternalStore(
+  const { info, pane, control, targetRevision } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
   )
   const controller = useAppSettings()
+  const [targetFocus] = useState(() => new SettingsTargetFocus())
+  const paneRenderers: Record<SettingsPane, () => ReactNode> = {
+    general: () => <GeneralPane {...controller} info={info} />,
+    appearance: () => <AppearancePane {...controller} />,
+    sources: () => <SourcesPane discoveryPaused={controller.settings.discoveryPaused} />,
+    privacy: () => <PrivacyPane {...controller} info={info} />,
+    notifications: () => <NotificationsPane {...controller} />,
+    usage: () => <UsagePane {...controller} />,
+    about: () => <AboutPane {...controller} info={info} onOpenPane={session.setPane} />,
+  }
 
   // Command-W closes the window when no application menu owns the shortcut.
   // Control-W provides the same fallback on Windows and Linux. The close
@@ -134,26 +147,29 @@ export function SettingsView() {
               the time any ref for this commit runs. */}
           <div
             key={pane}
-            ref={(node) => {
-              const viewport = node?.closest<HTMLDivElement>(".ui-scroll-viewport")
-              if (viewport) viewport.scrollTop = 0
-            }}
+            ref={(node) =>
+              node ? targetFocus.attach(node, pane, control, targetRevision) : undefined
+            }
             role="tabpanel"
             id={`${pane}-panel`}
             aria-labelledby={`${pane}-tab`}
-            className="animate-step-in mx-auto w-full max-w-[600px]"
+            className={`${control ? "" : "animate-step-in "}mx-auto w-full max-w-[600px]`}
           >
-            {pane === "general" && <GeneralPane {...controller} info={info} />}
-            {pane === "appearance" && <AppearancePane {...controller} />}
-            {pane === "sources" && (
-              <SourcesPane discoveryPaused={controller.settings.discoveryPaused} />
-            )}
-            {pane === "privacy" && <PrivacyPane {...controller} info={info} />}
-            {pane === "notifications" && <NotificationsPane {...controller} />}
-            {pane === "usage" && <UsagePane {...controller} />}
-            {pane === "about" && (
-              <AboutPane {...controller} info={info} onOpenPane={session.setPane} />
-            )}
+            {pane === "privacy" &&
+              control === "analytics" &&
+              info &&
+              !info.analyticsSupported && (
+                <div
+                  data-settings-control="analytics"
+                  tabIndex={-1}
+                  className="mb-4 rounded-control bg-surface-card p-4"
+                >
+                  <p role="status" className="type-body text-label-secondary">
+                    Product analytics is unavailable in this build.
+                  </p>
+                </div>
+              )}
+            {paneRenderers[pane]()}
           </div>
         </ScrollPane>
       </div>

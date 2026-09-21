@@ -73,7 +73,6 @@ export function SidebarNav({
   onChange,
   ariaLabel,
   className = "",
-  header,
   footer,
 }: {
   items: ReadonlyArray<SidebarNavItem>
@@ -81,8 +80,6 @@ export function SidebarNav({
   onChange: (next: string) => void
   ariaLabel: string
   className?: string
-  /** Optional non-tab content above the row list. */
-  header?: ReactNode
   /** Optional non-tab content pinned below the row list, past a hairline. */
   footer?: ReactNode
 }) {
@@ -124,7 +121,6 @@ export function SidebarNav({
         className,
       )}
     >
-      {header && <div className="px-5 pb-1 pt-4">{header}</div>}
       <div
         role="tablist"
         aria-orientation="vertical"

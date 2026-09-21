@@ -1,22 +1,8 @@
-import type {
-  BurnCheckDetectorId,
-  ChecksCategoryPayload,
-  ChecksReportPayload,
-} from "../insightsIpc"
+import type { ChecksCategoryPayload, ChecksReportPayload } from "../insightsIpc"
 import { aggregateBurnCheckPresentation, type BurnCheckPresentation } from "./burnChecks"
 import { activeChecksReport } from "../snoozedBurnChecks"
 
-export const CHECK_LABELS: Record<BurnCheckDetectorId, string> = {
-  sessionsOverDepth: "Session overdepth",
-  modelOverthinking: "Model overthinking",
-  overpoweredSubagents: "Overpowered subagents",
-  unusedMcpServers: "Unused MCP servers",
-  unusedBuiltInTools: "Unused built-in tools",
-  unusedSkills: "Unused skills",
-  oldModelUsage: "Old model usage",
-  overuseOfFastMode: "Fast mode overuse",
-  cacheChurn: "Excess cache rehydration",
-}
+export { CHECK_LABELS } from "./checkDefinitions"
 
 interface ChecksEstimate {
   tokenBurnBasisPoints: number | null

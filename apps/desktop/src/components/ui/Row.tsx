@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import type { HTMLAttributes, ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 
@@ -15,6 +15,8 @@ export function Row({
   trailing,
   dimmed,
   children,
+  className,
+  ...rootProps
 }: {
   label: string
   // `| undefined` on the forwarded props is deliberate: under
@@ -25,12 +27,14 @@ export function Row({
   dimmed?: boolean | undefined
   /** Extra full-width content rendered below the description, e.g. a slider track. */
   children?: ReactNode
-}) {
+} & Omit<HTMLAttributes<HTMLDivElement>, "title" | "onChange" | "children">) {
   return (
     <div
+      {...rootProps}
       className={cn(
         "grid min-h-[58px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-3",
         dimmed && "opacity-50",
+        className,
       )}
     >
       <p className="type-body min-w-0 truncate text-label">{label}</p>

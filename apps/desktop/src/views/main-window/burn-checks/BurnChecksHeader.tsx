@@ -2,7 +2,6 @@ import { CollectionToolbar } from "../../../components/ui/CollectionToolbar"
 import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks"
 
 import type { ChecksReportPayload } from "../../../lib/insightsIpc"
-import { isMacOS } from "../../../lib/platform"
 import { checksPresentation } from "../../../lib/presentation/checks"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
 
@@ -14,11 +13,8 @@ export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {
       : 0
   const FailureIcon = BURN_CHECK_MARKS.finding.Icon
   return (
-    <header
-      className="burn-checks-collection-header"
-      data-tauri-drag-region={isMacOS() ? "deep" : undefined}
-    >
-      <CollectionToolbar className="burn-checks-collection-toolbar" dragRegion={isMacOS()}>
+    <header className="burn-checks-collection-header">
+      <CollectionToolbar className="burn-checks-collection-toolbar">
         {failures > 0 && (
           <h2
             id="burn-checks-failed"

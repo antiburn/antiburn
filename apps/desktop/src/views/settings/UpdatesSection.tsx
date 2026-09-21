@@ -1,3 +1,4 @@
+import { SettingsRow, SettingsToggleRow } from "./SettingsSearchRows"
 import {
   AlertTriangle,
   Check as CheckGlyph,
@@ -12,7 +13,6 @@ import { PushButton } from "../../components/ui/PushButton"
 import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { StatusText } from "../../components/ui/StatusText"
-import { ToggleRow } from "../../components/ui/ToggleRow"
 import { createExternalStore } from "../../lib/externalStore"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import {
@@ -321,8 +321,8 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
   return (
     <SectionGroup title="Updates">
       <Card>
-        <Row
-          label="Software update"
+        <SettingsRow
+          searchId="softwareUpdate"
           description={
             supported
               ? undefined
@@ -347,7 +347,7 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
               <CheckStatus state={state} />
             </div>
           )}
-        </Row>
+        </SettingsRow>
         {debugBuild && (
           <Row
             label="Updater simulator"
@@ -360,8 +360,8 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
           />
         )}
         {supported ? (
-          <ToggleRow
-            label="Install updates automatically"
+          <SettingsToggleRow
+            searchId="automaticUpdates"
             description={
               lastAutomatic
                 ? `antiburn checks a moment after launch and every six hours, then downloads, verifies, installs, and restarts when an update is available; last checked ${relativeTime(lastAutomatic)}.`
@@ -371,8 +371,9 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
             onChange={(next) => void update({ autoUpdate: next })}
           />
         ) : (
-          <Row
+          <SettingsRow
             label="Automatic updates"
+            searchId="automaticUpdates"
             // Not a disabled switch: there is no automatic behaviour in this
             // build to turn on or off, so there is nothing to render a
             // control for.

@@ -5,7 +5,6 @@ import type { SessionQuotaOpenTarget } from "../../components/session/SessionQuo
 import { renderAgentIcon } from "../../lib/agentIcon"
 import { filterSessionEntries } from "../../lib/sessionFilters"
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
-import { isMacOS } from "../../lib/platform"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import type { SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
 import { SessionEmptyDetail } from "./SessionEmptyDetail"
@@ -124,7 +123,7 @@ export function MainActivityView({
                     emptyDescription: "Choose a different filter to see more sessions.",
                   }
                 : {})}
-              draggableHeader={isMacOS()}
+              draggableHeader={false}
               days={state.settings.activityWindowDays}
               selectedKey={selected?.id ?? null}
               onSelect={session.selectEntry}
@@ -169,7 +168,6 @@ export function MainActivityView({
               loading={state.loading}
               refreshing={state.refreshing}
               error={state.analysis?.error ?? false}
-              {...(state.history.length ? { onBack: session.goBack } : {})}
               {...(previous ? { onPrev: () => session.selectEntry(previous) } : {})}
               {...(next ? { onNext: () => session.selectEntry(next) } : {})}
               onOpenSession={session.openRelated}

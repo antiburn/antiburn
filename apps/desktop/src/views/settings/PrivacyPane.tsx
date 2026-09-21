@@ -1,3 +1,5 @@
+import { Row } from "../../components/ui/Row"
+import { SettingsRow, SettingsToggleRow } from "./SettingsSearchRows"
 import { confirm, save } from "@tauri-apps/plugin-dialog"
 import { useCallback, useState } from "react"
 
@@ -5,11 +7,9 @@ import { Card } from "../../components/ui/Card"
 import { Disclosure, DisclosureGroup } from "../../components/ui/Disclosure"
 import { Pane } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
-import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { StatusText } from "../../components/ui/StatusText"
-import { ToggleRow } from "../../components/ui/ToggleRow"
 import { exportDiagnostics } from "../../lib/diagnosticsIpc"
 import {
   clearLocalIndex,
@@ -208,8 +208,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
       {analyticsSupported ? (
         <SectionGroup title="Analytics">
           <Card>
-            <ToggleRow
-              label="Share product analytics"
+            <SettingsToggleRow
+              searchId="analytics"
               description={
                 analyticsEnvironmentDisabled
                   ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use this setting."
@@ -262,7 +262,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 <li>A count rounded to a range, when the event has one.</li>
                 <li>
                   A short label &mdash; which surface, Settings pane, provider, setting, agent
-                  category, or failure category. Never work content or a value you entered.
+                  category, navigation direction, sidebar state, search result category, or
+                  failure category. Never work content, search text, or a value you entered.
                 </li>
                 <li>
                   A second such label when an event has two things to tell apart, such as native
@@ -385,8 +386,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
 
       <SectionGroup title="Local data">
         <Card>
-          <Row
-            label="Keep session data"
+          <SettingsRow
+            searchId="retention"
             description="All session data stays on this machine. Keeping it longer preserves history after providers’ 30-day retention window; a shorter period keeps antiburn’s local index lighter."
             trailing={
               <SegmentedControl
@@ -398,8 +399,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
               />
             }
           />
-          <Row
-            label="Clear the local index"
+          <SettingsRow
+            searchId="clearIndex"
             description="Forget every session, analysis, evidence, and scan record antiburn has stored. Your agents’ transcripts are untouched, so a later scan finds them again. Your preferences, scan folders, and repository choices are kept."
             trailing={
               <PushButton
@@ -425,7 +426,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 )}
               </div>
             )}
-          </Row>
+          </SettingsRow>
           <Row
             label="Delete a coding agent’s own files"
             // Stated as a non-feature on purpose: "delete" in an app that reads
@@ -438,8 +439,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
 
       <SectionGroup title="Diagnostics">
         <Card>
-          <Row
-            label="Export diagnostics"
+          <SettingsRow
+            searchId="diagnostics"
             description="Create a JSON file for up to 500 recent indexed sessions, with derived evidence, processing state, revisions, errors, and aggregate turn signals. It excludes transcript bodies, titles, paths, working directories, repositories, account identifiers, analytics identifiers, and turn content. Model, tool, and skill names and descriptions can still describe real work, so review the file before sharing it."
             trailing={
               <PushButton
@@ -460,7 +461,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 <StatusText tone="secondary">The diagnostics could not be exported.</StatusText>
               </div>
             )}
-          </Row>
+          </SettingsRow>
         </Card>
       </SectionGroup>
     </Pane>

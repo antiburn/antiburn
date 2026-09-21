@@ -164,3 +164,8 @@ const AGENT_PROVIDER: Readonly<Record<string, string>> = {
 export function agentProvider(slug: string): string | null {
   return AGENT_PROVIDER[slug] ?? null
 }
+
+/** Use the same agent filter label in the sidebar and search. */
+export function agentSessionFilterLabel(agent: string): string {
+  return `${agentDisplayName(agent)} Sessions`
+}

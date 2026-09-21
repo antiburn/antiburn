@@ -23,14 +23,12 @@ pub use antiburn_main_window::LABEL;
 /// Event carrying whether the retained renderer can present work.
 pub const VISIBILITY_CHANGED_EVENT: &str = "main:visibility-changed";
 
-/// Event carrying the latest session requested for the main window.
-pub const SESSION_TARGET_EVENT: &str = "main:session-target";
-
-/// Event carrying the latest requested main-window section.
-pub const SECTION_TARGET_EVENT: &str = "main:section-target";
+/// Event carrying the latest destination requested for the main window.
+pub const NAVIGATION_TARGET_EVENT: &str = "main:navigation-target";
 
 const SAMPLE_HANDLE_TTL: Duration = Duration::from_secs(10 * 60);
 const SAMPLE_HANDLE_LIMIT: usize = 512;
+const NAVIGATION_EXISTENCE_LIMIT: usize = 101;
 const MISSING_SAMPLE_TITLE: &str = "Untitled session";
 
 /// A destination in the retained main window.
@@ -42,13 +40,6 @@ pub enum MainWindowSection {
     BurnChecks,
 }
 
-/// Revisioned section request shared by event and cold-renderer paths.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SectionTargetRequest {
-    revision: u64,
-    section: MainWindowSection,
-}
 /// Event asking the retained renderer to report its committed health.
 pub const HEALTH_CHECK_EVENT: &str = "main:health-check";
 
@@ -72,12 +63,20 @@ pub struct SessionTarget {
     wsl_distro: Option<String>,
 }
 
-/// Revisioned request shared by the event and renderer peek paths.
+/// One exact destination requested from outside the retained renderer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionTargetRequest {
+pub struct NavigationDestination {
+    section: MainWindowSection,
+    target: Option<SessionTarget>,
+}
+
+/// Revisioned request shared by the event and renderer recovery paths.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigationTargetRequest {
     revision: u64,
-    target: SessionTarget,
+    destination: NavigationDestination,
 }
 
 #[derive(Clone, Debug)]
@@ -197,8 +196,8 @@ struct RecoveryLedger {
 }
 
 #[derive(Debug, Default)]
-struct SessionTargetState {
-    pending: Option<SessionTargetRequest>,
+struct NavigationTargetState {
+    pending: Option<NavigationTargetRequest>,
     applied: Option<(u64, u64)>,
 }
 
@@ -361,10 +360,8 @@ pub struct MainWindowState {
     recovery: Mutex<RecoveryLedger>,
     renderer_status: Mutex<Option<(u64, RendererStatus)>>,
     failure_reports: Mutex<(u64, u32)>,
-    session_target: Mutex<SessionTargetState>,
-    session_target_revision: AtomicU64,
-    section_target: Mutex<Option<SectionTargetRequest>>,
-    section_target_revision: AtomicU64,
+    navigation_target: Mutex<NavigationTargetState>,
+    navigation_target_revision: AtomicU64,
     sample_targets: Mutex<VecDeque<SampleTarget>>,
 }
 
@@ -384,10 +381,8 @@ impl MainWindowState {
             recovery: Mutex::new(RecoveryLedger::default()),
             renderer_status: Mutex::new(None),
             failure_reports: Mutex::new((0, 0)),
-            session_target: Mutex::new(SessionTargetState::default()),
-            session_target_revision: AtomicU64::new(0),
-            section_target: Mutex::new(None),
-            section_target_revision: AtomicU64::new(0),
+            navigation_target: Mutex::new(NavigationTargetState::default()),
+            navigation_target_revision: AtomicU64::new(0),
             sample_targets: Mutex::new(VecDeque::new()),
         }
     }
@@ -451,19 +446,22 @@ impl MainWindowState {
         Ok(entry.target.clone())
     }
 
-    fn request_session_target(&self, target: SessionTarget) -> SessionTargetRequest {
-        let request = SessionTargetRequest {
-            revision: next_atomic_nonzero(&self.session_target_revision),
-            target,
+    fn request_navigation_target(
+        &self,
+        destination: NavigationDestination,
+    ) -> NavigationTargetRequest {
+        let request = NavigationTargetRequest {
+            revision: next_atomic_nonzero(&self.navigation_target_revision),
+            destination,
         };
-        let mut state = lock(&self.session_target);
+        let mut state = lock(&self.navigation_target);
         state.pending = Some(request.clone());
         state.applied = None;
         request
     }
 
-    fn clear_session_target(&self, revision: u64) {
-        let mut state = lock(&self.session_target);
+    fn clear_navigation_target(&self, revision: u64) {
+        let mut state = lock(&self.navigation_target);
         if state
             .pending
             .as_ref()
@@ -474,15 +472,15 @@ impl MainWindowState {
         }
     }
 
-    fn peek_session_target(
+    fn peek_navigation_target(
         &self,
         caller_generation: u64,
         active_generation: Option<u64>,
-    ) -> Option<SessionTargetRequest> {
+    ) -> Option<NavigationTargetRequest> {
         if active_generation != Some(caller_generation) {
             return None;
         }
-        lock(&self.session_target).pending.clone()
+        lock(&self.navigation_target).pending.clone()
     }
 
     fn record_target_applied(
@@ -496,7 +494,7 @@ impl MainWindowState {
         if active_generation != Some(generation) {
             return TargetAck::StaleGeneration;
         }
-        let mut state = lock(&self.session_target);
+        let mut state = lock(&self.navigation_target);
         let Some(pending) = state.pending.as_ref() else {
             return TargetAck::AlreadyRetired;
         };
@@ -514,7 +512,7 @@ impl MainWindowState {
     }
 
     fn retire_target_on_reveal(&self, revealed_generation: u64) -> bool {
-        let mut state = lock(&self.session_target);
+        let mut state = lock(&self.navigation_target);
         let Some(revision) = state.pending.as_ref().map(|request| request.revision) else {
             return false;
         };
@@ -527,38 +525,12 @@ impl MainWindowState {
     }
 
     fn invalidate_target_application(&self, doomed_generation: u64) {
-        let mut state = lock(&self.session_target);
+        let mut state = lock(&self.navigation_target);
         if state
             .applied
             .is_some_and(|(generation, _)| generation == doomed_generation)
         {
             state.applied = None;
-        }
-    }
-
-    fn request_section_target(&self, section: MainWindowSection) -> SectionTargetRequest {
-        let request = SectionTargetRequest {
-            revision: self
-                .section_target_revision
-                .fetch_add(1, Ordering::AcqRel)
-                .wrapping_add(1),
-            section,
-        };
-        *lock(&self.section_target) = Some(request.clone());
-        request
-    }
-
-    fn take_section_target(&self) -> Option<SectionTargetRequest> {
-        lock(&self.section_target).take()
-    }
-
-    fn clear_section_target(&self, revision: u64) {
-        let mut target = lock(&self.section_target);
-        if target
-            .as_ref()
-            .is_some_and(|request| request.revision == revision)
-        {
-            *target = None;
         }
     }
 
@@ -842,21 +814,63 @@ pub async fn open_main_window_session(app: AppHandle, target: SessionTarget) -> 
     on_main_value(&app, move |app| route_session_target(app, target)).await?
 }
 
+/// Return the bounded navigation targets that still exist in the local index.
+#[tauri::command]
+pub async fn existing_main_window_session_targets(
+    window: WebviewWindow,
+    targets: Vec<SessionTarget>,
+) -> Result<Vec<SessionTarget>, String> {
+    if window.label() != LABEL {
+        return Err("main-window session targets are unavailable to this window".to_owned());
+    }
+    if targets.len() > NAVIGATION_EXISTENCE_LIMIT {
+        return Err("too many main-window session targets".to_owned());
+    }
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        existing_session_targets(&store, targets)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn existing_session_targets(
+    store: &Store,
+    targets: Vec<SessionTarget>,
+) -> Result<Vec<SessionTarget>, String> {
+    targets
+        .into_iter()
+        .filter_map(|target| {
+            let key = SessionKey::for_session(
+                &target.agent,
+                &target.session_id,
+                target.wsl_distro.as_deref(),
+            );
+            match store.session(&key) {
+                Ok(Some(_)) => Some(Ok(target)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error.to_string())),
+            }
+        })
+        .collect()
+}
+
 fn route_session_target(app: &AppHandle, target: SessionTarget) -> Result<(), String> {
     ::tracing::info!(
         event = "main_window_open_source",
         source = "popover_session"
     );
     let state = app.state::<MainWindowState>();
-    let request = state.request_session_target(target);
-    let section_request = state.request_section_target(MainWindowSection::Activity);
+    let request = state.request_navigation_target(NavigationDestination {
+        section: MainWindowSection::Activity,
+        target: Some(target),
+    });
     if let Err(error) = open(app, OpenTrigger::Interaction) {
-        state.clear_session_target(request.revision);
-        state.clear_section_target(section_request.revision);
+        state.clear_navigation_target(request.revision);
         return Err(error.to_string());
     }
-    app.emit_to(LABEL, SECTION_TARGET_EVENT, section_request)
-        .and_then(|()| app.emit_to(LABEL, SESSION_TARGET_EVENT, request))
+    app.emit_to(LABEL, NAVIGATION_TARGET_EVENT, request)
         .map_err(|error| error.to_string())
 }
 
@@ -1045,63 +1059,48 @@ pub async fn open_main_window_section(
 
 fn route_section_target(app: &AppHandle, section: MainWindowSection) -> Result<(), String> {
     let state = app.state::<MainWindowState>();
-    let request = state.request_section_target(section);
+    let request = state.request_navigation_target(NavigationDestination {
+        section,
+        target: None,
+    });
     ::tracing::info!(
         event = "main_window_open_source",
         source = "popover_section"
     );
     if let Err(error) = open(app, OpenTrigger::Interaction) {
-        state.clear_section_target(request.revision);
+        state.clear_navigation_target(request.revision);
         return Err(error.to_string());
     }
-    app.emit_to(LABEL, SECTION_TARGET_EVENT, request)
+    app.emit_to(LABEL, NAVIGATION_TARGET_EVENT, request)
         .map_err(|error| error.to_string())
 }
 
-/// Read the latest target without retiring the upstream acknowledgment lifecycle.
+/// Peek at the latest destination after the main renderer installs its listener.
 #[tauri::command]
-pub fn take_main_window_session_target(
-    window: WebviewWindow,
-) -> Result<Option<SessionTargetRequest>, String> {
-    if window.label() != LABEL {
-        return Err("main-window session targets are unavailable to this window".to_owned());
-    }
-    Ok(lock(
-        &window
-            .app_handle()
-            .state::<MainWindowState>()
-            .session_target,
-    )
-    .pending
-    .clone())
-}
-
-/// Peek at the latest target after the main renderer installs its listener.
-#[tauri::command]
-pub async fn peek_main_window_session_target(
+pub async fn peek_main_window_navigation_target(
     window: WebviewWindow,
     generation: u64,
-) -> Result<Option<SessionTargetRequest>, String> {
+) -> Result<Option<NavigationTargetRequest>, String> {
     if window.label() != LABEL {
-        return Err("main-window session targets are unavailable to this window".to_owned());
+        return Err("main-window navigation targets are unavailable to this window".to_owned());
     }
     let app = window.app_handle().clone();
     on_main_value(&app, move |app| {
         let state = app.try_state::<MainWindowState>()?;
         let active = state.readiness().active_generation();
-        state.peek_session_target(generation, active)
+        state.peek_navigation_target(generation, active)
     })
     .await
 }
 
 #[tauri::command]
-pub fn acknowledge_main_window_session_target(
+pub fn acknowledge_main_window_navigation_target(
     window: WebviewWindow,
     generation: u64,
     revision: u64,
 ) -> Result<(), String> {
     if window.label() != LABEL {
-        return Err("main-window session targets are unavailable to this window".to_owned());
+        return Err("main-window navigation targets are unavailable to this window".to_owned());
     }
     let app = window.app_handle().clone();
     on_main(&app, move |app| {
@@ -1289,17 +1288,6 @@ pub fn request_main_window_recovery(window: WebviewWindow, generation: u64) -> R
         start_recovery_replacement(app, generation, replacement);
     });
     Ok(())
-}
-
-/// Take the latest section target after the main renderer installs its listener.
-#[tauri::command]
-pub fn take_main_window_section_target(
-    window: WebviewWindow,
-) -> Result<Option<SectionTargetRequest>, String> {
-    if window.label() != LABEL {
-        return Err("main-window section targets are unavailable to this window".to_owned());
-    }
-    Ok(window.state::<MainWindowState>().take_section_target())
 }
 
 /// Builds the hidden main window and applies the saved placement.
@@ -1976,10 +1964,8 @@ mod tests {
             recovery: Mutex::new(RecoveryLedger::default()),
             renderer_status: Mutex::new(None),
             failure_reports: Mutex::new((0, 0)),
-            session_target: Mutex::new(SessionTargetState::default()),
-            session_target_revision: AtomicU64::new(0),
-            section_target: Mutex::new(None),
-            section_target_revision: AtomicU64::new(0),
+            navigation_target: Mutex::new(NavigationTargetState::default()),
+            navigation_target_revision: AtomicU64::new(0),
             sample_targets: Mutex::new(VecDeque::new()),
         }
     }
@@ -1989,6 +1975,39 @@ mod tests {
             agent: "codex".to_owned(),
             session_id: id.to_owned(),
             wsl_distro: None,
+        }
+    }
+
+    fn stored_session(id: &str, wsl_distro: Option<&str>) -> crate::store::SessionRecord {
+        crate::store::SessionRecord {
+            key: SessionKey::for_session("codex", id, wsl_distro),
+            source_kind: "file".to_owned(),
+            source_label: format!("/sessions/{id}.jsonl"),
+            wsl_distro: wsl_distro.map(str::to_owned),
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".to_owned(),
+            updated_at_epoch: Some(1),
+            activity_cursor: String::new(),
+            activity_source: "mtime".to_owned(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
+        }
+    }
+
+    fn session_destination(id: &str) -> NavigationDestination {
+        NavigationDestination {
+            section: MainWindowSection::Activity,
+            target: Some(target(id)),
+        }
+    }
+
+    const fn section_destination(section: MainWindowSection) -> NavigationDestination {
+        NavigationDestination {
+            section,
+            target: None,
         }
     }
 
@@ -2064,7 +2083,7 @@ mod tests {
         let state = state();
         let now = Instant::now();
         let generation = ready_generation(&state, now, true);
-        let request = state.request_session_target(target("requested"));
+        let request = state.request_navigation_target(session_destination("requested"));
         assert!(!state.retire_target_on_reveal(generation));
         assert_eq!(
             state.record_target_applied(
@@ -2077,7 +2096,7 @@ mod tests {
             TargetAck::RetiredNow
         );
         assert_eq!(
-            state.peek_session_target(generation, Some(generation)),
+            state.peek_navigation_target(generation, Some(generation)),
             None
         );
     }
@@ -2087,7 +2106,7 @@ mod tests {
         let state = state();
         let now = Instant::now();
         let generation = ready_generation(&state, now, false);
-        let request = state.request_session_target(target("requested"));
+        let request = state.request_navigation_target(session_destination("requested"));
         assert_eq!(
             state.record_target_applied(
                 generation,
@@ -2100,7 +2119,7 @@ mod tests {
         );
         assert!(state.retire_target_on_reveal(generation));
         assert_eq!(
-            state.peek_session_target(generation, Some(generation)),
+            state.peek_navigation_target(generation, Some(generation)),
             None
         );
     }
@@ -2113,7 +2132,7 @@ mod tests {
             OpenAction::StartLoading { generation } => generation,
             _ => panic!("idle must load"),
         };
-        let request = state.request_session_target(target("during-load"));
+        let request = state.request_navigation_target(session_destination("during-load"));
 
         assert_eq!(
             state
@@ -2121,7 +2140,7 @@ mod tests {
             TargetAck::RecordedRetained
         );
         assert_eq!(
-            state.peek_session_target(generation, Some(generation)),
+            state.peek_navigation_target(generation, Some(generation)),
             Some(request)
         );
         assert!(matches!(
@@ -2130,7 +2149,7 @@ mod tests {
         ));
         assert!(state.retire_target_on_reveal(generation));
         assert_eq!(
-            state.peek_session_target(generation, Some(generation)),
+            state.peek_navigation_target(generation, Some(generation)),
             None
         );
     }
@@ -2140,7 +2159,7 @@ mod tests {
         let state = state();
         let now = Instant::now();
         let doomed = ready_generation(&state, now, false);
-        let request = state.request_session_target(target("survives"));
+        let request = state.request_navigation_target(session_destination("survives"));
         assert_eq!(
             state.record_target_applied(
                 doomed,
@@ -2158,7 +2177,7 @@ mod tests {
             TargetAck::StaleGeneration
         );
         assert_eq!(
-            state.peek_session_target(replacement, Some(replacement)),
+            state.peek_navigation_target(replacement, Some(replacement)),
             Some(request)
         );
     }
@@ -2168,8 +2187,8 @@ mod tests {
         let state = state();
         let now = Instant::now();
         let generation = ready_generation(&state, now, true);
-        let first = state.request_session_target(target("first"));
-        let second = state.request_session_target(target("second"));
+        let first = state.request_navigation_target(session_destination("first"));
+        let second = state.request_navigation_target(session_destination("second"));
         assert_eq!(
             state.record_target_applied(
                 generation,
@@ -2180,9 +2199,9 @@ mod tests {
             ),
             TargetAck::StaleRevision
         );
-        state.clear_session_target(first.revision);
+        state.clear_navigation_target(first.revision);
         assert_eq!(
-            state.peek_session_target(generation, Some(generation)),
+            state.peek_navigation_target(generation, Some(generation)),
             Some(second)
         );
     }
@@ -2192,7 +2211,7 @@ mod tests {
         let state = state();
         let now = Instant::now();
         let generation = ready_generation(&state, now, false);
-        let request = state.request_session_target(target("retained"));
+        let request = state.request_navigation_target(session_destination("retained"));
         state.invalidate_target_application(generation);
         let replacement = state.readiness().begin_recovery(generation, now).unwrap();
         let retry = state
@@ -2200,7 +2219,7 @@ mod tests {
             .build_failed_retry(replacement, now)
             .unwrap();
         assert_eq!(
-            state.peek_session_target(retry, Some(retry)),
+            state.peek_navigation_target(retry, Some(retry)),
             Some(request.clone())
         );
         assert_eq!(
@@ -2217,7 +2236,7 @@ mod tests {
             OpenAction::StartLoading { generation } => generation,
             _ => panic!("idle must load"),
         };
-        let request = state.request_session_target(target("terminal"));
+        let request = state.request_navigation_target(session_destination("terminal"));
         state
             .readiness()
             .enter_terminal_from_loading(generation, false);
@@ -2229,7 +2248,7 @@ mod tests {
             | TerminalRetry::StartLoading { generation } => generation,
         };
         assert_eq!(
-            state.peek_session_target(retry_generation, Some(retry_generation)),
+            state.peek_navigation_target(retry_generation, Some(retry_generation)),
             Some(request)
         );
     }
@@ -2320,15 +2339,62 @@ mod tests {
     }
 
     #[test]
-    fn section_target_keeps_only_the_latest_request() {
+    fn navigation_target_keeps_only_the_latest_request() {
         let state = state();
-        state.request_section_target(MainWindowSection::Overview);
-        state.request_section_target(MainWindowSection::BurnChecks);
-        let latest = state.request_section_target(MainWindowSection::Activity);
+        state.request_navigation_target(section_destination(MainWindowSection::Overview));
+        state.request_navigation_target(section_destination(MainWindowSection::BurnChecks));
+        let latest = state.request_navigation_target(session_destination("latest-session"));
 
         assert_eq!(latest.revision, 3);
-        assert_eq!(state.take_section_target(), Some(latest));
-        assert_eq!(state.take_section_target(), None);
+        assert_eq!(state.peek_navigation_target(1, Some(1)), Some(latest));
+    }
+
+    #[test]
+    fn session_navigation_serializes_as_one_correlated_destination() {
+        let state = state();
+        let request = state.request_navigation_target(session_destination("correlated"));
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "revision": 1,
+                "destination": {
+                    "section": "activity",
+                    "target": {
+                        "agent": "codex",
+                        "sessionId": "correlated",
+                        "wslDistro": null,
+                    },
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn existing_targets_use_exact_environment_identity() {
+        let store = Store::open_in_memory(std::path::Path::new("/tmp/navigation-existence"))
+            .expect("open store");
+        store
+            .upsert_sessions(
+                &[
+                    stored_session("shared", None),
+                    stored_session("shared", Some("Ubuntu")),
+                ],
+                &crate::agents::evidence_cohort(),
+            )
+            .expect("seed sessions");
+        let native = target("shared");
+        let wsl = SessionTarget {
+            agent: "codex".to_owned(),
+            session_id: "shared".to_owned(),
+            wsl_distro: Some("Ubuntu".to_owned()),
+        };
+        let missing = target("missing");
+
+        assert_eq!(
+            existing_session_targets(&store, vec![native.clone(), missing, wsl.clone()]).unwrap(),
+            vec![native, wsl]
+        );
     }
 
     #[test]
@@ -2587,19 +2653,18 @@ mod tests {
     #[test]
     fn a_later_external_session_request_wins_over_sample_navigation() {
         let state = state();
-        let sample = state.request_session_target(SessionTarget {
-            agent: "codex".to_owned(),
-            session_id: "sample".to_owned(),
-            wsl_distro: None,
-        });
-        let external = state.request_session_target(SessionTarget {
-            agent: "claude-code".to_owned(),
-            session_id: "external".to_owned(),
-            wsl_distro: None,
+        let sample = state.request_navigation_target(session_destination("sample"));
+        let external = state.request_navigation_target(NavigationDestination {
+            section: MainWindowSection::Activity,
+            target: Some(SessionTarget {
+                agent: "claude-code".to_owned(),
+                session_id: "external".to_owned(),
+                wsl_distro: None,
+            }),
         });
 
         assert!(external.revision > sample.revision);
-        assert_eq!(lock(&state.session_target).pending, Some(external));
+        assert_eq!(lock(&state.navigation_target).pending, Some(external));
     }
 
     #[test]

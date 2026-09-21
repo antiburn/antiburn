@@ -7,19 +7,23 @@
  * renamed pane is a type error at every call site instead of a link that
  * quietly lands nowhere.
  */
-const SETTINGS_PANE_IDS = [
-  "general",
-  "sources",
-  "notifications",
-  "usage",
-  "appearance",
-  "privacy",
-  "about",
+export const SETTINGS_PANES = [
+  { id: "general", label: "General" },
+  { id: "sources", label: "Sources" },
+  { id: "notifications", label: "Notifications" },
+  { id: "usage", label: "Usage" },
+  { id: "appearance", label: "Appearance" },
+  { id: "privacy", label: "Privacy" },
+  { id: "about", label: "About" },
 ] as const
 
-export type SettingsPane = (typeof SETTINGS_PANE_IDS)[number]
+export type SettingsPane = (typeof SETTINGS_PANES)[number]["id"]
+
+export function settingsPaneLabel(id: SettingsPane): string {
+  return SETTINGS_PANES.find((pane) => pane.id === id)!.label
+}
 
 /** Whether an arbitrary value — a shell payload, say — names a real pane. */
 export function isSettingsPane(value: unknown): value is SettingsPane {
-  return typeof value === "string" && (SETTINGS_PANE_IDS as readonly string[]).includes(value)
+  return typeof value === "string" && SETTINGS_PANES.some((pane) => pane.id === value)
 }

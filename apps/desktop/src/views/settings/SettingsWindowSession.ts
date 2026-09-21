@@ -10,12 +10,16 @@ import {
   takeSettingsPane,
   type AppInfo,
 } from "../../lib/ipc"
-import { isSettingsPane, type SettingsPane } from "../../lib/settingsPanes"
+import { type SettingsPane } from "../../lib/settingsPanes"
+
+import { parseSettingsSearchRequest } from "../../lib/settingsSearchTargets"
 
 export type SettingsWindowSnapshot = {
   info: AppInfo | null
   pane: SettingsPane
   visible: boolean
+  control?: string | null
+  targetRevision?: number
 }
 
 /**
@@ -57,6 +61,7 @@ export class SettingsWindowSession {
   setPane = (pane: SettingsPane): void => {
     this.paneEventRevision += 1
     this.paneResolved = true
+    this.update({ control: null })
     this.selectVisiblePane(pane)
   }
 
@@ -112,9 +117,11 @@ export class SettingsWindowSession {
       if (generation !== this.generation) return
       this.paneEventRevision += 1
       void takeSettingsPane().catch(() => {})
-      if (isSettingsPane(requested)) {
+      const target = parseSettingsSearchRequest(requested)
+      if (target) {
         this.paneResolved = true
-        this.selectVisiblePane(requested)
+        this.update({ control: target.control, targetRevision: this.paneEventRevision })
+        this.selectVisiblePane(target.pane)
       }
     }).catch(() => null)
     if (generation !== this.generation) {
@@ -128,7 +135,10 @@ export class SettingsWindowSession {
         if (generation !== this.generation) return
         if (paneEventRevision !== this.paneEventRevision) return
         this.paneResolved = true
-        this.selectVisiblePane(isSettingsPane(requested) ? requested : this.snapshot.pane)
+        const target = parseSettingsSearchRequest(requested)
+        if (target)
+          this.update({ control: target.control, targetRevision: this.paneEventRevision })
+        this.selectVisiblePane(target?.pane ?? this.snapshot.pane)
       })
       .catch(() => {
         if (generation !== this.generation) return

@@ -15,14 +15,11 @@ import type { BurnCheckDetectorId } from "./insightsIpc"
 import { visibleSessionHygieneChecks } from "./snoozedBurnChecks"
 import { sessionHygieneFor, type SessionHygieneSnapshot } from "./useSessionHygiene"
 
-/** One selectable filter over the loaded session list. */
-export type SessionFilter =
-  | { kind: "notable" }
-  | { kind: "material" }
-  | { kind: "agent"; agent: string }
-  | { kind: "failing" }
-  | { kind: "passing" }
-  | { kind: "all" }
+import {
+  FIXED_SESSION_FILTERS,
+  type SessionFilter,
+} from "./navigation/sessionFilterDefinitions"
+export type { SessionFilter } from "./navigation/sessionFilterDefinitions"
 
 /** A priced session counts as Material at or above this cost, in US dollars. */
 export const MATERIAL_COST_FLOOR_USD = 1
@@ -40,15 +37,8 @@ export function sessionFilterId(filter: SessionFilter): string {
  * filter can always fall back to showing everything.
  */
 export function parseSessionFilterId(id: string): SessionFilter {
-  if (
-    id === "notable" ||
-    id === "material" ||
-    id === "failing" ||
-    id === "passing" ||
-    id === "all"
-  ) {
-    return { kind: id }
-  }
+  const fixed = FIXED_SESSION_FILTERS.find((filter) => filter.id === id)
+  if (fixed) return { kind: fixed.id }
   if (id.startsWith("agent:")) {
     const agent = id.slice("agent:".length)
     if (agent) return { kind: "agent", agent }

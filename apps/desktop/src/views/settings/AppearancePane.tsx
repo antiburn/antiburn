@@ -1,9 +1,8 @@
+import { SettingsRow, SettingsToggleRow } from "./SettingsSearchRows"
 import { Card } from "../../components/ui/Card"
 import { Pane } from "../../components/ui/Pane"
-import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { SegmentedControl } from "../../components/ui/SegmentedControl"
-import { ToggleRow } from "../../components/ui/ToggleRow"
 import type { ThemePreference } from "../../lib/ipc"
 import type { AppSettingsController } from "./useAppSettings"
 
@@ -29,8 +28,8 @@ export function AppearancePane({ settings, update }: AppSettingsController) {
     <Pane title="Appearance">
       <SectionGroup title="Theme">
         <Card>
-          <Row
-            label="Appearance"
+          <SettingsRow
+            searchId="theme"
             description="System follows your operating system's light and dark setting."
             trailing={
               <SegmentedControl
@@ -46,8 +45,8 @@ export function AppearancePane({ settings, update }: AppSettingsController) {
 
       <SectionGroup title="Session analysis">
         <Card>
-          <ToggleRow
-            label="Show every skill and MCP"
+          <SettingsToggleRow
+            searchId="allResources"
             description="A session's Skills & MCPs table lists the largest few and hides the rest behind a button. Turn this on to see the whole table every time. That button writes this setting too, so it stays wherever you last left it."
             checked={settings.skillsMcpExpanded}
             onChange={(skillsMcpExpanded) => void update({ skillsMcpExpanded })}

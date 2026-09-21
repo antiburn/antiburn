@@ -1,3 +1,4 @@
+import { SettingsRow, SettingsToggleRow } from "./SettingsSearchRows"
 import { useCallback, useState, useSyncExternalStore } from "react"
 import { confirm } from "@tauri-apps/plugin-dialog"
 
@@ -5,10 +6,8 @@ import { Card } from "../../components/ui/Card"
 import { Pane } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
 import { RangeSlider } from "../../components/ui/RangeSlider"
-import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { StatusText } from "../../components/ui/StatusText"
-import { ToggleRow } from "../../components/ui/ToggleRow"
 import {
   cancelScan,
   closeCurrentWindow,
@@ -120,14 +119,14 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
           produced. */}
       <SectionGroup title="Monitoring">
         <Card>
-          <ToggleRow
-            label="Keep looking for new sessions"
+          <SettingsToggleRow
+            searchId="monitoring"
             description="antiburn re-reads your agents' session files while the popover is open. Turning this off stops the background pass — everything already indexed stays readable, and you can still scan on demand."
             checked={!settings.discoveryPaused}
             onChange={(next) => void update({ discoveryPaused: !next })}
           />
-          <Row
-            label="Historical scan"
+          <SettingsRow
+            searchId="historicalScan"
             description={`Read every session file antiburn can find on this machine, from the start. ${scanSummary(
               scanStatus,
             )}`}
@@ -144,8 +143,8 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
 
       <SectionGroup title="Activity">
         <Card>
-          <Row
-            label="Show the last"
+          <SettingsRow
+            searchId="recentDays"
             description={`The popover lists sessions from the last ${dayLabel(
               settings.activityWindowDays,
             )}. This changes the list, not storage; indexed sessions outside the window remain on this machine.`}
@@ -164,14 +163,14 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
               ariaValueText={dayLabel(settings.activityWindowDays)}
               onChange={(days) => void update({ activityWindowDays: days })}
             />
-          </Row>
+          </SettingsRow>
         </Card>
       </SectionGroup>
 
       <SectionGroup title="Local storage">
         <Card>
-          <Row
-            label="Indexed sessions"
+          <SettingsRow
+            searchId="indexedSessions"
             description="What antiburn currently has on this machine. Settings → Privacy controls how long indexed session data stays. Your agents' own files are never touched."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
@@ -184,8 +183,8 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
 
       <SectionGroup title="Application">
         <Card>
-          <ToggleRow
-            label={macOS ? "Show in menubar" : "Show system tray icon"}
+          <SettingsToggleRow
+            searchId="trayIcon"
             description={
               trayRequired
                 ? recoveryDescription
@@ -200,8 +199,8 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
             disabledTooltip={trayRequired ? trayRequiredTooltip : undefined}
           />
           {macOS && (
-            <ToggleRow
-              label="Show in Dock"
+            <SettingsToggleRow
+              searchId="dockIcon"
               description={
                 dockRequired ? recoveryDescription : "Keep antiburn available from the Dock."
               }
@@ -212,8 +211,8 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
               disabledTooltip={dockRequired ? dockRequiredTooltip : undefined}
             />
           )}
-          <ToggleRow
-            label="Start at login"
+          <SettingsToggleRow
+            searchId="startAtLogin"
             description="Starts antiburn automatically at login."
             checked={settings.launchAtLogin}
             onChange={(next) => void update({ launchAtLogin: next })}
@@ -223,8 +222,8 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
 
       <SectionGroup title="Setup">
         <Card>
-          <Row
-            label="Run setup again"
+          <SettingsRow
+            searchId="setup"
             description="Return to the Welcome step and review the setup choices. Indexed sessions, scan folders, repository choices, and current preferences stay on this machine."
             trailing={
               <PushButton
@@ -242,7 +241,7 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
                 </StatusText>
               )}
             </div>
-          </Row>
+          </SettingsRow>
         </Card>
       </SectionGroup>
     </Pane>

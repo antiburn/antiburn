@@ -1,3 +1,4 @@
+import { SettingsSectionGroup } from "./SettingsSearchRows"
 import { FolderPlus, RefreshCw, X } from "lucide-react"
 import { useCallback, useState, useSyncExternalStore } from "react"
 
@@ -6,7 +7,6 @@ import { LocalRepositoryList } from "../../components/repositories/LocalReposito
 import { Card } from "../../components/ui/Card"
 import { PaneHeader } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
-import { SectionGroup } from "../../components/ui/SectionGroup"
 import { StatusText } from "../../components/ui/StatusText"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { renderAgentIcon } from "../../lib/agentIcon"
@@ -119,8 +119,8 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
           />
         ) : null}
 
-        <SectionGroup
-          title="Scanning"
+        <SettingsSectionGroup
+          searchId="sourceScanning"
           trailing={
             <StatusText tone="secondary">
               {scanStatusLabel(scanStatus, discoveryPaused)}
@@ -142,9 +142,9 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
               </PushButton>
             </div>
           </Card>
-        </SectionGroup>
+        </SettingsSectionGroup>
 
-        <SectionGroup title="Coding agents">
+        <SettingsSectionGroup searchId="sourceAgents">
           <Card>
             <p className="px-4 pt-3 pb-1 type-footnote text-label-secondary">
               A switched-off agent keeps its sessions indexed, but the session list and reports
@@ -172,10 +172,10 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
               )
             })}
           </Card>
-        </SectionGroup>
+        </SettingsSectionGroup>
 
-        <SectionGroup
-          title="Scan folders"
+        <SettingsSectionGroup
+          searchId="sourceFolders"
           trailing={
             <StatusText tone="secondary">
               {scanRoots.length === 0
@@ -219,9 +219,9 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
               </PushButton>
             </div>
           </Card>
-        </SectionGroup>
+        </SettingsSectionGroup>
 
-        <SectionGroup title="Repositories">
+        <SettingsSectionGroup searchId="sourceRepositories">
           <Card className="h-[280px]">
             <div className="h-full px-4">
               <LocalRepositoryList
@@ -232,7 +232,7 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
               />
             </div>
           </Card>
-        </SectionGroup>
+        </SettingsSectionGroup>
       </div>
     </>
   )

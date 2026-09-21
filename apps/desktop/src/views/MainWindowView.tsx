@@ -1,5 +1,6 @@
 import { Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
+import { flushSync } from "react-dom"
 
 import type { SessionListEntry } from "../components/session/SessionList"
 import {
@@ -7,8 +8,11 @@ import {
   type SidebarNavChildItem,
   type SidebarNavItem,
 } from "../components/ui/SidebarNav"
-import { openSettingsWindow } from "../lib/ipc"
 import type { BurnCheckDetectorId } from "../lib/insightsIpc"
+import { noteInteraction, openSettingsWindow } from "../lib/ipc"
+import { FIXED_SESSION_FILTERS } from "../lib/navigation/sessionFilterDefinitions"
+import { agentSessionFilterLabel } from "../lib/presentation/agents"
+import { MAIN_VIEWS, isMainViewId, type MainViewId } from "../lib/navigation/mainViews"
 import {
   parseSessionFilterId,
   sessionFilterCounts,
@@ -23,9 +27,11 @@ import {
   type SessionHygieneSnapshot,
 } from "../lib/useSessionHygiene"
 import { MainActivityView } from "./main-window/MainActivityView"
-import { MainActivitySession } from "./main-window/MainActivitySession"
+import { MainActivitySession, subjectForEntry } from "./main-window/MainActivitySession"
 import { BurnChecksView } from "./main-window/BurnChecksView"
 import { BurnChecksSession } from "./main-window/BurnChecksSession"
+import { AppSearch } from "./main-window/AppSearch"
+import { resolveSettingsSearchTarget, type AppSearchResult } from "../lib/appSearch"
 import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
@@ -33,13 +39,11 @@ import { OverviewView } from "./main-window/OverviewView"
 import { QuotaSession } from "./main-window/quota/QuotaSession"
 import { QuotaView } from "./main-window/quota/QuotaView"
 
-/** A section id `MainWindowNavigationSession` does not know: it carries no
- *  cross-window target and is tracked locally instead. */
-const LOCAL_ONLY_SECTION_ID = "quota"
-
 export interface MainWindowSection extends SidebarNavItem {
   render: (context: { active: boolean }) => ReactNode
 }
+
+type ViewBinding = Omit<MainWindowSection, "id" | "label">
 
 /** A store subscription that never fires, for a reader that only needs the
  *  current snapshot and must not join the store's active-viewer count. */
@@ -78,26 +82,35 @@ function sessionFilterChildren(
 ): SidebarNavChildItem[] {
   const loaded = entries !== null
   const counts = sessionFilterCounts(entries ?? [], hygiene, snoozed)
+  const fixedGroup = (group: (typeof FIXED_SESSION_FILTERS)[number]["group"]) =>
+    FIXED_SESSION_FILTERS.filter((filter) => filter.group === group).map((filter, index) =>
+      sessionFilterChild(
+        { kind: filter.id },
+        filter.label,
+        counts[filter.id],
+        loaded,
+        group !== "featured" && index === 0,
+      ),
+    )
   return [
-    sessionFilterChild({ kind: "notable" }, "Notable Sessions", counts.notable, loaded),
-    sessionFilterChild({ kind: "material" }, "Material Sessions", counts.material, loaded),
+    ...fixedGroup("featured"),
     ...counts.agents.map((agent, index) =>
       sessionFilterChild(
         { kind: "agent", agent: agent.agent },
-        `${agent.displayName} Sessions`,
+        agentSessionFilterLabel(agent.agent),
         agent.count,
         loaded,
         index === 0,
       ),
     ),
-    sessionFilterChild({ kind: "failing" }, "Failing Sessions", counts.failing, loaded, true),
-    sessionFilterChild({ kind: "passing" }, "Passing Sessions", counts.passing, loaded),
-    sessionFilterChild({ kind: "all" }, "All Sessions", counts.all, loaded, true),
+    ...fixedGroup("status"),
+    ...fixedGroup("all"),
   ]
 }
 
 /** A section supplies its panes without changing the main window's native lifecycle. */
 export function MainWindowView({ sections }: { sections?: readonly MainWindowSection[] }) {
+  const [searchOpen, setSearchOpen] = useState(false)
   const [settingsError, setSettingsError] = useState(false)
   async function openSettings(): Promise<void> {
     setSettingsError(false)
@@ -109,6 +122,9 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   }
   useGlobalKeydown(true, (event) => {
     if (
+      !event.defaultPrevented &&
+      !event.isComposing &&
+      !document.querySelector("dialog[open], [aria-modal='true']") &&
       (event.metaKey || event.ctrlKey) &&
       event.key === "," &&
       !event.altKey &&
@@ -120,7 +136,9 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   })
   const [activitySession] = useState(() => new MainActivitySession())
   const [burnChecksSession] = useState(() => new BurnChecksSession())
-  const [navigationSession] = useState(() => new MainWindowNavigationSession())
+  const [navigationSession] = useState(
+    () => new MainWindowNavigationSession(sections ? undefined : activitySession),
+  )
   const [overviewSession] = useState(() => new MainOverviewSession(activitySession))
   const [quotaSession] = useState(() => new QuotaSession())
   const navigation = useSyncExternalStore(
@@ -128,23 +146,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     navigationSession.getSnapshot,
     navigationSession.getSnapshot,
   )
-  // Quota has no cross-window target, so its selection lives here instead of
-  // in MainWindowNavigationSession. A cross-window request always targets a
-  // real MainWindowSectionId, so a fresh one always means "leave Quota".
-  const [localSelectedId, setLocalSelectedId] = useState<string | null>(null)
-  // Stays true once Quota is first selected, so leaving it for another
-  // section keeps it mounted instead of tearing it down and refetching.
-  const [quotaVisited, setQuotaVisited] = useState(false)
-  // Diffs on `requests`, not `selected`: a cross-window request can retarget
-  // the section already selected (every session-open request targets
-  // Activity), which leaves `selected` unchanged but must still leave Quota.
-  const [previousNavigationRequests, setPreviousNavigationRequests] = useState(
-    navigation.requests,
-  )
-  if (previousNavigationRequests !== navigation.requests) {
-    setPreviousNavigationRequests(navigation.requests)
-    if (localSelectedId) setLocalSelectedId(null)
-  }
   // Read the shared Sessions list for the sidebar's counts. This list is a
   // main-window dependency, while detail analysis remains pane-scoped.
   const activity = useSyncExternalStore(
@@ -158,10 +159,8 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(activity.entries ?? []))
   const snoozes = useSnoozedBurnChecks()
   const snoozedDetectors = snoozedDetectorIds(snoozes.records)
-  const availableSections: readonly MainWindowSection[] = sections ?? [
-    {
-      id: "overview",
-      label: "Overview",
+  const viewBindings: Record<MainViewId, ViewBinding> = {
+    overview: {
       icon: House,
       render: ({ active }) => (
         <OverviewView
@@ -169,40 +168,44 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           session={overviewSession}
           onOpenSessions={() => selectSection("activity")}
           onSelectSession={(entry) => {
-            // Select first, so Sessions mounts with the subject already set
-            // and loads its analysis on activation.
-            selectSection("activity")
-            activitySession.selectEntry(entry)
+            if (!entry.sessionId) return
+            navigationSession.navigate({
+              section: "activity",
+              filter: { kind: "all" },
+              subject: subjectForEntry(entry),
+            })
           }}
         />
       ),
     },
-    {
-      id: "quota",
-      label: "Limits",
+    quota: {
       icon: Gauge,
       render: ({ active }) => (
         <QuotaView
           active={active}
           session={quotaSession}
           onSelectSession={(subject) => {
-            // Select first, so Sessions mounts with the subject already set
-            // and loads its analysis on activation.
-            selectSection("activity")
-            activitySession.openRelated(subject)
+            navigationSession.navigate({
+              section: "activity",
+              filter: { kind: "all" },
+              subject,
+            })
           }}
         />
       ),
     },
-    {
-      id: "burnChecks",
-      label: "Checks",
+    burnChecks: {
       icon: Flame,
-      render: ({ active }) => <BurnChecksView active={active} session={burnChecksSession} />,
+      render: ({ active }) => (
+        <BurnChecksView
+          active={active}
+          session={burnChecksSession}
+          focusedCheck={navigation.destination.check}
+          focusRevision={navigation.destinationRevision}
+        />
+      ),
     },
-    {
-      id: "activity",
-      label: "Sessions",
+    activity: {
       icon: MessagesSquare,
       children: sessionFilterChildren(
         snoozes.status === "ready" ? activity.entries : null,
@@ -224,17 +227,15 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         />
       ),
     },
-  ]
+  }
+  const availableSections: readonly MainWindowSection[] =
+    sections ?? MAIN_VIEWS.map(({ id, label }) => ({ id, label, ...viewBindings[id] }))
   const [customSelectedId, setCustomSelectedId] = useState(() => availableSections[0]?.id ?? "")
   const [customVisited, setCustomVisited] = useState(
     () => new Set(availableSections.slice(0, 1).map((section) => section.id)),
   )
-  const selectedId = sections ? customSelectedId : (localSelectedId ?? navigation.selected)
-  const visited: ReadonlySet<string> = sections
-    ? customVisited
-    : new Set(
-        quotaVisited ? [...navigation.visited, LOCAL_ONLY_SECTION_ID] : navigation.visited,
-      )
+  const selectedId = sections ? customSelectedId : navigation.selected
+  const visited: ReadonlySet<string> = sections ? customVisited : new Set(navigation.visited)
   function selectSection(id: string): void {
     if (sections) {
       if (!availableSections.some((section) => section.id === id)) return
@@ -242,24 +243,15 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       setCustomVisited((previous) => new Set(previous).add(id))
       return
     }
-    if (id === LOCAL_ONLY_SECTION_ID) {
-      setLocalSelectedId(id)
-      setQuotaVisited(true)
-      return
-    }
-    setLocalSelectedId(null)
-    if (id === "overview" || id === "burnChecks") {
+    if (isMainViewId(id)) {
       navigationSession.select(id)
       return
     }
-    if (id === "activity") {
-      navigationSession.select(id)
-      activitySession.setFilter({ kind: "all" })
-      return
-    }
-    // Every other id is a Sessions filter child, encoded by sessionFilterId.
-    navigationSession.select("activity")
-    activitySession.setFilter(parseSessionFilterId(id))
+    navigationSession.navigate({
+      section: "activity",
+      filter: parseSessionFilterId(id),
+      subject: activitySession.getSnapshot().subject,
+    })
   }
   const selected =
     availableSections.find((section) => section.id === selectedId) ?? availableSections[0]
@@ -269,48 +261,88 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     !sections && selected?.id === "activity"
       ? sessionFilterId(activity.filter)
       : (selected?.id ?? "")
+  async function chooseSearchResult(result: AppSearchResult): Promise<void> {
+    const target = result.target
+    if (target.kind === "setting") {
+      const destination = resolveSettingsSearchTarget(target)
+      await openSettingsWindow(destination.pane, destination.control)
+    } else if (target.kind === "check")
+      navigationSession.navigate({ section: "burnChecks", check: target.check })
+    else {
+      flushSync(() => {
+        if (target.filter && target.filter.kind !== "all") {
+          navigationSession.navigate({
+            section: target.section,
+            filter: target.filter,
+            subject: activitySession.getSnapshot().subject,
+          })
+        } else {
+          navigationSession.select(target.section)
+        }
+      })
+      document.getElementById(`${target.section}-panel`)?.focus({ preventScroll: true })
+    }
+    noteInteraction({ kind: "appSearchResultOpened", category: target.kind })
+  }
   return (
-    <MainWindowLayout
-      sidebar={
-        <SidebarNav
-          items={availableSections}
-          value={navValue}
-          onChange={selectSection}
-          ariaLabel="Main sections"
-          className="main-window-sidebar min-h-0 flex-1"
-          footer={
-            <>
-              {settingsError && (
-                <p role="alert" className="px-2 pb-2 type-caption text-label-secondary">
-                  Could not open Settings. Try again.
-                </p>
-              )}
-              <button
-                type="button"
-                onClick={() => void openSettings()}
-                className="flex h-7 w-full items-center gap-2 rounded-control px-2 type-body text-label hover:bg-surface-hover"
-              >
-                <Settings size={14} strokeWidth={2} aria-hidden="true" />
-                <span>Settings</span>
-              </button>
-            </>
+    <>
+      {searchOpen && (
+        <AppSearch onChoose={chooseSearchResult} onClose={() => setSearchOpen(false)} />
+      )}
+      <MainWindowLayout
+        canBack={navigation.canBack}
+        canForward={navigation.canForward}
+        onBack={navigationSession.back}
+        onForward={navigationSession.forward}
+        onSearch={() => {
+          if (!searchOpen) {
+            setSearchOpen(true)
+            noteInteraction({ kind: "appSearchOpened" })
           }
-        />
-      }
-    >
-      {availableSections.map((section) => (
-        <div
-          key={section.id}
-          id={`${section.id}-panel`}
-          role="tabpanel"
-          aria-labelledby={`${section.id}-tab`}
-          hidden={section.id !== selected?.id}
-          className="main-window-section"
-        >
-          {(visited.has(section.id) || section.id === selected?.id) &&
-            section.render({ active: section.id === selected?.id })}
-        </div>
-      ))}
-    </MainWindowLayout>
+        }}
+        searchOpen={searchOpen}
+        sidebar={
+          <SidebarNav
+            items={availableSections}
+            value={navValue}
+            onChange={selectSection}
+            ariaLabel="Main sections"
+            className="main-window-sidebar min-h-0 flex-1"
+            footer={
+              <>
+                {settingsError && (
+                  <p role="alert" className="px-2 pb-2 type-caption text-label-secondary">
+                    Could not open Settings. Try again.
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void openSettings()}
+                  className="flex h-7 w-full items-center gap-2 rounded-control px-2 type-body text-label hover:bg-surface-hover"
+                >
+                  <Settings size={14} strokeWidth={2} aria-hidden="true" />
+                  <span>Settings</span>
+                </button>
+              </>
+            }
+          />
+        }
+      >
+        {availableSections.map((section) => (
+          <div
+            key={section.id}
+            id={`${section.id}-panel`}
+            role="tabpanel"
+            tabIndex={-1}
+            aria-label={section.label}
+            hidden={section.id !== selected?.id}
+            className="main-window-section"
+          >
+            {(visited.has(section.id) || section.id === selected?.id) &&
+              section.render({ active: section.id === selected?.id })}
+          </div>
+        ))}
+      </MainWindowLayout>
+    </>
   )
 }

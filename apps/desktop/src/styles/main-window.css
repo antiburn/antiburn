@@ -2,9 +2,11 @@
 .main-window {
   --main-window-titlebar-height: calc(var(--space-2xl));
   --main-window-collection-width: 340px;
+  --main-window-native-inset: var(--space-sm);
 
   position: relative;
   display: flex;
+  flex-direction: column;
   block-size: 100%;
   min-block-size: 0;
   overflow: hidden;
@@ -25,28 +27,109 @@
   );
 }
 
-/* Keep the drag region above the sidebar and clear of feature controls. */
+/* Reserve native controls on macOS and retain a full-width shared toolbar. */
 .main-window-titlebar {
+  --main-window-tool-width: calc(var(--space-2xl) + var(--space-sm));
   position: absolute;
-  z-index: 20;
-  inset: 0 auto auto 0;
-  inline-size: var(--sidebar-width);
+  inset: 0 0 auto;
   block-size: var(--main-window-titlebar-height);
+  pointer-events: none;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  flex: 0 0 var(--main-window-titlebar-height);
+  min-inline-size: 0;
+  padding-inline: var(--main-window-native-inset) 0;
+  user-select: none;
 }
-
+/* Match the gap after native traffic lights to the toolbar control spacing. */
+.main-window-macos {
+  --main-window-native-inset: 78px;
+}
+.main-window-titlebar-controls {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.main-window-titlebar .main-window-titlebar-controls {
+  min-inline-size: calc(var(--sidebar-width) - var(--main-window-native-inset));
+}
+.main-window-drag-space {
+  align-self: stretch;
+  flex: 1;
+  min-inline-size: 0;
+}
+.main-window-tool {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  inline-size: var(--main-window-tool-width, calc(var(--space-2xl) + var(--space-lg)));
+  block-size: var(--main-window-titlebar-height, calc(var(--space-2xl) + var(--space-lg)));
+  border-radius: var(--radius-control);
+  color: var(--color-label-secondary);
+}
+.main-window-tool::before {
+  content: "";
+  position: absolute;
+  inline-size: calc(var(--space-xl) + var(--space-sm));
+  block-size: calc(var(--space-xl) + var(--space-sm));
+  border-radius: inherit;
+  pointer-events: none;
+}
+.main-window-tool:hover:enabled::before {
+  background: var(--color-surface-hover);
+}
+.main-window-tool:disabled {
+  opacity: 0.35;
+}
+.main-window-body {
+  position: relative;
+  display: flex;
+  min-block-size: 0;
+  flex: 1;
+}
+.main-window-body {
+  padding-inline-start: var(--sidebar-width);
+}
 .main-window-navigation {
+  position: absolute;
+  z-index: 30;
+  inset: 0 auto 0 0;
+  padding-block-start: var(--main-window-titlebar-height);
   display: flex;
   min-block-size: 0;
   inline-size: var(--sidebar-width);
-  flex: 0 0 var(--sidebar-width);
   flex-direction: column;
+  background: var(--color-bg-window);
 }
-
-.main-window-macos .main-window-sidebar {
-  padding-block-start: calc(var(--main-window-titlebar-height) - var(--space-xs));
+.main-window-navigation::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  block-size: var(--main-window-titlebar-height);
+  background: var(--color-surface-sidebar);
+  border-inline-end: 1px solid var(--color-separator);
+  pointer-events: none;
 }
-
-.main-window-sidebar > [role="tablist"] {
+.app-search {
+  inline-size: min(580px, calc(100vw - 2 * var(--space-lg)));
+  max-block-size: calc(100vh - 4 * var(--space-2xl));
+  margin: calc(2 * var(--space-2xl)) auto auto;
+  padding: 0;
+}
+.app-search::backdrop {
+  background: var(--color-command-palette-scrim);
+}
+.app-search-results {
+  max-block-size: 55vh;
+  overflow-y: auto;
+}
+.app-search-result[aria-selected="true"] {
+  background: var(--color-surface-selected);
+}
+.main-window-sidebar [role="tablist"] {
   gap: calc(var(--space-xs) / 2);
   padding: var(--space-md) var(--space-sm);
 }
@@ -138,8 +221,88 @@
   background-color: var(--color-bg-selected);
 }
 
-.main-window-empty-titlebar {
-  position: absolute;
-  inset: 0 0 auto;
+.main-window-caption-controls {
+  pointer-events: auto;
+  display: flex;
+  flex-shrink: 0;
+}
+
+.main-window-caption-button {
+  display: grid;
+  place-items: center;
+  inline-size: calc(var(--space-2xl) + var(--space-xl));
   block-size: var(--main-window-titlebar-height);
+  color: var(--color-label-secondary);
+}
+
+.main-window-caption-button:hover {
+  background: var(--color-surface-hover);
+}
+
+.main-window-caption-close:hover {
+  color: var(--color-system-red-text);
+  background: var(--color-surface-selected);
+}
+
+.main-window-caption-error {
+  position: absolute;
+  inset-block-start: var(--main-window-titlebar-height);
+  inset-inline-end: var(--space-sm);
+  box-shadow: var(--shadow-raised);
+}
+
+.main-window-resize-edge {
+  position: absolute;
+  z-index: 50;
+}
+.main-window-resize-edge[data-direction="North"] {
+  inset: 0 var(--space-sm) auto;
+  height: var(--space-xs);
+  cursor: n-resize;
+}
+.main-window-resize-edge[data-direction="South"] {
+  inset: auto var(--space-sm) 0;
+  height: var(--space-xs);
+  cursor: s-resize;
+}
+.main-window-resize-edge[data-direction="West"] {
+  inset: var(--space-sm) auto var(--space-sm) 0;
+  width: var(--space-xs);
+  cursor: w-resize;
+}
+.main-window-resize-edge[data-direction="East"] {
+  inset: var(--space-sm) 0 var(--space-sm) auto;
+  width: var(--space-xs);
+  cursor: e-resize;
+}
+.main-window-resize-edge[data-direction="NorthWest"],
+.main-window-resize-edge[data-direction="NorthEast"],
+.main-window-resize-edge[data-direction="SouthWest"],
+.main-window-resize-edge[data-direction="SouthEast"] {
+  width: var(--space-sm);
+  height: var(--space-sm);
+}
+.main-window-resize-edge[data-direction="NorthWest"] {
+  inset: 0 auto auto 0;
+  cursor: nw-resize;
+}
+.main-window-resize-edge[data-direction="NorthEast"] {
+  inset: 0 0 auto auto;
+  cursor: ne-resize;
+}
+.main-window-resize-edge[data-direction="SouthWest"] {
+  inset: auto auto 0 0;
+  cursor: sw-resize;
+}
+.main-window-resize-edge[data-direction="SouthEast"] {
+  inset: auto 0 0 auto;
+  cursor: se-resize;
+}
+
+.main-window:not(.main-window-macos) .main-window-detail {
+  padding-block-start: var(--main-window-titlebar-height);
+}
+.main-window:not(.main-window-macos) [data-overview-active],
+.main-window:not(.main-window-macos) [data-quota-active] {
+  padding-block-start: var(--main-window-titlebar-height);
 }

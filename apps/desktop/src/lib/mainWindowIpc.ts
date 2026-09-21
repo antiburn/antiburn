@@ -7,10 +7,18 @@ export interface MainWindowSessionIdentity {
   wslDistro: string | null
 }
 
-/** One revisioned request to show a session in the retained main window. */
-export interface MainWindowSessionRequest {
+export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
+
+/** One exact destination requested from outside the retained main renderer. */
+export interface MainWindowNavigationDestination {
+  section: MainWindowSectionId
+  target: MainWindowSessionIdentity | null
+}
+
+/** One revisioned request shared by event and renderer recovery paths. */
+export interface MainWindowNavigationRequest {
   revision: number
-  target: MainWindowSessionIdentity
+  destination: MainWindowNavigationDestination
 }
 
 export interface MainWindowHealthCheckRequest {
@@ -67,23 +75,39 @@ export async function openMainWindowSession(target: MainWindowSessionIdentity): 
   await invoke("open_main_window_session", { target })
 }
 
-/** Peek at the latest target that this renderer generation can apply. */
-export async function peekMainWindowSessionTarget(
+/** Open or focus the main window and select one top-level section. */
+export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
+  if (!isTauri()) return
+  await invoke("open_main_window_section", { section })
+}
+
+/** Return the requested session identities that still exist in the local index. */
+export async function existingMainWindowSessionTargets(
+  targets: readonly MainWindowSessionIdentity[],
+): Promise<MainWindowSessionIdentity[]> {
+  if (!isTauri()) return [...targets]
+  return invoke<MainWindowSessionIdentity[]>("existing_main_window_session_targets", {
+    targets,
+  })
+}
+
+/** Peek at the latest destination that this renderer generation can apply. */
+export async function peekMainWindowNavigationTarget(
   generation: number,
-): Promise<MainWindowSessionRequest | null> {
+): Promise<MainWindowNavigationRequest | null> {
   if (!isTauri()) return null
-  return invoke<MainWindowSessionRequest | null>("peek_main_window_session_target", {
+  return invoke<MainWindowNavigationRequest | null>("peek_main_window_navigation_target", {
     generation,
   })
 }
 
-/** Acknowledge that this renderer applied the latest session target. */
-export async function acknowledgeMainWindowSessionTarget(
+/** Acknowledge that this renderer applied the latest navigation target. */
+export async function acknowledgeMainWindowNavigationTarget(
   generation: number,
   revision: number,
 ): Promise<void> {
   if (!isTauri()) return
-  await invoke("acknowledge_main_window_session_target", { generation, revision })
+  await invoke("acknowledge_main_window_navigation_target", { generation, revision })
 }
 
 /** Answer one generation-scoped hidden-window health check. */
@@ -133,8 +157,8 @@ export async function requestMainWindowRecovery(generation: number): Promise<voi
 /** Event emitted when the main renderer can start or stop presenting work. */
 const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 
-/** Event carrying a revisioned session target to an existing main renderer. */
-const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
+/** Event carrying a revisioned destination to an existing main renderer. */
+export const MAIN_WINDOW_NAVIGATION_TARGET_EVENT = "main:navigation-target"
 
 /** Event asking a hidden retained renderer for its committed health. */
 const MAIN_WINDOW_HEALTH_CHECK_EVENT = "main:health-check"
@@ -149,12 +173,12 @@ export async function onMainWindowVisibilityChanged(
   )
 }
 
-/** Subscribe to session targets sent to the retained main renderer. */
-export async function onMainWindowSessionTarget(
-  handler: (request: MainWindowSessionRequest) => void,
+/** Subscribe to destinations sent to the retained main renderer. */
+export async function onMainWindowNavigationTarget(
+  handler: (request: MainWindowNavigationRequest) => void,
 ): Promise<UnlistenFn> {
   if (!isTauri()) return noShellUnlisten
-  return listen<MainWindowSessionRequest>(MAIN_WINDOW_SESSION_TARGET_EVENT, (event) =>
+  return listen<MainWindowNavigationRequest>(MAIN_WINDOW_NAVIGATION_TARGET_EVENT, (event) =>
     handler(event.payload),
   )
 }
