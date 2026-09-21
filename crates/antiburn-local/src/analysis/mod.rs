@@ -41,6 +41,7 @@ mod interface;
 mod merge;
 mod metrics_sink;
 mod model;
+mod modes;
 mod pricing;
 pub(crate) mod records;
 mod replay;
@@ -95,6 +96,7 @@ pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, 
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
+pub use modes::{ModeSample, WorkMode, mode_samples};
 pub use pricing::{
     install_runtime_pricing, lookup_pricing, lookup_turn_pricing, price_breakdown,
     pricing_generation, strip_window_tag, turn_pricing_key,

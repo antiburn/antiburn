@@ -244,7 +244,15 @@ pub async fn open_overlay_window(
     origin: crate::analytics::event::Origin,
 ) -> CommandResult<()> {
     let store = app.state::<Store>().inner().clone();
-    let entries = run_blocking(move || Ok(crate::hud::load_placements(&store))).await?;
+    let (entries, dock) = run_blocking(move || {
+        // Every open means the reader wants the HUD back at the next launch.
+        crate::hud::save_enabled(&store, true);
+        Ok((
+            crate::hud::load_placements(&store),
+            crate::hud::load_dock(&store),
+        ))
+    })
+    .await?;
     let needs_exposure = hud_needs_exposure(&app);
     if needs_exposure {
         crate::analytics::prepare_hud_exposure(origin);
@@ -255,7 +263,23 @@ pub async fn open_overlay_window(
         }
         return Err(fail(error));
     }
+    // A HUD the reader left docked comes back docked.
+    antiburn_hud::restore_dock(&app, dock);
     Ok(())
+}
+
+/// Free a docked HUD: a drag started on it.
+#[tauri::command]
+pub fn tear_off_overlay(app: tauri::AppHandle) -> bool {
+    let was_docked = antiburn_hud::tear_off();
+    crate::hud::save_dock(&app.state::<Store>(), antiburn_hud::dock_settings());
+    was_docked
+}
+
+/// Bring a docked HUD back for a while. `reason` is logged for tuning.
+#[tauri::command]
+pub fn wake_overlay(app: tauri::AppHandle, reason: String) {
+    antiburn_hud::wake_overlay(&app, &reason);
 }
 
 #[cfg(target_os = "macos")]
@@ -293,12 +317,15 @@ pub fn take_hud_analytics_origin(app: tauri::AppHandle) -> Option<crate::analyti
 pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
     let placement =
         crate::main_window::on_main_value(&app, antiburn_hud::current_placement).await?;
-    let Some(placement) = placement else {
-        return Ok(());
-    };
+    // A drop against a display edge docks the HUD there. The placement
+    // saved first is the drop, which the dock's home clamps on screen.
+    let dock = crate::main_window::on_main_value(&app, antiburn_hud::settle_after_drag).await?;
     let store = app.state::<Store>().inner().clone();
     run_blocking(move || {
-        crate::hud::save_placement(&store, placement);
+        if let Some(placement) = placement {
+            crate::hud::save_placement(&store, placement);
+        }
+        crate::hud::save_dock(&store, dock);
         Ok(())
     })
     .await
@@ -308,6 +335,7 @@ pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
 #[tauri::command]
 pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
     crate::analytics::cancel_hud_exposure();
+    crate::hud::save_enabled(&app.state::<Store>(), false);
     antiburn_hud::hide(&app).map_err(fail)
 }
 

@@ -1,8 +1,9 @@
 import { act, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type * as HudIpc from "../../lib/hudIpc"
+import type { HudDetailState } from "../../lib/hudIpc"
 import type * as Ipc from "../../lib/ipc"
-import type { HudDetailState } from "../../lib/ipc"
 import { HudDetailView } from "./HudDetailView"
 
 const getHudDetailState = vi.hoisted(() => vi.fn())
@@ -10,7 +11,11 @@ const setHudDetailSize = vi.hoisted(() => vi.fn(async () => {}))
 const concealHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 vi.mock("../../lib/ipc", async () => {
   const actual = await vi.importActual<typeof Ipc>("../../lib/ipc")
-  return { ...actual, getHudDetailState, setHudDetailSize, concealHudDetail }
+  return { ...actual, setHudDetailSize, concealHudDetail }
+})
+vi.mock("../../lib/hudIpc", async () => {
+  const actual = await vi.importActual<typeof HudIpc>("../../lib/hudIpc")
+  return { ...actual, getHudDetailState }
 })
 
 const push = vi.hoisted(() => ({
@@ -44,7 +49,68 @@ function detailState(overrides: Partial<HudDetailState> = {}): HudDetailState {
         expectedFraction: 0.6,
       },
     ],
+    map: null,
+    spend: null,
+    target: "usage",
     ...overrides,
+  }
+}
+
+function detailMap(): NonNullable<HudDetailState["map"]> {
+  return {
+    dotValue: 500,
+    sessions: [
+      {
+        key: "claude:hud",
+        label: "HUD token map",
+        agent: "claude-code",
+        tokensPerMin: 9_200,
+        topMode: "looking",
+        frameColor: "var(--color-label-tertiary)",
+        modes: {
+          looking: 30_000,
+          running: 0,
+          changing: 16_000,
+          delegating: 0,
+          thinking: 0,
+          talking: 0,
+          other: 0,
+        },
+        subagents: [
+          {
+            subagentId: "abcdef1234",
+            tokensPerMin: 800,
+            modes: {
+              looking: 0,
+              running: 4_000,
+              changing: 0,
+              delegating: 0,
+              thinking: 0,
+              talking: 0,
+              other: 0,
+            },
+          },
+        ],
+      },
+      {
+        key: "codex:quiet",
+        label: "codex",
+        agent: "codex",
+        tokensPerMin: 60,
+        topMode: "talking",
+        frameColor: "var(--color-system-red)",
+        modes: {
+          looking: 0,
+          running: 0,
+          changing: 0,
+          delegating: 0,
+          thinking: 0,
+          talking: 300,
+          other: 0,
+        },
+        subagents: [],
+      },
+    ],
   }
 }
 
@@ -139,6 +205,78 @@ describe("HudDetailView", () => {
     act(() => push.emit!(detailState()))
     expect(screen.getByText("5-hour limit")).toBeInTheDocument()
     expect(setHudDetailSize).toHaveBeenCalledWith(120)
+  })
+
+  it("lists each live session with its rate, top mode, and the dot value", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ map: detailMap() })))
+    expect(screen.getByText("HUD token map")).toBeInTheDocument()
+    expect(screen.getByText("9.2k/min")).toBeInTheDocument()
+    expect(screen.getByText("60/min")).toBeInTheDocument()
+    expect(screen.getByLabelText("mostly looking")).toBeInTheDocument()
+    expect(screen.getByLabelText("mostly talking")).toBeInTheDocument()
+    expect(screen.getByText("● = 500 tokens/min")).toBeInTheDocument()
+    // The mode key is gone; each row carries its own top-mode dot.
+    expect(screen.queryByText("delegating")).toBeNull()
+  })
+
+  it("lights the sub-agent under the pointer and names its top mode", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() =>
+      push.emit!(
+        detailState({ map: detailMap(), target: "claude:hud", subagent: "abcdef1234" }),
+      ),
+    )
+    const row = screen.getByTestId("hud-detail-session").querySelector("li[data-lit]")!
+    expect(row).not.toBeNull()
+    expect(row).toHaveTextContent("sub-agent abcdef12 · mostly running")
+  })
+
+  it("shows one agent's card when the target is its box", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ map: detailMap(), target: "claude:hud" })))
+    const card = screen.getByTestId("hud-detail-session")
+    expect(card).toHaveTextContent("HUD token map")
+    expect(card).toHaveTextContent("9.2k/min")
+    expect(card).toHaveTextContent("claude-code · mostly looking")
+    expect(card).toHaveTextContent("sub-agent abcdef12")
+    expect(card).toHaveTextContent("800/min")
+    expect(card).toHaveTextContent("● = 500 tokens/min")
+    // The mode row lights the whole bar, looking first, then changing.
+    const lit = card.querySelectorAll(".rounded-full")
+    expect(lit.length).toBe(20)
+    // The usage meter and the other session stay off this card.
+    expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
+    expect(screen.queryByText("codex")).not.toBeInTheDocument()
+  })
+
+  it("falls back to the usage card when the target left the map", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ map: detailMap(), target: "gone:key" })))
+    expect(screen.queryByTestId("hud-detail-session")).not.toBeInTheDocument()
+    expect(screen.getByText("5-hour limit")).toBeInTheDocument()
+  })
+
+  it("states the spend rate in words when the payload carries one", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ spend: "Spending about $0.420/min." })))
+    expect(screen.getByTestId("hud-detail-spend")).toHaveTextContent(
+      "Spending about $0.420/min.",
+    )
+    act(() => push.emit!(detailState({ reason: "refresh" })))
+    expect(screen.queryByTestId("hud-detail-spend")).toBeNull()
+  })
+
+  it("draws no map section when the payload carries none", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState()))
+    expect(screen.queryByTestId("hud-detail-map")).not.toBeInTheDocument()
   })
 
   it("shows the exact empty copy when no limits exist", async () => {

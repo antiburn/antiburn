@@ -465,6 +465,20 @@ fn fingerprint_of_path(path: &std::path::Path) -> String {
     format!("{mtime}:{}", metadata.len())
 }
 
+/// Fingerprint the parent transcript and all current sub-agent transcripts.
+pub(crate) async fn fingerprint_with_subagents(
+    agent: AgentKind,
+    session_id: &str,
+    wsl_distro: Option<&str>,
+    source: &SessionSource,
+) -> String {
+    let mut subagent_paths = Explorers::DISK
+        .list_subagents_in_environment(&agent, session_id, wsl_distro)
+        .await;
+    subagent_paths.sort();
+    combined_fingerprint(agent, source, &subagent_paths)
+}
+
 fn system_time_nanos(time: std::time::SystemTime) -> Option<i128> {
     match time.duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => i128::try_from(duration.as_nanos()).ok(),
@@ -713,8 +727,7 @@ pub async fn locate(
 }
 
 /// Shape a located source into the raw payload the analysis layer reads.
-#[cfg(test)]
-async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSource> {
+pub(crate) async fn raw_source(agent: AgentKind, source: &SessionSource) -> Option<RawSource> {
     raw_source_with_format(agent, source, source_format(agent, source)).await
 }
 

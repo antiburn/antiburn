@@ -10,6 +10,12 @@
 
 #[cfg(target_os = "macos")]
 use std::sync::LazyLock;
+
+mod dock;
+pub use dock::{
+    DockEdge, DockSettings, dock_overlay, dock_settings, restore_dock, settle_after_drag, tear_off,
+    wake_overlay,
+};
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use std::sync::MutexGuard;
@@ -311,7 +317,9 @@ pub fn apply_placement(app: &AppHandle, entries: &[Placement]) -> tauri::Result<
     let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
         return Ok(());
     };
-    place(&window, entries)
+    place(&window, entries)?;
+    dock::redock_after_placement(app, &window);
+    Ok(())
 }
 
 /// Keep placement unavailable where the HUD is unavailable.
@@ -474,6 +482,7 @@ pub fn hide(app: &AppHandle) -> tauri::Result<()> {
     let _guard = resize_apply_guard();
     RESIZE_STATE.request_hide();
     set_overlay_visible(false);
+    dock::reset();
     let _ = app.emit(OVERLAY_WORK_EVENT, false);
     hide_detail(app);
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL)
@@ -724,6 +733,7 @@ fn apply_height(
         _ => Ok(()),
     };
     let restore_result = window.set_resizable(false);
+    dock::keep_docked_after_resize(window);
     reposition_detail_after_hud_frame(window);
     size_result?;
     position_result?;
@@ -849,6 +859,16 @@ const DETAIL_MAX_HEIGHT: f64 = 600.0;
 /// report from showing a window whose hover already ended.
 #[cfg(target_os = "macos")]
 static DETAIL_SHOULD_SHOW: AtomicBool = AtomicBool::new(false);
+
+/// Report whether a detail show is requested or on screen.
+///
+/// The shell reads this when the app becomes active. The detail window
+/// activates the app before it is visible, so a visibility check alone lets
+/// the shell mistake a hover for a request to restore the main window.
+#[cfg(target_os = "macos")]
+pub fn detail_requested() -> bool {
+    DETAIL_SHOULD_SHOW.load(Ordering::Relaxed)
+}
 
 /// The newest detail payload, kept for a detail webview that mounts late.
 ///

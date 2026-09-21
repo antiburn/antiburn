@@ -15,7 +15,11 @@ import {
   type LiveUsageMeterPayload,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
-import { HudVisibilitySession } from "../../lib/overlayWindow"
+import {
+  HudVisibilitySession,
+  isHudTokenMapEnabled,
+  setHudTokenMapEnabled,
+} from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import {
   liveDetectionNote,
@@ -86,6 +90,11 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
   const hidden = settings?.liveUsageHiddenProviders ?? []
   const meters = roster(live)
 
+  const [tokenMapShown, setTokenMapShown] = useState(isHudTokenMapEnabled)
+  function handleTokenMapChange(next: boolean) {
+    setTokenMapShown(setHudTokenMapEnabled(next))
+  }
+
   function handleHudChange(next: boolean) {
     hudVisibility.set(next)
   }
@@ -133,6 +142,16 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               description="A small always-on-top readout of your plan limits. It expands when you hover over it, and you can drag it anywhere on screen. It shows the same figures as this pane, so it is only as current as they are — the refresh switch above is what keeps them moving."
               checked={hudShown}
               onChange={handleHudChange}
+            />
+            <ToggleRow
+              label="Show what live sessions are doing"
+              description="A small map above the bars: one blob per session that wrote in the last 90 seconds. Each dot stands for a set number of tokens a minute, from 250 up, and takes the colour of the kind of work (looking, running, changing, delegating, thinking, talking)."
+              checked={tokenMapShown}
+              onChange={handleTokenMapChange}
+            />
+            <Row
+              label="Docking"
+              description="Drag the HUD against any edge of the screen to dock it there. A small tab stays visible; rest the pointer on it to peek the HUD in. Drag it away to undock. A docked HUD also peeks in when a session starts writing after an hour of quiet, or when spend runs hot."
             />
           </Card>
         </SectionGroup>

@@ -186,6 +186,7 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
             .map(|store| store.settings_snapshot())
             .is_none_or(|settings| settings.tray_icon_visible);
         if menu_bar_location_target(tray_visible) == MenuBarLocationTarget::LaunchSurface {
+            ::tracing::info!(event = "main_window_open_source", source = "nudge");
             let _ = crate::open_launch_surface(app, crate::main_window::OpenTrigger::Interaction);
             return;
         }

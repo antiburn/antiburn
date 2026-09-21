@@ -9,18 +9,28 @@ import {
   hideHudDetail,
   isOverlayWorkActive,
   onLiveUsageChanged,
+  refreshLiveUsage,
   resizeOverlayWindow,
-  showHudDetail,
-  type HudDetailState,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
 import { hasWorkingActivity, liveSessions } from "../../lib/sessionLifecycle"
 import {
+  getHudTokenMap,
+  showHudDetail,
+  type HudDetailState,
+  type HudSpendRate,
+} from "../../lib/hudIpc"
+import { devSpendRate, withDevBlock, type HudDevOverride } from "../../lib/hudDev"
+import { BurnWakeTracker, activityWake } from "../../lib/hudWake"
+import {
   hideOverlayWindow,
+  isHudTokenMapEnabled,
   onOverlayWorkChanged,
   recordHudPosition,
   setFloatingHudEnabled,
   takeHudAnalyticsOrigin,
+  tearOffOverlayWindow,
+  wakeOverlayWindow,
 } from "../../lib/overlayWindow"
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
@@ -31,10 +41,32 @@ import {
   type ProviderModels,
 } from "../../lib/sessionLiveness"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
-import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
+import { blinkPeriod, describeSpend } from "../../lib/ledPeriod"
+import {
+  agentCount,
+  deriveTokenMap,
+  frameColor,
+  mapVisible,
+  type TokenMapLayout,
+} from "../../lib/tokenMap"
+import { playPop } from "../../lib/hudSounds"
+import {
+  blockedBars,
+  deriveUsageBars,
+  limitsReset,
+  noMeterSelected,
+  resetDue,
+  type UsageBarItem,
+} from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
 const SHOW_DELAY_MS = 400
+const TOKEN_MAP_WINDOW_SECS = 300
+const TOKEN_MAP_POLL_MS = 5_000
+/** How long the reset message and its confetti stay. */
+const CELEBRATION_MS = 6_000
+
+const EMPTY_TOKEN_MAP = deriveTokenMap(null)
 
 export type OverlaySnapshot = {
   bars: UsageBarItem[]
@@ -48,6 +80,17 @@ export type OverlaySnapshot = {
   liveModels: ProviderModels
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
+  tokenMap: TokenMapLayout
+  /** True while two or more sessions are live, so the map draws above the bars. */
+  showMap: boolean
+  /** Milliseconds per blink of the live LED. */
+  blinkPeriodMs: number
+  /** The spend rate in words, or null when the window carried no tokens. */
+  spend: string | null
+  /** The clock the countdown to a reset reads from. */
+  now: number
+  /** The reset message under the bars, or null. */
+  celebration: string | null
 }
 
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
@@ -58,6 +101,12 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   liveProviders: [],
   liveModels: {},
   noMeterSelected: false,
+  tokenMap: EMPTY_TOKEN_MAP,
+  showMap: false,
+  blinkPeriodMs: blinkPeriod(null, null).periodMs,
+  spend: null,
+  now: 0,
+  celebration: null,
 }
 
 type DragOrigin = {
@@ -101,13 +150,32 @@ export class OverlaySession {
   private observer: ResizeObserver | null = null
   private showTimer: number | null = null
   private detailShown = false
+  /** The agent box under the pointer, by blob key, or null over the meter. */
+  private hoverBlob: string | null = null
+  /** The sub-agent whose dot is under the pointer, or null. */
+  private hoverSubagent: string | null = null
+  /** Whether the map showed before the last poll, for its show hysteresis. */
+  private previousShowMap = false
   private usagePoll: number | null = null
+  private tokenMapPoll: number | null = null
+  /** The dot value the map last used, held for a window so a burst does not flicker the scale. */
+  private dotValueFloor = 0
+  private dotValueFloorSince = 0
   private stopWorkListening: (() => void) | null = null
   private stopHoverListening: (() => void) | null = null
   private stopUsageListening: (() => void) | null = null
   private stopLifecycleListening: (() => void) | null = null
   private stopVisibilityListening: (() => void) | null = null
   private stopDetailShownListening: (() => void) | null = null
+  private stopDevListening: (() => void) | null = null
+  /** A spend rate the "HUD Dev" menu pinned, in place of the measured one. */
+  private devSpend: HudSpendRate | null = null
+  /** Until when the "HUD Dev" menu holds the first bar at its limit. */
+  private devBlockUntil = 0
+  private devBlockTimer = 0
+  /** When work last ran, in epoch seconds, for the quiet-spell wake. */
+  private lastEventActivity: number | null = null
+  private burnWake = new BurnWakeTracker()
   private dragOrigin: DragOrigin | null = null
   private pendingMove: MouseEvent | null = null
   private moveFrame = 0
@@ -120,6 +188,10 @@ export class OverlaySession {
   private hudNativeVisible = false
   private detailRevision = 0
   private latestUsage: LiveUsageSummaryPayload | null = null
+  private celebrationTimer = 0
+  /** The reset time a fresh read was already asked for, so it is asked once. */
+  private resetAskedFor = 0
+  private latestSpend: HudSpendRate | null = null
   private usageFailed = false
 
   getSnapshot = (): OverlaySnapshot => this.snapshot
@@ -152,6 +224,16 @@ export class OverlaySession {
     if (this.snapshot.hovered) this.update({ hovered: false })
     this.clearShowTimer()
     this.hideDetail()
+  }
+
+  /** Note the agent box under the pointer. An open detail follows at once. */
+  setHoverBlob = (key: string | null, subagentId: string | null = null): void => {
+    if (this.hoverBlob === key && this.hoverSubagent === subagentId) return
+    this.hoverBlob = key
+    this.hoverSubagent = subagentId
+    if (!this.detailShown) return
+    this.detailRevision += 1
+    void showHudDetail(this.detailState("show")).catch(() => {})
   }
 
   startDrag = (event: ReactMouseEvent): void => {
@@ -221,6 +303,7 @@ export class OverlaySession {
       sessionLive: false,
       liveProviders: [],
       liveModels: {},
+      celebration: null,
     })
     this.connectPanel(generation)
     this.resumeHudExposure()
@@ -229,9 +312,14 @@ export class OverlaySession {
       if (!this.isCurrent(generation)) return
       this.latestUsage = response
       this.usageFailed = false
+      const bars = withDevBlock(deriveUsageBars(response), this.devBlockUntil, Date.now())
+      const freed = limitsReset(this.snapshot.bars, bars)
+      if (freed.length > 0) this.celebrate(freed[0]!.providerName)
+      this.update({ now: Date.now() })
       const changed = this.commitLayout({
-        bars: deriveUsageBars(response),
+        bars,
         noMeterSelected: noMeterSelected(response),
+        blinkPeriodMs: blinkPeriod(this.latestSpend, response).periodMs,
       })
       if (changed) void this.syncWindow(true, generation)
       if (changed && this.detailShown) {
@@ -270,14 +358,80 @@ export class OverlaySession {
     const syncLiveness = () => {
       if (!this.isCurrent(generation)) return
       const live = liveSessions.getSnapshot()
+      const working = hasWorkingActivity(live)
+      // A write after a quiet spell wakes a docked HUD. The registry reports
+      // the work, so the wake reads the gap since work last ran.
+      const nowSecs = Date.now() / 1000
+      if (working && activityWake(this.lastEventActivity, nowSecs)) {
+        void wakeOverlayWindow("activity").catch(() => {})
+      }
+      if (working) this.lastEventActivity = nowSecs
       this.update({
-        sessionLive: hasWorkingActivity(live),
+        sessionLive: working,
         liveProviders: liveProviders(live),
         liveModels: liveModels(live),
       })
     }
     this.stopLifecycleListening = liveSessions.subscribe(syncLiveness)
     syncLiveness()
+
+    const refreshTokenMap = () => {
+      this.tickCountdown(applyUsage)
+      if (!isHudTokenMapEnabled()) {
+        this.latestSpend = null
+        this.previousShowMap = false
+        const hadMap = this.snapshot.showMap
+        this.commitLayout({
+          tokenMap: EMPTY_TOKEN_MAP,
+          showMap: false,
+          blinkPeriodMs: blinkPeriod(null, this.latestUsage).periodMs,
+          spend: null,
+        })
+        if (hadMap) void this.syncWindow(true, generation)
+        // The detail window spells the map out. It needs the empty state too.
+        if (hadMap && this.detailShown) {
+          void showHudDetail(this.detailState("refresh")).catch(() => {})
+        }
+        return
+      }
+      void getHudTokenMap(TOKEN_MAP_WINDOW_SECS)
+        .then((payload) => {
+          if (!this.isCurrent(generation)) return
+          const tokenMap = deriveTokenMap(payload, { minDotValue: this.dotValueFloor })
+          this.holdDotValue(tokenMap.dotValue, payload?.windowSecs ?? TOKEN_MAP_WINDOW_SECS)
+          this.latestSpend = this.devSpend ?? payload?.spend ?? null
+          if (this.burnWake.observe(this.latestSpend?.usdPerMinute ?? null)) {
+            void wakeOverlayWindow("burn").catch(() => {})
+          }
+          const hadMap = this.snapshot.showMap
+          const showMap = mapVisible(this.previousShowMap, hadMap, agentCount(tokenMap))
+          this.previousShowMap = hadMap
+          this.commitLayout({
+            tokenMap,
+            showMap,
+            blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
+            spend: describeSpend(this.latestSpend),
+          })
+          if (hadMap !== showMap) void this.syncWindow(true, generation)
+          if (this.detailShown) {
+            void showHudDetail(this.detailState("refresh")).catch(() => {})
+          }
+        })
+        .catch(() => {})
+    }
+    refreshTokenMap()
+    this.tokenMapPoll = window.setInterval(refreshTokenMap, TOKEN_MAP_POLL_MS)
+
+    if (import.meta.env.DEV) {
+      void listen<HudDevOverride>("hud_dev", (event) => {
+        if (this.isCurrent(generation)) this.applyDevOverride(event.payload, applyUsage)
+      })
+        .then((dispose) => {
+          if (this.isCurrent(generation)) this.stopDevListening = dispose
+          else dispose()
+        })
+        .catch(() => {})
+    }
 
     void listen<boolean>("overlay_hover", (event) => {
       if (this.isCurrent(generation)) this.requestHover(Boolean(event.payload))
@@ -335,6 +489,7 @@ export class OverlaySession {
     this.clearShowTimer()
     this.hideDetail()
     this.clearUsagePoll()
+    this.clearTokenMapPoll()
     this.stopHoverListening?.()
     this.stopHoverListening = null
     this.stopUsageListening?.()
@@ -345,6 +500,16 @@ export class OverlaySession {
     this.stopVisibilityListening = null
     this.stopDetailShownListening?.()
     this.stopDetailShownListening = null
+    this.stopDevListening?.()
+    this.stopDevListening = null
+    this.lastEventActivity = null
+    this.burnWake = new BurnWakeTracker()
+    window.clearTimeout(this.celebrationTimer)
+    this.celebrationTimer = 0
+    window.clearTimeout(this.devBlockTimer)
+    this.devBlockTimer = 0
+    this.devBlockUntil = 0
+    this.resetAskedFor = 0
     this.removeDragListeners()
     this.observer?.disconnect()
     this.observer = null
@@ -356,6 +521,7 @@ export class OverlaySession {
       sessionLive: false,
       liveProviders: [],
       liveModels: {},
+      celebration: null,
     })
   }
 
@@ -370,6 +536,28 @@ export class OverlaySession {
   private clearUsagePoll(): void {
     if (this.usagePoll != null) window.clearInterval(this.usagePoll)
     this.usagePoll = null
+  }
+
+  private clearTokenMapPoll(): void {
+    if (this.tokenMapPoll != null) window.clearInterval(this.tokenMapPoll)
+    this.tokenMapPoll = null
+  }
+
+  /**
+   * Keep the scale from stepping down until a full window has passed. A step
+   * up applies at once, so the square never overflows.
+   */
+  private holdDotValue(dotValue: number, windowSecs: number): void {
+    const now = Date.now()
+    if (dotValue > this.dotValueFloor) {
+      this.dotValueFloor = dotValue
+      this.dotValueFloorSince = now
+      return
+    }
+    if (now - this.dotValueFloorSince >= windowSecs * 1000) {
+      this.dotValueFloor = 0
+      this.dotValueFloorSince = now
+    }
   }
 
   private armShowTimer(): void {
@@ -412,6 +600,37 @@ export class OverlaySession {
         color: bar.color,
         expectedFraction: bar.expectedFraction,
       })),
+      map: this.detailMap(),
+      spend: this.snapshot.spend,
+      target: this.detailTarget(),
+      subagent: this.hoverSubagent,
+    }
+  }
+
+  /** The hovered box when it is still on the map, else the usage meter. */
+  private detailTarget(): string {
+    const key = this.hoverBlob
+    if (key != null && this.snapshot.tokenMap.blobs.some((blob) => blob.key === key)) {
+      return key
+    }
+    return "usage"
+  }
+
+  private detailMap(): HudDetailState["map"] {
+    const { tokenMap } = this.snapshot
+    if (tokenMap.dots.length === 0) return null
+    return {
+      dotValue: tokenMap.dotValue,
+      sessions: tokenMap.blobs.map((blob, index) => ({
+        key: blob.key,
+        label: blob.title ?? blob.agent,
+        agent: blob.agent,
+        tokensPerMin: blob.tokensPerMin,
+        topMode: blob.topMode,
+        frameColor: frameColor(index),
+        modes: blob.modes,
+        subagents: blob.subagents,
+      })),
     }
   }
 
@@ -448,7 +667,12 @@ export class OverlaySession {
     this.hudExposure.observe(this.snapshot.bars.length > 0 ? "ready" : "empty", generation)
     if (response && this.hudOrigin === "user") {
       for (const provider of liveDisplayableProviders(response)) {
-        if (!liveWindows(provider).some((window) => window.usedPercent !== null)) continue
+        if (
+          !liveWindows(provider, { includeIdleModelLimits: true }).some(
+            (window) => window.usedPercent !== null,
+          )
+        )
+          continue
         this.hudExposure.observeLiveUsage(response, provider.provider, generation)
       }
     }
@@ -485,6 +709,69 @@ export class OverlaySession {
     })
   }
 
+  /**
+   * Keep the countdown current while a limit blocks a tool. Once the reset
+   * time passes, ask the shell for a fresh read: the cached summary can lag
+   * the reset by minutes, and the HUD should notice on its own.
+   */
+  private tickCountdown(apply: (response: LiveUsageSummaryPayload | null) => void): void {
+    const blocked = blockedBars(this.snapshot.bars)
+    if (blocked.length === 0) return
+    const now = Date.now()
+    this.update({ now })
+    const due = blocked.find((bar) => bar.resetsAt != null && bar.resetsAt.getTime() <= now)
+    if (!due || !resetDue(this.snapshot.bars, now)) return
+    const at = due.resetsAt!.getTime()
+    if (this.resetAskedFor === at) return
+    this.resetAskedFor = at
+    void refreshLiveUsage()
+      .then(apply)
+      .catch(() => {})
+  }
+
+  /** Apply one override from the tray's "HUD Dev" menu. Debug builds only. */
+  private applyDevOverride(
+    override: HudDevOverride,
+    apply: (response: LiveUsageSummaryPayload | null) => void,
+  ): void {
+    switch (override.kind) {
+      case "spend": {
+        this.devSpend = devSpendRate(override.usdPerMinute, TOKEN_MAP_WINDOW_SECS)
+        this.latestSpend = this.devSpend ?? this.latestSpend
+        this.commitLayout({
+          blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
+          spend: describeSpend(this.latestSpend),
+        })
+        return
+      }
+      case "block": {
+        window.clearTimeout(this.devBlockTimer)
+        this.devBlockUntil = Date.now() + override.secs * 1_000
+        apply(this.latestUsage)
+        // The usage poll runs once a minute. This timer ends a shorter block
+        // at the time the menu asked for.
+        this.devBlockTimer = window.setTimeout(() => {
+          this.devBlockTimer = 0
+          apply(this.latestUsage)
+        }, override.secs * 1_000)
+        return
+      }
+      case "celebrate":
+        this.celebrate(this.snapshot.bars[0]?.providerName ?? "claude")
+    }
+  }
+
+  /** Show the reset message with confetti, and peek a docked HUD in. */
+  private celebrate(providerName: string): void {
+    window.clearTimeout(this.celebrationTimer)
+    this.update({ celebration: `${providerName.toLowerCase()} usage reset` })
+    void wakeOverlayWindow("reset").catch(() => {})
+    this.celebrationTimer = window.setTimeout(() => {
+      this.celebrationTimer = 0
+      this.update({ celebration: null })
+    }, CELEBRATION_MS)
+  }
+
   private update(change: Partial<OverlaySnapshot>): boolean {
     const next = { ...this.snapshot, ...change }
     if (
@@ -494,7 +781,13 @@ export class OverlaySession {
       this.snapshot.sessionLive === next.sessionLive &&
       sameList(this.snapshot.liveProviders, next.liveProviders) &&
       sameProviderModels(this.snapshot.liveModels, next.liveModels) &&
-      this.snapshot.noMeterSelected === next.noMeterSelected
+      this.snapshot.noMeterSelected === next.noMeterSelected &&
+      this.snapshot.tokenMap === next.tokenMap &&
+      this.snapshot.showMap === next.showMap &&
+      this.snapshot.blinkPeriodMs === next.blinkPeriodMs &&
+      this.snapshot.spend === next.spend &&
+      this.snapshot.now === next.now &&
+      this.snapshot.celebration === next.celebration
     ) {
       return false
     }
@@ -533,6 +826,13 @@ export class OverlaySession {
     this.update({ dragging: true })
     this.dragOrigin = null
     this.addDragListeners()
+    // A drag on a docked HUD tears it off. The drop decides whether it docks
+    // again, in `recordHudPosition`. A real tear pops.
+    void tearOffOverlayWindow()
+      .then((torn) => {
+        if (torn) playPop()
+      })
+      .catch(() => {})
     await this.syncWindow(false, generation)
     if (!this.isCurrent(generation) || !this.snapshot.dragging) return
 
