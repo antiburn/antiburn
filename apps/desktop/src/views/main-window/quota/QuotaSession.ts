@@ -129,7 +129,7 @@ export class QuotaSession {
     accounts: null,
     accountsError: false,
     selection: null,
-    range: "thisWeek",
+    range: "thisWindow",
     usage: null,
     usageError: false,
     loading: false,

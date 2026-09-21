@@ -299,3 +299,59 @@
     transparent 1px 3px
   );
 }
+
+/* --- Limits page layout --- */
+
+/* The page measures itself as a container, so the hero figures can stack
+   below 540px the same way the Overview's do. */
+.quota-page {
+  container-type: inline-size;
+}
+
+/* A jump bar segment shows its chevron only on hover, focus, and while its
+   menu is open. The chevron keeps its space, so the text never shifts. */
+.quota-jump-chevron {
+  opacity: 0;
+  transition: opacity var(--duration-fast) ease-out;
+}
+
+.quota-jump-segment:hover .quota-jump-chevron,
+.quota-jump-segment:focus-visible .quota-jump-chevron,
+.quota-jump-segment[data-state="open"] .quota-jump-chevron {
+  opacity: 1;
+}
+
+/* The pace-line switch floats over the chart's top-right corner, on the
+   same key surface as the Overview chart's legend. Top-right, not top-left:
+   the value axis labels sit at the left. */
+.quota-chart-pill {
+  position: absolute;
+  inset-block-start: var(--space-xs);
+  inset-inline-end: var(--space-xs);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-control);
+  background-color: var(--color-surface-key);
+  box-shadow: var(--shadow-stats-card);
+}
+
+/* The sessions list sizes to its rows, up to 45% of the column, and the
+   chart takes the rest. `--quota-list-content` is the measured content
+   height (heading, gap, and rows), set by QuotaSessionList, so a change in
+   the rows moves the boundary with a transition. Before the first measure
+   the cap is the 45% alone. */
+.quota-session-list {
+  flex: 0 1 auto;
+  max-block-size: min(45%, var(--quota-list-content, 100%));
+  transition: max-block-size var(--duration-slow) ease-out;
+}
+
+/* The scroll pane's basis is its rows, so the section's auto size includes
+   them; it shrinks, and scrolls, once the section hits its cap. */
+.quota-session-list > .quota-session-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+}

@@ -1,8 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
-import { ChevronDown } from "lucide-react"
+import { Check, ChevronDown } from "lucide-react"
 import {
-  type ComponentPropsWithoutRef,
-  forwardRef,
+  type CSSProperties,
   Profiler,
   type ProfilerOnRenderCallback,
   type ReactNode,
@@ -14,9 +13,11 @@ import {
 } from "react"
 
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
+import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFigures"
 import { ScrollPane } from "../../../components/ui/ScrollPane"
-import { SegmentedControl } from "../../../components/ui/SegmentedControl"
+import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { ToggleSwitch } from "../../../components/ui/ToggleSwitch"
+import { renderAgentIcon } from "../../../lib/agentIcon"
 import { cn } from "../../../lib/cn"
 import { traceEvent, traceSpan } from "../../../lib/perfTrace"
 import { prefersReducedMotion } from "../../../lib/popoverHeight"
@@ -25,14 +26,13 @@ import { formatSpendFigure } from "../../../lib/presentation/providerUsage"
 import { relativeTime } from "../../../lib/presentation/relativeTime"
 import type { QuotaAccountPayload, QuotaLanePayload } from "../../../lib/providerUsageIpc"
 import type { SessionSubject } from "../../../lib/sessionSubject"
-import {
-  formatQuotaPercent,
-  QuotaBurnupChart,
-  type QuotaChartAxisMode,
-} from "./QuotaBurnupChart"
+import { resetsIn } from "../../../lib/usageBars"
+import { useElementHeight } from "../../../lib/useElementWidth"
+import { formatQuotaPercent, QuotaBurnupChart } from "./QuotaBurnupChart"
 import type { QuotaSession } from "./QuotaSession"
 import {
   isCustomRange,
+  isWeeklyLane,
   quotaBurnupSeries,
   quotaDisplayRange,
   quotaLatestSampleEpoch,
@@ -54,23 +54,14 @@ function roundsToAtLeastOneDecimal(value: number | null): boolean {
   return value != null && Math.round(value * 10) / 10 >= 0.1
 }
 
-const WINDOW_RANGE_OPTIONS: ReadonlyArray<{ value: QuotaRangePreset; label: string }> = [
-  { value: "thisWindow", label: "This window" },
-  { value: "lastWindow", label: "Last window" },
-  { value: "last3Windows", label: "Last 3 windows" },
-  { value: "last5Windows", label: "Last 5 windows" },
-  { value: "last10Windows", label: "Last 10 windows" },
-]
-const DATE_RANGE_OPTIONS: ReadonlyArray<{ value: QuotaRangePreset; label: string }> = [
-  { value: "thisWeek", label: "This week" },
-  { value: "lastWeek", label: "Last week" },
-  { value: "last30Days", label: "30 days" },
-]
-const ALL_RANGE_OPTIONS = [...WINDOW_RANGE_OPTIONS, ...DATE_RANGE_OPTIONS]
-const CUSTOM_RANGE_LABEL = "Custom"
-const AXIS_MODE_OPTIONS: ReadonlyArray<{ value: QuotaChartAxisMode; label: string }> = [
-  { value: "window", label: "Windows" },
-  { value: "date", label: "Dates" },
+/** The range menu's presets, in menu order. The date presets are not
+ *  listed: a saved one still loads until the chart drops its date axis. */
+const RANGE_MENU_PRESETS: readonly QuotaRangePreset[] = [
+  "thisWindow",
+  "lastWindow",
+  "last3Windows",
+  "last5Windows",
+  "last10Windows",
 ]
 /** How long the pointer must rest on one chart band before the list scrolls to its row. */
 const CHART_HOVER_SCROLL_DELAY_MS = 1200
@@ -80,7 +71,45 @@ function accountId(account: Pick<QuotaAccountPayload, "provider" | "accountKey">
   return `${account.provider}:${account.accountKey}`
 }
 
-/** The provider's display name, plus "account n" only when this provider has more than one. */
+/** The word a lane's windows go by: a weekly lane resets each week, so its
+ *  windows are "weeks"; every other lane's are "windows". */
+function windowWord(lane: QuotaLanePayload | null, count: number): string {
+  const singular = lane != null && isWeeklyLane(lane.lane) ? "week" : "window"
+  return count === 1 ? singular : `${singular}s`
+}
+
+/** A range preset's label in the lane's own words: "Last 3 weeks" on a
+ *  weekly lane, "Last 3 windows" on a 5-hour lane. */
+function rangePresetLabel(preset: QuotaRangePreset, lane: QuotaLanePayload | null): string {
+  switch (preset) {
+    case "thisWindow":
+      return `This ${windowWord(lane, 1)}`
+    case "lastWindow":
+      return `Last ${windowWord(lane, 1)}`
+    case "last3Windows":
+      return `Last 3 ${windowWord(lane, 3)}`
+    case "last5Windows":
+      return `Last 5 ${windowWord(lane, 5)}`
+    case "last10Windows":
+      return `Last 10 ${windowWord(lane, 10)}`
+    case "thisWeek":
+      return "This calendar week"
+    case "lastWeek":
+      return "Last calendar week"
+    case "last30Days":
+      return "Last 30 days"
+  }
+}
+
+/** The range segment's label: a preset in the lane's words, or the dates a
+ *  session-detail link handed in, until the reader picks a preset. */
+function rangeLabel(range: QuotaRangeSelection, lane: QuotaLanePayload | null): string {
+  if (!isCustomRange(range)) return rangePresetLabel(range, lane)
+  const day = (epoch: number) =>
+    new Date(epoch * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" })
+  return `${day(range.startEpoch)} – ${day(range.endEpoch)}`
+}
+
 /** The window a row's percent is a share of, named by provider and lane,
  *  such as "a Claude weekly window" or "a Claude Fable weekly window". */
 function windowNoun(
@@ -100,6 +129,7 @@ function windowNoun(
   return `${/^[aeiou]/i.test(words) ? "an" : "a"} ${words}`
 }
 
+/** The provider's display name, plus "account n" only when this provider has more than one. */
 function accountLabel(
   account: QuotaAccountPayload,
   accounts: readonly QuotaAccountPayload[],
@@ -117,7 +147,7 @@ function sessionRowTitle(title: string | null, agent: string, sessionId: string)
 }
 
 /** The chart series a top-sessions row highlights: its own key inside the
- *  chart's top five, else the "other" band the chart absorbs it into. */
+ *  chart's top sessions, else the "other" band the chart absorbs it into. */
 function topRowSeriesKey(row: QuotaTopSessionRow, topSessionKeys: ReadonlySet<string>): string {
   return topSessionKeys.has(row.key) ? row.key : "other"
 }
@@ -140,60 +170,45 @@ const onRenderChart: ProfilerOnRenderCallback = (id, phase, actualDuration, base
   })
 }
 
-/** A dropdown's own trigger button: the account picker and the range picker
- *  share this look. `asChild` on `DropdownMenu.Trigger` clones this element
- *  and merges in its own ref and handlers, so the button forwards both. */
-const MenuTriggerButton = forwardRef<
-  HTMLButtonElement,
-  ComponentPropsWithoutRef<"button"> & { ariaLabel?: string; children: ReactNode }
->(function MenuTriggerButton({ ariaLabel, children, ...props }, ref) {
-  return (
-    <button
-      ref={ref}
-      type="button"
-      aria-label={ariaLabel}
-      className="flex h-6 items-center gap-1 rounded-control border border-separator bg-surface-secondary px-2 type-footnote text-label"
-      {...props}
-    >
-      {children}
-      <ChevronDown size={12} aria-hidden="true" />
-    </button>
-  )
-})
+interface JumpBarOption {
+  value: string
+  label: string
+}
 
-function AccountPicker({
-  accounts,
-  selected,
-  numbers,
+/**
+ * One level of the header's jump bar: account, lane, or range. With one
+ * option the level is plain text, since there is nothing to choose. With
+ * more it is a borderless button that opens a menu of the options, with the
+ * current one checked; its chevron shows on hover, focus, and while open.
+ */
+function JumpBarSegment({
+  name,
+  value,
+  valueLabel,
+  options,
   onSelect,
 }: {
-  accounts: readonly QuotaAccountPayload[]
-  selected: QuotaAccountPayload | null
-  numbers: ReadonlyMap<string, number>
-  onSelect: (account: QuotaAccountPayload) => void
+  name: string
+  /** The checked option, or null while none applies (a custom range). */
+  value: string | null
+  valueLabel: string
+  options: readonly JumpBarOption[]
+  onSelect: (value: string) => void
 }) {
-  if (accounts.length <= 3) {
-    return (
-      <SegmentedControl
-        ariaLabel="Account"
-        options={accounts.map((account) => ({
-          value: accountId(account),
-          label: accountLabel(account, accounts, numbers),
-        }))}
-        value={selected ? accountId(selected) : ""}
-        onChange={(value) => {
-          const account = accounts.find((candidate) => accountId(candidate) === value)
-          if (account) onSelect(account)
-        }}
-      />
-    )
+  if (options.length <= 1) {
+    return <span className="px-1.5 text-label">{valueLabel}</span>
   }
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <MenuTriggerButton>
-          {selected ? accountLabel(selected, accounts, numbers) : "Choose account"}
-        </MenuTriggerButton>
+        <button
+          type="button"
+          aria-label={`${name}: ${valueLabel}`}
+          className="quota-jump-segment inline-flex h-6 items-center gap-1 rounded-control px-1.5 text-label hover:bg-surface-hover data-[state=open]:bg-surface-hover"
+        >
+          {valueLabel}
+          <ChevronDown size={12} aria-hidden="true" className="quota-jump-chevron" />
+        </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
@@ -202,115 +217,131 @@ function AccountPicker({
           align="start"
           sideOffset={4}
         >
-          {accounts.map((account) => (
-            <DropdownMenu.Item
-              key={accountId(account)}
-              className="ui-menu-item"
-              onSelect={() => onSelect(account)}
-            >
-              {accountLabel(account, accounts, numbers)}
-            </DropdownMenu.Item>
-          ))}
+          <DropdownMenu.RadioGroup value={value ?? ""} onValueChange={onSelect}>
+            {options.map((option) => (
+              <DropdownMenu.RadioItem
+                key={option.value}
+                value={option.value}
+                className="ui-menu-item"
+              >
+                <span className="flex w-3 shrink-0 justify-center">
+                  <DropdownMenu.ItemIndicator>
+                    <Check size={10} aria-hidden="true" />
+                  </DropdownMenu.ItemIndicator>
+                </span>
+                {option.label}
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
   )
 }
 
-/** The range control's own label: a preset's fixed label, or "Custom" while
- *  a session-detail deep link's own range is active. */
-function rangeControlLabel(range: QuotaRangeSelection): string {
-  if (isCustomRange(range)) return CUSTOM_RANGE_LABEL
-  return ALL_RANGE_OPTIONS.find((option) => option.value === range)?.label ?? CUSTOM_RANGE_LABEL
+function JumpBarSeparator() {
+  return (
+    <span aria-hidden="true" className="text-label-tertiary">
+      ›
+    </span>
+  )
+}
+
+/** A percent for a hero cell: whole percents, an em dash with no value. */
+function percentFigure(value: number | null): ReactNode {
+  return <SegmentFigure>{value == null ? "—" : `${Math.round(value)}%`}</SegmentFigure>
 }
 
 /**
- * The Quota screen's range picker: a dropdown split into a "Windows" group
- * (the lane's own reset-to-reset windows) and a "Dates" group (fixed date
- * spans). While a custom range from a session-detail link is active, the
- * trigger reads "Custom" and no menu item is checked; picking any item
- * always hands the reader back a preset of their own.
+ * The sessions list: a caption, then the rows in a scroll pane. The section
+ * sizes to its rows, up to 45% of the page, and the chart above takes the
+ * rest. The cap is also the measured content height, so a change in the
+ * rows moves the boundary with a transition instead of a jump; the CSS in
+ * quota.css reads `--quota-list-content`. Measured here, in the component
+ * that mounts with the list, so the size hooks find their elements.
  */
-function RangeControl({
-  range,
-  onSelect,
-}: {
-  range: QuotaRangeSelection
-  onSelect: (preset: QuotaRangePreset) => void
-}) {
+function QuotaSessionList({ heading, children }: { heading: string; children: ReactNode }) {
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const gridRef = useRef<HTMLDivElement>(null)
+  const headingHeight = useElementHeight(headingRef)
+  const gridHeight = useElementHeight(gridRef)
+  const style =
+    headingHeight > 0 && gridHeight > 0
+      ? ({
+          "--quota-list-content": `calc(${headingHeight + gridHeight}px + var(--space-sm))`,
+        } as CSSProperties)
+      : undefined
   return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <MenuTriggerButton ariaLabel="Range">{rangeControlLabel(range)}</MenuTriggerButton>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          className="ui-menu min-w-40"
-          side="bottom"
-          align="start"
-          sideOffset={4}
+    <section
+      className="quota-session-list flex min-h-0 flex-col gap-[var(--space-sm)]"
+      style={style}
+    >
+      <h2 ref={headingRef} className="type-caption text-label-secondary">
+        {heading}
+      </h2>
+      <ScrollPane
+        className="quota-session-scroll"
+        topEdgeFade
+        bottomEdgeFade
+        viewportLabel="Most prominent sessions"
+      >
+        <div
+          ref={gridRef}
+          className="grid grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] gap-y-1.5"
         >
-          <DropdownMenu.Label className="px-2 py-1 type-caption text-label-tertiary">
-            Windows
-          </DropdownMenu.Label>
-          {WINDOW_RANGE_OPTIONS.map((option) => (
-            <DropdownMenu.Item
-              key={option.value}
-              className="ui-menu-item"
-              onSelect={() => onSelect(option.value)}
-            >
-              {option.label}
-            </DropdownMenu.Item>
-          ))}
-          <DropdownMenu.Separator className="ui-menu-separator" />
-          <DropdownMenu.Label className="px-2 py-1 type-caption text-label-tertiary">
-            Dates
-          </DropdownMenu.Label>
-          {DATE_RANGE_OPTIONS.map((option) => (
-            <DropdownMenu.Item
-              key={option.value}
-              className="ui-menu-item"
-              onSelect={() => onSelect(option.value)}
-            >
-              {option.label}
-            </DropdownMenu.Item>
-          ))}
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+          {children}
+        </div>
+      </ScrollPane>
+    </section>
   )
 }
 
-/** One totals row in the sessions list: the "other sessions" band and the
- *  "unattributed" band share this wrapper (the hover row, its ref, and the
- *  swatch), each filling the remaining columns with its own content. */
+/** The columns every list row shares: swatch, agent icon, title, percent, dollars. */
+const ROW_GRID_CLASS =
+  "session-card col-span-full grid grid-cols-subgrid items-center gap-x-1.5 rounded-control px-3 py-2 text-left type-body"
+
+/** One totals row in the sessions list: the "other sessions", "unattributed"
+ *  and "unexplained" bands share this quieter card. Each hovers and
+ *  registers like a session row, so the chart can find it. */
 function GroupRow({
   rowKey,
   swatchClass,
   hovered,
   onHover,
   registerRow,
-  children,
+  label,
+  percent,
+  usd,
 }: {
   rowKey: string
   swatchClass: string | undefined
   hovered: string | null
   onHover: (key: string | null) => void
   registerRow: (key: string, element: HTMLElement | null) => void
-  children: ReactNode
+  label: string
+  percent: number | null
+  usd: number | null
 }) {
   return (
     <div
       ref={(element) => registerRow(rowKey, element)}
       className={cn(
-        "col-span-full grid grid-cols-subgrid items-center gap-2 rounded-control -mx-2 px-2 py-1.5 text-center type-body text-label hover:bg-surface-hover",
-        hovered === rowKey && "bg-surface-hover",
+        ROW_GRID_CLASS,
+        "bg-surface-card/50 text-label-secondary hover:bg-surface-secondary/50",
+        hovered === rowKey && "bg-surface-secondary/50",
       )}
       onMouseEnter={() => onHover(rowKey)}
       onMouseLeave={() => onHover(null)}
     >
       <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", swatchClass)} />
-      {children}
+      <span aria-hidden="true" />
+      <span className="min-w-0 truncate">{label}</span>
+      <span className="text-right">
+        <SegmentFigure>{formatQuotaPercent(percent)}</SegmentFigure>
+      </span>
+      <span className="text-right">
+        {usd != null && <SegmentFigure>{formatSpendFigure(usd)}</SegmentFigure>}
+      </span>
     </div>
   )
 }
@@ -326,22 +357,9 @@ function percentileOf(sorted: readonly number[], fraction: number): number | nul
   return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (rank - lower)
 }
 
-/** One figure in the header's prominent row: a labelled percent, an em dash
- *  with no value. */
-function QuotaLimitFigure({ label, value }: { label: string; value: number | null }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="type-callout text-label-secondary">{label}</dt>
-      <dd className="type-large-title font-semibold! font-mono tabular-nums text-label">
-        {value == null ? "—" : `${Math.round(value)}%`}
-      </dd>
-    </div>
-  )
-}
-
 /**
- * The main window's Quota section: a header for the account, lane, and range,
- * a summary strip for the most recent period, the burnup chart, and the
+ * The main window's Limits section: a jump bar for the account, lane, and
+ * range, hero figures for the windows in range, the burnup chart, and the
  * sessions that contributed the most in range.
  */
 export function QuotaView({
@@ -360,13 +378,9 @@ export function QuotaView({
   )
   const [hovered, setHovered] = useState<string | null>(null)
   // Read once per render as the initial value only: a `useState` initializer
-  // runs once at mount, so a later save (from the change handlers below)
+  // runs once at mount, so a later save (from the change handler below)
   // never fights this read.
-  const savedViewPrefs = readQuotaViewPrefs()
-  const [axisMode, setAxisMode] = useState<QuotaChartAxisMode>(
-    savedViewPrefs.axisMode ?? "window",
-  )
-  const [showPace, setShowPace] = useState(savedViewPrefs.showPace ?? true)
+  const [showPace, setShowPace] = useState(readQuotaViewPrefs().showPace ?? true)
   // Each top-sessions row's own DOM node, keyed the same way as the chart's
   // series keys. A ref, not state: registering a row must never trigger a
   // render, and a chart hover reads the current map without depending on it.
@@ -385,7 +399,6 @@ export function QuotaView({
     ) ?? null
   const selectedLane: QuotaLanePayload | null =
     selectedAccount?.lanes.find((lane) => lane.lane === state.selection?.lane) ?? null
-  const shareOf = `of ${windowNoun(selectedAccount, selectedLane)}`
 
   const loading = state.accounts == null && !state.accountsError
   const accountsEmpty = state.accounts != null && state.accounts.length === 0
@@ -421,25 +434,20 @@ export function QuotaView({
   }, [usage, state.range, state.now])
   const usageEmpty = usage != null && displayPeriods.length === 0
 
-  // The header's three figures and the session list read the same windows
-  // the chart draws, so "Last window" does not chart one window and list
-  // another. A window's own end value is its stack top at the reset:
-  // `estimatedPercent` already sums sessions, unattributed, and unexplained
-  // spend. Maximum, P90 and Median read every displayed window, and the
-  // open window counts at its value now, so one open window still gives
-  // all four figures. Current reads the one window still open, if the
-  // display holds one. The provider's own meter never passes 100 percent,
-  // so a window clamps at 100 here: an estimated tail with no meter
-  // readings can price a window past 100, and that overshoot shows as full
-  // instead of a value the meter itself could never reach.
+  // The hero figures and the session list read the same windows the chart
+  // draws, so "Last window" does not chart one window and list another. A
+  // window's own end value is its stack top at the reset: `estimatedPercent`
+  // already sums sessions, unattributed, and unexplained spend. Highest,
+  // P90 and Median read every displayed window, and the open window counts
+  // at its value now. The provider's own meter never passes 100 percent, so
+  // a window clamps at 100 here: an estimated tail with no meter readings
+  // can price a window past 100, and that overshoot shows as full instead
+  // of a value the meter itself could never reach.
   const endValues = displayPeriods
     .map((period) => period.estimatedPercent)
     .filter((value): value is number => value != null)
     .map((value) => Math.min(100, value))
     .sort((a, b) => a - b)
-  const maxLimitUsage = endValues.length > 0 ? endValues[endValues.length - 1]! : null
-  const p90LimitUsage = percentileOf(endValues, 0.9)
-  const medianLimitUsage = percentileOf(endValues, 0.5)
   const openPeriod = displayPeriods.find((period) => period.resetsAtEpoch > state.now) ?? null
   const currentLimitUsage =
     openPeriod?.estimatedPercent != null ? Math.min(100, openPeriod.estimatedPercent) : null
@@ -460,6 +468,54 @@ export function QuotaView({
     [series],
   )
   const swatchClasses = useMemo(() => quotaSwatchClasses(series?.topSessions ?? []), [series])
+
+  // The hero cells. The open window leads with its reset countdown. The
+  // three comparison cells need more than one window to compare, so a
+  // single window shows one cell: the open one, or the closed one with its
+  // reset time.
+  const windowCount = displayPeriods.length
+  const figureCells: HeroFigureCell[] = []
+  if (openPeriod) {
+    figureCells.push({
+      key: "current",
+      label: `This ${windowWord(selectedLane, 1)}`,
+      figure: percentFigure(currentLimitUsage),
+      caption: resetsIn(new Date(openPeriod.resetsAtEpoch * 1000), state.now * 1000),
+    })
+  } else if (windowCount === 1) {
+    const only = displayPeriods[0]!
+    const word = windowWord(selectedLane, 1)
+    figureCells.push({
+      key: "only",
+      label: word.charAt(0).toUpperCase() + word.slice(1),
+      figure: percentFigure(endValues[0] ?? null),
+      caption: `reset ${relativeTime(new Date(only.resetsAtEpoch * 1000).toISOString())}`,
+    })
+  }
+  if (windowCount > 1) {
+    const ofWindows = `of ${windowCount} ${windowWord(selectedLane, windowCount)}`
+    const word = windowWord(selectedLane, 1)
+    figureCells.push(
+      {
+        key: "max",
+        label: `Highest ${word}`,
+        figure: percentFigure(endValues.length > 0 ? endValues[endValues.length - 1]! : null),
+        caption: ofWindows,
+      },
+      {
+        key: "p90",
+        label: `P90 ${word}`,
+        figure: percentFigure(percentileOf(endValues, 0.9)),
+        caption: ofWindows,
+      },
+      {
+        key: "median",
+        label: `Median ${word}`,
+        figure: percentFigure(percentileOf(endValues, 0.5)),
+        caption: ofWindows,
+      },
+    )
+  }
 
   // The token a CSS attribute selector matches in quota.css: `s<index>` for
   // a top session, else the hovered band's own name. Absent when nothing is
@@ -502,17 +558,17 @@ export function QuotaView({
     [scrollRowIntoView],
   )
 
-  /** Change and persist the chart's own axis mode. */
-  const handleAxisModeChange = (mode: QuotaChartAxisMode) => {
-    setAxisMode(mode)
-    writeQuotaViewPrefs({ axisMode: mode })
-  }
-
   /** Change and persist the pace-line switch. */
   const handleShowPaceChange = (value: boolean) => {
     setShowPace(value)
     writeQuotaViewPrefs({ showPace: value })
   }
+
+  const hasListRows =
+    topRows.length > 0 ||
+    otherSessions.count > 0 ||
+    unattributed.usd > 0 ||
+    roundsToAtLeastOneDecimal(unexplained.percent)
 
   return (
     <div
@@ -546,44 +602,72 @@ export function QuotaView({
         <div
           role="region"
           aria-label="Limits"
-          className="flex min-h-0 w-full flex-1 flex-col gap-[var(--space-lg)] px-8 py-6"
+          className="quota-page flex min-h-0 w-full flex-1 flex-col gap-[var(--space-lg)] px-8 py-6"
         >
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-            <AccountPicker
-              accounts={accounts}
-              selected={selectedAccount}
-              numbers={accountNumbers}
-              onSelect={(account) =>
-                session.selectAccount(account.provider, account.accountKey)
+          <div
+            role="group"
+            aria-label="Limits scope"
+            className="flex flex-wrap items-center gap-x-1 gap-y-1 -mx-1.5 type-footnote"
+          >
+            <JumpBarSegment
+              name="Account"
+              value={selectedAccount ? accountId(selectedAccount) : null}
+              valueLabel={
+                selectedAccount
+                  ? accountLabel(selectedAccount, accounts, accountNumbers)
+                  : "Choose account"
               }
+              options={accounts.map((account) => ({
+                value: accountId(account),
+                label: accountLabel(account, accounts, accountNumbers),
+              }))}
+              onSelect={(value) => {
+                const account = accounts.find((candidate) => accountId(candidate) === value)
+                if (account) session.selectAccount(account.provider, account.accountKey)
+              }}
             />
             {selectedAccount && selectedAccount.lanes.length > 0 && (
-              <SegmentedControl
-                ariaLabel="Lane"
-                options={selectedAccount.lanes.map((lane) => ({
-                  value: lane.lane,
-                  label: lane.label,
-                }))}
-                value={selectedLane?.lane ?? ""}
-                onChange={session.selectLane}
-              />
-            )}
-            <RangeControl range={state.range} onSelect={session.selectRange} />
-            <div className="ml-auto flex items-center gap-x-4">
-              <SegmentedControl
-                ariaLabel="Time axis"
-                options={AXIS_MODE_OPTIONS}
-                value={axisMode}
-                onChange={handleAxisModeChange}
-              />
-              <label className="flex items-center gap-2 type-caption text-label-secondary">
-                Pace line
-                <ToggleSwitch
-                  checked={showPace}
-                  onCheckedChange={handleShowPaceChange}
-                  aria-label="Pace line"
+              <>
+                <JumpBarSeparator />
+                <JumpBarSegment
+                  name="Lane"
+                  value={selectedLane?.lane ?? null}
+                  valueLabel={selectedLane?.label ?? "Choose lane"}
+                  options={selectedAccount.lanes.map((lane) => ({
+                    value: lane.lane,
+                    label: lane.label,
+                  }))}
+                  onSelect={session.selectLane}
                 />
-              </label>
+              </>
+            )}
+            <JumpBarSeparator />
+            <JumpBarSegment
+              name="Range"
+              value={isCustomRange(state.range) ? null : state.range}
+              valueLabel={rangeLabel(state.range, selectedLane)}
+              options={RANGE_MENU_PRESETS.map((preset) => ({
+                value: preset,
+                label: rangePresetLabel(preset, selectedLane),
+              }))}
+              onSelect={(value) => session.selectRange(value as QuotaRangePreset)}
+            />
+            <div className="ml-auto flex items-baseline gap-x-2 px-1.5 text-label-tertiary">
+              {latestSampleEpoch != null && (
+                <span>
+                  Last reading{" "}
+                  {relativeTime(new Date(latestSampleEpoch * 1000).toISOString(), {
+                    compact: true,
+                  })}{" "}
+                  ago
+                </span>
+              )}
+              {state.usageError && <span role="alert">Could not refresh.</span>}
+              {state.usageError && (
+                <button type="button" onClick={session.refresh} className="underline">
+                  Retry
+                </button>
+              )}
             </div>
           </div>
 
@@ -594,33 +678,10 @@ export function QuotaView({
               refreshing && "opacity-60",
             )}
           >
-            {usage && displayPeriods.length > 0 && (
-              <div className="flex items-end justify-between gap-2">
-                <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
-                  <QuotaLimitFigure label="Maximum Limit Usage" value={maxLimitUsage} />
-                  <QuotaLimitFigure label="P90 Limit Usage" value={p90LimitUsage} />
-                  <QuotaLimitFigure label="Median Limit Usage" value={medianLimitUsage} />
-                  <QuotaLimitFigure label="Current Limit Usage" value={currentLimitUsage} />
-                </dl>
-
-                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 type-callout text-label-secondary">
-                  {latestSampleEpoch != null && (
-                    <span>
-                      Last reading{" "}
-                      {relativeTime(new Date(latestSampleEpoch * 1000).toISOString(), {
-                        compact: true,
-                      })}{" "}
-                      ago
-                    </span>
-                  )}
-                  {state.usageError && <span role="alert">Could not refresh. </span>}
-                  {state.usageError && (
-                    <button type="button" onClick={session.refresh} className="underline">
-                      Retry
-                    </button>
-                  )}
-                </div>
-              </div>
+            {figureCells.length > 0 && (
+              <section aria-label="Limit usage">
+                <HeroFigures cells={figureCells} />
+              </section>
             )}
 
             {usageEmpty ? (
@@ -630,16 +691,24 @@ export function QuotaView({
               series &&
               displayRange && (
                 <div
-                  className="flex min-h-64 shrink-0 basis-[38%] flex-col"
+                  className="relative flex min-h-0 flex-1 flex-col"
                   data-quota-highlight={highlightToken}
                 >
+                  <label className="quota-chart-pill type-caption text-label-secondary">
+                    Pace
+                    <ToggleSwitch
+                      checked={showPace}
+                      onCheckedChange={handleShowPaceChange}
+                      aria-label="Pace line"
+                    />
+                  </label>
                   <Profiler id="quota-chart" onRender={onRenderChart}>
                     <QuotaBurnupChart
                       rangeStartEpoch={displayRange.startEpoch}
                       rangeEndEpoch={displayRange.endEpoch}
                       nowEpoch={state.now}
                       periods={displayPeriods}
-                      axisMode={axisMode}
+                      axisMode="window"
                       showPace={showPace}
                       series={series}
                       onHighlight={onChartHighlight}
@@ -649,131 +718,99 @@ export function QuotaView({
               )
             )}
 
-            {(topRows.length > 0 ||
-              otherSessions.count > 0 ||
-              unattributed.usd > 0 ||
-              roundsToAtLeastOneDecimal(unexplained.percent)) && (
-              <section className="flex min-h-0 flex-1 flex-col gap-[var(--space-sm)]">
-                <ScrollPane
-                  className="min-h-0 flex-1"
-                  topEdgeFade
-                  bottomEdgeFade
-                  viewportLabel="Most prominent sessions"
-                >
-                  <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr] flex-col">
-                    {topRows.map((row) => {
-                      const seriesKey = topRowSeriesKey(row, topSessionKeys)
-                      return (
-                        <button
-                          type="button"
-                          key={row.key}
-                          ref={(element) => registerRow(seriesKey, element)}
-                          className={cn(
-                            "col-span-full grid grid-cols-subgrid items-center gap-x-4 rounded-control -mx-2 px-2 py-2.5 text-center type-body text-label hover:bg-surface-hover",
-                            hovered === seriesKey && "bg-surface-hover",
-                          )}
-                          onMouseEnter={() => setHovered(seriesKey)}
-                          onMouseLeave={() => setHovered(null)}
-                          onFocus={() => setHovered(seriesKey)}
-                          onBlur={() => setHovered(null)}
-                          onClick={() =>
-                            onSelectSession({
-                              agent: row.agent,
-                              sessionId: row.sessionId,
-                              wslDistro: row.wslDistro,
-                              title: row.title ?? undefined,
-                            })
-                          }
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={cn(
-                              "size-2 shrink-0 rounded-full",
-                              swatchClasses[seriesKey],
-                            )}
-                          />
-                          <span className="tabular-nums font-semibold">
-                            {formatQuotaPercent(row.percent)} {shareOf}
+            {hasListRows && (
+              <QuotaSessionList
+                heading={`Sessions · share of ${windowNoun(selectedAccount, selectedLane)}`}
+              >
+                {topRows.map((row) => {
+                  const seriesKey = topRowSeriesKey(row, topSessionKeys)
+                  return (
+                    <button
+                      type="button"
+                      key={row.key}
+                      ref={(element) => registerRow(seriesKey, element)}
+                      className={cn(
+                        ROW_GRID_CLASS,
+                        "bg-session-card text-label hover:bg-surface-secondary/50",
+                        hovered === seriesKey && "bg-surface-secondary/50",
+                      )}
+                      onMouseEnter={() => setHovered(seriesKey)}
+                      onMouseLeave={() => setHovered(null)}
+                      onFocus={() => setHovered(seriesKey)}
+                      onBlur={() => setHovered(null)}
+                      onClick={() =>
+                        onSelectSession({
+                          agent: row.agent,
+                          sessionId: row.sessionId,
+                          wslDistro: row.wslDistro,
+                          title: row.title ?? undefined,
+                        })
+                      }
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn("size-2 shrink-0 rounded-full", swatchClasses[seriesKey])}
+                      />
+                      {renderAgentIcon(row.agent, 16)}
+                      <span className="min-w-0">
+                        <span className="block truncate font-semibold">
+                          {sessionRowTitle(row.title, row.agent, row.sessionId)}
+                        </span>
+                        {row.periodCount > 1 && (
+                          <span className="block type-caption text-label-tertiary">
+                            across {row.periodCount} {windowWord(selectedLane, row.periodCount)}
                           </span>
-                          <span className="tabular-nums text-label-secondary">
-                            {formatSpendFigure(row.usd)}
-                          </span>
-                          <span className="type-callout text-label-tertiary">
-                            {row.periodCount} period{row.periodCount > 1 ? "s" : ""}
-                          </span>
-                          <span className="type-callout text-label-secondary">
-                            [{agentDisplayName(row.agent)}]
-                          </span>
-                          <span className="truncate text-left font-semibold">
-                            {sessionRowTitle(row.title, row.agent, row.sessionId)}
-                          </span>
-                        </button>
-                      )
-                    })}
+                        )}
+                      </span>
+                      <span className="text-right font-semibold">
+                        <SegmentFigure>{formatQuotaPercent(row.percent)}</SegmentFigure>
+                      </span>
+                      <span className="text-right text-label-secondary">
+                        <SegmentFigure>{formatSpendFigure(row.usd)}</SegmentFigure>
+                      </span>
+                    </button>
+                  )
+                })}
 
-                    {otherSessions.count > 0 && (
-                      <GroupRow
-                        rowKey="other"
-                        swatchClass={swatchClasses.other}
-                        hovered={hovered}
-                        onHover={setHovered}
-                        registerRow={registerRow}
-                      >
-                        <span className="tabular-nums font-semibold">
-                          {formatQuotaPercent(otherSessions.percent)} {shareOf}
-                        </span>
-                        <span className="tabular-nums text-label-secondary">
-                          {formatSpendFigure(otherSessions.usd)}
-                        </span>
-                        <span />
-                        <span />
-                        <span className="truncate text-left type-callout text-label-tertiary">
-                          {otherSessions.count} other session
-                          {otherSessions.count > 1 ? "s" : ""}
-                        </span>
-                      </GroupRow>
-                    )}
+                {otherSessions.count > 0 && (
+                  <GroupRow
+                    rowKey="other"
+                    swatchClass={swatchClasses.other}
+                    hovered={hovered}
+                    onHover={setHovered}
+                    registerRow={registerRow}
+                    label={`${otherSessions.count} other session${otherSessions.count > 1 ? "s" : ""}`}
+                    percent={otherSessions.percent}
+                    usd={otherSessions.usd}
+                  />
+                )}
 
-                    {unattributed.usd > 0 && (
-                      <GroupRow
-                        rowKey="unattributed"
-                        swatchClass={swatchClasses.unattributed}
-                        hovered={hovered}
-                        onHover={setHovered}
-                        registerRow={registerRow}
-                      >
-                        <span />
-                        <span className="min-w-0 flex-1 truncate">Unattributed</span>
-                        <span className="tabular-nums">
-                          {formatQuotaPercent(unattributed.percent)}
-                        </span>
-                        <span className="tabular-nums">
-                          {formatSpendFigure(unattributed.usd)}
-                        </span>
-                        <span />
-                      </GroupRow>
-                    )}
+                {unattributed.usd > 0 && (
+                  <GroupRow
+                    rowKey="unattributed"
+                    swatchClass={swatchClasses.unattributed}
+                    hovered={hovered}
+                    onHover={setHovered}
+                    registerRow={registerRow}
+                    label="Unattributed"
+                    percent={unattributed.percent}
+                    usd={unattributed.usd}
+                  />
+                )}
 
-                    {roundsToAtLeastOneDecimal(unexplained.percent) && (
-                      <GroupRow
-                        rowKey="unexplained"
-                        swatchClass="quota-swatch-hatch"
-                        hovered={hovered}
-                        onHover={setHovered}
-                        registerRow={registerRow}
-                      >
-                        <span />
-                        <span className="min-w-0 flex-1 truncate">Unexplained</span>
-                        <span className="tabular-nums">
-                          {formatQuotaPercent(unexplained.percent)}
-                        </span>
-                        <span />
-                        <span />
-                      </GroupRow>
-                    )}
-                  </div>
-                </ScrollPane>
-              </section>
+                {roundsToAtLeastOneDecimal(unexplained.percent) && (
+                  <GroupRow
+                    rowKey="unexplained"
+                    swatchClass="quota-swatch-hatch"
+                    hovered={hovered}
+                    onHover={setHovered}
+                    registerRow={registerRow}
+                    label="Unexplained"
+                    percent={unexplained.percent}
+                    usd={null}
+                  />
+                )}
+              </QuotaSessionList>
             )}
           </div>
         </div>

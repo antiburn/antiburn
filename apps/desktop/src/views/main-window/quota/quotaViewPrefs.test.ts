@@ -14,16 +14,14 @@ describe("quotaViewPrefs", () => {
     writeQuotaViewPrefs({ provider: "anthropic", accountKey: "acct-1" })
     writeQuotaViewPrefs({
       lane: "weekly",
-      rangePreset: "thisWeek",
-      axisMode: "date",
+      rangePreset: "thisWindow",
       showPace: false,
     })
     expect(readQuotaViewPrefs()).toEqual({
       provider: "anthropic",
       accountKey: "acct-1",
       lane: "weekly",
-      rangePreset: "thisWeek",
-      axisMode: "date",
+      rangePreset: "thisWindow",
       showPace: false,
     })
   })
