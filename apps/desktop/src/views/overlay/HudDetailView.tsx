@@ -3,11 +3,9 @@ import { useCallback, useState, useSyncExternalStore } from "react"
 import { flushSync } from "react-dom"
 
 import { LedBar } from "../../components/ui/LedBar"
-import { applyTheme, currentTheme } from "../../lib/appearance"
 import { concealHudDetail, setHudDetailSize } from "../../lib/ipc"
 import { getHudDetailState, type HudDetailState } from "../../lib/hudIpc"
 import { formatRate, WORK_MODES, type WorkMode } from "../../lib/tokenMap"
-import type { ThemePreference } from "../../lib/ipc"
 import { resetsIn } from "../../lib/usageBars"
 
 const HUD_SEGMENTS = 20
@@ -64,8 +62,6 @@ class HudDetailSession {
   private snapshot: DetailSnapshot = INITIAL_SNAPSHOT
   private wrap: HTMLDivElement | null = null
   private disposers: Array<() => void> = []
-  /** The reader's own theme, held while the island forces the dark card. */
-  private themeOffIsland: ThemePreference | null = null
 
   getSnapshot = (): DetailSnapshot => this.snapshot
 
@@ -115,26 +111,7 @@ class HudDetailSession {
       .catch(() => {})
   }
 
-  /**
-   * Take the dark theme while the HUD sits in the notch.
-   *
-   * The island is black on black against the notch, and a light card below it
-   * reads as a different object. The reader's own choice returns when the HUD
-   * leaves the notch.
-   */
-  private applyIslandTheme(island: boolean): void {
-    if (island === (this.themeOffIsland !== null)) return
-    if (island) {
-      this.themeOffIsland = currentTheme()
-      applyTheme("dark")
-      return
-    }
-    applyTheme(this.themeOffIsland ?? "system")
-    this.themeOffIsland = null
-  }
-
   private stop(): void {
-    this.applyIslandTheme(false)
     this.started = false
     this.generation += 1
     for (const dispose of this.disposers) dispose()
@@ -147,7 +124,6 @@ class HudDetailSession {
   }
 
   private apply(state: HudDetailState): void {
-    this.applyIslandTheme(state.island ?? false)
     const shown = state.reason === "show" ? this.snapshot.shown + 1 : this.snapshot.shown
     // flushSync, so the measurement below reads the fresh layout.
     flushSync(() => {

@@ -595,24 +595,22 @@ export class OverlaySession {
   }
 
   /**
-   * Take the island's new shape. A collapse hides the detail: the notch row
-   * has nothing to explain. An expansion under the pointer shows it.
+   * Take the island's new shape. The island has no detail card: the open
+   * island names and dates each bar itself. A detail left over from the
+   * floating frame goes away when the HUD lands in the notch.
    */
   private applyIsland(island: HudIslandState): void {
-    const wasCollapsed = this.snapshot.island.island === "collapsed"
     this.update({ island })
-    if (island.island === "collapsed") {
+    if (island.island !== "off") {
       this.clearShowTimer()
       this.hideDetail()
-    } else if (wasCollapsed && this.snapshot.hovered && !this.snapshot.dragging) {
-      this.armShowTimer()
     }
   }
 
   private armShowTimer(): void {
     if (this.showTimer != null || this.detailShown) return
-    // The collapsed island is the notch row alone. It has no detail.
-    if (this.snapshot.island.island === "collapsed") return
+    // The island carries its own detail, so it opens no card.
+    if (this.snapshot.island.island !== "off") return
     this.showTimer = window.setTimeout(() => {
       this.showTimer = null
       if (!this.active || !this.snapshot.hovered || this.snapshot.dragging) return
@@ -655,7 +653,6 @@ export class OverlaySession {
       spend: this.snapshot.spend,
       target: this.detailTarget(),
       subagent: this.hoverSubagent,
-      island: this.snapshot.island.island !== "off",
     }
   }
 

@@ -157,16 +157,16 @@ crate stores it with the dock state.
   collapsed. The pointer resting for 150ms in the hotspot, the notch plus
   10px either side and 5px below, or on a wing, expands the island: the full
   HUD hangs below the notch row. Each bar carries a label row, its name on
-  the left and its figure on the right, and a blocked bar shows the time to
-  its reset in place of the figure, so the island has no caption to clip.
-  The content is padded to half the wing, so the bars start under the marks
-  and not nearer the edge than them. It collapses 3s after the pointer leaves
-  the island and the hotspot. A wake expands it the same way, for as long as
-  a docked HUD peeks.
-- **The detail.** On the island the detail window takes the dark theme,
-  whatever the reader's own choice is, and the width of the panel the island
-  draws. It hangs centred under the notch, so the card and the island read as
-  one object. The reader's theme returns when the HUD leaves the notch.
+  the left and its figure on the right, and the time to its reset under it,
+  so the island has no caption to clip. When the token map shows, a legend
+  under it names each session with its rate and its top mode. The content
+  is padded to half the wing, so the bars start under the marks and not
+  nearer the edge than them. It collapses 3s after the pointer leaves the
+  island and the hotspot. A wake expands it the same way, for as long as a
+  docked HUD peeks.
+- **No detail card.** The island opens no detail window: the open island
+  carries what the card would say. A card left over from the floating frame
+  hides when the HUD lands in the notch.
 - **The drag preview.** A drag that carries the HUD over the notch turns the
   floating frame into the island's shape before the drop, so the release
   says what it will do. Dragging back out restores the frame. A drop above

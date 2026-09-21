@@ -99,8 +99,6 @@ export interface HudDetailState extends HudDetailBaseState {
   target: string
   /** The sub-agent whose dot the pointer is on, or null. */
   subagent?: string | null
-  /** True while the HUD sits in the notch, so the card matches the island. */
-  island?: boolean
 }
 
 /** Request the hover detail window with the newest usage payload and map. */

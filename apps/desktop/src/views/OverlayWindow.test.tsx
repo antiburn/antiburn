@@ -1298,12 +1298,13 @@ describe("OverlayWindow", () => {
         container.querySelector("[data-island]")?.classList.contains("hud-island-open"),
       ).toBe(true)
       expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
-      // The island names its bars; the floating frame leaves that to the detail.
+      // The island names and dates its bars; the floating frame leaves that to the detail.
       expect(screen.getByTestId("hud-bar-label").textContent).toBe("5-hour limit81%")
+      expect(screen.getByTestId("hud-bar-reset")).toBeTruthy()
       expect(screen.queryByTestId("hud-countdown")).toBeNull()
-      // The pointer is still on the island, so the expansion opens the detail.
+      // The island has no detail card, so the pointer on it opens nothing.
       await advance(400)
-      expect(showHudDetail).toHaveBeenCalledTimes(1)
+      expect(showHudDetail).not.toHaveBeenCalled()
 
       act(() =>
         emitNative("hud-island:state", {

@@ -3,6 +3,7 @@ import { useCallback, useState, useSyncExternalStore, type CSSProperties } from 
 import { LedBar } from "../components/ui/LedBar"
 import { Confetti } from "../components/ui/Confetti"
 import { TokenMap } from "../components/ui/TokenMap"
+import { formatRate, frameColor } from "../lib/tokenMap"
 import { blockedBars, resetsIn } from "../lib/usageBars"
 import { OverlaySession, type OverlaySnapshot } from "./overlay/OverlaySession"
 
@@ -207,6 +208,38 @@ function IslandPanel({
   )
 }
 
+/**
+ * The map spelled out for the island: one row for each session, with its
+ * rate and its top mode. The floating frame leaves this to its detail card.
+ */
+function MapLegend({ layout, ink }: { layout: OverlaySnapshot["tokenMap"]; ink: string }) {
+  return (
+    <ul
+      className={`led-caption type-footnote ${ink} mt-1.5 space-y-0.5`}
+      data-testid="hud-map-legend"
+    >
+      {layout.blobs.map((blob, index) => (
+        <li key={blob.key} className="flex items-baseline gap-1.5">
+          <span
+            aria-hidden="true"
+            className="inline-block size-2 shrink-0 self-center rounded-sm border"
+            style={{ borderColor: frameColor(index) }}
+          />
+          <span className="truncate">{blob.title ?? blob.agent}</span>
+          <span className="stats-number ml-auto shrink-0">
+            {formatRate(blob.tokensPerMin)}/min
+          </span>
+          <span
+            aria-label={`mostly ${blob.topMode}`}
+            className="inline-block size-2 shrink-0 self-center rounded-full"
+            style={{ backgroundColor: `var(--color-mode-${blob.topMode})` }}
+          />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /** The map, the bars, and the caption under them. The same in every frame. */
 function HudContent({
   state,
@@ -248,6 +281,7 @@ function HudContent({
             contentWidth={contentWidth}
             onHoverBlob={session.setHoverBlob}
           />
+          {labelled && <MapLegend layout={state.tokenMap} ink={ink} />}
         </div>
       )}
 
@@ -276,12 +310,7 @@ function HudContent({
                   data-testid="hud-bar-label"
                 >
                   <span className="truncate">{bar.label}</span>
-                  {/* A blocked bar swaps its full figure for the time to its reset. */}
-                  <span className="stats-number shrink-0">
-                    {bar.percent >= 100
-                      ? resetsIn(bar.resetsAt, state.now)
-                      : `${Math.round(bar.percent)}%`}
-                  </span>
+                  <span className="stats-number shrink-0">{Math.round(bar.percent)}%</span>
                 </div>
               )}
               <LedBar
@@ -292,6 +321,14 @@ function HudContent({
                 blinkColor={blinkColor}
                 expectedFraction={bar.expectedFraction}
               />
+              {labelled && (
+                <p
+                  className={`led-caption type-footnote ${ink} mt-1 opacity-60`}
+                  data-testid="hud-bar-reset"
+                >
+                  {resetsIn(bar.resetsAt, state.now)}
+                </p>
+              )}
             </div>
           ))}
         </div>
