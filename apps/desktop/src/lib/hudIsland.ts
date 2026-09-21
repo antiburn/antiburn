@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event"
 import type { HudSpendRate } from "./hudIpc"
 
 /** What the island is doing. `off` is the floating or edge-docked HUD. */
-export type HudIslandPhase = "off" | "preview" | "collapsed" | "expanded"
+type HudIslandPhase = "off" | "preview" | "collapsed" | "expanded"
 
 /** The island geometry the shell reports, in logical pixels. */
 export interface HudIslandState {
