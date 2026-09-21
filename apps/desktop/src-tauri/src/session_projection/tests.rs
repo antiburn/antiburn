@@ -1438,7 +1438,7 @@ fn no_producer_source_references_the_frontend_session_events() {
 #[test]
 fn the_legacy_session_events_are_not_reintroduced() {
     let sources = [
-        ("commands.rs", include_str!("../commands.rs")),
+        ("commands.rs", include_str!("../commands/mod.rs")),
         ("scan/mod.rs", include_str!("../scan/mod.rs")),
         ("scan/scoped.rs", include_str!("../scan/scoped.rs")),
         ("insights_worker.rs", include_str!("../insights_worker.rs")),
@@ -1469,7 +1469,7 @@ fn the_legacy_session_events_are_not_reintroduced() {
 /// bypassing the bridge.
 #[test]
 fn commands_do_not_emit_session_events_directly() {
-    let commands = include_str!("../commands.rs");
+    let commands = include_str!("../commands/mod.rs");
     for needle in [
         "emit(SESSION_LIFECYCLE_EVENT",
         "emit(SESSION_UPDATED_EVENT",

@@ -30,7 +30,7 @@ import { environmentKey } from "./presentation/localIdentity"
 export const SNAPSHOT_RETRY_MS = 5_000
 
 /** This state mirrors one live registry session. */
-export interface TrackedSession {
+interface TrackedSession {
   agent: string
   /** The timestamp records the last observed write in Unix seconds. */
   lastActivityAt: number
@@ -157,7 +157,7 @@ export function withRegistryActivity<T extends ListedSession>(
 }
 
 /** List consumers depend on this external-store interface. */
-export interface LiveSessionsSource {
+interface LiveSessionsSource {
   subscribe(listener: () => void): () => void
   getSnapshot(): LiveSessionsSnapshot
   setInterest(owner: object, refs: readonly SessionRefPayload[]): void

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wake-overlay"
+description = "Enables the wake_overlay command without any pre-configured scope."
+commands.allow = ["wake_overlay"]
+
+[[permission]]
+identifier = "deny-wake-overlay"
+description = "Denies the wake_overlay command without any pre-configured scope."
+commands.deny = ["wake_overlay"]

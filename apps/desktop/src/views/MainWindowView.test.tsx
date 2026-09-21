@@ -74,6 +74,10 @@ const activityMocks = vi.hoisted(() => {
       return () => this.listeners.delete(listener)
     }
     subscribeInactive = this.subscribe
+    subscribeList = (listener: () => void) => {
+      activityMocks.listSubscriptions += 1
+      return this.subscribe(listener)
+    }
     setEntries(entries: SessionListEntry[] | null) {
       this.snapshot = { ...this.snapshot, entries }
       this.notify()
@@ -85,6 +89,7 @@ const activityMocks = vi.hoisted(() => {
   return {
     FakeMainActivitySession,
     instances: [] as InstanceType<typeof FakeMainActivitySession>[],
+    listSubscriptions: 0,
   }
 })
 
@@ -145,6 +150,7 @@ function setWindowWidth(value: number): void {
 
 afterEach(() => {
   vi.clearAllMocks()
+  activityMocks.listSubscriptions = 0
   if (userAgent) Object.defineProperty(window.navigator, "userAgent", userAgent)
   if (innerWidth) Object.defineProperty(window, "innerWidth", innerWidth)
 })
@@ -176,9 +182,10 @@ describe("MainWindowView", () => {
   it("opens Overview by default and keeps Checks and Sessions in the sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
-    // Overview, Checks, Sessions, and Sessions' five fixed filter
+    // Overview, Limits, Checks, Sessions, and Sessions' five fixed filter
     // children (no harness rows yet, since no entries have loaded).
-    expect(screen.getAllByRole("tab")).toHaveLength(8)
+    expect(screen.getAllByRole("tab")).toHaveLength(9)
+    expect(screen.getByRole("tab", { name: "Limits" })).toBeVisible()
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -196,6 +203,7 @@ describe("MainWindowView", () => {
     fireEvent(window, new Event("resize"))
     expect(screen.getByRole("tablist", { name: "Main sections" })).toBeVisible()
     expect(screen.queryByRole("button", { name: "Open navigation" })).toBeNull()
+    expect(activityMocks.listSubscriptions).toBe(1)
   })
   it("lands in Sessions with the clicked recent session selected", () => {
     render(<MainWindowView />)
@@ -365,6 +373,48 @@ describe("MainWindowView", () => {
       })
       expect(activitySession().setFilter).not.toHaveBeenCalled()
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+    })
+
+    it("selects Limits, which has no cross-window target, and leaves it on a fresh cross-window request", async () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Limits"))
+      expect(tab("Limits")).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
+      await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
+      act(() => {
+        ipcMocks.sectionTarget!({ revision: 1, section: "burnChecks" })
+      })
+      expect(screen.getByRole("tab", { name: "Checks" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      )
+    })
+
+    it("leaves Limits on a cross-window request that retargets the section already selected", async () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Sessions"))
+      fireEvent.click(tab("Limits"))
+      expect(tab("Limits")).toHaveAttribute("aria-selected", "true")
+      await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
+      // Every session-open request targets "activity", the section already
+      // selected underneath Limits: `select()` alone would no-op here, so
+      // this exercises the same-section path the other cross-window test
+      // (which retargets "burnChecks", a value that does change) does not.
+      act(() => {
+        ipcMocks.sectionTarget!({ revision: 1, section: "activity" })
+      })
+      expect(tab("Limits")).toHaveAttribute("aria-selected", "false")
+      expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+    })
+
+    it("keeps Limits mounted after navigating away, instead of unmounting it", () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Limits"))
+      expect(document.querySelector("#quota-panel h1")).not.toBeNull()
+      fireEvent.click(tab("Checks"))
+      // Limits is hidden, not selected, but its content stays in the DOM: a
+      // return visit must not tear it down and refetch.
+      expect(document.querySelector("#quota-panel h1")).not.toBeNull()
     })
   })
 })

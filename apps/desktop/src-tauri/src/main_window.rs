@@ -843,6 +843,10 @@ pub async fn open_main_window_session(app: AppHandle, target: SessionTarget) -> 
 }
 
 fn route_session_target(app: &AppHandle, target: SessionTarget) -> Result<(), String> {
+    ::tracing::info!(
+        event = "main_window_open_source",
+        source = "popover_session"
+    );
     let state = app.state::<MainWindowState>();
     let request = state.request_session_target(target);
     let section_request = state.request_section_target(MainWindowSection::Activity);
@@ -1042,6 +1046,10 @@ pub async fn open_main_window_section(
 fn route_section_target(app: &AppHandle, section: MainWindowSection) -> Result<(), String> {
     let state = app.state::<MainWindowState>();
     let request = state.request_section_target(section);
+    ::tracing::info!(
+        event = "main_window_open_source",
+        source = "popover_section"
+    );
     if let Err(error) = open(app, OpenTrigger::Interaction) {
         state.clear_section_target(request.revision);
         return Err(error.to_string());
@@ -1681,6 +1689,7 @@ pub fn close(window: &WebviewWindow) {
     state.readiness().cancel_pending_verification();
     state.cancel_open_request();
     state.note_closed();
+    ::tracing::info!(event = "main_window_closed", window = LABEL);
     flush_placement(window.app_handle());
     let _ = antiburn_main_window::conceal(window);
     emit_visibility_changed(window);
@@ -1744,14 +1753,30 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
             antiburn_nudge::NUDGE_LABEL,
         ]
         .into_iter()
-        .any(|label| window_is_focused(app, label));
-    if !state.should_restore_after_activation(
+        .any(|label| window_is_focused(app, label))
+        || hud_owns_activation(app);
+    let restore = state.should_restore_after_activation(
         main_visible,
         main_minimized,
         another_window_owns_activation,
-    ) {
+    );
+    ::tracing::info!(
+        event = "app_activated",
+        main_visible,
+        main_minimized,
+        another_window_owns_activation,
+        detail_requested = antiburn_hud::detail_requested(),
+        hud_dragging = antiburn_hud::drag_in_progress(),
+        hud_cursor = ?app
+            .get_webview_window(antiburn_hud::OVERLAY_LABEL)
+            .and_then(|window| antiburn_hud::cursor_report(&window)),
+        activation_event = activation_event_kind(),
+        restore
+    );
+    if !restore {
         return;
     }
+    ::tracing::info!(event = "main_window_open_source", source = "app_activation");
     if let Err(error) = open(app, OpenTrigger::Interaction) {
         ::tracing::warn!(event = "main_window_activation_restore_failed", error = %error);
     }
@@ -1761,6 +1786,54 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
 fn window_is_visible(app: &AppHandle, label: &str) -> bool {
     app.get_webview_window(label)
         .is_some_and(|window| window.is_visible().unwrap_or(true))
+}
+
+/// A click on the HUD activates the app, but the HUD panel never takes
+/// focus. The cursor over the HUD is the sign that the HUD owns the
+/// activation, so the main window stays where it was. A drag of the HUD
+/// owns the activation for its whole run, wherever the cursor reads.
+#[cfg(target_os = "macos")]
+fn hud_owns_activation(app: &AppHandle) -> bool {
+    if antiburn_hud::detail_requested() {
+        return true;
+    }
+    if antiburn_hud::drag_in_progress() && window_is_visible(app, antiburn_hud::OVERLAY_LABEL) {
+        return true;
+    }
+    [antiburn_hud::OVERLAY_LABEL, antiburn_hud::DETAIL_LABEL]
+        .into_iter()
+        .filter_map(|label| app.get_webview_window(label))
+        .filter(|window| window.is_visible().unwrap_or(false))
+        .any(|window| antiburn_hud::cursor_inside(&window).unwrap_or(false))
+}
+
+/// The AppKit event that the activation arrives with, for the log. A mouse
+/// event names a click; a key event names a switch; none names the Dock or
+/// another process.
+#[cfg(target_os = "macos")]
+fn activation_event_kind() -> &'static str {
+    use objc2_app_kit::{NSApplication, NSEventType};
+    use objc2_foundation::MainThreadMarker;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return "off-main-thread";
+    };
+    let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else {
+        return "none";
+    };
+    match event.r#type() {
+        NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown => {
+            "mouse-down"
+        }
+        NSEventType::LeftMouseUp | NSEventType::RightMouseUp | NSEventType::OtherMouseUp => {
+            "mouse-up"
+        }
+        NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged => "key",
+        NSEventType::AppKitDefined
+        | NSEventType::SystemDefined
+        | NSEventType::ApplicationDefined => "system",
+        _ => "other",
+    }
 }
 
 #[cfg(target_os = "macos")]

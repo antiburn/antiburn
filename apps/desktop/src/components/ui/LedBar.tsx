@@ -19,6 +19,12 @@ import type { CSSProperties } from "react"
  * the sweep passes, so a session at zero usage still shows. Under reduced
  * motion the sweep stops, and the next segment to light holds the brand tint
  * instead; a full bar marks its last segment.
+ *
+ * `blinkLast` blinks the last lit segment, or the first segment when the bar
+ * has none lit, for the HUD's spend-rate LED. The
+ * segment can take its own period and colour. The period follows the spend
+ * rate; the colour is the mode of the newest live turn. Without them the
+ * segment blinks at the stylesheet's period in the bar's own colour.
  */
 export function LedBar({
   split,
@@ -27,6 +33,9 @@ export function LedBar({
   style,
   live = false,
   row = 0,
+  blinkLast = false,
+  blinkPeriodMs = null,
+  blinkColor = null,
   expectedFraction = null,
 }: {
   split: Array<{ fraction: number; color: string }>
@@ -37,6 +46,11 @@ export function LedBar({
   live?: boolean
   /** The bar's row within its provider, for the sweep stagger. */
   row?: number
+  blinkLast?: boolean
+  /** Milliseconds per blink cycle, or null for the stylesheet's period. */
+  blinkPeriodMs?: number | null
+  /** A CSS colour for the lit half of the blink, or null for the bar's colour. */
+  blinkColor?: string | null
   /** Elapsed share of the window's period, 0-1, or null when unknown. */
   expectedFraction?: number | null
 }) {
@@ -52,6 +66,9 @@ export function LedBar({
   )
   // A full bar has no next segment; the still mark then stays on the last one.
   const nextIndex = live ? Math.min(segments - 1, litCount) : -1
+  // A bar with nothing lit blinks its first segment, so a live session still
+  // shows when no meter is on.
+  const blinkIndex = blinkLast ? Math.max(0, litCount - 1) : -1
   const barStyle: CSSProperties | undefined = live
     ? ({ ...style, "--led-segments": segments, "--led-row": row } as CSSProperties)
     : style
@@ -68,19 +85,35 @@ export function LedBar({
         // The gleam runs over the lit segments. With none lit, the first
         // segment takes the sweep alone, in the brand tint.
         const sweeping = live && (hit != null || (litCount === 0 && index === 0))
+        const blinking = index === blinkIndex
         const style: CSSProperties = {}
         if (hit) style.backgroundColor = hit.color
         if (sweeping) Object.assign(style, { "--led-index": index })
         // The stylesheet derives the gleam from the segment's own colour, so a
         // provider whose bar is near white still shows the sweep.
         if (sweeping && hit) Object.assign(style, { "--led-color": hit.color })
+        // An unlit segment blinks in the brand tint. It takes the same period
+        // and colour as a lit one, so an empty bar still shows the spend rate.
+        if (blinking) {
+          Object.assign(style, {
+            backgroundColor: blinkColor ?? hit?.color ?? "var(--color-brand-tint)",
+            "--led-on": blinkColor ?? hit?.color ?? "var(--color-brand-tint)",
+            ...(blinkPeriodMs != null ? { "--led-period": `${blinkPeriodMs}ms` } : {}),
+          })
+        }
+        const classes = [
+          "relative h-1.5 w-1.5 shrink-0 rounded-full",
+          hit ? "led-lit" : "led-off bg-led-off",
+          sweeping ? "led-sweep-dot" : "",
+          blinking ? "led-blink" : "",
+        ]
         return (
           <span
             key={index}
             data-led-lit={live && hit != null ? true : undefined}
             data-led-next={index === nextIndex || undefined}
-            className={`relative h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "led-lit" : "led-off bg-led-off"} ${sweeping ? "led-sweep-dot" : ""}`.trimEnd()}
-            style={hit || sweeping ? style : undefined}
+            className={classes.filter(Boolean).join(" ")}
+            style={hit || sweeping || blinking ? style : undefined}
           />
         )
       })}

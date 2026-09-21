@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { App } from "./App"
@@ -85,7 +85,7 @@ describe("App", () => {
   it("renders the floating HUD for the overlay fragment", async () => {
     window.location.hash = "#/overlay"
     render(<App />)
-    expect(await screen.findByRole("button", { name: "Close overlay" })).toBeInTheDocument()
-    expect(document.body.dataset.transparentWindow).toBe("true")
+    await waitFor(() => expect(document.body.dataset.transparentWindow).toBe("true"))
+    expect(document.querySelector(".bg-hud-frame")).not.toBeNull()
   })
 })

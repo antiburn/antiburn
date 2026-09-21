@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource,
@@ -326,8 +327,8 @@ fn non_core_control_and_cache_checks_do_not_gain_clean_applicability() {
 
 #[test]
 fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
-    const CHECK_COVERAGE: &str = include_str!("../../../docs/check-coverage.md");
-    const SESSION_COVERAGE: &str = include_str!("../../../docs/session-coverage.md");
+    let check_coverage = coverage_document("check-coverage.md");
+    let session_coverage = coverage_document("session-coverage.md");
     const CHECK_STATUSES: &[&str] = &["Assessable", "Partial", "Unsupported", "Unknown"];
 
     let expected: BTreeSet<_> = SOURCE_FORMATS
@@ -336,11 +337,11 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
         .collect();
 
     let check_inventory =
-        markdown_table_rows(CHECK_COVERAGE, "## Source Inventory", "## Coverage Matrix");
+        markdown_table_rows(&check_coverage, "## Source Inventory", "## Coverage Matrix");
     assert_table_source_formats(&check_inventory, &expected, "check source inventory");
 
     let check_matrix = markdown_table_rows(
-        CHECK_COVERAGE,
+        &check_coverage,
         "## Coverage Matrix",
         "## Evidence Boundaries",
     );
@@ -356,14 +357,14 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     }
 
     let session_matrix =
-        markdown_table_rows(SESSION_COVERAGE, "## Source Matrix", "## Provider Routes");
+        markdown_table_rows(&session_coverage, "## Source Matrix", "## Provider Routes");
     assert_table_source_formats(&session_matrix, &expected, "session source matrix");
 }
 
 #[test]
 fn public_burn_check_table_keeps_fail_closed_readers_unavailable() {
-    const SUPPORT: &str = include_str!("../../../docs/support.md");
-    let rows = markdown_table_rows(SUPPORT, "## Burn Check remediation", "## Cost estimates");
+    let support = coverage_document("support.md");
+    let rows = markdown_table_rows(&support, "## Burn Check remediation", "## Cost estimates");
     let results: BTreeMap<_, _> = rows
         .into_iter()
         .map(|row| {
@@ -379,6 +380,56 @@ fn public_burn_check_table_keeps_fail_closed_readers_unavailable() {
     assert_eq!(
         results.get("GitHub Copilot"),
         Some(&"Supported S/O".to_owned())
+    );
+}
+
+fn coverage_document(name: &str) -> String {
+    read_coverage_document(Path::new(env!("CARGO_MANIFEST_DIR")), name)
+        .unwrap_or_else(|error| panic!("cannot read coverage document {name}: {error}"))
+}
+
+fn read_coverage_document(manifest_dir: &Path, name: &str) -> std::io::Result<String> {
+    let bundled_docs = manifest_dir.join("docs");
+    let docs = if bundled_docs.is_dir() {
+        bundled_docs
+    } else {
+        manifest_dir.join("../../docs")
+    };
+    std::fs::read_to_string(docs.join(name))
+}
+
+#[test]
+fn coverage_documents_support_checkout_and_archive_layouts() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest_dir = root.path().join("crates/antiburn-local");
+    std::fs::create_dir_all(&manifest_dir).unwrap();
+    std::fs::create_dir(root.path().join("docs")).unwrap();
+    std::fs::write(root.path().join("docs/support.md"), "checkout").unwrap();
+    assert_eq!(
+        read_coverage_document(&manifest_dir, "support.md").unwrap(),
+        "checkout"
+    );
+
+    std::fs::create_dir(manifest_dir.join("docs")).unwrap();
+    std::fs::write(manifest_dir.join("docs/support.md"), "archive").unwrap();
+    assert_eq!(
+        read_coverage_document(&manifest_dir, "support.md").unwrap(),
+        "archive"
+    );
+}
+
+#[test]
+fn missing_archive_documents_do_not_fall_back_to_checkout_documents() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest_dir = root.path().join("crates/antiburn-local");
+    std::fs::create_dir_all(manifest_dir.join("docs")).unwrap();
+    std::fs::create_dir(root.path().join("docs")).unwrap();
+    std::fs::write(root.path().join("docs/support.md"), "checkout").unwrap();
+    assert_eq!(
+        read_coverage_document(&manifest_dir, "support.md")
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
     );
 }
 

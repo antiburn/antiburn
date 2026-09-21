@@ -3,18 +3,22 @@ import { useCallback, useState, useSyncExternalStore } from "react"
 import { flushSync } from "react-dom"
 
 import { LedBar } from "../../components/ui/LedBar"
-import {
-  concealHudDetail,
-  getHudDetailState,
-  setHudDetailSize,
-  type HudDetailState,
-} from "../../lib/ipc"
+import { concealHudDetail, setHudDetailSize } from "../../lib/ipc"
+import { getHudDetailState, type HudDetailState } from "../../lib/hudIpc"
+import { formatRate, WORK_MODES, type WorkMode } from "../../lib/tokenMap"
 import { resetsIn } from "../../lib/usageBars"
 
 const HUD_SEGMENTS = 20
 
 type DetailSnapshot = {
   bars: HudDetailState["bars"]
+  map: HudDetailState["map"]
+  /** The spend rate in words, or null when the window carried no tokens. */
+  spend: string | null
+  /** "usage" for the meter card, or a session key for that agent's card. */
+  target: string
+  /** The sub-agent under the pointer, or null. */
+  subagent: string | null
   now: number
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
@@ -30,6 +34,10 @@ const INITIAL_SNAPSHOT: DetailSnapshot = {
   shown: 0,
   concealed: false,
   noMeterSelected: false,
+  map: null,
+  spend: null,
+  target: "usage",
+  subagent: null,
 }
 
 function resetDate(resetsAt: string | null): Date | null {
@@ -125,6 +133,10 @@ class HudDetailSession {
         shown,
         concealed: false,
         noMeterSelected: state.noMeterSelected,
+        map: state.map ?? null,
+        spend: state.spend ?? null,
+        target: state.target ?? "usage",
+        subagent: state.subagent ?? null,
       }
       for (const listener of this.listeners) listener()
     })
@@ -160,6 +172,120 @@ class HudDetailSession {
   }
 }
 
+/** Spell out the token map: one row for each session, with its top mode. */
+function MapLegend({ map }: { map: NonNullable<HudDetailState["map"]> }) {
+  return (
+    <div className="mb-2 border-b border-separator pb-2" data-testid="hud-detail-map">
+      <ul className="space-y-0.5">
+        {map.sessions.map((session) => (
+          <li key={session.key} className="flex items-baseline gap-1.5 type-caption">
+            <span
+              aria-hidden="true"
+              className="inline-block size-2 shrink-0 self-center rounded-sm border"
+              style={{ borderColor: session.frameColor }}
+            />
+            <span className="text-label truncate">{session.label}</span>
+            <span className="stats-number text-label shrink-0 ml-auto">
+              {formatRate(session.tokensPerMin)}/min
+            </span>
+            <span
+              aria-label={`mostly ${session.topMode}`}
+              className="inline-block size-2 shrink-0 self-center rounded-full"
+              style={{ backgroundColor: `var(--color-mode-${session.topMode})` }}
+            />
+          </li>
+        ))}
+      </ul>
+      <p className="led-caption type-footnote text-label mt-1">
+        ● = {formatRate(map.dotValue)} tokens/min
+      </p>
+    </div>
+  )
+}
+
+/** The mode split of one transcript as LED segments, busiest mode first. */
+function modeSplit(
+  modes: HudDetailSession_["modes"],
+): Array<{ fraction: number; color: string }> {
+  const total = WORK_MODES.reduce((sum, mode) => sum + modes[mode], 0)
+  if (total === 0) return []
+  return [...WORK_MODES]
+    .filter((mode) => modes[mode] > 0)
+    .sort((a, b) => modes[b] - modes[a])
+    .map((mode: WorkMode) => ({
+      fraction: modes[mode] / total,
+      color: `var(--color-mode-${mode})`,
+    }))
+}
+
+type HudDetailSession_ = NonNullable<HudDetailState["map"]>["sessions"][number]
+
+/** One agent box, spelled out: the session, its rate, its modes, its sub-agents. */
+/** The mode that paid for most of `modes`; the first mode in order on a tie. */
+function topModeOf(modes: HudDetailSession_["modes"]): WorkMode {
+  return WORK_MODES.reduce((best, mode) => (modes[mode] > modes[best] ? mode : best))
+}
+
+function SessionCard({
+  session,
+  dotValue,
+  subagent,
+}: {
+  session: HudDetailSession_
+  dotValue: number
+  /** The sub-agent under the pointer; its row is lit and names its top mode. */
+  subagent: string | null
+}) {
+  return (
+    <div data-testid="hud-detail-session">
+      <div className="flex items-baseline justify-between gap-2 type-caption">
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span
+            aria-hidden="true"
+            className="inline-block size-2 shrink-0 self-center rounded-sm border"
+            style={{ borderColor: session.frameColor }}
+          />
+          <span className="text-label truncate">{session.label}</span>
+        </span>
+        <span className="stats-number text-[13px] text-label shrink-0">
+          {formatRate(session.tokensPerMin)}/min
+        </span>
+      </div>
+      <p className="led-caption type-footnote text-label mt-0.5">
+        {session.agent} · mostly {session.topMode}
+      </p>
+      <LedBar segments={HUD_SEGMENTS} className="mt-1" split={modeSplit(session.modes)} />
+      {session.subagents.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5">
+          {session.subagents.map((entry) => {
+            const lit = entry.subagentId === subagent
+            return (
+              <li
+                key={entry.subagentId}
+                data-lit={lit || undefined}
+                className="flex items-baseline justify-between gap-2 type-caption"
+              >
+                <span
+                  className={`led-caption truncate ${lit ? "text-label" : "text-label-secondary"}`}
+                >
+                  sub-agent {entry.subagentId.slice(0, 8)}
+                  {lit ? ` · mostly ${topModeOf(entry.modes)}` : ""}
+                </span>
+                <span className="stats-number text-label shrink-0">
+                  {formatRate(entry.tokensPerMin)}/min
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      <p className="led-caption type-footnote text-label mt-1.5">
+        ● = {formatRate(dotValue)} tokens/min
+      </p>
+    </div>
+  )
+}
+
 /** Render the hover detail window: the HUD's stats, spelled out. */
 export function HudDetailView() {
   const [session] = useState(() => new HudDetailSession())
@@ -177,6 +303,11 @@ export function HudDetailView() {
     return <div ref={wrapRef} className="p-2" />
   }
 
+  const hoveredSession =
+    state.target === "usage"
+      ? null
+      : (state.map?.sessions.find((session) => session.key === state.target) ?? null)
+
   return (
     <div ref={wrapRef} className="p-2">
       <div
@@ -184,35 +315,54 @@ export function HudDetailView() {
         className="hud-detail-card hud-detail-in bevel select-none rounded-xl border border-separator px-3 pt-2 pb-3"
         style={{ backgroundColor: "var(--color-bg-hud)" }}
       >
-        <p className="font-bitcount text-[11px] text-label-tertiary lowercase mb-1.5">
+        <p className="font-bitcount text-[11px] text-label-secondary lowercase mb-1.5">
           antiburn
         </p>
-        {state.bars.length === 0 ? (
-          <p className="type-caption text-label-tertiary">
-            {state.noMeterSelected ? "No meter selected." : "No usage limits detected yet."}
-          </p>
+        {hoveredSession ? (
+          <SessionCard
+            session={hoveredSession}
+            dotValue={state.map!.dotValue}
+            subagent={state.subagent}
+          />
         ) : (
-          <div className="space-y-2">
-            {state.bars.map((bar) => (
-              <div key={bar.key}>
-                <div className="flex items-baseline justify-between gap-2 type-caption">
-                  <span className="led-caption text-label-secondary truncate">{bar.label}</span>
-                  <span className="stats-number text-[13px] text-label shrink-0">
-                    {Math.round(bar.percent)}%
-                  </span>
-                </div>
-                <LedBar
-                  segments={HUD_SEGMENTS}
-                  className="mt-1"
-                  split={[{ fraction: bar.percent / 100, color: bar.color }]}
-                  expectedFraction={bar.expectedFraction}
-                />
-                <p className="led-caption type-footnote text-label-secondary mt-0.5">
-                  {resetsIn(resetDate(bar.resetsAt), state.now)}
-                </p>
+          <>
+            {state.map && <MapLegend map={state.map} />}
+            {state.spend && (
+              <p
+                className="led-caption type-footnote text-label mb-1.5"
+                data-testid="hud-detail-spend"
+              >
+                {state.spend}
+              </p>
+            )}
+            {state.bars.length === 0 ? (
+              <p className="type-caption text-label-secondary">
+                {state.noMeterSelected ? "No meter selected." : "No usage limits detected yet."}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {state.bars.map((bar) => (
+                  <div key={bar.key}>
+                    <div className="flex items-baseline justify-between gap-2 type-caption">
+                      <span className="led-caption text-label truncate">{bar.label}</span>
+                      <span className="stats-number text-[13px] text-label shrink-0">
+                        {Math.round(bar.percent)}%
+                      </span>
+                    </div>
+                    <LedBar
+                      segments={HUD_SEGMENTS}
+                      className="mt-1"
+                      split={[{ fraction: bar.percent / 100, color: bar.color }]}
+                      expectedFraction={bar.expectedFraction}
+                    />
+                    <p className="led-caption type-footnote text-label mt-0.5">
+                      {resetsIn(resetDate(bar.resetsAt), state.now)}
+                    </p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )}
+          </>
         )}
       </div>
     </div>

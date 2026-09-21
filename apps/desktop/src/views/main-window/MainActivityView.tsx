@@ -1,6 +1,7 @@
 import { lazy, Suspense, useSyncExternalStore } from "react"
 
 import { SessionList } from "../../components/session/SessionList"
+import type { SessionQuotaOpenTarget } from "../../components/session/SessionQuotaSection"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import { filterSessionEntries } from "../../lib/sessionFilters"
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
@@ -34,11 +35,15 @@ export function MainActivityView({
   active,
   session,
   hygieneBySession,
+  onOpenQuota,
 }: {
   active: boolean
   session: MainActivitySession
   /** Fetched once above this view, pinned to the full unfiltered list. */
   hygieneBySession: SessionHygieneSnapshot
+  /** Open one quota window on the Quota screen. Omitted where there is no
+   *  Quota screen to open. */
+  onOpenQuota?: (target: SessionQuotaOpenTarget) => void
 }) {
   const state = useSyncExternalStore(
     active ? session.subscribe : session.subscribeInactive,
@@ -160,6 +165,8 @@ export function MainActivityView({
               {...(previous ? { onPrev: () => session.selectEntry(previous) } : {})}
               {...(next ? { onNext: () => session.selectEntry(next) } : {})}
               onOpenSession={session.openRelated}
+              sessionQuota={state.sessionQuota}
+              {...(onOpenQuota ? { onOpenQuota } : {})}
               onDeleted={session.deleted}
             />
           </div>

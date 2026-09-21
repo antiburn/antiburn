@@ -17,6 +17,27 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-21
+
+### Added
+
+- Add bounded analysis for AMP v39 full-export thread JSON and Devin Local
+  migration-17 SQLite sessions. AMP provides session-overdepth and old-model
+  usage findings; Devin provides overpowered-subagent findings and can use
+  optional ACP child context. Neither source can claim a clean result.
+- Add `KiroCliV3Bundle` and `CopilotCliBundle` raw-source inputs, plus the
+  `DevinLocalSqlite` source format and source-version fingerprints.
+- Add the public `WorkMode`, `ModeSample`, and `mode_samples` API for assigning
+  added tokens to the work modes observed in each assistant turn.
+
+### Changed
+
+- Advance parser, evidence, and coverage revisions to 39, 20, and 6. Existing
+  stored analyses reparse under the new contracts.
+- Keep partial or unsupported source evidence from claiming a clean result,
+  and fingerprint the accepted Devin SQLite and companion inputs so content
+  changes invalidate prior work.
+
 ## [0.9.1] - 2026-09-17
 
 ### Fixed

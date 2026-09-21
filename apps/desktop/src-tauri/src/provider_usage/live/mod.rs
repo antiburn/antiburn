@@ -391,8 +391,9 @@ pub fn summarize_collected(
         if let Some(app) = storage_app {
             match crate::storage_health::checked(app, "provider usage history", result) {
                 Ok(_) => {
-                    let learned = crate::provider_usage::factor::learn(store, now);
+                    let (learned, touched) = crate::provider_usage::factor::learn(store, now);
                     crate::analytics::record_limit_factor_observed(app, &learned);
+                    crate::analytics::record_quota_window_closed(app, store, &touched, now);
                 }
                 Err(_) => {
                     ::tracing::warn!(event = "provider_usage_history_write_failed");
