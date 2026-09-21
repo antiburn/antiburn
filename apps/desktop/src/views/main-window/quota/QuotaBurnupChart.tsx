@@ -126,7 +126,7 @@ interface WindowAxisTick {
  *  a short one, and "now" at the right edge of the open window. The edge
  *  labels always draw; an inner label draws only when it clears both the
  *  label before it and the right edge by `minGapPx`. */
-export function windowAxisTicks(slot: QuotaWindowSlot, minGapPx: number): WindowAxisTick[] {
+function windowAxisTicks(slot: QuotaWindowSlot, minGapPx: number): WindowAxisTick[] {
   const { period, endsAtEpoch } = slot
   const start = period.startsAtEpoch
   const open = endsAtEpoch !== period.resetsAtEpoch
