@@ -19,6 +19,7 @@ pub mod codex_subagents;
 pub mod copilot;
 pub mod cursor;
 pub mod kiro;
+pub mod omp;
 pub mod opencode;
 pub mod path_codec;
 pub mod pi;

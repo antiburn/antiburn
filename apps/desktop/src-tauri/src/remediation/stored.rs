@@ -157,6 +157,7 @@ fn legacy_source_format(value: &str) -> Option<SourceFormat> {
         "OpenCodeJsonl" => SourceFormat::OpenCodeJsonl,
         "OpenCodeSqliteV2" => SourceFormat::OpenCodeSqliteV2,
         "PiV3Jsonl" => SourceFormat::PiV3Jsonl,
+        "OmpV3Jsonl" => SourceFormat::OmpV3Jsonl,
         "CursorJsonl" => SourceFormat::CursorJsonl,
         "CursorCliAgentJsonl" => SourceFormat::CursorCliAgentJsonl,
         "CursorCliStoreDb" => SourceFormat::CursorCliStoreDb,

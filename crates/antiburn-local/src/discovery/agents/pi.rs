@@ -135,6 +135,14 @@ async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
         env_path_when_real_home(home, "PI_CODING_AGENT_DIR").as_deref(),
     )
     .join("sessions");
+    // OMP reads `PI_CODING_AGENT_DIR` too. Without this check, one variable
+    // gives the same tree to both explorers, and Pi mis-parses OMP journals.
+    // The comparison uses the OMP config root, so `PI_CONFIG_DIR` renames and
+    // paths under the OMP tree stay with the OMP explorer.
+    if sessions_dir.starts_with(super::omp::config_root_in(home)) {
+        return Vec::new();
+    }
+
     let mut entries = match tokio::fs::read_dir(&sessions_dir).await {
         Ok(entries) => entries,
         Err(_) => return Vec::new(),

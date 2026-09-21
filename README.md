@@ -18,7 +18,7 @@
 
 A little free desktop app to check your sessions for the most common causes of token burn - sessions that go too deep, subagents that go too hard, skills and MCPs that go unused, etc etc etc.
 
-antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Devin (Windsurf), and Pi. See the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
+antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Devin (Windsurf), Pi, and Oh My Pi. See the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
 
 ## Checks
 

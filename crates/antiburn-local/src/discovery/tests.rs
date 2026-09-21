@@ -923,6 +923,7 @@ fn surface_paths_each_agent_returns_expected_shape() {
         AgentKind::Codex,
         AgentKind::OpenCode,
         AgentKind::AmpCode,
+        AgentKind::Omp,
         AgentKind::Pi,
     ] {
         let sp = Explorers::DISK.surface_paths_for(&ty, &home);

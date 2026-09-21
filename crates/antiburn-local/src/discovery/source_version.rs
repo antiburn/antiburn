@@ -379,7 +379,11 @@ impl super::Explorers {
                 };
                 let streamability = if matches!(
                     descriptor.agent,
-                    AgentKind::Claude | AgentKind::Codex | AgentKind::Pi | AgentKind::Copilot
+                    AgentKind::Claude
+                        | AgentKind::Codex
+                        | AgentKind::Pi
+                        | AgentKind::Omp
+                        | AgentKind::Copilot
                 ) {
                     Streamability::RecordStream
                 } else {

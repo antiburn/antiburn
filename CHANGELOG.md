@@ -20,6 +20,13 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- Oh My Pi (`omp`) sessions under `~/.omp/agent/sessions` are discovered as
+  their own agent. Depth, thinking, and old-model findings can appear; other
+  journal types fail closed, and this version cannot report a clean Burn Check
+  result.
+
 ## [0.7.2] - 2026-09-22
 
 ### Added

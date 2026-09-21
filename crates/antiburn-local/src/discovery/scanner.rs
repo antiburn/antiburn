@@ -1538,6 +1538,12 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_infer_agent_type_omp() {
+        let path = agents::omp::sample_log_path(Path::new(FAKE_HOME));
+        assert_eq!(Explorers::DISK.infer_agent_type(&path), AgentKind::Omp);
+    }
+
+    #[tokio::test]
     async fn test_infer_agent_type_unknown_defaults_to_claude() {
         let path = Path::new("/tmp/some/random/session.jsonl");
         assert_eq!(Explorers::DISK.infer_agent_type(path), AgentKind::Claude);
@@ -1596,6 +1602,11 @@ mod tests {
     #[tokio::test]
     async fn test_agent_type_display_pi() {
         assert_eq!(AgentKind::Pi.to_string(), "pi");
+    }
+
+    #[tokio::test]
+    async fn test_agent_type_display_omp() {
+        assert_eq!(AgentKind::Omp.to_string(), "omp");
     }
 
     #[tokio::test]

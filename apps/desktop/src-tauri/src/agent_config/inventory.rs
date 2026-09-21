@@ -338,6 +338,7 @@ pub fn advisory_resource_inventory<'a>(
         AgentKind::Windsurf => {
             devin_inventory(&mut builder, &home, cwd.as_deref(), trusted_root.as_deref())
         }
+        AgentKind::Omp => {}
     }
     merge_indexed(&mut builder, indexed);
     Ok(builder.finish())
@@ -2135,6 +2136,7 @@ fn evidence_agent_matches(agent: AgentKind, evidence_agent: &str) -> bool {
         AgentKind::Codex => evidence_agent == "codex",
         AgentKind::OpenCode => evidence_agent == "opencode",
         AgentKind::Pi => evidence_agent == "pi",
+        AgentKind::Omp => evidence_agent == "omp",
         AgentKind::Cursor => matches!(evidence_agent, "cursor" | "cursor-ide"),
         AgentKind::Copilot => matches!(evidence_agent, "copilot" | "github-copilot"),
         AgentKind::Cline => evidence_agent == "cline",

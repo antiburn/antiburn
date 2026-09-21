@@ -802,6 +802,7 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
         (AgentKind::Claude, _) => SourceFormat::ClaudeJsonl,
         (AgentKind::Codex, _) => SourceFormat::CodexRolloutJsonl,
         (AgentKind::Pi, _) => SourceFormat::PiV3Jsonl,
+        (AgentKind::Omp, _) => SourceFormat::OmpV3Jsonl,
         (AgentKind::OpenCode, SessionSource::ProviderDb { .. }) => SourceFormat::OpenCodeSqliteV2,
         (AgentKind::OpenCode, _) => SourceFormat::OpenCodeJsonl,
         (AgentKind::Cursor, SessionSource::ProviderDb { db_path, .. })

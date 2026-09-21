@@ -103,6 +103,12 @@ const AGENTS: Record<string, AgentInfo> = {
     defaultSurface: "cli",
     supportsAnalysis: true,
   },
+  omp: {
+    displayName: "Oh My Pi",
+    icon: "omp",
+    defaultSurface: "cli",
+    supportsAnalysis: true,
+  },
 }
 
 /** Every agent slug the registry knows, in declaration order. */

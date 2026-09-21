@@ -61,42 +61,7 @@ impl SessionReader for PiSessionReader {
         input: &SessionInput,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
-        (|| -> anyhow::Result<VisitOutcome> {
-            let state = match &input.source {
-                RawSource::File(path) => self.visit_reader(
-                    BufReader::new(File::open(path)?),
-                    &|| false,
-                    sink,
-                    PiStreamState::default(),
-                )?,
-                RawSource::Jsonl(content) => {
-                    let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
-                    let source = Cursor::new(content.as_bytes()).chain(suffix);
-                    self.visit_reader(
-                        BufReader::new(source),
-                        &|| false,
-                        sink,
-                        PiStreamState::default(),
-                    )?
-                }
-                RawSource::Sqlite(_) => {
-                    anyhow::bail!("sqlite source must be handled by the sqlite adapter")
-                }
-                RawSource::ClineBundle { .. } => anyhow::bail!("Cline bundle is not a Pi source"),
-                RawSource::KiroCliV2Bundle { .. } => {
-                    anyhow::bail!("Kiro bundle is not a Pi source")
-                }
-                RawSource::KiroCliV3Bundle { .. } => {
-                    anyhow::bail!("Kiro bundle is not a Pi source")
-                }
-                RawSource::CopilotCliBundle { .. } => {
-                    anyhow::bail!("Copilot bundle is not a Pi source")
-                }
-            };
-            sink.finish(state.finish());
-            Ok(VisitOutcome::Unvalidated)
-        })()
-        .context("reading Pi session")
+        self.visit_dialect(input, sink, PiDialect::PI)
     }
 
     fn visit_claimed(
@@ -107,7 +72,7 @@ impl SessionReader for PiSessionReader {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
-        PiSessionReader::visit_claimed(self, input, claim, guarantee, cancel, sink)
+        self.visit_claimed_dialect(input, claim, guarantee, cancel, sink, PiDialect::PI)
     }
 
     fn visit_claimed_resumed(
@@ -118,7 +83,7 @@ impl SessionReader for PiSessionReader {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<ResumedVisit> {
-        PiSessionReader::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+        self.visit_claimed_resumed_dialect(input, claim, resume, cancel, sink, PiDialect::PI)
     }
 
     fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
@@ -148,9 +113,74 @@ impl PiSessionReader {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
+        self.visit_claimed_dialect(input, claim, guarantee, cancel, sink, PiDialect::PI)
+    }
+
+    /// Reads a whole unclaimed source in `dialect`.
+    pub(crate) fn visit_dialect(
+        &self,
+        input: &SessionInput,
+        sink: &mut dyn RecordSink,
+        dialect: PiDialect,
+    ) -> anyhow::Result<VisitOutcome> {
+        let label = dialect.label;
+        (|| -> anyhow::Result<VisitOutcome> {
+            let state = match &input.source {
+                RawSource::File(path) => self.visit_reader_dialect(
+                    BufReader::new(File::open(path)?),
+                    &|| false,
+                    sink,
+                    PiStreamState::default(),
+                    dialect,
+                )?,
+                RawSource::Jsonl(content) => {
+                    let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
+                    let source = Cursor::new(content.as_bytes()).chain(suffix);
+                    self.visit_reader_dialect(
+                        BufReader::new(source),
+                        &|| false,
+                        sink,
+                        PiStreamState::default(),
+                        dialect,
+                    )?
+                }
+                RawSource::Sqlite(_) => {
+                    anyhow::bail!("sqlite source must be handled by the sqlite adapter")
+                }
+                RawSource::ClineBundle { .. } => {
+                    anyhow::bail!("Cline bundle is not a {label} source")
+                }
+                RawSource::KiroCliV2Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a {label} source")
+                }
+                RawSource::KiroCliV3Bundle { .. } => {
+                    anyhow::bail!("Kiro bundle is not a {label} source")
+                }
+                RawSource::CopilotCliBundle { .. } => {
+                    anyhow::bail!("Copilot bundle is not a {label} source")
+                }
+            };
+            sink.finish(state.finish());
+            Ok(VisitOutcome::Unvalidated)
+        })()
+        .with_context(|| format!("reading {label} session"))
+    }
+
+    /// Reads a claimed source in `dialect`. The pin, boundary, and recheck
+    /// rules are the same for every Pi-family producer.
+    pub(crate) fn visit_claimed_dialect(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        guarantee: AppendOnlyGuarantee,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+        dialect: PiDialect,
+    ) -> anyhow::Result<VisitOutcome> {
+        let label = dialect.label;
         (|| -> anyhow::Result<VisitOutcome> {
             let RawSource::File(path) = &input.source else {
-                anyhow::bail!("a claimed Pi source must be a file");
+                anyhow::bail!("a claimed {label} source must be a file");
             };
             let mut pinned = match PinnedSource::open(path, claim.clone())? {
                 Ok(pinned) => pinned,
@@ -160,11 +190,12 @@ impl PiSessionReader {
                 AppendOnlyGuarantee::Evidenced => claim.boundary,
                 AppendOnlyGuarantee::Absent => u64::MAX,
             };
-            let state = self.visit_reader(
+            let state = self.visit_reader_dialect(
                 BufReader::new(pinned.reader(limit)),
                 cancel,
                 sink,
                 PiStreamState::default(),
+                dialect,
             )?;
             let outcome = match guarantee {
                 AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
@@ -184,7 +215,7 @@ impl PiSessionReader {
             sink.finish(state.finish());
             Ok(outcome)
         })()
-        .context("reading claimed Pi session")
+        .with_context(|| format!("reading claimed {label} session"))
     }
 
     /// Streams a file from a verified [`StreamSnapshot`], restoring
@@ -204,6 +235,20 @@ impl PiSessionReader {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<ResumedVisit> {
+        self.visit_claimed_resumed_dialect(input, claim, resume, cancel, sink, PiDialect::PI)
+    }
+
+    /// The `dialect` form of [`PiSessionReader::visit_claimed_resumed`].
+    pub(crate) fn visit_claimed_resumed_dialect(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        resume: &StreamSnapshot,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+        dialect: PiDialect,
+    ) -> anyhow::Result<ResumedVisit> {
+        let label = dialect.label;
         (|| -> anyhow::Result<ResumedVisit> {
             anyhow::ensure!(
                 resume.is_current(),
@@ -211,7 +256,7 @@ impl PiSessionReader {
                 resume.revision
             );
             let RawSource::File(path) = &input.source else {
-                anyhow::bail!("a claimed Pi source must be a file");
+                anyhow::bail!("a claimed {label} source must be a file");
             };
             let mut pinned = match PinnedSource::open_resumed(path, claim.clone(), &resume.resume)?
             {
@@ -223,13 +268,14 @@ impl PiSessionReader {
                     });
                 }
             };
-            let initial_state: PiStreamState =
-                postcard::from_bytes(&resume.adapter.0).context("decoding Pi adapter snapshot")?;
-            let state = self.visit_reader(
+            let initial_state: PiStreamState = postcard::from_bytes(&resume.adapter.0)
+                .with_context(|| format!("decoding {label} adapter snapshot"))?;
+            let state = self.visit_reader_dialect(
                 BufReader::new(pinned.reader_from(resume.resume.offset, u64::MAX)),
                 cancel,
                 sink,
                 initial_state,
+                dialect,
             )?;
             let outcome = match pinned.recheck_full()? {
                 Some(reason) => VisitOutcome::SourceChanged(reason),
@@ -241,7 +287,8 @@ impl PiSessionReader {
                     resume: None,
                 });
             }
-            let adapter = postcard::to_allocvec(&state).context("encoding Pi adapter snapshot")?;
+            let adapter = postcard::to_allocvec(&state)
+                .with_context(|| format!("encoding {label} adapter snapshot"))?;
             let new_resume = pinned.resume_point()?;
             sink.finish(state.finish());
             Ok(ResumedVisit {
@@ -252,7 +299,7 @@ impl PiSessionReader {
                 }),
             })
         })()
-        .context("reading resumed Pi session")
+        .with_context(|| format!("reading resumed {label} session"))
     }
 
     /// Streams `reader` starting from `state`, so a resumed pass can carry
@@ -260,13 +307,15 @@ impl PiSessionReader {
     /// from `PiStreamState::default()`. Returns the state at the end of the
     /// stream, not yet reduced to a [`SessionSummary`]: the caller decides
     /// whether to snapshot it before calling [`PiStreamState::finish`].
-    fn visit_reader(
+    pub(crate) fn visit_reader_dialect(
         &self,
         reader: impl BufRead,
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
         mut state: PiStreamState,
+        dialect: PiDialect,
     ) -> anyhow::Result<PiStreamState> {
+        let label = dialect.label;
         let mut reader = BoundedJsonlReader::new(reader);
 
         while let Some(record) = reader.next_record(cancel) {
@@ -277,26 +326,82 @@ impl PiSessionReader {
                         state.reject_admission();
                     }
                     RecordSkip::ReadFailed { index, kind } => {
-                        anyhow::bail!("Pi record {index} read failed: {kind:?}");
+                        anyhow::bail!("{label} record {index} read failed: {kind:?}");
                     }
                     RecordSkip::Cancelled { index } => {
-                        anyhow::bail!("Pi record {index} read was cancelled");
+                        anyhow::bail!("{label} record {index} read was cancelled");
                     }
                 },
                 FramedRecord::Complete { bytes, .. } => {
                     let record = std::str::from_utf8(bytes)
-                        .context("Pi transcript record is not valid UTF-8")?;
+                        .with_context(|| format!("{label} transcript record is not valid UTF-8"))?;
                     let Ok(value) = serde_json::from_str::<Value>(record) else {
                         sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
                         state.reject_admission();
                         continue;
                     };
+                    // The prologue sits before the header. A later record with
+                    // the same shape is a normal record and stays admitted.
+                    if state.is_awaiting_header() && (dialect.prologue)(bytes, &value) {
+                        continue;
+                    }
+                    // A row can be valid Pi input and still sit outside this
+                    // producer's characterized contract. Such a row fails
+                    // closed here instead of reaching the shared handler.
+                    if !(dialect.admits)(&value) {
+                        unrecognized(
+                            value
+                                .get("type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown"),
+                            sink,
+                        );
+                        state.reject_admission();
+                        continue;
+                    }
                     state.observe_admitted(value, sink);
                 }
             }
         }
 
         Ok(state)
+    }
+}
+
+/// One producer in the Pi journal family.
+///
+/// Pi and Oh My Pi write overlapping version 3 records, so one implementation
+/// streams both. They differ in the file prologue, in the record kinds each
+/// contract accepts, and in the name that error context shows. This
+/// descriptor holds those differences.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PiDialect {
+    /// The producer name that error context shows.
+    label: &'static str,
+    /// Tells if a record before the session header is a producer prologue
+    /// that the reader must drop. It receives the raw record bytes, so a
+    /// fixed-width slot can check its physical size.
+    prologue: fn(&[u8], &Value) -> bool,
+    /// Tells if a record is inside this producer's characterized contract.
+    /// A record outside it becomes an unrecognized type.
+    admits: fn(&Value) -> bool,
+}
+
+impl PiDialect {
+    /// Pi writes the session header first, so it has no prologue. Its own
+    /// row handler decides which record kinds it accepts.
+    pub(crate) const PI: Self = Self::new("Pi", |_, _| false, |_| true);
+
+    pub(crate) const fn new(
+        label: &'static str,
+        prologue: fn(&[u8], &Value) -> bool,
+        admits: fn(&Value) -> bool,
+    ) -> Self {
+        Self {
+            label,
+            prologue,
+            admits,
+        }
     }
 }
 
@@ -320,7 +425,7 @@ struct PiSubagentCall {
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
-struct PiStreamState {
+pub(crate) struct PiStreamState {
     admission: PiAdmission,
     admission_checked: bool,
     /// The header version after applying Pi's documented read-time migrations.
@@ -356,7 +461,7 @@ struct PiStreamState {
 }
 
 #[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
-enum PiAdmission {
+pub(crate) enum PiAdmission {
     #[default]
     AwaitingHeader,
     Accepted,
@@ -364,13 +469,17 @@ enum PiAdmission {
 }
 
 impl PiStreamState {
-    fn reject_admission(&mut self) {
+    pub(crate) fn reject_admission(&mut self) {
         if matches!(self.admission, PiAdmission::AwaitingHeader) {
             self.admission = PiAdmission::Rejected;
         }
     }
 
-    fn observe_admitted(&mut self, value: Value, sink: &mut dyn RecordSink) {
+    pub(crate) fn is_awaiting_header(&self) -> bool {
+        matches!(self.admission, PiAdmission::AwaitingHeader)
+    }
+
+    pub(crate) fn observe_admitted(&mut self, value: Value, sink: &mut dyn RecordSink) {
         self.admission_checked = true;
         match self.admission {
             PiAdmission::Accepted => self.observe(value, sink),
@@ -1103,7 +1212,7 @@ impl PiStreamState {
         }
     }
 
-    fn finish(self) -> SessionSummary {
+    pub(crate) fn finish(self) -> SessionSummary {
         let mut coverage_gaps: Vec<PartialReason> = self
             .fork_attribution_incomplete
             .then_some(PartialReason::AttributionIncomplete)

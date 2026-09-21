@@ -35,6 +35,8 @@ pub enum AgentKind {
     Antigravity,
     #[serde(rename = "windsurf")]
     Windsurf,
+    #[serde(rename = "omp")]
+    Omp,
     #[serde(rename = "pi")]
     Pi,
 }
@@ -59,6 +61,7 @@ impl AgentKind {
         AgentKind::AmpCode,
         AgentKind::Antigravity,
         AgentKind::Windsurf,
+        AgentKind::Omp,
         AgentKind::Pi,
     ];
 
@@ -75,6 +78,7 @@ impl AgentKind {
             AgentKind::AmpCode => "amp-code",
             AgentKind::Antigravity => "antigravity",
             AgentKind::Windsurf => "windsurf",
+            AgentKind::Omp => "omp",
             AgentKind::Pi => "pi",
         }
     }
@@ -100,6 +104,7 @@ impl AgentKind {
             AgentKind::AmpCode => "Amp",
             AgentKind::Antigravity => "Antigravity",
             AgentKind::Windsurf => "Devin",
+            AgentKind::Omp => "Oh My Pi",
             AgentKind::Pi => "Pi",
         }
     }
