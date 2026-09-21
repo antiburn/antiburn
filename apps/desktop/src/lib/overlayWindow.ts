@@ -15,6 +15,11 @@ export async function tearOffOverlayWindow(): Promise<boolean> {
   return (await invoke<boolean>("tear_off_overlay")) === true
 }
 
+/** Tell the shell why a drag ended, for its log. `reason` is the event type. */
+export function reportHudDragEnded(reason: string, originKnown: boolean): Promise<void> {
+  return invoke("hud_drag_ended", { reason, originKnown })
+}
+
 /** Bring a docked HUD in for a while. The shell logs `reason`. */
 export function wakeOverlayWindow(reason: "activity" | "burn" | "reset"): Promise<void> {
   return invoke("wake_overlay", { reason })

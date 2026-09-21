@@ -71,6 +71,7 @@ permissions = [
   "allow-show-hud-detail",
   "allow-start-update-simulation",
   "allow-take-hud-analytics-origin",
+  "allow-hud-drag-ended",
   "allow-tear-off-overlay",
   "allow-wake-overlay",
   "allow-hud-island-available",

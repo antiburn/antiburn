@@ -34,6 +34,7 @@ import {
   isHudTokenMapEnabled,
   onOverlayWorkChanged,
   recordHudPosition,
+  reportHudDragEnded,
   setFloatingHudEnabled,
   takeHudAnalyticsOrigin,
   tearOffOverlayWindow,
@@ -942,8 +943,9 @@ export class OverlaySession {
     )
   }
 
-  private stopDrag = (): void => {
+  private stopDrag = (event: Event): void => {
     if (!this.snapshot.dragging) return
+    void reportHudDragEnded(event.type, this.dragOrigin != null).catch(() => {})
     this.settleDrag()
     // The drag is what makes this display the preferred one, so the record
     // happens here and not in `settleDrag`, which a failed drag start shares.

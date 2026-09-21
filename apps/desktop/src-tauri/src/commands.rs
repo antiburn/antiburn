@@ -270,6 +270,15 @@ pub async fn open_overlay_window(
     Ok(())
 }
 
+/// Log why a HUD drag ended. The webview cannot write the shell log itself.
+///
+/// `reason` is the DOM event type that ended the drag. `origin_known` is
+/// false when the drag ended before the webview read the window position.
+#[tauri::command]
+pub fn hud_drag_ended(reason: String, origin_known: bool) {
+    ::tracing::info!(event = "hud_drag_ended", reason, origin_known);
+}
+
 /// Free a docked HUD: a drag started on it.
 ///
 /// While the drag runs, the HUD previews the island when a drop would make
