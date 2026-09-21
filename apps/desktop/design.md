@@ -19,6 +19,7 @@ sources:
   - src/components/ui/text-roll.css
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
+  - src/components/ui/hero-figures.css
   - src/views/main-window/quota/quota.css
 colors:
   # Concrete token colors use modern HSL function syntax.
@@ -586,6 +587,12 @@ Notes for what isn't expressible as a token:
   Finding rows have no separator lines. “Recent” sits at the left
   of the sessions header, on the same baseline as “All sessions”, with both using
   `type-caption text-label-secondary`. The width stays local to `overview.css`.
+
+- **Hero figures** — the Overview's spend totals and the Limits header share the
+  `hero-figures` grid (`src/components/ui/hero-figures.css`): one cell per figure,
+  each a `type-callout text-label-secondary` label over a `type-hero-figure font-mono`
+  number and a `type-caption text-label-tertiary` caption, with a 1px separator and
+  16px inline padding between cells. The cells stack below 540px of container width.
 
 - **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
   a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.
