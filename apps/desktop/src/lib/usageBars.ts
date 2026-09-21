@@ -194,3 +194,31 @@ export function resetsIn(resetsAt: Date | null, now: number): string {
   if (milliseconds <= 0) return "resets soon"
   return `resets in ${durationUntil(resetsAt, now)}`
 }
+
+/**
+ * The time to the soonest known reset, in the fewest characters.
+ *
+ * The island wing holds four or five characters. The figure drops the spaces
+ * and, past a day, the minutes: "42m", "3h20", "6d6h". Null when no bar
+ * knows its reset.
+ */
+export function nearestResetFigure(bars: readonly UsageBarItem[], now: number): string | null {
+  let soonest: Date | null = null
+  for (const bar of bars) {
+    if (bar.resetsAt && (!soonest || bar.resetsAt.getTime() < soonest.getTime())) {
+      soonest = bar.resetsAt
+    }
+  }
+  if (!soonest) return null
+  const minutes = Math.ceil((soonest.getTime() - now) / 60_000)
+  if (minutes <= 0) return "soon"
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) {
+    const remaining = minutes % 60
+    return remaining > 0 ? `${hours}h${String(remaining).padStart(2, "0")}` : `${hours}h`
+  }
+  const days = Math.floor(hours / 24)
+  const remainingHours = hours % 24
+  return remainingHours > 0 ? `${days}d${remainingHours}h` : `${days}d`
+}

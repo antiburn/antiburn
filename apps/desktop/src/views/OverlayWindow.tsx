@@ -5,7 +5,7 @@ import { LedBar } from "../components/ui/LedBar"
 import { Confetti } from "../components/ui/Confetti"
 import { TokenMap } from "../components/ui/TokenMap"
 import { formatRate, frameColor } from "../lib/tokenMap"
-import { blockedBars, resetsIn } from "../lib/usageBars"
+import { blockedBars, nearestResetFigure, resetsIn } from "../lib/usageBars"
 import { OverlaySession, type OverlaySnapshot } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
@@ -149,10 +149,10 @@ function IslandPanel({
   //   ? `var(--color-mode-${state.tokenMap.liveMode})`
   //   : "var(--color-brand-tint)"
   const liveColor = "var(--color-brand-tint)"
-  // The spend-rate figure is off for now: the right wing holds the mark
-  // until a figure earns the place.
+  // The spend-rate figure is off for now. The right wing counts down to the
+  // soonest reset instead: the number the reader opens the island for.
   // const figure = state.spendFigure
-  const figure: string | null = null
+  const reset = nearestResetFigure(state.bars, state.now)
 
   return (
     <div
@@ -187,21 +187,21 @@ function IslandPanel({
           style={preview ? undefined : { width: island.notch }}
         />
         <div className="flex shrink-0 items-center justify-center" style={wing}>
-          {figure ? (
+          {reset ? (
             <span
-              data-testid="island-spend"
-              // The unit sits under the figure: alone, "$.26" reads as a total.
+              data-testid="island-reset"
+              // The word sits under the figure: alone, "3h20" names no event.
               className="led-caption type-footnote text-hud-island-ink flex flex-col items-center gap-0.5 leading-none"
             >
-              <span>{figure}</span>
-              <span className="opacity-60">/min</span>
+              <span>{reset}</span>
+              <span className="opacity-60">reset</span>
             </span>
           ) : (
             <span
               data-testid="island-mark"
               aria-label="antiburn"
-              // The mark, cut from the island ink: no burn to price, so the
-              // wing says whose island this is.
+              // The mark, cut from the island ink: no reset to count down to,
+              // so the wing says whose island this is.
               className="size-3 bg-hud-island-ink opacity-60"
               style={{
                 maskImage: `url(${markUrl})`,

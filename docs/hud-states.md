@@ -147,9 +147,11 @@ it out, or press the same button again, to leave. It is a third placement beside
 crate stores it with the dock state.
 
 - **Collapsed.** The island is the notch row alone, so the notch covers all
-  of it but the wings. The left wing holds the live mark. The right wing holds
-  the antiburn mark, cut from the island ink. The spend-rate figure with
-  `/min` under it is off for now. The live mark is a short
+  of it but the wings. The left wing holds the live mark. The right wing
+  counts down to the soonest known reset, `3h20` over the word `reset`, and
+  holds the antiburn mark, cut from the island ink, when no bar knows its
+  reset. The spend-rate figure with `/min` under it is off for now. The live
+  mark is a short
   bar, not a dot, because a round light beside the lens reads as the camera
   light. It takes the brand colour; the mode colour is off for now. It pulses
   between three-quarters and one-third opacity on the spend-rate period, and
