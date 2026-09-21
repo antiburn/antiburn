@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-quota-usage"
+description = "Enables the get_quota_usage command without any pre-configured scope."
+commands.allow = ["get_quota_usage"]
+
+[[permission]]
+identifier = "deny-get-quota-usage"
+description = "Denies the get_quota_usage command without any pre-configured scope."
+commands.deny = ["get_quota_usage"]

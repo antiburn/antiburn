@@ -13,7 +13,7 @@ name: Release engine
 
 on:
   push:
-    tags: ['antiburn-local-v*']
+    tags: ["antiburn-local-v*"]
 
 permissions:
   contents: read
@@ -23,8 +23,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '24'
-  RUST_TOOLCHAIN: '1.97.0'
+  NODE_VERSION: "24"
+  RUST_TOOLCHAIN: "1.97.0"
 
 jobs:
   verify:
@@ -156,6 +156,9 @@ jobs:
           # `HEAD` rather than "$TAG": the checkout is the tagged commit either
           # way, and this does not depend on the tag ref surviving the fetch.
           git archive --format=tar HEAD:crates/antiburn-local | tar -x -C "$stage"
+          git archive --format=tar HEAD -- \
+            docs/check-coverage.md docs/session-coverage.md docs/support.md \
+            | tar -x -C "$stage"
           # Include the project licence and notice in the source tarball.
           cp LICENSE NOTICE THIRD_PARTY_NOTICES "$stage/"
           test -f "$stage/Cargo.toml"
@@ -172,6 +175,16 @@ jobs:
           # fails the step.
           tar --list --file "dist/${name}.tar.gz" > "${RUNNER_TEMP}/tarball-listing.txt"
           head -n 20 "${RUNNER_TEMP}/tarball-listing.txt"
+
+      - name: Test the extracted source archive
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive_test=$(mktemp -d "${RUNNER_TEMP}/engine-archive-test.XXXXXX")
+          tar -xzf "dist/antiburn-local-${VERSION}.tar.gz" -C "$archive_test"
+          cd "$archive_test/antiburn-local-${VERSION}"
+          cargo test --locked
 
       - name: Inventory the engine dependency tree
         env:
@@ -263,7 +276,7 @@ jobs:
             echo
             echo "Nothing is published yet. Follow \`docs/runbooks/release.md\`."
             echo
-            echo "The workflow verified this exact main SHA, the deterministic source archive, inventory, and checksums. Manual review remains responsible for extracting the archive, running its consumer test, and reading the release notes."
+            echo "The workflow verified this exact main SHA, the deterministic source archive, its full test suite after extraction, inventory, and checksums. Manual review remains responsible for inspecting the archive and reading the release notes."
             echo
             echo "| Asset | SHA-256 |"
             echo "| --- | --- |"
