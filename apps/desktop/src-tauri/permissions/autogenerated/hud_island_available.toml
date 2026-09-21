@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hud-island-available"
+description = "Enables the hud_island_available command without any pre-configured scope."
+commands.allow = ["hud_island_available"]
+
+[[permission]]
+identifier = "deny-hud-island-available"
+description = "Denies the hud_island_available command without any pre-configured scope."
+commands.deny = ["hud_island_available"]

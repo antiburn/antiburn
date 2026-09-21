@@ -9,18 +9,37 @@ import {
   hideHudDetail,
   isOverlayWorkActive,
   onLiveUsageChanged,
+  refreshLiveUsage,
   resizeOverlayWindow,
-  showHudDetail,
-  type HudDetailState,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
 import { hasWorkingActivity, liveSessions } from "../../lib/sessionLifecycle"
 import {
+  getHudTokenMap,
+  showHudDetail,
+  type HudDetailState,
+  type HudSpendRate,
+} from "../../lib/hudIpc"
+import { devSpendRate, withDevBlock, type HudDevOverride } from "../../lib/hudDev"
+import {
+  expandHudIsland,
+  getHudIslandState,
+  HUD_ISLAND_OFF,
+  islandSpendFigure,
+  onHudIslandState,
+  type HudIslandState,
+} from "../../lib/hudIsland"
+import { BurnWakeTracker, activityWake } from "../../lib/hudWake"
+import {
   hideOverlayWindow,
+  isHudTokenMapEnabled,
   onOverlayWorkChanged,
   recordHudPosition,
+  reportHudDragEnded,
   setFloatingHudEnabled,
   takeHudAnalyticsOrigin,
+  tearOffOverlayWindow,
+  wakeOverlayWindow,
 } from "../../lib/overlayWindow"
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
@@ -31,15 +50,47 @@ import {
   type ProviderModels,
 } from "../../lib/sessionLiveness"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
-import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
+import { blinkPeriod, describeSpend } from "../../lib/ledPeriod"
+import {
+  agentCount,
+  deriveTokenMap,
+  frameColor,
+  mapVisible,
+  type TokenMapLayout,
+} from "../../lib/tokenMap"
+// import { playPop } from "../../lib/hudSounds"
+import {
+  blockedBars,
+  deriveUsageBars,
+  limitsReset,
+  noMeterSelected,
+  resetDue,
+  type UsageBarItem,
+} from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
 const SHOW_DELAY_MS = 400
+/** Travel in screen pixels before a mouse-down on the island becomes a drag. */
+const ISLAND_DRAG_THRESHOLD_PX = 10
+/** How long a drag outlives a window blur while the button may still be down. */
+const DRAG_BLUR_GRACE_MS = 250
+const TOKEN_MAP_WINDOW_SECS = 300
+const TOKEN_MAP_POLL_MS = 5_000
+/** How long the reset message and its confetti stay. */
+const CELEBRATION_MS = 6_000
+
+const EMPTY_TOKEN_MAP = deriveTokenMap(null)
 
 export type OverlaySnapshot = {
   bars: UsageBarItem[]
   hovered: boolean
+  /** True while the window follows the pointer. */
   dragging: boolean
+  /**
+   * True from a mouse-down on the island until the pointer travels far
+   * enough to tear it off, or lets go. The island shows as a ghost.
+   */
+  dragArmed: boolean
   /** Whether any session is live, from the shell's lifecycle bus. */
   sessionLive: boolean
   /** The providers a live session draws on, sorted. Their bars blink. */
@@ -48,16 +99,40 @@ export type OverlaySnapshot = {
   liveModels: ProviderModels
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
+  tokenMap: TokenMapLayout
+  /** True while two or more sessions are live, so the map draws above the bars. */
+  showMap: boolean
+  /** Milliseconds per blink of the live LED. */
+  blinkPeriodMs: number
+  /** The spend rate in words, or null when the window carried no tokens. */
+  spend: string | null
+  /** The spend rate as a figure for the island's wing, or null. */
+  spendFigure: string | null
+  /** Where the HUD sits in the notch, if it does, and the notch's shape. */
+  island: HudIslandState
+  /** The clock the countdown to a reset reads from. */
+  now: number
+  /** The reset message under the bars, or null. */
+  celebration: string | null
 }
 
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
   bars: [],
   hovered: false,
   dragging: false,
+  dragArmed: false,
   sessionLive: false,
   liveProviders: [],
   liveModels: {},
   noMeterSelected: false,
+  tokenMap: EMPTY_TOKEN_MAP,
+  showMap: false,
+  blinkPeriodMs: blinkPeriod(null, null).periodMs,
+  spend: null,
+  spendFigure: null,
+  island: HUD_ISLAND_OFF,
+  now: 0,
+  celebration: null,
 }
 
 type DragOrigin = {
@@ -101,14 +176,37 @@ export class OverlaySession {
   private observer: ResizeObserver | null = null
   private showTimer: number | null = null
   private detailShown = false
+  /** The agent box under the pointer, by blob key, or null over the meter. */
+  private hoverBlob: string | null = null
+  /** The sub-agent whose dot is under the pointer, or null. */
+  private hoverSubagent: string | null = null
+  /** Whether the map showed before the last poll, for its show hysteresis. */
+  private previousShowMap = false
   private usagePoll: number | null = null
+  private tokenMapPoll: number | null = null
+  /** The dot value the map last used, held for a window so a burst does not flicker the scale. */
+  private dotValueFloor = 0
+  private dotValueFloorSince = 0
   private stopWorkListening: (() => void) | null = null
   private stopHoverListening: (() => void) | null = null
   private stopUsageListening: (() => void) | null = null
   private stopLifecycleListening: (() => void) | null = null
   private stopVisibilityListening: (() => void) | null = null
   private stopDetailShownListening: (() => void) | null = null
+  private stopDevListening: (() => void) | null = null
+  private stopIslandListening: (() => void) | null = null
+  /** A spend rate the "HUD Dev" menu pinned, in place of the measured one. */
+  private devSpend: HudSpendRate | null = null
+  /** Until when the "HUD Dev" menu holds the first bar at its limit. */
+  private devBlockUntil = 0
+  private devBlockTimer = 0
+  /** When work last ran, in epoch seconds, for the quiet-spell wake. */
+  private lastEventActivity: number | null = null
+  private burnWake = new BurnWakeTracker()
   private dragOrigin: DragOrigin | null = null
+  /** The pointer at a mouse-down on the island, until the drag begins. */
+  private dragArm: { pointerX: number; pointerY: number } | null = null
+  private blurGrace = 0
   private pendingMove: MouseEvent | null = null
   private moveFrame = 0
   private readonly hudExposure = new SurfaceExposureTracker()
@@ -120,6 +218,10 @@ export class OverlaySession {
   private hudNativeVisible = false
   private detailRevision = 0
   private latestUsage: LiveUsageSummaryPayload | null = null
+  private celebrationTimer = 0
+  /** The reset time a fresh read was already asked for, so it is asked once. */
+  private resetAskedFor = 0
+  private latestSpend: HudSpendRate | null = null
   private usageFailed = false
 
   getSnapshot = (): OverlaySnapshot => this.snapshot
@@ -154,15 +256,38 @@ export class OverlaySession {
     this.hideDetail()
   }
 
+  /** Note the agent box under the pointer. An open detail follows at once. */
+  setHoverBlob = (key: string | null, subagentId: string | null = null): void => {
+    if (this.hoverBlob === key && this.hoverSubagent === subagentId) return
+    this.hoverBlob = key
+    this.hoverSubagent = subagentId
+    if (!this.detailShown) return
+    this.detailRevision += 1
+    void showHudDetail(this.detailState("show")).catch(() => {})
+  }
+
   startDrag = (event: ReactMouseEvent): void => {
     if (
       !this.active ||
       (event.target as HTMLElement).closest("button") ||
-      this.snapshot.dragging
+      this.snapshot.dragging ||
+      this.dragArm
     )
       return
     const { screenX, screenY } = event
-    void this.beginDrag(screenX, screenY, this.activityGeneration)
+    if (this.snapshot.island.island === "off") {
+      void this.beginDrag(screenX, screenY, this.activityGeneration)
+      return
+    }
+    // A press on the island tears nothing off: a click is not a drag. The
+    // open island at reduced opacity shows what a drag would carry away, and
+    // `moveDrag` begins the drag once the pointer travels far enough.
+    this.clearShowTimer()
+    this.hideDetail()
+    this.dragArm = { pointerX: screenX, pointerY: screenY }
+    this.update({ dragArmed: true })
+    this.addDragListeners()
+    void expandHudIsland().catch(() => {})
   }
 
   close = (): void => {
@@ -221,6 +346,7 @@ export class OverlaySession {
       sessionLive: false,
       liveProviders: [],
       liveModels: {},
+      celebration: null,
     })
     this.connectPanel(generation)
     this.resumeHudExposure()
@@ -229,9 +355,14 @@ export class OverlaySession {
       if (!this.isCurrent(generation)) return
       this.latestUsage = response
       this.usageFailed = false
+      const bars = withDevBlock(deriveUsageBars(response), this.devBlockUntil, Date.now())
+      const freed = limitsReset(this.snapshot.bars, bars)
+      if (freed.length > 0) this.celebrate(freed[0]!.providerName)
+      this.update({ now: Date.now() })
       const changed = this.commitLayout({
-        bars: deriveUsageBars(response),
+        bars,
         noMeterSelected: noMeterSelected(response),
+        blinkPeriodMs: blinkPeriod(this.latestSpend, response).periodMs,
       })
       if (changed) void this.syncWindow(true, generation)
       if (changed && this.detailShown) {
@@ -270,14 +401,97 @@ export class OverlaySession {
     const syncLiveness = () => {
       if (!this.isCurrent(generation)) return
       const live = liveSessions.getSnapshot()
+      const working = hasWorkingActivity(live)
+      // A write after a quiet spell wakes a docked HUD. The registry reports
+      // the work, so the wake reads the gap since work last ran.
+      const nowSecs = Date.now() / 1000
+      if (working && activityWake(this.lastEventActivity, nowSecs)) {
+        void wakeOverlayWindow("activity").catch(() => {})
+      }
+      if (working) this.lastEventActivity = nowSecs
       this.update({
-        sessionLive: hasWorkingActivity(live),
+        sessionLive: working,
         liveProviders: liveProviders(live),
         liveModels: liveModels(live),
       })
     }
     this.stopLifecycleListening = liveSessions.subscribe(syncLiveness)
     syncLiveness()
+
+    const refreshTokenMap = () => {
+      this.tickCountdown(applyUsage)
+      if (!isHudTokenMapEnabled()) {
+        this.latestSpend = null
+        this.previousShowMap = false
+        const hadMap = this.snapshot.showMap
+        this.commitLayout({
+          tokenMap: EMPTY_TOKEN_MAP,
+          showMap: false,
+          blinkPeriodMs: blinkPeriod(null, this.latestUsage).periodMs,
+          spend: null,
+          spendFigure: null,
+        })
+        if (hadMap) void this.syncWindow(true, generation)
+        // The detail window spells the map out. It needs the empty state too.
+        if (hadMap && this.detailShown) {
+          void showHudDetail(this.detailState("refresh")).catch(() => {})
+        }
+        return
+      }
+      void getHudTokenMap(TOKEN_MAP_WINDOW_SECS)
+        .then((payload) => {
+          if (!this.isCurrent(generation)) return
+          const tokenMap = deriveTokenMap(payload, { minDotValue: this.dotValueFloor })
+          this.holdDotValue(tokenMap.dotValue, payload?.windowSecs ?? TOKEN_MAP_WINDOW_SECS)
+          this.latestSpend = this.devSpend ?? payload?.spend ?? null
+          if (this.burnWake.observe(this.latestSpend?.usdPerMinute ?? null)) {
+            void wakeOverlayWindow("burn").catch(() => {})
+          }
+          const hadMap = this.snapshot.showMap
+          const showMap = mapVisible(this.previousShowMap, hadMap, agentCount(tokenMap))
+          this.previousShowMap = hadMap
+          this.commitLayout({
+            tokenMap,
+            showMap,
+            blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
+            spend: describeSpend(this.latestSpend),
+            spendFigure: islandSpendFigure(this.latestSpend),
+          })
+          if (hadMap !== showMap) void this.syncWindow(true, generation)
+          if (this.detailShown) {
+            void showHudDetail(this.detailState("refresh")).catch(() => {})
+          }
+        })
+        .catch(() => {})
+    }
+    refreshTokenMap()
+    this.tokenMapPoll = window.setInterval(refreshTokenMap, TOKEN_MAP_POLL_MS)
+
+    if (import.meta.env.DEV) {
+      void listen<HudDevOverride>("hud_dev", (event) => {
+        if (this.isCurrent(generation)) this.applyDevOverride(event.payload, applyUsage)
+      })
+        .then((dispose) => {
+          if (this.isCurrent(generation)) this.stopDevListening = dispose
+          else dispose()
+        })
+        .catch(() => {})
+    }
+
+    // The shell owns the island. The HUD asks once, then follows its events.
+    void getHudIslandState()
+      .then((island) => {
+        if (this.isCurrent(generation)) this.applyIsland(island)
+      })
+      .catch(() => {})
+    void onHudIslandState((island) => {
+      if (this.isCurrent(generation)) this.applyIsland(island)
+    })
+      .then((dispose) => {
+        if (this.isCurrent(generation)) this.stopIslandListening = dispose
+        else dispose()
+      })
+      .catch(() => {})
 
     void listen<boolean>("overlay_hover", (event) => {
       if (this.isCurrent(generation)) this.requestHover(Boolean(event.payload))
@@ -335,6 +549,7 @@ export class OverlaySession {
     this.clearShowTimer()
     this.hideDetail()
     this.clearUsagePoll()
+    this.clearTokenMapPoll()
     this.stopHoverListening?.()
     this.stopHoverListening = null
     this.stopUsageListening?.()
@@ -345,17 +560,34 @@ export class OverlaySession {
     this.stopVisibilityListening = null
     this.stopDetailShownListening?.()
     this.stopDetailShownListening = null
+    this.stopDevListening?.()
+    this.stopDevListening = null
+    this.stopIslandListening?.()
+    this.stopIslandListening = null
+    this.lastEventActivity = null
+    this.burnWake = new BurnWakeTracker()
+    window.clearTimeout(this.celebrationTimer)
+    this.celebrationTimer = 0
+    window.clearTimeout(this.devBlockTimer)
+    this.devBlockTimer = 0
+    this.devBlockUntil = 0
+    this.resetAskedFor = 0
     this.removeDragListeners()
+    this.clearBlurGrace()
     this.observer?.disconnect()
     this.observer = null
     this.dragOrigin = null
+    this.dragArm = null
     this.pendingMove = null
     this.update({
       hovered: false,
       dragging: false,
+      dragArmed: false,
       sessionLive: false,
       liveProviders: [],
       liveModels: {},
+      celebration: null,
+      island: HUD_ISLAND_OFF,
     })
   }
 
@@ -372,11 +604,54 @@ export class OverlaySession {
     this.usagePoll = null
   }
 
+  private clearTokenMapPoll(): void {
+    if (this.tokenMapPoll != null) window.clearInterval(this.tokenMapPoll)
+    this.tokenMapPoll = null
+  }
+
+  /**
+   * Keep the scale from stepping down until a full window has passed. A step
+   * up applies at once, so the square never overflows.
+   */
+  private holdDotValue(dotValue: number, windowSecs: number): void {
+    const now = Date.now()
+    if (dotValue > this.dotValueFloor) {
+      this.dotValueFloor = dotValue
+      this.dotValueFloorSince = now
+      return
+    }
+    if (now - this.dotValueFloorSince >= windowSecs * 1000) {
+      this.dotValueFloor = 0
+      this.dotValueFloorSince = now
+    }
+  }
+
+  /**
+   * Take the island's new shape. The island has no detail card: the open
+   * island names and dates each bar itself. A detail left over from the
+   * floating frame goes away when the HUD lands in the notch.
+   */
+  private applyIsland(island: HudIslandState): void {
+    this.update({ island })
+    if (island.island !== "off") {
+      this.clearShowTimer()
+      this.hideDetail()
+    }
+  }
+
   private armShowTimer(): void {
     if (this.showTimer != null || this.detailShown) return
+    // The island carries its own detail, so it opens no card.
+    if (this.snapshot.island.island !== "off") return
     this.showTimer = window.setTimeout(() => {
       this.showTimer = null
-      if (!this.active || !this.snapshot.hovered || this.snapshot.dragging) return
+      if (
+        !this.active ||
+        !this.snapshot.hovered ||
+        this.snapshot.dragging ||
+        this.snapshot.dragArmed
+      )
+        return
       this.detailShown = true
       const revision = ++this.detailRevision
       const state = this.detailState("show")
@@ -411,6 +686,37 @@ export class OverlaySession {
         resetsAt: bar.resetsAt ? bar.resetsAt.toISOString() : null,
         color: bar.color,
         expectedFraction: bar.expectedFraction,
+      })),
+      map: this.detailMap(),
+      spend: this.snapshot.spend,
+      target: this.detailTarget(),
+      subagent: this.hoverSubagent,
+    }
+  }
+
+  /** The hovered box when it is still on the map, else the usage meter. */
+  private detailTarget(): string {
+    const key = this.hoverBlob
+    if (key != null && this.snapshot.tokenMap.blobs.some((blob) => blob.key === key)) {
+      return key
+    }
+    return "usage"
+  }
+
+  private detailMap(): HudDetailState["map"] {
+    const { tokenMap } = this.snapshot
+    if (tokenMap.dots.length === 0) return null
+    return {
+      dotValue: tokenMap.dotValue,
+      sessions: tokenMap.blobs.map((blob, index) => ({
+        key: blob.key,
+        label: blob.title ?? blob.agent,
+        agent: blob.agent,
+        tokensPerMin: blob.tokensPerMin,
+        topMode: blob.topMode,
+        frameColor: frameColor(index),
+        modes: blob.modes,
+        subagents: blob.subagents,
       })),
     }
   }
@@ -448,7 +754,12 @@ export class OverlaySession {
     this.hudExposure.observe(this.snapshot.bars.length > 0 ? "ready" : "empty", generation)
     if (response && this.hudOrigin === "user") {
       for (const provider of liveDisplayableProviders(response)) {
-        if (!liveWindows(provider).some((window) => window.usedPercent !== null)) continue
+        if (
+          !liveWindows(provider, { includeIdleModelLimits: true }).some(
+            (window) => window.usedPercent !== null,
+          )
+        )
+          continue
         this.hudExposure.observeLiveUsage(response, provider.provider, generation)
       }
     }
@@ -485,16 +796,89 @@ export class OverlaySession {
     })
   }
 
+  /**
+   * Keep the countdown current while a limit blocks a tool. Once the reset
+   * time passes, ask the shell for a fresh read: the cached summary can lag
+   * the reset by minutes, and the HUD should notice on its own.
+   */
+  private tickCountdown(apply: (response: LiveUsageSummaryPayload | null) => void): void {
+    const blocked = blockedBars(this.snapshot.bars)
+    if (blocked.length === 0) return
+    const now = Date.now()
+    this.update({ now })
+    const due = blocked.find((bar) => bar.resetsAt != null && bar.resetsAt.getTime() <= now)
+    if (!due || !resetDue(this.snapshot.bars, now)) return
+    const at = due.resetsAt!.getTime()
+    if (this.resetAskedFor === at) return
+    this.resetAskedFor = at
+    void refreshLiveUsage()
+      .then(apply)
+      .catch(() => {})
+  }
+
+  /** Apply one override from the tray's "HUD Dev" menu. Debug builds only. */
+  private applyDevOverride(
+    override: HudDevOverride,
+    apply: (response: LiveUsageSummaryPayload | null) => void,
+  ): void {
+    switch (override.kind) {
+      case "spend": {
+        this.devSpend = devSpendRate(override.usdPerMinute, TOKEN_MAP_WINDOW_SECS)
+        this.latestSpend = this.devSpend ?? this.latestSpend
+        this.commitLayout({
+          blinkPeriodMs: blinkPeriod(this.latestSpend, this.latestUsage).periodMs,
+          spend: describeSpend(this.latestSpend),
+          spendFigure: islandSpendFigure(this.latestSpend),
+        })
+        return
+      }
+      case "block": {
+        window.clearTimeout(this.devBlockTimer)
+        this.devBlockUntil = Date.now() + override.secs * 1_000
+        apply(this.latestUsage)
+        // The usage poll runs once a minute. This timer ends a shorter block
+        // at the time the menu asked for.
+        this.devBlockTimer = window.setTimeout(() => {
+          this.devBlockTimer = 0
+          apply(this.latestUsage)
+        }, override.secs * 1_000)
+        return
+      }
+      case "celebrate":
+        this.celebrate(this.snapshot.bars[0]?.providerName ?? "claude")
+    }
+  }
+
+  /** Show the reset message with confetti, and peek a docked HUD in. */
+  private celebrate(providerName: string): void {
+    window.clearTimeout(this.celebrationTimer)
+    this.update({ celebration: `${providerName.toLowerCase()} usage reset` })
+    void wakeOverlayWindow("reset").catch(() => {})
+    this.celebrationTimer = window.setTimeout(() => {
+      this.celebrationTimer = 0
+      this.update({ celebration: null })
+    }, CELEBRATION_MS)
+  }
+
   private update(change: Partial<OverlaySnapshot>): boolean {
     const next = { ...this.snapshot, ...change }
     if (
       sameBars(this.snapshot.bars, next.bars) &&
       this.snapshot.hovered === next.hovered &&
       this.snapshot.dragging === next.dragging &&
+      this.snapshot.dragArmed === next.dragArmed &&
       this.snapshot.sessionLive === next.sessionLive &&
       sameList(this.snapshot.liveProviders, next.liveProviders) &&
       sameProviderModels(this.snapshot.liveModels, next.liveModels) &&
-      this.snapshot.noMeterSelected === next.noMeterSelected
+      this.snapshot.noMeterSelected === next.noMeterSelected &&
+      this.snapshot.tokenMap === next.tokenMap &&
+      this.snapshot.showMap === next.showMap &&
+      this.snapshot.blinkPeriodMs === next.blinkPeriodMs &&
+      this.snapshot.spend === next.spend &&
+      this.snapshot.spendFigure === next.spendFigure &&
+      this.snapshot.island === next.island &&
+      this.snapshot.now === next.now &&
+      this.snapshot.celebration === next.celebration
     ) {
       return false
     }
@@ -530,9 +914,20 @@ export class OverlaySession {
   private async beginDrag(screenX: number, screenY: number, generation: number): Promise<void> {
     this.clearShowTimer()
     this.hideDetail()
-    this.update({ dragging: true })
+    this.update({ dragging: true, dragArmed: false })
     this.dragOrigin = null
     this.addDragListeners()
+    // A drag on a docked HUD tears it off. The drop decides whether it docks
+    // again, in `recordHudPosition`. The tear pop is off for now.
+    // The tear-off moves an island window under the pointer, so the origin
+    // read below waits for it.
+    try {
+      await tearOffOverlayWindow()
+      // if (torn) playPop()
+    } catch {
+      // The shell had nothing to free. The drag goes on from where it is.
+    }
+    if (!this.isCurrent(generation) || !this.snapshot.dragging) return
     await this.syncWindow(false, generation)
     if (!this.isCurrent(generation) || !this.snapshot.dragging) return
 
@@ -554,24 +949,38 @@ export class OverlaySession {
       windowX: position.x / scale,
       windowY: position.y / scale,
     }
+    // A move that arrived during the setup applies now.
+    if (this.pendingMove && !this.moveFrame) {
+      this.moveFrame = window.requestAnimationFrame(this.applyDragMove)
+    }
   }
 
   private addDragListeners(): void {
     window.addEventListener("mousemove", this.moveDrag)
     window.addEventListener("mouseup", this.stopDrag, true)
-    window.addEventListener("blur", this.stopDrag)
+    window.addEventListener("blur", this.blurDrag)
   }
 
   private removeDragListeners(): void {
     window.removeEventListener("mousemove", this.moveDrag)
     window.removeEventListener("mouseup", this.stopDrag, true)
-    window.removeEventListener("blur", this.stopDrag)
+    window.removeEventListener("blur", this.blurDrag)
     if (this.moveFrame) window.cancelAnimationFrame(this.moveFrame)
     this.moveFrame = 0
     this.pendingMove = null
   }
 
   private moveDrag = (event: MouseEvent): void => {
+    // The button is still down, so a blur before this was not a release.
+    if (event.buttons & 1) this.clearBlurGrace()
+    const arm = this.dragArm
+    if (arm) {
+      const travel = Math.hypot(event.screenX - arm.pointerX, event.screenY - arm.pointerY)
+      if (travel < ISLAND_DRAG_THRESHOLD_PX) return
+      this.dragArm = null
+      void this.beginDrag(event.screenX, event.screenY, this.activityGeneration)
+      return
+    }
     this.pendingMove = event
     if (!this.moveFrame) this.moveFrame = window.requestAnimationFrame(this.applyDragMove)
   }
@@ -590,18 +999,47 @@ export class OverlaySession {
     )
   }
 
-  private stopDrag = (): void => {
-    if (!this.snapshot.dragging) return
+  private stopDrag = (event: Event): void => {
+    this.endDrag(event.type)
+  }
+
+  /**
+   * Keep the drag through a blur for a grace period.
+   *
+   * The tear-off flips the window's resizable flag, and the shell can take
+   * first responder from the webview as it does, which reads as a blur. A
+   * move with the button down inside the grace cancels it.
+   */
+  private blurDrag = (): void => {
+    if ((!this.snapshot.dragging && !this.dragArm) || this.blurGrace) return
+    this.blurGrace = window.setTimeout(() => {
+      this.blurGrace = 0
+      this.endDrag("blur")
+    }, DRAG_BLUR_GRACE_MS)
+  }
+
+  private clearBlurGrace(): void {
+    if (this.blurGrace) window.clearTimeout(this.blurGrace)
+    this.blurGrace = 0
+  }
+
+  private endDrag(reason: string): void {
+    if (!this.snapshot.dragging && !this.dragArm) return
+    const moved = this.snapshot.dragging
+    if (moved) void reportHudDragEnded(reason, this.dragOrigin != null).catch(() => {})
     this.settleDrag()
     // The drag is what makes this display the preferred one, so the record
     // happens here and not in `settleDrag`, which a failed drag start shares.
-    void recordHudPosition().catch(() => {})
+    // A press that never travelled moved nothing, so it records nothing.
+    if (moved) void recordHudPosition().catch(() => {})
   }
 
   private settleDrag(): void {
     this.removeDragListeners()
+    this.clearBlurGrace()
+    this.dragArm = null
     this.dragOrigin = null
-    this.update({ dragging: false })
+    this.update({ dragging: false, dragArmed: false })
     if (this.snapshot.hovered) this.armShowTimer()
   }
 }

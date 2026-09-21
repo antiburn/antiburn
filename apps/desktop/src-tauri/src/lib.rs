@@ -63,6 +63,8 @@ mod dto;
 mod fork_lineage;
 mod global_click;
 mod hud;
+mod hud_commands;
+mod hud_token_map;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
@@ -190,6 +192,10 @@ pub fn run() {
                 if repeated.setup_ready.load(Ordering::Acquire) {
                     repeated.pending.store(false, Ordering::Release);
                     main_window::on_main(app, |app| {
+                        ::tracing::info!(
+                            event = "main_window_open_source",
+                            source = "second_instance"
+                        );
                         if let Err(error) =
                             open_launch_surface(app, main_window::OpenTrigger::Interaction)
                         {
@@ -292,6 +298,14 @@ pub fn run() {
         // sends it to one still connected, and the display coming back
         // takes it again. The watcher idles while the HUD is closed.
         hud::spawn_display_watcher(app.handle());
+        #[cfg(target_os = "macos")]
+        if app
+            .state::<store::Store>()
+            .settings()
+            .is_ok_and(|settings| settings.onboarding_completed)
+        {
+            hud::restore_at_launch(app.handle());
+        }
 
         // Registered before the update scheduler starts, so the first
         // automatic check can see whether there is anything to check with.
@@ -406,7 +420,15 @@ pub fn run() {
         }
         // Clicking the Dock icon restores the surface the current install owns.
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => {
+        RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            ::tracing::info!(
+                event = "main_window_open_source",
+                source = "dock_reopen",
+                has_visible_windows
+            );
             if let Err(error) = open_launch_surface(app, main_window::OpenTrigger::Interaction) {
                 ::tracing::warn!(
                     event = "launch_surface_open_failed",
