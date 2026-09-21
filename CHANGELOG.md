@@ -20,6 +20,28 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-21
+
+### Added
+
+- Limits has a dedicated workspace for provider and account lanes, five-hour
+  and weekly windows, model-scoped limits, burn-up charts, custom date ranges,
+  and estimated session contributions to a limit.
+- On macOS, the HUD can dock to a display edge. On a Mac with a notch, it can sit in the
+  notch and expand on hover or wake. Its live token map shows active sessions,
+  work modes, spend rate, and reset timing.
+- Session analysis now covers more local agent sources, including AMP thread
+  exports and Devin Local sessions, with partial check results shown when a
+  source cannot prove a clean result.
+
+### Changed
+
+- Provider meters share readings across sessions, while model-scoped
+  activity follows the recorded provider route.
+- Live meter sweeps, HUD animation, and session activity refreshes follow the
+  same lifecycle state across the popover, floating HUD, docked HUD, and Mac
+  notch island.
+
 ### Fixed
 
 - On Linux Wayland sessions whose environment carries `GDK_BACKEND=wayland`
@@ -28,8 +50,12 @@ CI changes, and documentation that no user acts on stay out — see
   through XWayland there and anchors correctly; set
   `ANTIBURN_GDK_BACKEND=wayland` to keep a native Wayland run instead.
 - On a native Wayland run (`ANTIBURN_GDK_BACKEND=wayland`, or a session
-  without an X server), the title-bar Close and Minimize buttons of the
-  main, Settings, and setup windows did nothing. They work now.
+  without an X server), the title-bar Close and Minimize buttons of the main,
+  Settings, and setup windows did nothing. They work now.
+- HUD placement and dragging stay correct across display changes, refreshes,
+  and main-window interactions.
+- Check states and resource details stay clear across the main window, popover,
+  and HUD, including incomplete and snoozed checks.
 
 ## [0.6.2] - 2026-09-17
 
