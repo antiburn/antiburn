@@ -137,14 +137,28 @@ describe("SessionQuotaSection", () => {
     expect(screen.getByText("contributed to 1 window")).toBeTruthy()
   })
 
-  it("counts unbound entries as windows too", () => {
+  it("counts only bound entries as windows, not an unbound one alongside them", () => {
+    render(
+      <SessionQuotaSection
+        sessionQuota={payload([
+          boundEntry({ lane: "lane-a" }),
+          boundEntry({ lane: "lane-b" }),
+          unboundEntry(),
+        ])}
+        onOpenQuota={() => undefined}
+      />,
+    )
+    expect(screen.getByText("contributed to 2 separate windows")).toBeTruthy()
+  })
+
+  it("renders no window count when every entry is unbound", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([unboundEntry(), unboundEntry({ provider: "google" })])}
         onOpenQuota={() => undefined}
       />,
     )
-    expect(screen.getByText("contributed to 2 separate windows")).toBeTruthy()
+    expect(screen.queryByText((text) => text.startsWith("contributed to"))).toBeNull()
   })
 
   it("shows the Measured tag for a shared-meter entry", () => {

@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { QuotaPeriodPayload, QuotaUsagePayload } from "../../../lib/providerUsageIpc"
-import { QuotaBurnupChart, type QuotaBurnupChartProps } from "./QuotaBurnupChart"
+import { QuotaBurnupChart, type QuotaBurnupChartProps, xAxisTicks } from "./QuotaBurnupChart"
 import { quotaBandSpecs } from "./quotaPaths"
 import { quotaBurnupSeries, type QuotaSeries } from "./quotaSeries"
 
@@ -485,5 +485,41 @@ describe("QuotaBurnupChart", () => {
       expect(ticks.length).toBeGreaterThanOrEqual(2)
       expect(ticks[0]!.getAttribute("text-anchor")).toBe("start")
     })
+  })
+})
+
+// No @types/node in this project's tsconfig: reach `process.env` through
+// `globalThis` instead of the untyped global.
+const nodeEnv = (
+  globalThis as unknown as { process: { env: Record<string, string | undefined> } }
+).process.env
+
+describe("xAxisTicks", () => {
+  // Fix the timezone so the test is deterministic wherever it runs.
+  // Melbourne moves its clocks forward in October, so a range crossing
+  // that change exercises the fix in any zone that also has one.
+  let originalTz: string | undefined
+
+  beforeAll(() => {
+    originalTz = nodeEnv.TZ
+    nodeEnv.TZ = "Australia/Melbourne"
+  })
+
+  afterAll(() => {
+    nodeEnv.TZ = originalTz
+  })
+
+  it("keeps every tick at local midnight across a daylight-saving change", () => {
+    // Confirms the TZ override took effect: Melbourne sits 11 hours ahead
+    // of UTC during October daylight saving.
+    expect(new Date(2026, 9, 15, 12, 0, 0).getTimezoneOffset()).toBe(-660)
+
+    const rangeStart = Math.floor(new Date(2026, 8, 15).getTime() / 1000)
+    const rangeEnd = Math.floor(new Date(2026, 10, 15).getTime() / 1000)
+    const ticks = xAxisTicks(rangeStart, rangeEnd)
+    expect(ticks.length).toBeGreaterThan(1)
+    for (const t of ticks) {
+      expect(new Date(t * 1000).getHours()).toBe(0)
+    }
   })
 })

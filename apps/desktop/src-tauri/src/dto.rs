@@ -697,7 +697,10 @@ pub struct SessionQuotaEntryPayload {
     /// `"measured"` when every one of the session's buckets fell in a
     /// shared meter segment, `"learned"` or `"seeded"` from the factor
     /// otherwise, or `"unbound"` when the session has no resolved account
-    /// for the provider its usage attributes to.
+    /// for the provider its usage attributes to. Also `"measured"` when the
+    /// lane has no factor point yet: `percent` then covers only the buckets
+    /// inside a shared meter segment, while `usd` still covers every bucket
+    /// in the window.
     pub confidence: String,
     /// The plan the account's newest observation reported, or `None` before
     /// any reading names one.

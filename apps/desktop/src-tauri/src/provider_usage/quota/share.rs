@@ -277,6 +277,12 @@ pub fn share_period(input: &ShareInput<'_>) -> SharedPeriod {
 /// reach. An open window is never capped: its factor-priced tail can still
 /// move before the window closes, so this function returns `share_period`'s
 /// own result unchanged.
+///
+/// A meter regression clamps its segment's rise to zero instead of going
+/// negative. That clamp can double-count the real rise across the segments
+/// on either side of the regression, so even after the synthetic reading the
+/// capped stack can still exceed 100. As a last step, this function scales
+/// the whole capped stack down to 100 whenever that happens.
 pub fn share_period_capped(input: &ShareInput<'_>, now: i64) -> SharedPeriod {
     let uncapped = share_period(input);
     let total: f64 = uncapped.bucket_percent.iter().flatten().sum::<f64>()
@@ -307,14 +313,42 @@ pub fn share_period_capped(input: &ShareInput<'_>, now: i64) -> SharedPeriod {
     };
     let capped = share_period(&capped_input);
 
+    // A regression's clamp can double-count the real rise, so even the
+    // capped stack can still run past 100. Scale every priced bucket and
+    // every unexplained entry down to a stack of exactly 100 when that
+    // happens; each one keeps its own share of the total.
+    let capped_total: f64 = capped.bucket_percent.iter().flatten().sum::<f64>()
+        + capped
+            .unexplained
+            .iter()
+            .map(|&(_, percent)| percent)
+            .sum::<f64>();
+    let (bucket_percent, unexplained) = if capped_total > 100.0 {
+        let scale = 100.0 / capped_total;
+        (
+            capped
+                .bucket_percent
+                .into_iter()
+                .map(|percent| percent.map(|value| value * scale))
+                .collect(),
+            capped
+                .unexplained
+                .into_iter()
+                .map(|(t, percent)| (t, percent * scale))
+                .collect(),
+        )
+    } else {
+        (capped.bucket_percent, capped.unexplained)
+    };
+
     // `coverage_until` and `meter_regressions` describe the real meter, not
     // the synthetic close, so keep the uncapped run's own values: the
     // synthetic reading can never itself regress (100 is the meter's
     // maximum), but state the uncapped count explicitly rather than assume
     // it.
     SharedPeriod {
-        bucket_percent: capped.bucket_percent,
-        unexplained: capped.unexplained,
+        bucket_percent,
+        unexplained,
         coverage_until: uncapped.coverage_until,
         meter_regressions: uncapped.meter_regressions,
     }
@@ -773,6 +807,53 @@ mod tests {
         assert_eq!(capped.unexplained, uncapped.unexplained);
         assert_eq!(capped.coverage_until, uncapped.coverage_until);
         assert_eq!(capped.meter_regressions, uncapped.meter_regressions);
+    }
+
+    /// A regression (80 -> 20 -> 80) inside a closed window, each reading
+    /// four hours apart so every one closes its own segment regardless of
+    /// the percent move (as in
+    /// [`a_meter_regression_counts_once_and_never_goes_negative`]): the
+    /// middle segment's rise clamps to zero, but the segments before and
+    /// after it still carry their own full rises, 80 and 60, and a tail
+    /// bucket past the last reading adds another 10 from the factor: an
+    /// uncapped stack of 150. The synthetic close then closes its own
+    /// segment too (its 20-point rise clears the merge threshold on its
+    /// own), so the capped run's stack, 160, is still past the meter's own
+    /// maximum. Scaling by `100 / 160` keeps every bucket's ratio to the
+    /// others.
+    #[test]
+    fn share_period_capped_scales_a_regressed_window_to_100() {
+        let points = [point(1.0)];
+        let four_hours = 4 * 3_600;
+        let r0 = (10_000, 80.0);
+        let r1 = (r0.0 + four_hours, 20.0);
+        let r2 = (r1.0 + four_hours, 80.0);
+        let reset = r2.0 + 2_000;
+        let input = ShareInput {
+            start: 0,
+            reset,
+            readings: &[r0, r1, r2],
+            buckets: &[(0, 10.0), (10_800, 10.0), (25_000, 10.0), (39_600, 10.0)],
+            points: &points,
+        };
+        let uncapped = share_period(&input);
+        let uncapped_total: f64 = uncapped.bucket_percent.iter().flatten().sum::<f64>()
+            + uncapped
+                .unexplained
+                .iter()
+                .map(|&(_, percent)| percent)
+                .sum::<f64>();
+        assert!(approx(uncapped_total, 150.0));
+
+        let capped = share_period_capped(&input, reset + 10_000);
+        let percents: Vec<f64> = capped.bucket_percent.iter().map(|p| p.unwrap()).collect();
+        assert!(approx(percents[0], 50.0));
+        assert!(approx(percents[1], 0.0));
+        assert!(approx(percents[2], 37.5));
+        assert!(approx(percents[3], 12.5));
+        assert!(approx(percents.iter().sum(), 100.0));
+        assert_eq!(capped.meter_regressions, 1);
+        assert_eq!(capped.coverage_until, Some(r2.0));
     }
 
     /// A closed window whose stack stays at or below 100 is never capped.

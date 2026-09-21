@@ -109,11 +109,12 @@ distribution, which you chose and which would identify your machine.
 `antiburn.session_filter_selected` carries the same fixed agent list, and only
 when you select a harness filter in the Sessions sidebar.
 
-`antiburn.live_usage_state_observed`, `antiburn.usage_observed`, and
-`antiburn.limit_factor_observed` each carry one of three provider categories:
-`anthropic`, `openai`, or `google`. The Claude reset event reveals that Claude
-is enabled; `usage_observed` and `limit_factor_observed` reveal more broadly
-which of the three providers are enabled and visible, since each fires for
+`antiburn.live_usage_state_observed`, `antiburn.usage_observed`,
+`antiburn.limit_factor_observed`, and `antiburn.quota_window_closed` each
+carry one of three provider categories: `anthropic`, `openai`, or `google`.
+The Claude reset event reveals that Claude is enabled; `usage_observed`,
+`limit_factor_observed`, and `quota_window_closed` reveal more broadly which
+of the three providers are enabled and visible, since each fires for
 whichever ones an ordinary pass produces a reading for. These, plus the two
 agent-carrying events above, are the only analytics fields that identify an
 agent or provider category. If that is more than you want to share, the switch

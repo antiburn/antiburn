@@ -614,7 +614,12 @@ fn the_app_database_has_one_writing_connection() {
         ),
         ("scan/mod.rs", include_str!("../../scan/mod.rs")),
         ("scan/scoped.rs", include_str!("../../scan/scoped.rs")),
-        ("commands.rs", include_str!("../../commands/mod.rs")),
+        ("commands/mod.rs", include_str!("../../commands/mod.rs")),
+        ("commands/quota.rs", include_str!("../../commands/quota.rs")),
+        (
+            "commands/local_usage.rs",
+            include_str!("../../commands/local_usage.rs"),
+        ),
         ("retention.rs", include_str!("../../retention.rs")),
         ("repositories.rs", include_str!("../../repositories.rs")),
     ] {
@@ -666,7 +671,12 @@ fn every_session_insert_assigns_an_incarnation_and_no_update_touches_it() {
         ("store/publication.rs", include_str!("../publication.rs")),
         ("scan/mod.rs", include_str!("../../scan/mod.rs")),
         ("scan/scoped.rs", include_str!("../../scan/scoped.rs")),
-        ("commands.rs", include_str!("../../commands/mod.rs")),
+        ("commands/mod.rs", include_str!("../../commands/mod.rs")),
+        ("commands/quota.rs", include_str!("../../commands/quota.rs")),
+        (
+            "commands/local_usage.rs",
+            include_str!("../../commands/local_usage.rs"),
+        ),
         ("repositories.rs", include_str!("../../repositories.rs")),
         ("fork_lineage.rs", include_str!("../../fork_lineage.rs")),
         (

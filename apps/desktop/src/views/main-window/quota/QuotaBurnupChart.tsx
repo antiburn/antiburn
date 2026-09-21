@@ -80,12 +80,19 @@ function localMidnight(epoch: number): number {
   return Math.floor(date.getTime() / 1000)
 }
 
-/** One tick per day for a range up to eight days, else one tick per week. */
-function xAxisTicks(rangeStart: number, rangeEnd: number): number[] {
-  const stepSecs = rangeEnd - rangeStart <= DAILY_TICKS_MAX_SPAN_SECS ? DAY_SECS : 7 * DAY_SECS
+/** One tick per day for a range up to eight days, else one tick per week.
+ *  Each tick advances by calendar day, not by a fixed number of seconds: a
+ *  daylight-saving change shifts local midnight by an hour, and adding
+ *  `stepSecs` would carry that shift into every later tick. */
+export function xAxisTicks(rangeStart: number, rangeEnd: number): number[] {
+  const stepDays = rangeEnd - rangeStart <= DAILY_TICKS_MAX_SPAN_SECS ? 1 : 7
   const ticks: number[] = []
-  for (let t = localMidnight(rangeStart); t <= rangeEnd; t += stepSecs) {
+  const date = new Date(localMidnight(rangeStart) * 1000)
+  let t = Math.floor(date.getTime() / 1000)
+  while (t <= rangeEnd) {
     if (t >= rangeStart) ticks.push(t)
+    date.setDate(date.getDate() + stepDays)
+    t = Math.floor(date.getTime() / 1000)
   }
   return ticks
 }

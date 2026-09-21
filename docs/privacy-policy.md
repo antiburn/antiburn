@@ -1,6 +1,6 @@
 # Privacy policy
 
-Effective: 8 September 2026
+Effective: 21 September 2026
 
 This policy explains the analytics sent by the antiburn desktop application.
 Antiburn is operated by **Cadence AI (Vic) Pty Ltd** ("we", "us"). Contact us

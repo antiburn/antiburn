@@ -299,9 +299,12 @@ account-wide ones, without ever naming the model itself.
 `model`, reported for every `model:<slug>` lane the learning pass touches; the
 model name and its slug never reach the event. The existing `short` and `long`
 values are unchanged. The first-per-pair rule, the 24-hour minimum between
-events for the same pair, and the plan and band mappings all apply unchanged
-to a `(provider, model)` pair. Reports segment `detail=model` from `short` and
-`long` at this app version's boundary; no historical event can be reclassified.
+events for the same pair, and the plan and band mappings all apply to the
+`(provider, "model")` pair itself: every model-scoped lane for one provider
+maps to the single detail value `model`, so all of a provider's model lanes
+share this one dedup slot, and the model name is never part of the key.
+Reports segment `detail=model` from `short` and `long` at this app version's
+boundary; no historical event can be reclassified.
 
 #### Burn Checks integration (implemented 2026-09-10)
 

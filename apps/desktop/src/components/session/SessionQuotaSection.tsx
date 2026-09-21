@@ -276,6 +276,7 @@ export function SessionQuotaSection({
   if (!sessionQuota || sessionQuota.entries.length === 0) return null
 
   const nowEpoch = generatedAtEpoch(sessionQuota.generatedAt)
+  const boundCount = sessionQuota.entries.filter(isBoundEntry).length
 
   const groups = new Map<string, { displayName: string; entries: SessionQuotaEntryPayload[] }>()
   for (const entry of sessionQuota.entries) {
@@ -307,9 +308,11 @@ export function SessionQuotaSection({
           />
           <span className="truncate text-label">Limits</span>
         </span>
-        <span className="flex shrink-0 items-baseline gap-1 text-right tabular-nums">
-          <span className="text-label">{windowCountLabel(sessionQuota.entries.length)}</span>
-        </span>
+        {boundCount > 0 && (
+          <span className="flex shrink-0 items-baseline gap-1 text-right tabular-nums">
+            <span className="text-label">{windowCountLabel(boundCount)}</span>
+          </span>
+        )}
       </button>
 
       {expanded && (

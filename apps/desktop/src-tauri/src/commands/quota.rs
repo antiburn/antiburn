@@ -552,8 +552,12 @@ fn session_quota_for_store(
 
         for lane in &account.lanes {
             let lane_duration = crate::store::provider_limit::lane_duration_seconds(&lane.lane);
-            let range_start = min_epoch - lane_duration;
             let range_end = max_epoch + 1;
+            // Cap the range at MAX_QUOTA_RANGE_DAYS. The card shows at most
+            // the last MAX_QUOTA_RANGE_DAYS days of a long-running session,
+            // the same bound the Limits screen applies to one request.
+            let range_start =
+                (min_epoch - lane_duration).max(range_end - MAX_QUOTA_RANGE_DAYS * 86_400);
             let observed = store
                 .quota_periods_for_lane(provider, &account_key, &lane.lane, range_start, range_end)
                 .map_err(fail)?;
@@ -930,6 +934,35 @@ mod tests {
                 ],
             )
             .expect("inserts a synthetic observation");
+    }
+
+    /// Like [`insert_observation`], for a weekly period instead of a
+    /// five-hour one.
+    fn insert_weekly_observation(
+        store: &Store,
+        period_id: i64,
+        account_key: &str,
+        observed_at_epoch: i64,
+        used_percent: f64,
+    ) {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO provider_usage_observation (
+                     period_id, provider, account_key, window_id, window_kind, window_role,
+                     scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                     is_authoritative, confidence, source_id, plan, plan_tier
+                 ) VALUES (?1, ?2, ?3, 'weekly', 'weekly', 'primaryLong',
+                           'account', 'account', ?4, ?5, 1, 1, 'high', 'test', NULL, NULL)",
+                params![
+                    period_id,
+                    PROVIDER,
+                    account_key,
+                    observed_at_epoch,
+                    used_percent
+                ],
+            )
+            .expect("inserts a synthetic weekly observation");
     }
 
     fn save_breakdown(store: &Store, key: &SessionKey, input_tokens: u64) {
@@ -1339,6 +1372,68 @@ mod tests {
         // The tail bucket has no factor to price it, so the entry carries
         // only the shared segment's own percent.
         assert_eq!(entry.percent, Some(20.0));
+    }
+
+    /// A session whose turns are 100 days apart: querying every weekly
+    /// period back to the session's own start would pull in a period from
+    /// months ago. The card instead clamps its range to
+    /// `MAX_QUOTA_RANGE_DAYS`, so the payload names only the window around
+    /// the recent turn.
+    #[test]
+    fn get_session_quota_bounds_a_session_spanning_a_hundred_days_to_the_recent_window() {
+        let store = memory_store();
+        let account_key = account('q');
+        let key = insert_session(&store, "long-lived-session");
+        bind_account(&store, &key, &account_key);
+        save_breakdown(&store, &key, 1_000_000);
+
+        let day = 86_400;
+        let old_epoch = 100;
+        let recent_epoch = old_epoch + 100 * day;
+        insert_turn(&store, &key, old_epoch * 1_000, 100_000);
+        insert_turn(&store, &key, recent_epoch * 1_000, 100_000);
+
+        let old_reset = 7 * day;
+        let recent_reset = recent_epoch + 100;
+        let old_period_id = insert_weekly_period(&store, &account_key, old_reset);
+        let recent_period_id = insert_weekly_period(&store, &account_key, recent_reset);
+        insert_weekly_observation(&store, old_period_id, &account_key, 0, 0.0);
+        insert_weekly_observation(&store, old_period_id, &account_key, old_epoch, 10.0);
+        insert_weekly_observation(
+            &store,
+            recent_period_id,
+            &account_key,
+            recent_reset - day,
+            0.0,
+        );
+        insert_weekly_observation(&store, recent_period_id, &account_key, recent_epoch, 10.0);
+        insert_point(&store, &account_key, LANE_WEEKLY, 0, 0.5);
+
+        let payload = session_quota_for_store(
+            &store,
+            recent_reset,
+            SessionQuotaRequest {
+                agent: AGENT.to_string(),
+                session_id: "long-lived-session".to_string(),
+                wsl_distro: None,
+            },
+        )
+        .expect("computes the payload");
+
+        for entry in &payload.entries {
+            assert_eq!(
+                entry.period.as_ref().unwrap().resets_at_epoch,
+                recent_reset,
+                "the payload names only the recent window, not the one 100 days back"
+            );
+        }
+        assert!(
+            payload
+                .entries
+                .iter()
+                .any(|entry| entry.period.as_ref().unwrap().resets_at_epoch == recent_reset),
+            "the recent window is still reported"
+        );
     }
 
     #[test]
