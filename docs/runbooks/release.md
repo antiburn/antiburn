@@ -379,12 +379,19 @@ application release.
    mismatch otherwise.
 2. Review, merge, then tag `antiburn-local-v<version>` and push the tag.
 3. The workflow requires the successful main push run for the exact tag SHA,
-   then packages a deterministic source tarball with `LICENSE` and `NOTICE`
-   alongside it, inventories the dependency tree, verifies its checksums,
+   then packages a deterministic source tarball with `LICENSE`, `NOTICE`,
+   `THIRD_PARTY_NOTICES`, and the three coverage-test inputs under `docs/`
+   (`check-coverage.md`, `session-coverage.md`, and `support.md`). It extracts
+   the archive into an isolated directory and requires `cargo test --locked`
+   to pass before it inventories the dependency tree, verifies its checksums,
    attests provenance, and drafts the release. The engine release does not
    repeat the desktop platform matrix.
-4. Review the draft: the tarball extracts, `cargo test` passes inside it, the
-   checksum matches, provenance verifies. (While the repository is private, the
+4. Review the draft: verify its checksum and provenance, inspect its contents,
+   and read the release notes. The workflow already tests the extracted archive.
+   To reproduce that gate locally, extract into an empty directory, enter
+   `antiburn-local-<version>`, and run `cargo test --locked`. Coverage tests read
+   bundled `docs/` files in the archive and repository-level docs in a checkout;
+   missing inputs fail the tests. (While the repository is private, the
    two provenance steps skip themselves — attestation persistence is plan-gated
    on private repositories — and activate automatically once the repository is
    public; a private-repository draft has no provenance bundle to verify.)
