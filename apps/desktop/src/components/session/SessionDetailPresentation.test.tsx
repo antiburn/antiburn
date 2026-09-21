@@ -387,7 +387,6 @@ describe("SessionDetailPresentation — chrome", () => {
               resetsAtEpoch: 1_604_800,
               startSource: "reported",
               resetSource: "reported",
-              peakPercent: 40,
             },
             usd: 2.5,
             percent: 12,
@@ -397,7 +396,6 @@ describe("SessionDetailPresentation — chrome", () => {
         ],
         generatedAt: "g",
       },
-      sessionQuotaError: false,
       onOpenQuota: () => undefined,
     })
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))

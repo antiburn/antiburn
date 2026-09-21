@@ -34,7 +34,6 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     startSource: "reported",
     resetSource: "reported",
     samples: [{ observedAtEpoch: BUCKET, usedPercent: 40, fresh: true, authoritative: true }],
-    peakPercent: 40,
     contributions: [
       {
         agent: "claude",
@@ -60,8 +59,6 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     estimatedPercent: 10,
     unexplainedBuckets: [],
     unexplainedPercent: null,
-    meterCoverageUntil: null,
-    meterRegressions: 0,
     ...over,
   }
 }
@@ -74,7 +71,6 @@ function usage(over: Partial<QuotaUsagePayload> = {}): QuotaUsagePayload {
     laneLabel: "Weekly",
     rangeStartEpoch: 0,
     rangeEndEpoch: WEEK,
-    factor: { usdPerPercent: 1, confidence: "learned" },
     periods: [period()],
     generatedAt: "now",
     ...over,
@@ -229,8 +225,8 @@ describe("QuotaBurnupChart", () => {
     expect(container.querySelector('[data-quota-line="limit"]')).toBeNull()
   })
 
-  it("draws real band values from accumulated percents even when the lane has no factor", () => {
-    const u = usage({ factor: null })
+  it("draws real band values from accumulated percents", () => {
+    const u = usage()
     const { container } = render(<QuotaBurnupChart {...chartProps({ usage: u })} />)
     expect(container.querySelectorAll("path.quota-area").length).toBeGreaterThan(0)
     const topLine = container.querySelector("path.quota-line-top")

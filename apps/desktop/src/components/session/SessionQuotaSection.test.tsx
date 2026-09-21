@@ -27,7 +27,6 @@ function boundEntry(over: Partial<SessionQuotaEntryPayload> = {}): SessionQuotaE
       resetsAtEpoch: 1_604_800,
       startSource: "reported",
       resetSource: "reported",
-      peakPercent: 40,
     },
     usd: 2.5,
     percent: 12,
@@ -70,7 +69,6 @@ function sevenWindows(): SessionQuotaEntryPayload[] {
         resetsAtEpoch: 1_604_800 + index,
         startSource: "reported",
         resetSource: "reported",
-        peakPercent: percent,
       },
       percent,
     }),
@@ -80,33 +78,14 @@ function sevenWindows(): SessionQuotaEntryPayload[] {
 describe("SessionQuotaSection", () => {
   it("renders nothing when quota has not loaded yet", () => {
     const { container } = render(
-      <SessionQuotaSection
-        sessionQuota={null}
-        sessionQuotaError={false}
-        onOpenQuota={() => undefined}
-      />,
+      <SessionQuotaSection sessionQuota={null} onOpenQuota={() => undefined} />,
     )
     expect(container).toBeEmptyDOMElement()
   })
 
-  it("renders nothing on an empty result carrying an error", () => {
+  it("renders nothing on an empty result", () => {
     const { container } = render(
-      <SessionQuotaSection
-        sessionQuota={payload([])}
-        sessionQuotaError
-        onOpenQuota={() => undefined}
-      />,
-    )
-    expect(container).toBeEmptyDOMElement()
-  })
-
-  it("renders nothing on an empty result with no error", () => {
-    const { container } = render(
-      <SessionQuotaSection
-        sessionQuota={payload([])}
-        sessionQuotaError={false}
-        onOpenQuota={() => undefined}
-      />,
+      <SessionQuotaSection sessionQuota={payload([])} onOpenQuota={() => undefined} />,
     )
     expect(container).toBeEmptyDOMElement()
   })
@@ -115,7 +94,6 @@ describe("SessionQuotaSection", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([boundEntry()])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -129,7 +107,6 @@ describe("SessionQuotaSection", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([boundEntry()])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -144,7 +121,6 @@ describe("SessionQuotaSection", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload(sevenWindows())}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -155,7 +131,6 @@ describe("SessionQuotaSection", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([boundEntry({ percent: 40 })])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -166,7 +141,6 @@ describe("SessionQuotaSection", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([unboundEntry(), unboundEntry({ provider: "google" })])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -177,7 +151,6 @@ describe("SessionQuotaSection", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([boundEntry({ confidence: "measured" })])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -189,7 +162,6 @@ describe("SessionQuotaSection", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([unboundEntry()])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -203,11 +175,7 @@ describe("SessionQuotaSection", () => {
   it("calls onOpenQuota with the clicked window's range on click", () => {
     const onOpenQuota = vi.fn()
     render(
-      <SessionQuotaSection
-        sessionQuota={payload([boundEntry()])}
-        sessionQuotaError={false}
-        onOpenQuota={onOpenQuota}
-      />,
+      <SessionQuotaSection sessionQuota={payload([boundEntry()])} onOpenQuota={onOpenQuota} />,
     )
     fireEvent.click(screen.getByRole("button", { name: HEADER_NAME }))
     // Clicking inner row text bubbles to the row's own button handler.
@@ -225,7 +193,6 @@ describe("SessionQuotaSection", () => {
     const { container } = render(
       <SessionQuotaSection
         sessionQuota={payload([boundEntry()])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -240,7 +207,6 @@ describe("SessionQuotaSection", () => {
         sessionQuota={payload([
           boundEntry({ plan: { name: "max", tier: "default_claude_max_20x" } }),
         ])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -253,7 +219,6 @@ describe("SessionQuotaSection", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([boundEntry()])}
-        sessionQuotaError={false}
         onOpenQuota={() => undefined}
       />,
     )
@@ -301,7 +266,6 @@ describe("SessionQuotaSection", () => {
       const { container } = render(
         <SessionQuotaSection
           sessionQuota={{ entries: [boundEntry()], generatedAt: GENERATED_AT }}
-          sessionQuotaError={false}
           onOpenQuota={() => undefined}
         />,
       )
@@ -321,7 +285,6 @@ describe("SessionQuotaSection", () => {
             ],
             generatedAt: GENERATED_AT,
           }}
-          sessionQuotaError={false}
           onOpenQuota={() => undefined}
         />,
       )

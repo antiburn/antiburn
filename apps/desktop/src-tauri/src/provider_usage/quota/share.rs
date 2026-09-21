@@ -86,11 +86,13 @@ fn bucket_span_in_period(input: &ShareInput<'_>, bucket_start: i64) -> Option<(i
 }
 
 /// A bucket's percent under the estimated regime: its dollars divided by the
-/// factor point in effect at the bucket's own end, `None` with no factor
-/// point yet.
-fn estimated_percent(points: &[FactorPoint], bucket_start: i64, usd: f64) -> Option<f64> {
-    let bucket_end = bucket_start + CONTRIBUTION_BUCKET_SECS;
-    factor_point_at_or_earliest(points, bucket_end).map(|point| usd / point.usd_per_percent)
+/// factor point in effect at the last second before `at`, the clipped end
+/// of the bucket's span from `bucket_span_in_period`, or `None` with no
+/// factor point yet. A period is `[start, reset)`, so a factor point that
+/// takes effect exactly at the reset belongs to the next window and must
+/// not price this one.
+fn estimated_percent(points: &[FactorPoint], at: i64, usd: f64) -> Option<f64> {
+    factor_point_at_or_earliest(points, at - 1).map(|point| usd / point.usd_per_percent)
 }
 
 /// Close one segment `[from_t, to_t)` from its boundary readings' percents.
@@ -135,7 +137,7 @@ pub fn share_period(input: &ShareInput<'_>) -> SharedPeriod {
             .iter()
             .map(|&(bucket_start, usd)| {
                 bucket_span_in_period(input, bucket_start)
-                    .and_then(|_| estimated_percent(input.points, bucket_start, usd))
+                    .and_then(|(_, to)| estimated_percent(input.points, to, usd))
             })
             .collect();
         return SharedPeriod {
@@ -250,7 +252,7 @@ pub fn share_period(input: &ShareInput<'_>) -> SharedPeriod {
                 return Some(shared_percent);
             }
             let tail_frac = tail_secs as f64 / span_secs;
-            match estimated_percent(input.points, bucket_start, usd * tail_frac) {
+            match estimated_percent(input.points, to, usd * tail_frac) {
                 Some(tail_percent) => Some(shared_percent + tail_percent),
                 // No factor for the tail part: keep the shared part alone
                 // when the bucket had one, else stay unpriced as today.
@@ -362,6 +364,33 @@ mod tests {
         assert_eq!(shared.coverage_until, None);
         assert_eq!(shared.meter_regressions, 0);
         assert!(shared.unexplained.is_empty());
+    }
+
+    /// A closed period with no readings and a reset at 5,100, off the
+    /// 15-minute grid: the last absolute bucket, 4,500 to 5,400, only 600 of
+    /// whose seconds belong to this period. A second factor point takes
+    /// effect exactly at the reset — the next window's own factor, seeded
+    /// right at its start. Pricing must stop short of the reset, or the
+    /// tail bucket wrongly borrows the next window's much bigger factor
+    /// (0.9 instead of 90).
+    #[test]
+    fn estimated_tail_prices_at_the_period_own_end_not_the_next_window_factor() {
+        let points = [
+            point(1.0),
+            FactorPoint {
+                effective_at_epoch: 5_100,
+                ..point(100.0)
+            },
+        ];
+        let input = ShareInput {
+            start: 0,
+            reset: 5_100,
+            readings: &[],
+            buckets: &[(4_500, 90.0)],
+            points: &points,
+        };
+        let shared = share_period(&input);
+        assert_eq!(shared.bucket_percent, vec![Some(90.0)]);
     }
 
     /// Two readings, 0 to 10 to 20 percent, with two "sessions" each

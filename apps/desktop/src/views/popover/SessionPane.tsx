@@ -60,8 +60,6 @@ export interface SessionPaneProps {
   onOpenSession: (subject: SessionSubject) => void
   /** The subject's quota contributions, when the host loads them. */
   sessionQuota?: SessionQuotaPayload | null
-  /** Whether the last quota load failed. Never hides the rest of the detail. */
-  sessionQuotaError?: boolean
   /** Open one quota window on the Quota screen. Omitted where there is no
    *  Quota screen to open, such as the popover. */
   onOpenQuota?: (target: SessionQuotaOpenTarget) => void
@@ -204,7 +202,6 @@ export function SessionPane({
   onNext,
   onOpenSession,
   sessionQuota = null,
-  sessionQuotaError = false,
   onOpenQuota,
   onDeleted,
   embedded = false,
@@ -353,7 +350,6 @@ export function SessionPane({
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
       sessionQuota={sessionQuota}
-      sessionQuotaError={sessionQuotaError}
       {...(onOpenQuota ? { onOpenQuota } : {})}
       {...(onBack ? { onBack } : {})}
       {...(onPrev ? { onPrev } : {})}

@@ -36,7 +36,7 @@ const BUCKET = 15 * 60
 const FAR_FUTURE = Number.MAX_SAFE_INTEGER
 
 function lane(over: Partial<QuotaLanePayload> = {}): QuotaLanePayload {
-  return { lane: "weekly", label: "Weekly", hasFactor: true, currentPeriod: null, ...over }
+  return { lane: "weekly", label: "Weekly", currentPeriod: null, ...over }
 }
 
 function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
@@ -47,7 +47,6 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     startSource: "reported",
     resetSource: "reported",
     samples: [],
-    peakPercent: null,
     contributions: [],
     sessions: [],
     unattributed: { usd: 0, percent: 0, sessionCount: 0 },
@@ -55,13 +54,11 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     estimatedPercent: null,
     unexplainedBuckets: [],
     unexplainedPercent: null,
-    meterCoverageUntil: null,
-    meterRegressions: 0,
     ...over,
   }
 }
 
-function usage(periods: QuotaPeriodPayload[], hasFactor = true): QuotaUsagePayload {
+function usage(periods: QuotaPeriodPayload[]): QuotaUsagePayload {
   return {
     provider: "anthropic",
     accountKey: "acct",
@@ -69,7 +66,6 @@ function usage(periods: QuotaPeriodPayload[], hasFactor = true): QuotaUsagePaylo
     laneLabel: "Weekly",
     rangeStartEpoch: 0,
     rangeEndEpoch: WEEK,
-    factor: hasFactor ? { usdPerPercent: 1, confidence: "learned" } : null,
     periods,
     generatedAt: "now",
   }
@@ -515,7 +511,7 @@ describe("quotaBurnupSeries", () => {
     expect(series.topSessions.some((s) => s.sessionId === `s${count - 1}`)).toBe(false)
   })
 
-  it("falls back to the top five sessions by dollars when the lane has no factor", () => {
+  it("falls back to the top five sessions by dollars when sessions carry no percent", () => {
     const start = 0
     const reset = WEEK
     const sessions = Array.from({ length: 7 }, (_, i) => ({
@@ -527,7 +523,7 @@ describe("quotaBurnupSeries", () => {
       percent: null,
     }))
     const p = period({ startsAtEpoch: start, resetsAtEpoch: reset, sessions })
-    const series = quotaBurnupSeries(usage([p], false), start, reset, FAR_FUTURE)
+    const series = quotaBurnupSeries(usage([p]), start, reset, FAR_FUTURE)
     expect(series.topSessions.map((s) => s.sessionId)).toEqual(["s0", "s1", "s2", "s3", "s4"])
   })
 
@@ -709,7 +705,7 @@ describe("quotaBurnupSeries", () => {
     expect(series.rows.every((row) => row.meter === null)).toBe(true)
   })
 
-  it("still accumulates band values from a no-factor payload that carries percents", () => {
+  it("still accumulates band values from contributions and session percents", () => {
     const start = 0
     const reset = WEEK
     const p = period({
@@ -738,10 +734,10 @@ describe("quotaBurnupSeries", () => {
       unattributed: { usd: 0.2, percent: 5, sessionCount: 1 },
       unattributedBuckets: [{ bucketStartEpoch: 0, usd: 0.2, percent: 5 }],
     })
-    // A lane with meter readings but no learned factor still carries shared
-    // percents from the backend: a band's value is the accumulated percent,
-    // not gated on `usage.factor`.
-    const series = quotaBurnupSeries(usage([p], false), start, reset, FAR_FUTURE)
+    // A band's value is the accumulated percent the backend already shared
+    // across contributions and sessions, not a value this module derives
+    // from a factor.
+    const series = quotaBurnupSeries(usage([p]), start, reset, FAR_FUTURE)
     const key = quotaSessionKey("claude", "s1", null)
     const finalRow = series.rows.find((row) => row.t === reset - 1)!
     expect(finalRow[key]).toBe(30)

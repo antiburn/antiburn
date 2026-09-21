@@ -147,8 +147,6 @@ export interface SessionDetailPresentationProps {
   relations: LocalSessionRelations | null
   /** This session's quota contributions, for the Cost tab's Quota block. */
   sessionQuota?: SessionQuotaPayload | null
-  /** Whether the last quota load failed. Never hides the rest of the detail. */
-  sessionQuotaError?: boolean
   /** Open one quota window on the Quota screen. Omitted where there is no
    *  Quota screen to open, such as the popover. */
   onOpenQuota?: (target: SessionQuotaOpenTarget) => void
@@ -687,7 +685,6 @@ export function SessionDetailPresentation({
   modelRuns,
   relations,
   sessionQuota = null,
-  sessionQuotaError = false,
   onOpenQuota,
   onBack,
   onPrev,
@@ -980,11 +977,7 @@ export function SessionDetailPresentation({
 
   const quotaSection = onOpenQuota && (
     <div className="shrink-0">
-      <SessionQuotaSection
-        sessionQuota={sessionQuota}
-        sessionQuotaError={sessionQuotaError}
-        onOpenQuota={onOpenQuota}
-      />
+      <SessionQuotaSection sessionQuota={sessionQuota} onOpenQuota={onOpenQuota} />
     </div>
   )
 

@@ -8,10 +8,10 @@
 use super::*;
 use crate::dto::{
     LiveProviderPlan, QuotaAccountPayload, QuotaAccountsPayload, QuotaBucketTotalPayload,
-    QuotaContributionPayload, QuotaCurrentPeriodPayload, QuotaFactorPayload, QuotaLanePayload,
-    QuotaPeriodPayload, QuotaSamplePayload, QuotaSessionTotalPayload, QuotaUnattributedPayload,
-    QuotaUsagePayload, QuotaUsageRequest, SessionQuotaEntryPayload, SessionQuotaPayload,
-    SessionQuotaPeriodPayload, SessionQuotaRequest,
+    QuotaContributionPayload, QuotaCurrentPeriodPayload, QuotaLanePayload, QuotaPeriodPayload,
+    QuotaSamplePayload, QuotaSessionTotalPayload, QuotaUnattributedPayload, QuotaUsagePayload,
+    QuotaUsageRequest, SessionQuotaEntryPayload, SessionQuotaPayload, SessionQuotaPeriodPayload,
+    SessionQuotaRequest,
 };
 use crate::provider_usage::quota::share::{ShareInput, share_period_capped};
 
@@ -50,7 +50,6 @@ fn quota_account_payload(
             .map(|lane| QuotaLanePayload {
                 lane: lane.lane,
                 label: lane.label,
-                has_factor: lane.has_factor,
                 current_period: lane
                     .current_period
                     .map(
@@ -205,10 +204,6 @@ fn quota_usage_for_store(
     let points = store
         .factor_points_for_lane(&provider, &account_key, &lane)
         .map_err(fail)?;
-    let factor = points.last().map(|point| QuotaFactorPayload {
-        usd_per_percent: point.usd_per_percent,
-        confidence: factor_confidence(point).to_string(),
-    });
 
     let bucketed = store
         .attributed_turn_dollars_by_bucket(
@@ -254,13 +249,6 @@ fn quota_usage_for_store(
                 .collect(),
             None => Vec::new(),
         };
-        let peak_percent = samples
-            .iter()
-            .filter(|sample| sample.authoritative)
-            .filter_map(|sample| sample.used_percent)
-            .fold(None, |max: Option<f64>, value| {
-                Some(max.map_or(value, |max| max.max(value)))
-            });
 
         // The period's authoritative readings, inside its own bounds and
         // sorted ascending: `share_period`'s own contract. Truncation can
@@ -416,7 +404,6 @@ fn quota_usage_for_store(
             start_source: boundary_source_str(period.start_source).to_string(),
             reset_source: boundary_source_str(period.reset_source).to_string(),
             samples,
-            peak_percent,
             contributions,
             sessions,
             unattributed: QuotaUnattributedPayload {
@@ -428,8 +415,6 @@ fn quota_usage_for_store(
             estimated_percent,
             unexplained_buckets,
             unexplained_percent,
-            meter_coverage_until: shared.coverage_until,
-            meter_regressions: shared.meter_regressions,
         });
     }
 
@@ -440,7 +425,6 @@ fn quota_usage_for_store(
         lane_label,
         range_start_epoch,
         range_end_epoch,
-        factor,
         periods: period_payloads,
         generated_at: iso_from_epoch(Some(now)),
     })
@@ -668,38 +652,31 @@ fn session_quota_for_store(
                     continue;
                 }
 
-                let peak_percent = samples
-                    .iter()
-                    .filter(|observation| observation.is_authoritative)
-                    .filter_map(|observation| observation.used_percent)
-                    .fold(None, |max: Option<f64>, value| {
-                        Some(max.map_or(value, |max| max.max(value)))
-                    });
-
                 // Every one of this session's own buckets fell in a shared
                 // meter segment: report the shared percent directly, with
                 // no need for a factor point at all. Otherwise fall back to
                 // today's single factor division over the session's whole
-                // usd, skipping the entry only when the lane has no factor
-                // point to price it from.
-                // `share_period` already priced the tail buckets with the
-                // factor, so the shared sum is the session's percent in both
-                // cases. Only the confidence differs: a session with a bucket
-                // past the last reading reports the factor's confidence, and
-                // one whose tail has no factor point to price it is skipped.
+                // usd. `share_period` already priced the tail buckets with
+                // the factor, so the shared sum is the session's percent in
+                // both cases. Only the confidence differs: a session with a
+                // bucket past the last reading reports the factor's
+                // confidence, and one whose lane has learned no factor yet
+                // still reports "measured" for the shared part it already
+                // has, the same rule the Limits screen applies to the same
+                // buckets, rather than drop a correctly priced contribution.
                 if !any_percent {
                     continue;
                 }
                 let confidence = if all_shared {
                     "measured".to_string()
                 } else {
-                    let Some(point) = crate::provider_usage::quota::factor_point_at_or_earliest(
+                    match crate::provider_usage::quota::factor_point_at_or_earliest(
                         &points,
                         period.resets_at_epoch.min(now),
-                    ) else {
-                        continue;
-                    };
-                    factor_confidence(point).to_string()
+                    ) {
+                        Some(point) => factor_confidence(point).to_string(),
+                        None => "measured".to_string(),
+                    }
                 };
                 let percent = Some(percent_sum);
 
@@ -715,7 +692,6 @@ fn session_quota_for_store(
                         resets_at_epoch: period.resets_at_epoch,
                         start_source: boundary_source_str(period.start_source).to_string(),
                         reset_source: boundary_source_str(period.reset_source).to_string(),
-                        peak_percent,
                     }),
                     usd,
                     percent,
@@ -1041,7 +1017,6 @@ mod tests {
         assert_eq!(period.start_source, "reported");
         assert_eq!(period.reset_source, "reported");
         assert_eq!(period.samples.len(), 3);
-        assert_eq!(period.peak_percent, Some(30.0));
 
         let cost_for = |input_tokens: u64| {
             price_breakdown(&std::collections::HashMap::from([(
@@ -1092,21 +1067,8 @@ mod tests {
         // Both segments are fully explained by local dollars, so the total
         // is exactly their combined rise (10 + 20), with nothing unexplained.
         assert_eq!(period.estimated_percent, Some(30.0));
-        assert_eq!(period.meter_coverage_until, Some(17_000));
-        assert_eq!(period.meter_regressions, 0);
         assert!(period.unexplained_buckets.is_empty());
         assert_eq!(period.unexplained_percent, Some(0.0));
-        assert_eq!(
-            payload.factor.as_ref().map(|factor| factor.usd_per_percent),
-            Some(0.5)
-        );
-        assert_eq!(
-            payload
-                .factor
-                .as_ref()
-                .map(|factor| factor.confidence.clone()),
-            Some("learned".to_string())
-        );
 
         let bucket_starts: std::collections::BTreeSet<i64> = period
             .contributions
@@ -1219,7 +1181,6 @@ mod tests {
         )
         .expect("computes the payload");
 
-        assert_eq!(payload.factor, None, "no factor point exists for this lane");
         let period = &payload.periods[0];
         assert!(period.sessions.is_empty());
         assert_eq!(period.unattributed.usd, 0.0);
@@ -1233,7 +1194,6 @@ mod tests {
         assert_eq!(period.unexplained_buckets[0].percent, Some(15.0));
         assert_eq!(period.unexplained_percent, Some(15.0));
         assert_eq!(period.estimated_percent, Some(15.0));
-        assert_eq!(period.meter_coverage_until, Some(9_000));
     }
 
     #[test]
@@ -1339,6 +1299,46 @@ mod tests {
             .expect("the tail period's entry");
         assert_eq!(tail.confidence, "learned");
         assert!(tail.percent.is_some());
+    }
+
+    /// A session with one bucket in the shared segment and one past the
+    /// last reading, in a lane that has never learned a factor point at
+    /// all: the entry is kept, not dropped, reporting the shared percent
+    /// and `"measured"` rather than losing an already-priced contribution
+    /// for lack of a factor the unpriced tail alone would have needed.
+    #[test]
+    fn get_session_quota_keeps_a_measured_entry_whose_tail_has_no_factor() {
+        let store = memory_store();
+        let account_key = account('k');
+        let key = insert_session(&store, "no-factor-session");
+        bind_account(&store, &key, &account_key);
+        save_breakdown(&store, &key, 1_000_000);
+
+        insert_turn(&store, &key, 100_000, 100_000); // inside [0, 9_000), shared regime
+        insert_turn(&store, &key, 19_000_000, 100_000); // past the last reading, no factor
+
+        let period_id = insert_five_hour_period(&store, &account_key, 0, 40_000);
+        insert_observation(&store, period_id, &account_key, 0, 0.0);
+        insert_observation(&store, period_id, &account_key, 9_000, 20.0);
+        // No insert_point call: the lane has never learned a factor.
+
+        let payload = session_quota_for_store(
+            &store,
+            40_000,
+            SessionQuotaRequest {
+                agent: AGENT.to_string(),
+                session_id: "no-factor-session".to_string(),
+                wsl_distro: None,
+            },
+        )
+        .expect("computes the payload");
+
+        assert_eq!(payload.entries.len(), 1);
+        let entry = &payload.entries[0];
+        assert_eq!(entry.confidence, "measured");
+        // The tail bucket has no factor to price it, so the entry carries
+        // only the shared segment's own percent.
+        assert_eq!(entry.percent, Some(20.0));
     }
 
     #[test]

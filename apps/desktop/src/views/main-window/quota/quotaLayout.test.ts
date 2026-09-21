@@ -15,7 +15,6 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     startSource: "reported",
     resetSource: "reported",
     samples: [],
-    peakPercent: null,
     contributions: [],
     sessions: [],
     unattributed: { usd: 0, percent: 0, sessionCount: 0 },
@@ -23,8 +22,6 @@ function period(over: Partial<QuotaPeriodPayload> = {}): QuotaPeriodPayload {
     estimatedPercent: null,
     unexplainedBuckets: [],
     unexplainedPercent: null,
-    meterCoverageUntil: null,
-    meterRegressions: 0,
     ...over,
   }
 }

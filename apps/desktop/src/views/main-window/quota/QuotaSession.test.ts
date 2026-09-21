@@ -14,8 +14,8 @@ function account(over: Partial<QuotaAccountPayload> = {}): QuotaAccountPayload {
     displayName: "Claude",
     accountKey: "acct-1",
     lanes: [
-      { lane: "weekly", label: "Weekly", hasFactor: true, currentPeriod: null },
-      { lane: "fiveHour", label: "5-hour", hasFactor: true, currentPeriod: null },
+      { lane: "weekly", label: "Weekly", currentPeriod: null },
+      { lane: "fiveHour", label: "5-hour", currentPeriod: null },
     ],
     ...over,
   }
@@ -32,7 +32,6 @@ function usage(
     laneLabel: "Weekly",
     rangeStartEpoch: NOW - 604800,
     rangeEndEpoch: NOW,
-    factor: { usdPerPercent: 1, confidence: "learned" },
     periods,
     generatedAt,
   }
@@ -247,7 +246,7 @@ describe("QuotaSession", () => {
     // `rangeForPreset` itself computes for the same inputs.
     const expected = rangeForPreset(
       "last3Windows",
-      { lane: "weekly", label: "Weekly", hasFactor: true, currentPeriod: null },
+      { lane: "weekly", label: "Weekly", currentPeriod: null },
       NOW,
     )
     expect(request.rangeStartEpoch).toBe(expected.startEpoch)

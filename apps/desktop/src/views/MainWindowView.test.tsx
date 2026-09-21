@@ -383,6 +383,23 @@ describe("MainWindowView", () => {
       )
     })
 
+    it("leaves Limits on a cross-window request that retargets the section already selected", async () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Sessions"))
+      fireEvent.click(tab("Limits"))
+      expect(tab("Limits")).toHaveAttribute("aria-selected", "true")
+      await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
+      // Every session-open request targets "activity", the section already
+      // selected underneath Limits: `select()` alone would no-op here, so
+      // this exercises the same-section path the other cross-window test
+      // (which retargets "burnChecks", a value that does change) does not.
+      act(() => {
+        ipcMocks.sectionTarget!({ revision: 1, section: "activity" })
+      })
+      expect(tab("Limits")).toHaveAttribute("aria-selected", "false")
+      expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+    })
+
     it("keeps Limits mounted after navigating away, instead of unmounting it", () => {
       render(<MainWindowView />)
       fireEvent.click(tab("Limits"))

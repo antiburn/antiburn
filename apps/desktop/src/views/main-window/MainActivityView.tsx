@@ -166,7 +166,6 @@ export function MainActivityView({
               {...(next ? { onNext: () => session.selectEntry(next) } : {})}
               onOpenSession={session.openRelated}
               sessionQuota={state.sessionQuota}
-              sessionQuotaError={state.sessionQuotaError}
               {...(onOpenQuota ? { onOpenQuota } : {})}
               onDeleted={session.deleted}
             />

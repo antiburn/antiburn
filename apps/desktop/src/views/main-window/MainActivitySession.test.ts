@@ -590,7 +590,6 @@ describe("MainActivitySession", () => {
             resetsAtEpoch: 2,
             startSource: "reported",
             resetSource: "reported",
-            peakPercent: 10,
           },
           usd: 1.5,
           percent: 5,
@@ -605,14 +604,18 @@ describe("MainActivitySession", () => {
     expect(mocks.getSessionQuota).toHaveBeenCalledWith(
       expect.objectContaining({ agent: "claude", sessionId: "one", wslDistro: null }),
     )
-    expect(session.getSnapshot().sessionQuotaError).toBe(false)
   })
 
-  it("keeps the analysis visible and flags sessionQuotaError on a failed quota load", async () => {
-    mocks.getSessionQuota.mockRejectedValue(new Error("no"))
+  it("keeps the last quota payload and leaves the analysis untouched when a later quota load fails", async () => {
     const { session } = start()
     await ready(session)
-    await vi.waitFor(() => expect(session.getSnapshot().sessionQuotaError).toBe(true))
+    await vi.waitFor(() => expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("g"))
+
+    mocks.getSessionQuota.mockRejectedValueOnce(new Error("no"))
+    mocks.events.get("update")!(update(entry("one")))
+    await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(2))
+
+    expect(session.getSnapshot().sessionQuota?.generatedAt).toBe("g")
     expect(session.getSnapshot().analysis?.payload?.title).toBe("Loaded")
     expect(session.getSnapshot().analysis?.error).toBe(false)
   })

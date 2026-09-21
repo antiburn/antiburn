@@ -64,7 +64,7 @@ function account(over: Partial<QuotaAccountPayload> = {}): QuotaAccountPayload {
     provider: "anthropic",
     displayName: "Claude",
     accountKey: "acct-1",
-    lanes: [{ lane: "weekly", label: "Weekly", hasFactor: true, currentPeriod: null }],
+    lanes: [{ lane: "weekly", label: "Weekly", currentPeriod: null }],
     ...over,
   }
 }
@@ -77,7 +77,6 @@ function usage(over: Partial<QuotaUsagePayload> = {}): QuotaUsagePayload {
     laneLabel: "Weekly",
     rangeStartEpoch: NOW - WEEK,
     rangeEndEpoch: NOW,
-    factor: { usdPerPercent: 1, confidence: "learned" },
     periods: [
       {
         periodId: 1,
@@ -88,7 +87,6 @@ function usage(over: Partial<QuotaUsagePayload> = {}): QuotaUsagePayload {
         samples: [
           { observedAtEpoch: NOW - 100, usedPercent: 40, fresh: true, authoritative: true },
         ],
-        peakPercent: 40,
         contributions: [],
         sessions: [
           {
@@ -105,8 +103,6 @@ function usage(over: Partial<QuotaUsagePayload> = {}): QuotaUsagePayload {
         estimatedPercent: 30,
         unexplainedBuckets: [],
         unexplainedPercent: null,
-        meterCoverageUntil: null,
-        meterRegressions: 0,
       },
     ],
     generatedAt: "g",
@@ -136,7 +132,6 @@ function manySessionsUsage(): QuotaUsagePayload {
         samples: [
           { observedAtEpoch: NOW - 100, usedPercent: 40, fresh: true, authoritative: true },
         ],
-        peakPercent: 40,
         contributions: [],
         sessions: rowSessions,
         unattributed: { usd: 1, percent: 10, sessionCount: 1 },
@@ -144,8 +139,6 @@ function manySessionsUsage(): QuotaUsagePayload {
         estimatedPercent: 30,
         unexplainedBuckets: [],
         unexplainedPercent: null,
-        meterCoverageUntil: null,
-        meterRegressions: 0,
       },
     ],
   })

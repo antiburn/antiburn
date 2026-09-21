@@ -118,7 +118,6 @@ export interface QuotaLanePayload {
   /** `"Weekly"`, `"5-hour"`, or the model-scoped window's own label
    * (Anthropic's is currently "Fable"). */
   label: string
-  hasFactor: boolean
   /** The lane's open window, derived the same way the period resolver
    * derives a boundary the provider did not state. `null` when every known
    * period for the lane has already reset. */
@@ -147,15 +146,6 @@ export interface QuotaUsageRequest {
   lane: string
   rangeStartEpoch: number
   rangeEndEpoch: number
-}
-
-/** The lane's factor at the newest point in effect. Mirrors Rust
- * `QuotaFactorPayload`. */
-interface QuotaFactorPayload {
-  usdPerPercent: number
-  /** `learned` from a meter delta, `seeded` from a single first-reading
-   * estimate. */
-  confidence: "learned" | "seeded"
 }
 
 /** One meter reading inside a quota period. Mirrors Rust
@@ -216,8 +206,6 @@ export interface QuotaPeriodPayload {
   startSource: QuotaBoundarySourcePayload
   resetSource: QuotaBoundarySourcePayload
   samples: QuotaSamplePayload[]
-  /** The highest authoritative meter reading in this period. */
-  peakPercent: number | null
   contributions: QuotaContributionPayload[]
   /** Descending by `usd`. */
   sessions: QuotaSessionTotalPayload[]
@@ -241,12 +229,6 @@ export interface QuotaPeriodPayload {
   /** The sum of every unexplained segment's percent. `null` only when the
    * period carries no meter reading at all. */
   unexplainedPercent: number | null
-  /** The last meter reading's own time this period shared its rise from,
-   * `null` when the period carries no reading. */
-  meterCoverageUntil: number | null
-  /** How many meter-rise segments closed on a reading lower than the one
-   * that opened them. */
-  meterRegressions: number
 }
 
 /** Response for `get_quota_usage`. Mirrors Rust `QuotaUsagePayload`. */
@@ -257,7 +239,6 @@ export interface QuotaUsagePayload {
   laneLabel: string
   rangeStartEpoch: number
   rangeEndEpoch: number
-  factor: QuotaFactorPayload | null
   periods: QuotaPeriodPayload[]
   generatedAt: string
 }
@@ -277,7 +258,6 @@ interface SessionQuotaPeriodPayload {
   resetsAtEpoch: number
   startSource: QuotaBoundarySourcePayload
   resetSource: QuotaBoundarySourcePayload
-  peakPercent: number | null
 }
 
 /** One `(provider, lane, period)` a session's turns fell in. Mirrors Rust
@@ -348,7 +328,6 @@ export async function getQuotaUsage(request: QuotaUsageRequest): Promise<QuotaUs
       0,
     ),
     sessions: usage.periods.reduce((total, period) => total + period.sessions.length, 0),
-    factorNull: usage.factor == null,
   })
   return usage
 }
@@ -373,7 +352,6 @@ const EMPTY_QUOTA_USAGE: QuotaUsagePayload = {
   laneLabel: "",
   rangeStartEpoch: 0,
   rangeEndEpoch: 0,
-  factor: null,
   periods: [],
   generatedAt: "",
 }

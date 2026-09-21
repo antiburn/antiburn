@@ -223,13 +223,20 @@ function QuotaBurnupChartImpl({
   // Date mode draws every band once, over the whole unsliced series, on the
   // shared scale — exactly today's rendering. Window mode draws a band once
   // per slot, over just that window's own rows, on the slot's own scale.
+  // Each layer carries the same key as its slot, for the stack-top line
+  // below; date mode has exactly one layer, so a fixed key is enough.
   const bandLayers: ReadonlyArray<{
     rows: readonly QuotaSeriesRow[]
     x: (t: number) => number
+    key: string | number
   }> =
     axisMode === "window"
-      ? slots.map((slot) => ({ rows: rowsInWindow(rows, slot.period), x: slot.x }))
-      : [{ rows, x: sharedX }]
+      ? slots.map((slot) => ({
+          rows: rowsInWindow(rows, slot.period),
+          x: slot.x,
+          key: slot.period.periodId ?? slot.period.startsAtEpoch,
+        }))
+      : [{ rows, x: sharedX, key: "date" }]
 
   const bandSpecs = quotaBandSpecs(topSessions, `url(#${hatchId})`)
   const bandKeys = bandSpecs.map((spec) => spec.key)
@@ -249,9 +256,10 @@ function QuotaBurnupChartImpl({
     })
     bandLayerPaths.set(spec.key, paths)
   })
-  const stackTopPaths = bandLayers.map((layer) =>
-    quotaStackTopPath(layer.rows, bandKeys, layer.x, y),
-  )
+  const stackTopPaths = bandLayers.map((layer) => ({
+    key: layer.key,
+    ...quotaStackTopPath(layer.rows, bandKeys, layer.x, y),
+  }))
   const lineVertices = stackTopPaths.reduce((total, line) => total + line.vertices, 0)
   // Every drawn band draws twice with a pace line (faded under it, full
   // above it); without one it draws once.
@@ -469,9 +477,9 @@ function QuotaBurnupChartImpl({
                 </g>
               )),
             )}
-            {stackTopPaths.map((stackTopPath, index) => (
+            {stackTopPaths.map((stackTopPath) => (
               <path
-                key={index}
+                key={stackTopPath.key}
                 className="quota-line-top"
                 d={stackTopPath.d}
                 fill="none"

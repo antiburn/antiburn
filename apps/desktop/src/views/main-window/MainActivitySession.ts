@@ -60,9 +60,6 @@ export interface MainActivitySnapshot {
   allocations: SessionLimitAllocationSummaryPayload
   /** The open subject's quota contributions, loaded alongside its analysis. */
   sessionQuota: SessionQuotaPayload | null
-  /** Whether the last quota load for the open subject failed. A failure
-   *  never blanks the rest of the detail view. */
-  sessionQuotaError: boolean
   /** The selected Sessions sidebar filter, parsed from `settings.sessionFilter`. */
   filter: SessionFilter
 }
@@ -128,7 +125,6 @@ export class MainActivitySession {
     liveUsage: EMPTY_LIVE_USAGE,
     allocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     sessionQuota: null,
-    sessionQuotaError: false,
     filter: parseSessionFilterId(DEFAULT_SETTINGS.sessionFilter),
   }
   private listeners = new Set<() => void>()
@@ -547,7 +543,6 @@ export class MainActivitySession {
       loading: true,
       refreshing: false,
       sessionQuota: null,
-      sessionQuotaError: false,
     })
     this.refreshAnalysis()
     this.refreshSessionQuota()
@@ -568,7 +563,6 @@ export class MainActivitySession {
       loading: false,
       refreshing: false,
       sessionQuota: null,
-      sessionQuotaError: false,
     })
   }
 
@@ -639,8 +633,8 @@ export class MainActivitySession {
 
   /**
    * One subject's quota contributions, loaded alongside its analysis. A
-   * failure sets `sessionQuotaError` and keeps the last good value, so it
-   * never blanks the rest of the detail view.
+   * failure keeps the last good value, so it never blanks the rest of the
+   * detail view.
    */
   private async loadSessionQuota(run: number): Promise<void> {
     while (
@@ -660,10 +654,9 @@ export class MainActivitySession {
           wslDistro: subject.wslDistro ?? null,
         })
         if (version !== this.sessionQuotaVersion || work !== this.workVersion) continue
-        this.update({ sessionQuota, sessionQuotaError: false })
+        this.update({ sessionQuota })
       } catch {
-        if (version !== this.sessionQuotaVersion || work !== this.workVersion) continue
-        this.update({ sessionQuotaError: true })
+        // Keep the last good payload; a failed load is not shown.
       }
     }
   }

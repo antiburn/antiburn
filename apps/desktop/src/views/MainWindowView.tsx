@@ -132,11 +132,14 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   // Stays true once Quota is first selected, so leaving it for another
   // section keeps it mounted instead of tearing it down and refetching.
   const [quotaVisited, setQuotaVisited] = useState(false)
-  const [previousNavigationSelected, setPreviousNavigationSelected] = useState(
-    navigation.selected,
+  // Diffs on `requests`, not `selected`: a cross-window request can retarget
+  // the section already selected (every session-open request targets
+  // Activity), which leaves `selected` unchanged but must still leave Quota.
+  const [previousNavigationRequests, setPreviousNavigationRequests] = useState(
+    navigation.requests,
   )
-  if (previousNavigationSelected !== navigation.selected) {
-    setPreviousNavigationSelected(navigation.selected)
+  if (previousNavigationRequests !== navigation.requests) {
+    setPreviousNavigationRequests(navigation.requests)
     if (localSelectedId) setLocalSelectedId(null)
   }
   // Read the Sessions list for the sidebar's counts without joining its

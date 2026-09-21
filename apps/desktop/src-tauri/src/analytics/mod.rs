@@ -907,9 +907,7 @@ mod enabled {
         let peak_percent = readings
             .iter()
             .map(|&(_, percent)| percent)
-            .fold(None, |max: Option<f64>, value| {
-                Some(max.map_or(value, |max: f64| max.max(value)))
-            });
+            .reduce(f64::max);
         let last_reading = readings.last().copied();
         // The dollars-only estimate the badge and forecast would have shown
         // at the last reading: every bucket's own dollars up to that

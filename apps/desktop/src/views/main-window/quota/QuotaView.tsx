@@ -315,8 +315,6 @@ function GroupRow({
   )
 }
 
-/** One figure in the header's prominent row: a labelled percent, an em dash
- *  with no value. */
 /** The `fraction` percentile of ascending `sorted`, with linear
  *  interpolation between the two nearest values, so a handful of windows
  *  still gives a value between them instead of one of them. */
@@ -328,6 +326,8 @@ function percentileOf(sorted: readonly number[], fraction: number): number | nul
   return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (rank - lower)
 }
 
+/** One figure in the header's prominent row: a labelled percent, an em dash
+ *  with no value. */
 function QuotaLimitFigure({ label, value }: { label: string; value: number | null }) {
   return (
     <div className="flex flex-col gap-1">

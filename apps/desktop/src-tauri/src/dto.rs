@@ -514,7 +514,6 @@ pub struct QuotaLanePayload {
     /// `"Weekly"`, `"5-hour"`, or the model-scoped window's own label
     /// (Anthropic's is currently "Fable").
     pub label: String,
-    pub has_factor: bool,
     /// The lane's open window, derived the same way the period resolver
     /// derives a boundary the provider did not state. `None` when every
     /// known period for the lane has already reset.
@@ -549,16 +548,6 @@ pub struct QuotaUsageRequest {
     pub lane: String,
     pub range_start_epoch: i64,
     pub range_end_epoch: i64,
-}
-
-/// The lane's factor at the newest point in effect, for `get_quota_usage`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QuotaFactorPayload {
-    pub usd_per_percent: f64,
-    /// `"learned"` from a meter delta, `"seeded"` from a single
-    /// first-reading estimate.
-    pub confidence: String,
 }
 
 /// One meter reading inside a quota period.
@@ -627,8 +616,6 @@ pub struct QuotaPeriodPayload {
     pub start_source: QuotaBoundarySource,
     pub reset_source: QuotaBoundarySource,
     pub samples: Vec<QuotaSamplePayload>,
-    /// The highest authoritative meter reading in this period.
-    pub peak_percent: Option<f64>,
     pub contributions: Vec<QuotaContributionPayload>,
     /// Descending by `usd`.
     pub sessions: Vec<QuotaSessionTotalPayload>,
@@ -652,12 +639,6 @@ pub struct QuotaPeriodPayload {
     /// The sum of every unexplained segment's percent. `None` only when the
     /// period carries no meter reading at all.
     pub unexplained_percent: Option<f64>,
-    /// The last meter reading's own time this period shared its rise from,
-    /// `None` when the period carries no reading.
-    pub meter_coverage_until: Option<i64>,
-    /// How many meter-rise segments closed on a reading lower than the one
-    /// that opened them.
-    pub meter_regressions: u32,
 }
 
 /// Response for `get_quota_usage`.
@@ -670,7 +651,6 @@ pub struct QuotaUsagePayload {
     pub lane_label: String,
     pub range_start_epoch: i64,
     pub range_end_epoch: i64,
-    pub factor: Option<QuotaFactorPayload>,
     pub periods: Vec<QuotaPeriodPayload>,
     pub generated_at: String,
 }
@@ -695,7 +675,6 @@ pub struct SessionQuotaPeriodPayload {
     pub resets_at_epoch: i64,
     pub start_source: QuotaBoundarySource,
     pub reset_source: QuotaBoundarySource,
-    pub peak_percent: Option<f64>,
 }
 
 /// One `(provider, lane, period)` a session's turns fell in.
@@ -2744,10 +2723,6 @@ mod tests {
             lane_label: "5-hour".to_string(),
             range_start_epoch: 0,
             range_end_epoch: 1_000,
-            factor: Some(QuotaFactorPayload {
-                usd_per_percent: 0.5,
-                confidence: "learned".to_string(),
-            }),
             periods: vec![QuotaPeriodPayload {
                 period_id: None,
                 starts_at_epoch: 0,
@@ -2760,7 +2735,6 @@ mod tests {
                     fresh: true,
                     authoritative: true,
                 }],
-                peak_percent: Some(10.0),
                 contributions: vec![QuotaContributionPayload {
                     agent: "claude-code".to_string(),
                     session_id: "s1".to_string(),
@@ -2794,8 +2768,6 @@ mod tests {
                     percent: Some(0.5),
                 }],
                 unexplained_percent: Some(0.5),
-                meter_coverage_until: Some(500),
-                meter_regressions: 0,
             }],
             generated_at: "2026-09-16T00:00:00Z".to_string(),
         };
@@ -2804,14 +2776,12 @@ mod tests {
         assert_eq!(json["laneLabel"], "5-hour");
         assert_eq!(json["rangeStartEpoch"], 0);
         assert_eq!(json["rangeEndEpoch"], 1_000);
-        assert_eq!(json["factor"]["usdPerPercent"], 0.5);
         let period = &json["periods"][0];
         assert_eq!(period["periodId"], serde_json::Value::Null);
         assert_eq!(period["startsAtEpoch"], 0);
         assert_eq!(period["resetsAtEpoch"], 1_000);
         assert_eq!(period["startSource"], "turnGap");
         assert_eq!(period["resetSource"], "cadence");
-        assert_eq!(period["peakPercent"], 10.0);
         assert_eq!(period["contributions"][0]["bucketStartEpoch"], 0);
         assert_eq!(period["sessions"][0]["sessionId"], "s1");
         assert_eq!(period["unattributed"]["sessionCount"], 1);
@@ -2822,8 +2792,6 @@ mod tests {
         assert_eq!(period["unexplainedBuckets"][0]["usd"], 0.0);
         assert_eq!(period["unexplainedBuckets"][0]["percent"], 0.5);
         assert_eq!(period["unexplainedPercent"], 0.5);
-        assert_eq!(period["meterCoverageUntil"], 500);
-        assert_eq!(period["meterRegressions"], 0);
     }
 
     #[test]
@@ -2842,7 +2810,6 @@ mod tests {
                         resets_at_epoch: 604_800,
                         start_source: "reported".to_string(),
                         reset_source: "derived".to_string(),
-                        peak_percent: None,
                     }),
                     usd: 1.0,
                     percent: Some(2.0),

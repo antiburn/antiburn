@@ -223,7 +223,7 @@ function AccountGroup({
         )}
       </h4>
 
-      {ordered.map((entry, index) =>
+      {ordered.map((entry) =>
         isBoundEntry(entry) ? (
           <BoundQuotaRow
             key={`${entry.lane}:${entry.period.periodId ?? entry.period.startsAtEpoch}`}
@@ -232,7 +232,9 @@ function AccountGroup({
             onOpenQuota={onOpenQuota}
           />
         ) : (
-          <UnboundQuotaRow key={index} entry={entry} />
+          // One unbound entry per provider by construction: see the ordered
+          // build above.
+          <UnboundQuotaRow key={`unbound:${entry.provider}`} entry={entry} />
         ),
       )}
     </>
@@ -268,7 +270,6 @@ export function SessionQuotaSection({
   onOpenQuota,
 }: {
   sessionQuota: SessionQuotaPayload | null
-  sessionQuotaError: boolean
   onOpenQuota: (target: SessionQuotaOpenTarget) => void
 }) {
   const expanded = useLimitsExpanded()
