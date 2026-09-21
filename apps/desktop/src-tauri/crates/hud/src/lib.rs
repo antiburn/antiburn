@@ -800,21 +800,87 @@ fn spawn_hover_watcher(window: WebviewWindow) {
     });
 }
 
+/// True when the cursor is over the window.
+///
+/// tao gives the cursor in physical pixels of the primary display and the
+/// window frame in physical pixels of the window's own display. The two
+/// scales differ on a mixed setup, so both sides convert to logical points
+/// before the test. The shell reads this when the app becomes active.
 #[cfg(target_os = "macos")]
-fn cursor_inside(window: &WebviewWindow) -> Option<bool> {
+pub fn cursor_inside(window: &WebviewWindow) -> Option<bool> {
     let cursor = window.cursor_position().ok()?;
+    let primary_scale = window.primary_monitor().ok().flatten()?.scale_factor();
+    let scale = window.scale_factor().ok()?;
     let position = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
-    let x = position.x as f64;
-    let y = position.y as f64;
-    Some(contains_point(
-        x,
-        y,
-        size.width as f64,
-        size.height as f64,
-        cursor.x,
-        cursor.y,
+    Some(cursor_over_frame(
+        (f64::from(position.x), f64::from(position.y)),
+        (f64::from(size.width), f64::from(size.height)),
+        scale,
+        (cursor.x, cursor.y),
+        primary_scale,
     ))
+}
+
+/// The pure part of [`cursor_inside`]: a physical frame at `scale` against a
+/// physical cursor at `cursor_scale`, compared in logical points.
+fn cursor_over_frame(
+    position: (f64, f64),
+    size: (f64, f64),
+    scale: f64,
+    cursor: (f64, f64),
+    cursor_scale: f64,
+) -> bool {
+    contains_point(
+        position.0 / scale,
+        position.1 / scale,
+        size.0 / scale,
+        size.1 / scale,
+        cursor.0 / cursor_scale,
+        cursor.1 / cursor_scale,
+    )
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::cursor_over_frame;
+
+    #[test]
+    fn compares_the_cursor_and_the_frame_in_logical_points() {
+        // A 2x window at logical (-1751, 0), 562 by 32. The cursor sits at
+        // logical (-1600, 10), reported at 1x by the primary display.
+        let frame = ((-3502.0, 0.0), (1124.0, 64.0));
+        assert!(cursor_over_frame(
+            frame.0,
+            frame.1,
+            2.0,
+            (-1600.0, 10.0),
+            1.0
+        ));
+        // The same cursor in the window's own scale is inside too.
+        assert!(cursor_over_frame(
+            frame.0,
+            frame.1,
+            2.0,
+            (-3200.0, 20.0),
+            2.0
+        ));
+        // Read as raw physical pixels, the 1x cursor would fall outside.
+        assert!(!cursor_over_frame(
+            frame.0,
+            frame.1,
+            1.0,
+            (-1600.0, 10.0),
+            1.0
+        ));
+        assert!(!cursor_over_frame(
+            frame.0,
+            frame.1,
+            2.0,
+            (-1600.0, 40.0),
+            1.0
+        ));
+    }
 }
 
 /* -------------------------------------------------------------------------
