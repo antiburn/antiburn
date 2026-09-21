@@ -340,8 +340,10 @@ fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
 /// How stale a reading a preference repaint accepts.
 ///
 /// A preference changes the arithmetic, not the readings. Accept any reading
-/// the sources already hold, so a control the reader moves sends no provider
-/// request.
+/// the sources already hold, so the repaint reuses them instead of asking a
+/// provider again. A source that has not polled since launch holds no reading
+/// to reuse and does fetch once. The cooldown then makes the next scheduled
+/// pass skip that source, so the request count stays the same.
 const REPAINT_MAX_AGE: Duration = Duration::from_secs(86_400);
 
 /// Publish the held readings again after a preference changed their arithmetic.
@@ -350,8 +352,18 @@ const REPAINT_MAX_AGE: Duration = Duration::from_secs(86_400);
 /// every weekly window. The shell computes all three, so the tray and each
 /// webview keep the previous figures until the next collection. This repaints
 /// them at once instead.
+///
+/// The caller is the settings transition, which runs on the main thread. A
+/// pass takes the summarize lock, and a collection already in flight can hold
+/// that lock across a provider request, so calling the pass here would stall
+/// the whole interface for the length of that request. Hop to a blocking
+/// thread, where every other pass already runs. The repaint is fire-and-forget
+/// because the transition has nothing to report and nothing to wait for.
 pub(crate) fn republish_after_settings_change(app: &AppHandle) {
-    let _ = refresh_publish_and_evaluate(app, REPAINT_MAX_AGE, None);
+    let app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let _ = refresh_publish_and_evaluate(&app, REPAINT_MAX_AGE, None);
+    }));
 }
 
 /// Collect, publish, and evaluate one live-usage reading.
