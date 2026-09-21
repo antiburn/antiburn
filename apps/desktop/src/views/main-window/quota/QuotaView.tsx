@@ -263,7 +263,7 @@ function JumpBarSegment({
               <DropdownMenu.RadioItem
                 key={option.value}
                 value={option.value}
-                disabled={option.disabled}
+                disabled={option.disabled ?? false}
                 className="ui-menu-item data-[disabled]:opacity-40"
               >
                 <span className="flex w-3 shrink-0 justify-center">
