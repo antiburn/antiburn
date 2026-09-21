@@ -506,7 +506,10 @@ describe("xAxisTicks", () => {
   })
 
   afterAll(() => {
-    nodeEnv.TZ = originalTz
+    // Assigning `undefined` would store the string "undefined", so an
+    // absent TZ is deleted rather than reassigned.
+    if (originalTz === undefined) delete nodeEnv.TZ
+    else nodeEnv.TZ = originalTz
   })
 
   it("keeps every tick at local midnight across a daylight-saving change", () => {
