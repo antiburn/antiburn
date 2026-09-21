@@ -36,11 +36,11 @@ const SLIDE_STEPS: u32 = 12;
 
 /// How often the docked HUD reads the cursor.
 #[cfg(target_os = "macos")]
-const TAB_POLL: Duration = Duration::from_millis(100);
+pub(crate) const TAB_POLL: Duration = Duration::from_millis(100);
 
 /// How long the cursor must rest on the tab before the HUD peeks in.
 #[cfg(target_os = "macos")]
-const TAB_HOLD: Duration = Duration::from_millis(150);
+pub(crate) const TAB_HOLD: Duration = Duration::from_millis(150);
 
 /// How often a peeked HUD checks whether it should park again.
 #[cfg(target_os = "macos")]
@@ -48,7 +48,7 @@ const AUTO_DOCK_POLL: Duration = Duration::from_millis(200);
 
 /// How long a peeked HUD stays after the pointer leaves it and the edge.
 #[cfg(target_os = "macos")]
-const PEEK_LINGER: Duration = Duration::from_millis(1_500);
+pub(crate) const PEEK_LINGER: Duration = Duration::from_millis(1_500);
 
 /// How long a woken HUD stays after the pointer leaves it.
 #[cfg(target_os = "macos")]
@@ -71,46 +71,63 @@ pub enum DockEdge {
 
 /// Whether the HUD is docked, and at which edge. The shell stores this so a
 /// docked HUD comes back docked.
+///
+/// `island` means the HUD sits in the notch. The edge is then `Top`, which
+/// is where it docks on a display without a notch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DockSettings {
     pub docked: bool,
     pub edge: DockEdge,
+    #[serde(default)]
+    pub island: bool,
 }
 
 /// A rectangle in physical desktop pixels.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Rect {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+pub(crate) struct Rect {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
 }
 
-struct DockState {
-    edge: DockEdge,
-    docked: bool,
+pub(crate) struct DockState {
+    pub(crate) edge: DockEdge,
+    pub(crate) docked: bool,
+    /// The HUD sits in the notch. `docked` then means collapsed.
+    pub(crate) island: bool,
+    /// The reader wants the notch. It stays true while a display change takes
+    /// the notch away, so the island comes back when a notch returns.
+    pub(crate) island_wanted: bool,
     /// Where the HUD sits when peeked in, in physical desktop pixels.
-    home: Option<(f64, f64)>,
+    pub(crate) home: Option<(f64, f64)>,
     /// The display the HUD docked against.
     #[cfg(target_os = "macos")]
-    frame: Option<Rect>,
+    pub(crate) frame: Option<Rect>,
     /// The display's scale, so the tab is in logical pixels.
     #[cfg(target_os = "macos")]
-    scale: f64,
+    pub(crate) scale: f64,
+    /// The notch of the built-in display, when one exists.
+    #[cfg(target_os = "macos")]
+    pub(crate) notch: Option<super::island::Notch>,
     /// A new value cancels every task from an earlier transition.
-    generation: u64,
+    pub(crate) generation: u64,
 }
 
 static DOCK: Mutex<DockState> = Mutex::new(DockState {
     edge: DockEdge::Right,
     docked: false,
+    island: false,
+    island_wanted: false,
     home: None,
     #[cfg(target_os = "macos")]
     frame: None,
     #[cfg(target_os = "macos")]
     scale: 1.0,
+    #[cfg(target_os = "macos")]
+    notch: None,
     generation: 0,
 });
 
@@ -119,7 +136,7 @@ static DOCK: Mutex<DockState> = Mutex::new(DockState {
 /// Never call into the window while the guard is held. A window getter waits
 /// for the main thread, and the main thread takes this lock in sync commands,
 /// so a getter under the lock deadlocks the app.
-fn state() -> std::sync::MutexGuard<'static, DockState> {
+pub(crate) fn state() -> std::sync::MutexGuard<'static, DockState> {
     DOCK.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -132,10 +149,13 @@ pub fn dock_settings() -> DockSettings {
     DockSettings {
         docked: dock.docked || dock.home.is_some(),
         edge: dock.edge,
+        island: dock.island || dock.island_wanted,
     }
 }
 
 /// Dock again at launch or reopen, when the reader left the HUD docked.
+///
+/// An island comes back in the notch. Without a notch it docks at the top.
 #[cfg(target_os = "macos")]
 pub fn restore_dock(app: &AppHandle, settings: DockSettings) {
     if !settings.docked {
@@ -144,6 +164,9 @@ pub fn restore_dock(app: &AppHandle, settings: DockSettings) {
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
         return;
     };
+    if settings.island && super::island::refresh_notch() && super::island::island_at(app, &window) {
+        return;
+    }
     dock_at(app, &window, settings.edge);
 }
 
@@ -156,14 +179,18 @@ pub fn restore_dock(_app: &tauri::AppHandle, _settings: DockSettings) {}
 /// Returns the dock state after the drop, for the shell to store.
 #[cfg(target_os = "macos")]
 pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
+    super::set_drag_in_progress(false);
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
         return dock_settings();
     };
+    super::island::refresh_notch();
     if let Some(window_rect) = window_rect(&window)
         && let Some(monitor) = monitor_of(&window)
     {
         let frame = monitor_rect(&monitor);
-        if let Some(edge) =
+        if super::island::dropped_on_notch(&window_rect) {
+            super::island::island_at(app, &window);
+        } else if let Some(edge) =
             edge_dropped_on(&frame, &window_rect, SIDE_INSET * monitor.scale_factor())
         {
             let others: Vec<Rect> = window
@@ -187,26 +214,49 @@ pub fn settle_after_drag(app: &AppHandle) -> DockSettings {
             }
         }
     }
+    // A free drop ends the drag's notch preview.
+    {
+        let mut dock = state();
+        if !dock.docked {
+            dock.generation += 1;
+        }
+    }
     dock_settings()
 }
 
 /// Keep the drop inert where the HUD is unavailable.
 #[cfg(not(target_os = "macos"))]
 pub fn settle_after_drag(_app: &tauri::AppHandle) -> DockSettings {
+    super::set_drag_in_progress(false);
     dock_settings()
 }
 
-/// Free the HUD: a drag started on a docked or peeked HUD.
-pub fn tear_off() -> bool {
-    let mut dock = state();
-    let was_docked = dock.docked || dock.home.is_some();
+/// Free the HUD: a drag started on a docked, peeked, or islanded HUD.
+///
+/// Returns true when the HUD was parked. An island window gets the floating
+/// width back.
+pub fn tear_off(app: &tauri::AppHandle) -> bool {
+    let (was_docked, was_island) = {
+        let mut dock = state();
+        let was_docked = dock.docked || dock.home.is_some();
+        #[cfg(target_os = "macos")]
+        if was_docked {
+            tracing::info!(event = "hud_tear_off", edge = ?dock.edge, island = dock.island);
+        }
+        let was_island = dock.island;
+        dock.docked = false;
+        dock.island = false;
+        dock.island_wanted = false;
+        dock.home = None;
+        dock.generation += 1;
+        (was_docked, was_island)
+    };
     #[cfg(target_os = "macos")]
-    if was_docked {
-        tracing::info!(event = "hud_tear_off", edge = ?dock.edge);
+    if was_island {
+        super::island::leave_window(app);
     }
-    dock.docked = false;
-    dock.home = None;
-    dock.generation += 1;
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, was_island);
     was_docked
 }
 
@@ -226,7 +276,7 @@ pub fn dock_overlay(app: &AppHandle, edge: DockEdge) {
         let _guard = super::resize_apply_guard();
         let _ = window.set_position(PhysicalPosition::new(x, y));
     }
-    tear_off();
+    tear_off(app);
     dock_at(app, &window, edge);
 }
 
@@ -240,12 +290,19 @@ pub fn wake_overlay(app: &AppHandle, reason: &str) {
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
         return;
     };
-    let docked = state().docked;
+    let (docked, island) = {
+        let dock = state();
+        (dock.docked, dock.island)
+    };
     if !docked {
         return;
     }
-    tracing::info!(event = "hud_wake", reason);
-    undock(app, &window, WAKE_HOLD, WAKE_LINGER);
+    tracing::info!(event = "hud_wake", reason, island);
+    if island {
+        super::island::expand(app, &window, WAKE_HOLD, WAKE_LINGER);
+    } else {
+        undock(app, &window, WAKE_HOLD, WAKE_LINGER);
+    }
 }
 
 /// Keep waking inert where the HUD is unavailable.
@@ -257,6 +314,7 @@ pub fn wake_overlay(_app: &tauri::AppHandle, _reason: &str) {}
 pub(crate) fn reset() {
     let mut dock = state();
     dock.docked = false;
+    dock.island = false;
     dock.home = None;
     dock.generation += 1;
 }
@@ -264,25 +322,74 @@ pub(crate) fn reset() {
 /// Dock again after a placement moved the window on screen.
 ///
 /// The placement is the new home, and the dock edge is the same edge of the
-/// display the placement chose.
+/// display the placement chose. An island goes back to the notch when one is
+/// still there, and to the top edge when it is gone.
 #[cfg(target_os = "macos")]
 pub(crate) fn redock_after_placement(app: &AppHandle, window: &WebviewWindow) {
-    let edge = {
+    let (edge, wants_island, has_notch) = {
         let dock = state();
         if !dock.docked && dock.home.is_none() {
             return;
         }
-        dock.edge
+        (
+            dock.edge,
+            dock.island || dock.island_wanted,
+            dock.notch.is_some(),
+        )
     };
-    tear_off();
+    if redock_choice(wants_island, has_notch) == Redock::Island
+        && super::island::island_at(app, window)
+    {
+        return;
+    }
+    tear_off(app);
+    if wants_island {
+        // The notch went with the display. The wish stays, so the island
+        // returns when a display with a notch does.
+        state().island_wanted = true;
+    }
     dock_at(app, window, edge);
+}
+
+/// What a placement change makes of the HUD. Pure.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Redock {
+    /// Back to the notch.
+    Island,
+    /// No notch to go to: park at the remembered edge, which an island left
+    /// as the top, and keep the wish.
+    EdgeKeepingWish,
+    /// An ordinary dock.
+    Edge,
+}
+
+/// Decide what a placement change does with a stored island. Pure.
+#[cfg(any(target_os = "macos", test))]
+fn redock_choice(wants_island: bool, has_notch: bool) -> Redock {
+    match (wants_island, has_notch) {
+        (true, true) => Redock::Island,
+        (true, false) => Redock::EdgeKeepingWish,
+        (false, _) => Redock::Edge,
+    }
 }
 
 /// Keep a docked window at its tab after its height changed.
 ///
 /// The caller holds the resize guard, so this writes the position directly.
+/// An island stays at its home: it only grows down from the notch.
 #[cfg(target_os = "macos")]
 pub(crate) fn keep_docked_after_resize(window: &WebviewWindow) {
+    let island_home = {
+        let dock = state();
+        if dock.island { Some(dock.home) } else { None }
+    };
+    if let Some(home) = island_home {
+        if let Some((x, y)) = home {
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
+        return;
+    }
     let (edge, frame, scale) = {
         let dock = state();
         let Some(frame) = dock.frame.filter(|_| dock.docked) else {
@@ -475,35 +582,69 @@ fn spawn_auto_dock(
     hold: Duration,
     linger: Duration,
 ) {
+    let on_strip = |window: &WebviewWindow| {
+        let (edge, docked_frame, scale) = {
+            let dock = state();
+            (dock.edge, dock.frame, dock.scale)
+        };
+        match (docked_frame, window.cursor_position().ok()) {
+            (Some(strip), Some(cursor)) => {
+                on_tab_strip(edge, &strip, tab_depth(edge, scale), (cursor.x, cursor.y))
+            }
+            _ => false,
+        }
+    };
+    spawn_auto_park(
+        app,
+        window,
+        generation,
+        hold,
+        linger,
+        on_strip,
+        move |app, window| {
+            let edge = state().edge;
+            tracing::info!(event = "hud_auto_dock", generation);
+            dock_at(app, window, edge);
+        },
+    );
+}
+
+/// Park an open HUD once the hold passed and the pointer left it.
+///
+/// `near` says whether the pointer counts as on the HUD when it is outside
+/// the window. `park` runs once, when the HUD should park. The watch ends
+/// when a later transition changes the generation.
+#[cfg(target_os = "macos")]
+pub(crate) fn spawn_auto_park(
+    app: AppHandle,
+    window: WebviewWindow,
+    generation: u64,
+    hold: Duration,
+    linger: Duration,
+    near: impl Fn(&WebviewWindow) -> bool + Send + 'static,
+    park: impl FnOnce(&AppHandle, &WebviewWindow) + Send + 'static,
+) {
     tauri::async_runtime::spawn(async move {
         let start = Instant::now();
         let mut last_inside = start;
         loop {
             tokio::time::sleep(AUTO_DOCK_POLL).await;
-            let (edge, docked_frame, scale) = {
+            {
                 let dock = state();
                 if dock.generation != generation || dock.docked || dock.home.is_none() {
                     return;
                 }
-                (dock.edge, dock.frame, dock.scale)
-            };
+            }
             if app.get_webview_window(super::OVERLAY_LABEL).is_none() {
                 return;
             }
             let now = Instant::now();
-            let on_strip = match (docked_frame, window.cursor_position().ok()) {
-                (Some(strip), Some(cursor)) => {
-                    on_tab_strip(edge, &strip, tab_depth(edge, scale), (cursor.x, cursor.y))
-                }
-                _ => false,
-            };
-            if on_strip || super::cursor_inside(&window).unwrap_or(false) {
+            if near(&window) || super::cursor_inside(&window).unwrap_or(false) {
                 last_inside = now;
                 continue;
             }
             if should_dock(now, start, hold, linger, last_inside) {
-                tracing::info!(event = "hud_auto_dock", generation);
-                dock_at(&app, &window, edge);
+                park(&app, &window);
                 return;
             }
         }
@@ -512,7 +653,7 @@ fn spawn_auto_dock(
 
 /// The window frame in physical desktop pixels.
 #[cfg(target_os = "macos")]
-fn window_rect(window: &WebviewWindow) -> Option<Rect> {
+pub(crate) fn window_rect(window: &WebviewWindow) -> Option<Rect> {
     let position = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
     Some(Rect {
@@ -525,7 +666,7 @@ fn window_rect(window: &WebviewWindow) -> Option<Rect> {
 
 /// The display the window is on, or the primary one for a window off screen.
 #[cfg(target_os = "macos")]
-fn monitor_of(window: &WebviewWindow) -> Option<Monitor> {
+pub(crate) fn monitor_of(window: &WebviewWindow) -> Option<Monitor> {
     window
         .current_monitor()
         .ok()
@@ -534,7 +675,7 @@ fn monitor_of(window: &WebviewWindow) -> Option<Monitor> {
 }
 
 #[cfg(target_os = "macos")]
-fn monitor_rect(monitor: &Monitor) -> Rect {
+pub(crate) fn monitor_rect(monitor: &Monitor) -> Rect {
     Rect {
         x: f64::from(monitor.position().x),
         y: f64::from(monitor.position().y),
@@ -775,6 +916,24 @@ mod tests {
     }
 
     #[test]
+    fn a_placement_change_puts_a_stored_island_back_on_the_notch() {
+        assert_eq!(redock_choice(true, true), Redock::Island);
+    }
+
+    #[test]
+    fn a_placement_change_without_a_notch_keeps_the_island_wish() {
+        // The display carrying the notch left. The HUD parks at the edge it
+        // remembers, and the wish waits for a notch to come back.
+        assert_eq!(redock_choice(true, false), Redock::EdgeKeepingWish);
+    }
+
+    #[test]
+    fn a_placement_change_leaves_an_ordinary_dock_alone() {
+        assert_eq!(redock_choice(false, true), Redock::Edge);
+        assert_eq!(redock_choice(false, false), Redock::Edge);
+    }
+
+    #[test]
     fn a_shared_display_edge_bounces_instead_of_docking() {
         let right_neighbour = Rect {
             x: 1100.0,
@@ -880,12 +1039,21 @@ mod tests {
             settings,
             DockSettings {
                 docked: true,
-                edge: DockEdge::Left
+                edge: DockEdge::Left,
+                island: false
             }
         );
         assert_eq!(
             serde_json::to_string(&settings).unwrap(),
-            "{\"docked\":true,\"edge\":\"left\"}"
+            "{\"docked\":true,\"edge\":\"left\",\"island\":false}"
         );
+    }
+
+    #[test]
+    fn stored_settings_without_the_island_field_read_as_no_island() {
+        let settings: DockSettings =
+            serde_json::from_str("{\"docked\":true,\"edge\":\"top\",\"island\":true}").unwrap();
+        assert!(settings.island);
+        assert_eq!(settings.edge, DockEdge::Top);
     }
 }

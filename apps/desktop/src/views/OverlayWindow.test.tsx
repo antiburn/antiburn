@@ -46,7 +46,9 @@ vi.mock("../lib/hudIpc", async () => {
   return { ...actual, getHudTokenMap, showHudDetail }
 })
 
-const invoke = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}))
+const invoke = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
+)
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 const takeHudAnalyticsOrigin = vi.hoisted(() => vi.fn())
@@ -898,7 +900,7 @@ describe("OverlayWindow", () => {
       expect(container.querySelectorAll("svg[data-dot-value] circle")).toHaveLength(5),
     )
     const svg = container.querySelector("svg[data-dot-value]")!
-    const bars = container.querySelector(".space-y-\\[3px\\]")
+    const bars = container.querySelector(".hud-leds")
     expect(svg.compareDocumentPosition(bars!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
@@ -1257,6 +1259,71 @@ describe("OverlayWindow", () => {
     }
   })
 
+  it("draws the collapsed island as the notch row alone and keeps the detail shut", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector("[data-island]")).toBeNull()
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "collapsed",
+          wing: 30,
+          fillet: 6,
+          notch: 200,
+          height: 32,
+        }),
+      )
+      const island = container.querySelector("[data-island]")
+      expect(island?.getAttribute("data-island")).toBe("collapsed")
+      expect(island?.classList.contains("hud-island-fillets")).toBe(true)
+      expect(screen.getByTestId("island-live-led")).toBeTruthy()
+      // The right wing holds the antiburn mark.
+      expect(screen.getByTestId("island-mark")).toBeTruthy()
+      expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(0)
+
+      act(() => hover.emit(true))
+      await advance(400)
+      expect(showHudDetail).not.toHaveBeenCalled()
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "expanded",
+          wing: 30,
+          fillet: 19,
+          notch: 200,
+          height: 32,
+        }),
+      )
+      expect(
+        container.querySelector("[data-island]")?.classList.contains("hud-island-open"),
+      ).toBe(true)
+      expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+      // The island names and dates its bars; the floating frame leaves that to the detail.
+      expect(screen.getByTestId("hud-bar-label").textContent).toBe("5-hour limit81%")
+      expect(screen.getByTestId("hud-bar-reset")).toBeTruthy()
+      expect(screen.queryByTestId("hud-countdown")).toBeNull()
+      // The island has no detail card, so the pointer on it opens nothing.
+      await advance(400)
+      expect(showHudDetail).not.toHaveBeenCalled()
+
+      act(() =>
+        emitNative("hud-island:state", {
+          island: "off",
+          wing: 0,
+          fillet: 0,
+          notch: 0,
+          height: 0,
+        }),
+      )
+      expect(container.querySelector("[data-island]")).toBeNull()
+      expect(container.querySelector(".hud-frame")).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("keeps hover active inside the transparent frame margin", async () => {
     const { container } = render(<OverlayWindow />)
     await waitFor(() => expect(nativeEvents.get("overlay_hover")?.size).toBe(1))
@@ -1466,5 +1533,95 @@ describe("OverlayWindow", () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  describe("island drag", () => {
+    const COLLAPSED = { island: "collapsed", wing: 30, fillet: 6, notch: 200, height: 32 }
+    const tearOffs = () =>
+      invoke.mock.calls.filter(([command]) => command === "tear_off_overlay")
+
+    async function mountIsland() {
+      const { container } = render(<OverlayWindow />)
+      await waitFor(() => expect(nativeEvents.get("hud-island:state")?.size).toBe(1))
+      act(() => emitNative("hud-island:state", COLLAPSED))
+      const island = container.querySelector<HTMLElement>("[data-island]")
+      if (!island) throw new Error("no island")
+      return island
+    }
+
+    it("ghosts the island on a press and tears nothing off for a click", async () => {
+      const island = await mountIsland()
+      fireEvent.mouseDown(island, { screenX: 700, screenY: 10 })
+      expect(island.getAttribute("data-drag-armed")).toBe("true")
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("expand_hud_island"))
+      // A wobble under the threshold is still a click.
+      fireEvent.mouseMove(window, { screenX: 704, screenY: 14, buttons: 1 })
+      expect(tearOffs()).toHaveLength(0)
+      fireEvent.mouseUp(window)
+      await act(async () => {})
+      expect(island.getAttribute("data-drag-armed")).toBeNull()
+      expect(tearOffs()).toHaveLength(0)
+      expect(outerPosition).not.toHaveBeenCalled()
+      expect(invoke).not.toHaveBeenCalledWith("record_hud_position")
+    })
+
+    it("tears the island off once the pointer travels, and reads the origin after", async () => {
+      let freeWindow!: (torn: boolean) => void
+      invoke.mockImplementation(async (command: unknown) => {
+        if (command !== "tear_off_overlay") return undefined
+        return new Promise<boolean>((resolve) => {
+          freeWindow = resolve
+        })
+      })
+      setPosition.mockClear()
+      try {
+        const island = await mountIsland()
+        fireEvent.mouseDown(island, { screenX: 700, screenY: 10 })
+        fireEvent.mouseMove(window, { screenX: 712, screenY: 10, buttons: 1 })
+        await waitFor(() => expect(tearOffs()).toHaveLength(1))
+        expect(island.getAttribute("data-drag-armed")).toBeNull()
+        // The shell moves the window under the pointer as it frees it, so
+        // the origin waits for the tear-off.
+        expect(outerPosition).not.toHaveBeenCalled()
+        await act(async () => freeWindow(true))
+        await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(1))
+
+        fireEvent.mouseMove(window, { screenX: 722, screenY: 30, buttons: 1 })
+        await waitFor(() => expect(setPosition).toHaveBeenCalled())
+        expect(setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 610, y: 60 }))
+        fireEvent.mouseUp(window)
+        await waitFor(() => expect(invoke).toHaveBeenCalledWith("record_hud_position"))
+      } finally {
+        invoke.mockImplementation(async () => {})
+      }
+    })
+
+    it("keeps a drag through a blur while the button stays down", async () => {
+      vi.useFakeTimers()
+      try {
+        const { container } = render(<OverlayWindow />)
+        await advance(0)
+        fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
+        await advance(0)
+        expect(outerPosition).toHaveBeenCalledTimes(1)
+
+        // The tear-off's window reshape can read as a blur. The button is
+        // still down, so the next move keeps the drag.
+        fireEvent.blur(window)
+        await advance(100)
+        fireEvent.mouseMove(window, { screenX: 710, screenY: 110, buttons: 1 })
+        await advance(300)
+        expect(invoke).not.toHaveBeenCalledWith("record_hud_position")
+
+        // A blur with no move after it is a release the webview missed.
+        fireEvent.blur(window)
+        await advance(249)
+        expect(invoke).not.toHaveBeenCalledWith("record_hud_position")
+        await advance(1)
+        expect(invoke).toHaveBeenCalledWith("record_hud_position")
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })

@@ -57,13 +57,13 @@ use crate::store::{
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
-type CommandResult<T> = Result<T, String>;
+pub(crate) type CommandResult<T> = Result<T, String>;
 
-fn fail(error: impl std::fmt::Display) -> String {
+pub(crate) fn fail(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-async fn run_blocking<T, F>(operation: F) -> CommandResult<T>
+pub(crate) async fn run_blocking<T, F>(operation: F) -> CommandResult<T>
 where
     T: Send + 'static,
     F: FnOnce() -> CommandResult<T> + Send + 'static,
@@ -231,162 +231,6 @@ pub fn begin_popover_hold(app: tauri::AppHandle) {
 #[tauri::command]
 pub fn end_popover_hold(app: tauri::AppHandle) {
     popover::end_focus_hold(&app);
-}
-
-/* -------------------------------------------------------------------------
- * Overlay window
- * ---------------------------------------------------------------------- */
-
-/// Open or re-show the always-on-top usage HUD.
-#[tauri::command]
-pub async fn open_overlay_window(
-    app: tauri::AppHandle,
-    origin: crate::analytics::event::Origin,
-) -> CommandResult<()> {
-    let store = app.state::<Store>().inner().clone();
-    let (entries, dock) = run_blocking(move || {
-        // Every open means the reader wants the HUD back at the next launch.
-        crate::hud::save_enabled(&store, true);
-        Ok((
-            crate::hud::load_placements(&store),
-            crate::hud::load_dock(&store),
-        ))
-    })
-    .await?;
-    let needs_exposure = hud_needs_exposure(&app);
-    if needs_exposure {
-        crate::analytics::prepare_hud_exposure(origin);
-    }
-    if let Err(error) = antiburn_hud::open(&app, &entries) {
-        if needs_exposure {
-            crate::analytics::cancel_hud_exposure();
-        }
-        return Err(fail(error));
-    }
-    // A HUD the reader left docked comes back docked.
-    antiburn_hud::restore_dock(&app, dock);
-    Ok(())
-}
-
-/// Free a docked HUD: a drag started on it.
-#[tauri::command]
-pub fn tear_off_overlay(app: tauri::AppHandle) -> bool {
-    let was_docked = antiburn_hud::tear_off();
-    crate::hud::save_dock(&app.state::<Store>(), antiburn_hud::dock_settings());
-    was_docked
-}
-
-/// Bring a docked HUD back for a while. `reason` is logged for tuning.
-#[tauri::command]
-pub fn wake_overlay(app: tauri::AppHandle, reason: String) {
-    antiburn_hud::wake_overlay(&app, &reason);
-}
-
-#[cfg(target_os = "macos")]
-fn hud_needs_exposure(app: &tauri::AppHandle) -> bool {
-    !hud_is_exposed(app)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn hud_needs_exposure(_app: &tauri::AppHandle) -> bool {
-    false
-}
-
-#[cfg(target_os = "macos")]
-fn hud_is_exposed(app: &tauri::AppHandle) -> bool {
-    app.get_webview_window(antiburn_hud::OVERLAY_LABEL)
-        .is_some_and(|window| window.is_visible().unwrap_or(false))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn hud_is_exposed(_app: &tauri::AppHandle) -> bool {
-    false
-}
-
-/// Take the origin after the HUD confirms that it reached the screen.
-#[tauri::command]
-pub fn take_hud_analytics_origin(app: tauri::AppHandle) -> Option<crate::analytics::event::Origin> {
-    crate::analytics::take_hud_exposure_origin(hud_is_exposed(&app))
-}
-
-/// Remember where the HUD is, after a drag moved it.
-///
-/// No argument: the webview knows a drag ended, the shell knows where the
-/// window is, and that split keeps geometry out of the IPC payload.
-#[tauri::command]
-pub async fn record_hud_position(app: tauri::AppHandle) -> CommandResult<()> {
-    let placement =
-        crate::main_window::on_main_value(&app, antiburn_hud::current_placement).await?;
-    // A drop against a display edge docks the HUD there. The placement
-    // saved first is the drop, which the dock's home clamps on screen.
-    let dock = crate::main_window::on_main_value(&app, antiburn_hud::settle_after_drag).await?;
-    let store = app.state::<Store>().inner().clone();
-    run_blocking(move || {
-        if let Some(placement) = placement {
-            crate::hud::save_placement(&store, placement);
-        }
-        crate::hud::save_dock(&store, dock);
-        Ok(())
-    })
-    .await
-}
-
-/// Hide the usage HUD and cancel any pending reveal.
-#[tauri::command]
-pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
-    crate::analytics::cancel_hud_exposure();
-    crate::hud::save_enabled(&app.state::<Store>(), false);
-    antiburn_hud::hide(&app).map_err(fail)
-}
-
-/// Return whether the HUD should run while its retained renderer mounts.
-#[tauri::command]
-pub fn is_overlay_work_active() -> bool {
-    antiburn_hud::work_is_active()
-}
-
-/// Match the native HUD frame to the rendered panel.
-#[tauri::command]
-pub fn resize_overlay_window(
-    app: tauri::AppHandle,
-    height: f64,
-    anchor_bottom: bool,
-    animate: bool,
-) -> CommandResult<()> {
-    antiburn_hud::resize(&app, height, anchor_bottom, animate).map_err(fail)
-}
-
-/// Request the hover detail window with the newest usage payload.
-///
-/// The payload passes through opaque on purpose: the HUD webview produces it
-/// and the detail webview consumes it, so the shell does not model its shape.
-#[tauri::command]
-pub fn show_hud_detail(app: tauri::AppHandle, state: serde_json::Value) {
-    antiburn_hud::show_detail(&app, state);
-}
-
-/// Hide the hover detail window.
-#[tauri::command]
-pub fn hide_hud_detail(app: tauri::AppHandle) {
-    antiburn_hud::hide_detail(&app);
-}
-
-/// Hide the detail window now that its webview cleared the card.
-#[tauri::command]
-pub fn conceal_hud_detail(app: tauri::AppHandle) {
-    antiburn_hud::conceal_detail(&app);
-}
-
-/// Return the newest detail payload for a detail webview that mounts late.
-#[tauri::command]
-pub fn get_hud_detail_state() -> serde_json::Value {
-    antiburn_hud::detail_state()
-}
-
-/// Size and place the detail window from its webview's measured height.
-#[tauri::command]
-pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
-    antiburn_hud::apply_detail_size(&app, height);
 }
 
 /// Read bounded live rows with exact registry counts. Readers must subscribe before

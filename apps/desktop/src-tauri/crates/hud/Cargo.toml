@@ -25,3 +25,7 @@ tauri = { version = "2", features = ["macos-private-api"] }
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 tracing = "0.1"
+# The island reads the notch from `NSScreen`. `tauri-nspanel` re-exports
+# `objc2-app-kit` without the `NSScreen` feature, so the crate names it.
+objc2-app-kit = { version = "0.3", features = ["NSScreen", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry"] }

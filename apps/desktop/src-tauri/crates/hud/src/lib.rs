@@ -12,15 +12,21 @@
 use std::sync::LazyLock;
 
 mod dock;
+mod island;
 pub use dock::{
     DockEdge, DockSettings, dock_overlay, dock_settings, restore_dock, settle_after_drag, tear_off,
     wake_overlay,
+};
+pub use island::{
+    IslandPhase, IslandState, begin_drag, expand_island, island_overlay, island_state,
+    island_wanted_off_notch, reclaim_island, refresh_notch, set_fake_notch,
 };
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use std::sync::MutexGuard;
 #[cfg(any(target_os = "macos", test))]
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
@@ -192,6 +198,26 @@ impl ResizeState {
 static RESIZE_STATE: ResizeState = ResizeState::new(OVERLAY_SEED_HEIGHT);
 #[cfg(target_os = "macos")]
 static RESIZE_APPLY_LOCK: Mutex<()> = Mutex::new(());
+
+/// True from the start of a HUD drag until the drop settles.
+///
+/// The shell reads this when the app becomes active: an activation during a
+/// drag comes from the drag, not from a request for the main window.
+static DRAG_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// True while the pointer drags the HUD window.
+pub fn drag_in_progress() -> bool {
+    DRAG_IN_PROGRESS.load(Ordering::SeqCst)
+}
+
+pub(crate) fn set_drag_in_progress(dragging: bool) {
+    DRAG_IN_PROGRESS.store(dragging, Ordering::SeqCst);
+}
+
+/// Clear the drag flag: the webview reported that its drag ended.
+pub fn end_drag() {
+    set_drag_in_progress(false);
+}
 
 #[cfg(target_os = "macos")]
 fn resize_apply_guard() -> MutexGuard<'static, ()> {
@@ -482,6 +508,7 @@ pub fn hide(app: &AppHandle) -> tauri::Result<()> {
     let _guard = resize_apply_guard();
     RESIZE_STATE.request_hide();
     set_overlay_visible(false);
+    set_drag_in_progress(false);
     dock::reset();
     let _ = app.emit(OVERLAY_WORK_EVENT, false);
     hide_detail(app);
@@ -722,7 +749,8 @@ fn apply_height(
     };
 
     window.set_resizable(true)?;
-    let size_result = window.set_size(LogicalSize::new(OVERLAY_WIDTH, target_height));
+    let width = island::frame_width().unwrap_or(OVERLAY_WIDTH);
+    let size_result = window.set_size(LogicalSize::new(width, target_height));
     if size_result.is_ok() {
         RESIZE_STATE.set_height(target_height);
     } else {
@@ -794,21 +822,122 @@ fn spawn_hover_watcher(window: WebviewWindow) {
     });
 }
 
+/// True when the cursor is over the window.
+///
+/// tao gives the cursor in physical pixels of the primary display and the
+/// window frame in physical pixels of the window's own display. The two
+/// scales differ on a mixed setup, so both sides convert to logical points
+/// before the test. The shell reads this when the app becomes active.
 #[cfg(target_os = "macos")]
-fn cursor_inside(window: &WebviewWindow) -> Option<bool> {
+pub fn cursor_inside(window: &WebviewWindow) -> Option<bool> {
+    cursor_report(window).map(|report| report.inside)
+}
+
+/// The cursor and the window frame in logical points, for the log.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+pub struct CursorReport {
+    pub cursor: (f64, f64),
+    pub frame: (f64, f64, f64, f64),
+    pub inside: bool,
+}
+
+/// Where the cursor sits against the window, in logical points.
+#[cfg(target_os = "macos")]
+pub fn cursor_report(window: &WebviewWindow) -> Option<CursorReport> {
     let cursor = window.cursor_position().ok()?;
+    let primary_scale = window.primary_monitor().ok().flatten()?.scale_factor();
+    let scale = window.scale_factor().ok()?;
     let position = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
-    let x = position.x as f64;
-    let y = position.y as f64;
-    Some(contains_point(
-        x,
-        y,
-        size.width as f64,
-        size.height as f64,
-        cursor.x,
-        cursor.y,
-    ))
+    let position = (f64::from(position.x), f64::from(position.y));
+    let size = (f64::from(size.width), f64::from(size.height));
+    let inside = cursor_over_frame(position, size, scale, (cursor.x, cursor.y), primary_scale);
+    Some(CursorReport {
+        cursor: (cursor.x / primary_scale, cursor.y / primary_scale),
+        frame: (
+            position.0 / scale,
+            position.1 / scale,
+            size.0 / scale,
+            size.1 / scale,
+        ),
+        inside,
+    })
+}
+
+/// The pure part of [`cursor_inside`]: a physical frame at `scale` against a
+/// physical cursor at `cursor_scale`, compared in logical points.
+#[cfg(any(target_os = "macos", test))]
+fn cursor_over_frame(
+    position: (f64, f64),
+    size: (f64, f64),
+    scale: f64,
+    cursor: (f64, f64),
+    cursor_scale: f64,
+) -> bool {
+    contains_point(
+        position.0 / scale,
+        position.1 / scale,
+        size.0 / scale,
+        size.1 / scale,
+        cursor.0 / cursor_scale,
+        cursor.1 / cursor_scale,
+    )
+}
+
+#[cfg(test)]
+mod drag_flag_tests {
+    use super::{drag_in_progress, end_drag, set_drag_in_progress};
+
+    #[test]
+    fn the_flag_follows_the_drag() {
+        set_drag_in_progress(true);
+        assert!(drag_in_progress());
+        end_drag();
+        assert!(!drag_in_progress());
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::cursor_over_frame;
+
+    #[test]
+    fn compares_the_cursor_and_the_frame_in_logical_points() {
+        // A 2x window at logical (-1751, 0), 562 by 32. The cursor sits at
+        // logical (-1600, 10), reported at 1x by the primary display.
+        let frame = ((-3502.0, 0.0), (1124.0, 64.0));
+        assert!(cursor_over_frame(
+            frame.0,
+            frame.1,
+            2.0,
+            (-1600.0, 10.0),
+            1.0
+        ));
+        // The same cursor in the window's own scale is inside too.
+        assert!(cursor_over_frame(
+            frame.0,
+            frame.1,
+            2.0,
+            (-3200.0, 20.0),
+            2.0
+        ));
+        // Read as raw physical pixels, the 1x cursor would fall outside.
+        assert!(!cursor_over_frame(
+            frame.0,
+            frame.1,
+            1.0,
+            (-1600.0, 10.0),
+            1.0
+        ));
+        assert!(!cursor_over_frame(
+            frame.0,
+            frame.1,
+            2.0,
+            (-1600.0, 40.0),
+            1.0
+        ));
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -834,6 +963,30 @@ const DETAIL_CONCEAL_FALLBACK_MS: u64 = 80;
 /// Detail window width in logical pixels. Matches the HUD frame width.
 #[cfg(any(target_os = "macos", test))]
 const DETAIL_WIDTH: f64 = 176.0;
+
+/// The transparent pad the detail webview keeps around its card, in logical
+/// pixels (`p-2`). The card sits inside it, so the card is as wide as the
+/// window minus this pad on each side.
+#[cfg(any(target_os = "macos", test))]
+const DETAIL_CARD_PAD: f64 = 8.0;
+
+/// The detail window width, and the offset from the HUD window's left edge to
+/// the panel the HUD draws inside it.
+///
+/// The island draws a panel as wide as the notch and both wings, inset by a
+/// fillet on each side. The detail card takes that same width and sits under
+/// it, so the two read as one object on the notch.
+#[cfg(any(target_os = "macos", test))]
+fn detail_metrics(island: &IslandState) -> (f64, f64) {
+    match island.island {
+        IslandPhase::Collapsed | IslandPhase::Expanded => (
+            island.notch + island.wing * 2.0 + DETAIL_CARD_PAD * 2.0,
+            island.fillet - DETAIL_CARD_PAD,
+        ),
+        // A floating or previewing HUD keeps the frame width.
+        IslandPhase::Off | IslandPhase::Preview => (DETAIL_WIDTH, 0.0),
+    }
+}
 
 /// Gap between the panel and the detail window frame. Zero: the webview
 /// carries a transparent pad for its shadow, and that pad is the visible gap.
@@ -897,6 +1050,12 @@ pub fn show_detail(app: &AppHandle, state: serde_json::Value) {
         if !RESIZE_STATE.wants_visible() {
             return;
         }
+        // The island carries its own detail. A request that lands while the
+        // HUD sits in the notch comes from a webview that has not learned the
+        // island yet, so it shows nothing.
+        if !matches!(island::island_state().island, island::IslandPhase::Off) {
+            return;
+        }
         if let Ok(mut slot) = DETAIL_STATE.lock() {
             *slot = Some(state.clone());
         }
@@ -954,10 +1113,8 @@ pub fn apply_detail_size(app: &AppHandle, height: f64) {
     let Some(hud) = app.get_webview_window(OVERLAY_LABEL) else {
         return;
     };
-    if detail
-        .set_size(LogicalSize::new(DETAIL_WIDTH, height))
-        .is_err()
-    {
+    let (width, _) = detail_metrics(&island::island_state());
+    if detail.set_size(LogicalSize::new(width, height)).is_err() {
         return;
     }
     if position_detail_window(&detail, &hud, height).is_none() {
@@ -1114,9 +1271,11 @@ fn reposition_detail_after_hud_frame(hud: &WebviewWindow) {
 
 #[cfg(target_os = "macos")]
 fn position_detail_window(detail: &WebviewWindow, hud: &WebviewWindow, height: f64) -> Option<()> {
-    let anchor = panel_anchor(hud)?;
+    let mut anchor = panel_anchor(hud)?;
+    let (width, inset) = detail_metrics(&island::island_state());
+    anchor.x += inset;
     let frame = monitor_frame(hud);
-    let (x, y) = compute_detail_position(&anchor, frame.as_ref(), DETAIL_WIDTH, height);
+    let (x, y) = compute_detail_position(&anchor, frame.as_ref(), width, height);
     detail.set_position(LogicalPosition::new(x, y)).ok()
 }
 
@@ -1282,6 +1441,37 @@ mod tests {
             right: 1512.0,
             bottom: 982.0,
         }
+    }
+
+    fn island(phase: IslandPhase) -> IslandState {
+        IslandState {
+            island: phase,
+            wing: 30.0,
+            fillet: 19.0,
+            notch: 183.0,
+            height: 38.0,
+        }
+    }
+
+    #[test]
+    fn the_detail_keeps_the_frame_width_off_the_island() {
+        assert_eq!(
+            detail_metrics(&island(IslandPhase::Off)),
+            (DETAIL_WIDTH, 0.0)
+        );
+        assert_eq!(
+            detail_metrics(&island(IslandPhase::Preview)),
+            (DETAIL_WIDTH, 0.0)
+        );
+    }
+
+    #[test]
+    fn the_detail_takes_the_island_panel_width() {
+        let (width, inset) = detail_metrics(&island(IslandPhase::Expanded));
+        // The card is the notch and both wings wide, and its own pad puts it
+        // on the panel's left edge.
+        assert_eq!(width - DETAIL_CARD_PAD * 2.0, 183.0 + 60.0);
+        assert_eq!(inset + DETAIL_CARD_PAD, 19.0);
     }
 
     #[test]

@@ -1765,6 +1765,12 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
         main_visible,
         main_minimized,
         another_window_owns_activation,
+        detail_requested = antiburn_hud::detail_requested(),
+        hud_dragging = antiburn_hud::drag_in_progress(),
+        hud_cursor = ?app
+            .get_webview_window(antiburn_hud::OVERLAY_LABEL)
+            .and_then(|window| antiburn_hud::cursor_report(&window)),
+        activation_event = activation_event_kind(),
         restore
     );
     if !restore {
@@ -1784,33 +1790,50 @@ fn window_is_visible(app: &AppHandle, label: &str) -> bool {
 
 /// A click on the HUD activates the app, but the HUD panel never takes
 /// focus. The cursor over the HUD is the sign that the HUD owns the
-/// activation, so the main window stays where it was.
+/// activation, so the main window stays where it was. A drag of the HUD
+/// owns the activation for its whole run, wherever the cursor reads.
 #[cfg(target_os = "macos")]
 fn hud_owns_activation(app: &AppHandle) -> bool {
     if antiburn_hud::detail_requested() {
+        return true;
+    }
+    if antiburn_hud::drag_in_progress() && window_is_visible(app, antiburn_hud::OVERLAY_LABEL) {
         return true;
     }
     [antiburn_hud::OVERLAY_LABEL, antiburn_hud::DETAIL_LABEL]
         .into_iter()
         .filter_map(|label| app.get_webview_window(label))
         .filter(|window| window.is_visible().unwrap_or(false))
-        .any(|window| cursor_inside(&window))
+        .any(|window| antiburn_hud::cursor_inside(&window).unwrap_or(false))
 }
 
+/// The AppKit event that the activation arrives with, for the log. A mouse
+/// event names a click; a key event names a switch; none names the Dock or
+/// another process.
 #[cfg(target_os = "macos")]
-fn cursor_inside(window: &tauri::WebviewWindow) -> bool {
-    let (Ok(cursor), Ok(position), Ok(size)) = (
-        window.cursor_position(),
-        window.outer_position(),
-        window.outer_size(),
-    ) else {
-        return false;
+fn activation_event_kind() -> &'static str {
+    use objc2_app_kit::{NSApplication, NSEventType};
+    use objc2_foundation::MainThreadMarker;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return "off-main-thread";
     };
-    let (x, y) = (position.x as f64, position.y as f64);
-    cursor.x >= x
-        && cursor.x < x + size.width as f64
-        && cursor.y >= y
-        && cursor.y < y + size.height as f64
+    let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else {
+        return "none";
+    };
+    match event.r#type() {
+        NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown => {
+            "mouse-down"
+        }
+        NSEventType::LeftMouseUp | NSEventType::RightMouseUp | NSEventType::OtherMouseUp => {
+            "mouse-up"
+        }
+        NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged => "key",
+        NSEventType::AppKitDefined
+        | NSEventType::SystemDefined
+        | NSEventType::ApplicationDefined => "system",
+        _ => "other",
+    }
 }
 
 #[cfg(target_os = "macos")]
