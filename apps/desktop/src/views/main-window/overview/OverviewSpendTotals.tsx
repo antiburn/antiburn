@@ -9,6 +9,7 @@ import {
   windowTokens,
 } from "../../../lib/presentation/providerUsage"
 
+import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFigures"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
 
@@ -38,45 +39,41 @@ export function OverviewSpendTotals({
   totals: ProviderUsageWindowsPayload | null
   loading?: boolean
 }) {
+  const cells: HeroFigureCell[] = SPANS.map((span) => ({
+    key: span.key,
+    label: (
+      <>
+        <span aria-hidden="true">{span.label}</span>
+        <span className="sr-only">{span.accessibleLabel}</span>
+      </>
+    ),
+    ...(loading || !totals
+      ? {
+          figure: <Skeleton className="h-8 w-28" />,
+          caption: <Skeleton className="h-3 w-36 max-w-full" />,
+        }
+      : spendCell(totals[span.key])),
+  }))
   return (
     <section aria-label="Estimated local spend" aria-busy={loading || undefined}>
-      <dl className="overview-totals">
-        {SPANS.map((span) => (
-          <div key={span.key} className="overview-totals-cell min-w-0 border-separator">
-            <dt className="type-callout text-label-secondary">
-              <span aria-hidden="true">{span.label}</span>
-              <span className="sr-only">{span.accessibleLabel}</span>
-            </dt>
-            {loading || !totals ? (
-              <>
-                <dd className="mt-[var(--space-xs)]">
-                  <Skeleton className="h-8 w-28" />
-                </dd>
-                <dd className="mt-[var(--space-xs)]">
-                  <Skeleton className="h-3 w-36 max-w-full" />
-                </dd>
-              </>
-            ) : (
-              <SpendCell window={totals[span.key]} />
-            )}
-          </div>
-        ))}
-      </dl>
+      <HeroFigures cells={cells} />
     </section>
   )
 }
 
-function SpendCell({ window }: { window: ProviderUsageWindowPayload }) {
+function spendCell(
+  window: ProviderUsageWindowPayload,
+): Pick<HeroFigureCell, "figure" | "caption"> {
   const hasCost = window.estimatedUsd != null
   const tokens = windowTokens(window)
-  return (
-    <>
-      <dd className="type-hero-figure mt-[var(--space-xs)] whitespace-nowrap font-mono text-measure">
-        <SegmentFigure>
-          {hasCost ? formatSpendFigure(window.estimatedUsd ?? 0) : formatTokenFigure(tokens)}
-        </SegmentFigure>
-      </dd>
-      <dd className="type-caption mt-[var(--space-xs)] whitespace-nowrap text-label-tertiary">
+  return {
+    figure: (
+      <SegmentFigure>
+        {hasCost ? formatSpendFigure(window.estimatedUsd ?? 0) : formatTokenFigure(tokens)}
+      </SegmentFigure>
+    ),
+    caption: (
+      <>
         {hasCost && (
           <>
             <SegmentFigure>{formatTokenFigure(tokens)}</SegmentFigure>
@@ -90,7 +87,7 @@ function SpendCell({ window }: { window: ProviderUsageWindowPayload }) {
             <span title="Some models in this period have no known price.">partial</span>
           </>
         )}
-      </dd>
-    </>
-  )
+      </>
+    ),
+  }
 }

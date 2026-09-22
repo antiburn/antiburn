@@ -1,0 +1,42 @@
+/* ==========================================================================
+   Hero figures.
+
+   A row of headline numbers: one cell for each figure, a hairline between
+   cells. The Overview's spend totals and the Limits header share this
+   layout. The grid flows by column, so the cell count sets the column count
+   and every cell gets the same share of the row. Below 540px of container
+   width the cells stack, and the hairline moves to the top of each cell.
+   ========================================================================== */
+
+.hero-figures {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+
+.hero-figures-cell + .hero-figures-cell {
+  border-left-width: 1px;
+  padding-inline: var(--space-lg);
+}
+
+.hero-figures-cell:first-child {
+  padding-inline-end: var(--space-lg);
+}
+
+@container (max-width: 540px) {
+  .hero-figures {
+    grid-auto-flow: row;
+    row-gap: var(--space-md);
+  }
+
+  .hero-figures-cell:first-child {
+    padding-inline-end: 0;
+  }
+
+  .hero-figures-cell + .hero-figures-cell {
+    border-left-width: 0;
+    border-top-width: 1px;
+    padding-inline: 0;
+    padding-block-start: var(--space-md);
+  }
+}
