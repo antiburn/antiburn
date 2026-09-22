@@ -594,6 +594,20 @@ Notes for what isn't expressible as a token:
   number and a `type-caption text-label-tertiary` caption, with a 1px separator and
   16px inline padding between cells. The cells stack below 540px of container width.
 
+- **Limits page** — the header is a jump bar, not a row of controls: account › lane ›
+  range as `type-footnote` text with `›` in `text-label-tertiary`. A level with more
+  than one choice is a borderless `rounded-control` button whose chevron shows only on
+  hover, focus, or while its menu is open (`quota-jump-chevron`); a level with one
+  choice is plain text. The range reads in the lane's own words ("Last 3 weeks" on a
+  weekly lane, "Last 3 windows" on a 5-hour lane). The pace-line switch floats over the
+  chart's top-right corner on `surface-key` with `shadow-stats-card`, like the Overview
+  legend. Session rows follow the session-card recipe (`bg-session-card`,
+  `rounded-control`, 12px by 8px padding, 6px gaps, `hover:bg-surface-secondary/50`)
+  with the swatch, the agent icon, a semibold title, and right-aligned percent and
+  dollars; the "other", "unattributed" and "unexplained" rows use `surface-card/50` and
+  secondary ink. The list sizes to its rows up to 45% of the column and the chart takes
+  the rest (`quota-session-list` in `quota.css`).
+
 - **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
   a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.
   The following component owns the gap below the card; the summary adds no bottom padding.

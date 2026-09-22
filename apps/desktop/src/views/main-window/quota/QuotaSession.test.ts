@@ -83,7 +83,7 @@ describe("QuotaSession", () => {
       accountKey: "acct-1",
       lane: "weekly",
     })
-    expect(session.getSnapshot().range).toBe("thisWeek")
+    expect(session.getSnapshot().range).toBe("thisWindow")
     stop()
   })
 
@@ -108,7 +108,7 @@ describe("QuotaSession", () => {
     session.selectLane("fiveHour")
     await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("u2"))
     expect(session.getSnapshot().selection?.lane).toBe("fiveHour")
-    expect(session.getSnapshot().range).toBe("thisWeek")
+    expect(session.getSnapshot().range).toBe("thisWindow")
     const request = vi.mocked(adapter.getUsage).mock.calls.at(-1)![0]
     expect(request.lane).toBe("fiveHour")
     stop()
@@ -430,7 +430,7 @@ describe("QuotaSession", () => {
       accountKey: "acct-1",
       lane: "weekly",
     })
-    expect(session.getSnapshot().range).toBe("thisWeek")
+    expect(session.getSnapshot().range).toBe("thisWindow")
     stop()
   })
 
