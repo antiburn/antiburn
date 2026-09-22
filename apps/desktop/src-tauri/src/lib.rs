@@ -131,6 +131,15 @@ struct RepeatedLaunch {
     setup_ready: AtomicBool,
 }
 
+/// The Overview's own read-only store handle, managed apart from the
+/// writer [`store::Store`] so `app.state::<store::Store>()` keeps naming the
+/// writer everywhere else. See [`store::Store::open_reader`].
+pub(crate) struct UiReadStore(pub(crate) store::Store);
+
+/// How long a UI-reader connection waits on SQLite's own busy retry before
+/// giving up, matching the export and report readers' own timeout.
+const UI_READ_STORE_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl WindowRebuildState {
     fn begin(&self) {
         self.0.fetch_add(1, Ordering::AcqRel);
@@ -253,6 +262,24 @@ pub fn run() {
             .purge_stale_source_resume(analysis::resume_revisions())
         {
             ::tracing::error!(event = "source_resume_purge_failed", error = %error);
+        }
+
+        // The Overview's charts read through their own connection so they
+        // never queue behind the insights worker's writer-mutex bursts. Fall
+        // back to a writer clone on failure, so a reader that cannot open
+        // still leaves the app usable.
+        match app
+            .state::<store::Store>()
+            .open_reader(UI_READ_STORE_BUSY_TIMEOUT)
+        {
+            Ok(reader) => {
+                ::tracing::info!(event = "ui_read_store_opened");
+                app.manage(UiReadStore(reader));
+            }
+            Err(error) => {
+                ::tracing::warn!(event = "ui_read_store_fallback", error = %error);
+                app.manage(UiReadStore(app.state::<store::Store>().inner().clone()));
+            }
         }
 
         // Apply the persisted theme before any window shows, so the first

@@ -424,6 +424,25 @@ impl Store {
         Store::from_connection(Connection::open_in_memory()?, state_dir.to_path_buf())
     }
 
+    /// A [`Store`] whose connection is a fresh [`open_read_only`] WAL reader,
+    /// sharing every other Arc with `self`.
+    ///
+    /// Call this only on an already migrated store: [`Store::open`] always
+    /// migrates before returning, so this holds by construction for every
+    /// caller. A write through the returned store fails with SQLite's
+    /// read-only error, on purpose — the connection carries
+    /// `SQLITE_OPEN_READ_ONLY`.
+    pub fn open_reader(&self, busy_timeout: Duration) -> Result<Store> {
+        let connection = open_read_only(&self.state_dir, busy_timeout)?;
+        Ok(Store {
+            connection: Arc::new(Mutex::new(connection)),
+            settings_snapshot: Arc::clone(&self.settings_snapshot),
+            limit_factor_learn: Arc::clone(&self.limit_factor_learn),
+            remediation_turn: Arc::clone(&self.remediation_turn),
+            state_dir: self.state_dir.clone(),
+        })
+    }
+
     fn from_connection(connection: Connection, state_dir: PathBuf) -> Result<Store> {
         // WAL keeps a read during a scan write from blocking, and `NORMAL` is
         // the documented companion: a crash can lose the last commit, which for
