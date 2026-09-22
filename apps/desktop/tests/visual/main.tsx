@@ -30,8 +30,22 @@ function configureDocument(): void {
   setHudTokenMapEnabled(params.get("map") === "on")
   const scale = Number(params.get("scale")) || 100
   const theme = params.get("theme") === "dark" ? "dark" : "light"
+  const requestedPlatform = params.get("platform")
+  const platform =
+    requestedPlatform === "windows" || requestedPlatform === "linux"
+      ? requestedPlatform
+      : "macos"
+  const platformName = { macos: "macOS", windows: "Windows", linux: "Linux" }[platform]
+  Object.defineProperty(navigator, "userAgentData", {
+    configurable: true,
+    value: { platform: platformName },
+  })
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value: `Antiburn visual fixture (${platformName})`,
+  })
   document.documentElement.dataset.theme = theme
-  document.documentElement.dataset.platform = "macos"
+  document.documentElement.dataset.platform = platform
   document.documentElement.dataset.route = querySurface()
   document.documentElement.style.setProperty("--interface-scale", String(scale / 100))
   const fixtureWindow = window as Window & { __ANTIBURN_INTERFACE_SCALE_PERCENT__?: number }

@@ -28,6 +28,7 @@ function fixtureUrl(
     theme?: "light" | "dark"
     state?: State
     fault?: FixtureFault
+    platform?: "macos" | "windows" | "linux"
   } = {},
 ): string {
   const params = new URLSearchParams({
@@ -37,6 +38,7 @@ function fixtureUrl(
     state: options.state ?? "populated",
   })
   if (options.fault) params.set("fault", options.fault)
+  if (options.platform) params.set("platform", options.platform)
   return `/tests/visual/?${params}`
 }
 
@@ -48,6 +50,7 @@ async function openFixture(
     theme?: "light" | "dark"
     state?: State
     fault?: FixtureFault
+    platform?: "macos" | "windows" | "linux"
   } = {},
 ) {
   await page.clock.setFixedTime(new Date("2026-09-15T00:00:00.000Z"))
@@ -168,6 +171,157 @@ test.describe("interface-scale smoke", () => {
     await expect(page.getByRole("button", { name: "Open usage" })).toBeVisible()
     await capture(page, "nudge-expanded-150-dark", testInfo)
   })
+})
+
+test.describe("interface-scale integrated chrome", () => {
+  test.use({ viewport: { width: 320, height: 240 }, reducedMotion: "reduce" })
+
+  test("settings search target focuses interface size without changing it", async ({
+    page,
+  }, testInfo) => {
+    await openFixture(page, "settings", { scale: 200, theme: "dark" })
+    await expect(page.getByRole("tabpanel", { name: "General", exact: true })).toBeVisible()
+    await page.waitForFunction(() => Boolean(window.__ANTIBURN_VISUAL_EMIT__))
+    const requestTarget = () =>
+      page.evaluate(() => {
+        const emit = window.__ANTIBURN_VISUAL_EMIT__
+        if (!emit) throw new Error("Fixture event bridge is unavailable")
+        emit("settings:pane", "appearance#interfaceSize")
+      })
+    await requestTarget()
+    const control = page.getByRole("combobox", { name: "Interface size" })
+    await expect(control).toBeFocused()
+    await expect(control).toBeInViewport()
+    await expect(control).toHaveValue("200")
+    await expectNoHorizontalOverflow(page)
+    await expectControlsReachable(page)
+    await capture(page, "settings-search-target-200", testInfo)
+    await page.getByRole("button", { name: "Open Settings navigation" }).focus()
+    await requestTarget()
+    await expect(control).toBeFocused()
+    await expect(control).toHaveValue("200")
+    expect(await page.evaluate(() => window.__ANTIBURN_VISUAL_SETTINGS_CALLS__ ?? [])).toEqual(
+      [],
+    )
+  })
+
+  for (const theme of ["light", "dark"] as const) {
+    for (const scale of [90, 200]) {
+      test(`search at ${scale}% constrained in ${theme} restores focus and targets settings`, async ({
+        page,
+      }, testInfo) => {
+        await page.setViewportSize({
+          width: Math.round(640 / (scale / 100)),
+          height: Math.round(480 / (scale / 100)),
+        })
+        await openFixture(page, "main", { scale, theme })
+        await expect(page.locator("html")).toHaveAttribute("data-platform", "macos")
+        await expect(page.getByRole("group", { name: "Window controls" })).toHaveCount(0)
+        const trigger = page.getByRole("button", { name: "Search antiburn", exact: true })
+        await trigger.click()
+        const dialog = page.getByRole("dialog", { name: "Search antiburn" })
+        const query = dialog.getByRole("combobox", { name: "Search antiburn" })
+        await expect(query).toBeFocused()
+        await query.fill("Interface size")
+        const result = dialog.getByRole("option", { name: /Interface size/ })
+        await expect(result).toBeVisible()
+        await expectNoHorizontalOverflow(page)
+        await expectControlsReachable(page)
+        await capture(page, `search-${scale}-${theme}`, testInfo)
+        await page.keyboard.press("Escape")
+        await expect(dialog).toHaveCount(0)
+        await expect(trigger).toBeFocused()
+
+        await page.keyboard.press("Meta+k")
+        await expect(query).toBeFocused()
+        await query.fill("Interface size")
+        await page.keyboard.press("Enter")
+        await expect(dialog).toHaveCount(0)
+        await expect
+          .poll(() => page.evaluate(() => window.__ANTIBURN_VISUAL_SETTINGS_CALLS__))
+          .toEqual([
+            { command: "open_settings_window", args: { pane: "appearance#interfaceSize" } },
+          ])
+      })
+    }
+
+    test(`history and compact navigation remain reachable at 200% in ${theme}`, async ({
+      page,
+    }, testInfo) => {
+      await openFixture(page, "main", { scale: 200, theme })
+      const opener = page.getByRole("button", { name: "Open Main navigation" })
+      await expect(opener).toBeVisible()
+      await selectNavigationItem(page, "main", "Sessions")
+      await expect(page.getByRole("dialog", { name: "Main navigation" })).toHaveCount(0)
+      await expect(page.getByRole("tabpanel", { name: "Sessions", exact: true })).toBeVisible()
+      await selectNavigationItem(page, "main", "Checks")
+      await expect(page.getByRole("tabpanel", { name: "Checks", exact: true })).toBeVisible()
+      await page.getByRole("button", { name: "Back", exact: true }).click()
+      await expect(page.getByRole("tabpanel", { name: "Sessions", exact: true })).toBeVisible()
+      await page.getByRole("button", { name: "Forward", exact: true }).click()
+      await expect(page.getByRole("tabpanel", { name: "Checks", exact: true })).toBeVisible()
+      await page.keyboard.press("Meta+[")
+      await expect(page.getByRole("tabpanel", { name: "Sessions", exact: true })).toBeVisible()
+      await page.keyboard.press("Meta+]")
+      await expect(page.getByRole("tabpanel", { name: "Checks", exact: true })).toBeVisible()
+      await opener.click()
+      await page.keyboard.press("Escape")
+      await expect(opener).toBeFocused()
+      await expectNoHorizontalOverflow(page)
+      await expectControlsReachable(page)
+      await capture(page, `history-200-${theme}`, testInfo)
+    })
+  }
+
+  for (const platform of ["windows", "linux"] as const) {
+    for (const scale of [90, 200]) {
+      test(`${platform} caption controls and resize handles at ${scale}%`, async ({
+        page,
+      }, testInfo) => {
+        await page.setViewportSize({
+          width: Math.round(640 / (scale / 100)),
+          height: Math.round(480 / (scale / 100)),
+        })
+        await openFixture(page, "main", { platform, scale, theme: "dark" })
+        await expect(page.locator("html")).toHaveAttribute("data-platform", platform)
+        const controls = page.getByRole("group", { name: "Window controls" })
+        await expect(controls).toBeVisible()
+        await expectNoHorizontalOverflow(page)
+        await expectControlsReachable(page)
+        const handles = page.locator(".main-window-resize-edge")
+        await expect(handles).toHaveCount(platform === "linux" ? 8 : 0)
+        if (platform === "linux") {
+          const east = page.locator('.main-window-resize-edge[data-direction="East"]')
+          await expect(east).toBeVisible()
+          await east.hover()
+          await page.mouse.down()
+          await page.mouse.up()
+          await expect
+            .poll(() => page.evaluate(() => window.__ANTIBURN_VISUAL_WINDOW_ACTIONS__))
+            .toEqual(["resize:East"])
+        }
+        await controls.getByRole("button", { name: "Maximize window" }).click()
+        await expect(controls.getByRole("button", { name: "Restore window" })).toBeVisible()
+        await expect(handles).toHaveCount(0)
+        await controls.getByRole("button", { name: "Restore window" }).click()
+        await expect(controls.getByRole("button", { name: "Maximize window" })).toBeVisible()
+        await expect(handles).toHaveCount(platform === "linux" ? 8 : 0)
+        await controls.getByRole("button", { name: "Minimize window" }).click()
+        await controls.getByRole("button", { name: "Close window" }).click()
+        await expect
+          .poll(() => page.evaluate(() => window.__ANTIBURN_VISUAL_WINDOW_ACTIONS__))
+          .toEqual([
+            ...(platform === "linux" ? ["resize:East"] : []),
+            "toggleMaximize",
+            "toggleMaximize",
+            "minimize",
+            "close",
+          ])
+        await expect(page.getByRole("alert")).toHaveCount(0)
+        await capture(page, `${platform}-chrome-${scale}`, testInfo)
+      })
+    }
+  }
 })
 
 test.describe("interface-scale resize focus", () => {
@@ -296,11 +450,14 @@ test.describe("interface-scale keyboard", () => {
         (target) => {
           const emit = window.__ANTIBURN_VISUAL_EMIT__
           if (!emit) throw new Error("Fixture event bridge is unavailable")
-          emit("main:session-target", target)
+          emit("main:navigation-target", target)
         },
         {
           revision,
-          target: { agent: "codex", sessionId: "fixture-active-session", wslDistro: null },
+          destination: {
+            section: "activity",
+            target: { agent: "codex", sessionId: "fixture-active-session", wslDistro: null },
+          },
         },
       )
 

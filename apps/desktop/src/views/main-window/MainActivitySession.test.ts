@@ -134,6 +134,21 @@ beforeEach(() => {
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
 describe("MainActivitySession", () => {
+  it("reopens the same detail only on a deliberate reveal without reloading analysis", async () => {
+    const { session } = start()
+    await ready(session)
+    const before = session.getSnapshot()
+    const reads = mocks.loadSessionAnalysis.mock.calls.length
+    session.revealDetail()
+    session.revealDetail()
+    expect(session.getSnapshot().detailRevealRevision).toBe(before.detailRevealRevision + 2)
+    expect(session.getSnapshot().subject).toBe(before.subject)
+    expect(mocks.loadSessionAnalysis).toHaveBeenCalledTimes(reads)
+    session.clearSelection()
+    session.revealDetail()
+    expect(session.getSnapshot().detailRevealRevision).toBe(before.detailRevealRevision + 2)
+  })
+
   it("loads the shared list for a visible window without starting detail work", async () => {
     const { session } = startList()
 

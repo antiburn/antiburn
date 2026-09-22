@@ -46,17 +46,64 @@
   padding-block-start: 0;
 }
 
-.main-window[data-compact-navigation],
+.responsive-navigation-content > .main-window-navigation {
+  position: static;
+}
+
+.responsive-navigation-content > .main-window-navigation::before {
+  display: none;
+}
+
+.main-window[data-compact-navigation] .main-window-body {
+  flex-direction: column;
+  padding-inline-start: 0;
+  padding-block-start: var(--main-window-titlebar-height);
+}
+
 .settings-window[data-compact-navigation] {
   flex-direction: column;
 }
 
-:root[data-platform="macos"] .responsive-navigation-bar {
+:root[data-platform="macos"] .settings-window .responsive-navigation-bar {
   padding-block-start: calc(var(--native-titlebar-clearance) + var(--space-sm));
 }
 
 .main-window {
+  --main-window-titlebar-height: calc(var(--space-2xl) + var(--space-lg));
+}
+
+.main-window-macos {
   --main-window-titlebar-height: var(--native-titlebar-clearance);
+  --main-window-native-inset: calc(78px / var(--interface-scale));
+}
+
+.main-window-macos .main-window-tool::before {
+  max-block-size: calc(
+    var(--main-window-titlebar-height) - var(--space-sm) / var(--interface-scale)
+  );
+}
+
+.main-window[data-compact-navigation] .main-window-titlebar-controls {
+  min-inline-size: 0;
+}
+
+.main-window[data-compact-navigation] .main-window-detail,
+.main-window[data-compact-navigation] [data-overview-active],
+.main-window[data-compact-navigation] [data-quota-active] {
+  padding-block-start: 0;
+}
+
+.app-search[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-search > :not(.app-search-results) {
+  flex-shrink: 0;
+}
+
+.app-search-results {
+  min-block-size: 0;
 }
 
 :root[data-platform="macos"] .settings-titlebar,
@@ -138,21 +185,31 @@
 }
 
 @media (max-width: 719px) {
+  .main-window .burn-checks-layout {
+    flex-direction: column;
+  }
+
+  .main-window .burn-checks-collection {
+    flex: 1;
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--color-separator);
+  }
+
   .overview-layout {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-lg);
     padding-inline: var(--space-lg);
   }
 
   .overview-layout > .overview-viewport {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 1;
   }
 
   .overview-layout > .overview-provider-limits {
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 2;
   }
 
   .settings-content {

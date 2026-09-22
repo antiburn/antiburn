@@ -831,7 +831,7 @@ Notes for what isn't expressible as a token:
   minimum of 1000 × 560. The initial outer frame uses at most 85% of each usable display dimension,
   including native chrome. A smaller work area takes precedence over the normal minimum. Saved
   user sizes can exceed the initial cap and remain constrained to the usable work area. It paints the opaque
-  `surface-window` canvas. A shared 40px titlebar spans the window. macOS reserves 78px
+  `surface-window` canvas. A shared titlebar spans the window, 40px high at 100%. macOS reserves 78 native logical pixels
   for native traffic lights, matching the 32px center spacing of adjacent toolbar icons. Native button centers target 20 logical pixels below the
   window top, using AppKit coordinate conversion. Horizontal native positions remain unchanged.
   Resize, display-scale, focus, and fullscreen-exit notifications align the buttons synchronously
@@ -852,7 +852,9 @@ Notes for what isn't expressible as a token:
   charts, and explicit `data-no-window-drag` regions keep their own input behavior.
   The overlay passes pointer input through to the view; there is no blocking drag sheet.
   Windows and Linux reserve 40px above the detail pane, Overview, and Limits content for right-side caption controls.
-  The sidebar stays visible at 220px on all platforms. Navigation starts below the toolbar
+  The sidebar stays visible at 220 CSS pixels when the CSS viewport is at least 720px wide.
+  Narrower viewports use a modal navigation drawer; its trigger sits below the shared toolbar.
+  Navigation starts below the toolbar
   without a brand header or Search row. Search stays after Forward. Command+K / Control+K
   open the palette. Previously saved collapsed preferences do not change this layout.
   Search opens an immediate, top-centered
@@ -927,11 +929,23 @@ Below 720px, Overview stacks usage and provider limits in one full-width column.
 Each pane retains its own bounded vertical scroll area; the wide layout stays unchanged.
 
 `styles/interface-scale.css` owns these adaptations. The shell supplies
-`--interface-scale` only to preserve native chrome clearance. On macOS,
-`--native-titlebar-clearance` is `40px / --interface-scale`, keeping at least 40 native
-logical pixels free of interactive content at every preset, including 90%.
+`--interface-scale` only to preserve native chrome geometry. On macOS,
+`--native-titlebar-clearance` is `40px / --interface-scale`, preserving a 40 native
+logical pixel band at every preset, including 90%. Settings and onboarding keep
+their content below it; the main toolbar shares it outside the traffic-light inset.
+The main toolbar reserves 78 native logical pixels horizontally for traffic lights.
+Its web controls scale horizontally; hover fills stay inside the fixed native-height band.
+Windows and Linux have web-owned titlebars: their 40 CSS pixel height and caption controls
+scale with the interface. Compact main navigation reserves the toolbar once above its
+trigger, rather than adding a second inset inside the workspace. Drawer sidebars use normal
+flow, not the wide layout's absolute positioning. Overview's compact grid has two content
+rows, with no obsolete titlebar spacer. Search keeps its input and footer fixed while the
+results shrink and scroll inside the viewport-bounded dialog.
+Below 720 CSS pixels, Checks stacks its collection and detail in two flexible scroll
+regions, so the fixed desktop collection width cannot push controls outside the window.
 
-The Interface size control is a presentational primitive. Its Settings owner invokes
+The Interface size control is a presentational primitive. A Settings-owned search adapter
+exposes its stable `interfaceSize` target without changing the value on navigation. Its Settings owner invokes
 the dedicated scale command; general settings updates cannot change this preference.
 The shell owns serialization, persistence, all-surface propagation, geometry conversion,
 and consent-gated change analytics. Reusable native window crates accept values and

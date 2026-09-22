@@ -509,6 +509,12 @@ export class MainActivitySession {
     this.open(subject, [], "user")
   }
 
+  revealDetail(): void {
+    if (this.snapshot.subject) {
+      this.update({ detailRevealRevision: this.snapshot.detailRevealRevision + 1 })
+    }
+  }
+
   openRelated = (subject: SessionSubject): void => {
     const current = this.snapshot.subject
     if (current && sessionKey(current) === sessionKey(subject)) return
@@ -524,7 +530,6 @@ export class MainActivitySession {
     subject: SessionSubject,
     history: SessionSubject[],
     origin: SurfaceOrigin,
-    detailRevealRevision = this.snapshot.detailRevealRevision,
   ): void {
     this.exposureOrigin = origin
     this.defaultSelectionPending = false
@@ -541,7 +546,6 @@ export class MainActivitySession {
       loading: true,
       refreshing: false,
       sessionQuota: null,
-      detailRevealRevision,
     })
     this.refreshAnalysis()
     this.refreshSessionQuota()

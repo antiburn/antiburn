@@ -3,6 +3,15 @@ import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsag
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
 
+declare global {
+  interface Window {
+    __ANTIBURN_VISUAL_SETTINGS_CALLS__?: Array<{
+      command: string
+      args: Record<string, unknown> | undefined
+    }>
+  }
+}
+
 type FixtureState = "populated" | "empty" | "loading" | "error" | "long"
 type FixtureFault = "session-analysis" | "scale-save" | "onboarding-bootstrap" | "peek-data"
 
@@ -507,6 +516,10 @@ export function isTauri(): boolean {
 }
 
 export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (["open_settings_window", "set_settings", "set_interface_scale"].includes(command)) {
+    window.__ANTIBURN_VISUAL_SETTINGS_CALLS__ ??= []
+    window.__ANTIBURN_VISUAL_SETTINGS_CALLS__.push({ command, args })
+  }
   if (command === "tear_off_overlay" || command === "hud_drag_ended") {
     window.__ANTIBURN_VISUAL_HUD_DRAGS__ ??= []
     window.__ANTIBURN_VISUAL_HUD_DRAGS__.push(command)
