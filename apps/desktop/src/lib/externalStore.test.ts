@@ -119,6 +119,30 @@ describe("createExternalStore", () => {
     expect(store.getSnapshot()).toBe("second")
   })
 
+  it("does not publish a startup load after a later refresh has started", async () => {
+    const initial = deferred<string>()
+    const refreshed = deferred<string>()
+    const load = vi
+      .fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(refreshed.promise)
+    const store = createExternalStore({ initial: "initial", load })
+
+    store.subscribe(() => {})
+    await flush()
+
+    // The refresh starts while the startup load is still in flight, so the
+    // startup result is the older request even though it resolves first.
+    const refresh = store.refresh()
+    initial.resolve("startup")
+    await flush()
+    expect(store.getSnapshot()).toBe("initial")
+
+    refreshed.resolve("refreshed")
+    await refresh
+    expect(store.getSnapshot()).toBe("refreshed")
+  })
+
   it("the later of two overlapping refresh() calls wins, even when it resolves first", async () => {
     const initial = deferred<string>()
     const first = deferred<string>()
