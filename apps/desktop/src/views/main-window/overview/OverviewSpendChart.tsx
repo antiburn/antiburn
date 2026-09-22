@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from "react"
+import { useId, useState, type KeyboardEvent } from "react"
 
 import type {
   ProviderUsageDayPayload,
@@ -19,11 +19,14 @@ import { Skeleton } from "../../../components/ui/Skeleton"
 
 import "./overview.css"
 
+/* Every agent stacks in the one blue the session Context chart uses, and
+   the columns fade toward the baseline like that chart's area. The opacity
+   steps are what tell the agents apart, so the swatches take the same steps. */
 const LAYER_STYLES = [
-  { fill: "fill-token-in", swatch: "bg-token-in" },
-  { fill: "fill-token-in/55", swatch: "bg-token-in/55" },
-  { fill: "fill-token-in/30", swatch: "bg-token-in/30" },
-  { fill: "fill-token-in/[0.18]", swatch: "bg-token-in/[0.18]" },
+  { opacity: 1, swatch: "bg-context-stroke" },
+  { opacity: 0.55, swatch: "bg-context-stroke/55" },
+  { opacity: 0.3, swatch: "bg-context-stroke/30" },
+  { opacity: 0.18, swatch: "bg-context-stroke/[0.18]" },
 ] as const
 
 function spendScale(max: number): { ceiling: number; guideFractions: number[] } {
@@ -69,6 +72,7 @@ export function OverviewSpendChart({
   loading?: boolean
 }) {
   const [focusDate, setFocusDate] = useState<string | null>(null)
+  const fillId = `overview-spend-fill-${useId().replace(/:/g, "")}`
   const lastIndex = days.length - 1
   const foundFocus =
     focusDate == null ? -1 : days.findIndex((day) => day.localDate === focusDate)
@@ -175,8 +179,23 @@ export function OverviewSpendChart({
                 preserveAspectRatio="none"
                 aria-hidden="true"
               >
+                <defs>
+                  {/* Drawn in plot space, not per column, so a tall column is
+                      solid at the top and a short one sits in the faded band. */}
+                  <linearGradient
+                    id={fillId}
+                    gradientUnits="userSpaceOnUse"
+                    x1={0}
+                    y1={0}
+                    x2={0}
+                    y2={100}
+                  >
+                    <stop offset={0} stopColor="var(--color-context-stroke)" />
+                    <stop offset={1} stopColor="var(--color-context-fill-top)" />
+                  </linearGradient>
+                </defs>
                 {series.map(({ agent, rects, style }) => (
-                  <g key={agent} data-agent={agent}>
+                  <g key={agent} data-agent={agent} fillOpacity={style.opacity}>
                     {rects.map(({ index, lower: segmentLower, upper }) => (
                       <rect
                         key={index}
@@ -184,7 +203,7 @@ export function OverviewSpendChart({
                         y={100 - upper}
                         width={columnWidth}
                         height={upper - segmentLower}
-                        className={style.fill}
+                        fill={`url(#${fillId})`}
                       />
                     ))}
                   </g>

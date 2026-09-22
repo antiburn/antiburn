@@ -56,7 +56,7 @@ export function HeroFigures({
             tabIndex={cell.tooltip ? 0 : undefined}
           >
             <dt className="type-callout text-label-secondary">{cell.label}</dt>
-            <dd className="type-hero-figure whitespace-nowrap font-mono text-measure">
+            <dd className="type-hero-figure whitespace-nowrap font-mono text-label/80">
               {cell.figure}
             </dd>
             {cell.caption != null && (
