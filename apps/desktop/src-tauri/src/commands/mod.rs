@@ -93,9 +93,9 @@ pub(crate) fn log_overview_read_timing(command: &'static str, elapsed: std::time
     }
 }
 
+pub(crate) use local_usage::provider_priced_models;
 #[cfg(test)]
 pub(crate) use local_usage::session_limit_allocations;
-pub(crate) use local_usage::{cached_live_usage, provider_priced_models, provider_usage_summary};
 pub(crate) mod usage;
 
 /// Version stamp of the active runtime pricing catalog.

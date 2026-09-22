@@ -36,16 +36,9 @@ pub async fn get_provider_usage(
 }
 
 /// [`get_provider_usage`]'s body, over a borrowed [`Store`] so a caller can
-/// pick the writer or a reader connection. [`popover_peek::peek_data`] keeps
-/// using the writer through [`provider_usage_summary`].
-pub(crate) fn provider_usage_summary(
-    app: &tauri::AppHandle,
-    utc_offset_minutes: Option<i32>,
-) -> CommandResult<ProviderUsageSummary> {
-    provider_usage_summary_for_store(app.state::<Store>().inner(), utc_offset_minutes)
-}
-
-pub(super) fn provider_usage_summary_for_store(
+/// pick the writer or a reader connection. [`crate::popover_peek::peek_data`]
+/// calls this directly over the UI reader.
+pub(crate) fn provider_usage_summary_for_store(
     store: &Store,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
@@ -324,15 +317,14 @@ pub async fn get_live_usage(
     .await
 }
 
-/// Keep this reader cache-only because synchronous popover IPC calls it.
-/// Never read provider metadata or start subprocesses here.
-pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
-    cached_live_usage_for_store(app, app.state::<Store>().inner())
-}
-
-/// [`cached_live_usage`]'s body, over a borrowed [`Store`] so a caller can
-/// pick the writer or a reader connection.
-fn cached_live_usage_for_store(app: &tauri::AppHandle, store: &Store) -> LiveUsageSummary {
+/// [`get_live_usage`]'s body, over a borrowed [`Store`] so a caller can pick
+/// the writer or a reader connection. Keep this reader cache-only because
+/// synchronous popover IPC calls it directly, over the UI reader. Never read
+/// provider metadata or start subprocesses here.
+pub(crate) fn cached_live_usage_for_store(
+    app: &tauri::AppHandle,
+    store: &Store,
+) -> LiveUsageSummary {
     let summary = collected_live_usage(app, store);
     #[cfg(debug_assertions)]
     let summary = crate::tray::simulate_codex_only(app, summary);
