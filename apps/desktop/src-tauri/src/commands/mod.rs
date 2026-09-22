@@ -78,6 +78,21 @@ where
         .map_err(fail)?
 }
 
+/// Logs how long one of the Overview's `UiReadStore`-routed commands spent
+/// in its blocking body. A read at or past this threshold is worth calling
+/// out in the ordinary log; a faster one stays at `debug` so it does not
+/// crowd it.
+const OVERVIEW_READ_SLOW_MS: u64 = 250;
+
+pub(crate) fn log_overview_read_timing(command: &'static str, elapsed: std::time::Duration) {
+    let elapsed_ms = elapsed.as_millis() as u64;
+    if elapsed_ms >= OVERVIEW_READ_SLOW_MS {
+        ::tracing::info!(event = "overview_read_timing", command, elapsed_ms);
+    } else {
+        ::tracing::debug!(event = "overview_read_timing", command, elapsed_ms);
+    }
+}
+
 #[cfg(test)]
 pub(crate) use local_usage::session_limit_allocations;
 pub(crate) use local_usage::{cached_live_usage, provider_priced_models, provider_usage_summary};
@@ -119,6 +134,15 @@ pub fn main_window_ready(window: tauri::WebviewWindow, generation: u64) {
 pub fn popover_content_ready(window: tauri::WebviewWindow, generation: u64) {
     if window.label() == crate::popover::LABEL {
         crate::popover::content_ready(&window, generation);
+    }
+}
+
+/// Record when the main window's first activity and cached usage state
+/// settle. Mirrors [`popover_content_ready`].
+#[tauri::command]
+pub fn main_window_content_ready(window: tauri::WebviewWindow, generation: u64) {
+    if window.label() == crate::main_window::LABEL {
+        crate::main_window::content_ready(&window, generation);
     }
 }
 

@@ -1696,6 +1696,30 @@ impl Store {
         Ok(counts)
     }
 
+    /// Count evidence rows still waiting for a first worker pass, across the
+    /// enabled agents. The insights worker logs this once when its backlog
+    /// starts, as the size of the queue it is about to drain.
+    pub fn pending_evidence_count(&self, agents: &[&str]) -> Result<usize> {
+        if agents.is_empty() {
+            return Ok(0);
+        }
+        let connection = self.lock();
+        let agent_placeholders = vec!["?"; agents.len()].join(", ");
+        let agent_values: Vec<rusqlite::types::Value> = agents
+            .iter()
+            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
+            .collect();
+        let count: i64 = connection.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM session_evidence
+                  WHERE status = 'pending' AND agent IN ({agent_placeholders})"
+            ),
+            rusqlite::params_from_iter(agent_values.iter()),
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
     /// Enroll missing evidence rows and requeue stale transcript projections.
     pub fn reconcile_evidence_revisions(
         &self,

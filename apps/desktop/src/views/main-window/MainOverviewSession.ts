@@ -5,6 +5,7 @@ import {
   getMainWindowVisible,
   getProviderUsage,
   getSessionLimitAllocations,
+  mainWindowContentReady,
   onLiveUsageChanged,
   onMainWindowVisibilityChanged,
   onSessionIndexChanged,
@@ -138,6 +139,12 @@ export class MainOverviewSession {
   private refreshTask: Promise<void> | null = null
   private refreshDirty = false
   private readonly sessionList: MainOverviewSessionListSource
+  /** Whether the local usage and allowance reads have each settled once,
+   *  success or error. `main_window_content_ready` fires once both have,
+   *  timing when the Overview's first paint had something to show. */
+  private usageSettled = false
+  private allowanceSettled = false
+  private contentReadyReported = false
 
   constructor(
     sessionList: MainOverviewSessionListSource,
@@ -154,6 +161,16 @@ export class MainOverviewSession {
   private update(patch: Partial<MainOverviewSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...patch }
     for (const listener of this.listeners) listener()
+  }
+
+  /** Reports once both reads have settled. Takes the renderer generation
+   *  the same way `PopoverSession.reportContentReady` does. */
+  private reportContentReadyOnceSettled(): void {
+    if (this.contentReadyReported || !this.usageSettled || !this.allowanceSettled) return
+    const generation = window.__ANTIBURN_WINDOW_GENERATION__
+    if (typeof generation !== "number" || !Number.isSafeInteger(generation)) return
+    this.contentReadyReported = true
+    void mainWindowContentReady(generation).catch(() => undefined)
   }
 
   private attach(listener: () => void, active: boolean): () => void {
@@ -262,9 +279,13 @@ export class MainOverviewSession {
       void this.loadLiveUsage(work, version, ++this.liveUsageVersion)
       try {
         const usage = await this.adapter.getUsage()
+        this.usageSettled = true
+        this.reportContentReadyOnceSettled()
         if (work !== this.workVersion || version !== this.refreshVersion) continue
         this.update({ usage, loading: false, refreshing: false, usageError: false })
       } catch {
+        this.usageSettled = true
+        this.reportContentReadyOnceSettled()
         if (work === this.workVersion && version === this.refreshVersion) {
           this.update({ loading: false, refreshing: false, usageError: true })
         }
@@ -312,11 +333,15 @@ export class MainOverviewSession {
       this.update({ allowanceLoading: !this.snapshot.allowance })
       try {
         const allowance = await this.adapter.getAllowanceUsage()
+        this.allowanceSettled = true
+        this.reportContentReadyOnceSettled()
         if (work === this.workVersion && !this.allowanceDirty) {
           this.update({ allowance, allowanceLoading: false, allowanceError: false })
         }
       } catch {
         // A failed read must not hide the cost totals beside the allowance.
+        this.allowanceSettled = true
+        this.reportContentReadyOnceSettled()
         if (work === this.workVersion && !this.allowanceDirty) {
           this.update({ allowanceLoading: false, allowanceError: true })
         }

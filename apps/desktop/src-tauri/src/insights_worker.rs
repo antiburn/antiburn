@@ -2,8 +2,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::{SessionEvidence, TurnRowStore};
 use antiburn_local::insights::{DetectorId, eligible};
@@ -42,10 +42,71 @@ pub(crate) const EVIDENCE_ERROR_UNSUPPORTED: &str = "source-unsupported";
 /// this suffix safely.
 const UNREADABLE_REASON_SEPARATOR: &str = ":";
 
+/// The insights worker pool's shared backlog state: how many workers are
+/// currently busy, how many evidence rows they have drained since the pool
+/// last went idle, and when the current busy stretch began.
+#[derive(Default)]
+struct Backlog {
+    active: usize,
+    processed: usize,
+    started_at: Option<Instant>,
+}
+
 /// This handle wakes the worker.
 #[derive(Default)]
 pub struct WorkerHandle {
     wake: Notify,
+    backlog: Mutex<Backlog>,
+}
+
+impl WorkerHandle {
+    /// Marks one worker's idle→busy transition. Returns the pending count
+    /// only for the worker that takes the pool from zero to one active
+    /// worker, so `worker_loop` logs the backlog's start once per stretch,
+    /// not once per worker.
+    fn note_backlog_busy(&self, store: &Store) -> Option<usize> {
+        let mut backlog = self.backlog.lock().expect("backlog lock");
+        backlog.active += 1;
+        if backlog.active == 1 {
+            backlog.started_at = Some(Instant::now());
+            Some(
+                store
+                    .pending_evidence_count(&crate::agents::evidence_cohort())
+                    .unwrap_or(0),
+            )
+        } else {
+            None
+        }
+    }
+
+    /// Counts one evidence row as processed in the current busy stretch.
+    fn note_backlog_processed(&self) {
+        self.backlog.lock().expect("backlog lock").processed += 1;
+    }
+
+    /// Marks one worker's busy→idle transition. Returns the drained total
+    /// and its elapsed time only when this was the last busy worker and the
+    /// stretch processed at least one row, resetting the counters for the
+    /// next stretch.
+    fn note_backlog_idle(&self) -> Option<(usize, u64)> {
+        let mut backlog = self.backlog.lock().expect("backlog lock");
+        if backlog.active == 0 {
+            return None;
+        }
+        backlog.active -= 1;
+        if backlog.active == 0 && backlog.processed > 0 {
+            let elapsed_ms = backlog
+                .started_at
+                .map(|started_at| started_at.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            let processed = backlog.processed;
+            backlog.processed = 0;
+            backlog.started_at = None;
+            Some((processed, elapsed_ms))
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
@@ -506,14 +567,32 @@ pub(crate) async fn worker_loop(
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) {
     let mut processed = false;
+    let mut busy = false;
     loop {
         match process_next_work(store, clock, run_pass, announce, report_ingested).await {
             Ok(true) => {
+                if !busy {
+                    busy = true;
+                    if let Some(pending) = handle.note_backlog_busy(store) {
+                        ::tracing::info!(event = "insights_backlog_started", pending);
+                    }
+                }
+                handle.note_backlog_processed();
                 processed = true;
                 announce_idle();
                 continue;
             }
             Ok(false) => {
+                if busy {
+                    busy = false;
+                    if let Some((drained, elapsed_ms)) = handle.note_backlog_idle() {
+                        ::tracing::info!(
+                            event = "insights_backlog_drained",
+                            processed = drained,
+                            elapsed_ms
+                        );
+                    }
+                }
                 if processed {
                     processed = false;
                     announce_idle();
@@ -524,6 +603,16 @@ pub(crate) async fn worker_loop(
                 }
             }
             Err(error) => {
+                if busy {
+                    busy = false;
+                    if let Some((drained, elapsed_ms)) = handle.note_backlog_idle() {
+                        ::tracing::info!(
+                            event = "insights_backlog_drained",
+                            processed = drained,
+                            elapsed_ms
+                        );
+                    }
+                }
                 ::tracing::error!(event = "insights_worker_failed", error = %error);
                 tokio::time::sleep(Duration::from_secs(IDLE_POLL_SECS)).await;
             }

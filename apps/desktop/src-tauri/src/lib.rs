@@ -245,11 +245,17 @@ pub fn run() {
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
         app.manage(insights_ipc::InsightsController::default());
-        if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
+        let evidence_reconcile_started = std::time::Instant::now();
+        match app.state::<store::Store>().reconcile_evidence_revisions(
             &agents::evidence_cohort(),
             analysis::projection_revisions(),
         ) {
-            ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
+            Ok(requeued) => ::tracing::info!(
+                event = "evidence_reconciled",
+                requeued,
+                elapsed_ms = evidence_reconcile_started.elapsed().as_millis() as u64
+            ),
+            Err(error) => ::tracing::error!(event = "evidence_reconcile_failed", error = %error),
         }
         if let Err(error) = app
             .state::<store::Store>()
@@ -257,11 +263,17 @@ pub fn run() {
         {
             ::tracing::error!(event = "remediation_reconcile_failed", error = %error);
         }
-        if let Err(error) = app
+        let source_resume_purge_started = std::time::Instant::now();
+        match app
             .state::<store::Store>()
             .purge_stale_source_resume(analysis::resume_revisions())
         {
-            ::tracing::error!(event = "source_resume_purge_failed", error = %error);
+            Ok(removed) => ::tracing::info!(
+                event = "source_resume_purged",
+                removed,
+                elapsed_ms = source_resume_purge_started.elapsed().as_millis() as u64
+            ),
+            Err(error) => ::tracing::error!(event = "source_resume_purge_failed", error = %error),
         }
 
         // The Overview's charts read through their own connection so they

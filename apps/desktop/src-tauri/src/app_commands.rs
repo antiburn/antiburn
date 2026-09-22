@@ -56,6 +56,7 @@ macro_rules! with_app_commands {
             commands::list_recent_sessions => "list_recent_sessions",
             commands::list_repositories => "list_repositories",
             commands::list_scan_roots => "list_scan_roots",
+            commands::main_window_content_ready => "main_window_content_ready",
             commands::main_window_ready => "main_window_ready",
             main_window::acknowledge_main_window_navigation_target => "acknowledge_main_window_navigation_target",
             main_window::get_main_window_visible => "get_main_window_visible",

@@ -26,7 +26,13 @@ pub async fn get_provider_usage(
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
     let store = app.state::<UiReadStore>().0.clone();
-    run_blocking(move || provider_usage_summary_for_store(&store, utc_offset_minutes)).await
+    run_blocking(move || {
+        let started = Instant::now();
+        let result = provider_usage_summary_for_store(&store, utc_offset_minutes);
+        super::log_overview_read_timing("get_provider_usage", started.elapsed());
+        result
+    })
+    .await
 }
 
 /// [`get_provider_usage`]'s body, over a borrowed [`Store`] so a caller can
@@ -88,7 +94,10 @@ pub async fn get_session_limit_allocations(
     let now = scan::unix_now();
     let store = app.state::<UiReadStore>().0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        session_limit_allocation_summary_for_store(&store, now)
+        let started = Instant::now();
+        let result = session_limit_allocation_summary_for_store(&store, now);
+        super::log_overview_read_timing("get_session_limit_allocations", started.elapsed());
+        result
     })
     .await
     .map_err(fail)?
@@ -298,6 +307,7 @@ pub async fn get_live_usage(
 ) -> CommandResult<LiveUsageSummary> {
     let store = app.state::<UiReadStore>().0.clone();
     run_blocking(move || {
+        let started = Instant::now();
         // With live usage off no collection pass runs, so this is the one
         // place detection advances for the roster. Metadata-only here: the
         // reader has not opted in.
@@ -307,7 +317,9 @@ pub async fn get_live_usage(
             let detection = provider_usage::live::detect_all(&live.sources, false);
             live.store_detection(detection);
         }
-        Ok(cached_live_usage_for_store(&app, &store))
+        let result = cached_live_usage_for_store(&app, &store);
+        super::log_overview_read_timing("get_live_usage", started.elapsed());
+        Ok(result)
     })
     .await
 }
