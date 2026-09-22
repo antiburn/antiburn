@@ -64,6 +64,7 @@ const settings = {
   skillsMcpExpanded: false,
   sessionBadgeMetric: "cost",
   sessionFilter: "all",
+  workingWeek: "seven",
 }
 
 const liveUsage = {
@@ -84,6 +85,7 @@ const liveUsage = {
           usedPercent: 72,
           startsAt: "2026-09-14T20:00:00.000Z",
           resetsAt: "2026-09-15T01:00:00.000Z",
+          elapsedFraction: 0.8,
           hasNonzeroUsageInCurrentPeriod: true,
           forecast: {
             unavailableReason: null,
@@ -103,6 +105,7 @@ const liveUsage = {
           usedPercent: 44,
           startsAt: "2026-09-09T00:00:00.000Z",
           resetsAt: "2026-09-16T00:00:00.000Z",
+          elapsedFraction: 6 / 7,
           hasNonzeroUsageInCurrentPeriod: true,
           forecast: {
             unavailableReason: null,
