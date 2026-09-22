@@ -43,7 +43,7 @@ export function OverviewView({
     <div
       className={cn(
         "min-h-0 min-w-0 flex-1 bg-surface-window",
-        "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[minmax(0,1fr)] gap-x-(--space-2xl) mb-(--space-2xl)",
+        "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[minmax(0,1fr)] gap-x-(--space-2xl) pt-(--space-2xl) mb-(--space-2xl)",
       )}
       data-overview-active={active ? "" : undefined}
     >
