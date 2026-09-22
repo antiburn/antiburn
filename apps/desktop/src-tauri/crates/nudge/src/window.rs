@@ -376,13 +376,12 @@ pub(crate) fn reveal(
 /// downward like a real notification. Elsewhere it snaps to the new size at the
 /// platform's corner.
 pub(crate) fn resize(window: &WebviewWindow, content_height: f64, interface_scale: f64) {
-    let content_height = content_height * interface_scale;
     #[cfg(target_os = "macos")]
-    crate::macos::animate_resize(window, content_height);
+    crate::macos::animate_resize(window, content_height * interface_scale);
     #[cfg(not(target_os = "macos"))]
     place(
         window,
-        content_height / interface_scale,
+        content_height,
         NudgePlacement::NativeCorner,
         interface_scale,
     );
