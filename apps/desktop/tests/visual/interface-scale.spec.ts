@@ -119,6 +119,9 @@ test.describe("interface-scale smoke", () => {
   test("the main navigation reaches Sessions and settings", async ({ page }, testInfo) => {
     await openFixture(page, "main")
     await expect(page.getByRole("main", { name: "antiburn main window" })).toBeVisible()
+    await expect(
+      page.getByRole("group", { name: "Allowance for the past 30 days" }),
+    ).toBeVisible()
     await selectNavigationItem(page, "main", "Sessions")
     await expect(
       page
@@ -479,7 +482,46 @@ test.describe("interface-scale matrix", () => {
             })
             test("stays reachable", async ({ page }, testInfo) => {
               await openFixture(page, surface, { scale, theme })
-              if (surface === "main") await selectNavigationItem(page, "main", "Sessions")
+              if (surface === "main") {
+                await expect(
+                  page.getByRole("group", { name: "Allowance for the past 30 days" }),
+                ).toBeVisible()
+                await expectNoHorizontalOverflow(page)
+                await expectControlsReachable(page)
+                await capture(page, `overview-${layout.name}-${scale}-${theme}`, testInfo)
+                if (scale === 200 && layout.name === "constrained") {
+                  const chart = page.getByRole("group", {
+                    name: "Allowance for the past 30 days",
+                  })
+                  const lastDay = chart.locator('button[data-day-index="29"]')
+                  await lastDay.focus()
+                  await expect(lastDay).toBeFocused()
+                  await expect(lastDay).toBeInViewport()
+                  await lastDay.press("ArrowLeft")
+                  const previousDay = chart.locator('button[data-day-index="28"]')
+                  await expect(previousDay).toBeFocused()
+                  await expect(previousDay).toBeInViewport()
+                  await expect
+                    .poll(() =>
+                      page
+                        .locator(".overview-viewport .ui-scroll-viewport")
+                        .evaluate((node) => node.scrollTop),
+                    )
+                    .toBeGreaterThan(0)
+                  await capture(page, `overview-chart-scrolled-200-${theme}`, testInfo)
+                  const providers = page.getByRole("region", {
+                    name: "Provider limits card",
+                  })
+                  await providers.focus()
+                  await expect(providers).toBeFocused()
+                  await expect(providers).toBeInViewport()
+                  await providers.press("End")
+                  await expect
+                    .poll(() => providers.evaluate((node) => node.scrollTop))
+                    .toBeGreaterThan(0)
+                }
+                await selectNavigationItem(page, "main", "Sessions")
+              }
               if (surface === "settings")
                 await selectNavigationItem(page, "settings", "Appearance")
               await expectNoHorizontalOverflow(page)

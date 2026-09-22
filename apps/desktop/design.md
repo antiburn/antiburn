@@ -923,6 +923,8 @@ Escape dismissal and focus restoration. Arrow keys select tabs without closing t
 drawer; activation closes it. Settings rows stack controls at a 360px container width.
 Onboarding source columns stack below 720px and retain scrolling. Constrained surfaces
 must reflow or scroll; reducing the chosen zoom to fit is not allowed.
+Below 720px, Overview stacks usage and provider limits in one full-width column.
+Each pane retains its own bounded vertical scroll area; the wide layout stays unchanged.
 
 `styles/interface-scale.css` owns these adaptations. The shell supplies
 `--interface-scale` only to preserve native chrome clearance. On macOS,

@@ -1,4 +1,5 @@
 import type { HygieneSummary } from "../../../src/lib/insightsIpc"
+import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
 
@@ -125,6 +126,53 @@ const liveUsage = {
   ],
   errors: [],
   meters: [{ provider: "openai", displayName: "Codex", shown: true }],
+  generatedAt: now,
+}
+
+const endEpoch = Date.parse(now) / 1000
+const daySeconds = 86_400
+const allowanceUsage: AllowanceUsageSummaryPayload = {
+  accounts: [
+    {
+      provider: "openai",
+      displayName: "Codex",
+      accountKey: "fixture-account",
+      plan: { name: "Pro", tier: null },
+      utilization: {
+        utilizationPercent: 58,
+        weeklyWindowCount: 1,
+        shortWindowCount: 1,
+        modelWindowCount: 0,
+      },
+      chart: {
+        shortWindows: [
+          {
+            startsAtEpoch: endEpoch - 14_400,
+            resetsAtEpoch: endEpoch + 3_600,
+            peakPercent: 72,
+          },
+        ],
+        weeklyWindows: [
+          {
+            lane: "weekly",
+            startsAtEpoch: endEpoch - 6 * daySeconds,
+            resetsAtEpoch: endEpoch + daySeconds,
+            points: [
+              { atEpoch: endEpoch - 6 * daySeconds, percent: 0 },
+              { atEpoch: endEpoch, percent: 44 },
+            ],
+          },
+        ],
+        rolling: [
+          { atEpoch: endEpoch - 5 * daySeconds, percent: 30 },
+          { atEpoch: endEpoch, percent: 58 },
+        ],
+      },
+    },
+  ],
+  utilizationSpanDays: 30,
+  rangeStartEpoch: endEpoch - 30 * daySeconds,
+  rangeEndEpoch: endEpoch,
   generatedAt: now,
 }
 
@@ -320,6 +368,8 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return empty
         ? { providers: [], totals: providerUsage.totals, agents: [], generatedAt: now }
         : providerUsage
+    case "get_allowance_usage":
+      return empty ? { ...allowanceUsage, accounts: [] } : allowanceUsage
     case "get_live_usage":
     case "refresh_live_usage":
       if (state === "long" && new URLSearchParams(window.location.search).has("island")) {

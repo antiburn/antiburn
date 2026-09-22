@@ -138,6 +138,23 @@
 }
 
 @media (max-width: 719px) {
+  .overview-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-lg);
+    padding-inline: var(--space-lg);
+  }
+
+  .overview-layout > .overview-viewport {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .overview-layout > .overview-provider-limits {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
   .settings-content {
     padding-inline: var(--space-lg);
   }
