@@ -20,27 +20,56 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-09-21
+## [0.7.1] - 2026-09-22
 
 ### Added
 
 - Limits has a dedicated workspace for provider and account lanes, five-hour
-  and weekly windows, model-scoped limits, burn-up charts, custom date ranges,
-  and estimated session contributions to a limit.
-- On macOS, the HUD can dock to a display edge. On a Mac with a notch, it can sit in the
-  notch and expand on hover or wake. Its live token map shows active sessions,
-  work modes, spend rate, and reset timing.
-- Session analysis now covers more local agent sources, including AMP thread
-  exports and Devin Local sessions, with partial check results shown when a
-  source cannot prove a clean result.
+  and weekly windows, model-scoped limits, burn-up charts, and estimated
+  session contributions to a limit. An account, lane, and range jump bar
+  selects the view, the chart opens on the last three windows and colors
+  sessions by spend, and a range that predates a lane's first reading is
+  shown as disabled instead of empty.
+- The main window has its own toolbar with Back, Forward, and Search on
+  macOS, Windows, and Linux. Back and Forward (Cmd+[ and Cmd+] on macOS,
+  Alt+Left and Alt+Right elsewhere) step through view, session, and check
+  history. Search (Cmd+K or Ctrl+K) finds views, agent session filters,
+  Settings controls, and checks by name, and opens a Settings result focused
+  on its control without changing its value.
+- Overview shows usage in one unit at a time: Cost, or Subscription, which
+  reports each provider account's average subscription utilization, time
+  lost to limit hits, and a 30-day utilization chart that marks days with a
+  refusal. Each figure explains how it is made in a tooltip. Live provider
+  meters float in a card at the top right of the main window, visible from
+  every view.
+- Settings → Usage has a "Your working week" control (5, 6, or 7 days). It
+  shapes the pace marker, runway, and milestone tone for weekly limit
+  windows on the popover bar, Usage view, and HUD.
+- On macOS, the HUD can dock to a display edge. On a Mac with a notch, it can
+  sit in the notch and expand on hover or wake. Its live token map shows
+  active sessions, work modes, spend rate, and reset timing; it is off by
+  default and turns on with "Show what live sessions are doing" in
+  Settings → Usage.
+- Session analysis now covers more local agent sources and formats,
+  including AMP thread exports, Devin Local sessions, older Pi session
+  headers, and fuller Cursor, OpenCode, and Antigravity records, with partial
+  check results shown when a source cannot prove a clean result.
+- Burn Checks show whether a check is failing, passed, or awaiting
+  verification, and label an estimated burn figure as an estimate. Fix
+  prompts can now be copied for Cursor, Copilot, Cline, Kiro, Amp, and
+  Windsurf sessions, grouped across several targets at once.
 
 ### Changed
 
 - Provider meters share readings across sessions, while model-scoped
   activity follows the recorded provider route.
 - Live meter sweeps, HUD animation, and session activity refreshes follow the
-  same lifecycle state across the popover, floating HUD, docked HUD, and Mac
-  notch island.
+  same lifecycle state across the main window, popover, floating HUD, docked
+  HUD, and Mac notch island.
+- Overview, the sidebar filters, and Sessions share one live session list,
+  so Overview shows current session counts without a visit to Sessions.
+- Snoozed Burn Checks are excluded from totals, filters, prompts, and
+  savings, and savings count only the current fix cycle.
 
 ### Fixed
 
@@ -54,8 +83,17 @@ CI changes, and documentation that no user acts on stay out — see
   Settings, and setup windows did nothing. They work now.
 - HUD placement and dragging stay correct across display changes, refreshes,
   and main-window interactions.
-- Check states and resource details stay clear across the main window, popover,
-  and HUD, including incomplete and snoozed checks.
+- Check states and resource details stay clear across the main window,
+  popover, and HUD, including incomplete, snoozed, and awaiting-verification
+  checks.
+- The first click of "Copy fix prompt" works on checks with many targets,
+  such as Unused Skills, instead of needing a second click.
+- Overview session titles and model names stay on one line, and the
+  active-session shimmer and fork indicator no longer disappear.
+- The Limits chart aligns with the surrounding content, and every session
+  above the share threshold is listed instead of stopping at forty.
+- Long-running sessions whose file changes the file watcher misses are
+  picked up by a periodic check, so they stay current.
 
 ## [0.6.2] - 2026-09-17
 
