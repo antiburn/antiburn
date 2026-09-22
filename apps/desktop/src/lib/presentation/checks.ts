@@ -1,4 +1,8 @@
-import type { ChecksCategoryPayload, ChecksReportPayload } from "../insightsIpc"
+import type {
+  BurnCheckDetectorId,
+  ChecksCategoryPayload,
+  ChecksReportPayload,
+} from "../insightsIpc"
 import { aggregateBurnCheckPresentation, type BurnCheckPresentation } from "./burnChecks"
 import { activeChecksReport } from "../snoozedBurnChecks"
 

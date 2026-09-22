@@ -301,7 +301,7 @@ function CheckMetadata({
   inline?: boolean
   className?: string
 }) {
-  if (check.finding === 0 && check.clean === 0) {
+  if (check.lifecycle == null) {
     return <span className="mt-1 block type-footnote text-label-secondary">Not assessed</span>
   }
   return (

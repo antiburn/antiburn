@@ -629,6 +629,62 @@ describe("BurnChecksView", () => {
 
     afterEach(() => vi.restoreAllMocks())
 
+    it.each([false, true])(
+      "search targets an awaiting check once with snoozed=%s",
+      async (snoozed) => {
+        HTMLElement.prototype.scrollIntoView = vi.fn()
+        mockSnoozes(snoozed ? [{ detector: "oldModelUsage", scope: "check", until: null }] : [])
+        const { session, view } = setup(watchingTarget, false, aggregate, awaitingReport)
+        await waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+        view.rerender(
+          <BurnChecksView
+            active
+            session={session}
+            focusedCheck="oldModelUsage"
+            focusRevision={1}
+          />,
+        )
+        const rows = screen.getAllByRole("button", { name: /Old model usage/ })
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toHaveAttribute("aria-pressed", "true")
+        expect(rows[0]).toHaveFocus()
+        expect(
+          screen.queryByText("This check has not been assessed for the available sessions."),
+        ).not.toBeInTheDocument()
+        if (snoozed)
+          expect(screen.getByRole("button", { name: "Snoozed 1" })).toHaveAttribute(
+            "aria-expanded",
+            "true",
+          )
+      },
+    )
+
+    it("keeps a zero-count awaiting search result assessed", async () => {
+      HTMLElement.prototype.scrollIntoView = vi.fn()
+      const { session, view } = setup(watchingTarget, false, aggregate, {
+        ...awaitingReport,
+        categories: awaitingReport.categories.map((check) =>
+          check.id === "oldModelUsage" ? { ...check, finding: 0, clean: 0 } : check,
+        ),
+      })
+      await screen.findByRole("button", { name: /Old model usage/ })
+      view.rerender(
+        <BurnChecksView
+          active
+          session={session}
+          focusedCheck="oldModelUsage"
+          focusRevision={1}
+        />,
+      )
+      const row = screen.getByRole("button", { name: /Old model usage, Awaiting verification/ })
+      expect(row).toHaveAttribute("aria-pressed", "true")
+      expect(row).toHaveFocus()
+      expect(screen.queryByText("Not assessed")).not.toBeInTheDocument()
+      expect(
+        screen.queryByText("This check has not been assessed for the available sessions."),
+      ).not.toBeInTheDocument()
+    })
+
     it("shows awaiting from the report before target details load", async () => {
       const pending = deferred<BurnCheckTargetPayload[]>()
       setup(pending.promise, false, aggregate, awaitingReport)
