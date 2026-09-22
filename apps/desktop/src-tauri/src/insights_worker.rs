@@ -2,8 +2,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::{SessionEvidence, TurnRowStore};
 use antiburn_local::insights::{DetectorId, eligible};
@@ -26,6 +26,10 @@ pub(crate) const LEASE_RENEW_SECS: u64 = 60;
 pub(crate) const IDLE_POLL_SECS: u64 = 60;
 /// Parse several independent transcripts at once without saturating the machine.
 const WORKER_CONCURRENCY: usize = 4;
+/// How long `spawn` waits for the main window's first content-ready
+/// notification before ramping to full concurrency on its own. Covers a
+/// launch that never opens the main window (tray-only, HUD).
+const WORKER_RAMP_SECS: u64 = 30;
 pub(crate) const BACKOFF_BASE_SECS: i64 = 30;
 pub(crate) const BACKOFF_MAX_SECS: i64 = 900;
 pub(crate) const MAX_EVIDENCE_ATTEMPTS: i64 = 5;
@@ -42,10 +46,73 @@ pub(crate) const EVIDENCE_ERROR_UNSUPPORTED: &str = "source-unsupported";
 /// this suffix safely.
 const UNREADABLE_REASON_SEPARATOR: &str = ":";
 
+/// The insights worker pool's shared backlog state: how many workers are
+/// currently busy, how many evidence rows they have drained since the pool
+/// last went idle, and when the current busy stretch began.
+#[derive(Default)]
+struct Backlog {
+    active: usize,
+    processed: usize,
+    started_at: Option<Instant>,
+}
+
 /// This handle wakes the worker.
 #[derive(Default)]
 pub struct WorkerHandle {
     wake: Notify,
+    backlog: Mutex<Backlog>,
+    /// Ends `spawn`'s launch-time throttle early. See [`notify_ramp`].
+    ramp: Notify,
+}
+
+impl WorkerHandle {
+    /// Marks one worker's idle→busy transition. Returns the pending count
+    /// only for the worker that takes the pool from zero to one active
+    /// worker, so `worker_loop` logs the backlog's start once per stretch,
+    /// not once per worker.
+    fn note_backlog_busy(&self, store: &Store) -> Option<usize> {
+        let mut backlog = self.backlog.lock().expect("backlog lock");
+        backlog.active += 1;
+        if backlog.active == 1 {
+            backlog.started_at = Some(Instant::now());
+            Some(
+                store
+                    .pending_evidence_count(&crate::agents::evidence_cohort())
+                    .unwrap_or(0),
+            )
+        } else {
+            None
+        }
+    }
+
+    /// Counts one evidence row as processed in the current busy stretch.
+    fn note_backlog_processed(&self) {
+        self.backlog.lock().expect("backlog lock").processed += 1;
+    }
+
+    /// Marks one worker's busy→idle transition. Returns the drained total
+    /// and its elapsed time only when this was the last busy worker and the
+    /// stretch processed at least one row, resetting the counters for the
+    /// next stretch.
+    fn note_backlog_idle(&self) -> Option<(usize, u64)> {
+        let mut backlog = self.backlog.lock().expect("backlog lock");
+        if backlog.active == 0 {
+            return None;
+        }
+        backlog.active -= 1;
+        if backlog.active == 0 && backlog.processed > 0 {
+            let elapsed_ms = backlog
+                .started_at
+                .map(|started_at| started_at.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            let processed = backlog.processed;
+            backlog.processed = 0;
+            backlog.started_at = None;
+            Some((processed, elapsed_ms))
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
@@ -139,15 +206,50 @@ fn run_record_pass_with(
     )
 }
 
+/// The first minute after a cold launch runs one worker, so the main
+/// window's first paint competes with a single parse thread rather than
+/// [`WORKER_CONCURRENCY`]. Full concurrency resumes as soon as the main
+/// window reports its content ready, or after [`WORKER_RAMP_SECS`],
+/// whichever comes first.
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut workers = JoinSet::new();
-        for _ in 0..WORKER_CONCURRENCY {
+        workers.spawn(run_worker(app.clone()));
+        let handle = app.state::<WorkerHandle>();
+        let (reason, elapsed) =
+            await_ramp(&handle.ramp, Duration::from_secs(WORKER_RAMP_SECS)).await;
+        for _ in 1..WORKER_CONCURRENCY {
             workers.spawn(run_worker(app.clone()));
         }
+        ::tracing::info!(
+            event = "insights_worker_ramped",
+            workers = WORKER_CONCURRENCY,
+            reason,
+            elapsed_ms = elapsed.as_millis() as u64
+        );
         while workers.join_next().await.is_some() {}
     })
+}
+
+/// Waits for `ramp` or `timeout`, whichever comes first. A small function
+/// so a test with paused time can drive both branches directly. Times
+/// itself against tokio's own clock, not [`Instant`], so a paused-time test
+/// sees the timeout branch's elapsed time as the requested timeout instead
+/// of the real time the wait actually took.
+async fn await_ramp(ramp: &Notify, timeout: Duration) -> (&'static str, Duration) {
+    let started = tokio::time::Instant::now();
+    tokio::select! {
+        () = ramp.notified() => ("content_ready", started.elapsed()),
+        () = tokio::time::sleep(timeout) => ("timeout", started.elapsed()),
+    }
+}
+
+/// Ends [`spawn`]'s launch-time throttle. The main window's
+/// `main_window::content_ready` calls this on its first report; a launch
+/// that never opens the main window ramps on [`WORKER_RAMP_SECS`] instead.
+pub fn notify_ramp(app: &tauri::AppHandle) {
+    app.state::<WorkerHandle>().ramp.notify_one();
 }
 
 async fn run_worker(app: tauri::AppHandle) {
@@ -506,14 +608,32 @@ pub(crate) async fn worker_loop(
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) {
     let mut processed = false;
+    let mut busy = false;
     loop {
         match process_next_work(store, clock, run_pass, announce, report_ingested).await {
             Ok(true) => {
+                if !busy {
+                    busy = true;
+                    if let Some(pending) = handle.note_backlog_busy(store) {
+                        ::tracing::info!(event = "insights_backlog_started", pending);
+                    }
+                }
+                handle.note_backlog_processed();
                 processed = true;
                 announce_idle();
                 continue;
             }
             Ok(false) => {
+                if busy {
+                    busy = false;
+                    if let Some((drained, elapsed_ms)) = handle.note_backlog_idle() {
+                        ::tracing::info!(
+                            event = "insights_backlog_drained",
+                            processed = drained,
+                            elapsed_ms
+                        );
+                    }
+                }
                 if processed {
                     processed = false;
                     announce_idle();
@@ -524,6 +644,16 @@ pub(crate) async fn worker_loop(
                 }
             }
             Err(error) => {
+                if busy {
+                    busy = false;
+                    if let Some((drained, elapsed_ms)) = handle.note_backlog_idle() {
+                        ::tracing::info!(
+                            event = "insights_backlog_drained",
+                            processed = drained,
+                            elapsed_ms
+                        );
+                    }
+                }
                 ::tracing::error!(event = "insights_worker_failed", error = %error);
                 tokio::time::sleep(Duration::from_secs(IDLE_POLL_SECS)).await;
             }

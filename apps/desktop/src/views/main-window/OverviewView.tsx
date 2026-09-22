@@ -63,7 +63,7 @@ export function OverviewView({
   return (
     <div
       className={cn(
-        "min-h-0 min-w-0 flex-1 bg-surface-window",
+        "overview-layout min-h-0 min-w-0 flex-1 bg-surface-window",
         "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[minmax(0,1fr)] gap-x-(--space-2xl) pt-(--space-2xl) mb-(--space-2xl)",
       )}
       data-overview-active={active ? "" : undefined}
@@ -118,7 +118,7 @@ export function OverviewView({
 
       <ScrollPane
         className={cn(
-          "min-h-0 min-w-0",
+          "overview-provider-limits min-h-0 min-w-0",
           "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)]",
           "bg-(--color-surface-window) bg-gradient-to-b from-(--color-surface-sidebar) to-(--color-surface-sidebar)",
         )}

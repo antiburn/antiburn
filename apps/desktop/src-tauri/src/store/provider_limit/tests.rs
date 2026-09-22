@@ -1399,6 +1399,32 @@ fn attributed_turn_epochs_rounds_to_the_minute_and_respects_the_two_step_rule() 
 }
 
 #[test]
+fn attributed_turn_minutes_for_account_matches_attributed_turn_epochs_for_every_account() {
+    let store = memory_store();
+    let bound = insert_session(&store, "bound");
+    observe_account(&store, &account('a'));
+    insert_turn(&store, &bound, 100_123, 1);
+    insert_turn(&store, &bound, 100_456, 1);
+
+    let other = insert_session(&store, "other");
+    bind_account(&store, &other, &account('b'));
+    insert_turn(&store, &other, 200_000, 1);
+
+    let minutes = store
+        .attributed_turn_minutes(0, 1_000)
+        .expect("scan succeeds");
+    for account_key in [account('a'), account('b')] {
+        assert_eq!(
+            minutes.for_account(PROVIDER, &account_key),
+            store
+                .attributed_turn_epochs(PROVIDER, &account_key, 0, 1_000)
+                .expect("query succeeds"),
+            "the shared scan must resolve the same epochs as the per-account query"
+        );
+    }
+}
+
+#[test]
 fn quota_accounts_reports_label_has_factor_and_the_current_open_period() {
     let store = memory_store();
     let account_key = account('a');

@@ -40,11 +40,14 @@ struct NativeConfiguration {
     radius: f64,
     generation: u64,
     title: String,
+    interface_scale: f64,
 }
 
 pub(super) struct NativeObjects {
     pub panel: Retained<PassivePanel>,
     pub webview: Retained<WKWebView>,
+    content: Retained<NSVisualEffectView>,
+    corner_radius: f64,
     delegate: Retained<Delegate>,
 }
 
@@ -69,6 +72,7 @@ impl NativeWindow {
         config: &AnchoredWindowConfig,
         generation: u64,
         height: f64,
+        interface_scale: f64,
         handler: NativeRequestHandler,
         failed: impl Fn() + Send + Sync + 'static,
     ) -> tauri::Result<Self> {
@@ -84,10 +88,14 @@ impl NativeWindow {
         let pending = window.clone();
         let configuration = NativeConfiguration {
             policy,
-            frame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(config.width, height)),
+            frame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(config.width * interface_scale, height * interface_scale),
+            ),
             radius: config.corner_radius,
             generation,
             title: config.title.clone(),
+            interface_scale,
         };
         app.run_on_main_thread(move || {
             if !pending.0.alive.load(Ordering::Acquire) {
@@ -148,6 +156,26 @@ impl NativeWindow {
         self.with_objects(move |objects| {
             objects.panel.orderFrontRegardless();
             state.visible.store(true, Ordering::Release);
+        })
+    }
+
+    pub(crate) fn set_interface_scale(&self, interface_scale: f64) -> tauri::Result<()> {
+        let percent = (interface_scale * 100.0).round() as u16;
+        self.with_objects(move |objects| {
+            // SAFETY: The retained views are live, and this callback runs on the main thread.
+            unsafe {
+            objects.webview.setPageZoom(interface_scale);
+            if let Some(layer) = objects.content.layer() {
+                layer.setCornerRadius(objects.corner_radius * interface_scale);
+            }
+            let script = format!(
+                "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={percent};document.documentElement?.style.setProperty('--interface-scale','{interface_scale}');globalThis.dispatchEvent(new CustomEvent('antiburn:interface-scale-changed',{{detail:{{percent:{percent}}}}}));"
+            );
+            objects.webview.evaluateJavaScript_completionHandler(
+                &NSString::from_str(&script),
+                None,
+            );
+            }
         })
     }
 
@@ -229,6 +257,7 @@ impl NativeObjects {
             radius,
             generation,
             title,
+            interface_scale,
         } = configuration;
         // SAFETY: The panel subclass has no ivars, and all objects are created on the main thread.
         unsafe {
@@ -251,7 +280,7 @@ impl NativeObjects {
             content.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
             content.setWantsLayer(true);
             if let Some(layer) = content.layer() {
-                layer.setCornerRadius(radius);
+                layer.setCornerRadius(radius * interface_scale);
                 layer.setMasksToBounds(true);
             }
             panel.setContentView(Some(&content));
@@ -273,7 +302,11 @@ impl NativeObjects {
                 ProtocolObject::from_ref(&*delegate),
                 &NSString::from_str("anchored"),
             );
-            let script = super::bridge::initialization_script(generation, &policy);
+            let mut script = super::bridge::initialization_script(generation, &policy);
+            script.push_str(&format!(
+                "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale',String(globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__/100)),{{once:true}});",
+                (interface_scale * 100.0).round() as u16,
+            ));
             let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
                 WKUserScript::alloc(mtm),
                 &NSString::from_str(&script),
@@ -286,6 +319,7 @@ impl NativeObjects {
                 frame,
                 &configuration,
             );
+            webview.setPageZoom(interface_scale);
             delegate.set_webview(&webview);
             webview.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             webview.setAutoresizingMask(
@@ -302,6 +336,8 @@ impl NativeObjects {
             Ok(Self {
                 panel,
                 webview,
+                content,
+                corner_radius: radius,
                 delegate,
             })
         }

@@ -40,6 +40,21 @@ reports at the app-version boundary where this event ships. Missing identity,
 environment-disabled, unconfigured, and crashed-before-delivery cases remain
 unobserved; the event carries no properties beyond the standard envelope.
 
+Application interface size changes are implemented at the native persistence
+boundary. The product question is which supported sizes readers choose and
+whether they find the Settings, keyboard, or native-menu route. Reports use
+the distribution of `antiburn.interface_scale_changed` by preset and source
+among reporting installations. This guides preset and control placement; it
+does not measure current adoption because automatic restoration emits nothing.
+The event fires only after an atomic saved transition to another allowlisted
+preset. Its `label` is one of `90`, `100`, `110`, `125`, `150`, `175`, or
+`200`; its `detail` is `settings`, `shortcut`, or `menu`. Edge shortcuts,
+repeated selections, startup restoration, generic Settings saves, failed
+requests, and renderer reconciliation emit nothing. Maximum volume is one
+event per successful user-requested change. It excludes window bounds, display
+details, DPI, content, and work identifiers. Reports segment at the first app
+version that includes this event.
+
 ## Coverage at the audited revision
 
 The closed catalog had nine events. Envelope fields provided event IDs, rotating

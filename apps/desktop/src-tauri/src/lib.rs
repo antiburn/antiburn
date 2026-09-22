@@ -68,6 +68,7 @@ mod hud_token_map;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
+mod interface_scale;
 mod launch_intent;
 mod main_window;
 #[cfg(feature = "memory-probe")]
@@ -130,6 +131,15 @@ struct RepeatedLaunch {
     pending: AtomicBool,
     setup_ready: AtomicBool,
 }
+
+/// The Overview's own read-only store handle, managed apart from the
+/// writer [`store::Store`] so `app.state::<store::Store>()` keeps naming the
+/// writer everywhere else. See [`store::Store::open_reader`].
+pub(crate) struct UiReadStore(pub(crate) store::Store);
+
+/// How long a UI-reader connection waits on SQLite's own busy retry before
+/// giving up, matching the export and report readers' own timeout.
+const UI_READ_STORE_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl WindowRebuildState {
     fn begin(&self) {
@@ -236,11 +246,17 @@ pub fn run() {
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
         app.manage(insights_ipc::InsightsController::default());
-        if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
+        let evidence_reconcile_started = std::time::Instant::now();
+        match app.state::<store::Store>().reconcile_evidence_revisions(
             &agents::evidence_cohort(),
             analysis::projection_revisions(),
         ) {
-            ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
+            Ok(requeued) => ::tracing::info!(
+                event = "evidence_reconciled",
+                requeued,
+                elapsed_ms = evidence_reconcile_started.elapsed().as_millis() as u64
+            ),
+            Err(error) => ::tracing::error!(event = "evidence_reconcile_failed", error = %error),
         }
         if let Err(error) = app
             .state::<store::Store>()
@@ -248,11 +264,35 @@ pub fn run() {
         {
             ::tracing::error!(event = "remediation_reconcile_failed", error = %error);
         }
-        if let Err(error) = app
+        let source_resume_purge_started = std::time::Instant::now();
+        match app
             .state::<store::Store>()
             .purge_stale_source_resume(analysis::resume_revisions())
         {
-            ::tracing::error!(event = "source_resume_purge_failed", error = %error);
+            Ok(removed) => ::tracing::info!(
+                event = "source_resume_purged",
+                removed,
+                elapsed_ms = source_resume_purge_started.elapsed().as_millis() as u64
+            ),
+            Err(error) => ::tracing::error!(event = "source_resume_purge_failed", error = %error),
+        }
+
+        // The Overview's charts read through their own connection so they
+        // never queue behind the insights worker's writer-mutex bursts. Fall
+        // back to a writer clone on failure, so a reader that cannot open
+        // still leaves the app usable.
+        match app
+            .state::<store::Store>()
+            .open_reader(UI_READ_STORE_BUSY_TIMEOUT)
+        {
+            Ok(reader) => {
+                ::tracing::info!(event = "ui_read_store_opened");
+                app.manage(UiReadStore(reader));
+            }
+            Err(error) => {
+                ::tracing::warn!(event = "ui_read_store_fallback", error = %error);
+                app.manage(UiReadStore(app.state::<store::Store>().inner().clone()));
+            }
         }
 
         // Apply the persisted theme before any window shows, so the first
@@ -272,7 +312,9 @@ pub fn run() {
         app.manage(session_lifecycle::SessionEvents::default());
         app.manage(Schedulers::default());
         app.manage(popover::PopoverState::default());
-        app.manage(popover_peek::manager());
+        app.manage(popover_peek::manager(
+            interface_scale::current(app.handle()).factor(),
+        ));
         app.manage(updates::UpdaterState::default());
         app.manage(notifications::NotificationState::default());
         app.manage(storage_health::StorageHealth::default());
@@ -657,6 +699,16 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         }
         WindowEvent::Moved(_) | WindowEvent::Resized(_) if window.label() == main_window::LABEL => {
             main_window::schedule_placement_save(window.app_handle());
+        }
+        WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. }
+            if window.label() == settings::LABEL =>
+        {
+            let app = window.app_handle();
+            if let Err(error) =
+                settings::reconcile_interface_scale(app, interface_scale::current(app))
+            {
+                ::tracing::error!(event = "settings_minimum_size_failed", error = %error);
+            }
         }
         _ => {}
     }

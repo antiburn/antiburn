@@ -116,24 +116,25 @@ export class MainWindowNavigationSession {
 
   select(section: MainViewId): void {
     if (section === "activity" && this.activity) {
-      this.navigate({
-        section,
-        filter: { kind: "all" },
-        subject: this.activity.getSnapshot().subject,
-      })
+      this.navigate(
+        { section, filter: { kind: "all" }, subject: this.activity.getSnapshot().subject },
+        false,
+      )
       return
     }
     this.navigate({ section })
   }
 
-  navigate(destination: MainDestination): void {
+  navigate(destination: MainDestination, revealDetail = true): void {
     this.commit(destination, false, "user")
+    if (revealDetail) this.revealDetail()
   }
 
   back = (): void => {
     if (this.index === 0) return
     this.index -= 1
     this.restore("user")
+    this.revealDetail()
     noteInteraction({ kind: "navigationHistoryMoved", direction: "back" })
   }
 
@@ -141,7 +142,13 @@ export class MainWindowNavigationSession {
     if (this.index >= this.history.length - 1) return
     this.index += 1
     this.restore("user")
+    this.revealDetail()
     noteInteraction({ kind: "navigationHistoryMoved", direction: "forward" })
+  }
+
+  private revealDetail(): void {
+    if (this.snapshot.selected === "activity" && this.activity?.getSnapshot().subject)
+      this.activity.revealDetail()
   }
 
   private commit(

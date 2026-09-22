@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { toActivityEntry } from "../../lib/activityEntries"
 import type { SessionListEntry } from "../../components/session/SessionList"
 
+import type * as Ipc from "../../lib/ipc"
 import type {
   ActivityEntryPayload,
   SessionIndexChangedPayload,
@@ -19,6 +20,15 @@ import {
   type MainOverviewScanSource,
   type MainOverviewSessionListSource,
 } from "./MainOverviewSession"
+
+const mainWindowContentReady = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+
+// Only `mainWindowContentReady` is overridden: the test adapter stands in
+// for every other ipc call, so the real wrappers underneath it never run.
+vi.mock("../../lib/ipc", async (importOriginal) => {
+  const actual = await importOriginal<typeof Ipc>()
+  return { ...actual, mainWindowContentReady }
+})
 
 const usage = (generatedAt: string): ProviderUsageSummaryPayload => ({
   providers: [],
@@ -192,6 +202,14 @@ function setup(
 
 const sessions: MainOverviewSession[] = []
 afterEach(() => sessions.splice(0).forEach((session) => session.dispose()))
+
+beforeEach(() => {
+  mainWindowContentReady.mockClear()
+  Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+    configurable: true,
+    value: 7,
+  })
+})
 
 describe("MainOverviewSession", () => {
   it("uses the main-window list source for recent sessions", async () => {
@@ -643,5 +661,83 @@ describe("MainOverviewSession", () => {
     for (const facet of ["metadata", "analysis", "usage", "checks", "limits"] as const) {
       expect(overviewUpdateTouchesTotals(update(row, { [facet]: true }))).toBe(true)
     }
+  })
+
+  it("reports main-window content ready once both reads settle, and only once", async () => {
+    const { adapter, session, scanFinished } = setup()
+    sessions.push(session)
+    const usagePending = deferred<ProviderUsageSummaryPayload>()
+    const allowancePending = deferred<AllowanceUsageSummaryPayload>()
+    vi.mocked(adapter.getUsage).mockReturnValueOnce(usagePending.promise)
+    vi.mocked(adapter.getAllowanceUsage).mockReturnValueOnce(allowancePending.promise)
+    const stop = session.subscribe(() => undefined)
+
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledOnce())
+    expect(mainWindowContentReady).not.toHaveBeenCalled()
+
+    usagePending.resolve(usage("first"))
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("first"))
+    // Usage settled alone must not report: the allowance read is still open.
+    expect(mainWindowContentReady).not.toHaveBeenCalled()
+
+    allowancePending.resolve(allowance("allowance-first"))
+    await vi.waitFor(() => expect(mainWindowContentReady).toHaveBeenCalledOnce())
+    expect(mainWindowContentReady).toHaveBeenCalledWith(7)
+
+    // A later refresh re-reads both, but must not report a second time.
+    scanFinished()
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2))
+    expect(mainWindowContentReady).toHaveBeenCalledOnce()
+    stop()
+  })
+
+  it("still reports once the allowance settles when usage fails first", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const allowancePending = deferred<AllowanceUsageSummaryPayload>()
+    vi.mocked(adapter.getUsage).mockRejectedValueOnce(new Error("Unavailable"))
+    vi.mocked(adapter.getAllowanceUsage).mockReturnValueOnce(allowancePending.promise)
+    const stop = session.subscribe(() => undefined)
+
+    await vi.waitFor(() => expect(session.getSnapshot().usageError).toBe(true))
+    // Usage settled with an error; the allowance read has not, so nothing
+    // reports yet.
+    expect(mainWindowContentReady).not.toHaveBeenCalled()
+
+    allowancePending.resolve(allowance("allowance-first"))
+    await vi.waitFor(() => expect(mainWindowContentReady).toHaveBeenCalledOnce())
+    stop()
+  })
+
+  it("does not settle content ready for a usage read superseded before it resolves", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const firstUsage = deferred<ProviderUsageSummaryPayload>()
+    const secondUsage = deferred<ProviderUsageSummaryPayload>()
+    vi.mocked(adapter.getUsage)
+      .mockReturnValueOnce(firstUsage.promise)
+      .mockReturnValueOnce(secondUsage.promise)
+    const stop = session.subscribe(() => undefined)
+
+    // Allowance settles on the first pass, so only the usage read is left
+    // gating content ready.
+    await vi.waitFor(() => expect(session.getSnapshot().allowance).not.toBeNull())
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledOnce())
+
+    // A second refresh starts, and only then does the first read resolve:
+    // it is superseded before it settles.
+    session.refresh()
+    firstUsage.resolve(usage("stale"))
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    expect(mainWindowContentReady).not.toHaveBeenCalled()
+    expect(session.getSnapshot().usage).toBeNull()
+
+    // The current read settling reports, carrying its own value.
+    secondUsage.resolve(usage("second"))
+    await vi.waitFor(() => expect(mainWindowContentReady).toHaveBeenCalledOnce())
+    expect(mainWindowContentReady).toHaveBeenCalledWith(7)
+    expect(session.getSnapshot().usage?.generatedAt).toBe("second")
+    stop()
   })
 })
