@@ -33,7 +33,20 @@ pub fn spawn_live_poll(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     tauri::async_runtime::spawn(async move {
         let mut seen: HashMap<PathBuf, FileStamp> = HashMap::new();
         loop {
-            let next = poll_once(&app, &mut seen);
+            let poll_app = app.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                let next = poll_once(&poll_app, &mut seen);
+                (seen, next)
+            })
+            .await;
+            let (returned_seen, next) = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    ::tracing::error!(event = "scan_live_poll_task_failed", error = %error);
+                    return;
+                }
+            };
+            seen = returned_seen;
             tokio::time::sleep(next).await;
         }
     })

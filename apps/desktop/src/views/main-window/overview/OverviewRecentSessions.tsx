@@ -139,49 +139,50 @@ function OverviewRecentSessionRow({
         )}
       </span>
 
-      {/* One line of inline text with one ellipsis at its end, so the models
-          lose their width first and the title only after they are gone. */}
-      <span className="min-w-0 truncate">
-        {/* An inline-block, so the shimmer overlay (`::before`, `inset: 0`)
+      <span className="flex min-w-0 items-center">
+        <span className="min-w-0 truncate">
+          {/* An inline-block, so the shimmer overlay (`::before`, `inset: 0`)
             gets the line box as its containing block and sits on the text. */}
-        <span
-          className={cn(
-            "inline-block type-body font-medium! text-label",
-            entry.isActive && "activity-row-title-shimmer",
-          )}
-          data-text={entry.isActive ? title : undefined}
-          aria-label={entry.isActive ? title : undefined}
-        >
-          {title}
-        </span>
+          <span
+            className={cn(
+              "inline-block type-body font-medium! text-label",
+              entry.isActive && "activity-row-title-shimmer",
+            )}
+            data-text={entry.isActive ? title : undefined}
+            aria-label={entry.isActive ? title : undefined}
+          >
+            {title}
+          </span>
 
+          {modelPairs.length > 0 && (
+            <span
+              aria-label={contextDescription}
+              className="ms-2 font-mono type-metadata text-label-tertiary"
+            >
+              <span aria-hidden="true" className="text-label">
+                ·{" "}
+              </span>
+              {modelPairs.map((pair, index) => (
+                <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
+                  {index > 0 && <span aria-hidden="true"> · </span>}
+                  <span>{pair.model}</span>
+                  {pair.thinkingMode && (
+                    <span className="opacity-70"> {pair.thinkingMode}</span>
+                  )}
+                </span>
+              ))}
+            </span>
+          )}
+        </span>
         {entry.hasForkParent && (
           <Tooltip label="Forked from another session" delayMs={500}>
             <span
-              className="ms-1 inline-flex align-middle text-label-tertiary"
+              className="ms-1 inline-flex shrink-0 text-label-tertiary"
               aria-label="Forked from another session"
             >
               <GitFork size={12} strokeWidth={2} aria-hidden="true" />
             </span>
           </Tooltip>
-        )}
-
-        {modelPairs.length > 0 && (
-          <span
-            aria-label={contextDescription}
-            className="ms-2 font-mono type-metadata text-label-tertiary"
-          >
-            <span aria-hidden="true" className="text-label">
-              ·{" "}
-            </span>
-            {modelPairs.map((pair, index) => (
-              <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
-                {index > 0 && <span aria-hidden="true"> · </span>}
-                <span>{pair.model}</span>
-                {pair.thinkingMode && <span className="opacity-70"> {pair.thinkingMode}</span>}
-              </span>
-            ))}
-          </span>
         )}
       </span>
 
