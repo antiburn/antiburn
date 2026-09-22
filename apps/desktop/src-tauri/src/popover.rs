@@ -127,6 +127,15 @@ const WIDTH: f64 = 380.0;
 /// numbers differ.
 pub(crate) const CORNER_RADIUS: f64 = 10.0;
 
+#[cfg(target_os = "macos")]
+fn popover_effects(interface_scale: f64) -> tauri::utils::config::WindowEffectsConfig {
+    EffectsBuilder::new()
+        .effect(Effect::Popover)
+        .state(EffectState::Active)
+        .radius(CORNER_RADIUS * interface_scale)
+        .build()
+}
+
 /// Tallest the main popover may get, in logical pixels.
 pub const MAX_HEIGHT: f64 = 700.0;
 
@@ -262,7 +271,8 @@ fn linux_anchor(window: &WebviewWindow) -> Option<AnchorRect> {
         .primary_monitor()
         .ok()
         .flatten()
-        .or_else(|| window.current_monitor().ok().flatten())?;
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten())?;
 
     let area = monitor.work_area();
     let work = ScreenRect {
@@ -659,11 +669,19 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
         .try_state::<PopoverState>()
         .map(|state| state.height())
         .unwrap_or(DEFAULT_HEIGHT);
+    let interface_scale = crate::interface_scale::current(app);
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
-        .initialization_script(renderer_generation_script(generation))
+        .initialization_script(crate::interface_scale::append_initialization_script(
+            renderer_generation_script(generation),
+            interface_scale,
+        ))
         .title("antiburn")
-        .inner_size(WIDTH, height)
+        .inner_size(
+            WIDTH * interface_scale.factor(),
+            height * interface_scale.factor(),
+        )
         .resizable(false)
+        .zoom_hotkeys_enabled(false)
         .maximizable(false)
         .minimizable(false)
         .decorations(false)
@@ -691,16 +709,17 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
     // stylesheets already paint html, body, and #root transparent, so the
     // material is what the reader sees behind the content.
     #[cfg(target_os = "macos")]
-    let builder = builder.accept_first_mouse(true).transparent(true).effects(
-        EffectsBuilder::new()
-            .effect(Effect::Popover)
-            .state(EffectState::Active)
-            .radius(CORNER_RADIUS)
-            .build(),
-    );
+    let builder = builder
+        .accept_first_mouse(true)
+        .transparent(true)
+        .effects(popover_effects(interface_scale.factor()));
 
     match builder.build() {
         Ok(window) => {
+            if let Err(error) = crate::interface_scale::apply_window(&window, interface_scale) {
+                retire_failed_scale_window(&window, generation);
+                return Err(error);
+            }
             // Non-activating panel: opening the popover must not deactivate
             // the frontmost application. Applied here so a rebuild after a
             // destroy converts again.
@@ -755,6 +774,31 @@ fn destroy_window(window: &WebviewWindow) -> tauri::Result<()> {
         )));
     }
     window.destroy()
+}
+
+fn cancel_failed_scale_load(state: &PopoverState, generation: u64) -> bool {
+    let mut readiness = state.readiness();
+    if readiness.loading_generation() != Some(generation) {
+        return false;
+    }
+    readiness.reset();
+    drop(readiness);
+    state.timing.cancel_open();
+    if state.clear_prewarm_generation(generation) {
+        state.cancel_eviction();
+    }
+    true
+}
+
+fn retire_failed_scale_window(window: &WebviewWindow, generation: u64) {
+    let state = window.app_handle().state::<PopoverState>();
+    if !cancel_failed_scale_load(&state, generation) {
+        return;
+    }
+    // A later open retries destruction if the native window still owns its label.
+    if let Err(error) = destroy_window(window) {
+        ::tracing::warn!(event = "popover_scale_cleanup_failed", generation, error = %error);
+    }
 }
 
 enum WindowRequest {
@@ -1029,12 +1073,31 @@ fn request_toggle_window(app: &AppHandle, requested_at: Instant) -> tauri::Resul
     }
 }
 
+fn begin_rebuild_after_destroy(
+    state: &PopoverState,
+    window_exists: bool,
+    now: Instant,
+) -> Option<u64> {
+    // An old destruction callback must not reset a newer registered renderer.
+    if window_exists {
+        return None;
+    }
+    let generation = state.readiness().begin_deferred_build(now);
+    if generation.is_none() {
+        state.clear_prewarm();
+    }
+    generation
+}
+
 /// Build a deferred replacement after Tauri removes the old window label.
 pub fn rebuild_after_destroy(app: &AppHandle) {
     let state = app.state::<PopoverState>();
-    let generation = window_lifecycle::begin_deferred_build::<PopoverState>(app, Instant::now());
+    let generation = begin_rebuild_after_destroy(
+        &state,
+        app.get_webview_window(LABEL).is_some(),
+        Instant::now(),
+    );
     let Some(generation) = generation else {
-        state.clear_prewarm();
         return;
     };
     match build_window(app, generation) {
@@ -1353,7 +1416,11 @@ pub async fn set_height(app: &AppHandle, requested: f64, animate: bool) -> bool 
 
 /// Size the window and put it back where its anchor says it belongs.
 fn apply_height(window: &WebviewWindow, height: f64) -> bool {
-    if window.set_size(LogicalSize::new(WIDTH, height)).is_err() {
+    let (width, scaled_height) = interface_dimensions(window, WIDTH, height);
+    if window
+        .set_size(LogicalSize::new(width, scaled_height))
+        .is_err()
+    {
         return false;
     }
     let Some(state) = window.app_handle().try_state::<PopoverState>() else {
@@ -1627,6 +1694,13 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     let app = window.app_handle();
     let state = app.state::<PopoverState>();
     let now = Instant::now();
+    if let Err(error) =
+        crate::interface_scale::apply_window(window, crate::interface_scale::current(app))
+    {
+        ::tracing::error!(event = "interface_scale_apply_failed", window = LABEL, error = %error);
+        retire_failed_scale_window(window, generation);
+        return;
+    }
     if let Some(expired) = state.expired_prewarm(now)
         && expired.renderer_generation() == generation
     {
@@ -1856,8 +1930,9 @@ fn monitor_frame_for(window: &WebviewWindow, anchor: AnchorRect) -> Option<Monit
     if !scale.is_finite() || scale <= 0.0 {
         return None;
     }
-    let position = monitor.position();
-    let size = monitor.size();
+    let area = monitor.work_area();
+    let position = &area.position;
+    let size = &area.size;
     let left = f64::from(position.x) / scale;
     let top = f64::from(position.y) / scale;
     Some(MonitorFrame {
@@ -1919,8 +1994,59 @@ fn compute_position(
 /// size is still scaled for whichever display it was last shown on.
 fn place(window: &WebviewWindow, anchor: AnchorRect, width: f64, height: f64) -> tauri::Result<()> {
     let frame = monitor_frame_for(window, anchor);
+    let factor = crate::interface_scale::current(window.app_handle()).factor();
+    let (width, height) = fit_dimensions(width * factor, height * factor, frame.as_ref());
     let (x, y) = compute_position(anchor, frame.as_ref(), width, height);
+    window.set_size(LogicalSize::new(width, height))?;
     window.set_position(LogicalPosition::new(x, y))
+}
+
+fn fit_dimensions(width: f64, height: f64, frame: Option<&MonitorFrame>) -> (f64, f64) {
+    match frame {
+        Some(frame) => (
+            width.min((frame.right - frame.left - 2.0 * SCREEN_MARGIN).max(1.0)),
+            height.min((frame.bottom - frame.top - 2.0 * SCREEN_MARGIN).max(1.0)),
+        ),
+        None => (width, height),
+    }
+}
+
+fn interface_dimensions(window: &WebviewWindow, width: f64, height: f64) -> (f64, f64) {
+    let factor = crate::interface_scale::current(window.app_handle()).factor();
+    let mut width = width * factor;
+    let mut height = height * factor;
+    if let Some(monitor) = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+    {
+        let dpi = monitor.scale_factor();
+        if dpi.is_finite() && dpi > 0.0 {
+            let area = monitor.work_area();
+            width = width.min((f64::from(area.size.width) / dpi - 2.0 * SCREEN_MARGIN).max(1.0));
+            height = height.min((f64::from(area.size.height) / dpi - 2.0 * SCREEN_MARGIN).max(1.0));
+        }
+    }
+    (width, height)
+}
+
+pub fn reconcile_interface_scale(app: &AppHandle, _factor: f64) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return Ok(());
+    };
+    #[cfg(target_os = "macos")]
+    panel::replace_material(&window, popover_effects(_factor))?;
+    let requested_height = app
+        .try_state::<PopoverState>()
+        .map(|state| state.height())
+        .unwrap_or(DEFAULT_HEIGHT);
+    let (width, height) = interface_dimensions(&window, WIDTH, requested_height);
+    window.set_size(LogicalSize::new(width, height))?;
+    if let Some(anchor) = app.state::<PopoverState>().anchor() {
+        place(&window, anchor, WIDTH, requested_height)?;
+    }
+    Ok(())
 }
 
 /// `f64::clamp` panics when `max < min`, which happens on displays narrower
@@ -1935,6 +2061,142 @@ fn clamp(value: f64, min: f64, max: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scale_failure_cancels_loading_and_rejects_late_readiness() {
+        for prewarm in [false, true] {
+            let state = PopoverState::default();
+            let now = Instant::now();
+            let generation = if prewarm {
+                let PrewarmAction::StartLoading { generation } =
+                    state.readiness().request_prewarm(now)
+                else {
+                    panic!("a fresh prewarm starts loading");
+                };
+                state.mark_prewarm(generation, now);
+                generation
+            } else {
+                let OpenAction::StartLoading { generation } = state.readiness().request_open(now)
+                else {
+                    panic!("a fresh open starts loading");
+                };
+                generation
+            };
+            assert!(cancel_failed_scale_load(&state, generation));
+            assert_eq!(state.readiness().loading_generation(), None);
+            assert_eq!(state.prewarm_generation(), None);
+            assert_eq!(
+                state.readiness().renderer_ready(generation, now),
+                crate::window_readiness::ReadyAction::None
+            );
+            // Destruction does not retry a persistent scale failure automatically.
+            assert_eq!(state.readiness().begin_deferred_build(now), None);
+            assert!(matches!(
+                state.readiness().request_open(now),
+                OpenAction::StartLoading { generation: next } if next != generation
+            ));
+        }
+    }
+
+    #[test]
+    fn stale_scale_failure_preserves_the_newer_deferred_load() {
+        let state = PopoverState::default();
+        let now = Instant::now();
+        let OpenAction::StartLoading { generation: old } = state.readiness().request_open(now)
+        else {
+            panic!("a fresh open starts loading");
+        };
+        let later = now + Duration::from_secs(6);
+        let OpenAction::Rebuild { generation: new } = state.readiness().request_open(later) else {
+            panic!("a stale open starts a replacement");
+        };
+        state.mark_prewarm(new, later);
+        assert!(state.readiness().defer_build_until_destroyed(new));
+        assert!(!cancel_failed_scale_load(&state, old));
+        assert!(state.is_prewarm(new));
+        assert_eq!(state.readiness().begin_deferred_build(later), Some(new));
+    }
+
+    #[test]
+    fn delayed_scale_failure_destruction_preserves_a_new_renderer() {
+        for ready in [false, true] {
+            let state = PopoverState::default();
+            let now = Instant::now();
+            let OpenAction::StartLoading { generation: old } = state.readiness().request_open(now)
+            else {
+                panic!("a fresh open starts loading");
+            };
+            assert!(cancel_failed_scale_load(&state, old));
+            let OpenAction::StartLoading { generation: new } = state.readiness().request_open(now)
+            else {
+                panic!("a later open retries the failed load");
+            };
+            state.mark_prewarm(new, now);
+            if ready {
+                state.readiness().renderer_ready(new, now);
+            }
+            assert_eq!(begin_rebuild_after_destroy(&state, true, now), None);
+            assert!(state.is_prewarm(new));
+            if ready {
+                assert_eq!(state.readiness().ready_generation(), Some(new));
+            } else {
+                assert_eq!(state.readiness().loading_generation(), Some(new));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_scale_cleanup_can_defer_a_retry_until_the_label_is_free() {
+        let state = PopoverState::default();
+        let now = Instant::now();
+        let OpenAction::StartLoading { generation: old } = state.readiness().request_open(now)
+        else {
+            panic!("a fresh open starts loading");
+        };
+        assert!(cancel_failed_scale_load(&state, old));
+        let ToggleAction::StartLoading { generation: new } = state.readiness().toggle_open(now)
+        else {
+            panic!("the tray can retry a failed load");
+        };
+        assert!(state.readiness().defer_build_until_destroyed(new));
+        assert_eq!(begin_rebuild_after_destroy(&state, true, now), None);
+        assert_eq!(begin_rebuild_after_destroy(&state, false, now), Some(new));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn material_radius_matches_zoomed_css_at_every_preset_and_reset() {
+        for percent in [90, 100, 110, 125, 150, 175, 200, 90, 100] {
+            let effects = popover_effects(f64::from(percent) / 100.0);
+            let expected = f64::from(percent) / 10.0;
+            assert!((effects.radius.unwrap() - expected).abs() < f64::EPSILON * 16.0);
+            assert_eq!(effects.effects, vec![Effect::Popover]);
+            assert_eq!(effects.state, Some(EffectState::Active));
+        }
+    }
+
+    #[test]
+    fn anchor_monitor_limits_both_dimensions_before_placement() {
+        let frame = MonitorFrame {
+            left: -800.0,
+            top: 30.0,
+            right: 0.0,
+            bottom: 600.0,
+            scale: 2.0,
+        };
+        let (width, height) = fit_dimensions(760.0, 1400.0, Some(&frame));
+        assert_eq!(width, 760.0_f64.min(800.0 - 2.0 * SCREEN_MARGIN));
+        assert_eq!(height, 570.0 - 2.0 * SCREEN_MARGIN);
+        let anchor = AnchorRect {
+            x: -600.0,
+            y: 60.0,
+            width: 40.0,
+            height: 40.0,
+        };
+        let (x, y) = compute_position(anchor, Some(&frame), width, height);
+        assert!(x >= frame.left && x + width <= frame.right);
+        assert!(y >= frame.top && y + height <= frame.bottom);
+    }
 
     #[test]
     fn clamp_prefers_the_low_edge_on_undersized_displays() {

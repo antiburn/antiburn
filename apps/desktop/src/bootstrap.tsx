@@ -2,6 +2,7 @@ import { StrictMode, type ReactNode } from "react"
 import { createRoot } from "react-dom/client"
 
 import { WindowReadyBoundary, type WindowReadyReporter } from "./components/WindowReadyMarker"
+import { InterfaceScaleShortcuts } from "./components/InterfaceScaleShortcuts"
 import { installFocusModality } from "./lib/focusModality"
 import { installLivePhase } from "./lib/livePhase"
 import { applyPlatformAttribute } from "./lib/platform"
@@ -24,10 +25,11 @@ export function mountWindow(
   installFocusModality()
   installLivePhase()
 
-  const content = reporter ? (
-    <WindowReadyBoundary reporter={reporter}>{view}</WindowReadyBoundary>
-  ) : (
-    <WindowReadyBoundary>{view}</WindowReadyBoundary>
+  const content = (
+    <WindowReadyBoundary {...(reporter ? { reporter } : {})}>
+      {view}
+      <InterfaceScaleShortcuts />
+    </WindowReadyBoundary>
   )
 
   createRoot(container).render(<StrictMode>{content}</StrictMode>)

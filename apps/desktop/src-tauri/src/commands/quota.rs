@@ -166,7 +166,9 @@ pub(super) fn quota_usage_for_store(
         .lane
         .strip_prefix(crate::store::provider_limit::MODEL_LANE_PREFIX);
     let dollars = input.for_account(&request.provider, &request.account_key, model_scope);
-    quota_usage_with_turn_dollars(store, now, request, &dollars)
+    // A single-account command has no shared scan to reuse, so it keeps
+    // computing its own five-hour turn epochs, the way it always has.
+    quota_usage_with_turn_dollars(store, now, request, &dollars, None)
 }
 
 pub(super) fn quota_usage_with_turn_dollars(
@@ -174,6 +176,7 @@ pub(super) fn quota_usage_with_turn_dollars(
     now: i64,
     request: QuotaUsageRequest,
     dollars: &crate::store::provider_limit::AccountTurnDollars,
+    turn_minutes: Option<&crate::store::provider_limit::TurnMinutes>,
 ) -> CommandResult<QuotaUsagePayload> {
     let QuotaUsageRequest {
         provider,
@@ -198,9 +201,12 @@ pub(super) fn quota_usage_with_turn_dollars(
         )
         .map_err(fail)?;
     let turn_epochs = if lane == crate::store::provider_limit::LANE_FIVE_HOUR {
-        store
-            .attributed_turn_epochs(&provider, &account_key, range_start_epoch, range_end_epoch)
-            .map_err(fail)?
+        match turn_minutes {
+            Some(turn_minutes) => turn_minutes.for_account(&provider, &account_key),
+            None => store
+                .attributed_turn_epochs(&provider, &account_key, range_start_epoch, range_end_epoch)
+                .map_err(fail)?,
+        }
     } else {
         Vec::new()
     };
@@ -242,22 +248,26 @@ pub(super) fn quota_usage_with_turn_dollars(
     let session_keys: HashSet<SessionKey> = bucketed.iter().map(|row| row.key.clone()).collect();
     let session_titles = session_titles_and_distros(store, &session_keys)?;
 
+    let period_ids: Vec<i64> = periods
+        .iter()
+        .filter_map(|period| period.period_id)
+        .collect();
+    let samples_by_period = store.quota_period_samples_for(&period_ids).map_err(fail)?;
+
     let mut period_payloads = Vec::with_capacity(periods.len());
     for (period, rows) in periods.iter().zip(by_period) {
-        let samples: Vec<QuotaSamplePayload> = match period.period_id {
-            Some(period_id) => store
-                .quota_period_samples(period_id)
-                .map_err(fail)?
-                .into_iter()
-                .map(|observation| QuotaSamplePayload {
-                    observed_at_epoch: observation.observed_at_epoch,
-                    used_percent: observation.used_percent,
-                    fresh: observation.is_fresh,
-                    authoritative: observation.is_authoritative,
-                })
-                .collect(),
-            None => Vec::new(),
-        };
+        let samples: Vec<QuotaSamplePayload> = period
+            .period_id
+            .and_then(|period_id| samples_by_period.get(&period_id))
+            .into_iter()
+            .flatten()
+            .map(|observation| QuotaSamplePayload {
+                observed_at_epoch: observation.observed_at_epoch,
+                used_percent: observation.used_percent,
+                fresh: observation.is_fresh,
+                authoritative: observation.is_authoritative,
+            })
+            .collect();
 
         // The period's authoritative readings, inside its own bounds and
         // sorted ascending: `share_period`'s own contract. Truncation can

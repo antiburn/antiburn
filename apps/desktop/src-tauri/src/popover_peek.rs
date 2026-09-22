@@ -77,7 +77,7 @@ pub type PopoverPeekManager = AnchoredWindowManager<PopoverPeekTarget, PopoverPe
 /// Tallest the anchored Usage preview may get, in logical pixels.
 const MAX_CONTENT_HEIGHT: f64 = 780.0;
 
-pub fn manager() -> PopoverPeekManager {
+pub fn manager(interface_scale: f64) -> PopoverPeekManager {
     let manager = AnchoredWindowManager::new(AnchoredWindowConfig {
         label: LABEL.to_string(),
         anchor_label: crate::popover::LABEL.to_string(),
@@ -88,6 +88,7 @@ pub fn manager() -> PopoverPeekManager {
         }
         .to_string(),
         title: "antiburn".to_string(),
+        interface_scale,
         width: 380.0,
         corner_radius: crate::popover::CORNER_RADIUS,
         initial_height: 320.0,
@@ -264,8 +265,12 @@ fn peek_data(
             provider,
             utc_offset_minutes,
         } => {
-            let local = crate::commands::provider_usage_summary(app, Some(utc_offset_minutes))?;
-            let live = crate::commands::cached_live_usage(app);
+            let store = &app.state::<crate::UiReadStore>().0;
+            let local = crate::commands::local_usage::provider_usage_summary_for_store(
+                store,
+                Some(utc_offset_minutes),
+            )?;
+            let live = crate::commands::local_usage::cached_live_usage_for_store(app, store);
             current_target(manager, generation)?;
             Ok(selected_provider_data(&provider, local, live))
         }

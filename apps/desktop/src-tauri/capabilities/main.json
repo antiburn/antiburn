@@ -51,6 +51,7 @@
     "allow-open-settings-window",
     "allow-open-burn-check-sample",
     "allow-prepare-auto-fix-burn-check-target",
+    "allow-main-window-content-ready",
     "allow-main-window-health-ack",
     "allow-main-window-pending-health-check",
     "allow-main-window-ready",
@@ -61,6 +62,7 @@
     "allow-request-main-window-recovery",
     "allow-reveal-source",
     "allow-open-project-folder",
+    "allow-set-interface-scale",
     "allow-set-settings"
   ]
 }

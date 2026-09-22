@@ -7,6 +7,9 @@
 //! The HUD remembers where a reader put it. The crate supplies the geometry of
 //! that memory — [`Placement`], [`current_placement`], and [`apply_placement`]
 //! — and the shell supplies the storage.
+//!
+//! Acquire the resize lock only from workers, never from the UI thread. Native
+//! queries can wait for the UI thread while the resize lock remains held.
 
 #[cfg(target_os = "macos")]
 use std::sync::LazyLock;
@@ -18,16 +21,16 @@ pub use dock::{
     wake_overlay,
 };
 pub use island::{
-    IslandPhase, IslandState, begin_drag, expand_island, island_overlay, island_state,
-    island_wanted_off_notch, reclaim_island, refresh_notch, set_fake_notch,
+    IslandPhase, IslandState, expand_island, island_overlay, island_state, island_wanted_off_notch,
+    reclaim_island, refresh_notch, set_fake_notch,
 };
 use std::sync::Mutex;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 use std::sync::MutexGuard;
 #[cfg(any(target_os = "macos", test))]
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(target_os = "macos", test))]
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -93,11 +96,13 @@ impl VisibilityState {
         self.hover_generation
     }
 
-    fn destroy_hover_watcher(&mut self, generation: u64) {
+    fn destroy_hover_watcher(&mut self, generation: u64) -> bool {
         if self.hover_generation == generation {
             self.hover_generation = self.hover_generation.wrapping_add(1);
             self.visible = false;
+            return true;
         }
+        false
     }
 }
 
@@ -109,7 +114,7 @@ fn set_overlay_visible(visible: bool) {
 /// Return whether the HUD is requested to run, including its first render.
 #[cfg(target_os = "macos")]
 pub fn work_is_active() -> bool {
-    RESIZE_STATE.wants_visible()
+    RESIZE_STATE.wants_visible() && VISIBILITY_INTENT.wants_visible()
 }
 
 /// Keep HUD work inactive where the HUD is unavailable.
@@ -127,6 +132,7 @@ pub fn visibility_receiver() -> tokio::sync::watch::Receiver<VisibilityState> {
 #[cfg(any(target_os = "macos", test))]
 struct ResizeState {
     height_bits: AtomicU64,
+    target_height_bits: AtomicU64,
     generation: AtomicU64,
     measured: AtomicBool,
     wanted_visible: AtomicBool,
@@ -137,6 +143,7 @@ impl ResizeState {
     const fn new(height: f64) -> Self {
         Self {
             height_bits: AtomicU64::new(height.to_bits()),
+            target_height_bits: AtomicU64::new(height.to_bits()),
             generation: AtomicU64::new(0),
             measured: AtomicBool::new(false),
             wanted_visible: AtomicBool::new(true),
@@ -145,23 +152,30 @@ impl ResizeState {
 
     fn reset(&self, height: f64) {
         self.height_bits.store(height.to_bits(), Ordering::SeqCst);
+        self.target_height_bits
+            .store(height.to_bits(), Ordering::SeqCst);
         self.measured.store(false, Ordering::SeqCst);
         self.wanted_visible.store(true, Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
-    #[cfg(target_os = "macos")]
     fn height(&self) -> f64 {
         f64::from_bits(self.height_bits.load(Ordering::SeqCst))
     }
 
-    #[cfg(target_os = "macos")]
     fn set_height(&self, height: f64) {
         self.height_bits.store(height.to_bits(), Ordering::SeqCst);
     }
 
-    fn begin_resize(&self) -> u64 {
+    fn begin_resize(&self, target_height: f64) -> u64 {
+        self.target_height_bits
+            .store(target_height.to_bits(), Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn finish_resize(&self) -> f64 {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        f64::from_bits(self.target_height_bits.load(Ordering::SeqCst))
     }
 
     fn resize_is_current(&self, generation: u64) -> bool {
@@ -199,28 +213,213 @@ static RESIZE_STATE: ResizeState = ResizeState::new(OVERLAY_SEED_HEIGHT);
 #[cfg(target_os = "macos")]
 static RESIZE_APPLY_LOCK: Mutex<()> = Mutex::new(());
 
+/// Capture visibility intent before dispatching a blocking native operation.
+/// The low bit is the requested visibility; the remaining bits distinguish
+/// hide/reopen cycles. Recording intent never waits on a native window query.
+struct VisibilityIntent(AtomicU64);
+
+impl VisibilityIntent {
+    const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    fn request(&self, visible: bool) -> VisibilityRequest {
+        let previous = self
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                Some((value.wrapping_add(2) & !1) | u64::from(visible))
+            })
+            .expect("visibility update cannot fail");
+        VisibilityRequest((previous.wrapping_add(2) & !1) | u64::from(visible))
+    }
+
+    fn is_current(&self, request: VisibilityRequest) -> bool {
+        self.0.load(Ordering::SeqCst) == request.0
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn wants_visible(&self) -> bool {
+        self.0.load(Ordering::SeqCst) & 1 != 0
+    }
+}
+
+/// Opaque native visibility intent, safe to carry across worker dispatch.
+#[derive(Clone, Copy)]
+pub struct VisibilityRequest(u64);
+
+static VISIBILITY_INTENT: VisibilityIntent = VisibilityIntent::new();
+
+/// Record show/hide intent before asynchronous persistence or native work.
+pub fn request_visibility(visible: bool) -> VisibilityRequest {
+    VISIBILITY_INTENT.request(visible)
+}
+
+/// True while a dispatched show/hide still represents the latest request.
+pub fn visibility_request_is_current(request: VisibilityRequest) -> bool {
+    VISIBILITY_INTENT.is_current(request)
+}
+
+// Worker-only lifecycle serialization encloses resize operations, never the
+// reverse. Open, hide, drag begin, and settlement share this lock.
+#[cfg(target_os = "macos")]
+static LIFECYCLE_APPLY_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(any(target_os = "macos", test))]
+fn lock_current_drag<'a>(
+    lock: &'a Mutex<()>,
+    drag: &DragState,
+    revision: u64,
+) -> Option<MutexGuard<'a, ()>> {
+    let guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    drag.is_current(revision).then_some(guard)
+}
+
+#[cfg(target_os = "macos")]
+fn drag_lifecycle_guard(revision: u64) -> Option<MutexGuard<'static, ()>> {
+    debug_assert!(
+        !tauri_nspanel::objc2_foundation::NSThread::isMainThread_class(),
+        "HUD lifecycle locks must stay off the UI thread"
+    );
+    lock_current_drag(&LIFECYCLE_APPLY_LOCK, &DRAG_STATE, revision)
+}
+
+/// Apply drag setup on a worker after earlier native lifecycle work finishes.
+/// New intent can arrive during accepted work; its worker applies afterward.
+pub fn begin_drag(app: &AppHandle, revision: u64) -> bool {
+    #[cfg(target_os = "macos")]
+    let Some(_lifecycle) = drag_lifecycle_guard(revision) else {
+        return false;
+    };
+    island::begin_drag(app, revision)
+}
+
 /// True from the start of a HUD drag until the drop settles.
 ///
 /// The shell reads this when the app becomes active: an activation during a
 /// drag comes from the drag, not from a request for the main window.
-static DRAG_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static DRAG_STATE: DragState = DragState::new();
+
+// Keep revision and activity in one atomic word. An old drop must not clear
+// the active flag between a newer drag's revision and flag updates.
+struct DragState(AtomicU64);
+
+impl DragState {
+    const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    fn start(&self) -> u64 {
+        let previous = self
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                Some(value.wrapping_add(2) | 1)
+            })
+            .expect("drag update cannot fail");
+        (previous.wrapping_add(2) | 1) >> 1
+    }
+
+    fn revision(&self) -> u64 {
+        self.0.load(Ordering::SeqCst) >> 1
+    }
+    fn active(&self) -> bool {
+        self.0.load(Ordering::SeqCst) & 1 != 0
+    }
+    fn is_current(&self, revision: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == (revision << 1 | 1)
+    }
+    fn finish(&self, revision: u64) -> bool {
+        self.0
+            .compare_exchange(
+                revision << 1 | 1,
+                revision << 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+}
+
+/// Capture drag intent before the shell dispatches notch reads/native work.
+pub fn request_drag() -> u64 {
+    DRAG_STATE.start()
+}
+
+/// Identify the drag whose drop is being dispatched.
+pub fn drag_revision() -> u64 {
+    DRAG_STATE.revision()
+}
+
+/// True when this revision is the latest drag and its drop has not settled.
+pub fn drag_is_current(revision: u64) -> bool {
+    DRAG_STATE.is_current(revision)
+}
 
 /// True while the pointer drags the HUD window.
 pub fn drag_in_progress() -> bool {
-    DRAG_IN_PROGRESS.load(Ordering::SeqCst)
+    DRAG_STATE.active()
 }
 
-pub(crate) fn set_drag_in_progress(dragging: bool) {
-    DRAG_IN_PROGRESS.store(dragging, Ordering::SeqCst);
+pub(crate) fn finish_drag(revision: u64) -> bool {
+    DRAG_STATE.finish(revision)
 }
 
 /// Clear the drag flag: the webview reported that its drag ended.
 pub fn end_drag() {
-    set_drag_in_progress(false);
+    finish_drag(drag_revision());
+}
+
+#[cfg(target_os = "macos")]
+static INTERFACE_SCALE_BITS: AtomicU64 = AtomicU64::new(1.0_f64.to_bits());
+
+#[cfg(target_os = "macos")]
+static PENDING_INTERFACE_SCALE: Mutex<Option<(f64, Vec<Placement>)>> = Mutex::new(None);
+
+#[cfg(any(target_os = "macos", test))]
+fn cancel_pending_drag_state(
+    drag: &DragState,
+    pending: &Mutex<Option<(f64, Vec<Placement>)>>,
+    revision: u64,
+) {
+    // This short lock never encloses native calls. Scale reconciliation takes
+    // it before inspecting drag intent, so a newer deferred request survives.
+    let mut pending = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if drag.revision() == revision {
+        drag.finish(revision);
+        pending.take();
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn cancel_pending_drag(revision: u64) {
+    cancel_pending_drag_state(&DRAG_STATE, &PENDING_INTERFACE_SCALE, revision);
+}
+
+#[cfg(target_os = "macos")]
+fn interface_scale() -> f64 {
+    f64::from_bits(INTERFACE_SCALE_BITS.load(Ordering::Acquire))
+}
+
+#[cfg(target_os = "macos")]
+fn set_interface_scale_value(value: f64) -> f64 {
+    let value = if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
+    };
+    INTERFACE_SCALE_BITS.store(value.to_bits(), Ordering::Release);
+    value
 }
 
 #[cfg(target_os = "macos")]
 fn resize_apply_guard() -> MutexGuard<'static, ()> {
+    debug_assert!(
+        !tauri_nspanel::objc2_foundation::NSThread::isMainThread_class(),
+        "HUD resize locks must stay off the UI thread"
+    );
     RESIZE_APPLY_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -361,20 +560,25 @@ pub fn apply_placement(_app: &AppHandle, _entries: &[Placement]) -> tauri::Resul
 /// it is, because a window at its old position beats a window at (0,0).
 #[cfg(target_os = "macos")]
 fn place(window: &WebviewWindow, entries: &[Placement]) -> tauri::Result<()> {
+    let _guard = resize_apply_guard();
+    place_guarded(window, entries)
+}
+
+#[cfg(target_os = "macos")]
+fn place_guarded(window: &WebviewWindow, entries: &[Placement]) -> tauri::Result<()> {
     let Ok(monitors) = window.available_monitors() else {
         return Ok(());
     };
-    // The same lock the animated resize holds: a placement and a resize frame
-    // must not write the window position at the same time.
-    let _guard = resize_apply_guard();
-    let height = RESIZE_STATE.height();
+    let scale = interface_scale();
+    let height = RESIZE_STATE.height() * scale;
+    let width = OVERLAY_WIDTH * scale;
     let keys: Vec<String> = monitors.iter().map(monitor_key).collect();
 
     if let Some(placement) = resolve(entries, &keys)
         && let Some(index) = keys.iter().position(|key| key == &placement.monitor)
         && let Some(frame) = logical_frame(&monitors[index])
     {
-        let (x, y) = clamp_into(placement.x, placement.y, OVERLAY_WIDTH, height, &frame);
+        let (x, y) = clamp_into(placement.x, placement.y, width, height, &frame);
         return set_on_monitor(window, &monitors[index], x, y);
     }
 
@@ -384,8 +588,8 @@ fn place(window: &WebviewWindow, entries: &[Placement]) -> tauri::Result<()> {
     let Some(frame) = logical_frame(&monitor) else {
         return Ok(());
     };
-    let x = (frame.width - OVERLAY_WIDTH) / 2.0;
-    set_on_monitor(window, &monitor, x, OVERLAY_TOP_INSET)
+    let x = (frame.width - width) / 2.0;
+    set_on_monitor(window, &monitor, x, OVERLAY_TOP_INSET * scale)
 }
 
 /// The display's own size in logical pixels. `None` for an unusable scale.
@@ -446,36 +650,53 @@ fn clamp_into(x: f64, y: f64, width: f64, height: f64, frame: &LogicalFrame) -> 
 /// reaches its position before the renderer reveals it, so a restored HUD
 /// never appears in one place and jumps to another.
 #[cfg(target_os = "macos")]
-pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
+pub fn open(
+    app: &AppHandle,
+    entries: &[Placement],
+    requested_interface_scale: f64,
+    dock: DockSettings,
+    request: VisibilityRequest,
+) -> tauri::Result<()> {
+    let _lifecycle = LIFECYCLE_APPLY_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !VISIBILITY_INTENT.is_current(request) || !VISIBILITY_INTENT.wants_visible() {
+        return Ok(());
+    }
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        let measured = {
+        {
             let _guard = resize_apply_guard();
-            RESIZE_STATE.request_open();
-            RESIZE_STATE.is_measured()
-        };
-        let _ = app.emit(OVERLAY_WORK_EVENT, true);
+            RESIZE_STATE.request_hide();
+            let interface_scale = set_interface_scale_value(requested_interface_scale);
+            window.set_zoom(interface_scale)?;
+            apply_height(&window, RESIZE_STATE.height(), None)?;
+        }
         // Displays can connect or disconnect while the HUD is off, so the
         // reopen resolves the remembered position again before it shows.
         place(&window, entries)?;
-        if measured {
-            show_without_activation(&window)?;
-        }
+        restore_dock(app, dock);
+        finish_open(&window, request)?;
         return Ok(());
     }
 
-    {
-        let _guard = resize_apply_guard();
-        RESIZE_STATE.reset(OVERLAY_SEED_HEIGHT);
-    }
+    let guard = resize_apply_guard();
+    RESIZE_STATE.reset(OVERLAY_SEED_HEIGHT);
+    RESIZE_STATE.request_hide();
+    let interface_scale = set_interface_scale_value(requested_interface_scale);
     set_overlay_visible(false);
     let window = WebviewWindowBuilder::new(
         app,
         OVERLAY_LABEL,
         WebviewUrl::App("index.html#/overlay".into()),
     )
+    .initialization_script(interface_scale_initialization_script(interface_scale))
     .title("antiburn")
-    .inner_size(OVERLAY_WIDTH, OVERLAY_SEED_HEIGHT)
+    .inner_size(
+        OVERLAY_WIDTH * interface_scale,
+        OVERLAY_SEED_HEIGHT * interface_scale,
+    )
     .resizable(false)
+    .zoom_hotkeys_enabled(false)
     .visible(false)
     .focused(false)
     .focusable(false)
@@ -487,28 +708,63 @@ pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
     .transparent(true)
     .build()?;
 
+    window.set_zoom(interface_scale)?;
+
     float_over_all_spaces(&window)?;
     spawn_hover_watcher(window.clone());
-    place(&window, entries)?;
-    let _ = app.emit(OVERLAY_WORK_EVENT, true);
+    place_guarded(&window, entries)?;
+    drop(guard);
+    restore_dock(app, dock);
+    finish_open(&window, request)?;
 
     // The renderer reveals the window after it reports the first content height.
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn finish_open(window: &WebviewWindow, request: VisibilityRequest) -> tauri::Result<()> {
+    let _guard = resize_apply_guard();
+    if !VISIBILITY_INTENT.is_current(request) || !VISIBILITY_INTENT.wants_visible() {
+        return Ok(());
+    }
+    RESIZE_STATE.request_open();
+    island::geometry_changed(window.app_handle());
+    let _ = window.app_handle().emit(OVERLAY_WORK_EVENT, true);
+    if RESIZE_STATE.is_measured() {
+        show_without_activation(window)?;
+    }
+    Ok(())
+}
+
 /// Keep the HUD unavailable on platforms whose behavior is not tuned.
 #[cfg(not(target_os = "macos"))]
-pub fn open(_app: &AppHandle, _entries: &[Placement]) -> tauri::Result<()> {
+pub fn open(
+    _app: &AppHandle,
+    _entries: &[Placement],
+    _interface_scale: f64,
+    _dock: DockSettings,
+    _request: VisibilityRequest,
+) -> tauri::Result<()> {
     Ok(())
 }
 
 /// Hide the HUD and cancel a pending first reveal or animated resize.
 #[cfg(target_os = "macos")]
-pub fn hide(app: &AppHandle) -> tauri::Result<()> {
+pub fn hide(app: &AppHandle, request: VisibilityRequest) -> tauri::Result<()> {
+    let _lifecycle = LIFECYCLE_APPLY_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !VISIBILITY_INTENT.is_current(request) {
+        return Ok(());
+    }
     let _guard = resize_apply_guard();
     RESIZE_STATE.request_hide();
     set_overlay_visible(false);
-    set_drag_in_progress(false);
+    cancel_pending_drag(drag_revision());
+    PENDING_INTERFACE_SCALE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
     dock::reset();
     let _ = app.emit(OVERLAY_WORK_EVENT, false);
     hide_detail(app);
@@ -526,7 +782,7 @@ pub fn hide(app: &AppHandle) -> tauri::Result<()> {
 
 /// Keep HUD hiding unavailable on unsupported platforms.
 #[cfg(not(target_os = "macos"))]
-pub fn hide(_app: &AppHandle) -> tauri::Result<()> {
+pub fn hide(_app: &AppHandle, _request: VisibilityRequest) -> tauri::Result<()> {
     Ok(())
 }
 
@@ -540,6 +796,7 @@ pub fn resize(
     requested_height: f64,
     anchor_bottom: bool,
     animate: bool,
+    geometry_revision: Option<u64>,
 ) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
         return Ok(());
@@ -547,10 +804,13 @@ pub fn resize(
 
     let target = clamp_height(requested_height);
     let visible = window.is_visible().unwrap_or(false);
-    let (from, generation, bottom_edge) = {
+    let (from, generation, bottom_edge, geometry_revision) = {
         let _guard = resize_apply_guard();
+        if geometry_revision.is_some_and(|revision| revision != island::revision()) {
+            return Ok(());
+        }
         let from = RESIZE_STATE.height();
-        let generation = RESIZE_STATE.begin_resize();
+        let generation = RESIZE_STATE.begin_resize(target);
         let first_measurement = !RESIZE_STATE.is_measured();
         let bottom_edge = bottom_anchor_edge(&window, from, anchor_bottom)?;
 
@@ -567,7 +827,7 @@ pub fn resize(
             return Ok(());
         }
 
-        (from, generation, bottom_edge)
+        (from, generation, bottom_edge, island::revision())
     };
 
     tauri::async_runtime::spawn(async move {
@@ -575,7 +835,9 @@ pub fn resize(
         for frame in 1..=RESIZE_STEPS {
             tokio::time::sleep(step).await;
             let _guard = resize_apply_guard();
-            if !RESIZE_STATE.resize_is_current(generation) {
+            if !RESIZE_STATE.resize_is_current(generation)
+                || island::revision() != geometry_revision
+            {
                 return;
             }
             let progress = f64::from(frame) / f64::from(RESIZE_STEPS);
@@ -680,7 +942,7 @@ fn show_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
     let app = window.app_handle().clone();
     window
         .run_on_main_thread(move || {
-            if !RESIZE_STATE.wants_visible() {
+            if !RESIZE_STATE.wants_visible() || !VISIBILITY_INTENT.wants_visible() {
                 return;
             }
             if let Some(panel) = macos::configured_panel(&native_window) {
@@ -705,7 +967,9 @@ fn bottom_anchor_edge(
     }
     let scale = window.scale_factor()?;
     let position = window.outer_position()?;
-    Ok(Some(position.y as f64 / scale + current_height))
+    Ok(Some(
+        position.y as f64 / scale + current_height * interface_scale(),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -716,7 +980,7 @@ fn record_window_height(window: &WebviewWindow) {
     let Ok(size) = window.outer_size() else {
         return;
     };
-    RESIZE_STATE.set_height(size.height as f64 / scale);
+    RESIZE_STATE.set_height(size.height as f64 / scale / interface_scale());
 }
 
 /// Keep dynamic sizing unavailable on unsupported platforms.
@@ -726,6 +990,7 @@ pub fn resize(
     _requested_height: f64,
     _anchor_bottom: bool,
     _animate: bool,
+    _geometry_revision: Option<u64>,
 ) -> tauri::Result<()> {
     Ok(())
 }
@@ -742,15 +1007,20 @@ fn apply_height(
             let current = window.outer_position()?;
             Some(LogicalPosition::new(
                 current.x as f64 / scale,
-                anchored_y(current.y as f64 / scale, target_height, Some(bottom_edge)),
+                anchored_y(
+                    current.y as f64 / scale,
+                    target_height * interface_scale(),
+                    Some(bottom_edge),
+                ),
             ))
         }
         None => None,
     };
 
     window.set_resizable(true)?;
-    let width = island::frame_width().unwrap_or(OVERLAY_WIDTH);
-    let size_result = window.set_size(LogicalSize::new(width, target_height));
+    let (width, height) = island::fit_height(window, target_height * interface_scale())
+        .unwrap_or_else(|| scaled_size_for_window(window, OVERLAY_WIDTH, target_height));
+    let size_result = window.set_size(LogicalSize::new(width, height));
     if size_result.is_ok() {
         RESIZE_STATE.set_height(target_height);
     } else {
@@ -769,6 +1039,111 @@ fn apply_height(
 }
 
 #[cfg(target_os = "macos")]
+fn scaled_size_for_window(window: &WebviewWindow, width: f64, height: f64) -> (f64, f64) {
+    let interface_scale = interface_scale();
+    let mut width = width * interface_scale;
+    let mut height = height * interface_scale;
+    if let Ok(Some(monitor)) = window
+        .current_monitor()
+        .or_else(|_| window.primary_monitor())
+    {
+        let dpi = monitor.scale_factor();
+        if dpi.is_finite() && dpi > 0.0 {
+            let area = monitor.work_area();
+            width = width.min(f64::from(area.size.width) / dpi);
+            height = height.min(f64::from(area.size.height) / dpi);
+        }
+    }
+    (width.max(1.0), height.max(1.0))
+}
+
+/// Apply an explicit host scale to existing HUD windows without creating them.
+#[cfg(target_os = "macos")]
+pub fn set_interface_scale(
+    app: &AppHandle,
+    value: f64,
+    entries: &[Placement],
+) -> tauri::Result<()> {
+    let _guard = resize_apply_guard();
+    let mut pending = PENDING_INTERFACE_SCALE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if drag_in_progress() {
+        *pending = Some((value, entries.to_vec()));
+        return Ok(());
+    }
+    *pending = None;
+    drop(pending);
+    apply_interface_scale_guarded(app, value, entries)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn flush_pending_scale(app: &AppHandle) -> tauri::Result<()> {
+    let _guard = resize_apply_guard();
+    if drag_in_progress() {
+        return Ok(());
+    }
+    let pending = PENDING_INTERFACE_SCALE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some((value, entries)) = pending {
+        apply_interface_scale_guarded(app, value, &entries)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_interface_scale_guarded(
+    app: &AppHandle,
+    value: f64,
+    entries: &[Placement],
+) -> tauri::Result<()> {
+    let target_height = RESIZE_STATE.finish_resize();
+    let old_scale = interface_scale();
+    let header = island::island_state().height;
+    let value = set_interface_scale_value(value);
+    let target_height = (target_height - header / old_scale).max(0.0) + header / value;
+    RESIZE_STATE.begin_resize(target_height);
+    dock::cancel_motion_for_scale();
+    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
+        window.set_zoom(value)?;
+        apply_height(&window, target_height, None)?;
+        if !dock::reconcile_scale(app, &window) {
+            // Scaling a free HUD preserves the current anchor, including a
+            // just-completed drag. Persisted entries are only the fallback.
+            let current = current_placement(app);
+            let placements = if current.is_some() {
+                current.as_slice()
+            } else {
+                entries
+            };
+            place_guarded(&window, placements)?;
+        }
+    }
+    if let Some(detail) = app.get_webview_window(DETAIL_LABEL) {
+        detail.set_zoom(value)?;
+        let height = f64::from_bits(DETAIL_HEIGHT_BITS.load(Ordering::Acquire));
+        let (width, height) = scaled_size_for_window(&detail, DETAIL_WIDTH, height);
+        detail.set_size(LogicalSize::new(width, height))?;
+        if let Some(hud) = app.get_webview_window(OVERLAY_LABEL) {
+            let _ = position_detail_window(&detail, &hud, height);
+        }
+    }
+    island::geometry_changed(app);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_interface_scale(
+    _app: &AppHandle,
+    _value: f64,
+    _entries: &[Placement],
+) -> tauri::Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn spawn_hover_watcher(window: WebviewWindow) {
     let mut generation = 0;
     OVERLAY_VISIBILITY.send_modify(|state| {
@@ -776,7 +1151,12 @@ fn spawn_hover_watcher(window: WebviewWindow) {
     });
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
-            OVERLAY_VISIBILITY.send_modify(|state| state.destroy_hover_watcher(generation));
+            OVERLAY_VISIBILITY.send_modify(|state| {
+                if state.destroy_hover_watcher(generation) {
+                    RESIZE_STATE.request_hide();
+                    cancel_pending_drag(drag_revision());
+                }
+            });
         }
     });
     tauri::async_runtime::spawn(async move {
@@ -887,14 +1267,92 @@ fn cursor_over_frame(
 
 #[cfg(test)]
 mod drag_flag_tests {
-    use super::{drag_in_progress, end_drag, set_drag_in_progress};
+    use super::{DragState, cancel_pending_drag_state, lock_current_drag};
+    use std::sync::Mutex;
+
+    #[test]
+    fn a_queued_lifecycle_operation_rechecks_drag_intent_after_locking() {
+        let gate = std::sync::Arc::new(Mutex::new(()));
+        let drag = std::sync::Arc::new(DragState::new());
+        let old = drag.start();
+        let guard = gate.lock().unwrap();
+        let (queued_tx, queued_rx) = std::sync::mpsc::channel();
+        let worker = {
+            let gate = gate.clone();
+            let drag = drag.clone();
+            std::thread::spawn(move || {
+                queued_tx.send(()).unwrap();
+                lock_current_drag(&gate, &drag, old).is_some()
+            })
+        };
+        queued_rx
+            .recv_timeout(super::Duration::from_secs(5))
+            .unwrap();
+        let latest = drag.start();
+        drop(guard);
+        assert!(!worker.join().unwrap());
+        assert!(drag.is_current(latest));
+    }
+
+    #[test]
+    fn a_new_drag_applies_after_an_accepted_lifecycle_operation() {
+        let gate = std::sync::Arc::new(Mutex::new(()));
+        let drag = std::sync::Arc::new(DragState::new());
+        let applied = std::sync::Arc::new(super::AtomicU64::new(0));
+        let old = drag.start();
+        let guard = lock_current_drag(&gate, &drag, old).unwrap();
+        let (requested_tx, requested_rx) = std::sync::mpsc::channel();
+        let worker = {
+            let gate = gate.clone();
+            let drag = drag.clone();
+            let applied = applied.clone();
+            std::thread::spawn(move || {
+                let latest = drag.start();
+                requested_tx.send(latest).unwrap();
+                let _guard = lock_current_drag(&gate, &drag, latest).unwrap();
+                applied.store(latest, super::Ordering::SeqCst);
+            })
+        };
+        let latest = requested_rx
+            .recv_timeout(super::Duration::from_secs(5))
+            .unwrap();
+        assert!(!drag.is_current(old));
+        assert!(gate.try_lock().is_err());
+        // Accepted work can finish after new intent; the newer worker applies last.
+        applied.store(old, super::Ordering::SeqCst);
+        drop(guard);
+        worker.join().unwrap();
+        assert_eq!(applied.load(super::Ordering::SeqCst), latest);
+    }
 
     #[test]
     fn the_flag_follows_the_drag() {
-        set_drag_in_progress(true);
-        assert!(drag_in_progress());
-        end_drag();
-        assert!(!drag_in_progress());
+        let drag = DragState::new();
+        let first = drag.start();
+        assert!(drag.active());
+        let next = drag.start();
+        assert!(!drag.finish(first));
+        assert!(drag.is_current(next));
+        assert!(drag.finish(next));
+        assert!(!drag.active());
+    }
+
+    #[test]
+    fn cancellation_clears_only_the_current_drags_deferred_scale() {
+        let drag = DragState::new();
+        let old = drag.start();
+        let current = drag.start();
+        let pending = Mutex::new(Some((2.0, Vec::new())));
+        cancel_pending_drag_state(&drag, &pending, old);
+        assert!(drag.is_current(current));
+        assert!(pending.lock().unwrap().is_some());
+        cancel_pending_drag_state(&drag, &pending, current);
+        assert!(!drag.active());
+        assert!(pending.lock().unwrap().is_none());
+        // Destruction can arrive after the flag clears but before scale flush.
+        *pending.lock().unwrap() = Some((1.5, Vec::new()));
+        cancel_pending_drag_state(&drag, &pending, current);
+        assert!(pending.lock().unwrap().is_none());
     }
 }
 
@@ -1023,6 +1481,9 @@ pub fn detail_requested() -> bool {
     DETAIL_SHOULD_SHOW.load(Ordering::Relaxed)
 }
 
+#[cfg(target_os = "macos")]
+static DETAIL_HEIGHT_BITS: AtomicU64 = AtomicU64::new(DETAIL_MIN_HEIGHT.to_bits());
+
 /// The newest detail payload, kept for a detail webview that mounts late.
 ///
 /// The first show request creates the window, so the webview subscribes after
@@ -1046,7 +1507,10 @@ pub fn detail_state() -> serde_json::Value {
 #[cfg(target_os = "macos")]
 pub fn show_detail(app: &AppHandle, state: serde_json::Value) {
     {
-        let _guard = resize_apply_guard();
+        // Intent uses a separate lock that never encloses native window calls.
+        let mut slot = DETAIL_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !RESIZE_STATE.wants_visible() {
             return;
         }
@@ -1056,9 +1520,7 @@ pub fn show_detail(app: &AppHandle, state: serde_json::Value) {
         if !matches!(island::island_state().island, island::IslandPhase::Off) {
             return;
         }
-        if let Ok(mut slot) = DETAIL_STATE.lock() {
-            *slot = Some(state.clone());
-        }
+        *slot = Some(state.clone());
         DETAIL_SHOULD_SHOW.store(true, Ordering::Relaxed);
     }
     if app.get_webview_window(DETAIL_LABEL).is_none()
@@ -1083,7 +1545,9 @@ fn show_detail_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
     let app = window.app_handle().clone();
     window
         .run_on_main_thread(move || {
-            if !RESIZE_STATE.wants_detail_visible(&DETAIL_SHOULD_SHOW) {
+            if !RESIZE_STATE.wants_detail_visible(&DETAIL_SHOULD_SHOW)
+                || !VISIBILITY_INTENT.wants_visible()
+            {
                 return;
             }
             if let Some(panel) = macos::configured_panel(&native_window) {
@@ -1107,17 +1571,22 @@ fn show_detail_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
 pub fn apply_detail_size(app: &AppHandle, height: f64) {
     let _guard = resize_apply_guard();
     let height = clamp_detail_height(height);
+    DETAIL_HEIGHT_BITS.store(height.to_bits(), Ordering::Release);
     let Some(detail) = app.get_webview_window(DETAIL_LABEL) else {
         return;
     };
     let Some(hud) = app.get_webview_window(OVERLAY_LABEL) else {
         return;
     };
-    let (width, _) = detail_metrics(&island::island_state());
-    if detail.set_size(LogicalSize::new(width, height)).is_err() {
+    let (base_width, _) = detail_metrics(&island::island_state());
+    let (width, scaled_height) = scaled_size_for_window(&detail, base_width, height);
+    if detail
+        .set_size(LogicalSize::new(width, scaled_height))
+        .is_err()
+    {
         return;
     }
-    if position_detail_window(&detail, &hud, height).is_none() {
+    if position_detail_window(&detail, &hud, scaled_height).is_none() {
         return;
     }
     if RESIZE_STATE.wants_detail_visible(&DETAIL_SHOULD_SHOW) {
@@ -1141,7 +1610,12 @@ pub fn apply_detail_size(_app: &AppHandle, _height: f64) {}
 /// hide. A fallback hides the window anyway after a short wait.
 #[cfg(target_os = "macos")]
 pub fn hide_detail(app: &AppHandle) {
-    DETAIL_SHOULD_SHOW.store(false, Ordering::Relaxed);
+    {
+        let _intent = DETAIL_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        DETAIL_SHOULD_SHOW.store(false, Ordering::Relaxed);
+    }
     let Some(window) = app.get_webview_window(DETAIL_LABEL) else {
         return;
     };
@@ -1181,14 +1655,20 @@ pub fn conceal_detail(_app: &AppHandle) {}
 /// with it, so every click passes through to whatever sits below.
 #[cfg(target_os = "macos")]
 fn build_detail(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let interface_scale = interface_scale();
     let window = WebviewWindowBuilder::new(
         app,
         DETAIL_LABEL,
         WebviewUrl::App("index.html#/hud-detail".into()),
     )
+    .initialization_script(interface_scale_initialization_script(interface_scale))
     .title("antiburn")
-    .inner_size(DETAIL_WIDTH, DETAIL_MIN_HEIGHT)
+    .inner_size(
+        DETAIL_WIDTH * interface_scale,
+        DETAIL_MIN_HEIGHT * interface_scale,
+    )
     .resizable(false)
+    .zoom_hotkeys_enabled(false)
     .visible(false)
     .focused(false)
     .focusable(false)
@@ -1198,9 +1678,18 @@ fn build_detail(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     .decorations(false)
     .transparent(true)
     .build()?;
+    window.set_zoom(interface_scale)?;
     float_over_all_spaces(&window)?;
     let _ = window.set_ignore_cursor_events(true);
     Ok(window)
+}
+
+#[cfg(target_os = "macos")]
+fn interface_scale_initialization_script(interface_scale: f64) -> String {
+    format!(
+        "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale',String(globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__/100)),{{once:true}});",
+        (interface_scale * 100.0).round() as u16,
+    )
 }
 
 /// The drawn HUD panel in logical screen coordinates.
@@ -1272,8 +1761,9 @@ fn reposition_detail_after_hud_frame(hud: &WebviewWindow) {
 #[cfg(target_os = "macos")]
 fn position_detail_window(detail: &WebviewWindow, hud: &WebviewWindow, height: f64) -> Option<()> {
     let mut anchor = panel_anchor(hud)?;
-    let (width, inset) = detail_metrics(&island::island_state());
-    anchor.x += inset;
+    let (_, inset) = detail_metrics(&island::island_state());
+    anchor.x += inset * interface_scale();
+    let width = f64::from(detail.outer_size().ok()?.width) / detail.scale_factor().ok()?;
     let frame = monitor_frame(hud);
     let (x, y) = compute_detail_position(&anchor, frame.as_ref(), width, height);
     detail.set_position(LogicalPosition::new(x, y)).ok()
@@ -1337,6 +1827,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn queued_visibility_requests_cannot_revive_a_hidden_hud() {
+        let intent = VisibilityIntent::new();
+        assert!(!intent.wants_visible());
+        let startup = intent.request(true);
+        let hidden = intent.request(false);
+        assert!(!intent.is_current(startup));
+        assert!(intent.is_current(hidden));
+        assert!(!intent.wants_visible());
+        let reopened = intent.request(true);
+        assert!(!intent.is_current(hidden));
+        assert!(!intent.is_current(startup));
+        assert!(intent.is_current(reopened));
+    }
+
+    #[test]
+    fn visibility_intent_remains_responsive_while_a_worker_waits_for_native_queries() {
+        let intent = std::sync::Arc::new(VisibilityIntent::new());
+        let startup = intent.request(true);
+        let worker_intent = intent.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            resume_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            worker_intent.is_current(startup)
+        });
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        intent.request(false);
+        resume_tx.send(()).unwrap();
+        assert!(!worker.join().unwrap());
+    }
+
+    #[test]
     fn heights_stay_inside_the_supported_frame() {
         assert_eq!(clamp_height(f64::NAN), OVERLAY_SEED_HEIGHT);
         assert_eq!(clamp_height(-2.0), OVERLAY_SEED_HEIGHT);
@@ -1358,11 +1881,28 @@ mod tests {
     #[test]
     fn a_new_resize_invalidates_the_previous_generation() {
         let state = ResizeState::new(30.0);
-        let first = state.begin_resize();
+        let first = state.begin_resize(60.0);
         assert!(state.resize_is_current(first));
-        let second = state.begin_resize();
+        let second = state.begin_resize(90.0);
         assert!(state.resize_is_current(second));
         assert!(!state.resize_is_current(first));
+    }
+
+    #[test]
+    fn scale_reconciliation_finishes_expansion_and_contraction_at_the_requested_height() {
+        for (from, target) in [(30.0, 160.0), (160.0, 30.0)] {
+            let state = ResizeState::new(from);
+            let animation = state.begin_resize(target);
+            state.set_height((from + target) / 2.0);
+            assert_ne!(state.height(), target);
+            let final_height = state.finish_resize();
+            assert_eq!(final_height, target);
+            assert!(!state.resize_is_current(animation));
+            state.set_height(final_height);
+            assert_eq!(state.height(), target);
+            state.reset(1.0);
+            assert_eq!(state.finish_resize(), 1.0);
+        }
     }
 
     #[test]
@@ -1410,7 +1950,7 @@ mod tests {
         let mut state = VisibilityState::hidden();
         state.visible = true;
         let generation = state.start_hover_watcher();
-        state.destroy_hover_watcher(generation);
+        assert!(state.destroy_hover_watcher(generation));
         assert!(!state.visible);
         assert_ne!(state.hover_generation, generation);
     }
@@ -1421,7 +1961,7 @@ mod tests {
         let old = state.start_hover_watcher();
         let current = state.start_hover_watcher();
         state.visible = true;
-        state.destroy_hover_watcher(old);
+        assert!(!state.destroy_hover_watcher(old));
         assert!(state.visible);
         assert_eq!(state.hover_generation, current);
     }
@@ -1450,6 +1990,7 @@ mod tests {
             fillet: 19.0,
             notch: 183.0,
             height: 38.0,
+            ..IslandState::off()
         }
     }
 

@@ -247,11 +247,14 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       navigationSession.select(id)
       return
     }
-    navigationSession.navigate({
-      section: "activity",
-      filter: parseSessionFilterId(id),
-      subject: activitySession.getSnapshot().subject,
-    })
+    navigationSession.navigate(
+      {
+        section: "activity",
+        filter: parseSessionFilterId(id),
+        subject: activitySession.getSnapshot().subject,
+      },
+      false,
+    )
   }
   const selected =
     availableSections.find((section) => section.id === selectedId) ?? availableSections[0]
@@ -271,11 +274,14 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     else {
       flushSync(() => {
         if (target.filter && target.filter.kind !== "all") {
-          navigationSession.navigate({
-            section: target.section,
-            filter: target.filter,
-            subject: activitySession.getSnapshot().subject,
-          })
+          navigationSession.navigate(
+            {
+              section: target.section,
+              filter: target.filter,
+              subject: activitySession.getSnapshot().subject,
+            },
+            false,
+          )
         } else {
           navigationSession.select(target.section)
         }
@@ -301,11 +307,12 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           }
         }}
         searchOpen={searchOpen}
-        sidebar={
+        sidebar={(closeNavigation) => (
           <SidebarNav
             items={availableSections}
             value={navValue}
             onChange={selectSection}
+            onActivate={closeNavigation}
             ariaLabel="Main sections"
             className="main-window-sidebar min-h-0 flex-1"
             footer={
@@ -317,7 +324,10 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
                 )}
                 <button
                   type="button"
-                  onClick={() => void openSettings()}
+                  onClick={() => {
+                    closeNavigation()
+                    void openSettings()
+                  }}
                   className="flex h-7 w-full items-center gap-2 rounded-control px-2 type-body text-label hover:bg-surface-hover"
                 >
                   <Settings size={14} strokeWidth={2} aria-hidden="true" />
@@ -326,7 +336,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
               </>
             }
           />
-        }
+        )}
       >
         {availableSections.map((section) => (
           <div

@@ -47,6 +47,11 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "Show every skill and MCP",
     aliases: ["tools", "unused resources"],
   },
+  interfaceSize: {
+    pane: "appearance",
+    label: "Interface size",
+    aliases: ["zoom", "scaling", "text size"],
+  },
   analytics: {
     pane: "privacy",
     label: "Share product analytics",

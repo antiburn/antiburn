@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { CollectionDetailPane, type CollectionItem } from "./CollectionDetailPane"
 
@@ -21,6 +21,197 @@ function Workspace({ entries = items }: { entries?: CollectionItem[] }) {
 }
 
 describe("CollectionDetailPane", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("returns to the wide collection after external detail and accepts a newer reveal", async () => {
+    vi.stubGlobal("innerWidth", 1200)
+    function ExternalWorkspace({ revision }: { revision: number }) {
+      return (
+        <CollectionDetailPane
+          title="Collection"
+          items={items}
+          selection={items[0]!}
+          externalDetailRevealRevision={revision}
+          emptyMessage="Nothing here"
+          detailEmptyMessage="Select an item"
+          renderDetail={(item) => item.label}
+        />
+      )
+    }
+    const { rerender } = render(<ExternalWorkspace revision={1} />)
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "First item" })).toHaveFocus(),
+    )
+    const row = screen.getByRole("option", { name: "First item" })
+    fireEvent.click(row)
+    vi.stubGlobal("innerWidth", 850)
+    fireEvent(window, new Event("resize"))
+    expect(row).toHaveFocus()
+    expect(row).toBeVisible()
+    rerender(<ExternalWorkspace revision={2} />)
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "First item" })).toHaveFocus(),
+    )
+  })
+
+  it.each([false, true])(
+    "keeps focus visible across compact layout after returning to collection: %s",
+    (returnToCollection) => {
+      vi.stubGlobal("innerWidth", 1200)
+      render(
+        <CollectionDetailPane
+          title="Collection"
+          items={items}
+          emptyMessage="Nothing here"
+          detailEmptyMessage="Select an item"
+          renderDetail={() => <button>Detail action</button>}
+        />,
+      )
+      const row = screen.getByRole("option", { name: "First item" })
+      fireEvent.click(row)
+      const action = screen.getByRole("button", { name: "Detail action" })
+      fireEvent.focus(action)
+      action.focus()
+      expect(action).toHaveFocus()
+      if (returnToCollection) {
+        fireEvent.focus(row)
+        row.focus()
+      }
+
+      vi.stubGlobal("innerWidth", 850)
+      fireEvent(window, new Event("resize"))
+      expect(returnToCollection ? row : action).toHaveFocus()
+      expect(document.activeElement).toBeVisible()
+    },
+  )
+
+  it("does not steal focus from a collection control after Back and a resize", async () => {
+    vi.stubGlobal("innerWidth", 550)
+    render(
+      <CollectionDetailPane
+        title="Collection"
+        items={[]}
+        selection={items[0]!}
+        externalDetailRevealRevision={1}
+        emptyMessage="Empty"
+        detailEmptyMessage="Select"
+        renderCollection={() => <button>Collection filter</button>}
+        renderDetail={(item) => item.label}
+      />,
+    )
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "First item" })).toHaveFocus(),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Back to collection" }))
+    expect(screen.getByRole("region", { name: "Collection" })).toHaveFocus()
+    const filter = screen.getByRole("button", { name: "Collection filter" })
+    filter.focus()
+    vi.stubGlobal("innerWidth", 1200)
+    fireEvent(window, new Event("resize"))
+    expect(filter).toHaveFocus()
+  })
+
+  it.each([false, true])(
+    "restores a mounted virtual row unless focus moved: %s",
+    async (focusMoved) => {
+      vi.stubGlobal("innerWidth", 550)
+      function VirtualWorkspace({ mounted }: { mounted: boolean }) {
+        return (
+          <>
+            <button>Outside collection</button>
+            <CollectionDetailPane
+              title="Virtual collection"
+              items={items}
+              emptyMessage="Empty"
+              detailEmptyMessage="Select"
+              renderCollection={({ openDetail, selectedId }) =>
+                mounted ? (
+                  <button
+                    aria-current={selectedId === "one" ? "true" : undefined}
+                    onClick={() => openDetail(items[0]!)}
+                  >
+                    Virtual row
+                  </button>
+                ) : null
+              }
+              renderDetail={(item) => item.label}
+            />
+          </>
+        )
+      }
+      const { rerender } = render(<VirtualWorkspace mounted />)
+      fireEvent.click(screen.getByRole("button", { name: "Virtual row" }))
+      await waitFor(() =>
+        expect(screen.getByRole("region", { name: "First item" })).toHaveFocus(),
+      )
+      rerender(<VirtualWorkspace mounted={false} />)
+      fireEvent.click(screen.getByRole("button", { name: "Back to virtual collection" }))
+      expect(screen.getByRole("region", { name: "Virtual collection" })).toHaveFocus()
+      const outside = screen.getByRole("button", { name: "Outside collection" })
+      if (focusMoved) {
+        outside.focus()
+        vi.stubGlobal("innerWidth", 1200)
+        fireEvent(window, new Event("resize"))
+      }
+      rerender(<VirtualWorkspace mounted />)
+      await waitFor(() =>
+        expect(
+          focusMoved ? outside : screen.getByRole("button", { name: "Virtual row" }),
+        ).toHaveFocus(),
+      )
+    },
+  )
+
+  it("opens one detail pane below 900 CSS pixels and restores the list focus and scroll", async () => {
+    vi.stubGlobal("innerWidth", 550)
+    const { container } = render(<Workspace />)
+    const viewport = container.querySelector<HTMLElement>(".main-window-collection-scroll")!
+    viewport.scrollTop = 42
+    const second = screen.getByRole("option", { name: "Second item" })
+    fireEvent.click(second)
+    expect(screen.queryByRole("listbox")).toBeNull()
+    expect(screen.getByText("Content for Second item")).toBeVisible()
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Second item" })).toHaveFocus(),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Back to collection" }))
+    await waitFor(() => expect(second).toHaveFocus())
+    expect(screen.getByRole("listbox")).toBeVisible()
+    expect(viewport.scrollTop).toBe(42)
+    expect(screen.queryByRole("region", { name: "Second item" })).toBeNull()
+  })
+
+  it("opens and focuses a repeated external detail request after Back", async () => {
+    vi.stubGlobal("innerWidth", 550)
+    function ExternalWorkspace({ revision }: { revision: number }) {
+      return (
+        <CollectionDetailPane
+          title="Collection"
+          items={items}
+          emptyMessage="Nothing here"
+          detailEmptyMessage="Select an item"
+          selection={items[0]!}
+          externalDetailRevealRevision={revision}
+          renderDetail={(item) => <p>Content for {item.label}</p>}
+        />
+      )
+    }
+    const { rerender } = render(<ExternalWorkspace revision={0} />)
+    expect(screen.getByRole("listbox")).toBeVisible()
+
+    rerender(<ExternalWorkspace revision={1} />)
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "First item" })).toHaveFocus(),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Back to collection" }))
+    expect(screen.getByRole("listbox")).toBeVisible()
+
+    rerender(<ExternalWorkspace revision={2} />)
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "First item" })).toHaveFocus(),
+    )
+  })
+
   it("reserves the detail region without auto-selecting or rendering detail", () => {
     const renderDetail = vi.fn()
     render(

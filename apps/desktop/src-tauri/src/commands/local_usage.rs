@@ -5,6 +5,7 @@
 //! by side in the popover, so their commands share a module.
 
 use super::*;
+use crate::UiReadStore;
 
 /// Per-provider token and cost totals derived from the sessions already on this
 /// machine.
@@ -24,17 +25,27 @@ pub async fn get_provider_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
-    run_blocking(move || provider_usage_summary(&app, utc_offset_minutes)).await
+    let store = app.state::<UiReadStore>().0.clone();
+    run_blocking(move || {
+        let started = Instant::now();
+        let result = provider_usage_summary_for_store(&store, utc_offset_minutes);
+        super::log_overview_read_timing("get_provider_usage", started.elapsed());
+        result
+    })
+    .await
 }
 
-pub(crate) fn provider_usage_summary(
-    app: &tauri::AppHandle,
+/// [`get_provider_usage`]'s body, over a borrowed [`Store`] so a caller can
+/// pick the writer or a reader connection. [`crate::popover_peek::peek_data`]
+/// calls this directly over the UI reader.
+pub(crate) fn provider_usage_summary_for_store(
+    store: &Store,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
     let now = scan::unix_now();
     let offset = utc_offset_minutes.unwrap_or(0);
     let since = provider_usage::lookback_start(now, offset);
-    let evidence = app.state::<Store>().usage_evidence(since).map_err(fail)?;
+    let evidence = store.usage_evidence(since).map_err(fail)?;
     let summary = provider_usage::summarize(&evidence, now, offset);
     ::tracing::debug!(
         event = "provider_attribution_summary",
@@ -74,21 +85,33 @@ pub async fn get_session_limit_allocations(
     app: tauri::AppHandle,
 ) -> CommandResult<SessionLimitAllocationSummary> {
     let now = scan::unix_now();
-    let store = app.state::<Store>().inner().clone();
+    let store = app.state::<UiReadStore>().0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let settings = store.settings().map_err(fail)?;
-        let since = now.saturating_sub(i64::from(settings.activity_window_days) * 86_400);
-        let sessions = store
-            .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
-            .map_err(fail)?;
-        let allocations = session_limit_allocations(&store, &sessions).map_err(fail)?;
-        Ok(SessionLimitAllocationSummary {
-            allocations,
-            generated_at: crate::store::iso_from_epoch(Some(now)),
-        })
+        let started = Instant::now();
+        let result = session_limit_allocation_summary_for_store(&store, now);
+        super::log_overview_read_timing("get_session_limit_allocations", started.elapsed());
+        result
     })
     .await
     .map_err(fail)?
+}
+
+/// [`get_session_limit_allocations`]'s body, over a borrowed [`Store`] so a
+/// test can run it against the writer and against a reader.
+pub(super) fn session_limit_allocation_summary_for_store(
+    store: &Store,
+    now: i64,
+) -> CommandResult<SessionLimitAllocationSummary> {
+    let settings = store.settings().map_err(fail)?;
+    let since = now.saturating_sub(i64::from(settings.activity_window_days) * 86_400);
+    let sessions = store
+        .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
+        .map_err(fail)?;
+    let allocations = session_limit_allocations(store, &sessions).map_err(fail)?;
+    Ok(SessionLimitAllocationSummary {
+        allocations,
+        generated_at: crate::store::iso_from_epoch(Some(now)),
+    })
 }
 
 /// Per-provider token maps ready for [`price_breakdown`], keyed the same way
@@ -275,36 +298,48 @@ pub async fn get_live_usage(
     app: tauri::AppHandle,
     _utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
+    let store = app.state::<UiReadStore>().0.clone();
     run_blocking(move || {
+        let started = Instant::now();
         // With live usage off no collection pass runs, so this is the one
         // place detection advances for the roster. Metadata-only here: the
         // reader has not opted in.
-        let active = app
-            .try_state::<Store>()
-            .and_then(|store| store.settings().ok())
-            .is_some_and(|settings| settings.live_usage_active());
+        let active =
+            live_usage_settings(&store).is_some_and(|settings| settings.live_usage_active());
         if !active && let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() {
             let detection = provider_usage::live::detect_all(&live.sources, false);
             live.store_detection(detection);
         }
-        Ok(cached_live_usage(&app))
+        let result = cached_live_usage_for_store(&app, &store);
+        super::log_overview_read_timing("get_live_usage", started.elapsed());
+        Ok(result)
     })
     .await
 }
 
-/// Keep this reader cache-only because synchronous popover IPC calls it.
-/// Never read provider metadata or start subprocesses here.
-pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
-    let summary = collected_live_usage(app);
+/// [`get_live_usage`]'s body, over a borrowed [`Store`] so a caller can pick
+/// the writer or a reader connection. Keep this reader cache-only because
+/// synchronous popover IPC calls it directly, over the UI reader. Never read
+/// provider metadata or start subprocesses here.
+pub(crate) fn cached_live_usage_for_store(
+    app: &tauri::AppHandle,
+    store: &Store,
+) -> LiveUsageSummary {
+    let summary = collected_live_usage(app, store);
     #[cfg(debug_assertions)]
     let summary = crate::tray::simulate_codex_only(app, summary);
     summary
 }
 
-fn collected_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
-    let settings = app
-        .try_state::<Store>()
-        .and_then(|store| store.settings().ok());
+/// Whether the reader has turned live usage on. The one database touch the
+/// live-usage read path makes, named so a test can assert it answers the
+/// same through the reader and the writer.
+pub(super) fn live_usage_settings(store: &Store) -> Option<AppSettings> {
+    store.settings().ok()
+}
+
+fn collected_live_usage(app: &tauri::AppHandle, store: &Store) -> LiveUsageSummary {
+    let settings = live_usage_settings(store);
     let active = settings
         .as_ref()
         .is_some_and(|settings| settings.live_usage_active());

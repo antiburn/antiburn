@@ -69,6 +69,7 @@ const overviewMocks = vi.hoisted(() => ({
  */
 const activityMocks = vi.hoisted(() => {
   class FakeMainActivitySession {
+    revealDetail = vi.fn()
     snapshot: {
       entries: SessionListEntry[] | null
       filter: SessionFilter

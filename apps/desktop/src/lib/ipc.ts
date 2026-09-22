@@ -8,6 +8,11 @@ import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 import { nativePeekBridge } from "./nativePeekBridge"
+import {
+  DEFAULT_INTERFACE_SCALE_PERCENT,
+  type InterfaceScaleChange,
+  type InterfaceScaleSource,
+} from "./interfaceScale"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -28,6 +33,7 @@ import type {
 export * from "./ipcPayloads"
 export * from "./mainWindowIpc"
 export * from "./nudgeIpc"
+export { resizeOverlayWindow, setHudDetailSize } from "./hudSizingIpc"
 export * from "./providerUsageIpc"
 export * from "./sessionIpc"
 export type { SettingsPane } from "./settingsPanes"
@@ -43,6 +49,7 @@ export function hasShell(): boolean {
 
 /** What settings look like before anything has been stored, or without a shell. */
 export const DEFAULT_SETTINGS: AppSettings = {
+  interfaceScalePercent: DEFAULT_INTERFACE_SCALE_PERCENT,
   theme: "system",
   activityWindowDays: 7,
   sessionDataRetentionDays: -1,
@@ -97,6 +104,12 @@ export async function getMainWindowVisible(): Promise<boolean> {
 export async function popoverContentReady(generation: number): Promise<void> {
   if (!hasShell()) return
   await invoke("popover_content_ready", { generation })
+}
+
+/** Tell the shell that the main window's initial activity and usage state settled. */
+export async function mainWindowContentReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("main_window_content_ready", { generation })
 }
 
 /**
@@ -200,16 +213,6 @@ export async function withPopoverHold<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Resize the floating HUD around its measured panel. */
-export async function resizeOverlayWindow(
-  height: number,
-  anchorBottom: boolean,
-  animate: boolean,
-): Promise<void> {
-  if (!hasShell()) return
-  await invoke("resize_overlay_window", { height, anchorBottom, animate })
-}
-
 /** Where the app came from and what it is running against. */
 export async function appInfo(): Promise<AppInfo | null> {
   if (!hasShell()) return null
@@ -270,6 +273,15 @@ export async function getSettings(): Promise<AppSettings> {
 export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   if (!hasShell()) return settings
   return invoke<AppSettings>("set_settings", { settings })
+}
+
+/** Change only interface size using the shell's atomic preference update. */
+export async function setInterfaceScale(
+  change: InterfaceScaleChange,
+  source: InterfaceScaleSource,
+): Promise<AppSettings> {
+  if (!hasShell()) throw new Error("Interface size requires the desktop application.")
+  return invoke<AppSettings>("set_interface_scale", { change, source })
 }
 
 /** Make setup pending and open it at Welcome without clearing local data. */
@@ -629,12 +641,6 @@ export async function concealHudDetail(): Promise<void> {
 export async function getHudDetailState(): Promise<HudDetailState | null> {
   if (!hasShell()) return null
   return (await invoke<HudDetailState | null>("get_hud_detail_state")) ?? null
-}
-
-/** Report the detail webview's measured height so the shell can show it. */
-export async function setHudDetailSize(height: number): Promise<void> {
-  if (!hasShell()) return
-  await invoke("set_hud_detail_size", { height })
 }
 
 /** Run a scan now, unless one is already in flight. */

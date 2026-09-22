@@ -299,7 +299,7 @@ function SourcesAndRepos({
   // automatic rows share the leftover space instead, which moves the column
   // headings down whenever the columns hold less.
   return (
-    <div className="grid h-full grid-cols-2 grid-rows-[auto_minmax(0,1fr)] gap-x-8 px-8">
+    <div className="onboarding-sources grid h-full grid-cols-2 grid-rows-[auto_minmax(0,1fr)] gap-x-8 px-8">
       <div className="col-span-full mb-4 flex flex-col gap-1.5">
         <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
           Scan Locations: Repos
@@ -681,7 +681,7 @@ export function OnboardingFlow({
 
   return (
     <div
-      className="grid h-full grid-rows-[auto_minmax(0,1fr)_auto]"
+      className="onboarding-window grid h-full grid-rows-[auto_minmax(0,1fr)_auto]"
       aria-label="Set up antiburn"
       role="region"
     >
@@ -695,7 +695,7 @@ export function OnboardingFlow({
         // resizable nor maximizable.
         <div
           data-tauri-drag-region
-          className="absolute inset-x-0 top-0 z-10 h-10"
+          className="onboarding-titlebar absolute inset-x-0 top-0 z-10 h-10"
           aria-hidden="true"
         />
       )}
@@ -705,14 +705,19 @@ export function OnboardingFlow({
           placement, and it buys nothing — the window is already named by its
           title bar, by the app icon on the Welcome step, and by every step's
           own heading. Windows and Linux keep the native bar and show it. */}
-      <header className="flex h-11 items-center px-4">
+      <header className="onboarding-header flex h-11 items-center px-4">
         <h1 className={cn("type-headline text-label", isMacOS() && "sr-only")}>antiburn</h1>
         <p className="sr-only" aria-live="polite">
           Step {index + 1} of {STEPS.length}
         </p>
       </header>
 
-      <div className={cn("min-h-0", (step === "welcome" || step === "ready") && "self-center")}>
+      <div
+        className={cn(
+          "onboarding-step min-h-0 overflow-y-auto",
+          (step === "welcome" || step === "ready") && "grid items-center",
+        )}
+      >
         {step === "welcome" && <Welcome />}
         {step === "agentsDetected" && (
           <AgentsDetected
