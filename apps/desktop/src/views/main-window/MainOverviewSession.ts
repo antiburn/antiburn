@@ -19,6 +19,7 @@ import type {
   ProviderUsageSummaryPayload,
   SessionLimitAllocationSummaryPayload,
 } from "../../lib/providerUsageIpc"
+import { scanStatusStore } from "../../lib/scanStatusStore"
 
 export interface MainOverviewAdapter {
   getUsage(): Promise<ProviderUsageSummaryPayload>
@@ -37,6 +38,50 @@ export interface MainOverviewAdapter {
 export interface MainOverviewSessionListSource {
   getSnapshot(): { entries: SessionListEntry[] | null }
   subscribeList(listener: () => void): () => void
+}
+
+/** Whether a scan pass is in flight, and a way to hear when that changes.
+ *  Narrowed to the one field this page acts on, so a test can stand it up
+ *  without the rest of a `ScanStatus`. */
+export interface MainOverviewScanSource {
+  getSnapshot(): { running: boolean }
+  subscribe(listener: () => void): () => void
+}
+
+/**
+ * How long an event-driven read waits for the burst around it to stop.
+ *
+ * The session bus publishes one event per indexed session. A scan pass
+ * therefore lands dozens of them in a few seconds, and each one used to run
+ * the page's four reads again. The dirty flags already coalesce events that
+ * arrive while a read is in flight; this covers the ones either side of it.
+ */
+const OVERVIEW_REFRESH_DEBOUNCE_MS = 300
+
+/**
+ * The longest the page holds its reads waiting for a scan pass to finish.
+ *
+ * The hold below is an optimisation, not a correctness requirement. A pass
+ * that stalls, or a status that never reports its end, must cost the reader a
+ * stale page for a few seconds rather than forever.
+ */
+const OVERVIEW_SCAN_HOLD_CAP_MS = 15_000
+
+/** Which of the page's reads an event asked for. */
+type OverviewReadKind = "totals" | "allowance" | "allocations"
+
+export interface MainOverviewSessionOptions {
+  scanSource?: MainOverviewScanSource
+  debounceMs?: number
+  scanHoldCapMs?: number
+}
+
+const productionScanSource: MainOverviewScanSource = {
+  // The store snapshot is null until its first load resolves. Treat that gap
+  // as a running scan: the hold cap bounds the cost of a wrong guess, and the
+  // first read of an activation runs regardless.
+  getSnapshot: () => ({ running: scanStatusStore.getSnapshot()?.running ?? true }),
+  subscribe: (listener) => scanStatusStore.subscribe(listener),
 }
 
 const productionAdapter: MainOverviewAdapter = {
@@ -145,13 +190,29 @@ export class MainOverviewSession {
   private usageSettled = false
   private allowanceSettled = false
   private contentReadyReported = false
+  private readonly scanSource: MainOverviewScanSource
+  private readonly debounceMs: number
+  private readonly scanHoldCapMs: number
+  /** The reads events have asked for and the debounce has not run yet. */
+  private readonly pendingReads = new Set<OverviewReadKind>()
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null
+  private scanHoldTimer: ReturnType<typeof setTimeout> | null = null
+  /** True once a scan pass has finished, or the cap has fired, since the
+   *  page became active. The hold applies to the first pass only: scoped
+   *  passes run all day from watcher bursts, and holding on every one of
+   *  them would starve the ordinary updates the page exists to show. */
+  private scanSettled = false
 
   constructor(
     sessionList: MainOverviewSessionListSource,
     adapter: MainOverviewAdapter = productionAdapter,
+    options: MainOverviewSessionOptions = {},
   ) {
     this.sessionList = sessionList
     this.adapter = adapter
+    this.scanSource = options.scanSource ?? productionScanSource
+    this.debounceMs = options.debounceMs ?? OVERVIEW_REFRESH_DEBOUNCE_MS
+    this.scanHoldCapMs = options.scanHoldCapMs ?? OVERVIEW_SCAN_HOLD_CAP_MS
   }
 
   getSnapshot = (): MainOverviewSnapshot => this.snapshot
@@ -220,22 +281,38 @@ export class MainOverviewSession {
       ),
       this.listen(
         generation,
+        Promise.resolve(
+          this.scanSource.subscribe(() => {
+            if (generation !== this.generation) return
+            this.onScanStateChanged()
+          }),
+        ),
+      ),
+      this.listen(
+        generation,
         this.adapter.onLiveUsageChanged((liveUsage) => {
           if (generation !== this.generation || !this.snapshot.active) return
           // The push carries the newest figures. A read still in flight
           // carries older ones, so it must not land after this.
           this.liveUsageVersion += 1
+          // Published straight away: the push is the figures, not a hint to
+          // go and read them. Only the two reads it prompts are deferred.
           this.update({ liveUsage, liveUsageSettled: true })
-          this.refreshAllowance()
-          this.refreshSessionLimitAllocations()
+          this.scheduleRead("allowance")
+          this.scheduleRead("allocations")
         }),
       ),
-      this.listen(generation, this.adapter.onSessionIndexChanged(whenCurrent(this.refresh))),
+      this.listen(
+        generation,
+        this.adapter.onSessionIndexChanged(whenCurrent(() => this.scheduleRead("totals"))),
+      ),
       this.listen(
         generation,
         this.adapter.onSessionUpdated((update) => {
           if (generation !== this.generation) return
-          if (overviewUpdateTouchesTotals(update)) this.refresh()
+          // The recent rows come from the shared list already in memory, so
+          // they cost nothing to redo and stay immediate.
+          if (overviewUpdateTouchesTotals(update)) this.scheduleRead("totals")
           else this.refreshRecentSessions()
         }),
       ),
@@ -253,8 +330,107 @@ export class MainOverviewSession {
     if (active === this.snapshot.active) return
     this.workVersion += 1
     this.update({ active, loading: active && !this.snapshot.usage, refreshing: false })
+    this.clearScheduledReads()
     if (!active) return
+    // The first read of an activation is the one the reader is waiting for.
+    // It runs now; only the churn behind it is deferred.
+    // An activation that finds no pass running has nothing to hold for, so a
+    // later pass is a later pass.
+    this.scanSettled = !this.scanSource.getSnapshot().running
     this.refresh()
+  }
+
+  /**
+   * Queue one of the page's reads, to run once the events around it stop.
+   *
+   * Held entirely while the first scan pass of this activation is still
+   * running: a pass publishes its sessions as it goes, so reading before it
+   * finishes means reading a figure that is about to change again.
+   */
+  private scheduleRead(kind: OverviewReadKind): void {
+    // Inactive, the reads are dirty flags and no IO. Let them through, so a
+    // resume still finds the page marked stale.
+    if (!this.snapshot.active) {
+      this.runRead(kind)
+      return
+    }
+    this.pendingReads.add(kind)
+    if (this.holdingForScan()) {
+      this.armScanHoldCap()
+      return
+    }
+    this.armDebounce()
+  }
+
+  private holdingForScan(): boolean {
+    if (this.scanSettled) return false
+    return this.scanSource.getSnapshot().running
+  }
+
+  private armDebounce(): void {
+    if (this.debounceTimer) return
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null
+      this.flushReads()
+    }, this.debounceMs)
+  }
+
+  private armScanHoldCap(): void {
+    if (this.scanHoldTimer) return
+    this.scanHoldTimer = setTimeout(() => {
+      this.scanHoldTimer = null
+      this.releaseScanHold()
+    }, this.scanHoldCapMs)
+  }
+
+  private onScanStateChanged(): void {
+    if (this.scanSettled || this.scanSource.getSnapshot().running) return
+    this.releaseScanHold()
+  }
+
+  /** Stop holding for the rest of this activation, and run what queued up. */
+  private releaseScanHold(): void {
+    if (this.scanSettled) return
+    this.scanSettled = true
+    if (this.scanHoldTimer) {
+      clearTimeout(this.scanHoldTimer)
+      this.scanHoldTimer = null
+    }
+    if (this.pendingReads.size > 0) this.armDebounce()
+  }
+
+  private flushReads(): void {
+    // A scan can start after the debounce armed but before it fired. Hold
+    // the reads back in that case too, so a read never lands mid-pass.
+    if (this.snapshot.active && this.holdingForScan()) {
+      this.armScanHoldCap()
+      return
+    }
+    const kinds = [...this.pendingReads]
+    this.pendingReads.clear()
+    if (!this.snapshot.active) return
+    // A totals read already refreshes the allowance and the allocations, so
+    // the other two would be the same work again.
+    if (kinds.includes("totals")) this.refresh()
+    else for (const kind of kinds) this.runRead(kind)
+  }
+
+  private runRead(kind: OverviewReadKind): void {
+    if (kind === "totals") this.refresh()
+    else if (kind === "allowance") this.refreshAllowance()
+    else this.refreshSessionLimitAllocations()
+  }
+
+  private clearScheduledReads(): void {
+    this.pendingReads.clear()
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer)
+      this.debounceTimer = null
+    }
+    if (this.scanHoldTimer) {
+      clearTimeout(this.scanHoldTimer)
+      this.scanHoldTimer = null
+    }
   }
 
   refresh = (): void => {
@@ -396,6 +572,7 @@ export class MainOverviewSession {
     this.visible = false
     this.allowanceDirty = false
     this.sessionLimitAllocationsDirty = false
+    this.clearScheduledReads()
     for (const stop of this.stops.splice(0)) stop()
     this.update({ active: false, loading: false, refreshing: false, allowanceLoading: false })
   }
