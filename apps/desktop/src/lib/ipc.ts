@@ -106,6 +106,12 @@ export async function popoverContentReady(generation: number): Promise<void> {
   await invoke("popover_content_ready", { generation })
 }
 
+/** Tell the shell that the main window's initial activity and usage state settled. */
+export async function mainWindowContentReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("main_window_content_ready", { generation })
+}
+
 /**
  * Opens (or refocuses) the standalone settings window.
  *

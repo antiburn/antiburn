@@ -400,8 +400,8 @@ fn toggle_random_usage(app: &AppHandle) -> bool {
     }
 
     let active = app
-        .try_state::<crate::store::Store>()
-        .map(|store| store.settings_snapshot())
+        .try_state::<crate::UiReadStore>()
+        .map(|store| store.0.settings_snapshot())
         .is_some_and(|settings| settings.live_usage_active());
     let summary = app
         .try_state::<crate::usage_alerts::LiveUsage>()
@@ -1064,9 +1064,10 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             }
             // The live-usage event carries the summary, so the views take the
             // filtered copy from here instead of asking for it again.
+            let store = &app.state::<crate::UiReadStore>().0;
             let _ = app.emit(
                 crate::usage_alerts::EVENT_CHANGED,
-                commands::cached_live_usage(app),
+                commands::local_usage::cached_live_usage_for_store(app, store),
             );
         }
         #[cfg(debug_assertions)]

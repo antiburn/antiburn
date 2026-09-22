@@ -958,6 +958,103 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
     assert_eq!(maximum.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn backlog_transitions_report_once_per_busy_stretch() {
+    let store = store();
+    store
+        .upsert_sessions(
+            &[record("backlog-pending-one"), record("backlog-pending-two")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let handle = WorkerHandle::default();
+
+    // Both sessions are still pending, so the first worker to go busy
+    // reports the whole queue; a second worker reports nothing new.
+    assert_eq!(handle.note_backlog_busy(&store), Some(2));
+    assert_eq!(handle.note_backlog_busy(&store), None);
+
+    handle.note_backlog_processed();
+    handle.note_backlog_processed();
+
+    // One worker going idle while the other is still busy reports nothing.
+    assert_eq!(handle.note_backlog_idle(), None);
+    let drained = handle.note_backlog_idle();
+    assert!(matches!(drained, Some((2, _))));
+
+    // The stretch reset when it drained: a later stretch that processes
+    // nothing reports nothing when it goes idle.
+    assert_eq!(handle.note_backlog_busy(&store), Some(2));
+    assert_eq!(handle.note_backlog_idle(), None);
+}
+
+/// `backlog_transitions_report_once_per_busy_stretch` proves the transition
+/// logic directly for two simulated workers. This test proves the same
+/// counters reset correctly when `worker_loop` drives that logic for real,
+/// with one worker — the fake `PassRunner` here has no await of its own, so
+/// a second concurrent worker would race its claim against this one for the
+/// one seeded session instead of overlapping it.
+#[tokio::test]
+async fn a_worker_loop_pass_reports_one_busy_stretch_and_resets() {
+    let store = Arc::new(store());
+    store
+        .upsert_sessions(&[record("backlog-live")], &crate::agents::evidence_cohort())
+        .unwrap();
+    let handle = Arc::new(WorkerHandle::default());
+    let task_store = Arc::clone(&store);
+    let task_handle = Arc::clone(&handle);
+    let task = tokio::spawn(async move {
+        let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+            let pass = published_pass(record);
+            Box::pin(async move { pass }) as PassFuture
+        };
+        worker_loop(
+            &task_store,
+            &task_handle,
+            &|| 100,
+            &runner,
+            &|_| {},
+            &|| {},
+            &|_, _| {},
+        )
+        .await;
+    });
+
+    let key = SessionKey::new("native", "claude-code", "backlog-live");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let published = store
+                .evidence(&key)
+                .unwrap()
+                .is_some_and(|row| row.status == EvidenceStatus::Ready);
+            if published {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the session publishes");
+
+    // The loop needs one more scheduling pass, past its own claim of
+    // nothing left, to reach its idle branch and reset the counters.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if handle.backlog.lock().unwrap().active == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the backlog returns to idle");
+
+    task.abort();
+    let backlog = handle.backlog.lock().unwrap();
+    assert_eq!(backlog.active, 0);
+    assert_eq!(backlog.processed, 0);
+}
+
 #[tokio::test]
 async fn the_store_is_lockable_while_a_pass_runs() {
     let store = store();
@@ -1514,6 +1611,23 @@ async fn a_wake_releases_the_idle_wait() {
     tokio::time::timeout(Duration::from_millis(10), handle.wake.notified())
         .await
         .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn await_ramp_reports_content_ready_when_already_notified() {
+    let ramp = Notify::new();
+    ramp.notify_one();
+    let (reason, elapsed) = await_ramp(&ramp, Duration::from_secs(30)).await;
+    assert_eq!(reason, "content_ready");
+    assert_eq!(elapsed, Duration::ZERO);
+}
+
+#[tokio::test(start_paused = true)]
+async fn await_ramp_reports_timeout_when_never_notified() {
+    let ramp = Notify::new();
+    let (reason, elapsed) = await_ramp(&ramp, Duration::from_secs(30)).await;
+    assert_eq!(reason, "timeout");
+    assert_eq!(elapsed, Duration::from_secs(30));
 }
 
 /* --------------------------------------------------------------------

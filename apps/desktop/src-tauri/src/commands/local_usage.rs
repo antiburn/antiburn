@@ -26,20 +26,19 @@ pub async fn get_provider_usage(
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
     let store = app.state::<UiReadStore>().0.clone();
-    run_blocking(move || provider_usage_summary_for_store(&store, utc_offset_minutes)).await
+    run_blocking(move || {
+        let started = Instant::now();
+        let result = provider_usage_summary_for_store(&store, utc_offset_minutes);
+        super::log_overview_read_timing("get_provider_usage", started.elapsed());
+        result
+    })
+    .await
 }
 
 /// [`get_provider_usage`]'s body, over a borrowed [`Store`] so a caller can
-/// pick the writer or a reader connection. [`popover_peek::peek_data`] keeps
-/// using the writer through [`provider_usage_summary`].
-pub(crate) fn provider_usage_summary(
-    app: &tauri::AppHandle,
-    utc_offset_minutes: Option<i32>,
-) -> CommandResult<ProviderUsageSummary> {
-    provider_usage_summary_for_store(app.state::<Store>().inner(), utc_offset_minutes)
-}
-
-pub(super) fn provider_usage_summary_for_store(
+/// pick the writer or a reader connection. [`crate::popover_peek::peek_data`]
+/// calls this directly over the UI reader.
+pub(crate) fn provider_usage_summary_for_store(
     store: &Store,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
@@ -88,7 +87,10 @@ pub async fn get_session_limit_allocations(
     let now = scan::unix_now();
     let store = app.state::<UiReadStore>().0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        session_limit_allocation_summary_for_store(&store, now)
+        let started = Instant::now();
+        let result = session_limit_allocation_summary_for_store(&store, now);
+        super::log_overview_read_timing("get_session_limit_allocations", started.elapsed());
+        result
     })
     .await
     .map_err(fail)?
@@ -298,6 +300,7 @@ pub async fn get_live_usage(
 ) -> CommandResult<LiveUsageSummary> {
     let store = app.state::<UiReadStore>().0.clone();
     run_blocking(move || {
+        let started = Instant::now();
         // With live usage off no collection pass runs, so this is the one
         // place detection advances for the roster. Metadata-only here: the
         // reader has not opted in.
@@ -307,20 +310,21 @@ pub async fn get_live_usage(
             let detection = provider_usage::live::detect_all(&live.sources, false);
             live.store_detection(detection);
         }
-        Ok(cached_live_usage_for_store(&app, &store))
+        let result = cached_live_usage_for_store(&app, &store);
+        super::log_overview_read_timing("get_live_usage", started.elapsed());
+        Ok(result)
     })
     .await
 }
 
-/// Keep this reader cache-only because synchronous popover IPC calls it.
-/// Never read provider metadata or start subprocesses here.
-pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
-    cached_live_usage_for_store(app, app.state::<Store>().inner())
-}
-
-/// [`cached_live_usage`]'s body, over a borrowed [`Store`] so a caller can
-/// pick the writer or a reader connection.
-fn cached_live_usage_for_store(app: &tauri::AppHandle, store: &Store) -> LiveUsageSummary {
+/// [`get_live_usage`]'s body, over a borrowed [`Store`] so a caller can pick
+/// the writer or a reader connection. Keep this reader cache-only because
+/// synchronous popover IPC calls it directly, over the UI reader. Never read
+/// provider metadata or start subprocesses here.
+pub(crate) fn cached_live_usage_for_store(
+    app: &tauri::AppHandle,
+    store: &Store,
+) -> LiveUsageSummary {
     let summary = collected_live_usage(app, store);
     #[cfg(debug_assertions)]
     let summary = crate::tray::simulate_codex_only(app, summary);

@@ -5,6 +5,8 @@
 //! pace and runway forecast in [`crate::provider_usage::live`] reads it too,
 //! through [`Store::provider_usage_samples`].
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -167,6 +169,46 @@ impl Store {
             period,
             observations,
         }))
+    }
+
+    /// Several periods' readings in one round trip, oldest first within each
+    /// period. Chunks the id list at 500, the same bound
+    /// `SOURCE_LABEL_LOOKUP_CHUNK_SIZE` keeps its `IN (...)` list to, so a
+    /// caller that already
+    /// has every period id it needs — the quota screen's contribution chart,
+    /// building one row per period — reads them without a point query per
+    /// period. A period with no readings is absent from the map rather than
+    /// present with an empty vec.
+    pub(crate) fn provider_usage_observations_for(
+        &self,
+        period_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<ProviderUsageObservation>>> {
+        let mut by_period: HashMap<i64, Vec<ProviderUsageObservation>> = HashMap::new();
+        if period_ids.is_empty() {
+            return Ok(by_period);
+        }
+        let connection = self.lock();
+        for chunk in period_ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let mut statement = connection.prepare(&format!(
+                "SELECT id, period_id, provider, account_key, window_id, window_kind,
+                        window_role, scope_key, scope_label, observed_at_epoch, used_percent,
+                        is_fresh, is_authoritative, confidence, source_id,
+                        reported_starts_at_epoch, reported_resets_at_epoch, plan, plan_tier,
+                        refusal_kind
+                   FROM provider_usage_observation
+                  WHERE period_id IN ({placeholders})
+                  ORDER BY period_id, observed_at_epoch, id"
+            ))?;
+            let mut rows = statement.query(rusqlite::params_from_iter(chunk.iter().copied()))?;
+            while let Some(row) = rows.next()? {
+                let observation = row_to_observation(row)?;
+                if let Some(period_id) = observation.period_id {
+                    by_period.entry(period_id).or_default().push(observation);
+                }
+            }
+        }
+        Ok(by_period)
     }
 
     /// List period metadata with an observation at or after a cursor.

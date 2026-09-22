@@ -265,8 +265,12 @@ fn peek_data(
             provider,
             utc_offset_minutes,
         } => {
-            let local = crate::commands::provider_usage_summary(app, Some(utc_offset_minutes))?;
-            let live = crate::commands::cached_live_usage(app);
+            let store = &app.state::<crate::UiReadStore>().0;
+            let local = crate::commands::local_usage::provider_usage_summary_for_store(
+                store,
+                Some(utc_offset_minutes),
+            )?;
+            let live = crate::commands::local_usage::cached_live_usage_for_store(app, store);
             current_target(manager, generation)?;
             Ok(selected_provider_data(&provider, local, live))
         }
