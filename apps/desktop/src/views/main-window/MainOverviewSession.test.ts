@@ -581,6 +581,31 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
+  it("keeps queued reads back when a scan starts during the debounce", async () => {
+    const { adapter, session, entryChanged, setScanRunning } = setup(
+      true,
+      {},
+      {
+        scanRunning: false,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    entryChanged({ analysis: true })
+    // The scan starts before the debounce fires, so the flush must still
+    // hold the queued read back rather than dispatch it mid-pass.
+    setScanRunning(true)
+    await new Promise((resolve) => setTimeout(resolve, TEST_DEBOUNCE_MS * 4))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    setScanRunning(false)
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    stop()
+  })
+
   it("holds the live-usage push's reads but publishes its figures at once", async () => {
     const { adapter, session, meterChanged, setScanRunning } = setup(
       true,
