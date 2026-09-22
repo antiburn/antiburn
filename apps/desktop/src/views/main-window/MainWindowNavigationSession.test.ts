@@ -37,6 +37,7 @@ function subject(sessionId: string): SessionSubject & { wslDistro: null } {
 }
 
 class FakeActivitySession {
+  revealDetail = vi.fn()
   onNavigation?: (origin: "user" | "automatic") => void
   onDeleted?: (subject: SessionSubject) => void
   onSessionInventoryInvalidated?: () => void
@@ -99,6 +100,26 @@ beforeEach(() => {
 })
 
 describe("MainWindowNavigationSession", () => {
+  it("reveals deliberate session destinations, but not ordinary row selection", () => {
+    const { activity, session } = setup()
+    session.select("activity")
+    activity.select(subject("one"))
+    activity.select(subject("two"))
+    expect(activity.revealDetail).not.toHaveBeenCalled()
+
+    session.navigate({ section: "activity", subject: subject("two") })
+    session.navigate({ section: "activity", subject: subject("two") })
+    expect(activity.revealDetail).toHaveBeenCalledTimes(2)
+    session.back()
+    expect(activity.getSnapshot().subject).toEqual(subject("one"))
+    expect(activity.revealDetail).toHaveBeenCalledTimes(3)
+    session.forward()
+    expect(activity.getSnapshot().subject).toEqual(subject("two"))
+    expect(activity.revealDetail).toHaveBeenCalledTimes(4)
+    session.select("overview")
+    expect(activity.revealDetail).toHaveBeenCalledTimes(4)
+  })
+
   it("records selection, filter, related, and adjacent destinations and restores them", () => {
     const { activity, session } = setup()
     session.select("activity")

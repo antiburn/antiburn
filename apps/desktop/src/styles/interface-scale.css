@@ -1,0 +1,238 @@
+/* Native zoom scales content; this value only preserves native chrome clearance. */
+:root {
+  --interface-scale: 1;
+  --native-titlebar-clearance: calc(40px / var(--interface-scale));
+}
+
+.responsive-navigation-bar {
+  display: flex;
+  flex: 0 0 auto;
+  padding: var(--space-sm);
+  border-block-end: 1px solid var(--color-border);
+}
+
+.responsive-navigation-dialog {
+  position: fixed;
+  inset: 0 auto 0 0;
+  margin: 0;
+  padding: 0;
+  inline-size: min(320px, 100%);
+  max-inline-size: 100%;
+  block-size: 100%;
+  max-block-size: 100%;
+  border: 0;
+  color: var(--color-text-primary);
+  background: var(--color-bg-window);
+  box-shadow: var(--shadow-popover);
+}
+
+.responsive-navigation-dialog::backdrop {
+  background: var(--color-bg-selected);
+}
+
+.responsive-navigation-content {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+}
+
+.responsive-navigation-content > .main-window-navigation,
+.responsive-navigation-content > .settings-sidebar,
+.responsive-navigation-content .main-window-sidebar {
+  inline-size: 100%;
+  flex: 1;
+  min-block-size: 0;
+  padding-block-start: 0;
+}
+
+.responsive-navigation-content > .main-window-navigation {
+  position: static;
+}
+
+.responsive-navigation-content > .main-window-navigation::before {
+  display: none;
+}
+
+.main-window[data-compact-navigation] .main-window-body {
+  flex-direction: column;
+  padding-inline-start: 0;
+  padding-block-start: var(--main-window-titlebar-height);
+}
+
+.settings-window[data-compact-navigation] {
+  flex-direction: column;
+}
+
+:root[data-platform="macos"] .settings-window .responsive-navigation-bar {
+  padding-block-start: calc(var(--native-titlebar-clearance) + var(--space-sm));
+}
+
+.main-window {
+  --main-window-titlebar-height: calc(var(--space-2xl) + var(--space-lg));
+}
+
+.main-window-macos {
+  --main-window-titlebar-height: var(--native-titlebar-clearance);
+  --main-window-native-inset: calc(78px / var(--interface-scale));
+}
+
+.main-window-macos .main-window-tool::before {
+  max-block-size: calc(
+    var(--main-window-titlebar-height) - var(--space-sm) / var(--interface-scale)
+  );
+}
+
+.main-window[data-compact-navigation] .main-window-titlebar-controls {
+  min-inline-size: 0;
+}
+
+.main-window[data-compact-navigation] .main-window-detail,
+.main-window[data-compact-navigation] [data-overview-active],
+.main-window[data-compact-navigation] [data-quota-active] {
+  padding-block-start: 0;
+}
+
+.app-search[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-search > :not(.app-search-results) {
+  flex-shrink: 0;
+}
+
+.app-search-results {
+  min-block-size: 0;
+}
+
+:root[data-platform="macos"] .settings-titlebar,
+:root[data-platform="macos"] .onboarding-titlebar {
+  block-size: var(--native-titlebar-clearance);
+}
+
+:root[data-platform="macos"] .onboarding-header {
+  min-block-size: var(--native-titlebar-clearance);
+}
+
+:root[data-platform="macos"] .settings-sidebar {
+  padding-block-start: calc(var(--native-titlebar-clearance) - var(--space-md));
+}
+
+:root[data-platform="macos"] .settings-content {
+  padding-block-start: var(--native-titlebar-clearance);
+}
+
+.settings-window[data-compact-navigation] .settings-content {
+  padding-block-start: var(--space-lg);
+}
+
+.main-window[data-compact-navigation] .main-window-titlebar {
+  inline-size: 100%;
+}
+
+.ui-settings-row {
+  container-type: inline-size;
+}
+
+@container (max-width: 360px) {
+  .ui-settings-row > p,
+  .ui-settings-row-control {
+    grid-column: 1 / -1;
+  }
+
+  .ui-settings-row-control:not(:empty) {
+    padding-block-start: var(--space-sm);
+  }
+}
+
+.onboarding-step {
+  align-items: safe center;
+}
+
+.main-window-collection-detail {
+  display: flex;
+  flex: 1;
+  min-inline-size: 0;
+  min-block-size: 0;
+}
+
+.main-window-collection-detail[data-single-pane] > .main-window-collection {
+  flex: 1;
+  border-inline-end: 0;
+}
+
+.main-window-collection-detail > [hidden] {
+  display: none;
+}
+
+.collection-back {
+  display: flex;
+  flex: 0 0 auto;
+  padding: var(--space-sm);
+}
+
+.interface-scale-error {
+  position: fixed;
+  z-index: 100;
+  inset: auto var(--space-sm) var(--space-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+
+@media (max-width: 719px) {
+  .main-window .burn-checks-layout {
+    flex-direction: column;
+  }
+
+  .main-window .burn-checks-collection {
+    flex: 1;
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--color-separator);
+  }
+
+  .overview-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-lg);
+    padding-inline: var(--space-lg);
+  }
+
+  .overview-layout > .overview-viewport {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .overview-layout > .overview-provider-limits {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .settings-content {
+    padding-inline: var(--space-lg);
+  }
+
+  .ui-menu {
+    max-inline-size: calc(100vw - var(--space-lg));
+  }
+
+  .onboarding-sources {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    block-size: auto;
+    gap: var(--space-lg);
+    padding-inline: var(--space-lg);
+  }
+
+  .onboarding-sources > div {
+    min-inline-size: 0;
+  }
+
+  .onboarding-sources .ui-scroll-viewport {
+    max-block-size: 40vh;
+  }
+}

@@ -104,6 +104,7 @@ export interface SessionListProps {
   onSelect?: (entry: SessionListEntry) => void
   /** Move focus to the selected session's detail pane. */
   onOpenDetail?: (entry: SessionListEntry) => void
+  openOnClick?: boolean
   /** Stable local identity for the selected session. */
   selectedKey?: string | null
   /** Pause hidden presentation work while keeping the list mounted. */
@@ -343,6 +344,7 @@ function groupHeadingId(label: string): string {
 export interface SessionRowInteractiveState {
   clickable: boolean
   selectionMode: boolean
+  openOnClick?: boolean
   tabIndex?: number | undefined
   selected?: boolean | undefined
   busy?: boolean | undefined
@@ -358,6 +360,7 @@ export interface SessionRowInteractiveState {
 export function sessionRowInteractiveProps({
   clickable,
   selectionMode,
+  openOnClick = false,
   tabIndex,
   selected = false,
   busy = false,
@@ -382,7 +385,8 @@ export function sessionRowInteractiveProps({
           )
           if (nestedControl && nestedControl !== event.currentTarget) return
           event.currentTarget.focus()
-          onSelect?.()
+          if (openOnClick && onOpenDetail) onOpenDetail()
+          else onSelect?.()
         }
       : () => {
           if (!busy) onOpen?.()
@@ -414,6 +418,7 @@ export interface SessionRowProps {
   onOpen?: () => void
   onSelect?: () => void
   onOpenDetail?: () => void
+  openOnClick?: boolean
   selected?: boolean
   tabIndex?: number
   active?: boolean
@@ -439,6 +444,7 @@ export function SessionRow({
   onOpen,
   onSelect,
   onOpenDetail,
+  openOnClick = false,
   selected = false,
   tabIndex,
   active = true,
@@ -510,6 +516,7 @@ export function SessionRow({
   const interactiveProps = sessionRowInteractiveProps({
     clickable,
     selectionMode,
+    openOnClick,
     tabIndex,
     selected,
     busy,
@@ -674,6 +681,7 @@ export function SessionList({
   onOpenSession,
   onSelect,
   onOpenDetail,
+  openOnClick = false,
   selectedKey,
   active = true,
   draggableHeader = false,
@@ -1003,6 +1011,7 @@ export function SessionList({
                             ) : (
                               <SessionRow
                                 entry={virtualItem.item.entry}
+                                openOnClick={openOnClick}
                                 active={active}
                                 selected={virtualItem.item.key === selectedKey}
                                 {...(onSelect && virtualItem.item.entry.sessionId

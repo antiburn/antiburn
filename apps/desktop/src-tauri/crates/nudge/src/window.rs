@@ -38,6 +38,25 @@ const NUDGE_HEIGHT: f64 = 168.0;
 #[cfg(target_os = "macos")]
 const NUDGE_CORNER_RADIUS: f64 = 10.0;
 
+#[cfg(target_os = "macos")]
+fn nudge_effects(interface_scale: f64) -> tauri::utils::config::WindowEffectsConfig {
+    EffectsBuilder::new()
+        .effect(Effect::Popover)
+        .state(EffectState::Active)
+        .radius(NUDGE_CORNER_RADIUS * interface_scale)
+        .build()
+}
+
+pub(crate) fn apply_interface_scale(
+    window: &WebviewWindow,
+    interface_scale: f64,
+) -> tauri::Result<()> {
+    window.set_zoom(interface_scale)?;
+    #[cfg(target_os = "macos")]
+    crate::macos::replace_material(window, nudge_effects(interface_scale))?;
+    Ok(())
+}
+
 /// Inset from the screen edges.
 const NUDGE_MARGIN: f64 = 12.0;
 
@@ -62,11 +81,14 @@ const NUDGE_ANCHOR_MENU_BAR_GAP: f64 = NUDGE_MENU_BAR_GAP / 2.0;
 const NUDGE_TOP_INSET: f64 = MACOS_MENU_BAR_HEIGHT + NUDGE_MENU_BAR_GAP;
 
 /// Return the notification window, building it (hidden) on first call.
-pub(crate) fn get_or_create_nudge_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+pub(crate) fn get_or_create_nudge_window(
+    app: &AppHandle,
+    interface_scale: f64,
+) -> tauri::Result<WebviewWindow> {
     if let Some(window) = app.get_webview_window(crate::NUDGE_LABEL) {
         return Ok(window);
     }
-    match build_nudge_window(app, crate::NUDGE_LABEL) {
+    match build_nudge_window(app, crate::NUDGE_LABEL, interface_scale) {
         Ok(window) => Ok(window),
         // Concurrent policy events can both observe `None` above and race into
         // `build`; return whichever build won instead of dropping a nudge.
@@ -74,7 +96,11 @@ pub(crate) fn get_or_create_nudge_window(app: &AppHandle) -> tauri::Result<Webvi
     }
 }
 
-fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
+fn build_nudge_window(
+    app: &AppHandle,
+    label: &str,
+    interface_scale: f64,
+) -> tauri::Result<WebviewWindow> {
     // The fragment, not the default URL: this app's frontend selects its view
     // from the URL hash (`src/lib/route.ts`), unlike the source app, which
     // branched on the window label. Without it the hidden window renders the
@@ -82,9 +108,17 @@ fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWind
     // height never arrives is never revealed.
     let mut builder =
         WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#/nudge".into()))
+            .initialization_script(format!(
+                "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale',String(globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__/100)),{{once:true}});",
+                (interface_scale * 100.0).round() as u16,
+            ))
             .title("antiburn")
-            .inner_size(NUDGE_WIDTH, NUDGE_HEIGHT)
+            .inner_size(
+                NUDGE_WIDTH * interface_scale,
+                NUDGE_HEIGHT * interface_scale,
+            )
             .resizable(false)
+            .zoom_hotkeys_enabled(false)
             .visible(false)
             .focused(false) // never take key focus
             .shadow(true)
@@ -97,16 +131,11 @@ fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWind
         // responds to the click that would otherwise only have activated the
         // window. The Popover material draws the window corner. The nudge route
         // clips its surface to the same design token in `src/styles.css`.
-        let effects = EffectsBuilder::new()
-            .effect(Effect::Popover)
-            .state(EffectState::Active)
-            .radius(NUDGE_CORNER_RADIUS)
-            .build();
         builder = builder
             .decorations(false)
             .transparent(true)
             .accept_first_mouse(true)
-            .effects(effects);
+            .effects(nudge_effects(interface_scale));
     }
 
     #[cfg(target_os = "linux")]
@@ -129,6 +158,7 @@ fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWind
     }
 
     let window = builder.build()?;
+    window.set_zoom(interface_scale)?;
 
     // macOS: subclass into a non-activating floating NSPanel so the notification
     // never steals key focus. No-op (and untouched window) on other platforms.
@@ -141,39 +171,60 @@ fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWind
 /// Position + size the notification at the requested placement. Shared by
 /// [`reveal`] (first show) and the non-macOS [`resize`] path; it does not show
 /// or focus the window.
-fn place(window: &WebviewWindow, content_height: f64, placement: NudgePlacement) {
+fn place(
+    window: &WebviewWindow,
+    content_height: f64,
+    placement: NudgePlacement,
+    interface_scale: f64,
+) {
     match placement {
         #[cfg(target_os = "macos")]
         NudgePlacement::MenuBarAnchor { rect } => {
-            if place_at_menu_bar_anchor(window, content_height, rect) {
+            if place_at_menu_bar_anchor(window, content_height, rect, interface_scale) {
                 return;
             }
-            place_native_corner(window, content_height);
+            place_native_corner(window, content_height, interface_scale);
         }
-        _ => place_native_corner(window, content_height),
+        _ => place_native_corner(window, content_height, interface_scale),
     }
 }
 
 /// Position + size the notification at the OS-native corner of the **active**
 /// display. It does not show or focus the window.
-fn place_native_corner(window: &WebviewWindow, content_height: f64) {
+fn place_native_corner(window: &WebviewWindow, content_height: f64, interface_scale: f64) {
     let Some(display) = active_display(window) else {
         return;
     };
 
-    let w = NUDGE_WIDTH;
-    let h = content_height.max(1.0);
+    let margin = NUDGE_MARGIN * interface_scale;
 
-    // macOS / Linux: top-right under the menu bar. Windows: bottom-right above
-    // the taskbar, matching each platform's native notification corner.
-    #[cfg(target_os = "windows")]
-    let (x, y) = geometry::bottom_right_origin(display, w, h, NUDGE_MARGIN);
     #[cfg(target_os = "macos")]
-    let (x, y) = geometry::top_right_origin(display, w, NUDGE_MARGIN, NUDGE_TOP_INSET);
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    let (x, y) = geometry::top_right_origin(display, w, NUDGE_MARGIN, NUDGE_MARGIN);
+    {
+        let frame = geometry::top_right_frame(
+            display,
+            NUDGE_WIDTH * interface_scale,
+            content_height.max(1.0) * interface_scale,
+            margin,
+            NUDGE_TOP_INSET * interface_scale,
+        );
+        set_frame(window, frame.w, frame.h, frame.x, frame.y);
+    }
 
-    set_frame(window, w, h, x, y);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let w = (NUDGE_WIDTH * interface_scale).min((display.w - 2.0 * margin).max(1.0));
+        let h =
+            (content_height.max(1.0) * interface_scale).min((display.h - 2.0 * margin).max(1.0));
+
+        // Linux: top-right under the panel. Windows: bottom-right above the
+        // taskbar, matching each platform's native notification corner.
+        #[cfg(target_os = "windows")]
+        let (x, y) = geometry::bottom_right_origin(display, w, h, margin);
+        #[cfg(not(target_os = "windows"))]
+        let (x, y) = geometry::top_right_origin(display, w, margin, margin);
+
+        set_frame(window, w, h, x, y);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -181,6 +232,7 @@ fn place_at_menu_bar_anchor(
     window: &WebviewWindow,
     content_height: f64,
     tray_rect: tauri::Rect,
+    interface_scale: f64,
 ) -> bool {
     let tray_phys: PhysicalPosition<f64> = tray_rect.position.to_physical(1.0);
     let tray_size_phys: tauri::PhysicalSize<f64> = tray_rect.size.to_physical(1.0);
@@ -193,14 +245,27 @@ fn place_at_menu_bar_anchor(
     let tray_w = tray_size_phys.width / scale;
     let tray_h = tray_size_phys.height / scale;
 
-    let w = NUDGE_WIDTH;
-    let h = content_height.max(1.0);
-    let x = tray_x + (tray_w / 2.0) - (w / 2.0);
-    // The tray rect spans the full menu bar, so its bottom edge is the menu bar's
-    // bottom edge — the same baseline `place_native_corner` insets from.
-    let y = tray_y + tray_h + NUDGE_ANCHOR_MENU_BAR_GAP;
+    let work_area = monitor.work_area();
+    let frame = geometry::anchored_frame(
+        Rect {
+            x: work_area.position.x as f64 / scale,
+            y: work_area.position.y as f64 / scale,
+            w: work_area.size.width as f64 / scale,
+            h: work_area.size.height as f64 / scale,
+        },
+        Rect {
+            x: tray_x,
+            y: tray_y,
+            w: tray_w,
+            h: tray_h,
+        },
+        NUDGE_WIDTH * interface_scale,
+        content_height * interface_scale,
+        NUDGE_MARGIN * interface_scale,
+        NUDGE_ANCHOR_MENU_BAR_GAP * interface_scale,
+    );
 
-    set_frame(window, w, h, x, y);
+    set_frame(window, frame.w, frame.h, frame.x, frame.y);
     true
 }
 
@@ -273,8 +338,13 @@ fn active_display(window: &WebviewWindow) -> Option<Rect> {
 /// never resizes on screen. Deliberately does **not** `set_focus()` — a
 /// notification must not activate the app; on macOS the panel is ordered front
 /// without becoming key.
-pub(crate) fn reveal(window: &WebviewWindow, content_height: f64, placement: NudgePlacement) {
-    place(window, content_height, placement);
+pub(crate) fn reveal(
+    window: &WebviewWindow,
+    content_height: f64,
+    placement: NudgePlacement,
+    interface_scale: f64,
+) {
+    place(window, content_height, placement, interface_scale);
 
     // Platform-specific no-activate show: `.focused(false)` on the builder (see
     // `build_nudge_window`) only governs the *initial* build, not a later
@@ -305,11 +375,26 @@ pub(crate) fn reveal(window: &WebviewWindow, content_height: f64, placement: Nud
 /// system's default resize ease, anchored at its top edge so it grows/shrinks
 /// downward like a real notification. Elsewhere it snaps to the new size at the
 /// platform's corner.
-pub(crate) fn resize(window: &WebviewWindow, content_height: f64) {
+pub(crate) fn resize(window: &WebviewWindow, content_height: f64, interface_scale: f64) {
     #[cfg(target_os = "macos")]
-    crate::macos::animate_resize(window, content_height);
+    crate::macos::animate_resize(window, content_height * interface_scale);
     #[cfg(not(target_os = "macos"))]
-    place(window, content_height, NudgePlacement::NativeCorner);
+    place(
+        window,
+        content_height,
+        NudgePlacement::NativeCorner,
+        interface_scale,
+    );
+}
+
+pub(crate) fn place_existing(
+    window: &WebviewWindow,
+    content_height: f64,
+    placement: NudgePlacement,
+    interface_scale: f64,
+) -> tauri::Result<()> {
+    place(window, content_height, placement, interface_scale);
+    Ok(())
 }
 
 /// Hide the notification. On macOS this orders the panel out; elsewhere a plain
@@ -368,4 +453,20 @@ fn monitor_containing_physical_point(
             && point.y >= pos.y as f64
             && point.y < pos.y as f64 + size.height as f64
     })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod material_tests {
+    use super::*;
+
+    #[test]
+    fn material_radius_matches_zoomed_css_at_every_preset_and_reset() {
+        for percent in [90, 100, 110, 125, 150, 175, 200, 90, 100] {
+            let effects = nudge_effects(f64::from(percent) / 100.0);
+            let expected = f64::from(percent) / 10.0;
+            assert!((effects.radius.unwrap() - expected).abs() < f64::EPSILON * 16.0);
+            assert_eq!(effects.effects, vec![Effect::Popover]);
+            assert_eq!(effects.state, Some(EffectState::Active));
+        }
+    }
 }

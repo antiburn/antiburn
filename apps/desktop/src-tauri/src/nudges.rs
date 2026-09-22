@@ -61,6 +61,7 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
         app,
         move |event| on_action(&action_app, event),
         move || placement(&placement_app),
+        crate::interface_scale::current(app).factor(),
     )?
     .on_key_acquiring(move || crate::popover::begin_nudge_key_handoff(&acquiring_app))
     // The notification resigns key without handing it to any window. Give key

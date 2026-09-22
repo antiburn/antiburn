@@ -53,6 +53,8 @@ pub struct AnchoredWindowConfig {
     pub route: String,
     /// The native companion window title.
     pub title: String,
+    /// The host-provided application interface scale factor.
+    pub interface_scale: f64,
     /// The companion's logical width.
     pub width: f64,
     /// The corner radius for the native popover material.

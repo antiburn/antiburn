@@ -7,8 +7,10 @@ import {
   getSettings,
   onSettingsChanged,
   setSettings,
+  setInterfaceScale,
   type AppSettings,
 } from "../../lib/ipc"
+import type { InterfaceScaleChange } from "../../lib/interfaceScale"
 
 /**
  * The settings window's copy of the reader's preferences.
@@ -26,10 +28,11 @@ export interface AppSettingsController {
   /** False until the first read resolves. */
   loaded: boolean
   /** Merge a change into the stored preferences. */
-  update: (change: Partial<AppSettings>) => Promise<void>
+  update: (change: SettingsChange) => Promise<void>
 }
 
 type SettingsSnapshot = { settings: AppSettings; loaded: boolean }
+type SettingsChange = Partial<Omit<AppSettings, "interfaceScalePercent">>
 
 // Only the newest optimistic write or shell event can replace the visible settings.
 let settingsRevision = 0
@@ -59,13 +62,20 @@ const settingsStore = createExternalStore<SettingsSnapshot>({
     }),
 })
 
+/** Save scale through its atomic command and publish the confirmed preference. */
+export async function saveInterfaceScale(change: InterfaceScaleChange): Promise<void> {
+  const revision = ++settingsRevision
+  const saved = await setInterfaceScale(change, "settings")
+  if (revision === settingsRevision) settingsStore.set({ settings: saved, loaded: true })
+}
+
 export function useAppSettings(): AppSettingsController {
   const { settings, loaded } = useSyncExternalStore(
     settingsStore.subscribe,
     settingsStore.getSnapshot,
   )
 
-  const update = useCallback(async (change: Partial<AppSettings>) => {
+  const update = useCallback(async (change: SettingsChange) => {
     if (!settingsStore.getSnapshot().loaded) return
     // Optimistic, so a switch does not lag behind the pointer; the stored
     // answer replaces it a moment later and wins any disagreement. Reads the

@@ -266,6 +266,32 @@ body[data-transparent-window] #root {
   border-radius: 0 0 24px 24px;
 }
 
+/* Camera height and curves stay fixed; wings and indicators follow interface size. */
+.hud-island-header {
+  --hud-indicator-size: min(
+    calc(var(--spacing) * 2.5),
+    max(0px, calc((var(--hud-header-height) - 2 * var(--space-xs)) / var(--hud-header-scale)))
+  );
+  --island-fillet: calc(6px / var(--hud-header-scale, 1));
+  border-radius: 0 0 calc(14px / var(--hud-header-scale, 1))
+    calc(14px / var(--hud-header-scale, 1));
+}
+
+.hud-island-header-open {
+  --island-fillet: calc(19px / var(--hud-header-scale, 1));
+  border-radius: 0;
+}
+
+.hud-island-mark {
+  width: var(--hud-indicator-size);
+  height: var(--hud-indicator-size);
+}
+
+.hud-island-live-led {
+  width: calc(var(--hud-indicator-size) * 1.4);
+  height: calc(var(--hud-indicator-size) * 0.4);
+}
+
 .hud-island-fillets::before,
 .hud-island-fillets::after {
   content: "";

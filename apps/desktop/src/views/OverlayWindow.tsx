@@ -5,6 +5,7 @@ import { Confetti } from "../components/ui/Confetti"
 import { TokenMap } from "../components/ui/TokenMap"
 import { formatRate, frameColor } from "../lib/tokenMap"
 import { blockedBars, resetsIn } from "../lib/usageBars"
+import { islandCssGeometry } from "../lib/hudIsland"
 import { OverlaySession, type OverlaySnapshot } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
@@ -93,12 +94,12 @@ export function OverlayWindow() {
 function islandContentWidth(state: OverlaySnapshot): number {
   const { island } = state
   if (island.island === "preview") return FLOATING_CONTENT_PX
-  return island.notch + island.wing * 2 - islandContentPad(island.wing) * 2
+  const geometry = islandCssGeometry(island)
+  return Math.max(1, geometry.bodyWidth - islandContentPad(geometry.wing) * 2)
 }
 
 /**
- * The side padding of the island's open content. Half the wing, so the bars
- * start under the marks in the notch row and not nearer the edge than them.
+ * Keep body padding at half the compact wing width when the header expands.
  */
 function islandContentPad(wing: number): number {
   return wing / 2
@@ -167,24 +168,40 @@ function IslandPanel({
   const preview = island.island === "preview"
   const collapsed = island.island === "collapsed"
   const open = !collapsed
+  const geometry = islandCssGeometry(island)
+  const headerScale = island.scale
   const shape = [
-    "hud-island relative select-none bg-hud-island",
+    "relative select-none",
     "transition-opacity duration-[var(--duration-fast)] ease-out",
-    open ? "hud-island-open" : "hud-island-closed",
-    preview ? "mx-2" : "hud-island-fillets",
+    preview ? "mx-2" : "",
     // A press on the island ghosts it: the drag has not begun, and this is
     // what it would carry away.
     state.dragArmed ? "opacity-60" : "",
   ].join(" ")
-  const gutter: CSSProperties | undefined = preview
+  const shellStyle: CSSProperties | undefined = preview
     ? undefined
-    : { marginLeft: island.fillet, marginRight: island.fillet }
-  const wing: CSSProperties = { width: island.wing }
+    : { width: geometry.bodyWidth + geometry.fillet * 2 }
+  const headerStyle = {
+    height: geometry.height,
+    "--hud-header-scale": headerScale,
+    "--hud-header-height": `${island.height}px`,
+    ...(preview
+      ? {}
+      : {
+          width: geometry.headerWidth,
+          marginLeft: geometry.headerOffset + geometry.fillet,
+        }),
+  } as CSSProperties
+  const leftWing: CSSProperties = { width: geometry.leftWing }
+  const rightWing: CSSProperties = { width: geometry.rightWing }
   const contentPad: CSSProperties | undefined = preview
     ? undefined
     : {
-        paddingLeft: islandContentPad(island.wing),
-        paddingRight: islandContentPad(island.wing),
+        width: geometry.bodyWidth,
+        maxHeight: geometry.bodyMaxHeight,
+        marginLeft: geometry.fillet,
+        paddingLeft: islandContentPad(geometry.wing),
+        paddingRight: islandContentPad(geometry.wing),
       }
   // The mark held the live agent's mode colour. That is off for now: one
   // colour beside the notch, until the modes earn a place there.
@@ -200,18 +217,25 @@ function IslandPanel({
     <div
       ref={panelRef}
       className={shape}
-      style={gutter}
+      style={shellStyle}
       data-island={island.island}
       data-drag-armed={state.dragArmed || undefined}
       onMouseDown={(event) => session.startDrag(event)}
     >
-      <div className="flex items-center" style={{ height: island.height }}>
-        <div className="flex shrink-0 items-center justify-center" style={wing}>
+      <div
+        className={`hud-island hud-island-header relative flex items-center bg-hud-island ${preview ? "" : "hud-island-fillets"} ${open ? "hud-island-header-open" : ""}`}
+        style={headerStyle}
+        data-testid="island-header"
+      >
+        <div
+          className="hud-island-wing flex shrink-0 items-center justify-center"
+          style={leftWing}
+        >
           <span
             data-testid="island-live-led"
             // A short bar, not a dot: a round light beside the lens reads as
             // the camera light. `led-pulse` holds it dim and moves it little.
-            className={`h-1 w-3.5 rounded-full ${
+            className={`hud-island-live-led rounded-full ${
               state.sessionLive ? "led-lit led-pulse opacity-75" : "led-off bg-led-off"
             }`}
             style={
@@ -227,16 +251,35 @@ function IslandPanel({
         {/* The notch covers this span. In the preview there is no notch, so it stretches. */}
         <div
           className={preview ? "flex-1" : "shrink-0"}
-          style={preview ? undefined : { width: island.notch }}
+          style={preview ? undefined : { width: geometry.notch }}
         />
-        <div className="flex shrink-0 items-center justify-center" style={wing}>
+        <div
+          className="hud-island-wing flex shrink-0 items-center justify-center"
+          style={rightWing}
+        >
           {/* The mark in the island ink, kept faint: it says whose island
               this is without competing with the live mark. */}
-          <AntiburnMark className="size-2.5 text-hud-island-ink opacity-35" />
+          <AntiburnMark className="hud-island-mark text-hud-island-ink opacity-35" />
         </div>
       </div>
       {open && (
-        <div className="p-2.5" style={contentPad}>
+        <div
+          className="hud-island hud-island-open overflow-y-auto overscroll-contain bg-hud-island p-2.5"
+          style={contentPad}
+          data-testid="island-body"
+          onMouseDown={(event) => {
+            const body = event.currentTarget
+            const bounds = body.getBoundingClientRect()
+            // Only a native scrollbar gutter owns this press. Usage bars are
+            // pointer-transparent, so their presses also target the body.
+            if (
+              event.target === body &&
+              body.clientWidth > 0 &&
+              event.clientX >= bounds.left + body.clientLeft + body.clientWidth
+            )
+              event.stopPropagation()
+          }}
+        >
           {children}
         </div>
       )}
@@ -351,7 +394,15 @@ function HudContent({
               )}
               <LedBar
                 segments={HUD_SEGMENTS}
-                split={[{ fraction: bar.percent / 100, color: bar.color }]}
+                split={[
+                  {
+                    fraction: bar.percent / 100,
+                    color:
+                      labelled && bar.color === "var(--color-label)"
+                        ? "var(--color-hud-island-ink)"
+                        : bar.color,
+                  },
+                ]}
                 blinkLast={blink && state.sessionLive && index === 0}
                 blinkPeriodMs={state.blinkPeriodMs}
                 blinkColor={blinkColor}

@@ -5,8 +5,14 @@ Overview, Limits, Sessions with its filter and optional session identity, or Che
 optional check ID. Explicit navigation appends; Back and Forward restore; automatic initial
 selection replaces. Selecting the same destination can reveal it again without appending.
 New navigation after Back removes the forward branch. Deleted session targets are pruned.
-History lives for the renderer lifetime. The sidebar stays visible on all platforms;
+History lives for the renderer lifetime. The sidebar stays visible above the 720 CSS pixel
+navigation breakpoint and becomes a modal drawer below it;
 previously saved collapse preferences are ignored without being deleted.
+
+Explicit session targets and Back/Forward reveal the selected detail in compact layouts,
+including a repeated target after the collection's Back action. Ordinary row selection and
+filter changes do not force detail open. The navigation owner sends a reveal intent to the
+session owner; the generic collection pane receives only its monotonically increasing revision.
 
 The shell sends one revisioned `main:navigation-target` request containing a destination.
 Live events and generation-scoped peek/acknowledgement recovery use the same request.

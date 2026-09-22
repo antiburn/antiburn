@@ -31,6 +31,23 @@ use tauri_nspanel::{ManagerExt, WebviewPanelManager, WebviewWindowExt};
 
 use crate::geometry::{self, Point, Rect};
 
+pub(crate) fn replace_material(
+    window: &WebviewWindow,
+    effects: tauri::utils::config::WindowEffectsConfig,
+) -> tauri::Result<()> {
+    let window = window.clone();
+    window.clone().run_on_main_thread(move || {
+        // Tauri adds a material view on each call, so remove the previous view first.
+        if let Err(error) = window_vibrancy::clear_vibrancy(&window) {
+            tracing::warn!(%error, "failed to clear the nudge material");
+            return;
+        }
+        if let Err(error) = window.set_effects(effects) {
+            tracing::warn!(%error, "failed to update the nudge material");
+        }
+    })
+}
+
 tauri_nspanel::tauri_panel! {
     panel!(NudgePanel {
         config: {

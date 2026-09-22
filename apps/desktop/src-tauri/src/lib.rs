@@ -68,6 +68,7 @@ mod hud_token_map;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
+mod interface_scale;
 mod launch_intent;
 mod main_window;
 #[cfg(feature = "memory-probe")]
@@ -299,7 +300,9 @@ pub fn run() {
         app.manage(session_lifecycle::SessionEvents::default());
         app.manage(Schedulers::default());
         app.manage(popover::PopoverState::default());
-        app.manage(popover_peek::manager());
+        app.manage(popover_peek::manager(
+            interface_scale::current(app.handle()).factor(),
+        ));
         app.manage(updates::UpdaterState::default());
         app.manage(notifications::NotificationState::default());
         app.manage(storage_health::StorageHealth::default());
@@ -684,6 +687,16 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         }
         WindowEvent::Moved(_) | WindowEvent::Resized(_) if window.label() == main_window::LABEL => {
             main_window::schedule_placement_save(window.app_handle());
+        }
+        WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. }
+            if window.label() == settings::LABEL =>
+        {
+            let app = window.app_handle();
+            if let Err(error) =
+                settings::reconcile_interface_scale(app, interface_scale::current(app))
+            {
+                ::tracing::error!(event = "settings_minimum_size_failed", error = %error);
+            }
         }
         _ => {}
     }

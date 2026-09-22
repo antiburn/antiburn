@@ -121,7 +121,11 @@ beforeEach(() => {
   mocks.setSettings.mockImplementation(async (settings) => settings)
   mocks.getMainWindowVisible.mockResolvedValue(true)
   mocks.existingMainWindowSessionTargets.mockImplementation(async (targets) => targets)
-  mocks.listRecentSessions.mockResolvedValue([entry("one"), entry("two")])
+  const now = Date.now()
+  mocks.listRecentSessions.mockResolvedValue([
+    entry("one", { timestamp: new Date(now).toISOString() }),
+    entry("two", { timestamp: new Date(now - 1).toISOString() }),
+  ])
   mocks.loadSessionAnalysis.mockResolvedValue(payload("Loaded"))
   mocks.getLiveUsage.mockResolvedValue(null)
   mocks.getSessionLimitAllocations.mockResolvedValue(null)
@@ -130,6 +134,21 @@ beforeEach(() => {
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
 describe("MainActivitySession", () => {
+  it("reopens the same detail only on a deliberate reveal without reloading analysis", async () => {
+    const { session } = start()
+    await ready(session)
+    const before = session.getSnapshot()
+    const reads = mocks.loadSessionAnalysis.mock.calls.length
+    session.revealDetail()
+    session.revealDetail()
+    expect(session.getSnapshot().detailRevealRevision).toBe(before.detailRevealRevision + 2)
+    expect(session.getSnapshot().subject).toBe(before.subject)
+    expect(mocks.loadSessionAnalysis).toHaveBeenCalledTimes(reads)
+    session.clearSelection()
+    session.revealDetail()
+    expect(session.getSnapshot().detailRevealRevision).toBe(before.detailRevealRevision + 2)
+  })
+
   it("loads the shared list for a visible window without starting detail work", async () => {
     const { session } = startList()
 
@@ -794,10 +813,6 @@ describe("MainActivitySession", () => {
   })
 
   it("orders navigation like the list and excludes non-opening rows", async () => {
-    // Set explicit, distinct timestamps here. The default fixture stamps
-    // both entries with `new Date()` at call time. The two calls can land in
-    // the same millisecond or in different ones, and that changes the sort
-    // order, so this test needs its own unambiguous times.
     mocks.listRecentSessions.mockResolvedValue([
       entry("one", { timestamp: "2026-01-01T00:00:02.000Z" }),
       entry("two", { timestamp: "2026-01-01T00:00:01.000Z" }),
@@ -878,6 +893,7 @@ describe("MainActivitySession", () => {
     mocks.listRecentSessions.mockResolvedValue([entry("one")])
     const { session } = start()
     await ready(session)
+    expect(session.getSnapshot().subject?.sessionId).toBe("one")
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(1))
     mocks.events.get("update")!(update(entry("one")))
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(2))

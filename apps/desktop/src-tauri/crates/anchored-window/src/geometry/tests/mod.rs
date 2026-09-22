@@ -1,6 +1,42 @@
-use super::{CursorProximity, Point, Rect, classify_cursor, place_left_preferred};
+use super::{
+    CursorProximity, Point, Rect, classify_cursor, fit_companion_frame, place_left_preferred,
+};
 
 mod fixtures;
+
+#[test]
+fn scaled_companion_size_and_position_share_the_fitted_work_area() {
+    for dpi in [1.0, 1.25, 2.0] {
+        for zoom in [0.9, 1.0, 1.25, 2.0] {
+            let work = Rect {
+                x: -1280.0 * dpi,
+                y: 32.0 * dpi,
+                width: 1280.0 * dpi,
+                height: 800.0 * dpi,
+            };
+            let anchor = Rect {
+                x: -400.0 * dpi,
+                y: 650.0 * dpi,
+                width: 380.0 * dpi,
+                height: 60.0 * dpi,
+            };
+            let margin = 8.0 * zoom * dpi;
+            let frame = fit_companion_frame(
+                anchor,
+                work,
+                (420.0 * zoom * dpi, 700.0 * zoom * dpi),
+                8.0 * zoom * dpi,
+                margin,
+            );
+            assert!(frame.x >= work.x + margin);
+            assert!(frame.y >= work.y + margin);
+            assert!(frame.x + frame.width <= work.x + work.width - margin);
+            assert!(frame.y + frame.height <= work.y + work.height - margin);
+            assert_eq!(frame.width.fract(), 0.0);
+            assert_eq!(frame.height.fract(), 0.0);
+        }
+    }
+}
 
 #[test]
 fn placement_covers_fit_clamp_negative_origin_and_scale() {

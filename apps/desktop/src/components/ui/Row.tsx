@@ -32,13 +32,13 @@ export function Row({
     <div
       {...rootProps}
       className={cn(
-        "grid min-h-[58px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-3",
+        "ui-settings-row grid min-h-[58px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-3",
         dimmed && "opacity-50",
         className,
       )}
     >
-      <p className="type-body min-w-0 truncate text-label">{label}</p>
-      <div className="shrink-0">{trailing}</div>
+      <p className="type-body min-w-0 text-pretty text-label">{label}</p>
+      <div className="ui-settings-row-control min-w-0">{trailing}</div>
       {description && (
         <p className="type-footnote col-span-2 mt-0.5 w-full text-pretty text-label-secondary">
           {description}

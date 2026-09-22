@@ -92,6 +92,31 @@ pub(crate) fn top_right_origin(display: Rect, w: f64, margin: f64, top_inset: f6
     (x, display.y + top_inset)
 }
 
+/// A top-right frame that stays inside `display`. The top and bottom insets can
+/// differ, as they do below the macOS menu bar.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn top_right_frame(
+    display: Rect,
+    requested_w: f64,
+    requested_h: f64,
+    margin: f64,
+    top_inset: f64,
+) -> Rect {
+    let w_extent = display.w.max(1.0);
+    let horizontal_inset = margin.max(0.0).min((w_extent - 1.0) / 2.0);
+    let w = requested_w
+        .max(1.0)
+        .min((w_extent - 2.0 * horizontal_inset).max(1.0));
+
+    let h_extent = display.h.max(1.0);
+    let top = top_inset.max(0.0).min(h_extent - 1.0);
+    let bottom = margin.max(0.0).min((h_extent - top - 1.0).max(0.0));
+    let h = requested_h.max(1.0).min((h_extent - top - bottom).max(1.0));
+
+    let (x, y) = top_right_origin(display, w, horizontal_inset, top);
+    Rect { x, y, w, h }
+}
+
 /// Top-left corner of a notification pinned to the bottom-right of `display`,
 /// inset by `margin` from both edges. Clamped to the display's top-left, so a
 /// notification taller or wider than the display stays anchored on-screen and
@@ -103,6 +128,34 @@ pub(crate) fn bottom_right_origin(display: Rect, w: f64, h: f64, margin: f64) ->
     (x, y)
 }
 
+/// Fit a tray-anchored notification inside the display's usable bounds.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn anchored_frame(
+    area: Rect,
+    anchor: Rect,
+    width: f64,
+    height: f64,
+    margin: f64,
+    gap: f64,
+) -> Rect {
+    let fit_axis = |origin: f64, extent: f64, requested: f64| {
+        let extent = extent.max(1.0);
+        let inset = margin.max(0.0).min((extent - 1.0) / 2.0);
+        let size = requested.max(1.0).min(extent - 2.0 * inset);
+        let minimum = origin + inset;
+        let maximum = (origin + extent - inset - size).max(minimum);
+        (size, minimum, maximum)
+    };
+    let (w, left, right) = fit_axis(area.x, area.w, width);
+    let (h, top, bottom) = fit_axis(area.y, area.h, height);
+    Rect {
+        x: (anchor.x + anchor.w / 2.0 - w / 2.0).clamp(left, right),
+        y: (anchor.y + anchor.h + gap).clamp(top, bottom),
+        w,
+        h,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +163,94 @@ mod tests {
     const WIDTH: f64 = 344.0;
     const MARGIN: f64 = 12.0;
     const TOP_INSET: f64 = 48.0;
+
+    #[test]
+    fn anchored_frame_keeps_scaled_notifications_inside_the_work_area() {
+        for scale in [0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0] {
+            for area in [
+                Rect {
+                    x: 0.0,
+                    y: 24.0,
+                    w: 1280.0,
+                    h: 726.0,
+                },
+                Rect {
+                    x: -1512.0,
+                    y: -400.0,
+                    w: 1512.0,
+                    h: 900.0,
+                },
+                Rect {
+                    x: 0.0,
+                    y: 24.0,
+                    w: 320.0,
+                    h: 200.0,
+                },
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 8.0,
+                    h: 8.0,
+                },
+            ] {
+                for anchor_x in [area.x, area.x + area.w / 2.0, area.x + area.w - 24.0] {
+                    let frame = anchored_frame(
+                        area,
+                        Rect {
+                            x: anchor_x,
+                            y: area.y - 24.0,
+                            w: 24.0,
+                            h: 24.0,
+                        },
+                        WIDTH * scale,
+                        800.0 * scale,
+                        MARGIN * scale,
+                        12.0 * scale,
+                    );
+                    assert!(frame.x >= area.x && frame.y >= area.y, "{frame:?}");
+                    assert!(frame.x + frame.w <= area.x + area.w + 1e-9, "{frame:?}");
+                    assert!(frame.y + frame.h <= area.y + area.h + 1e-9, "{frame:?}");
+                    assert!(frame.w >= 1.0 && frame.h >= 1.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn anchored_frame_preserves_centering_until_the_scaled_frame_needs_clamping() {
+        let area = Rect {
+            x: 0.0,
+            y: 24.0,
+            w: 1280.0,
+            h: 726.0,
+        };
+        let anchor = Rect {
+            x: 1000.0,
+            y: 0.0,
+            w: 24.0,
+            h: 24.0,
+        };
+        let normal = anchored_frame(area, anchor, 344.0, 168.0, 12.0, 12.0);
+        assert_eq!(
+            normal,
+            Rect {
+                x: 840.0,
+                y: 36.0,
+                w: 344.0,
+                h: 168.0
+            }
+        );
+        let enlarged = anchored_frame(area, anchor, 688.0, 336.0, 24.0, 24.0);
+        assert_eq!(
+            enlarged,
+            Rect {
+                x: 568.0,
+                y: 48.0,
+                w: 688.0,
+                h: 336.0
+            }
+        );
+    }
 
     /// A real mixed-DPI arrangement: a 2x built-in beside a 1x external whose top
     /// edge sits *above* it, so the external's origin has a negative y.
@@ -244,6 +385,88 @@ mod tests {
             top_right_origin(built_in, WIDTH, MARGIN, TOP_INSET),
             (1156.0, 48.0)
         );
+    }
+
+    #[test]
+    fn top_right_frame_keeps_scaled_notifications_inside_displays() {
+        for scale in [0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0] {
+            for display in [
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1512.0,
+                    h: 982.0,
+                },
+                Rect {
+                    x: -1512.0,
+                    y: -400.0,
+                    w: 1512.0,
+                    h: 600.0,
+                },
+                Rect {
+                    x: 100.0,
+                    y: -50.0,
+                    w: 320.0,
+                    h: 100.0,
+                },
+                Rect {
+                    x: -8.0,
+                    y: -8.0,
+                    w: 8.0,
+                    h: 8.0,
+                },
+            ] {
+                let frame = top_right_frame(
+                    display,
+                    WIDTH * scale,
+                    300.0 * scale,
+                    MARGIN * scale,
+                    TOP_INSET * scale,
+                );
+                assert!(frame.x >= display.x && frame.y >= display.y, "{frame:?}");
+                assert!(
+                    frame.x + frame.w <= display.x + display.w + 1e-9,
+                    "{frame:?}"
+                );
+                assert!(
+                    frame.y + frame.h <= display.y + display.h + 1e-9,
+                    "{frame:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn top_right_frame_preserves_the_ordinary_native_corner_position() {
+        assert_eq!(
+            top_right_frame(displays()[0], WIDTH, 168.0, MARGIN, TOP_INSET,),
+            Rect {
+                x: 1156.0,
+                y: 48.0,
+                w: WIDTH,
+                h: 168.0,
+            }
+        );
+    }
+
+    #[test]
+    fn top_right_frame_reserves_the_actual_macos_top_and_bottom_insets() {
+        let frame = top_right_frame(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1200.0,
+                h: 600.0,
+            },
+            WIDTH * 2.0,
+            300.0 * 2.0,
+            MARGIN * 2.0,
+            TOP_INSET * 2.0,
+        );
+
+        assert_eq!(frame.y, 96.0);
+        assert_eq!(frame.h, 480.0);
+        assert_eq!(frame.y + frame.h, 576.0);
     }
 
     #[test]

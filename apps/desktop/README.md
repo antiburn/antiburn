@@ -40,6 +40,12 @@ Read [`design.md`](design.md) before any styling work. Component code uses the
 semantic Tailwind utilities it defines (`bg-surface`, `text-label`,
 `type-body`, …) rather than raw values.
 
+Interface size is configured in Settings → Appearance or through View → Zoom In,
+Zoom Out, and Actual Size. It applies across app windows independently of OS display
+scaling. The preset contract lives in `interface-scale.json`; native window owners
+apply it before reveal. See the [scaling QA runbook](../../docs/runbooks/interface-scale-qa.md)
+for the browser matrix, boundary checks, and required native-platform validation.
+
 `src-tauri` is a **standalone Cargo workspace** with its own `Cargo.lock`. It is
 deliberately not joined with the engine's workspace: the engine resolves under
 its own dependency boundary that keeps it free of any service of ours, and the

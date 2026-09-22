@@ -79,6 +79,7 @@ export function MainActivityView({
       title="Sessions"
       items={items}
       selection={selected}
+      externalDetailRevealRevision={state.detailRevealRevision}
       onSelectionChange={(item) =>
         session.selectEntry({
           ...item.subject,
@@ -91,7 +92,7 @@ export function MainActivityView({
       detailEmptyMessage="Select a session to view its details."
       detailEmptyContent={<SessionEmptyDetail />}
       detailOwnsViewport
-      renderCollection={({ openDetail }) => (
+      renderCollection={({ openDetail, compact }) => (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {state.listError && (
             <div role="status" className="px-4 py-2 type-callout text-label-secondary">
@@ -127,6 +128,7 @@ export function MainActivityView({
               days={state.settings.activityWindowDays}
               selectedKey={selected?.id ?? null}
               onSelect={session.selectEntry}
+              openOnClick={compact}
               onOpenDetail={(entry) => {
                 if (entry.sessionId) openDetail(itemForSubject(subjectForEntry(entry)))
               }}

@@ -24,6 +24,7 @@ export type Milestones = number[]
 /** Every persisted preference. Mirrors Rust `AppSettings`. */
 export interface AppSettings {
   theme: ThemePreference
+  interfaceScalePercent: number
   /** Calendar days of activity the popover list shows. */
   activityWindowDays: number
   /** Days to keep local session data. `-1` keeps it until explicit deletion. */
