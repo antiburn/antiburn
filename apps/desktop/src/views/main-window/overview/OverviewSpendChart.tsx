@@ -1,118 +1,124 @@
-import { useState, type CSSProperties, type KeyboardEvent } from "react"
+import { useState, type KeyboardEvent } from "react"
 
-import type { ProviderUsageDayPayload } from "../../../lib/providerUsageIpc"
-import {
-  dayLabel,
-  niceCeiling,
-  seriesMax,
-  spendDeltaLabel,
-} from "../../../lib/presentation/overviewChart"
+import type {
+  ProviderUsageDayPayload,
+  ProviderUsageWindowPayload,
+} from "../../../lib/providerUsageIpc"
+import { agentDisplayName } from "../../../lib/presentation/agents"
+import { axisDayLabel, dayLabel } from "../../../lib/presentation/chartDates"
 import {
   formatSpendFigure,
   formatTokenFigure,
   sessionCountLabel,
   windowTokens,
 } from "../../../lib/presentation/providerUsage"
-
 import { Tooltip } from "../../../components/presentation/Tooltip"
+import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
-import {
-  Bar,
-  ChartAxis,
-  ChartLegend,
-  GUIDE_FRACTIONS,
-  GuideLabels,
-  Guides,
-  DAY_TOOLTIP_DELAY_MS,
-} from "./overviewChartParts"
 
 import "./overview.css"
 
-/**
- * The figures beside the guides, one precision for the whole scale: whole
- * dollars when every guide lands on one, else dollars and cents.
- */
-function guideLabels(ceiling: number): Map<number, string> {
-  const values = GUIDE_FRACTIONS.map((fraction) => [fraction, ceiling * fraction] as const)
-  const whole = values.every(([, usd]) => Number.isInteger(usd))
-  return new Map(
-    values.map(([fraction, usd]) => [
-      fraction,
-      whole ? `$${usd.toLocaleString("en-US")}` : formatSpendFigure(usd),
-    ]),
-  )
-}
+const LAYER_STYLES = [
+  { fill: "fill-token-in", swatch: "bg-token-in" },
+  { fill: "fill-token-in/55", swatch: "bg-token-in/55" },
+  { fill: "fill-token-in/30", swatch: "bg-token-in/30" },
+  { fill: "fill-token-in/[0.18]", swatch: "bg-token-in/[0.18]" },
+] as const
 
-/** The bar for one day: its height on the scale, and whether it has a figure. */
-function barGeometry(day: ProviderUsageDayPayload | undefined, ceiling: number) {
-  const usd = day?.estimatedUsd ?? null
-  const tokens = day ? windowTokens(day) : 0
+function spendScale(max: number): { ceiling: number; guideFractions: number[] } {
+  const peak = Number.isFinite(max) && max > 0 ? max : 1
+  const targetStep = peak / 5
+  const power = 10 ** Math.floor(Math.log10(targetStep))
+  const multiple = [1, 2, 2.5, 5, 10].find((value) => value * power >= targetStep) ?? 10
+  const step = multiple * power
+  const tickCount = Math.ceil(peak / step)
   return {
-    outline: usd == null && tokens > 0,
-    fraction: usd == null ? 0 : Math.min(1, usd / ceiling),
+    ceiling: tickCount * step,
+    guideFractions: Array.from(
+      { length: tickCount },
+      (_, index) => (tickCount - index) / tickCount,
+    ),
   }
 }
 
-/** The one-line reading in a day's tooltip. */
-function dayDetail(
-  day: ProviderUsageDayPayload,
-  previous: ProviderUsageDayPayload | undefined,
-  isToday: boolean,
-): string {
-  const tokens = windowTokens(day)
-  const figure =
-    day.estimatedUsd != null
-      ? formatSpendFigure(day.estimatedUsd)
-      : tokens > 0
-        ? "not priced"
-        : "no sessions"
-  const parts = [isToday ? "Today" : dayLabel(day.localDate), figure]
-  if (tokens > 0) parts.push(formatTokenFigure(tokens), sessionCountLabel(day.sessionCount))
-  const delta = spendDeltaLabel(day, previous)
-  if (delta) parts.push(`${delta} vs 30 days before`)
+function spendLabel(usage: ProviderUsageWindowPayload): string {
+  if (usage.estimatedUsd != null) {
+    return `${usage.costComplete ? "" : "at least "}${formatSpendFigure(usage.estimatedUsd)}`
+  }
+  return windowTokens(usage) > 0 ? "not priced" : "no sessions"
+}
+
+function dayDetail(day: ProviderUsageDayPayload, isToday: boolean): string {
+  const parts = [isToday ? "Today" : dayLabel(day.localDate), spendLabel(day)]
+  if (windowTokens(day) > 0) {
+    parts.push(formatTokenFigure(windowTokens(day)), sessionCountLabel(day.sessionCount))
+  }
+  for (const usage of day.agents ?? []) {
+    parts.push(`${agentDisplayName(usage.agent)}: ${spendLabel(usage)}`)
+  }
+  if (!day.agents?.length && windowTokens(day) > 0) parts.push("Agent breakdown unavailable")
   return parts.join(" · ")
 }
 
-/**
- * Thirty days of estimated local spend as paired pill bars: this period in
- * front, the thirty days before it behind in a quiet neutral. A day under
- * the pointer, or the day with keyboard focus, writes its reading on the
- * line under the chart. Each day is a button, and the arrow keys walk them.
- *
- * A day with tokens but no price draws an outlined dot and says "not priced",
- * so it is never mistaken for a day at zero.
- */
 export function OverviewSpendChart({
   days,
-  previousDays,
   loading = false,
 }: {
   days: ReadonlyArray<ProviderUsageDayPayload>
-  previousDays: ReadonlyArray<ProviderUsageDayPayload>
   loading?: boolean
 }) {
-  // The keyboard's place in the row follows the date, not the index, so a
-  // refresh that adds a day keeps the reader's day. A date the series no
-  // longer holds falls back to today.
   const [focusDate, setFocusDate] = useState<string | null>(null)
   const lastIndex = days.length - 1
   const foundFocus =
     focusDate == null ? -1 : days.findIndex((day) => day.localDate === focusDate)
   const focusIndex = foundFocus >= 0 ? foundFocus : lastIndex
-  const ceiling = niceCeiling(seriesMax(days, previousDays))
-
-  function focusDay(index: number, list: HTMLElement | null): void {
-    const clamped = Math.max(0, Math.min(lastIndex, index))
-    const day = days[clamped]
-    if (!day) return
-    setFocusDate(day.localDate)
-    const button = list?.querySelector<HTMLButtonElement>(`[data-day="${day.localDate}"]`)
-    button?.focus()
+  const dayCount = days.length
+  const agentTotals = new Map<string, number>()
+  for (const day of days) {
+    for (const usage of day.agents ?? []) {
+      agentTotals.set(
+        usage.agent,
+        (agentTotals.get(usage.agent) ?? 0) + (usage.estimatedUsd ?? 0),
+      )
+    }
   }
+  // Largest 30-day spend first: that agent is the solid foot of every column.
+  const agents = [...agentTotals.keys()].sort((left, right) => {
+    const diff = (agentTotals.get(right) ?? 0) - (agentTotals.get(left) ?? 0)
+    return diff !== 0 ? diff : left.localeCompare(right)
+  })
+  const totals = days.map((day) =>
+    (day.agents ?? []).reduce((sum, usage) => sum + (usage.estimatedUsd ?? 0), 0),
+  )
+  const { ceiling, guideFractions } = spendScale(Math.max(0, ...totals))
+  const wholeGuides = guideFractions.every((fraction) => Number.isInteger(ceiling * fraction))
+  const slotWidth = 100 / dayCount
+  const columnWidth = slotWidth * 0.8
+  const columnInset = slotWidth * 0.2
+  const lower = days.map(() => 0)
+  const series = agents.map((agent, agentIndex) => {
+    const rects = days.flatMap((day, index) => {
+      const usd = day.agents?.find((usage) => usage.agent === agent)?.estimatedUsd ?? 0
+      const bottom = lower[index]!
+      lower[index] = bottom + usd
+      if (usd <= 0) return []
+      return [
+        {
+          index,
+          lower: (bottom / ceiling) * 100,
+          upper: ((bottom + usd) / ceiling) * 100,
+        },
+      ]
+    })
+    return {
+      agent,
+      rects,
+      style: LAYER_STYLES[Math.min(agentIndex, LAYER_STYLES.length - 1)]!,
+    }
+  })
 
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number): void {
-    const list = event.currentTarget.parentElement
     const target =
       event.key === "ArrowLeft"
         ? index - 1
@@ -125,7 +131,12 @@ export function OverviewSpendChart({
               : null
     if (target == null) return
     event.preventDefault()
-    focusDay(target, list)
+    const day = days[Math.max(0, Math.min(lastIndex, target))]
+    if (!day) return
+    setFocusDate(day.localDate)
+    event.currentTarget.parentElement
+      ?.querySelector<HTMLButtonElement>(`[data-day="${day.localDate}"]`)
+      ?.focus()
   }
 
   return (
@@ -135,66 +146,130 @@ export function OverviewSpendChart({
       aria-busy={loading || undefined}
     >
       {loading || days.length === 0 ? (
-        <Skeleton className="block min-h-[var(--overview-chart-height)] w-full flex-1" />
+        <Skeleton className="block min-h-(--overview-chart-height) w-full flex-1" />
       ) : (
-        <div className="overview-chart-scroll">
-          <div className="overview-chart-body">
-            <div className="overview-plot">
-              <div className="relative h-full">
-                <ChartLegend nowClassName="bg-token-in" />
-                <Guides />
-                <div
-                  role="group"
-                  aria-label="Estimated spend for the past 30 days"
-                  className="overview-days relative"
-                >
-                  {days.map((day, index) => {
-                    const previous = previousDays[index]
-                    const now = barGeometry(day, ceiling)
-                    const before = barGeometry(previous, ceiling)
-                    const isToday = index === lastIndex
-                    const detail = dayDetail(day, previous, isToday)
-                    return (
-                      <Tooltip
-                        key={day.localDate}
-                        label={<SegmentFigure>{detail}</SegmentFigure>}
-                        delayMs={DAY_TOOLTIP_DELAY_MS}
-                      >
-                        <button
-                          type="button"
-                          data-day={day.localDate}
-                          aria-label={detail}
-                          tabIndex={index === focusIndex ? 0 : -1}
-                          className="overview-day"
-                          onFocus={() => setFocusDate(day.localDate)}
-                          onKeyDown={(event) => onKeyDown(event, index)}
-                          style={{ "--overview-bar-index": index } as CSSProperties}
-                        >
-                          <Bar
-                            fraction={before.fraction}
-                            outline={before.outline}
-                            className="bg-label-tertiary/30 text-label-tertiary/30"
-                          />
-                          <Bar
-                            fraction={now.fraction}
-                            outline={now.outline}
-                            className={
-                              isToday
-                                ? "bg-token-in text-token-in"
-                                : "bg-token-in text-token-in opacity-70"
-                            }
-                          />
-                        </button>
-                      </Tooltip>
-                    )
-                  })}
-                </div>
+        <>
+          <ChartLegend
+            ariaLabel="Agents"
+            className="mb-(--space-sm)"
+            items={series.map(({ agent, style }) => ({
+              key: agent,
+              label: agentDisplayName(agent),
+              swatch: style.swatch,
+            }))}
+          />
+          <div className="grid min-h-(--overview-chart-height) flex-auto grid-cols-[minmax(0,1fr)_auto] grid-rows-[minmax(0,1fr)_auto] gap-x-(--space-sm) gap-y-(--space-xs) pt-(--space-sm)">
+            <div className="relative min-h-(--overview-chart-height)">
+              <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+                {guideFractions.map((fraction) => (
+                  <div
+                    key={fraction}
+                    className="absolute inset-x-0 border-t border-separator/60"
+                    style={{ top: `${(1 - fraction) * 100}%` }}
+                  />
+                ))}
               </div>
-              <GuideLabels labels={guideLabels(ceiling)} />
+              <svg
+                className="pointer-events-none absolute inset-0 h-full w-full overflow-hidden"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                {series.map(({ agent, rects, style }) => (
+                  <g key={agent} data-agent={agent}>
+                    {rects.map(({ index, lower: segmentLower, upper }) => (
+                      <rect
+                        key={index}
+                        x={index * slotWidth + columnInset}
+                        y={100 - upper}
+                        width={columnWidth}
+                        height={upper - segmentLower}
+                        className={style.fill}
+                      />
+                    ))}
+                  </g>
+                ))}
+              </svg>
+              <div
+                role="group"
+                aria-label="Estimated spend for the past 30 days"
+                className="absolute inset-0"
+              >
+                {days.map((day, index) => {
+                  const detail = dayDetail(day, index === lastIndex)
+                  const incomplete =
+                    !day.costComplete || (!day.agents?.length && windowTokens(day) > 0)
+                  return (
+                    <Tooltip
+                      key={day.localDate}
+                      label={<SegmentFigure>{detail}</SegmentFigure>}
+                      delayMs={100}
+                    >
+                      <button
+                        type="button"
+                        data-day={day.localDate}
+                        aria-label={detail}
+                        tabIndex={index === focusIndex ? 0 : -1}
+                        className="group absolute inset-y-0 border-0 bg-transparent p-0"
+                        style={{ left: `${index * slotWidth}%`, width: `${slotWidth}%` }}
+                        onFocus={() => setFocusDate(day.localDate)}
+                        onKeyDown={(event) => onKeyDown(event, index)}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-label/0 group-hover:bg-label/25 group-focus-visible:bg-label/25"
+                        />
+                        {incomplete && (
+                          <span
+                            aria-hidden="true"
+                            data-unpriced
+                            className="absolute inset-x-0 bottom-0 border-t-2 border-dashed border-label-secondary"
+                          />
+                        )}
+                      </button>
+                    </Tooltip>
+                  )
+                })}
+              </div>
             </div>
-            <ChartAxis dates={days.map((day) => day.localDate)} />
+            <div aria-hidden="true" className="type-metadata relative text-label-tertiary">
+              <span className="invisible">
+                {wholeGuides
+                  ? `$${ceiling.toLocaleString("en-US")}`
+                  : formatSpendFigure(ceiling)}
+              </span>
+              {guideFractions.map((fraction) => (
+                <span
+                  key={fraction}
+                  className="absolute right-0 -translate-y-1/2 whitespace-nowrap"
+                  style={{ top: `${(1 - fraction) * 100}%` }}
+                >
+                  <SegmentFigure>
+                    {wholeGuides
+                      ? `$${(ceiling * fraction).toLocaleString("en-US")}`
+                      : formatSpendFigure(ceiling * fraction)}
+                  </SegmentFigure>
+                </span>
+              ))}
+            </div>
+            <div
+              aria-hidden="true"
+              className="type-caption relative h-[1.4em] text-label-tertiary"
+            >
+              {days.map((day, index) =>
+                index === lastIndex || (index % 7 === 0 && index < lastIndex - 3) ? (
+                  <span
+                    key={day.localDate}
+                    className={`absolute whitespace-nowrap ${index === lastIndex ? "right-0" : ""}`}
+                    style={index === lastIndex ? undefined : { left: `${index * slotWidth}%` }}
+                  >
+                    {index === lastIndex ? "Today" : axisDayLabel(day.localDate)}
+                  </span>
+                ) : null,
+              )}
+            </div>
           </div>
-        </div>
+        </>
       )}
     </section>
   )

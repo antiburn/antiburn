@@ -6,8 +6,8 @@ import type {
   LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
-} from "../../lib/ipc"
-import { ProviderLimitsPanel, meterSegmentsForWidth } from "./ProviderLimitsPanel"
+} from "../../../lib/ipc"
+import { OverviewProviderLimits, meterSegmentsForWidth } from "./OverviewProviderLimits"
 
 const FORECAST = {
   unavailableReason: "sparseHistory",
@@ -81,11 +81,11 @@ function liveSummary(
   }
 }
 
-describe("ProviderLimitsPanel", () => {
+describe("OverviewProviderLimits", () => {
   afterEach(() => vi.restoreAllMocks())
 
   it("draws a thirty-two-dot meter with the notch, the figure and the reset caption", () => {
-    render(<ProviderLimitsPanel live={liveSummary()} />)
+    render(<OverviewProviderLimits live={liveSummary()} />)
     const card = screen.getByRole("group", { name: /Claude/ })
     expect(card).toHaveAccessibleName("Claude, Max plan")
     expect(within(card).getByText("42%")).toBeInTheDocument()
@@ -106,7 +106,7 @@ describe("ProviderLimitsPanel", () => {
     expect(meterSegmentsForWidth(300)).toBe(33)
     expect(meterSegmentsForWidth(603)).toBe(67)
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(603)
-    render(<ProviderLimitsPanel live={liveSummary()} />)
+    render(<OverviewProviderLimits live={liveSummary()} />)
     const card = screen.getByRole("group", { name: /Claude/ })
     const dots = card.querySelectorAll(".rounded-full")
     expect(dots).toHaveLength(67)
@@ -117,7 +117,7 @@ describe("ProviderLimitsPanel", () => {
 
   it("dims a meter with no reading and turns the red zone on above 90%", () => {
     render(
-      <ProviderLimitsPanel
+      <OverviewProviderLimits
         live={liveSummary({
           providers: [
             liveProvider({
@@ -143,7 +143,7 @@ describe("ProviderLimitsPanel", () => {
 
   it("seats a failed provider with its action and marks stale readings", () => {
     render(
-      <ProviderLimitsPanel
+      <OverviewProviderLimits
         live={liveSummary({
           providers: [liveProvider({ freshness: "stale" })],
           errors: [sourceError()],
@@ -157,13 +157,15 @@ describe("ProviderLimitsPanel", () => {
   })
 
   it("shows one quiet line when no provider reports anything", () => {
-    render(<ProviderLimitsPanel live={liveSummary({ providers: [] })} />)
-    expect(screen.getByText(/No provider limits to show/)).toBeInTheDocument()
+    render(<OverviewProviderLimits live={liveSummary({ providers: [] })} />)
+    expect(screen.getByText(/No providers set up for limits yet/)).toBeInTheDocument()
     expect(screen.queryByText("Live")).toBeNull()
   })
 
   it("holds placeholders while loading", () => {
-    render(<ProviderLimitsPanel live={null} loading />)
+    const { container } = render(<OverviewProviderLimits live={null} loading />)
+    expect(screen.queryByText(/No providers set up/)).toBeNull()
+    expect(container.querySelector(".animate-pulse")).not.toBeNull()
     expect(screen.getByRole("region", { name: "Provider limits" })).toHaveAttribute(
       "aria-busy",
       "true",
@@ -174,8 +176,8 @@ describe("ProviderLimitsPanel", () => {
   it("says there is nothing to show when the read answers with nothing", () => {
     // A failed read leaves no summary and stops the loading state. The panel
     // must answer, because a permanent skeleton states a read in progress.
-    render(<ProviderLimitsPanel live={null} loading={false} />)
-    expect(screen.getByText(/No provider limits to show/)).toBeInTheDocument()
+    render(<OverviewProviderLimits live={null} loading={false} />)
+    expect(screen.getByText(/No providers set up for limits yet/)).toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Provider limits" })).not.toHaveAttribute(
       "aria-busy",
     )

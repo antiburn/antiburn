@@ -1,27 +1,17 @@
 import { useState, useSyncExternalStore } from "react"
 
-import { isMacOS } from "../../lib/platform"
+import { cn } from "../../lib/cn"
 
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { type MainOverviewSession } from "./MainOverviewSession"
+import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
+import { readOverviewViewPrefs, writeOverviewViewPrefs } from "./overview/overviewViewPrefs"
 
 import "./overview/overview.css"
 
-/**
- * The main window's landing section: the usage block, which is the unit
- * control over the daily chart and the totals it summarizes, and then the
- * recent sessions card. The chart takes any height the window has to spare.
- * The Sessions panel is a summary; its control leaves for the full section.
- *
- * The page holds the unit. The chart and the totals both read it, so the
- * page can never show dollars in one place and allowance in another.
- *
- * The live provider limits are not here. They sit in the main window's
- * sidebar, where every section shows them.
- */
 export function OverviewView({
   active,
   session,
@@ -38,42 +28,58 @@ export function OverviewView({
     session.getSnapshot,
     session.getSnapshot,
   )
-  // The page opens on the subscription, because the plan is the limit a
-  // reader meets. A dollar estimate is the second question.
-  const [metric, setMetric] = useState<OverviewMetric>("allowance")
+  const [selectedMetric, setMetric] = useState<OverviewMetric | null>(() => {
+    const saved = readOverviewViewPrefs().metric
+    return saved === "cost" || saved === "allowance" ? saved : null
+  })
+  const hasSubscriptionPlan =
+    state.allowance?.accounts.some((account) => account.plan != null) ||
+    state.liveUsage?.providers.some((provider) => provider.plan != null)
+  const metric = selectedMetric ?? (hasSubscriptionPlan ? "allowance" : "cost")
   const usage = state.usage
   const loading = !usage && !state.usageError
+
   return (
     <div
-      className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window"
+      className={cn(
+        "min-h-0 min-w-0 flex-1 bg-surface-window",
+        "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[auto_minmax(0,1fr)_auto] gap-x-(--space-2xl) mb-(--space-2xl)",
+      )}
       data-overview-active={active ? "" : undefined}
     >
-      {isMacOS() && (
-        <div
-          className="h-[var(--main-window-titlebar-height)] shrink-0"
-          data-tauri-drag-region
-          aria-hidden="true"
-        />
-      )}
+      <div
+        className="col-span-full h-(--main-window-titlebar-height)"
+        data-tauri-drag-region
+        aria-hidden="true"
+      />
+
       <h1 className="sr-only">Overview</h1>
-      <ScrollPane className="min-h-0" topEdgeFade>
+
+      <ScrollPane
+        topEdgeFade
+        className="col-2 overview-viewport"
+        viewportClassName="[&>div]:flex! [&>div]:min-block-full"
+      >
         <div
           role="region"
           aria-label={loading ? "Loading Overview" : "Overview"}
           aria-busy={loading || undefined}
-          className="overview-page flex w-full flex-col gap-[var(--space-xl)] px-8 py-6"
+          className="@container grow shrink-0 flex w-full flex-col gap-(--space-2xl)"
         >
           {loading && (
             <p role="status" className="sr-only">
-              Loading Overview.
+              Loading Overview
             </p>
           )}
+
           <OverviewUsage
             metric={metric}
-            onMetricChange={setMetric}
+            onMetricChange={(next) => {
+              setMetric(next)
+              writeOverviewViewPrefs({ metric: next })
+            }}
             totals={usage?.totals ?? null}
             days={usage?.days ?? []}
-            previousDays={usage?.previousDays ?? []}
             allowance={state.allowance}
             allowanceLoading={state.allowanceLoading}
             allowanceError={state.allowanceError}
@@ -81,15 +87,31 @@ export function OverviewView({
             onRetryUsage={session.refresh}
             loading={loading}
           />
-          <div className="overview-stack p-[var(--space-lg)]">
-            <OverviewRecentSessions
-              entries={state.recentSessions}
-              loading={loading && !state.recentSessions}
-              onSelect={onSelectSession}
-              onOpenAll={onOpenSessions}
-            />
-          </div>
+
+          <OverviewRecentSessions
+            active={active && state.active}
+            entries={state.recentSessions}
+            loading={loading && !state.recentSessions}
+            onSelect={onSelectSession}
+            onOpenAll={onOpenSessions}
+            metric={metric}
+            liveUsage={state.liveUsage ?? undefined}
+            sessionLimitAllocations={state.sessionLimitAllocations}
+          />
         </div>
+      </ScrollPane>
+
+      <ScrollPane
+        className={cn(
+          "min-h-0 min-w-0",
+          "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)]",
+          "bg-(--color-surface-window) bg-gradient-to-b from-(--color-surface-sidebar) to-(--color-surface-sidebar)",
+        )}
+        viewportTabIndex={0}
+        viewportLabel="Provider limits card"
+        topEdgeFade
+      >
+        <OverviewProviderLimits live={state.liveUsage} loading={!state.liveUsageSettled} />
       </ScrollPane>
     </div>
   )

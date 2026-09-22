@@ -19,6 +19,7 @@ function payload(over: Partial<ActivityEntryPayload> = {}): ActivityEntryPayload
     cost: null,
     models: [],
     modelRuns: [],
+    totalTokens: 0,
     ...over,
   }
 }
@@ -37,6 +38,7 @@ describe("toActivityEntries", () => {
   it("carries the identity, repository, and title straight through", () => {
     const [entry] = toActivityEntries([
       payload({
+        totalTokens: 12345,
         models: ["claude-haiku-4-5"],
         modelRuns: [{ model: "claude-haiku-4-5", thinkingMode: "low" }],
       }),
@@ -47,6 +49,7 @@ describe("toActivityEntries", () => {
       repo: "widgets",
       title: "Wire the tray popover",
       surface: "cli",
+      totalTokens: 12345,
       modelRuns: [{ model: "claude-haiku-4-5", thinkingMode: "low" }],
     })
   })

@@ -51,8 +51,13 @@ export interface ProviderUsagePayload {
   lastActivityAt: string | null
 }
 
+export interface ProviderAgentDayUsagePayload extends ProviderUsageWindowPayload {
+  agent: string
+}
+
 /** One local calendar day's totals across every provider. Mirrors Rust `ProviderUsageDay`. */
 export interface ProviderUsageDayPayload extends ProviderUsageWindowPayload {
+  agents?: ProviderAgentDayUsagePayload[]
   /** The reader's calendar date, `YYYY-MM-DD`. */
   localDate: string
 }
@@ -496,90 +501,95 @@ export interface LiveUsageMeterPayload {
 }
 
 /**
- * How much of one allowance window the reader consumed, across whole
- * periods. Mirrors Rust `AllowanceUtilization`.
+ * The trailing 28-day pooled utilization: the tuned percentile, by nearest
+ * rank, of every account-wide quota window's capped estimate that pools at
+ * "now" — the same figure the rolling chart line's last point states.
+ * Mirrors Rust `AllowanceUtilization`.
  */
 export interface AllowanceUtilizationPayload {
-  /** The median peak across the periods, or null while too few periods
-   * exist for a median to describe a typical one. The peak stands alone
-   * until then; it is honest at any sample size. */
-  typicalPercent: number | null
-  /** The highest figure any one period reached. */
-  peakPercent: number
-  /** The mean peak across the selected quota periods. */
-  averagePercent: number
-  periodCount: number
-  /** How many selected periods reached an estimated 100%. */
-  maxedPeriodCount: number
-  /** The window the periods measure: `weekly`, `rolling`, or the provider's
-   * own word. The weekly window measures plan fit and the rolling window
-   * measures burstiness, so the reader must know which. */
-  windowKind: string
-  /** ISO-8601 start of the oldest period counted. */
-  firstPeriodAt: string
-  /** ISO-8601 start of the newest period counted. */
-  lastPeriodAt: string
+  utilizationPercent: number
+  /** How many weekly windows pooled into this figure. */
+  weeklyWindowCount: number
+  /** How many 5-hour windows pooled into this figure. */
+  shortWindowCount: number
+  /** How many model-scoped weekly windows pooled into this figure. */
+  modelWindowCount: number
 }
 
-/** The demand the provider refused. Mirrors Rust `AllowanceOverage`. */
-export interface AllowanceOveragePayload {
-  /** How many times the provider blocked the reader. A retry storm is one
-   * block, not one for each refused attempt. */
-  blockCount: number
-  /** The total wait across the blocks that state a reset. */
-  waitedSeconds: number
-  /** Blocks that state no usable reset. They are counted and contribute no
-   * waiting time, rather than being dropped or guessed at. */
-  blocksWithoutWait: number
-  lastBlockAt: string | null
-}
-
-/**
- * One provider account's two allowance numbers. Mirrors Rust
- * `AllowanceUsageAccount`.
- *
- * Utilization is supply consumed and overage is demand refused. Neither
- * follows from the other: a period can close well under its limit and still
- * contain a block from a shorter window.
- */
+/** One provider account's subscription chart. Mirrors Rust
+ * `AllowanceUsageAccount`. */
 export interface AllowanceUsageAccountPayload {
   provider: string
   displayName: string
   accountKey: string
-  /** The long window: how well the plan fits. */
+  /** The plan the account's newest observation names, or null before any
+   * observation names one. */
+  plan: LiveUsagePlanPayload | null
+  /** The headline figure. Null when no window in the trailing span has an
+   * estimate. */
   utilization: AllowanceUtilizationPayload | null
-  /** The short rolling window: the cause of the blocks, not a second
-   * plan-fit figure. The two windows answer different questions. */
-  burst: AllowanceUtilizationPayload | null
-  overage: AllowanceOveragePayload
-  /** The trailing thirty days, oldest first. */
-  days: AllowanceDayPayload[]
-  /** The thirty days before those, for the same comparison the cost chart
-   * draws. */
-  previousDays: AllowanceDayPayload[]
+  chart: AllowanceChartPayload
 }
 
-/** One day of an account's allowance series. Mirrors Rust `AllowanceDay`. */
-export interface AllowanceDayPayload {
-  /** The reader's calendar date, `YYYY-MM-DD`. */
-  localDate: string
-  /** Estimated allowance points assigned to this day from quota buckets,
-   * or null when no quota evidence covers the day. */
-  usedPercent: number | null
-  /** Blocks that started on this day. A block is its own fact, so it is
-   * reported even for a day the meter says nothing about. */
-  blockCount: number
+/** The three drawn layers of one account's allowance chart. Mirrors Rust
+ * `AllowanceChart`. */
+interface AllowanceChartPayload {
+  /** 5-hour windows, ascending by start. */
+  shortWindows: AllowanceWindowPeakPayload[]
+  /** Weekly and model-scoped weekly windows, ascending by start. */
+  weeklyWindows: AllowanceWindowLevelsPayload[]
+  /** The rolling utilization step line, ascending by time. */
+  rolling: AllowanceRollingPointPayload[]
 }
 
-/** The allowance numbers for every account. Mirrors Rust `AllowanceUsageSummary`. */
+/** One 5-hour window's column: its span, and the highest level it reached.
+ * Mirrors Rust `AllowanceWindowPeak`. */
+export interface AllowanceWindowPeakPayload {
+  startsAtEpoch: number
+  resetsAtEpoch: number
+  /** The window's own `estimatedPercent`, capped at 100. */
+  peakPercent: number
+}
+
+/** One weekly (or model-scoped weekly) window's rising area. Mirrors Rust
+ * `AllowanceWindowLevels`. */
+export interface AllowanceWindowLevelsPayload {
+  /** `"weekly"` for the account-wide window, or `"model:<slug>"` for a
+   * model-scoped one. */
+  lane: string
+  startsAtEpoch: number
+  resetsAtEpoch: number
+  /** Hourly, cumulative, capped at 100. The first point is always zero at
+   * `startsAtEpoch`. */
+  points: AllowanceLevelPointPayload[]
+}
+
+/** One point of a weekly window's cumulative level. Mirrors Rust
+ * `AllowanceLevelPoint`. */
+interface AllowanceLevelPointPayload {
+  atEpoch: number
+  percent: number
+}
+
+/** One point of the rolling utilization step line. Mirrors Rust
+ * `AllowanceRollingPoint`. */
+export interface AllowanceRollingPointPayload {
+  atEpoch: number
+  /** Null ends the line when no window remains in the pool. */
+  percent: number | null
+}
+
+/** The allowance chart for every account, as one snapshot. Mirrors Rust
+ * `AllowanceUsageSummary`. */
 export interface AllowanceUsageSummaryPayload {
-  /** One entry for each provider account with either number. An account
-   * with no allowance evidence is absent rather than zeroed. */
+  /** One entry for each provider account this app has quota evidence for. */
   accounts: AllowanceUsageAccountPayload[]
-  /** The trailing calendar days used to select quota periods. */
+  /** The trailing span the headline `utilization` pools. */
   utilizationSpanDays: number
-  /** How many trailing days `overage` covers. */
-  overageSpanDays: number
+  /** Start of the visible 30-day chart range. */
+  rangeStartEpoch: number
+  /** End of the visible chart range: "now". */
+  rangeEndEpoch: number
   generatedAt: string
 }
 type LiveLoginCarrier =

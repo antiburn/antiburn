@@ -33,34 +33,14 @@ function account(
     provider: "anthropic",
     displayName: "Claude",
     accountKey: "account",
+    plan: null,
     utilization: {
-      typicalPercent: 40,
-      peakPercent: 62,
-      averagePercent: 41.4,
-      periodCount: 9,
-      maxedPeriodCount: 0,
-      windowKind: "weekly",
-      firstPeriodAt: "2026-07-13T00:00:00Z",
-      lastPeriodAt: "2026-09-14T00:00:00Z",
+      utilizationPercent: 41.4,
+      weeklyWindowCount: 4,
+      shortWindowCount: 18,
+      modelWindowCount: 2,
     },
-    burst: {
-      typicalPercent: 15,
-      peakPercent: 100,
-      averagePercent: 27.5,
-      periodCount: 18,
-      maxedPeriodCount: 1,
-      windowKind: "rolling",
-      firstPeriodAt: "2026-08-30T00:00:00Z",
-      lastPeriodAt: "2026-09-14T00:00:00Z",
-    },
-    overage: {
-      blockCount: 8,
-      waitedSeconds: 39_960,
-      blocksWithoutWait: 0,
-      lastBlockAt: "2026-09-14T03:43:00Z",
-    },
-    days: [],
-    previousDays: [],
+    chart: { shortWindows: [], weeklyWindows: [], rolling: [] },
     ...overrides,
   }
 }
@@ -70,8 +50,9 @@ function summary(
 ): AllowanceUsageSummaryPayload {
   return {
     accounts,
-    utilizationSpanDays: 60,
-    overageSpanDays: 30,
+    utilizationSpanDays: 28,
+    rangeStartEpoch: 0,
+    rangeEndEpoch: 30 * 86400,
     generatedAt: "2026-09-15T00:00:00Z",
   }
 }
@@ -86,7 +67,6 @@ function renderTotals(
       onMetricChange={onMetricChange}
       totals={TOTALS}
       days={[]}
-      previousDays={[]}
       allowance={summary()}
       {...overrides}
     />,
@@ -96,6 +76,7 @@ function renderTotals(
 
 afterEach(() => {
   vi.restoreAllMocks()
+  localStorage.clear()
 })
 
 describe("OverviewUsage", () => {
@@ -106,7 +87,6 @@ describe("OverviewUsage", () => {
         onMetricChange={vi.fn()}
         totals={TOTALS}
         days={[]}
-        previousDays={[]}
         allowance={summary()}
       />,
     )
@@ -119,7 +99,6 @@ describe("OverviewUsage", () => {
         onMetricChange={vi.fn()}
         totals={TOTALS}
         days={[]}
-        previousDays={[]}
         allowance={summary()}
       />,
     )
@@ -135,57 +114,38 @@ describe("OverviewUsage", () => {
     expect(onMetricChange).toHaveBeenCalledWith("cost")
   })
 
-  it("states the average utilization and the limit hits beside it with their cause", () => {
+  it("shows each account's average subscription usage", () => {
     renderTotals()
     const cell = screen.getByRole("region", { name: "Allowance" })
-
-    expect(within(cell).getByText("Average subscription utilization")).toBeInTheDocument()
+    expect(within(cell).getByText("Claude")).toBeInTheDocument()
     expect(within(cell).getByText("41%")).toBeInTheDocument()
-    expect(within(cell).getByText("average subscription utilization")).toBeInTheDocument()
-    expect(within(cell).getByText("11h")).toBeInTheDocument()
-    expect(within(cell).getByText(/8 limit hits in 30 days/)).toBeInTheDocument()
-    expect(within(cell).getByText("1 of 18 windows estimated at 100%")).toBeInTheDocument()
+    expect(within(cell).getByText("Average subscription usage")).toBeInTheDocument()
   })
 
-  it("says how antiburn makes each hero figure", () => {
-    // A hero figure has room for a name and none for a method. A reader who
-    // doubts the number wants the method and the span it covers.
+  it("explains the figure's window counts and time span", () => {
     renderTotals()
-    const cell = screen.getByRole("region", { name: "Allowance" })
-
-    const utilization = within(cell).getByText("41%").closest("[tabindex]")
+    const utilization = screen.getByText("41%").closest("[tabindex]")
     fireEvent.focus(utilization!)
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/across 9 weeks in the last 60 days/)
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/current week can be incomplete/)
-    fireEvent.blur(utilization!)
-
-    const limitHits = within(cell).getByText("11h").closest("[tabindex]")
-    fireEvent.focus(limitHits!)
     expect(screen.getByRole("tooltip")).toHaveTextContent(
-      /waited for the limit to reset, across 8 limit hits in the last 30 days/,
+      "last 28 days, covering 4 weekly windows, 18 5-hour windows and 2 specific model windows",
     )
   })
 
-  it("counts the limit hits when none states a reset", () => {
-    // Codex refuses without naming a reset. The limit hits still happened,
-    // so the figure falls back to counting them.
-    renderTotals({
+  it("selects and saves a provider account without changing the metric", () => {
+    localStorage.clear()
+    const onMetricChange = renderTotals({
       allowance: summary([
-        account({
-          overage: {
-            blockCount: 1,
-            waitedSeconds: 0,
-            blocksWithoutWait: 1,
-            lastBlockAt: "2026-09-11T00:00:00Z",
-          },
-        }),
+        account(),
+        account({ provider: "openai", accountKey: "second", displayName: "Codex" }),
       ]),
     })
-    const cell = screen.getByRole("region", { name: "Allowance" })
-
-    expect(within(cell).getByText("1")).toBeInTheDocument()
-    expect(within(cell).getByText(/limit hit in 30 days/)).toBeInTheDocument()
-    expect(within(cell).getByText(/no stated reset/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("radio", { name: "Codex" }))
+    expect(screen.getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByText(/Codex: not enough window history/)).toBeInTheDocument()
+    expect(onMetricChange).not.toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem("antiburn.overview.view.v1")!)).toEqual({
+      accountTabKey: "openai:second",
+    })
   })
 
   it("shows no utilization figure for an account with no meter history", () => {
@@ -195,7 +155,7 @@ describe("OverviewUsage", () => {
     const cell = screen.getByRole("region", { name: "Allowance" })
 
     expect(within(cell).queryByText(/subscription utilization/i)).not.toBeInTheDocument()
-    expect(within(cell).getByText("11h")).toBeInTheDocument()
+    expect(within(cell).getByText(/no allowance history yet/)).toBeInTheDocument()
   })
 
   it("says the readings have not arrived rather than showing an empty meter", () => {
@@ -215,7 +175,7 @@ describe("OverviewUsage", () => {
     // yet states a different thing about the same account.
     renderTotals({ allowance: null, allowanceError: true })
     expect(screen.queryByText(/no allowance history to chart yet/)).not.toBeInTheDocument()
-    expect(screen.queryByRole("region", { name: "Allowance by day" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Allowance chart" })).not.toBeInTheDocument()
   })
 
   it("keeps the subscription figures when the cost read fails", () => {

@@ -465,21 +465,6 @@ pub struct SourcePublishOutcome {
     pub resume: Option<StoredResume>,
 }
 
-/// One session's observed quota incidents, with the accounts it used.
-///
-/// The incidents come straight out of the stored evidence as JSON, so this
-/// row stays a store type and the reduction stays out of the store.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuotaIncidentRecord {
-    /// The agent's discovery slug.
-    pub agent: String,
-    /// The session's quota incidents, as a JSON array. Never empty: the
-    /// query returns no row for a session that observed none.
-    pub incidents_json: String,
-    /// Opaque account observations keyed by canonical provider.
-    pub provider_accounts_json: String,
-}
-
 /// One session's token evidence, as the provider-usage aggregation reads it.
 ///
 /// A projection rather than a record: the aggregation needs four columns out

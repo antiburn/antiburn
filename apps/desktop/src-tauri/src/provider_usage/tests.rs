@@ -1014,3 +1014,88 @@ fn session_observations_never_produce_a_live_or_detected_state() {
         );
     }
 }
+
+#[test]
+fn daily_agent_costs_sum_to_the_daily_total() {
+    let rows = [
+        row(
+            "claude-code",
+            NOW,
+            &[(PRICED_MODEL, tokens(1_000_000, 0, 0, 0))],
+        ),
+        row("codex", NOW, &[("gpt-6-astra", tokens(2_000_000, 0, 0, 0))]),
+        row(
+            "claude-code",
+            NOW - DAY,
+            &[(PRICED_MODEL, tokens(500_000, 0, 0, 0))],
+        ),
+    ];
+    let summary = summarize(&rows, NOW, 0);
+    let today = &summary.days[29];
+    assert_eq!(today.agents.len(), 2);
+    assert_eq!(today.agents[0].agent, "claude-code");
+    assert_eq!(today.agents[1].agent, "codex");
+    assert!(
+        today
+            .agents
+            .iter()
+            .all(|agent| agent.usage.estimated_usd.is_some())
+    );
+    let sum: f64 = today
+        .agents
+        .iter()
+        .map(|agent| agent.usage.estimated_usd.unwrap())
+        .sum();
+    assert!((sum - today.usage.estimated_usd.unwrap()).abs() < 1e-9);
+    assert_eq!(today.agents[0].usage.tokens_in, 1_000_000);
+    assert_eq!(today.agents[1].usage.tokens_in, 2_000_000);
+    assert_eq!(summary.days[28].agents.len(), 1);
+    assert!(summary.days[27].agents.is_empty());
+}
+
+#[test]
+fn daily_agent_costs_keep_unknown_prices_and_provider_routes() {
+    let rows = [
+        row(
+            "pi",
+            NOW,
+            &[
+                (PRICED_MODEL, tokens(1_000_000, 0, 0, 0)),
+                ("gpt-6-astra", tokens(1_000_000, 0, 0, 0)),
+            ],
+        ),
+        row("codex", NOW, &[(UNPRICED_MODEL, tokens(123, 0, 0, 0))]),
+    ];
+    let summary = summarize(&rows, NOW, 0);
+    let today = &summary.days[29];
+    let pi = today
+        .agents
+        .iter()
+        .find(|agent| agent.agent == "pi")
+        .unwrap();
+    let codex = today
+        .agents
+        .iter()
+        .find(|agent| agent.agent == "codex")
+        .unwrap();
+    assert_eq!(pi.usage.session_count, 1);
+    assert_eq!(today.usage.session_count, 2);
+    assert_eq!(summary.totals.today.session_count, 2);
+    assert_eq!(
+        summary
+            .agents
+            .iter()
+            .find(|agent| agent.agent == "pi")
+            .unwrap()
+            .windows
+            .today
+            .session_count,
+        1
+    );
+    assert_eq!(pi.usage.tokens_in, 2_000_000);
+    assert_eq!(pi.usage.estimated_usd, today.usage.estimated_usd);
+    assert!(pi.usage.cost_complete);
+    assert_eq!(codex.usage.estimated_usd, None);
+    assert!(!codex.usage.cost_complete);
+    assert_eq!(codex.usage.tokens_in, 123);
+}

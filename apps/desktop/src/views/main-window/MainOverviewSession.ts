@@ -1,14 +1,10 @@
 import type { SessionListEntry } from "../../components/session/SessionList"
 import {
-  cancelChecksReport,
-  getChecksReport,
-  onChecksReportChanged,
-  type ChecksReportPayload,
-} from "../../lib/insightsIpc"
-import {
   getAllowanceUsage,
+  getLiveUsage,
   getMainWindowVisible,
   getProviderUsage,
+  getSessionLimitAllocations,
   onLiveUsageChanged,
   onMainWindowVisibilityChanged,
   onSessionIndexChanged,
@@ -18,18 +14,19 @@ import {
 } from "../../lib/ipc"
 import type {
   AllowanceUsageSummaryPayload,
+  LiveUsageSummaryPayload,
   ProviderUsageSummaryPayload,
+  SessionLimitAllocationSummaryPayload,
 } from "../../lib/providerUsageIpc"
 
 export interface MainOverviewAdapter {
   getUsage(): Promise<ProviderUsageSummaryPayload>
   getAllowanceUsage(): Promise<AllowanceUsageSummaryPayload>
-  getChecksReport(consumerId: string): Promise<ChecksReportPayload | null>
-  cancelChecksReport(consumerId: string): Promise<void>
+  getLiveUsage(): Promise<LiveUsageSummaryPayload>
+  getSessionLimitAllocations(): Promise<SessionLimitAllocationSummaryPayload>
   getVisible(): Promise<boolean>
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
-  onLiveUsageChanged(handler: () => void): Promise<() => void>
-  onChecksReportChanged(handler: () => void): Promise<() => void>
+  onLiveUsageChanged(handler: (usage: LiveUsageSummaryPayload) => void): Promise<() => void>
   onSessionIndexChanged(
     handler: (change: SessionIndexChangedPayload) => void,
   ): Promise<() => void>
@@ -44,18 +41,17 @@ export interface MainOverviewSessionListSource {
 const productionAdapter: MainOverviewAdapter = {
   getUsage: () => getProviderUsage(),
   getAllowanceUsage: () => getAllowanceUsage(),
-  getChecksReport: (consumerId) => getChecksReport(consumerId),
-  cancelChecksReport: (consumerId) => cancelChecksReport(consumerId),
+  getLiveUsage: () => getLiveUsage(),
+  getSessionLimitAllocations: () => getSessionLimitAllocations(),
   getVisible: () => getMainWindowVisible(),
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
   onLiveUsageChanged: (handler) => onLiveUsageChanged(handler),
-  onChecksReportChanged: (handler) => onChecksReportChanged(handler),
   onSessionIndexChanged: (handler) => onSessionIndexChanged(handler),
   onSessionUpdated: (handler) => onSessionUpdated(handler),
 }
 
 /**
- * Whether one row update can move the Overview's spend totals or report.
+ * Whether one row update can move the Overview's usage totals.
  *
  * A title-only change re-reads the recent rows alone. The `usage`, `checks`,
  * and `limits` facets are reserved by the bus; the page already honours them.
@@ -67,10 +63,9 @@ export function overviewUpdateTouchesTotals(update: SessionUpdatedPayload): bool
   )
 }
 
-/** How many recent sessions the Overview page shows. */
-export const OVERVIEW_RECENT_SESSION_COUNT = 3
-
-let nextConsumer = 0
+/** The most recent sessions the Overview page shows. The stylesheet hides
+ *  the rows a short window has no room for, down to a minimum of three. */
+export const OVERVIEW_RECENT_SESSION_COUNT = 6
 
 export interface MainOverviewSnapshot {
   active: boolean
@@ -78,17 +73,23 @@ export interface MainOverviewSnapshot {
   usage: ProviderUsageSummaryPayload | null
   /** True when the newest local usage read failed and nothing replaced it. */
   usageError: boolean
-  /** Utilization and overage for each account, or null before the first
-   *  successful read. */
+  /** Null before the first successful allowance read. */
   allowance: AllowanceUsageSummaryPayload | null
   /** True while an allowance read is in flight and nothing is on the page. */
   allowanceLoading: boolean
   /** True when the newest allowance read failed and nothing replaced it. */
   allowanceError: boolean
-  /** The Burn checks report, or null before the first successful read. */
-  report: ChecksReportPayload | null
+  /** The provider limit snapshot, or null before the first successful read. */
+  liveUsage: LiveUsageSummaryPayload | null
+  /** True once the first live-usage read answers, success or failure, or a
+   *  push arrives. Stays true afterwards: `liveUsage` is retained across
+   *  deactivation, so this flag must not revert to a loading state. */
+  liveUsageSettled: boolean
   /** The newest local sessions, or null before the first successful read. */
   recentSessions: SessionListEntry[] | null
+  /** Each recent session's estimated limit share, or null before the first
+   *  successful read. A failed read keeps the last value. */
+  sessionLimitAllocations: SessionLimitAllocationSummaryPayload | null
   /** True while the first local usage read is in flight. */
   loading: boolean
   /** True while a later local usage read is in flight. */
@@ -101,18 +102,7 @@ function overviewRecentEntries(entries: readonly SessionListEntry[]): SessionLis
     .slice(0, OVERVIEW_RECENT_SESSION_COUNT)
 }
 
-/**
- * Own the Overview section's reads: local provider usage, the live provider
- * limits, and the Burn checks report. The main window supplies the newest
- * sessions through the shared list source, so this store does not start a
- * second session-list read. It refreshes the page while the section is
- * visible and on every `session:index-changed` event or row update that can
- * move its totals.
- *
- * The checks report is read under a consumer id of its own. The backend
- * keeps that report warm until the store cancels the consumer, which it does
- * whenever the section goes inactive.
- */
+// The shared list supplies recent sessions. This store reads usage only while Overview is visible.
 export class MainOverviewSession {
   private readonly adapter: MainOverviewAdapter
   private snapshot: MainOverviewSnapshot = {
@@ -122,8 +112,10 @@ export class MainOverviewSession {
     allowance: null,
     allowanceLoading: false,
     allowanceError: false,
-    report: null,
+    liveUsage: null,
+    liveUsageSettled: false,
     recentSessions: null,
+    sessionLimitAllocations: null,
     loading: false,
     refreshing: false,
   }
@@ -135,12 +127,16 @@ export class MainOverviewSession {
   private refreshVersion = 0
   private allowanceTask: Promise<void> | null = null
   private allowanceDirty = false
-  private reportVersion = 0
+  private sessionLimitAllocationsTask: Promise<void> | null = null
+  private sessionLimitAllocationsDirty = false
+  /** Counts every live-usage push and read start. A read applies its result
+   *  only while it still holds the newest version, so a push always wins
+   *  over a read still in flight. */
+  private liveUsageVersion = 0
   private visible = false
   private initialized = false
   private refreshTask: Promise<void> | null = null
   private refreshDirty = false
-  private consumerId: string | null = null
   private readonly sessionList: MainOverviewSessionListSource
 
   constructor(
@@ -207,11 +203,15 @@ export class MainOverviewSession {
       ),
       this.listen(
         generation,
-        this.adapter.onLiveUsageChanged(whenCurrent(this.refreshAllowance)),
-      ),
-      this.listen(
-        generation,
-        this.adapter.onChecksReportChanged(whenCurrent(this.refreshReport)),
+        this.adapter.onLiveUsageChanged((liveUsage) => {
+          if (generation !== this.generation || !this.snapshot.active) return
+          // The push carries the newest figures. A read still in flight
+          // carries older ones, so it must not land after this.
+          this.liveUsageVersion += 1
+          this.update({ liveUsage, liveUsageSettled: true })
+          this.refreshAllowance()
+          this.refreshSessionLimitAllocations()
+        }),
       ),
       this.listen(generation, this.adapter.onSessionIndexChanged(whenCurrent(this.refresh))),
       this.listen(
@@ -236,18 +236,8 @@ export class MainOverviewSession {
     if (active === this.snapshot.active) return
     this.workVersion += 1
     this.update({ active, loading: active && !this.snapshot.usage, refreshing: false })
-    if (!active) {
-      this.releaseConsumer()
-      return
-    }
-    this.consumerId = `main-home-${++nextConsumer}`
+    if (!active) return
     this.refresh()
-  }
-
-  private releaseConsumer(): void {
-    const consumerId = this.consumerId
-    this.consumerId = null
-    if (consumerId) void this.adapter.cancelChecksReport(consumerId).catch(() => undefined)
   }
 
   refresh = (): void => {
@@ -267,8 +257,9 @@ export class MainOverviewSession {
       const version = this.refreshVersion
       this.update({ loading: !this.snapshot.usage, refreshing: !!this.snapshot.usage })
       this.refreshAllowance()
-      this.refreshReport()
       this.refreshRecentSessions()
+      this.refreshSessionLimitAllocations()
+      void this.loadLiveUsage(work, version, ++this.liveUsageVersion)
       try {
         const usage = await this.adapter.getUsage()
         if (work !== this.workVersion || version !== this.refreshVersion) continue
@@ -278,6 +269,29 @@ export class MainOverviewSession {
           this.update({ loading: false, refreshing: false, usageError: true })
         }
       }
+    }
+  }
+
+  /** Read the live provider limits. Only the newest read, by work, refresh,
+   *  and live-usage version, is allowed to land: a push or a later refresh
+   *  must not lose to a read still in flight. */
+  private async loadLiveUsage(
+    work: number,
+    version: number,
+    liveVersion: number,
+  ): Promise<void> {
+    const current = () =>
+      work === this.workVersion &&
+      version === this.refreshVersion &&
+      liveVersion === this.liveUsageVersion &&
+      this.snapshot.active
+    try {
+      const liveUsage = await this.adapter.getLiveUsage()
+      if (current()) this.update({ liveUsage, liveUsageSettled: true })
+    } catch {
+      // The limits panel shows its own empty state. A failed read must not
+      // hide the local totals, so liveUsage stays as it was.
+      if (current()) this.update({ liveUsageSettled: true })
     }
   }
 
@@ -310,22 +324,33 @@ export class MainOverviewSession {
     }
   }
 
-  /** Re-read the checks report alone. The newest read wins. */
-  refreshReport = (): void => {
-    const consumerId = this.consumerId
-    if (!this.snapshot.active || !consumerId) return
-    void this.loadReport(consumerId, this.workVersion, ++this.reportVersion)
+  /** Keep one allocations read in flight while changes queue a single later
+   *  read. A failed read keeps the last value, so it never disturbs the rest
+   *  of the page. */
+  refreshSessionLimitAllocations = (): void => {
+    this.sessionLimitAllocationsDirty = true
+    if (!this.snapshot.active || this.sessionLimitAllocationsTask) return
+    this.sessionLimitAllocationsTask = this.runSessionLimitAllocationsRefresh().finally(() => {
+      this.sessionLimitAllocationsTask = null
+      if (this.sessionLimitAllocationsDirty && this.snapshot.active) {
+        this.refreshSessionLimitAllocations()
+      }
+    })
   }
 
-  private async loadReport(consumerId: string, work: number, version: number): Promise<void> {
-    try {
-      const report = await this.adapter.getChecksReport(consumerId)
-      if (report && work === this.workVersion && version === this.reportVersion) {
-        this.update({ report })
+  private async runSessionLimitAllocationsRefresh(): Promise<void> {
+    while (this.sessionLimitAllocationsDirty && this.snapshot.active) {
+      this.sessionLimitAllocationsDirty = false
+      const work = this.workVersion
+      try {
+        const sessionLimitAllocations = await this.adapter.getSessionLimitAllocations()
+        if (work === this.workVersion && !this.sessionLimitAllocationsDirty) {
+          this.update({ sessionLimitAllocations })
+        }
+      } catch {
+        // Keep the last value; a failed read must not disturb the rest of
+        // the page.
       }
-    } catch {
-      // The checks panel keeps its last report. A failed read must not hide
-      // the rest of the page.
     }
   }
 
@@ -344,9 +369,8 @@ export class MainOverviewSession {
     this.workVersion += 1
     this.initialized = false
     this.visible = false
-    this.refreshTask = null
     this.allowanceDirty = false
-    this.releaseConsumer()
+    this.sessionLimitAllocationsDirty = false
     for (const stop of this.stops.splice(0)) stop()
     this.update({ active: false, loading: false, refreshing: false, allowanceLoading: false })
   }

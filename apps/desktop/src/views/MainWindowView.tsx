@@ -27,8 +27,6 @@ import { BurnChecksSession } from "./main-window/BurnChecksSession"
 import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
-import { MainWindowLimitsSession } from "./main-window/MainWindowLimitsSession"
-import { ProviderLimitsPanel } from "./main-window/ProviderLimitsPanel"
 import { OverviewView } from "./main-window/OverviewView"
 import { QuotaSession } from "./main-window/quota/QuotaSession"
 import { QuotaView } from "./main-window/quota/QuotaView"
@@ -121,14 +119,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const [burnChecksSession] = useState(() => new BurnChecksSession())
   const [navigationSession] = useState(() => new MainWindowNavigationSession())
   const [overviewSession] = useState(() => new MainOverviewSession(activitySession))
-  const [limitsSession] = useState(() => new MainWindowLimitsSession())
-  // The sidebar carries the live limits, so they stay on screen in every
-  // section instead of only on the Overview.
-  const limits = useSyncExternalStore(
-    limitsSession.subscribe,
-    limitsSession.getSnapshot,
-    limitsSession.getSnapshot,
-  )
   const [quotaSession] = useState(() => new QuotaSession())
   const navigation = useSyncExternalStore(
     navigationSession.subscribe,
@@ -298,7 +288,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           }
         />
       }
-      panel={<ProviderLimitsPanel live={limits.liveUsage} loading={limits.loading} />}
     >
       {availableSections.map((section) => (
         <div

@@ -135,6 +135,7 @@ fn generate_sessions(
                     cache_read_usd: 0.025,
                     cache_write_usd: 0.025,
                 }),
+                total_tokens: 1_000 + (shape % 200_000) as u64,
                 models: vec![model.to_string()],
                 model_runs: vec![ModelRun {
                     model: model.to_string(),

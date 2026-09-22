@@ -1,13 +1,6 @@
 /* The retained window paints an opaque canvas over the native window surface. */
 .main-window {
-  --main-window-titlebar-height: calc(var(--space-2xl) + var(--space-lg));
-  /* The card that holds the provider meters. The card takes width from the
-     window, because the sections beside it need the width more at the small
-     sizes and less at the large ones. The card is 156px at the 1000px minimum
-     window width and 316px from 1800px up. The meters add dots as it grows.
-
-     The width carries the 12px inner padding on each side. */
-  --main-window-panel-width: clamp(156px, calc(20vw - 44px), 316px);
+  --main-window-titlebar-height: calc(var(--space-2xl));
   --main-window-collection-width: 340px;
 
   position: relative;
@@ -47,37 +40,6 @@
   inline-size: var(--sidebar-width);
   flex: 0 0 var(--sidebar-width);
   flex-direction: column;
-}
-
-/* The provider meters float in a card at the top right, over the workspace.
-   Every section shows the same meters, so they keep a place of their own
-   instead of a place in one section. The card lifts off the canvas with the
-   raised shadow and the stats-card outline, and it scrolls alone when the
-   accounts outgrow the window.
-
-   The workspace holds a matching inset, so no section draws under the card.
-
-   The card keeps the full window height between its margins, which are equal
-   on all four sides. The drag strip covers only the sidebar, so the card can
-   start at the window edge on macOS too. The meters scroll inside it when the
-   accounts outgrow it, and the card keeps its own padding clear of the
-   scrolling content. */
-.main-window-panel {
-  position: absolute;
-  z-index: 10;
-  display: flex;
-  inset-block: var(--space-lg);
-  inset-inline-end: var(--space-lg);
-  inline-size: var(--main-window-panel-width);
-  flex-direction: column;
-  padding-block: var(--space-md);
-  border-radius: var(--radius-popover);
-  /* The sidebar tint is a low-alpha layer for the window surface. The card
-     paints it over the opaque window fill, so the card keeps the material the
-     meters had in the sidebar and stays opaque over the page below. */
-  background-color: var(--color-surface-window);
-  background-image: linear-gradient(var(--color-surface-sidebar), var(--color-surface-sidebar));
-  box-shadow: var(--shadow-raised), var(--shadow-stats-card);
 }
 
 .main-window-macos .main-window-sidebar {
@@ -124,11 +86,6 @@
   min-inline-size: 0;
   min-block-size: 0;
   flex: 1;
-}
-
-/* Keep every section clear of the floating meter card. */
-.main-window-workspace {
-  padding-inline-end: calc(var(--main-window-panel-width) + 2 * var(--space-lg));
 }
 
 .main-window-section[hidden] {

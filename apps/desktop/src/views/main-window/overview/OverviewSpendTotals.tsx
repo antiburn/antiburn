@@ -13,25 +13,26 @@ import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFig
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
 
-import "./overview.css"
-
 const SPANS: ReadonlyArray<{
   key: keyof ProviderUsageWindowsPayload
   label: string
   accessibleLabel: string
+  span: string
 }> = [
-  { key: "today", label: "Today", accessibleLabel: "Today" },
-  { key: "week", label: "7 days", accessibleLabel: "Last 7 days" },
-  { key: "last30Days", label: "30 days", accessibleLabel: "Last 30 days" },
+  { key: "today", label: "Today", accessibleLabel: "Today", span: "since midnight" },
+  { key: "week", label: "7 days", accessibleLabel: "Last 7 days", span: "in the last 7 days" },
+  {
+    key: "last30Days",
+    label: "30 days",
+    accessibleLabel: "Last 30 days",
+    span: "in the last 30 days",
+  },
 ]
 
-/**
- * The Overview's headline: estimated local spend today, this week, and over
- * the trailing thirty days, each as a hero figure over its token count and
- * session count. The cells carry their own labels; there is no heading. An
- * unpriced window leads with its token count instead of a zero-dollar
- * figure, and a partly priced one says so.
- */
+function spendTooltip(span: string): string {
+  return `Estimated cost, at list price, of the tokens you used ${span}.`
+}
+
 export function OverviewSpendTotals({
   totals,
   loading = false,
@@ -47,6 +48,7 @@ export function OverviewSpendTotals({
         <span className="sr-only">{span.accessibleLabel}</span>
       </>
     ),
+    tooltip: spendTooltip(span.span),
     ...(loading || !totals
       ? {
           figure: <Skeleton className="h-8 w-28" />,
@@ -54,6 +56,7 @@ export function OverviewSpendTotals({
         }
       : spendCell(totals[span.key])),
   }))
+
   return (
     <section aria-label="Estimated local spend" aria-busy={loading || undefined}>
       <HeroFigures cells={cells} />
@@ -66,6 +69,7 @@ function spendCell(
 ): Pick<HeroFigureCell, "figure" | "caption"> {
   const hasCost = window.estimatedUsd != null
   const tokens = windowTokens(window)
+
   return {
     figure: (
       <SegmentFigure>
@@ -74,13 +78,13 @@ function spendCell(
     ),
     caption: (
       <>
+        {sessionCountLabel(window.sessionCount)}
         {hasCost && (
           <>
-            <SegmentFigure>{formatTokenFigure(tokens)}</SegmentFigure>
             <span aria-hidden="true"> · </span>
+            <SegmentFigure>{`${formatTokenFigure(tokens)} tokens`}</SegmentFigure>
           </>
         )}
-        {sessionCountLabel(window.sessionCount)}
         {!window.costComplete && (
           <>
             <span aria-hidden="true"> · </span>

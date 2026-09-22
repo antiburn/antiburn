@@ -474,11 +474,10 @@ export async function getProviderUsage(): Promise<ProviderUsageSummaryPayload> {
 }
 
 /**
- * The two allowance numbers for each provider account.
+ * The allowance utilization and chart series for each provider account.
  *
- * Utilization is supply consumed and overage is demand refused. Without a
- * shell the answer is an empty snapshot: no account, rather than an account
- * with zeroed figures.
+ * Without a shell the answer is an empty snapshot: no account, rather than
+ * an account with a zeroed figure.
  */
 export async function getAllowanceUsage(): Promise<AllowanceUsageSummaryPayload> {
   if (!hasShell()) return EMPTY_ALLOWANCE_USAGE
@@ -489,8 +488,9 @@ export async function getAllowanceUsage(): Promise<AllowanceUsageSummaryPayload>
 
 const EMPTY_ALLOWANCE_USAGE: AllowanceUsageSummaryPayload = {
   accounts: [],
-  utilizationSpanDays: 60,
-  overageSpanDays: 30,
+  utilizationSpanDays: 28,
+  rangeStartEpoch: 0,
+  rangeEndEpoch: 0,
   generatedAt: "",
 }
 

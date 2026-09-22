@@ -73,6 +73,9 @@ export function SessionCostBadge({
               <span>{figureLabel}</span>
               <span className="tabular-nums">{formatCost(totalUsd)}</span>
             </div>
+            <div className="type-caption text-label-tertiary">
+              Priced at list rates. An estimate, not a bill.
+            </div>
             {models.length > 0 && (
               <div className="type-caption text-label-tertiary">
                 {models.map((model) => (

@@ -703,6 +703,10 @@ pub(crate) fn activity_entry(
         .as_ref()
         .map(|record| analysis::cached_inclusive_model_runs(&record.inclusive_models_json))
         .unwrap_or_default();
+    let total_tokens = analysis
+        .as_ref()
+        .map(|record| analysis::cached_total_tokens(&record.model_breakdown_json))
+        .unwrap_or(0);
 
     Ok(ActivityEntry {
         agent: session.key.agent.clone(),
@@ -716,6 +720,7 @@ pub(crate) fn activity_entry(
         has_fork_parent: session.fork_parent_session_id.is_some(),
         fork_child_count: store.fork_children(&session.key)?.len() as u32,
         cost,
+        total_tokens,
         models,
         model_runs,
     })

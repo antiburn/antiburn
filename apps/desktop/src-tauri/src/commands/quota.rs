@@ -538,18 +538,7 @@ fn session_quota_for_store(
             continue;
         };
 
-        // A plan is per account, not per lane: the first lane whose newest
-        // observation names one speaks for the whole account.
-        let mut plan: Option<LiveProviderPlan> = None;
-        for lane in &account.lanes {
-            if let Some((Some(name), tier)) = store
-                .latest_observation_plan(provider, &account_key, &lane.lane)
-                .map_err(fail)?
-            {
-                plan = Some(LiveProviderPlan { name, tier });
-                break;
-            }
-        }
+        let plan = account_plan(store, provider, &account_key, &account.lanes)?;
 
         for lane in &account.lanes {
             let lane_duration = crate::store::provider_limit::lane_duration_seconds(&lane.lane);
@@ -710,6 +699,25 @@ fn session_quota_for_store(
         entries,
         generated_at: iso_from_epoch(Some(now)),
     })
+}
+
+/// A plan is per account, not per lane: the first lane whose newest
+/// observation names one speaks for the whole account.
+pub(super) fn account_plan(
+    store: &Store,
+    provider: &str,
+    account_key: &str,
+    lanes: &[crate::store::provider_limit::QuotaAccountLane],
+) -> CommandResult<Option<LiveProviderPlan>> {
+    for lane in lanes {
+        if let Some((Some(name), tier)) = store
+            .latest_observation_plan(provider, account_key, &lane.lane)
+            .map_err(fail)?
+        {
+            return Ok(Some(LiveProviderPlan { name, tier }));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1749,18 +1757,33 @@ mod tests {
         seen_account(&store, &account('w'));
         insert_turn(&store, &unbound, (now - 2 * DAY + 3_600) * 1_000, 100_000);
 
+        let fable_period_id = {
+            let connection = store.lock();
+            connection
+                .execute(
+                    "INSERT INTO provider_usage_period (
+                     provider, account_key, window_id, window_kind, window_role,
+                     scope_key, scope_label, duration_seconds, starts_at_epoch,
+                     resets_at_epoch, first_observed_epoch, last_observed_epoch
+                 ) VALUES (?1, ?2, 'weekly-fable', 'weekly', 'supplemental',
+                           'model:fable', 'Fable', NULL, NULL, ?3, ?3, ?3)",
+                    params![PROVIDER, account_key, reset],
+                )
+                .expect("adds a model-scoped lane");
+            connection.last_insert_rowid()
+        };
         store
             .lock()
             .execute(
-                "INSERT INTO provider_usage_period (
-                 provider, account_key, window_id, window_kind, window_role,
-                 scope_key, scope_label, duration_seconds, starts_at_epoch,
-                 resets_at_epoch, first_observed_epoch, last_observed_epoch
-             ) VALUES (?1, ?2, 'weekly-fable', 'weekly', 'supplemental',
-                       'model:fable', 'Fable', NULL, NULL, ?3, ?3, ?3)",
-                params![PROVIDER, account_key, reset],
+                "INSERT INTO provider_usage_observation (
+                     period_id, provider, account_key, window_id, window_kind, window_role,
+                     scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                     is_authoritative, confidence, source_id, plan, plan_tier
+                 ) VALUES (?1, ?2, ?3, 'weekly-fable', 'weekly', 'supplemental',
+                           'model:fable', 'Fable', ?4, ?5, 1, 1, 'high', 'test', NULL, NULL)",
+                params![fable_period_id, PROVIDER, account_key, now - DAY, 40.0],
             )
-            .expect("adds a model-scoped lane");
+            .expect("inserts a synthetic model-scoped observation");
 
         let bounds = crate::provider_usage::window_bounds(now, 0);
         let limits = quota_usage_for_store(
@@ -1792,22 +1815,35 @@ mod tests {
             .iter()
             .find(|account| account.account_key == account_key)
             .expect("account appears");
-        assert_eq!(
-            account.utilization.as_ref().map(|value| value.peak_percent),
-            Some(50.0)
-        );
-        assert_eq!(
-            account.utilization.as_ref().map(|value| value.period_count),
-            Some(1)
-        );
-        assert_eq!(account.burst, None);
-        let daily_sum: f64 = account
-            .days
+        assert_eq!(overview.range_start_epoch, bounds.last_30_days_start);
+        assert_eq!(overview.range_end_epoch, now);
+        assert_eq!(overview.utilization_span_days, 28);
+
+        // The window opened less than seven days ago (it resets a day from
+        // now), so the rolling line has not reached its start yet and the
+        // headline states no figure.
+        assert_eq!(account.utilization, None);
+
+        // The chart still draws both weekly-style areas, from the same
+        // shared period Limits computed above: its last level equals
+        // `estimated_percent`, because both sum the same buckets.
+        let weekly_area = account
+            .chart
+            .weekly_windows
             .iter()
-            .chain(&account.previous_days)
-            .filter_map(|day| day.used_percent)
-            .sum();
-        assert!((daily_sum - shared.estimated_percent.unwrap()).abs() < 1e-9);
-        assert_eq!(overview.utilization_span_days, 60);
+            .find(|window| window.lane == "weekly")
+            .expect("the account-wide weekly window draws");
+        assert_eq!(
+            weekly_area.points.last().map(|point| point.percent),
+            shared.estimated_percent
+        );
+        assert!(
+            account
+                .chart
+                .weekly_windows
+                .iter()
+                .any(|window| window.lane == "model:fable"),
+            "the model-scoped window draws its own area"
+        );
     }
 }

@@ -186,4 +186,42 @@ describe("SegmentedControl", () => {
     expect(onChange).toHaveBeenLastCalledWith("a")
     expect(document.activeElement).toBe(screen.getByRole("tab", { name: "A" }))
   })
+
+  it("defaults text tabs to the regular size", () => {
+    render(
+      <SegmentedControl
+        options={TWO}
+        value="left"
+        onChange={() => {}}
+        ariaLabel="Placement"
+        variant="text-tabs"
+      />,
+    )
+
+    const tablist = screen.getByRole("radiogroup", { name: "Placement" })
+    expect(tablist.className).toContain("h-6")
+    expect(tablist.className).toContain("gap-3")
+    expect(screen.getByRole("radio", { name: "Left" }).className).toContain("type-footnote")
+  })
+
+  it("grows text tabs to the large size", () => {
+    render(
+      <SegmentedControl
+        options={TWO}
+        value="left"
+        onChange={() => {}}
+        ariaLabel="Placement"
+        variant="text-tabs"
+        size="large"
+      />,
+    )
+
+    const tablist = screen.getByRole("radiogroup", { name: "Placement" })
+    expect(tablist.className).toContain("h-7")
+    expect(tablist.className).toContain("gap-4")
+    const selected = screen.getByRole("radio", { name: "Left" })
+    expect(selected.className).toContain("type-body")
+    expect(selected.className).toContain("font-medium")
+    expect(selected.className).toContain("text-accent")
+  })
 })

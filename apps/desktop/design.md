@@ -14,11 +14,9 @@ sources:
   - src/styles/main-window.css
   - src/styles/burn-checks-report.css
   - src/styles/session-analysis-colors.css
-  - src/styles/overview-series-colors.css
   - src/styles/session-rows.css
   - src/styles/session-detail.css
   - src/components/ui/text-roll.css
-  - src/components/ui/hero-figures.css
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
   - src/views/main-window/quota/quota.css
@@ -329,18 +327,6 @@ colors:
   mark-compaction: # a compaction mark, lit; the brand tint in both themes
     light: "hsl(17.6 100% 58.6%)"
     dark: "hsl(17.6 100% 58.6%)"
-  series-1: # Overview account series, first: the deep blue of a reading, at full strength
-    light: "hsl(201.5 100% 34.9%)"
-    dark: "hsl(201.6 77% 62.5%)"
-  series-2: # Overview account series, second: the same blue, muted; the ramp inverts on dark
-    light: "hsl(201 48% 74%)"
-    dark: "hsl(201 38% 37%)"
-  series-3: # Overview account series, third: the same blue, between the first two
-    light: "hsl(201 62% 55%)"
-    dark: "hsl(201 50% 50%)"
-  series-4: # Overview account series, fourth: the same blue, palest
-    light: "hsl(202 31% 88%)"
-    dark: "hsl(201 28% 28%)"
   measure: # the reading itself: the real-work run and the cost-scale measure; a calm blue
     light: "hsl(191.5 83% 36.8%)"
     dark: "hsl(192 63% 47.6%)"
@@ -557,10 +543,11 @@ components:
     className: "ListDisplayToolbar + SegmentedControl variant=text-tabs"
     selectedInk: "{colors.accent}"
     indicatorColor: "{colors.label}"
-    typography: "{typography.footnote}"
+    typography: "{typography.footnote}" # size="regular" (default): 24px row, 12px gap
     height: 32px
     padding: "0 12px"
     motion: "100ms color and underline opacity crossfade; no moving indicator"
+    largeSize: 'size="large": {typography.body}, 28px row, 16px gap; used by the Overview usage unit control'
   scroll:
     className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
@@ -579,19 +566,38 @@ Notes for what isn't expressible as a token:
 
 - **Overview panels** — the usage meters use a card background and inset
   outline. The checks and sessions section fills the remaining column without an
-  outer card. Both retain 16px internal padding. Individual burn findings match
+  outer card. Both retain 16px internal padding. A unit control that heads a whole block uses
+  the large text-tabs size; a toolbar control uses the regular one. Individual burn findings match
   compact session cards: `bg-session-card`,
   `--radius-popover` corners, 12px horizontal and 8px vertical padding, 6px gaps,
   and `hover:bg-surface-secondary/50` with the shared `session-card` transition.
   Finding rows have no separator lines. “Recent” sits at the left
   of the sessions header, on the same baseline as “All sessions”, with both using
-  `type-caption text-label-secondary`.
+  `type-caption text-label-secondary`. Rows that share columns are one grid with subgrid rows,
+  never a stack of flex rows. A list that ranks sessions by a figure draws every figure the
+  same: plain text, with no pill, flame, or high-cost mark at any magnitude, because the order
+  already says which is large. A missing figure leaves its cell empty rather than showing a
+  zero. When the page narrows, a secondary column hides and its grid track goes with it, so
+  the remaining columns keep their places; when the page shortens, the list yields rows from
+  the end, so the chart above it keeps a usable plot height. Both answer a container query, not
+  the window. Every cost figure in the app is an estimate at list rates, never a bill, and its
+  tooltip says so in one muted line. The provider limits card is the one side panel: only the
+  Overview shows it, every other section keeps its full workspace width. It takes its width
+  from the window with a clamp — the page needs the width more at small sizes and less at
+  large — keeps the full window height between its margins, and scrolls alone when the accounts
+  outgrow it. It uses the popover corner, the opaque `surface-window` fill under the
+  `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card` outline.
 
-- **Hero figures** — the Overview's spend totals and the Limits header share the
-  `hero-figures` grid (`src/components/ui/hero-figures.css`): one cell per figure,
-  each a `type-callout text-label-secondary` label over a `type-hero-figure font-mono`
-  number and a `type-caption text-label-tertiary` caption, with a 1px separator and
-  16px inline padding between cells. The cells stack below 540px of container width.
+- **Overview cost chart** — show daily estimated cost as stacked areas, one per source
+  agent, for the latest 30 days. Keep agent colors stable and name each agent in the
+  legend. Do not show the previous period. Leave gaps for unknown costs and mark
+  incomplete days; tooltips distinguish unpriced usage from known subtotals.
+
+- **Hero figures** — every row of headline figures in the app is one `HeroFigures`: a
+  `type-callout text-label-secondary` label over a `type-hero-figure font-mono` number in the
+  `measure` ink, with a `type-caption text-label-tertiary` line under it, cells parted by a
+  hairline, stacking when their container narrows. A figure's method goes in its tooltip.
+  A new headline number joins this row rather than drawing its own.
 
 - **Limits page** — the scope picker is a pill that floats over the bottom centre of
   the page, in the shape of the session detail's section picker and in its selected
@@ -678,13 +684,13 @@ Notes for what isn't expressible as a token:
 - **Burn Checks** — `BurnCheckIndicator` owns the feature palette and iconography. Failure uses
   `burn-check-failure-fill` for arcs or marks and `burn-check-failure-text` for wording. Pass arcs
   and terminal ticks use `burn-check-pass-fill`. A passing session-card verdict uses the same cyan
-  with semibold sentence-case `All X passed` wording. Passed counts in mixed results use the same cyan at regular
-  weight, so the color maps to the dial segment while failure retains weight priority. Unassessed arcs and
+  with semibold sentence-case `X/Y passed` wording, counting assessed checks only. A failing
+  verdict uses semibold failure ink with `X/Y failed` wording instead; the two never appear
+  together, so the verdict is always a single phrase. Unassessed arcs and
   lifecycle marks use `burn-check-neutral`. A compact session-list verdict uses system monospace with
-  `type-footnote tabular-nums text-label-secondary`, aligns its text to the card's 8px content
-  gap, and renders each outcome and middle dot as separate elements. The dot uses 2px CSS margins on
-  each side instead of monospace space characters. The verdict omits unassessed counts and the repeated “Burn Checks” noun
-  from assessed counts. Failure wording uses semibold weight. Compact Lucide indicators use a
+  `type-footnote tabular-nums text-label-secondary` and aligns its text to the card's 8px content
+  gap. The verdict omits unassessed checks entirely, counting them out of both the numerator and the
+  denominator. Failure wording uses semibold weight. Compact Lucide indicators use a
   15px visual size. Compact segmented dials remain 14px with a 1.5px optical stroke and 14-degree requested
   gaps. A text-bearing indicator shifts down 1px for optical alignment with the monospace verdict.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
@@ -790,42 +796,28 @@ Notes for what isn't expressible as a token:
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
-- **Session Detail style rules** — the detail view matches the home screen's density of styles.
-  One data size per tab: every figure, row, and data label is `type-body`; hierarchy comes from ink
-  and weight, and size changes are reserved for the hero title (`type-title-3`), guidance prose
-  (`type-callout`), footnotes, and the wide Cost card's component table (`type-callout`, so it
-  sits beside the total at the minimum window width). No heading that restates its content, and no caption label over
-  a self-evident value — identification that is genuinely needed uses an icon with a tooltip, the
-  session-row fork-glyph pattern. Every horizontal bar uses the usage meter (`SegmentedMeter`)
-  silhouette; judgment is carried by the band word's ink, never by a multi-color bar. Color only
-  where it means a category: blue for context, the token series colors for in/out, yellow and
-  pink for cache marks, brand orange for a compaction, and the `measure` blue wherever the view
-  draws a reading — the real-work run of the efficiency composition and the measure on the cost
-  scale. The Cost tab's burnup chart stacks the same token in/out colors with two more: a muted
-  blue-green `cost-cache-read` and a muted green `cost-cache-write`, each grey at rest in its own
-  step (`chart-rest` through the new `chart-rest-fainter`) until the key names it. In that
-  composition rewrite waste takes the mid neutral and carry takes the brand orange, so the same
-  orange means a compaction in the chart and carry in the bar below it; the two never share a
-  shape, and the legend beside each names it. The Tools tab reports its wasted
-  tokens in `waste-warn`, and in `system-red-text` when the waste is both a large share of the
-  startup context and large in absolute terms. `waste-warn` is its own token because `brand` is
-  too dark on the light surface to read as orange beside that red. Everything else stays greyscale
-  until the pointer names a layer. The Overview allowance chart draws every provider account on
-  one percent scale, so there color names an account: the `series-1` to `series-4` tokens hand
-  out one hue, the deep blue of a reading, at four weights. One hue keeps the chart calm and
-  keeps every series away from the red that marks a block, which is the one mark on the chart a
-  reader must not miss. Weight names the account: the first two weights sit at opposite ends of
-  the ramp, which is the widest separation one hue can give the common case of two accounts, and
-  a difference in lightness alone survives every type of color vision deficiency. The cost is
-  that the muted series reads as the secondary one. A fifth account repeats the first weight,
-  because a repeat is honest and a fifth step does not stay separable. A block keeps the system red and its own
-  shape, a dot over the bar ringed in the window surface, so it never depends on hue alone and
-  never sinks into the bar beneath it. The wide Cost tab is a query
-  container, and its burn checks answer their own pane width. Each check is a card, which is what
-  groups its name with its verdict; the verdict is the mark alone, with the word kept for a screen
-  reader, and the card itself is the affordance that opens the explanation. Two cards to a row, and
-  three from 48rem where each card also shows its summary sentence. The tooltip holds the evidence
-  and the advice at every width.
+- **Data views** — a view that shows figures (Session Detail, the Overview) keeps the home
+  screen's density of styles. One data size per view: every figure, row, and data label is
+  `type-body`; hierarchy comes from ink and weight, and size changes are reserved for a hero
+  title or figure, guidance prose (`type-callout`), and footnotes. No heading that restates its
+  content, and no caption label over a self-evident value — identification that is genuinely
+  needed uses an icon with a tooltip. A figure's method belongs in its tooltip, not beside it: a
+  hero figure has room for a name and no room for a method. Every horizontal bar uses the usage
+  meter (`SegmentedMeter`) silhouette; judgment is carried by ink, never by a multi-color bar.
+- **Chart color** — color only where it means a category: blue for context, the token series
+  colors for in/out, `cost-cache-read` and `cost-cache-write` for the cache layers, yellow and
+  pink for cache marks, brand orange for a compaction or carry, and the `measure` blue wherever
+  the view draws a reading. One meaning per color across a view: when two marks share a color
+  they never share a shape, and a legend names each. Layers rest in the `chart-rest` greys and
+  take their color when the key or the pointer names them. A chart with several layers on one
+  category stays on one hue and separates the layers by weight and opacity, so a further layer
+  never needs a second hue to stay legible. Layer styling is Tailwind utilities on the SVG
+  elements, not stylesheet rules. `waste-warn` is its own token because `brand` is too dark on
+  the light surface to read as orange beside `system-red-text`.
+- **Verdict cards** — a card groups a name with its verdict; the verdict is the mark alone, with
+  the word kept for a screen reader, and the card itself is the affordance that opens the
+  explanation. The tooltip holds the evidence and the advice at every width. A pane of cards is a
+  query container, and its cards answer their own pane width, not the window's.
 - **Main window** — the retained main window opens at 1100 × 600 logical pixels with a normal
   minimum of 1000 × 560. The initial outer frame uses at most 85% of each usable display dimension,
   including native chrome. A smaller work area takes precedence over the normal minimum. Saved
@@ -836,17 +828,6 @@ Notes for what isn't expressible as a token:
   their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
-  A card floats at the top right, over the workspace, and holds the live provider meters.
-  The card takes width from the window: 156px at the 1000px minimum window width, then
-  `clamp(156px, calc(20vw - 44px), 316px)` up to 316px from 1800px. The sections beside it
-  need the width more at the small sizes and less at the large ones. Every section shows the same meters, so they sit over the workspace instead of
-  under the section rows. The card uses the popover corner, the opaque `surface-window`
-  fill under the `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card`
-  outline. The tint keeps the material the meters had in the sidebar. It insets 16px from the
-  window edges on all four sides, including on macOS, where the drag strip covers only the
-  sidebar. It keeps the full window height between those margins. It scrolls alone when the accounts outgrow it. The workspace holds a matching inset, so no section draws under it.
-  The meters hold 12px of padding on each side and pack one dot every 9px of measured
-  width, to a floor of 16 dots.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,
   and 12px icon gaps, which Settings keeps. A top-level item can nest child rows one level deep,
@@ -873,11 +854,10 @@ Notes for what isn't expressible as a token:
 
 ### Main window collection and detail architecture
 
-The 220px navigation sidebar, 340px collection pane, flexible detail pane, and fluid provider
-card remain visible at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
-the session detail owns its toolbar and scroll area. The workspace reserves the provider
-card and the 16px margin on each side of it. At the 1000px minimum window width, the
-detail retains 252px; at the 1100px default width, it receives 332px.
+The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
+at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
+the detail retains 440px; at the 1100px default width, it receives 540px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;

@@ -62,6 +62,7 @@ const entry = (id: string, extra = {}): ActivityEntryPayload =>
     cost: null,
     models: [],
     modelRuns: [],
+    totalTokens: 0,
     hasForkParent: false,
     forkChildCount: 0,
     wslDistro: null,

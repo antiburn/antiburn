@@ -36,6 +36,9 @@ export interface ActivityEntryPayload {
   forkChildCount: number
   /** Cost of the parent transcript plus every sub-agent the session launched. */
   cost: SessionCostComponents | null
+  /** Input, cache-creation, output, and cache-read tokens, summed across
+   *  every model. The count covers every sub-agent the session launched. */
+  totalTokens: number
   /** Every model that contributed billable tokens. */
   models: string[]
   /** Parent model runs followed by runs used only by sub-agents. */

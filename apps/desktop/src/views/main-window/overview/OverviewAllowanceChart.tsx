@@ -1,163 +1,110 @@
-import { useState, type CSSProperties, type KeyboardEvent } from "react"
+import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 
 import type {
-  AllowanceDayPayload,
+  AllowanceRollingPointPayload,
   AllowanceUsageAccountPayload,
+  AllowanceWindowLevelsPayload,
+  AllowanceWindowPeakPayload,
 } from "../../../lib/providerUsageIpc"
-import {
-  allowancePointsLabel,
-  allowanceSeriesMax,
-  limitHitDayLabel,
-  dayLabel,
-  percentCeiling,
-} from "../../../lib/presentation/overviewChart"
+import { axisDayLabel, dayLabel } from "../../../lib/presentation/chartDates"
+import { AXIS_TICK } from "../../../components/session/analysis/chartLabels"
 
 import { Tooltip } from "../../../components/presentation/Tooltip"
+import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
-import {
-  Bar,
-  ChartAxis,
-  GUIDE_FRACTIONS,
-  GuideLabels,
-  Guides,
-  DAY_TOOLTIP_DELAY_MS,
-} from "./overviewChartParts"
+import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
 
 import "./overview.css"
 
-/**
- * The colors one chart gives its accounts, in the order it hands them out.
- *
- * Every weight is the deep blue of a reading, so nothing on the chart comes
- * near the red that marks a block. The first two sit at opposite ends of
- * the ramp, which is the widest separation one hue can give the common case
- * of two accounts. A fifth account repeats the first weight, because a
- * repeat is honest and a fifth step does not stay separable.
- */
-const SERIES_COLORS = [
-  "bg-series-1 text-series-1",
-  "bg-series-2 text-series-2",
-  "bg-series-3 text-series-3",
-  "bg-series-4 text-series-4",
-]
+const MARGIN_TOP = 8
+const TIME_AXIS_HEIGHT = 16
+const VALUE_AXIS_WIDTH = 44
+const DAY_TOOLTIP_DELAY_MS = 100
 
-/** The color for one account, by its place in the chart. */
-function seriesColor(index: number): string {
-  return SERIES_COLORS[index % SERIES_COLORS.length]!
-}
+const DAY_SECS = 24 * 60 * 60
+const CHART_DAYS = 30
+const AXIS_LABEL_STEP = 7
+const AXIS_LABEL_CLEARANCE = 3
 
-/** The figures beside the guides: points of the allowance, in percent. */
-function guideLabels(ceiling: number): Map<number, string> {
-  return new Map(
-    GUIDE_FRACTIONS.map((fraction) => [fraction, `${Math.round(ceiling * fraction)}%`]),
+const GUIDE_PERCENTS = [100, 75, 50, 25]
+
+export function OverviewAllowanceChart({
+  account,
+  rangeStartEpoch,
+  rangeEndEpoch,
+  loading = false,
+  controls,
+}: {
+  account: AllowanceUsageAccountPayload | null
+  rangeStartEpoch: number
+  rangeEndEpoch: number
+  loading?: boolean
+  controls?: ReactNode
+}) {
+  if (!account) {
+    return (
+      <section className="overview-chart" aria-label="Allowance chart" aria-busy={loading}>
+        {loading ? (
+          <Skeleton className="block min-h-(--overview-chart-height) w-full flex-1" />
+        ) : (
+          <p className="type-body text-label-secondary">No allowance history to chart yet.</p>
+        )}
+      </section>
+    )
+  }
+
+  return (
+    <AllowancePlot
+      account={account}
+      rangeStartEpoch={rangeStartEpoch}
+      rangeEndEpoch={rangeEndEpoch}
+      controls={controls}
+    />
   )
 }
 
-/** The bar for one day: its height on the scale, and whether it has a figure. */
-function barGeometry(day: AllowanceDayPayload | undefined, ceiling: number) {
-  const percent = day?.usedPercent ?? null
-  return {
-    outline: percent == null,
-    fraction: percent == null ? 0 : Math.min(1, percent / ceiling),
-  }
-}
-
-/**
- * Every date any account charts, oldest first.
- *
- * Two accounts can have quota evidence on different days. The chart draws one
- * column for each date either account knows, so a column always holds the
- * same date in every series.
- */
-function chartDates(accounts: ReadonlyArray<AllowanceUsageAccountPayload>): string[] {
-  const dates = new Set<string>()
-  for (const account of accounts) {
-    for (const day of account.days) dates.add(day.localDate)
-  }
-  return [...dates].sort()
-}
-
-/** One account's days, addressed by date. */
-function daysByDate(account: AllowanceUsageAccountPayload): Map<string, AllowanceDayPayload> {
-  return new Map(account.days.map((day) => [day.localDate, day]))
-}
-
-/** The one-line reading in a day's tooltip, across every account. */
-function dayDetail(
-  localDate: string,
-  isToday: boolean,
-  accounts: ReadonlyArray<AllowanceUsageAccountPayload>,
-  series: ReadonlyArray<Map<string, AllowanceDayPayload>>,
-): string {
-  const parts = [isToday ? "Today" : dayLabel(localDate)]
-  accounts.forEach((account, index) => {
-    const day = series[index]?.get(localDate)
-    const reading = allowancePointsLabel(day?.usedPercent ?? null)
-    const hits = day ? limitHitDayLabel(day.blockCount) : null
-    parts.push(`${account.displayName} ${reading}${hits ? `, ${hits}` : ""}`)
-  })
-  return parts.join(" · ")
-}
-
-/**
- * Thirty days of allowance, every provider account on one scale.
- *
- * The bars sum the same quota buckets as Limits. Antiburn shares meter
- * changes across local sessions and estimates usage between readings.
- *
- * Both accounts read in percent of their own plan, so one scale holds them
- * both. Color names the account, and the key is the only place that says
- * which color is which.
- *
- * A day with no quota evidence draws an outlined dot. A gap is unknown.
- */
-export function OverviewAllowanceChart({
-  accounts,
-  loading = false,
+// Keep loading states outside this component. The size hooks must find the element when they subscribe.
+function AllowancePlot({
+  account,
+  rangeStartEpoch,
+  rangeEndEpoch,
+  controls,
 }: {
-  accounts: ReadonlyArray<AllowanceUsageAccountPayload>
-  loading?: boolean
+  account: AllowanceUsageAccountPayload
+  rangeStartEpoch: number
+  rangeEndEpoch: number
+  controls?: ReactNode
 }) {
-  // The keyboard's place in the row follows the date, not the index, so a
-  // refresh that adds a day keeps the reader's day. A date the series no
-  // longer holds falls back to today.
-  const [focusDate, setFocusDate] = useState<string | null>(null)
-  const charted = accounts.filter((account) => account.days.length > 0)
-  const dates = chartDates(charted)
-  if (loading && dates.length === 0) {
-    return (
-      <section className="overview-chart" aria-label="Allowance by day" aria-busy>
-        <Skeleton className="block min-h-[var(--overview-chart-height)] w-full flex-1" />
-      </section>
-    )
-  }
-  if (dates.length === 0) {
-    return (
-      <section className="overview-chart" aria-label="Allowance by day">
-        <p className="type-body text-label-secondary">
-          antiburn has no allowance history to chart yet. Usage appears after a provider reports
-          allowance data or local sessions provide an estimate.
-        </p>
-      </section>
-    )
-  }
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const width = useElementWidth(containerRef)
+  const height = useElementHeight(containerRef)
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
+  const rawId = useId()
+  const clipId = `overview-allowance-clip-${rawId.replace(/:/g, "")}`
 
-  const series = charted.map(daysByDate)
-  const lastIndex = dates.length - 1
-  const foundFocus = focusDate == null ? -1 : dates.indexOf(focusDate)
-  const focusIndex = foundFocus >= 0 ? foundFocus : lastIndex
-  const ceiling = percentCeiling(allowanceSeriesMax(...charted.map((account) => account.days)))
+  const slots = chartDaySlots(rangeStartEpoch, rangeEndEpoch)
+  const lastIndex = CHART_DAYS - 1
+  const activeIndex = focusedIndex ?? lastIndex
 
-  function focusDay(index: number, list: HTMLElement | null): void {
-    const localDate = dates[Math.max(0, Math.min(lastIndex, index))]
-    if (!localDate) return
-    setFocusDate(localDate)
-    list?.querySelector<HTMLButtonElement>(`[data-day="${localDate}"]`)?.focus()
+  const plotLeft = 0
+  const plotRight = Math.max(plotLeft, width - VALUE_AXIS_WIDTH)
+  const plotTop = MARGIN_TOP
+  const plotBottom = Math.max(plotTop, height - TIME_AXIS_HEIGHT)
+  const plotWidth = plotRight - plotLeft
+  const plotHeight = plotBottom - plotTop
+  const x = timeScale(rangeStartEpoch, rangeEndEpoch, plotLeft, plotWidth)
+  const y = percentScale(plotTop, plotHeight)
+
+  function focusDay(index: number): void {
+    const target = Math.max(0, Math.min(lastIndex, index))
+    setFocusedIndex(target)
+    containerRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-day-index="${target}"]`)
+      ?.focus()
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number): void {
-    const list = event.currentTarget.parentElement
     const target =
       event.key === "ArrowLeft"
         ? index - 1
@@ -170,106 +117,310 @@ export function OverviewAllowanceChart({
               : null
     if (target == null) return
     event.preventDefault()
-    focusDay(target, list)
+    focusDay(target)
   }
 
+  const lastRolling = rollingAt(account.chart.rolling, rangeEndEpoch)
+  const summary =
+    lastRolling == null
+      ? `${account.displayName}: not enough window history yet for a rolling utilization line.`
+      : `${account.displayName}: rolling subscription utilization ends this range at ` +
+        `${Math.round(lastRolling)} percent.`
+
   return (
-    <section
-      className="overview-chart"
-      aria-label="Allowance by day"
-      style={{ "--overview-series-count": charted.length } as CSSProperties}
-    >
-      <div className="overview-chart-scroll">
-        <div className="overview-chart-body">
-          <div className="overview-plot">
-            <div className="relative h-full">
-              <AccountLegend accounts={charted} />
-              <Guides />
-              <div
-                role="group"
-                aria-label="Allowance for the past 30 days"
-                className="overview-days relative"
-              >
-                {dates.map((localDate, index) => {
-                  const isToday = index === lastIndex
-                  const detail = dayDetail(localDate, isToday, charted, series)
+    <section className="overview-chart" aria-label="Allowance chart">
+      <p className="sr-only">{summary}</p>
+      <div className="mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
+        <ChartLegend
+          ariaLabel="Layers"
+          items={[
+            { key: "short", label: "5-hour window", swatch: "bg-token-in/20" },
+            { key: "weekly", label: "Week", swatch: "bg-token-in/60" },
+            { key: "rolling", label: "Average usage", swatch: "bg-gray-500", shape: "line" },
+          ]}
+        />
+        {controls}
+      </div>
+      <div ref={containerRef} className="relative min-h-(--overview-chart-height) flex-1">
+        {width > 0 && height > 0 && (
+          <>
+            {/* Keep the SVG outside normal layout flow. Its measured height otherwise prevents the container from shrinking. */}
+            <svg className="absolute inset-0" width={width} height={height} aria-hidden="true">
+              <defs>
+                <clipPath id={clipId}>
+                  <rect x={plotLeft} y={plotTop} width={plotWidth} height={plotHeight} />
+                </clipPath>
+              </defs>
+
+              {GUIDE_PERCENTS.map((percent) => (
+                <line
+                  key={percent}
+                  x1={plotLeft}
+                  x2={plotRight}
+                  y1={y(percent)}
+                  y2={y(percent)}
+                  stroke="var(--color-separator)"
+                  strokeOpacity={0.6}
+                />
+              ))}
+              {GUIDE_PERCENTS.map((percent) => (
+                <text
+                  key={`label-${percent}`}
+                  x={plotRight + 6}
+                  y={y(percent)}
+                  textAnchor="start"
+                  dominantBaseline="middle"
+                  {...AXIS_TICK}
+                >
+                  {percent}%
+                </text>
+              ))}
+
+              {slots.map((slot) => {
+                const label = dayAxisLabel(slot)
+                if (!label) return null
+                return (
+                  <text
+                    key={slot.index}
+                    x={slot.isToday ? x(slot.endEpoch) : x(slot.startEpoch)}
+                    y={plotBottom + 4}
+                    textAnchor={slot.isToday ? "end" : "start"}
+                    dominantBaseline="hanging"
+                    {...AXIS_TICK}
+                  >
+                    {label}
+                  </text>
+                )
+              })}
+
+              <g clipPath={`url(#${clipId})`}>
+                {account.chart.shortWindows.map((window) => {
+                  const rect = shortWindowRect(window, x, y, plotBottom)
                   return (
-                    <Tooltip
-                      key={localDate}
-                      label={<SegmentFigure>{detail}</SegmentFigure>}
-                      delayMs={DAY_TOOLTIP_DELAY_MS}
-                    >
-                      <button
-                        type="button"
-                        data-day={localDate}
-                        aria-label={detail}
-                        tabIndex={index === focusIndex ? 0 : -1}
-                        className="overview-day"
-                        onFocus={() => setFocusDate(localDate)}
-                        onKeyDown={(event) => onKeyDown(event, index)}
-                        style={{ "--overview-bar-index": index } as CSSProperties}
-                      >
-                        {charted.map((account, accountIndex) => {
-                          const day = series[accountIndex]?.get(localDate)
-                          const geometry = barGeometry(day, ceiling)
-                          return (
-                            <span
-                              key={`${account.provider}:${account.accountKey}`}
-                              className="overview-series"
-                            >
-                              {(day?.blockCount ?? 0) > 0 && (
-                                <span
-                                  aria-hidden="true"
-                                  className="overview-block-mark bg-system-red-tint"
-                                />
-                              )}
-                              <Bar
-                                fraction={geometry.fraction}
-                                outline={geometry.outline}
-                                className={seriesColor(accountIndex)}
-                              />
-                            </span>
-                          )
-                        })}
-                      </button>
-                    </Tooltip>
+                    <rect
+                      key={`${window.startsAtEpoch}-${window.resetsAtEpoch}`}
+                      x={rect.x}
+                      y={rect.y}
+                      width={rect.width}
+                      height={rect.height}
+                      className="fill-token-in/[0.18]"
+                    />
                   )
                 })}
-              </div>
+
+                <g className="opacity-50">
+                  {account.chart.weeklyWindows.map((window) => {
+                    const area = weeklyAreaPath(window, x, y)
+                    if (!area) return null
+                    return (
+                      <g key={`${window.lane}-${window.startsAtEpoch}`}>
+                        <path d={area} className="fill-token-in" stroke="none" />
+                        <path
+                          d={weeklyTopLinePath(window, x, y)}
+                          fill="none"
+                          className="stroke-token-in stroke-1"
+                        />
+                      </g>
+                    )
+                  })}
+                </g>
+
+                {account.chart.rolling.length > 0 && (
+                  <path
+                    d={rollingLinePath(account.chart.rolling, x, y, rangeEndEpoch)}
+                    fill="none"
+                    className="stroke-gray-500 stroke-[3.5px]"
+                    strokeLinejoin="round"
+                  />
+                )}
+              </g>
+            </svg>
+
+            <div
+              role="group"
+              aria-label="Allowance for the past 30 days"
+              className="absolute inset-0"
+            >
+              {slots.map((slot) => {
+                const left = x(slot.startEpoch)
+                const right = x(slot.endEpoch)
+                const lines = dayTooltipLines(account, slot)
+                return (
+                  <Tooltip
+                    key={slot.index}
+                    label={<SegmentFigure>{lines.join(" · ")}</SegmentFigure>}
+                    delayMs={DAY_TOOLTIP_DELAY_MS}
+                  >
+                    <button
+                      type="button"
+                      data-day-index={slot.index}
+                      aria-label={lines.join(", ")}
+                      tabIndex={slot.index === activeIndex ? 0 : -1}
+                      className="group absolute inset-y-0 border-0 bg-transparent p-0"
+                      style={{ left, width: Math.max(0, right - left) }}
+                      onFocus={() => setFocusedIndex(slot.index)}
+                      onKeyDown={(event) => onKeyDown(event, slot.index)}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-label/0 group-hover:bg-label/25 group-focus-visible:bg-label/25"
+                      />
+                    </button>
+                  </Tooltip>
+                )
+              })}
             </div>
-            <GuideLabels labels={guideLabels(ceiling)} />
-          </div>
-          <ChartAxis dates={dates} />
-        </div>
+          </>
+        )}
       </div>
     </section>
   )
 }
 
-/** The key: which color draws which account, and what a red mark means. */
-function AccountLegend({
-  accounts,
-}: {
-  accounts: ReadonlyArray<AllowanceUsageAccountPayload>
-}) {
+interface AllowanceDaySlot {
+  index: number
+  startEpoch: number
+  endEpoch: number
+  isToday: boolean
+}
+
+function chartDaySlots(rangeStartEpoch: number, rangeEndEpoch: number): AllowanceDaySlot[] {
+  return Array.from({ length: CHART_DAYS }, (_, index) => {
+    const isToday = index === CHART_DAYS - 1
+    const startEpoch = rangeStartEpoch + index * DAY_SECS
+    const endEpoch = isToday ? rangeEndEpoch : Math.min(startEpoch + DAY_SECS, rangeEndEpoch)
+    return { index, startEpoch, endEpoch, isToday }
+  })
+}
+
+function timeScale(
+  rangeStartEpoch: number,
+  rangeEndEpoch: number,
+  plotLeft: number,
+  plotWidth: number,
+): (epoch: number) => number {
+  const span = rangeEndEpoch - rangeStartEpoch || 1
+  return (epoch: number) => plotLeft + ((epoch - rangeStartEpoch) / span) * plotWidth
+}
+
+function percentScale(plotTop: number, plotHeight: number): (percent: number) => number {
+  return (percent: number) => plotTop + (1 - percent / 100) * plotHeight
+}
+
+function shortWindowRect(
+  window: AllowanceWindowPeakPayload,
+  x: (epoch: number) => number,
+  y: (percent: number) => number,
+  plotBottom: number,
+): { x: number; width: number; y: number; height: number } {
+  const left = x(window.startsAtEpoch)
+  const right = x(window.resetsAtEpoch)
+  const top = y(window.peakPercent)
+  return {
+    x: left,
+    width: Math.max(0, right - left),
+    y: top,
+    height: Math.max(0, plotBottom - top),
+  }
+}
+
+function weeklyTopLinePath(
+  window: AllowanceWindowLevelsPayload,
+  x: (epoch: number) => number,
+  y: (percent: number) => number,
+): string {
+  if (window.points.length < 2) return ""
+  return window.points
+    .map((point, index) => `${index === 0 ? "M" : "L"}${x(point.atEpoch)},${y(point.percent)}`)
+    .join(" ")
+}
+
+function weeklyAreaPath(
+  window: AllowanceWindowLevelsPayload,
+  x: (epoch: number) => number,
+  y: (percent: number) => number,
+  baselinePercent = 0,
+): string {
+  const top = weeklyTopLinePath(window, x, y)
+  if (!top) return ""
+  const lastPoint = window.points[window.points.length - 1]!
+  const firstPoint = window.points[0]!
   return (
-    <p className="overview-legend type-caption flex items-center gap-[var(--space-md)] text-label-secondary">
-      {accounts.map((account, index) => (
-        <span
-          key={`${account.provider}:${account.accountKey}`}
-          className="inline-flex items-center gap-[var(--space-xs)]"
-        >
-          <span
-            aria-hidden="true"
-            className={`h-2 w-2 rounded-small ${seriesColor(index).split(" ")[0]}`}
-          />
-          {account.displayName}
-        </span>
-      ))}
-      <span className="inline-flex items-center gap-[var(--space-xs)]">
-        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-system-red-tint" />
-        Limit hit
-      </span>
-    </p>
+    `${top} L${x(lastPoint.atEpoch)},${y(baselinePercent)} ` +
+    `L${x(firstPoint.atEpoch)},${y(baselinePercent)} Z`
   )
+}
+
+function rollingLinePath(
+  points: readonly AllowanceRollingPointPayload[],
+  x: (epoch: number) => number,
+  y: (percent: number) => number,
+  rangeEndEpoch: number,
+): string {
+  const segments: string[] = []
+  let previous: AllowanceRollingPointPayload | null = null
+  for (const point of points) {
+    if (previous?.percent != null) {
+      segments.push(`L${x(point.atEpoch)},${y(previous.percent)}`)
+    }
+    if (point.percent != null) {
+      segments.push(
+        `${previous?.percent == null ? "M" : "L"}${x(point.atEpoch)},${y(point.percent)}`,
+      )
+    }
+    previous = point
+  }
+  if (previous?.percent != null) {
+    segments.push(`L${x(rangeEndEpoch)},${y(previous.percent)}`)
+  }
+  return segments.join(" ")
+}
+
+function localDateOf(epoch: number): string {
+  const date = new Date(epoch * 1_000)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function dayAxisLabel(slot: AllowanceDaySlot): string | null {
+  if (slot.isToday) return "Today"
+  if (
+    slot.index % AXIS_LABEL_STEP === 0 &&
+    slot.index < CHART_DAYS - 1 - AXIS_LABEL_CLEARANCE
+  ) {
+    return axisDayLabel(localDateOf(slot.startEpoch))
+  }
+  return null
+}
+
+function dayHeadingLabel(slot: AllowanceDaySlot): string {
+  return slot.isToday ? "Today" : dayLabel(localDateOf(slot.startEpoch))
+}
+
+function rollingAt(
+  rolling: readonly AllowanceRollingPointPayload[],
+  atEpoch: number,
+): number | null {
+  let value: number | null = null
+  for (const point of rolling) {
+    if (point.atEpoch > atEpoch) break
+    value = point.percent
+  }
+  return value
+}
+
+function dayTooltipLines(
+  account: AllowanceUsageAccountPayload,
+  slot: AllowanceDaySlot,
+): string[] {
+  const lines = [dayHeadingLabel(slot)]
+  const rolling = rollingAt(account.chart.rolling, slot.endEpoch)
+  lines.push(
+    rolling == null
+      ? "Average usage: not enough history yet"
+      : `Average usage: ${Math.round(rolling)}%`,
+  )
+  return lines
 }

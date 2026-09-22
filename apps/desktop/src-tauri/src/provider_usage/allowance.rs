@@ -1,435 +1,229 @@
-//! Reduce observed evidence to the two allowance figures the Overview shows.
+//! Reduce observed quota windows to the Overview's subscription chart.
 //!
-//! # Two numbers, neither derived from the other
-//!
-//! **Utilization** is supply consumed: the shared quota period estimate from
-//! meter observations and local turn spend. **Overage** is demand refused: how often the
-//! provider turned a request away, and how long the reader then waited. A
-//! week can close at 62% and still contain a refusal, because the refusal
-//! came from a different, shorter window. So the surface states both.
-//!
-//! # What counts as a refusal
-//!
-//! Only the provider saying it refused a request. A meter reading of 100% is
-//! not a refusal. Claude states a refusal as a limit error in the transcript;
-//! Codex states one on the `rate_limits` object of a reading.
+//! The Overview shows one account's rolling utilization: the
+//! [`UTILIZATION_PERCENTILE`] percentile, by nearest rank, of every
+//! account-wide quota window's estimated share (5-hour, weekly, and any
+//! model-scoped weekly window), pooled over a trailing 28-day span. A
+//! weekly-scale window's percent counts [`WEEKLY_POOL_WEIGHT`] times in the
+//! pool; a 5-hour window's percent counts [`SHORT_POOL_WEIGHT`] time. This
+//! module holds the pure reductions the chart and its headline share: a
+//! weekly window's cumulative level, a window's own capped peak, and the
+//! pooled rolling line both read from.
 
 use std::collections::BTreeMap;
 
-use antiburn_local::analysis::{QuotaIncident, QuotaLimitKind, QuotaResetClock};
-use serde::Deserialize;
-
 use crate::dto::QuotaPeriodPayload;
-use crate::store::QuotaIncidentRecord;
 
-/// The gap that separates two refusals.
-///
-/// A refused request is retried, and each retry is refused again while the
-/// window stays closed. Every refusal inside this gap belongs to one block.
-const STORM_GAP_MS: i64 = 3 * 60 * 60 * 1000;
-
-/// How long the rolling window lasts. Claude calls it the session limit.
-const ROLLING_WINDOW_MS: i64 = 5 * 60 * 60 * 1000;
-
-/// How long the weekly window lasts.
-const WEEKLY_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-
-/// One block: a refusal and the wait it caused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Block {
-    /// When the provider first refused.
-    pub started_at_ms: i64,
-    /// When the window reopened, when a refusal in this block states a
-    /// reset the window length can hold.
-    pub reset_at_ms: Option<i64>,
-}
-
-impl Block {
-    /// How long the reader waited: the whole block, not the last retry.
-    ///
-    /// A block that states no usable reset contributes to the count and not
-    /// to the wait.
-    pub fn waited_ms(&self) -> Option<i64> {
-        self.reset_at_ms
-            .map(|reset_at_ms| reset_at_ms - self.started_at_ms)
-    }
-}
-
-/// Every block over one span, already reduced.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Overage {
-    pub block_count: usize,
-    /// The total wait across the blocks that state one.
-    pub waited_ms: i64,
-    /// How many blocks state no usable reset, so state no wait.
-    pub blocks_without_wait: usize,
-    pub last_block_at_ms: Option<i64>,
-}
-
-/// How long the window of `kind` lasts.
-///
-/// `UsageLimit` names no window, and `RateLimit` is the fallback for text
-/// that names none either. Both take the rolling window, the shorter of the
-/// two, so a wait that only a weekly window could hold is discarded.
-fn window_ms(kind: QuotaLimitKind) -> i64 {
-    match kind {
-        QuotaLimitKind::Weekly => WEEKLY_WINDOW_MS,
-        QuotaLimitKind::RollingWindow
-        | QuotaLimitKind::ModelSpecific
-        | QuotaLimitKind::WeightedUsage
-        | QuotaLimitKind::RateLimit
-        | QuotaLimitKind::UsageLimit => ROLLING_WINDOW_MS,
-    }
-}
-
-/// The instant a stated local reset clock names, after `ts_ms`.
-///
-/// The text states a wall-clock time and a zone, and no date. The reset is
-/// therefore the next time that clock comes around in that zone. A zone the
-/// database does not know gives no instant at all.
-fn resolve_reset_clock(ts_ms: i64, clock: &QuotaResetClock) -> Option<i64> {
-    let zone = jiff::tz::TimeZone::get(&clock.zone).ok()?;
-    let at = jiff::Timestamp::from_millisecond(ts_ms)
-        .ok()?
-        .to_zoned(zone);
-    let same_day = at
-        .with()
-        .hour(i8::try_from(clock.hour).ok()?)
-        .minute(i8::try_from(clock.minute).ok()?)
-        .second(0)
-        .subsec_nanosecond(0)
-        .build()
-        .ok()?;
-    let reset = if same_day > at {
-        same_day
-    } else {
-        same_day.checked_add(jiff::Span::new().days(1)).ok()?
-    };
-    Some(reset.timestamp().as_millisecond())
-}
-
-/// When the window this refusal hit reopens.
-///
-/// The wait it implies must fit inside the window that refused. A stated
-/// clock carries no date, so reading it as the next occurrence gives a
-/// 23-hour wait when the time has already passed today. A five-hour window
-/// cannot produce that. Such a reset is discarded and never clamped: a
-/// clamped value would read as a real five-hour outage.
-fn reset_at_ms(incident: &QuotaIncident) -> Option<i64> {
-    let reset_ms = match (incident.reset_ts_ms, incident.reset_clock.as_ref()) {
-        (Some(reset_ms), _) => reset_ms,
-        (None, Some(clock)) => resolve_reset_clock(incident.ts_ms, clock)?,
-        (None, None) => return None,
-    };
-    let waited = reset_ms.checked_sub(incident.ts_ms)?;
-    (waited > 0 && waited <= window_ms(incident.limit_kind)).then_some(reset_ms)
-}
-
-/// The blocks the refusals at or after `since_ms` make.
-///
-/// The span drops the refusals before it, not the blocks that start before
-/// it. A refusal up to the storm gap before the span merges with the first
-/// refusal inside it, and the merged block keeps the earlier start. Dropping
-/// that block loses a refusal the reader met inside the span.
-fn blocks_since(incidents: &[QuotaIncident], since_ms: i64) -> Vec<Block> {
-    blocks_from(
-        incidents
-            .iter()
-            .filter(|incident| incident.ts_ms >= since_ms)
-            .collect(),
-    )
-}
-
-/// Collapse a retry storm into the blocks behind it.
-///
-/// Incidents arrive from every session, so one block can appear in two
-/// transcripts that ran at once. Grouping by time rather than by session is
-/// what makes the count a count of blocks.
-fn blocks_from(mut sorted: Vec<&QuotaIncident>) -> Vec<Block> {
-    sorted.sort_by_key(|incident| (incident.ts_ms, incident.limit_kind));
-    // One open block for each limit kind, and the last refusal that kind saw.
-    //
-    // A five-hour limit and a weekly limit are two different windows. They
-    // refuse at their own times and state their own resets, so a refusal of
-    // one kind must never extend a block of the other. Merging them let a
-    // weekly reset state the wait for a five-hour block.
-    let mut open: Vec<(QuotaLimitKind, usize, i64)> = Vec::new();
-    let mut blocks: Vec<Block> = Vec::new();
-    for incident in sorted {
-        let reset_at_ms = reset_at_ms(incident);
-        let same_kind = open
-            .iter_mut()
-            .find(|(kind, _, _)| *kind == incident.limit_kind);
-        match same_kind {
-            // The gap that opens a new block is the gap between two
-            // refusals, not the span since the block started. A window that
-            // stays closed longer than the gap is still one block while the
-            // retries keep arriving inside it.
-            //
-            // A retry can state the reset the first refusal missed, so the
-            // latest stated reset wins.
-            Some((_, index, last_ts_ms)) if incident.ts_ms - *last_ts_ms <= STORM_GAP_MS => {
-                let block = &mut blocks[*index];
-                block.reset_at_ms = block.reset_at_ms.max(reset_at_ms);
-                *last_ts_ms = incident.ts_ms;
-            }
-            Some((_, index, last_ts_ms)) => {
-                *index = blocks.len();
-                *last_ts_ms = incident.ts_ms;
-                blocks.push(Block {
-                    started_at_ms: incident.ts_ms,
-                    reset_at_ms,
-                });
-            }
-            None => {
-                open.push((incident.limit_kind, blocks.len(), incident.ts_ms));
-                blocks.push(Block {
-                    started_at_ms: incident.ts_ms,
-                    reset_at_ms,
-                });
-            }
-        }
-    }
-    blocks.sort_by_key(|block| block.started_at_ms);
-    blocks
-}
-
-/// Reduce every refusal at or after `since_ms` to one overage figure.
-pub fn overage(incidents: &[QuotaIncident], since_ms: i64) -> Overage {
-    let mut overage = Overage::default();
-    for block in blocks_since(incidents, since_ms) {
-        overage.block_count += 1;
-        match block.waited_ms() {
-            Some(waited) => overage.waited_ms += waited,
-            None => overage.blocks_without_wait += 1,
-        }
-        overage.last_block_at_ms = Some(
-            overage
-                .last_block_at_ms
-                .map_or(block.started_at_ms, |last| last.max(block.started_at_ms)),
-        );
-    }
-    overage
-}
-
-/// The fewest periods that make a median a typical value.
-///
-/// The midpoint of two numbers is not typical of anything. Below this count
-/// the peak stands on its own, which is honest at any sample size.
-pub const TYPICAL_MIN_PERIODS: usize = 6;
-
-/// The maximum percentage shown in utilization statistics.
-/// A shared estimate can reach this value without a provider refusal.
+/// The maximum percentage a window's estimate shows as.
 pub const MAXED_PERCENT: f64 = 100.0;
 
-/// How much of the allowance the reader consumed, across whole periods.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Utilization {
-    /// The median estimate across the periods, or `None` while the sample is
-    /// too small for a median to mean anything.
-    pub typical_percent: Option<f64>,
-    /// The highest shared estimate any one period reached.
-    pub peak_percent: f64,
-    /// The mean estimate across every known period in the span. It answers "how
-    /// much of the plan do I use", where the peak answers "can the plan
-    /// hold me". An idle period pulls this figure down and moves the
-    /// median above far less.
-    pub average_percent: f64,
-    pub period_count: usize,
-    /// How many periods reached [`MAXED_PERCENT`].
-    pub maxed_period_count: usize,
-    /// The account-wide window the periods measure: `weekly` or `rolling`.
-    /// The reader must know which
-    /// window a figure covers, because the windows answer different
-    /// questions.
-    pub window_kind: String,
-    pub first_period_at_epoch: i64,
-    pub last_period_at_epoch: i64,
-}
+/// How far back the rolling pool looks for a closed window.
+pub const POOL_SPAN_SECS: i64 = 28 * 24 * 60 * 60;
 
-/// Reduce the shared quota periods in one account-wide lane.
-/// Unknown periods have no percentage and do not count as idle.
-pub fn utilization(periods: &[QuotaPeriodPayload], window_kind: &str) -> Option<Utilization> {
-    let mut peaks: Vec<(i64, f64)> = periods
-        .iter()
-        .filter_map(|period| {
-            Some((
-                period.starts_at_epoch,
-                period.estimated_percent?.min(MAXED_PERCENT),
-            ))
-        })
-        .collect();
-    if peaks.is_empty() {
-        return None;
-    }
-    let total: f64 = peaks.iter().map(|entry| entry.1).sum();
-    peaks.sort_by(|left, right| left.1.total_cmp(&right.1));
-    let period_count = peaks.len();
-    let typical_percent =
-        (period_count >= TYPICAL_MIN_PERIODS).then(|| median(&peaks[..], |entry| entry.1));
-    Some(Utilization {
-        window_kind: window_kind.to_owned(),
-        typical_percent,
-        peak_percent: peaks[period_count - 1].1,
-        average_percent: total / period_count as f64,
-        period_count,
-        maxed_period_count: peaks
-            .iter()
-            .filter(|entry| entry.1 >= MAXED_PERCENT)
-            .count(),
-        first_period_at_epoch: peaks.iter().map(|entry| entry.0).min().expect("not empty"),
-        last_period_at_epoch: peaks.iter().map(|entry| entry.0).max().expect("not empty"),
-    })
-}
+/// How many times a weekly-scale window's percent appears in the pool.
+/// A weekly limit constrains work more than a 5-hour limit, so the
+/// figure weights it more.
+pub const WEEKLY_POOL_WEIGHT: usize = 5;
 
-/// The middle value of an already-sorted list.
-///
-/// The typical figure is a median and not a mean. An unspent allowance
-/// expires, so an idle period is a real zero that drags a mean toward a
-/// number no period resembles.
-fn median<T>(sorted: &[T], value: impl Fn(&T) -> f64) -> f64 {
-    let middle = sorted.len() / 2;
-    if sorted.len() % 2 == 1 {
-        value(&sorted[middle])
-    } else {
-        f64::midpoint(value(&sorted[middle - 1]), value(&sorted[middle]))
-    }
-}
+/// How many times a 5-hour window's percent appears in the pool.
+pub const SHORT_POOL_WEIGHT: usize = 1;
 
-/// One provider account, named the way the store names it.
-pub type AccountId = (String, String);
+/// How much window history the rolling line needs behind it before its
+/// first point.
+const LINE_START_LEAD_SECS: i64 = 7 * 24 * 60 * 60;
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AccountObservation {
-    provider: String,
-    account_key: String,
-}
+/// The weekly area's sample step.
+const LEVEL_STEP_SECS: i64 = 60 * 60;
 
-/// What the shared quota bucket estimates assign to a day.
+/// One point of a weekly-style window's cumulative level.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Consumed {
+pub struct LevelPoint {
     pub at_epoch: i64,
     pub percent: f64,
 }
 
-/// The span one account's shared quota evidence covers and its daily shares.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct AccountConsumption {
-    pub consumed: Vec<Consumed>,
-    pub covered: Vec<(i64, i64)>,
-}
-
-impl AccountConsumption {
-    pub fn covers(&self, from_epoch: i64, to_epoch: i64) -> bool {
-        self.covered
-            .iter()
-            .any(|(from, to)| *from <= to_epoch && *to >= from_epoch)
+/// A weekly (or model-scoped weekly) window's cumulative level, sampled
+/// hourly from zero at its start to its own estimate.
+///
+/// The level at each hour is the running sum of every contribution,
+/// unattributed, and unexplained bucket percent up to that hour — the same
+/// three sources [`crate::commands::quota::quota_usage_for_store`] sums into
+/// `estimated_percent`, so a closed window's last point equals
+/// `estimated_percent.min(100)` exactly: both figures sum the same buckets,
+/// and a closed window's buckets already stay under 100 by
+/// [`crate::provider_usage::quota::share::share_period_capped`]'s own
+/// contract. Capping each point defends an open window's tail, which can
+/// still run past 100 before it closes.
+///
+/// `None` when the period has no estimate at all. The single point at the
+/// window's own start when it has not yet run a full hour, or has not yet
+/// started relative to `now`.
+pub fn weekly_levels(period: &QuotaPeriodPayload, now: i64) -> Option<Vec<LevelPoint>> {
+    period.estimated_percent?;
+    let start = period.starts_at_epoch;
+    let end = period.resets_at_epoch.min(now);
+    let mut points = vec![LevelPoint {
+        at_epoch: start,
+        percent: 0.0,
+    }];
+    if end <= start {
+        return Some(points);
     }
+
+    let mut by_bucket: BTreeMap<i64, f64> = BTreeMap::new();
+    for bucket in &period.contributions {
+        if let Some(percent) = bucket.percent {
+            *by_bucket.entry(bucket.bucket_start_epoch).or_insert(0.0) += percent;
+        }
+    }
+    for bucket in period
+        .unattributed_buckets
+        .iter()
+        .chain(&period.unexplained_buckets)
+    {
+        if let Some(percent) = bucket.percent {
+            *by_bucket.entry(bucket.bucket_start_epoch).or_insert(0.0) += percent;
+        }
+    }
+
+    let steps = ((end - start) as f64 / LEVEL_STEP_SECS as f64).ceil() as i64;
+    let mut cumulative = 0.0;
+    for step in 1..=steps {
+        let step_start = start + (step - 1) * LEVEL_STEP_SECS;
+        let step_end = (start + step * LEVEL_STEP_SECS).min(end);
+        let rise: f64 = by_bucket
+            .range(step_start..step_end)
+            .map(|(_, percent)| *percent)
+            .sum();
+        cumulative += rise;
+        points.push(LevelPoint {
+            at_epoch: step_end,
+            percent: cumulative.min(MAXED_PERCENT),
+        });
+    }
+    Some(points)
 }
 
-/// Sum the same buckets used by the Limits period total.
-/// The meter's unexplained rise belongs to its reading day; estimated turn
-/// spend belongs to its bucket day.
-pub fn consumption(periods: &[QuotaPeriodPayload]) -> AccountConsumption {
-    let mut result = AccountConsumption::default();
-    for period in periods {
-        let sample_epochs: Vec<i64> = period
-            .samples
+/// A window's own capped peak: its `estimated_percent`, capped at
+/// [`MAXED_PERCENT`]. `None` when the window has no estimate.
+pub fn window_peak(period: &QuotaPeriodPayload) -> Option<f64> {
+    period
+        .estimated_percent
+        .map(|percent| percent.min(MAXED_PERCENT))
+}
+
+/// Whether the window that closes at `resets_at_epoch` (open when `open` is
+/// true) belongs to the pool a headline or a rolling point reduces at time
+/// `t`.
+///
+/// A closed window counts when its close falls in the trailing 28-day span
+/// ending at `t`, `(t − 28 days, t]`. An open window counts only at the
+/// pool's final evaluation, `t == now`, at its present level — `t` never
+/// exceeds `now`, so an open window's close never falls at or before any
+/// other `t` and this rule alone decides it.
+pub fn pooled_at(resets_at_epoch: i64, open: bool, t: i64, now: i64) -> bool {
+    let closed_in_span = resets_at_epoch > t - POOL_SPAN_SECS && resets_at_epoch <= t;
+    closed_in_span || (t == now && open)
+}
+
+/// One point of the rolling utilization step line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RollingPoint {
+    pub at_epoch: i64,
+    pub percent: Option<f64>,
+}
+
+/// One window as the rolling pool reduces it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoolWindow {
+    pub starts_at_epoch: i64,
+    pub resets_at_epoch: i64,
+    /// The window's own [`window_peak`].
+    pub percent: f64,
+    /// True when the window has not closed at `now`.
+    pub open: bool,
+    /// How many times `percent` appears in the pool.
+    pub weight: usize,
+}
+
+/// The trailing 28-day pooled utilization, as a step line.
+///
+/// `windows` is every account-wide window (5-hour, weekly, and any
+/// model-scoped weekly window) this account has. Each window's `percent`
+/// appears `weight` times in the pool at every time it is counted — a
+/// weekly-scale window carries [`WEEKLY_POOL_WEIGHT`], a 5-hour window
+/// carries [`SHORT_POOL_WEIGHT`] — so a weekly limit shapes the figure more
+/// than a 5-hour limit does. The line evaluates at every window close and at
+/// every time a closed window leaves the span, from its start to `now`, plus
+/// `now` itself, so the last point also pools every window still open, each
+/// at its present level — the same rule [`pooled_at`] states. It emits a
+/// point only when the pooled value changes, or at the first and the last
+/// evaluation. A null value ends the line when the pool becomes empty.
+///
+/// The line starts at the first evaluation time with at least seven days of
+/// window history behind it: `max(from_epoch, earliest window start + 7
+/// days)`. It emits nothing when `now` falls before that start, or when
+/// `windows` is empty.
+pub fn rolling_utilization(windows: &[PoolWindow], now: i64, from_epoch: i64) -> Vec<RollingPoint> {
+    let Some(earliest_start) = windows.iter().map(|w| w.starts_at_epoch).min() else {
+        return Vec::new();
+    };
+    let line_start = from_epoch.max(earliest_start + LINE_START_LEAD_SECS);
+    if now < line_start {
+        return Vec::new();
+    }
+
+    // The pool changes when a window closes and when a closed window leaves
+    // the trailing span, so the line evaluates at both times.
+    let mut times: Vec<i64> = windows
+        .iter()
+        .flat_map(|w| [w.resets_at_epoch, w.resets_at_epoch + POOL_SPAN_SECS])
+        .filter(|&t| t >= line_start && t <= now)
+        .collect();
+    times.push(line_start);
+    times.push(now);
+    times.sort_unstable();
+    times.dedup();
+
+    let mut points = Vec::new();
+    let mut last_value: Option<f64> = None;
+    let last_index = times.len() - 1;
+    for (index, &t) in times.iter().enumerate() {
+        let mut pooled: Vec<f64> = windows
             .iter()
-            .filter(|sample| {
-                sample.authoritative
-                    && sample.used_percent.is_some()
-                    && sample.observed_at_epoch >= period.starts_at_epoch
-                    && sample.observed_at_epoch < period.resets_at_epoch
-            })
-            .map(|sample| sample.observed_at_epoch)
+            .filter(|w| pooled_at(w.resets_at_epoch, w.open, t, now))
+            .flat_map(|w| std::iter::repeat_n(w.percent, w.weight))
             .collect();
-        if let (Some(first), Some(last)) = (
-            sample_epochs.iter().min().copied(),
-            sample_epochs.iter().max().copied(),
-        ) {
-            result.covered.push((first, last));
-        }
-        for bucket in &period.contributions {
-            if let Some(percent) = bucket.percent {
-                result
-                    .covered
-                    .push((bucket.bucket_start_epoch, bucket.bucket_start_epoch));
-                result.consumed.push(Consumed {
-                    at_epoch: bucket.bucket_start_epoch,
-                    percent,
-                });
-            }
-        }
-        for bucket in period
-            .unattributed_buckets
-            .iter()
-            .chain(&period.unexplained_buckets)
-        {
-            if let Some(percent) = bucket.percent {
-                result
-                    .covered
-                    .push((bucket.bucket_start_epoch, bucket.bucket_start_epoch));
-                result.consumed.push(Consumed {
-                    at_epoch: bucket.bucket_start_epoch,
-                    percent,
-                });
-            }
+        pooled.sort_by(f64::total_cmp);
+        let value = (!pooled.is_empty()).then(|| percentile_by_rank(&pooled, |percent| *percent));
+        let is_edge = index == 0 || index == last_index;
+        if (is_edge && value.is_some()) || value != last_value {
+            points.push(RollingPoint {
+                at_epoch: t,
+                percent: value,
+            });
+            last_value = value;
         }
     }
-    result
+    points
 }
 
-/// The blocks each account met inside the span, in the order they happened.
+/// The rank the pooled utilization figure reads. Tune the figure by
+/// changing this constant alone.
+const UTILIZATION_PERCENTILE: f64 = 0.5;
+
+/// The [`UTILIZATION_PERCENTILE`] percentile of an already-sorted,
+/// non-empty list.
 ///
-/// The Overview marks the days that carry a block, so it needs the blocks
-/// themselves and not only how many there were.
-pub fn account_blocks(
-    incidents: &[QuotaIncidentRecord],
-    since_ms: i64,
-) -> BTreeMap<AccountId, Vec<Block>> {
-    incidents_by_account(incidents)
-        .into_iter()
-        .map(|(id, incidents)| (id, blocks_since(&incidents, since_ms)))
-        .collect()
-}
-
-/// Reduce the provider refusal history for every observed account.
-pub fn account_overages(
-    incidents: &[QuotaIncidentRecord],
-    since_ms: i64,
-) -> BTreeMap<AccountId, Overage> {
-    incidents_by_account(incidents)
-        .into_iter()
-        .map(|(id, incidents)| (id, overage(&incidents, since_ms)))
-        .collect()
-}
-
-/// Gather every session's incidents under the accounts that session used.
-///
-/// A session states which provider accounts it touched. Grouping by account
-/// rather than by session is what lets one block that two transcripts both
-/// recorded count once.
-fn incidents_by_account(
-    records: &[QuotaIncidentRecord],
-) -> BTreeMap<AccountId, Vec<QuotaIncident>> {
-    let mut by_account: BTreeMap<AccountId, Vec<QuotaIncident>> = BTreeMap::new();
-    for record in records {
-        let Ok(incidents) = serde_json::from_str::<Vec<QuotaIncident>>(&record.incidents_json)
-        else {
-            continue;
-        };
-        let observations: Vec<AccountObservation> =
-            serde_json::from_str(&record.provider_accounts_json).unwrap_or_default();
-        for observation in observations {
-            by_account
-                .entry((observation.provider, observation.account_key))
-                .or_default()
-                .extend(incidents.iter().cloned());
-        }
-    }
-    by_account
+/// Nearest-rank method: index = ceil(UTILIZATION_PERCENTILE * n) - 1. The
+/// figure is always a value a real window reached, never an interpolation
+/// between two. With one period the index resolves to that period, so the
+/// figure equals its own value.
+fn percentile_by_rank<T>(sorted: &[T], value: impl Fn(&T) -> f64) -> f64 {
+    let n = sorted.len();
+    let rank = (UTILIZATION_PERCENTILE * n as f64).ceil() as usize;
+    let index = rank.saturating_sub(1).min(n - 1);
+    value(&sorted[index])
 }
 
 #[cfg(test)]

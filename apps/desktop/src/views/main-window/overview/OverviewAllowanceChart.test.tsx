@@ -1,130 +1,144 @@
 import { fireEvent, render, screen, within } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type {
-  AllowanceDayPayload,
-  AllowanceUsageAccountPayload,
-} from "../../../lib/providerUsageIpc"
+import type { AllowanceUsageAccountPayload } from "../../../lib/providerUsageIpc"
 import { OverviewAllowanceChart } from "./OverviewAllowanceChart"
 
-function day(offset: number, usedPercent: number | null, blockCount = 0): AllowanceDayPayload {
-  const date = new Date(2026, 8, 14 - (29 - offset))
-  const localDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
-  return { localDate, usedPercent, blockCount }
+const DAY = 86400
+const start = new Date(2026, 8, 1).getTime() / 1000
+const end = start + 29.5 * DAY
+const account: AllowanceUsageAccountPayload = {
+  provider: "anthropic",
+  displayName: "Claude",
+  accountKey: "one",
+  plan: null,
+  utilization: null,
+  chart: {
+    shortWindows: [{ startsAtEpoch: start, resetsAtEpoch: start + 18000, peakPercent: 30 }],
+    weeklyWindows: [
+      {
+        lane: "weekly",
+        startsAtEpoch: start,
+        resetsAtEpoch: start + 7 * DAY,
+        points: [
+          { atEpoch: start, percent: 0 },
+          { atEpoch: start + 7 * DAY, percent: 75 },
+        ],
+      },
+    ],
+    rolling: [{ atEpoch: start + 7 * DAY, percent: 40 }],
+  },
 }
 
-const days = Array.from({ length: 30 }, (_, index) =>
-  day(index, index === 3 ? null : index * 0.5, index === 10 ? 2 : 0),
-)
-const previousDays = Array.from({ length: 30 }, (_, index) => day(index, 1))
-
-function account(overrides: Partial<AllowanceUsageAccountPayload> = {}) {
-  return {
-    provider: "anthropic",
-    displayName: "Claude",
-    accountKey: "account",
-    utilization: null,
-    burst: null,
-    overage: { blockCount: 0, waitedSeconds: 0, blocksWithoutWait: 0, lastBlockAt: null },
-    days,
-    previousDays,
-    ...overrides,
-  } satisfies AllowanceUsageAccountPayload
+function buttons() {
+  return within(
+    screen.getByRole("group", { name: "Allowance for the past 30 days" }),
+  ).getAllByRole("button")
 }
 
-function dayButtons(): HTMLElement[] {
-  const group = screen.getByRole("group", { name: "Allowance for the past 30 days" })
-  return within(group).getAllByRole("button")
-}
+beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(634)
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(224)
+})
+afterEach(() => vi.restoreAllMocks())
 
 describe("OverviewAllowanceChart", () => {
-  it("reads each day in allowance points and names the account", () => {
-    render(<OverviewAllowanceChart accounts={[account()]} />)
-    const buttons = dayButtons()
-    expect(buttons).toHaveLength(30)
-    const today = "Today · Claude 15 points"
-    expect(buttons[29]).toHaveAttribute("aria-label", today)
-    fireEvent.focus(buttons[29]!)
-    expect(screen.getByRole("tooltip")).toHaveTextContent(today)
-  })
-
-  it("calls a day with no quota data unknown, never zero", () => {
-    render(<OverviewAllowanceChart accounts={[account()]} />)
-    // The gap states no figure rather than a zero.
-    expect(dayButtons()[3]).toHaveAttribute(
-      "aria-label",
-      expect.stringContaining("no quota data"),
+  it("shows the quota windows and rolling utilization for the selected account", () => {
+    const { container } = render(
+      <OverviewAllowanceChart account={account} rangeStartEpoch={start} rangeEndEpoch={end} />,
     )
-  })
-
-  it("marks a day that carried a limit hit", () => {
-    const { container } = render(<OverviewAllowanceChart accounts={[account()]} />)
-    expect(dayButtons()[10]).toHaveAttribute(
-      "aria-label",
-      expect.stringContaining("2 limit hits"),
+    expect(
+      screen.getByText(
+        /Claude: rolling subscription utilization ends this range at 40 percent/,
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText("5-hour window")).toBeVisible()
+    expect(screen.getByText("Week")).toBeVisible()
+    expect(screen.getByText("Average usage")).toBeVisible()
+    const rect = container.querySelector("g[clip-path] > rect")!
+    expect(Number(rect.getAttribute("height"))).toBeCloseTo(60)
+    expect(Number(rect.getAttribute("width"))).toBeGreaterThan(0)
+    expect(container.querySelector("path[stroke-linejoin]")).toHaveAttribute(
+      "d",
+      expect.stringContaining("M140,128"),
     )
-    expect(container.querySelectorAll(".overview-block-mark")).toHaveLength(1)
+    expect(buttons()).toHaveLength(30)
+    expect(buttons()[29]).toHaveAccessibleName("Today, Average usage: 40%")
+    fireEvent.focus(buttons()[29]!)
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Today · Average usage: 40%")
   })
 
-  it("draws every account on one chart, each at its own weight", () => {
-    // Two accounts both read in percent of their own plan, so one scale holds
-    // them both. Color is the only thing that names which is which.
+  it("calls history before the first rolling point unknown", () => {
     render(
+      <OverviewAllowanceChart account={account} rangeStartEpoch={start} rangeEndEpoch={end} />,
+    )
+    expect(buttons()[0]).toHaveAccessibleName(/Average usage: not enough history yet/)
+    expect(buttons()[0]).not.toHaveAccessibleName(/0%/)
+  })
+
+  it("breaks the rolling line when history expires and resumes when new history arrives", () => {
+    const { container } = render(
       <OverviewAllowanceChart
-        accounts={[
-          account(),
-          account({ provider: "openai", displayName: "Codex", accountKey: "other" }),
-        ]}
+        account={{
+          ...account,
+          chart: {
+            ...account.chart,
+            rolling: [
+              { atEpoch: start, percent: 40 },
+              { atEpoch: start + DAY, percent: null },
+              { atEpoch: start + 3 * DAY, percent: 40 },
+              { atEpoch: start + 4 * DAY, percent: null },
+            ],
+          },
+        }}
+        rangeStartEpoch={start}
+        rangeEndEpoch={end}
       />,
     )
-    expect(screen.getAllByRole("region", { name: /Allowance by day/ })).toHaveLength(1)
-    const buttons = dayButtons()
-    expect(buttons).toHaveLength(30)
-    expect(buttons[29]).toHaveAttribute(
-      "aria-label",
-      "Today · Claude 15 points · Codex 15 points",
-    )
-    expect(buttons[29]!.querySelectorAll(".overview-series")).toHaveLength(2)
-    expect(buttons[29]!.querySelector(".bg-series-1")).toBeTruthy()
-    expect(buttons[29]!.querySelector(".bg-series-2")).toBeTruthy()
+    const path = container.querySelector("path[stroke-linejoin]")!.getAttribute("d")!
+    expect(path.match(/[ML]/g)).toEqual(["M", "L", "M", "L"])
+    const coordinates = path.match(/[\d.]+/g)!.map(Number)
+    const expected = [0, 128, 20, 128, 60, 128, 80, 128]
+    coordinates.forEach((value, index) => expect(value).toBeCloseTo(expected[index]!))
+    expect(buttons()[1]).toHaveAccessibleName(/not enough history yet/)
+    expect(buttons()[2]).toHaveAccessibleName(/40%/)
+    expect(buttons()[29]).toHaveAccessibleName(/not enough history yet/)
+    expect(screen.getByText(/Claude: not enough window history/)).toBeInTheDocument()
   })
 
-  it("draws one column for a date only one account knows", () => {
-    // Two accounts can start metering on different days. A column always
-    // holds the same date in every series.
+  it("walks the days with arrow keys, Home, and End", () => {
     render(
+      <OverviewAllowanceChart account={account} rangeStartEpoch={start} rangeEndEpoch={end} />,
+    )
+    const days = buttons()
+    expect(days[29]).toHaveAttribute("tabindex", "0")
+    fireEvent.keyDown(days[29]!, { key: "ArrowLeft" })
+    expect(document.activeElement).toBe(days[28])
+    fireEvent.keyDown(days[28]!, { key: "Home" })
+    expect(document.activeElement).toBe(days[0])
+    fireEvent.keyDown(days[0]!, { key: "ArrowLeft" })
+    expect(document.activeElement).toBe(days[0])
+    fireEvent.keyDown(days[0]!, { key: "End" })
+    expect(document.activeElement).toBe(days[29])
+  })
+
+  it("measures the plot when an account arrives after loading", () => {
+    const { rerender } = render(
       <OverviewAllowanceChart
-        accounts={[
-          account({ days: days.slice(28) }),
-          account({ provider: "openai", displayName: "Codex", accountKey: "other" }),
-        ]}
+        account={null}
+        rangeStartEpoch={start}
+        rangeEndEpoch={end}
+        loading
       />,
     )
-    const buttons = dayButtons()
-    expect(buttons).toHaveLength(30)
-    expect(buttons[0]).toHaveAttribute(
-      "aria-label",
-      expect.stringContaining("Claude no quota data"),
+    expect(screen.getByRole("region", { name: "Allowance chart" })).toHaveAttribute(
+      "aria-busy",
+      "true",
     )
-  })
-
-  it("says antiburn has no readings rather than drawing an empty chart", () => {
-    render(<OverviewAllowanceChart accounts={[account({ days: [], previousDays: [] })]} />)
-    expect(screen.getByRole("region", { name: "Allowance by day" }).textContent).toContain(
-      "no allowance history",
+    expect(screen.queryByRole("group")).not.toBeInTheDocument()
+    rerender(
+      <OverviewAllowanceChart account={account} rangeStartEpoch={start} rangeEndEpoch={end} />,
     )
-  })
-
-  it("walks the days with the arrow keys", () => {
-    render(<OverviewAllowanceChart accounts={[account()]} />)
-    const buttons = dayButtons()
-    buttons[29]!.focus()
-    fireEvent.focus(buttons[29]!)
-    fireEvent.keyDown(buttons[29]!, { key: "ArrowLeft" })
-    expect(document.activeElement).toBe(buttons[28])
-    fireEvent.keyDown(buttons[28]!, { key: "Home" })
-    expect(document.activeElement).toBe(buttons[0])
-    fireEvent.keyDown(buttons[0]!, { key: "End" })
-    expect(document.activeElement).toBe(buttons[29])
+    expect(buttons()).toHaveLength(30)
   })
 })

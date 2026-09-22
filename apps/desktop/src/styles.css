@@ -4,7 +4,6 @@
  *   tailwindcss                 preflight + the theme/utility layers
  *   tokens                      @theme aliases and every palette branch
  *   session-analysis-colors     the session-analysis @theme sub-palette
- *   overview-series-colors      the Overview per-account @theme sub-palette
  *   base                        unlayered element behavior
  *   typography                  unlayered type scale (outranks utilities)
  *   focus                       keyboard-only focus ring
@@ -20,7 +19,6 @@
 @import "tailwindcss";
 @import "./styles/tokens.css";
 @import "./styles/session-analysis-colors.css";
-@import "./styles/overview-series-colors.css";
 @import "./views/main-window/quota/quota.css";
 @import "./styles/base.css";
 @import "./styles/typography.css";
