@@ -581,7 +581,7 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
-  it("keeps queued reads back when a scan starts during the debounce", async () => {
+  it("does not hold for a scan that starts after an idle activation", async () => {
     const { adapter, session, entryChanged, setScanRunning } = setup(
       true,
       {},
@@ -594,14 +594,8 @@ describe("MainOverviewSession", () => {
     await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
     expect(adapter.getUsage).toHaveBeenCalledTimes(1)
 
-    entryChanged({ analysis: true })
-    // The scan starts before the debounce fires, so the flush must still
-    // hold the queued read back rather than dispatch it mid-pass.
     setScanRunning(true)
-    await new Promise((resolve) => setTimeout(resolve, TEST_DEBOUNCE_MS * 4))
-    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
-
-    setScanRunning(false)
+    entryChanged({ analysis: true })
     await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
     stop()
   })

@@ -334,7 +334,9 @@ export class MainOverviewSession {
     if (!active) return
     // The first read of an activation is the one the reader is waiting for.
     // It runs now; only the churn behind it is deferred.
-    this.scanSettled = false
+    // An activation that finds no pass running has nothing to hold for, so a
+    // later pass is a later pass.
+    this.scanSettled = !this.scanSource.getSnapshot().running
     this.refresh()
   }
 
