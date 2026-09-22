@@ -53,7 +53,11 @@ async function openFixture(
   await page.clock.setFixedTime(new Date("2026-09-15T00:00:00.000Z"))
   await page.emulateMedia({ colorScheme: options.theme ?? "light" })
   await page.goto(fixtureUrl(surface, options))
-  await expect(page.locator(".fixture-scale-root > *").first()).toBeVisible()
+  // The first navigation waits for the dev server to transform the surface
+  // tree. Give it more time than an ordinary assertion gets.
+  await expect(page.locator(".fixture-scale-root > *").first()).toBeVisible({
+    timeout: 30_000,
+  })
 }
 
 async function expectNoHorizontalOverflow(page: Page) {

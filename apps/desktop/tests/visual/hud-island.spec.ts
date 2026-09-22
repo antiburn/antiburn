@@ -30,9 +30,11 @@ async function openHud(
   })
   await page.clock.setFixedTime(new Date("2026-09-15T00:00:00.000Z"))
   await page.goto(`/tests/visual/?${params}`)
+  // The first navigation waits for the dev server to transform the surface
+  // tree. Give it more time than an ordinary assertion gets.
   await expect(
     page.locator(phase === "off" ? ".hud-frame" : `[data-island=${phase}]`),
-  ).toBeVisible()
+  ).toBeVisible({ timeout: 30_000 })
   await expect
     .poll(() =>
       page.evaluate(() =>
