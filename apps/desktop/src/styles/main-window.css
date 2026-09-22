@@ -1,6 +1,6 @@
 /* The retained window paints an opaque canvas over the native window surface. */
 .main-window {
-  --main-window-titlebar-height: calc(var(--space-2xl));
+  --main-window-titlebar-height: calc(var(--space-2xl) + var(--space-lg));
   --main-window-collection-width: 340px;
   --main-window-native-inset: var(--space-sm);
 
