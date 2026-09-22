@@ -41,19 +41,29 @@ function wrapperHighlight(): string | null {
   return screen.getByTestId("chart").parentElement!.getAttribute("data-quota-highlight")
 }
 
-/** Opens the range dropdown: Radix's trigger listens for `pointerdown`, not
- *  `click`, to toggle open. */
-function openRangeMenu(): void {
-  const trigger = screen.getByRole("button", { name: "Range" })
+/** Opens one jump bar menu: Radix's trigger listens for `pointerdown`, not
+ *  `click`, to toggle open. The trigger's name is "<level>: <value>". */
+function openJumpMenu(level: "Account" | "Lane" | "Range"): void {
+  const trigger = screen.getByRole("button", { name: new RegExp(`^${level}: `) })
   fireEvent.pointerDown(trigger, { button: 0, pointerId: 1 })
   fireEvent.click(trigger)
 }
 
-/** Opens the range dropdown and picks one item by its visible label. */
+/** Opens the range menu and picks one item by its visible label. */
 async function selectRangeOption(label: string): Promise<void> {
-  openRangeMenu()
-  const item = await screen.findByRole("menuitem", { name: label })
+  openJumpMenu("Range")
+  const item = await screen.findByRole("menuitemradio", { name: label })
   fireEvent.click(item)
+}
+
+/** Resolves once the loaded screen shows: the range level is always a menu. */
+async function loaded(): Promise<HTMLElement> {
+  return screen.findByRole("button", { name: /^Range: / })
+}
+
+/** The jump bar's range trigger, by its accessible name. */
+function rangeTrigger(): HTMLElement {
+  return screen.getByRole("button", { name: /^Range: / })
 }
 
 const NOW = 1_000_000
@@ -64,7 +74,7 @@ function account(over: Partial<QuotaAccountPayload> = {}): QuotaAccountPayload {
     provider: "anthropic",
     displayName: "Claude",
     accountKey: "acct-1",
-    lanes: [{ lane: "weekly", label: "Weekly", currentPeriod: null }],
+    lanes: [{ lane: "weekly", label: "Weekly", currentPeriod: null, firstObservedEpoch: 0 }],
     ...over,
   }
 }
@@ -139,6 +149,39 @@ function manySessionsUsage(): QuotaUsagePayload {
         estimatedPercent: 30,
         unexplainedBuckets: [],
         unexplainedPercent: null,
+      },
+    ],
+  })
+}
+
+/** Two closed windows and one open window, with the same session in each,
+ *  so a row can say how many windows it spans. */
+function multiWindowUsage(): QuotaUsagePayload {
+  const base = usage().periods[0]!
+  return usage({
+    rangeStartEpoch: NOW - 2 * WEEK,
+    rangeEndEpoch: NOW + WEEK,
+    periods: [
+      {
+        ...base,
+        periodId: 1,
+        startsAtEpoch: NOW - 2 * WEEK,
+        resetsAtEpoch: NOW - WEEK,
+        estimatedPercent: 20,
+      },
+      {
+        ...base,
+        periodId: 2,
+        startsAtEpoch: NOW - WEEK,
+        resetsAtEpoch: NOW,
+        estimatedPercent: 40,
+      },
+      {
+        ...base,
+        periodId: 3,
+        startsAtEpoch: NOW,
+        resetsAtEpoch: NOW + WEEK,
+        estimatedPercent: 15,
       },
     ],
   })
@@ -220,67 +263,65 @@ describe("QuotaView", () => {
       generatedAt: "g2",
     })
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
-    await screen.findByText("This week")
+    await loaded()
   })
 
-  it("shows 'No windows in this range' when usage has no periods", async () => {
+  it("shows an empty state naming the range when usage has no periods, and says readings began later once any fetched window has a sample", async () => {
     const { session } = setup({ getUsage: vi.fn().mockResolvedValue(usage({ periods: [] })) })
     sessions.push(session)
-    await screen.findByText("No windows in this range.")
+    const title = await screen.findByText("No readings for last 3 weeks.")
+    const status = title.closest('[role="status"]')!
+    expect(status).toHaveTextContent("antiburn records a meter only while the app is running.")
+    expect(screen.queryByRole("region", { name: "Limit usage" })).toBeNull()
   })
 
-  it("shows Maximum, P90, Median, and Current limit usage from the closed and open windows", async () => {
-    const base = usage().periods[0]!
-    const multiWindow = usage({
-      rangeStartEpoch: NOW - 2 * WEEK,
-      rangeEndEpoch: NOW + WEEK,
-      periods: [
-        {
-          ...base,
-          periodId: 1,
-          startsAtEpoch: NOW - 2 * WEEK,
-          resetsAtEpoch: NOW - WEEK,
-          estimatedPercent: 20,
-        },
-        {
-          ...base,
-          periodId: 2,
-          startsAtEpoch: NOW - WEEK,
-          resetsAtEpoch: NOW,
-          estimatedPercent: 40,
-        },
-        {
-          ...base,
-          periodId: 3,
-          startsAtEpoch: NOW,
-          resetsAtEpoch: NOW + WEEK,
-          estimatedPercent: 15,
-        },
-      ],
-    })
-    const { session, view } = setup({ getUsage: vi.fn().mockResolvedValue(multiWindow) })
+  it("shows a 'no usage yet' state, without hero figures or chart, when the open window has no reading and no session", async () => {
+    const empty = usage()
+    const openPeriod = empty.periods[0]!
+    empty.periods = [
+      {
+        ...openPeriod,
+        resetsAtEpoch: NOW + 3600,
+        samples: [],
+        sessions: [],
+        unattributed: { usd: 0, percent: 0, sessionCount: 0 },
+        unattributedBuckets: [],
+        estimatedPercent: null,
+      },
+    ]
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(empty) })
     sessions.push(session)
-    await screen.findByText("This week")
-    // All three windows count: 20%, 40% and the open window at 15% now.
-    // Sorted they are 15, 20, 40: Maximum is 40%, the median is 20%, and
-    // the interpolated P90 sits at rank 1.8, so 20 + 0.8 * 20 = 36%. The
-    // third window is still open (its reset is after `now`), so Current
-    // reads its own value, 15%. The figures round to whole percents.
-    expect(view.container.textContent).toContain("Maximum Limit Usage")
-    expect(view.container.textContent).toContain("40%")
-    expect(view.container.textContent).toContain("P90 Limit Usage")
-    expect(view.container.textContent).toContain("36%")
-    expect(view.container.textContent).toContain("Median Limit Usage")
-    expect(view.container.textContent).toContain("20%")
-    expect(view.container.textContent).toContain("Current Limit Usage")
-    expect(view.container.textContent).toContain("15%")
-    expect(view.container.textContent).not.toContain("40.0%")
-    expect(view.container.textContent).toContain("Last reading")
-    expect(view.container.textContent).not.toContain("Meter ·")
-    expect(view.container.textContent).not.toContain("Local sessions ·")
+    const title = await screen.findByText("No usage recorded yet this week.")
+    const status = title.closest('[role="status"]')!
+    expect(status).toHaveTextContent("resets in")
+    expect(screen.queryByRole("region", { name: "Limit usage" })).toBeNull()
+    expect(screen.queryByTestId("chart")).toBeNull()
   })
 
-  it("reads Maximum, P90, and Median from the open window when it is the only one", async () => {
+  it("shows This week with its reset, then Highest, P90 and Median over the windows in range", async () => {
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(multiWindowUsage()) })
+    sessions.push(session)
+    await loaded()
+    await selectRangeOption("Last 3 weeks")
+    const figures = await screen.findByRole("region", { name: "Limit usage" })
+    // All three windows count: 20%, 40% and the open window at 15% now.
+    // Sorted they are 15, 20, 40: Highest is 40%, the median is 20%, and
+    // the interpolated P90 sits at rank 1.8, so 20 + 0.8 * 20 = 36%. The
+    // third window is still open (its reset is after `now`), so This week
+    // reads its own value, 15%, over its reset countdown. The figures round
+    // to whole percents.
+    const cell = (label: string) => within(figures).getByText(label).closest("div")!
+    expect(cell("This week")).toHaveTextContent("15%")
+    expect(cell("This week")).toHaveTextContent("resets in 7d")
+    expect(cell("Highest week")).toHaveTextContent("40%")
+    expect(cell("Highest week")).toHaveTextContent("of 3 weeks")
+    expect(cell("P90 week")).toHaveTextContent("36%")
+    expect(cell("Median week")).toHaveTextContent("20%")
+    expect(figures.textContent).not.toContain("40.0%")
+    expect(screen.getByText(/Last reading/)).toBeInTheDocument()
+  })
+
+  it("shows only This week when the open window is the only one in range", async () => {
     const base = usage().periods[0]!
     const onlyOpen = usage({
       rangeEndEpoch: NOW + WEEK,
@@ -294,14 +335,32 @@ describe("QuotaView", () => {
         },
       ],
     })
-    const { session, view } = setup({ getUsage: vi.fn().mockResolvedValue(onlyOpen) })
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(onlyOpen) })
     sessions.push(session)
-    await screen.findByText("This week")
-    expect(view.container.textContent).toContain("Current Limit Usage")
-    // The open window is the only data point, so all four figures read
-    // its value now and nothing shows an em dash.
-    expect((view.container.textContent!.match(/25%/g) ?? []).length).toBe(4)
-    expect(view.container.textContent).not.toContain("—")
+    await loaded()
+    const figures = screen.getByRole("region", { name: "Limit usage" })
+    // One window compares with nothing, so the three comparison cells stay
+    // out and the open window's own cell is the whole row.
+    expect(within(figures).getByText("This week").closest("div")).toHaveTextContent("25%")
+    expect(within(figures).queryByText("Highest week")).not.toBeInTheDocument()
+    expect(within(figures).queryByText("P90 week")).not.toBeInTheDocument()
+    expect(within(figures).queryByText("Median week")).not.toBeInTheDocument()
+    expect(figures.textContent).not.toContain("—")
+  })
+
+  it("names a lone closed window by its lane word with its reset time", async () => {
+    const base = usage().periods[0]!
+    const closed = usage({
+      periods: [{ ...base, startsAtEpoch: NOW - 2 * WEEK, resetsAtEpoch: NOW - WEEK }],
+    })
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(closed) })
+    sessions.push(session)
+    await loaded()
+    const figures = screen.getByRole("region", { name: "Limit usage" })
+    const cell = within(figures).getByText("Week").closest("div")!
+    expect(cell).toHaveTextContent("30%")
+    expect(cell).toHaveTextContent(/reset .* ago/)
+    expect(within(figures).queryByText("This week")).not.toBeInTheDocument()
   })
 
   it("clamps a window's value at 100 percent, since the provider's own meter can never pass it", async () => {
@@ -333,21 +392,19 @@ describe("QuotaView", () => {
         },
       ],
     })
-    const { session, view } = setup({ getUsage: vi.fn().mockResolvedValue(overshootWindows) })
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(overshootWindows) })
     sessions.push(session)
-    await screen.findByText("This week")
+    await loaded()
+    await selectRangeOption("Last 3 weeks")
+    const figures = await screen.findByRole("region", { name: "Limit usage" })
     // An estimated tail with no meter readings can price a window past 100,
     // but the provider's own meter never passes it: 130 and 120 both clamp
     // to 100 before the figures read them. Sorted the windows are 50, 100,
-    // 100, so Maximum, P90, Median, and Current all read 100% (four times,
+    // 100, so This week, Highest, P90 and Median all read 100% (four times,
     // total) and nothing reads past it.
-    expect(view.container.textContent).toContain("Maximum Limit Usage")
-    expect(view.container.textContent).toContain("P90 Limit Usage")
-    expect(view.container.textContent).toContain("Median Limit Usage")
-    expect(view.container.textContent).toContain("Current Limit Usage")
-    expect((view.container.textContent!.match(/100%/g) ?? []).length).toBe(4)
-    expect(view.container.textContent).not.toContain("130%")
-    expect(view.container.textContent).not.toContain("120%")
+    expect((figures.textContent!.match(/100%/g) ?? []).length).toBe(4)
+    expect(figures.textContent).not.toContain("130%")
+    expect(figures.textContent).not.toContain("120%")
   })
 
   it("shows the Unexplained row in the sessions list once the latest period carries unexplained spend", async () => {
@@ -364,92 +421,160 @@ describe("QuotaView", () => {
     })
     const { session } = setup({ getUsage: vi.fn().mockResolvedValue(withUnexplained) })
     sessions.push(session)
-    await screen.findByText("This week")
+    await loaded()
     expect(screen.getByText("Unexplained")).toBeInTheDocument()
   })
 
-  it("changing the range control reloads usage for the new range", async () => {
+  it("changing the range reloads usage for the new preset", async () => {
     const { session, adapter } = setup()
     sessions.push(session)
-    await screen.findByText("This week")
-    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage({ generatedAt: "g-30d" }))
-    await selectRangeOption("30 days")
-    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last30Days"))
-    const lastCall = vi.mocked(adapter.getUsage).mock.calls.at(-1)![0]
-    expect(lastCall.rangeStartEpoch).toBe(NOW - 30 * 24 * 60 * 60)
-    expect(lastCall.rangeEndEpoch).toBe(NOW)
+    await loaded()
+    const callsBefore = vi.mocked(adapter.getUsage).mock.calls.length
+    vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage({ generatedAt: "g-5w" }))
+    await selectRangeOption("Last 5 weeks")
+    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last5Windows"))
+    expect(vi.mocked(adapter.getUsage).mock.calls.length).toBeGreaterThan(callsBefore)
   })
 
-  it("the range dropdown lists the window presets and the date presets in two groups", async () => {
+  it("the range menu lists the five window presets in the lane's own words, with the current one checked", async () => {
     const { session } = setup()
     sessions.push(session)
-    await screen.findByText("This week")
-    openRangeMenu()
+    await loaded()
+    openJumpMenu("Range")
     const menu = within(await screen.findByRole("menu"))
-    expect(menu.getByText("Windows")).toBeInTheDocument()
-    expect(menu.getByText("Dates")).toBeInTheDocument()
-    for (const label of [
-      "This window",
-      "Last window",
-      "Last 3 windows",
-      "Last 5 windows",
-      "Last 10 windows",
+    expect(menu.queryByText("Windows")).not.toBeInTheDocument()
+    expect(menu.queryByText("Dates")).not.toBeInTheDocument()
+    expect(menu.getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual([
       "This week",
       "Last week",
-      "30 days",
-    ]) {
-      expect(menu.getByRole("menuitem", { name: label })).toBeInTheDocument()
-    }
+      "Last 3 weeks",
+      "Last 5 weeks",
+      "Last 10 weeks",
+    ])
+    expect(menu.getByRole("menuitemradio", { name: "Last 3 weeks" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    )
+    expect(menu.getByRole("menuitemradio", { name: "Last week" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    )
   })
 
-  it("selects Last 3 windows and calls selectRange with the window preset", async () => {
+  it("selects Last 3 weeks and calls selectRange with the window preset", async () => {
     const { session, adapter } = setup()
     sessions.push(session)
-    await screen.findByText("This week")
+    await loaded()
     vi.mocked(adapter.getUsage).mockResolvedValueOnce(usage({ generatedAt: "g-3w" }))
-    await selectRangeOption("Last 3 windows")
+    await selectRangeOption("Last 3 weeks")
     await vi.waitFor(() => expect(session.getSnapshot().range).toBe("last3Windows"))
-    await screen.findByText("Last 3 windows")
+    expect(rangeTrigger()).toHaveTextContent("Last 3 weeks")
   })
 
-  it("shows Custom only while a custom range from open() is active, and drops it on a preset", async () => {
+  it("words the range and the figures by window on a 5-hour lane", async () => {
+    const twoLanes = account({
+      lanes: [
+        { lane: "weekly", label: "Weekly", currentPeriod: null, firstObservedEpoch: 0 },
+        { lane: "fiveHour", label: "5-hour", currentPeriod: null, firstObservedEpoch: 0 },
+      ],
+    })
+    // The window is still open, so the figures lead with "This window".
+    const base = usage().periods[0]!
+    const open = usage({
+      rangeEndEpoch: NOW + 3600,
+      periods: [{ ...base, resetsAtEpoch: NOW + 3600 }],
+    })
+    const { session } = setup({
+      getAccounts: vi.fn().mockResolvedValue({ accounts: [twoLanes], generatedAt: "g" }),
+      getUsage: vi.fn().mockResolvedValue(open),
+    })
+    sessions.push(session)
+    await loaded()
+    expect(rangeTrigger()).toHaveTextContent("Last 3 weeks")
+
+    openJumpMenu("Lane")
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "5-hour" }))
+    await vi.waitFor(() => expect(session.getSnapshot().selection?.lane).toBe("fiveHour"))
+    expect(rangeTrigger()).toHaveTextContent("Last 3 windows")
+    const figures = screen.getByRole("region", { name: "Limit usage" })
+    expect(within(figures).getByText("This window")).toBeInTheDocument()
+    openJumpMenu("Range")
+    const menu = within(await screen.findByRole("menu"))
+    expect(menu.getByRole("menuitemradio", { name: "Last 3 windows" })).toBeInTheDocument()
+  })
+
+  it("shows one account and one lane as plain text, not menus", async () => {
     const { session } = setup()
     sessions.push(session)
-    await screen.findByText("This week")
-    expect(screen.queryByText("Custom")).not.toBeInTheDocument()
+    const scope = within(await screen.findByRole("group", { name: "Limits scope" }))
+    expect(scope.queryByRole("button", { name: /^Account: / })).not.toBeInTheDocument()
+    expect(scope.queryByRole("button", { name: /^Lane: / })).not.toBeInTheDocument()
+    expect(scope.getByText("Claude")).toBeInTheDocument()
+    expect(scope.getByText("Weekly")).toBeInTheDocument()
+    expect(scope.getByRole("button", { name: "Range: Last 3 weeks" })).toBeInTheDocument()
+  })
+
+  it("offers an account menu once a provider has two accounts", async () => {
+    const { session } = setup({
+      getAccounts: vi.fn().mockResolvedValue({
+        accounts: [account(), account({ accountKey: "acct-2" })],
+        generatedAt: "g",
+      }),
+    })
+    sessions.push(session)
+    await loaded()
+    openJumpMenu("Account")
+    const menu = within(await screen.findByRole("menu"))
+    fireEvent.click(menu.getByRole("menuitemradio", { name: "Claude account 2" }))
+    await vi.waitFor(() => expect(session.getSnapshot().selection?.accountKey).toBe("acct-2"))
+  })
+
+  it("reads the dates of a custom range from open() until a preset is picked", async () => {
+    const { session } = setup()
+    sessions.push(session)
+    await loaded()
+    expect(rangeTrigger()).not.toHaveTextContent("–")
 
     session.open(
       { provider: "anthropic", accountKey: "acct-1", lane: "weekly" },
       { startEpoch: NOW - WEEK, endEpoch: NOW },
     )
-    await screen.findByText("Custom")
-
-    await selectRangeOption("This week")
-    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("thisWeek"))
-    expect(screen.queryByText("Custom")).not.toBeInTheDocument()
+    await vi.waitFor(() => expect(rangeTrigger()).toHaveTextContent("–"))
+    openJumpMenu("Range")
+    const menu = within(await screen.findByRole("menu"))
+    for (const item of menu.getAllByRole("menuitemradio")) {
+      expect(item).toHaveAttribute("aria-checked", "false")
+    }
+    fireEvent.click(menu.getByRole("menuitemradio", { name: "This week" }))
+    await vi.waitFor(() => expect(session.getSnapshot().range).toBe("thisWindow"))
+    expect(rangeTrigger()).toHaveTextContent("This week")
+    expect(rangeTrigger()).not.toHaveTextContent("–")
   })
 
-  it("defaults to window axis mode with the pace line on, and the controls change what the chart receives", async () => {
+  it("draws the pace line on by default, and the toggle button under the chart changes what the chart receives", async () => {
     const { session } = setup()
     sessions.push(session)
     await screen.findByTestId("chart")
-    expect(chart.props?.axisMode).toBe("window")
     expect(chart.props?.showPace).toBe(true)
 
-    fireEvent.click(screen.getByRole("radio", { name: "Dates" }))
-    expect(chart.props?.axisMode).toBe("date")
-
-    fireEvent.click(screen.getByRole("switch", { name: "Pace line" }))
+    const toggle = screen.getByRole("button", { name: "Hide pace" })
+    expect(toggle).toHaveAttribute("aria-pressed", "true")
+    fireEvent.click(toggle)
     expect(chart.props?.showPace).toBe(false)
+    expect(toggle).toHaveAttribute("aria-pressed", "false")
+    expect(toggle).toHaveTextContent("Show pace")
   })
 
-  it("restores the axis mode and the pace switch from saved prefs", async () => {
-    writeQuotaViewPrefs({ axisMode: "date", showPace: false })
+  it("restores the pace switch from saved prefs", async () => {
+    writeQuotaViewPrefs({ showPace: false })
     const { session } = setup()
     sessions.push(session)
     await screen.findByTestId("chart")
-    expect(chart.props?.axisMode).toBe("date")
     expect(chart.props?.showPace).toBe(false)
+    expect(screen.getByRole("button", { name: "Show pace" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    )
   })
 
   it("passes the display periods to the chart", async () => {
@@ -497,15 +622,39 @@ describe("QuotaView", () => {
     expect(within(list).queryByRole("button", { name: /Session 6/ })).not.toBeInTheDocument()
     const row = within(list).getByText(/other session/).parentElement!
     expect(row).toHaveTextContent("1 other session")
-    // Every share names the window it is a share of, by provider and lane.
-    expect(row).toHaveTextContent("of a Claude weekly window")
-    expect(within(list).getByRole("button", { name: /Session 1/ })).toHaveTextContent(
-      "of a Claude weekly window",
+    // The list heading names the window every share is a share of, by
+    // provider and lane, once, instead of every row repeating it.
+    expect(
+      screen.getByRole("heading", { name: "Sessions · share of a Claude weekly window" }),
+    ).toBeInTheDocument()
+    expect(within(list).getByRole("button", { name: /Session 1/ })).not.toHaveTextContent(
+      "of a Claude",
     )
     fireEvent.mouseEnter(row)
     expect(wrapperHighlight()).toBe("other")
     fireEvent.mouseLeave(row)
     expect(wrapperHighlight()).toBeNull()
+  })
+
+  it("shows a session's agent icon, its share and dollars, and how many windows it spans", async () => {
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(multiWindowUsage()) })
+    sessions.push(session)
+    await loaded()
+    await selectRangeOption("Last 3 weeks")
+    const list = await screen.findByRole("region", { name: "Most prominent sessions" })
+    const row = within(list).getByRole("button", { name: /Fix bug/ })
+    expect(within(row).getByRole("img", { name: "Claude" })).toBeInTheDocument()
+    expect(row).toHaveTextContent("across 3 weeks")
+    expect(row).toHaveTextContent("90.0%")
+    expect(row).toHaveTextContent("$9.00")
+  })
+
+  it("omits the windows caption on a row from a single window", async () => {
+    const { session } = setup()
+    sessions.push(session)
+    const list = await screen.findByRole("region", { name: "Most prominent sessions" })
+    const row = within(list).getByRole("button", { name: /Fix bug/ })
+    expect(row).not.toHaveTextContent("across")
   })
 
   it("hovering the Unattributed row sets 'unattributed' on the chart's wrapper", async () => {
@@ -628,10 +777,10 @@ describe("QuotaView", () => {
 
     const pending = deferred<QuotaUsagePayload>()
     vi.mocked(adapter.getUsage).mockReturnValueOnce(pending.promise)
-    await selectRangeOption("30 days")
+    await selectRangeOption("Last 5 weeks")
     expect(list.closest('[aria-busy="true"]')).not.toBeNull()
 
-    pending.resolve(usage({ generatedAt: "g-30d" }))
+    pending.resolve(usage({ generatedAt: "g-5w" }))
     await vi.waitFor(() => expect(session.getSnapshot().loading).toBe(false))
     expect(list.closest('[aria-busy="true"]')).toBeNull()
   })

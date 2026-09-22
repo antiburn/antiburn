@@ -18,7 +18,7 @@ const VERTICAL_LABEL_LINE_GAP = 3
 /** A pill's rect, sized and placed around its text at the given anchor
  *  point. Plain numbers, so a recharts label and a hand-drawn SVG label can
  *  both build the same pill shape from the same rule. */
-export interface PillGeometry {
+interface PillGeometry {
   x: number
   y: number
   width: number
@@ -31,7 +31,7 @@ export interface PillGeometry {
  * recharts' own text uses: `verticalAnchor: "start"` puts the text's top
  * edge on `y`, `"end"` puts its bottom edge there.
  */
-export function pillGeometry(
+function pillGeometry(
   text: string,
   x: number,
   y: number,

@@ -58,6 +58,7 @@ fn quota_account_payload(
                             resets_at_epoch,
                         },
                     ),
+                first_observed_epoch: lane.first_observed_epoch,
             })
             .collect(),
     }

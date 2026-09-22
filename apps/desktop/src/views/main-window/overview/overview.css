@@ -12,17 +12,9 @@
   /* One meter dot. */
   --overview-bar-width: 7px;
   --overview-chart-height: 90px;
-  /* Between the bars of a day, and between days. The spend chart draws two
-     bars in a day and the allowance chart draws one for each account. */
+  /* Between the two bars of a day, and between days. */
   --overview-pair-gap: 2px;
   --overview-day-gap: 3px;
-  /* Bars to a day: two for the spend chart, one for each account on the
-     allowance chart. The chart sets it when it is not two. */
-  --overview-series-count: 2;
-  --overview-day-width: calc(
-    var(--overview-series-count) * var(--overview-bar-width) +
-      (var(--overview-series-count) - 1) * var(--overview-pair-gap)
-  );
   /* Left-to-right delay per day on first paint. */
   --overview-bar-stagger: 12ms;
   /* Room for the scale figures to the right of the bars. */
@@ -30,14 +22,14 @@
   --overview-day-count: 30;
   /* The bars, the gaps, and the gutter at their natural size. */
   --overview-min-width: calc(
-    var(--overview-day-count) * var(--overview-day-width) + var(--overview-day-count) *
-      var(--overview-day-gap) + var(--overview-scale-gutter)
+    var(--overview-day-count) * (2 * var(--overview-bar-width) + var(--overview-pair-gap)) +
+      var(--overview-day-count) * var(--overview-day-gap) + var(--overview-scale-gutter)
   );
 }
 
-/* The chart takes the height the window has to spare, so a taller window
-   shows taller bars. Each layer down to the plot grows with it; the chart
-   height is the floor. */
+/* The chart is the last block on the page and takes the height the window
+   has to spare, so a taller window shows taller bars. Each layer down to
+   the plot grows with it; the chart height is the floor. */
 .overview-chart,
 .overview-chart-scroll,
 .overview-chart-body {
@@ -101,9 +93,9 @@
   animation-delay: calc(var(--overview-bar-index, 0) * var(--overview-bar-stagger));
 }
 
-/* A day the chart has no figure for: an outline the height of a dot, so it
-   is visibly a day with no figure rather than a day at zero. */
-.overview-bar[data-outline] {
+/* A day with tokens that no price covers: an outline the height of a dot,
+   so it is visibly a reading with no figure rather than a zero. */
+.overview-bar[data-unpriced] {
   background: transparent;
   box-shadow: inset 0 0 0 1px currentcolor;
 }
@@ -139,7 +131,7 @@
 .overview-axis-day {
   position: relative;
   flex: 0 0 auto;
-  inline-size: var(--overview-day-width);
+  inline-size: calc(var(--overview-bar-width) * 2 + var(--overview-pair-gap));
   block-size: 1.4em;
 }
 
@@ -157,17 +149,11 @@
 /* ==========================================================================
    Overview page width.
 
-   The page measures itself as a container. The three spend totals sit in a
-   row and stack below 540px, where three hero figures no longer fit. The
-   stack card and the limits card sit in a row and stack below 700px, where
-   the meter dots of the limits card no longer fit beside the checks.
-
-   The page is 528px wide at the 1000px minimum window, which is the floor:
-   the sidebar is 220px, the page holds 32px of padding on each side, and the
-   meter card and its margins take the rest. The card grows with the window,
-   but slower than the window, so the page only gets wider. The allowance
-   totals must hold their row at that floor, because a second row of hero
-   figures pushes the chart down the page.
+   The page measures itself as a container. The three spend totals are a
+   `hero-figures` row (src/components/ui/hero-figures.css) and stack below
+   540px, where three hero figures no longer fit. The stack card and the
+   limits card sit in a row and stack below 700px, where the meter dots of
+   the limits card no longer fit beside the checks.
    ========================================================================== */
 
 .overview-page {
@@ -180,8 +166,8 @@
    at the bottom can grow. */
 /* Radix's viewport wrapper has no set height, so a percent min-height on
    the page cannot resolve through it. Make the wrapper a column that fills
-   the viewport and let the page grow inside it. The usage block takes that
-   spare height and gives it to the chart. */
+   the viewport and let the page grow inside it. The chart, last on the
+   page, takes that spare height. */
 [data-radix-scroll-area-viewport]:has(> div > .overview-page) > div {
   display: flex !important;
   flex-direction: column;
@@ -211,21 +197,20 @@
   pointer-events: none;
 }
 
-.overview-totals {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.overview-totals-cell + .overview-totals-cell {
-  border-left-width: 1px;
-  padding-inline: var(--space-lg);
-}
-
-.overview-totals-cell:first-child {
-  padding-inline-end: var(--space-lg);
-}
-
 /* The sessions card fills the space beside the fixed-width provider limits card. */
+.overview-panels {
+  --overview-provider-width: 180px;
+
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--overview-provider-width);
+  align-items: stretch;
+  gap: var(--space-xl);
+}
+
+.overview-provider-limits {
+  inline-size: var(--overview-provider-width);
+}
+
 /* Inside the stack card, a rule and a gap separate the sessions from the
    checks above them. */
 .overview-stack > * + * {
@@ -234,98 +219,8 @@
   padding-block-start: var(--space-md);
 }
 
-@container (max-width: 540px) {
-  .overview-totals {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: var(--space-md);
-  }
-
-  .overview-totals-cell:first-child {
-    padding-inline-end: 0;
-  }
-
-  .overview-totals-cell + .overview-totals-cell {
-    border-left-width: 0;
-    border-top-width: 1px;
-    padding-inline: 0;
-    padding-block-start: var(--space-md);
-  }
-}
-
-/* ==========================================================================
-   Overview allowance totals.
-
-   One cell for each provider account. Inside a cell the utilization figure
-   and the time blocked sit side by side, because the two answer different
-   questions about the same account. The cells stack later than the spend
-   totals, because the accounts must hold their row at the page floor.
-   ========================================================================== */
-
-/* Two accounts hold one row at the 528px page floor: two 248px cells and the
-   16px gap measure 512px. The captions take two lines at that width, which
-   costs less height than a second row of accounts. */
-.overview-allowance {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
-  gap: var(--space-lg);
-}
-
-.overview-allowance-account + .overview-allowance-account {
-  border-left-width: 1px;
-  padding-inline-start: var(--space-lg);
-}
-
-.overview-allowance-pair {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-md);
-}
-
-/* The accounts stack at the width the auto-fit grid drops to one column, so
-   a stacked account never keeps the border of a column beside it. */
-@container (max-width: 512px) {
-  .overview-allowance {
+@container (max-width: 700px) {
+  .overview-panels {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .overview-allowance-account + .overview-allowance-account {
-    border-left-width: 0;
-    border-top-width: 1px;
-    padding-inline-start: 0;
-    padding-block-start: var(--space-md);
-  }
-}
-
-/* ==========================================================================
-   Overview allowance chart.
-
-   Every provider account draws on one scale, because every account reads in
-   percent of its own plan. One day holds one bar for each account, and color
-   names the account. A day that carried a block gets a mark over that
-   account's bar; a block is its own fact and does not change a bar's height.
-   ========================================================================== */
-
-/* One account's column inside a day. It is one bar wide, so the block mark
-   centers on the bar it belongs to. */
-.overview-series {
-  position: relative;
-  display: flex;
-  flex: 0 0 auto;
-  align-items: flex-end;
-  block-size: 100%;
-}
-
-/* A block draws over every bar, never behind one. The bar is a later
-   sibling, so the mark needs the z-index to stay on top of a full-height
-   bar. The ring keeps it crisp over any series color it lands on. */
-.overview-block-mark {
-  position: absolute;
-  z-index: 1;
-  inset-block-start: 0;
-  inset-inline-start: 50%;
-  inline-size: var(--overview-bar-width);
-  block-size: var(--overview-bar-width);
-  transform: translateX(-50%);
-  border-radius: 9999px;
-  box-shadow: 0 0 0 1.5px var(--color-surface-window);
 }

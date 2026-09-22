@@ -55,6 +55,9 @@ stateDiagram-v2
 
 ### The token map
 
+The map is experimental and off by default. The "Show what live sessions are
+doing" switch in Settings turns it on.
+
 A fixed square above the bars answers "what are my agents doing right now". It
 draws one blob per session that wrote tokens in the last 5 minutes. Each full
 dot stands for a fixed number of tokens per minute, coloured by the mode of

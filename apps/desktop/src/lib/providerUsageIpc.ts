@@ -122,6 +122,9 @@ export interface QuotaLanePayload {
    * derives a boundary the provider did not state. `null` when every known
    * period for the lane has already reset. */
   currentPeriod: QuotaCurrentPeriodPayload | null
+  /** The earliest reading the lane holds. A range that ends before it has
+   * no data. */
+  firstObservedEpoch: number
 }
 
 /** One `(provider, account)` this app has observed at least one quota

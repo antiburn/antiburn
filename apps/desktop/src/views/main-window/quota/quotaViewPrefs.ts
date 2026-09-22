@@ -1,6 +1,6 @@
 /**
  * The Quota screen's own view controls a reader last chose: the account,
- * lane, range preset, axis mode, and pace-line switch. Persisted to
+ * lane, range preset, and pace-line switch. Persisted to
  * `localStorage`, the same pattern `overlayWindow.ts` uses for the floating
  * HUD preference, so the screen reopens the way the reader left it and the
  * choice survives an app restart.
@@ -9,7 +9,6 @@
  * `QuotaRangePreset` is worth restoring on a later visit.
  */
 
-import type { QuotaChartAxisMode } from "./QuotaBurnupChart"
 import type { QuotaRangePreset } from "./quotaSeries"
 
 const QUOTA_VIEW_PREFS_KEY = "antiburn.quota.view.v1"
@@ -19,7 +18,6 @@ export interface QuotaViewPrefs {
   accountKey?: string
   lane?: string
   rangePreset?: QuotaRangePreset
-  axisMode?: QuotaChartAxisMode
   showPace?: boolean
 }
 
