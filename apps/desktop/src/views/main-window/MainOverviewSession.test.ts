@@ -847,6 +847,62 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
+  it("holds a negative answer while live usage is still pending, then remembers a plan it finds", async () => {
+    const rememberPlan = vi.fn()
+    const livePending = deferred<LiveUsageSummaryPayload>()
+    const { session } = setup(
+      true,
+      { getLiveUsage: vi.fn().mockReturnValueOnce(livePending.promise) },
+      { rememberPlan },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    // The allowance read landed with no plan, but live usage has not
+    // answered yet, so a negative answer is not certain.
+    expect(rememberPlan).not.toHaveBeenCalled()
+
+    livePending.resolve(liveUsage("live-plan", [liveProviderWithPlan()]))
+    await vi.waitFor(() => expect(session.getSnapshot().liveUsageSettled).toBe(true))
+    expect(rememberPlan).toHaveBeenCalledExactlyOnceWith(true)
+    stop()
+  })
+
+  it("remembers a negative answer only once both reads land with no plan", async () => {
+    const rememberPlan = vi.fn()
+    const livePending = deferred<LiveUsageSummaryPayload>()
+    const { session } = setup(
+      true,
+      { getLiveUsage: vi.fn().mockReturnValueOnce(livePending.promise) },
+      { rememberPlan },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    expect(rememberPlan).not.toHaveBeenCalled()
+
+    livePending.resolve(liveUsage("live-first"))
+    await vi.waitFor(() => expect(session.getSnapshot().liveUsageSettled).toBe(true))
+    expect(rememberPlan).toHaveBeenCalledExactlyOnceWith(false)
+    stop()
+  })
+
+  it("remembers a negative answer once a failed allowance read and a plan-free live-usage read have both settled", async () => {
+    const rememberPlan = vi.fn()
+    const { adapter, session } = setup(true, {}, { rememberPlan })
+    sessions.push(session)
+    vi.mocked(adapter.getAllowanceUsage).mockRejectedValueOnce(new Error("Unavailable"))
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().allowanceError).toBe(true))
+    await vi.waitFor(() => expect(session.getSnapshot().liveUsageSettled).toBe(true))
+    expect(rememberPlan).toHaveBeenCalledExactlyOnceWith(false)
+    stop()
+  })
+
   it("starts from what a previous run remembered, in the production default", async () => {
     // The default adapter's first allowance read has no plan, so a memory
     // of `false` already agrees with it.

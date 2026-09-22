@@ -117,13 +117,32 @@ function expectUsageState(state: "held" | "shown") {
 }
 
 describe("OverviewView metric preference", () => {
-  it("settles on cost once the read comes back without a plan", () => {
+  it("settles on cost only once both the allowance and live-usage reads land without a plan", () => {
     const view = setup(usage)
     view.update(allowance([]))
+    // The allowance read landed with no plan, but live usage has not
+    // answered yet, so the unit stays undecided rather than picking cost.
+    expectUsageState("held")
+    view.update({
+      liveUsage: { providers: [], errors: [], meters: [], generatedAt: "" },
+      liveUsageSettled: true,
+    })
     expectMetric("cost")
     view.update(allowance([{ ...account, plan: null }]))
     expectMetric("cost")
     expect(readOverviewViewPrefs().metric).toBeUndefined()
+  })
+
+  it("never shows cost when a plan arrives from a still-pending live-usage read", () => {
+    const view = setup(usage)
+    view.update(allowance([]))
+    expectUsageState("held")
+    view.update({
+      liveUsage: { providers: [liveProvider], errors: [], meters: [], generatedAt: "" },
+      liveUsageSettled: true,
+    })
+    expectMetric("allowance")
+    expectUsageState("shown")
   })
 
   it("holds the figures until it knows which unit to show them in", () => {
@@ -154,6 +173,13 @@ describe("OverviewView metric preference", () => {
     const view = setup(usage)
     expectMetric("allowance")
     view.update(allowance([]))
+    // The allowance read alone disagrees, but live usage has not answered
+    // yet, so the remembered answer still stands.
+    expectMetric("allowance")
+    view.update({
+      liveUsage: { providers: [], errors: [], meters: [], generatedAt: "" },
+      liveUsageSettled: true,
+    })
     expectMetric("cost")
   })
 

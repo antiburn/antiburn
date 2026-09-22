@@ -37,15 +37,17 @@ export function OverviewView({
   const [rememberedPlan] = useState<boolean | undefined>(
     () => readOverviewViewPrefs().hadSubscriptionPlan,
   )
-  // `allowance` and `liveUsage` are both null until the first read returns, and
-  // a reader with no subscription looks exactly like one whose plans have not
-  // been read yet. Only believe them once one of the two has reported.
-  const planSettled = state.liveUsageSettled || state.allowance != null
-  const observedPlan = planSettled
-    ? (state.allowance?.accounts.some((account) => account.plan != null) ?? false) ||
-      (state.liveUsage?.providers.some((provider) => provider.plan != null) ?? false)
-    : undefined
-  const hasSubscriptionPlan = observedPlan ?? rememberedPlan
+  // A detected plan settles the answer at once. A reader with no plan looks
+  // exactly like one whose allowance and live-usage reads have not both
+  // answered yet, so a negative answer only settles once both have.
+  const observedPlan =
+    (state.allowance?.accounts.some((account) => account.plan != null) ?? false) ||
+    (state.liveUsage?.providers.some((provider) => provider.plan != null) ?? false)
+  const allowanceSettled =
+    !state.allowanceLoading && (state.allowance != null || state.allowanceError)
+  const planSettled = observedPlan || (allowanceSettled && state.liveUsageSettled)
+  const settledPlan = planSettled ? observedPlan : undefined
+  const hasSubscriptionPlan = settledPlan ?? rememberedPlan
 
   const metric = selectedMetric ?? (hasSubscriptionPlan === false ? "cost" : "allowance")
   // On a first run there is no choice and nothing remembered, so the unit above

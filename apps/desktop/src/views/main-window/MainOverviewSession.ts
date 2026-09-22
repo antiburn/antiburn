@@ -247,14 +247,18 @@ export class MainOverviewSession {
    * and correcting itself in front of the reader.
    *
    * Reads the snapshot just updated, so it must run after the `update` call
-   * for the read it reports on. Writes only when the answer differs from
-   * what the session last remembered, so a read that repeats the same
-   * answer costs nothing.
+   * for the read it reports on. A detected plan is certain on its own and
+   * writes at once. A reader with no plan looks exactly like one whose
+   * allowance and live-usage reads have not both answered yet, so a negative
+   * answer only writes once both have settled. Writes only when the answer
+   * differs from what the session last remembered, so a read that repeats
+   * the same answer costs nothing.
    */
   private notePlanObservation(): void {
     const hadPlan =
       (this.snapshot.allowance?.accounts.some((account) => account.plan != null) ?? false) ||
       (this.snapshot.liveUsage?.providers.some((provider) => provider.plan != null) ?? false)
+    if (!hadPlan && !(this.allowanceSettled && this.snapshot.liveUsageSettled)) return
     if (hadPlan === this.rememberedPlan) return
     this.rememberedPlan = hadPlan
     this.rememberPlan(hadPlan)
@@ -521,11 +525,17 @@ export class MainOverviewSession {
       this.snapshot.active
     try {
       const liveUsage = await this.adapter.getLiveUsage()
-      if (current()) this.update({ liveUsage, liveUsageSettled: true })
+      if (current()) {
+        this.update({ liveUsage, liveUsageSettled: true })
+        this.notePlanObservation()
+      }
     } catch {
       // The limits panel shows its own empty state. A failed read must not
       // hide the local totals, so liveUsage stays as it was.
-      if (current()) this.update({ liveUsageSettled: true })
+      if (current()) {
+        this.update({ liveUsageSettled: true })
+        this.notePlanObservation()
+      }
     }
   }
 
@@ -558,6 +568,7 @@ export class MainOverviewSession {
           this.allowanceSettled = true
           this.reportContentReadyOnceSettled()
           this.update({ allowanceLoading: false, allowanceError: true })
+          this.notePlanObservation()
         }
       }
     }
