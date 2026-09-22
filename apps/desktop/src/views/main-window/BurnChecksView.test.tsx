@@ -1257,7 +1257,6 @@ describe("BurnChecksView", () => {
       await act(async () => pending.resolve(report))
       await screen.findByRole("button", { name: /Old model usage.*8% estimated burn/ })
       expect(view.container.querySelectorAll("[data-tauri-drag-region]")).toHaveLength(0)
-      expect(view.container.querySelector("[data-tauri-drag-region] button")).toBeNull()
     } finally {
       userAgent.mockRestore()
     }
