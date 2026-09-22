@@ -274,6 +274,12 @@ supports the setting and platform, and successful prepare/apply checks. Native W
 has read attribution but no apply path; WSL never edits native host configuration. An
 unavailable Auto Fix leaves a supported prompt action available.
 
+Model replacement requires a reviewed obsolete model and its reviewed replacement.
+Reasoning changes to `medium` only when the observed level exceeds the reviewed
+cap and `medium` is a valid below-cap value. For one exact Claude Code MCP
+server, the editor appends only `mcp__<name>__*` to an existing same-scope deny
+list; it does not broaden another permission rule.
+
 ## Verification And Recurrence
 
 The durable lifecycle is:

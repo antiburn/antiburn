@@ -24,6 +24,9 @@ pending hover detail, and a drag hides any open card. A fresh hover is required
 after the drag. The card is display-only, ignores input, and never takes focus.
 The island carries labels and reset times in its expanded body, so it does not
 open that card. Reduced motion stops the live pulse and appearance animation.
+The shell treats an app activation during a HUD drag as part of that drag,
+even after the pointer leaves the HUD. It must not restore the main window
+until the drag ends.
 
 ### The token map
 
@@ -73,11 +76,12 @@ Hiding the HUD retains its dock preference for the next open.
 
 On a Mac with a notch, dropping over that notch or using Settings → Usage →
 Docking → Move to Notch selects the island. The collapsed row sits beside the
-notch with a live mark. Hovering its hotspot expands the bars, labels, reset
-times, and any token-map legend below it. Clicking the row alone does not tear
-it off; dragging beyond the movement threshold does. The drag previews the
-island shape over a valid notch, then returns to the floating shape away from
-it.
+notch with a short live bar. The mark must not be a round dot beside the lens:
+that can read as the camera indicator. Hovering its hotspot expands the bars,
+labels, reset times, and any token-map legend below it. Clicking the row alone
+does not tear it off; dragging beyond the movement threshold does. The drag
+previews the island shape over a valid notch, then returns to the floating
+shape away from it.
 
 The island belongs to the notched display. If that display disappears, the HUD
 falls back to a top dock while retaining the island preference, and returns
@@ -92,7 +96,9 @@ not turn a saved offset into a global desktop coordinate. A drag makes that
 display preferred. Disconnecting it uses another connected placement without
 rewriting the preference; reconnecting it restores the preferred location.
 The shell measures the rendered HUD before its first reveal and updates the
-native frame when content height changes. It parks display checks while hidden.
+native frame when content height changes. Hiding the HUD must cancel a pending
+first reveal, even if the measurement arrives later. It parks display checks
+while hidden.
 
 The HUD and detail are passive, nonactivating macOS panels: neither becomes key
 or main, and the detail passes clicks through. Their native policy joins Spaces

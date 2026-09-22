@@ -26,6 +26,15 @@ its reveal, hide, and destruction decisions; the shared
 timing and stale-load warnings. A readiness report from a destroyed generation
 cannot reveal a new one.
 
+For new window policies, create renderers on demand by default. Prewarm only
+at a handoff with a likely near-term interaction and a bounded lease. Reuse an
+active generation rather than starting parallel loads. Keep durable state in
+native services, the local database, or persisted preferences so a fresh
+renderer can reconstruct the surface. Cancel work when its final visible owner
+leaves; frontend cleanup helps, but native teardown is the final ownership
+gate. Every delayed reveal or destruction must prove that its request and
+renderer generation are still current.
+
 ## macOS overlay presentation
 
 HUD, HUD detail, popover, and nudge start hidden and unfocused. Their native
@@ -206,10 +215,17 @@ duration and generation guard together. The main-window timeout values still
 need release calibration.
 
 Popover timing records content-free boundaries for open, generation, build,
-readiness, reveal, and settled activity and cached usage. A hidden prewarm can
-settle content before the click. Use those measurements to justify any added
-cache; a second representation of native state needs a measured visible delay
-and a bounded invalidation path.
+readiness, reveal, and settled activity and cached usage. Content readiness
+requires both activity and cached usage to settle; an empty activity list
+counts as settled. A hidden prewarm can reach that point before the click, in
+which case reveal-to-content time is zero.
+
+Add a popover bootstrap snapshot only if release measurements show a median
+reveal-to-content interval of at least 250 ms. The snapshot must stay in
+memory, derive from authoritative stores, have a bounded serialized size, and
+invalidate with one revision. It must refresh through the existing command
+path after reveal. Below that gate, renderer prewarm remains the complete
+optimization.
 
 ## Owners
 

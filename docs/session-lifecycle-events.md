@@ -47,8 +47,10 @@ The durable evidence queue feeds analysis workers. Only a winning
 `Store::publish_projections` transaction reports `RowChanged` with the `analysis` facet.
 Processing and failed passes do not report success. This invalidates compact execution
 evidence and requests an enriched row, without changing activity timestamps. Global
-Checks notifications remain separate. A published fence identifies a visible row set and
-may be reused; execution reads also require the writer revision and incarnation.
+Checks notifications remain separate. Analysis rebuilds published evidence from
+stored turn facts and coverage, not only its in-memory fold. A published fence
+identifies a visible row set and may be reused; execution reads also require the
+writer revision and incarnation.
 Snapshot and named-presence commands read registry memory, not SQL. For source
 parsing and publication coverage, see the
 [session parsing pipeline](session-coverage.md#pipeline-contract).
@@ -101,6 +103,11 @@ A full pending set retains the unaccepted suffix of one recovery page. The
 cursor advances only after every row is accepted, deferred safely, or rejected
 as stale. Exhaustion completes recovery; shutdown discards late read results.
 
+The special repair path for early V49 databases applies the missing main
+migrations through V51 in one transaction. It preserves existing session
+incarnations and their counter. Failure rolls back the repair so the database
+remains retryable at V49.
+
 ## Evidence, guards, and convergence
 
 These numbers have different scopes and must not substitute for one another:
@@ -116,6 +123,8 @@ These numbers have different scopes and must not substitute for one another:
 Each `IndexedSession` carries its incarnation and activity epoch; its batch
 carries the upsert revision. Presence pages return incarnation, epoch, and
 revision together. `RowChanged` and `IndexChanged` never establish presence.
+Rust and JavaScript lowercase only ASCII A–Z in WSL environment keys;
+non-ASCII letters remain distinct.
 
 Admission applies these rules:
 
@@ -406,8 +415,11 @@ bounded rows. Popover and main-window lists patch enriched rows from `session:up
 refetch membership on `session:index-changed`, and register visible rows as
 named-presence interests for active pills. Main-window activity and overview clear
 interests while hidden or section-inactive; the retained popover keeps its interests
-while hidden. Analysis, usage, checks, and limits refresh from their relevant facets or
-lifecycle activity. Settings refreshes app info on index changes.
+while hidden. On resume, the main window overlays current registry evidence,
+restores interests, and refreshes its active views. Popover usage refreshes on
+lifecycle activity with a 30-second floor and an independent visible-only poll;
+membership changes can refresh it immediately. Analysis, checks, and limits
+refresh from their relevant facets. Settings refreshes app info on index changes.
 
 Extend the protocol at its owner: producers add typed facts, the registry defines
 ordering and evidence, the projection worker owns Tauri events and bounded rich-row
@@ -444,22 +456,30 @@ paid subscription or account. Historical spend attribution is separate.
 
 Displayed provider meters use positive canonical route counts. Pending, failed,
 unmodeled, missing-route, and anonymous activity remains global only. Anonymous activity
-proves no provider or model.
+proves no provider or model. An account-wide meter can sweep for any working
+model on its canonical route. A model-scoped meter sweeps only when the same
+canonical route has a working published model that matches the meter's scope.
 
 The registry retains compact execution metadata per live identity. Checked
 tickets never reset after idle or re-admission. A broad invalidation advances an
 epoch and immediately removes positive evidence. Selection walks at most 256
 metadata slots before keyed work; model pages contain at most 256 identities and
-retry failed reads after 2–30 seconds. One blocking model read can run alongside
-one rich-row read. The registry retains model work until acknowledged, and the
-capacity-one result mailbox is independent of blocked admission.
+retry failed reads after 2–30 seconds without delaying other due pages. One
+blocking model read can run alongside one rich-row read. The worker continues
+relaying lifecycle events during those reads and acknowledgements. The registry
+retains model work until acknowledged, and the capacity-one result mailbox is
+independent of blocked admission. A constant-size resolved counter detects broad
+metadata invalidation without walking every slot in the actor.
 
 The Store reads incarnation, published fence, newest nonempty model and same-turn
 provider, and writer revision together. An answer requires matching incarnation, epoch,
 and ticket plus sufficient revision; the fence alone cannot validate it because a later
-publication may reuse that fence. Missing rows establish no presence. `sweep_changed`
-carries batch-final counts, including changes for quiet rows; metadata never changes
-activity timestamps. Invalidation removes execution immediately even if reload fails.
+publication may reuse that fence. The query skips unmodeled turns and does not
+join historical provider hints or model runs. Missing rows establish no presence.
+`sweep_changed` carries batch-final counts. Resolved metadata also advances the
+sequence for quiet rows even when working counts do not change. Metadata never
+changes activity timestamps. Invalidation removes execution immediately even if
+reload fails.
 
 The shared frontend tracker retains liveness and aggregate counts, not per-row
 execution. A future row-level consumer must reconcile its bounded snapshot or named

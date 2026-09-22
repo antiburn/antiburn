@@ -2,10 +2,11 @@
 
 This guide helps contributors make design decisions for antiburn's desktop app.
 It describes visual intent, shared rules, and exceptions that are difficult to
-infer from one component. CSS and components own exact values and behavior; the
-source map below points to them. Treat a screenshot or an old rule as evidence
-of one implementation, then check the current code and user outcome before
-reusing it.
+infer from one component. These are requirements for contributors and reviewers.
+CSS owns exact token values; shared components implement the rules below. The
+source map points to those owners. Existing code or a screenshot can contain a
+violation; neither overrides a written rule. Change a rule explicitly, with its
+rationale, rather than treating an implementation difference as permission.
 
 Use this guide when adding a surface, changing visual hierarchy, or deciding
 whether a pattern belongs in the shared system. Update it when a design rule
@@ -29,6 +30,13 @@ figure with a permanent qualifier.
 Write interface copy in sentence case. Name the state plainly and make action
 labels describe what pressing them does. Keep explanations short and specific
 about the evidence, limit, or next step; avoid vague success and failure copy.
+Use active voice and present tense. Do not use marketing superlatives,
+exclamation marks, or promises the app cannot keep. Spell `antiburn` lowercase.
+Keep accessible names short; do not repeat an entire message in its action label.
+
+Settings owns stored preferences, the popover reads, onboarding owns first run,
+and notifications alert. Do not put settings controls in the popover or turn a
+notification into a reading pane. Deep links must name and reach their destination.
 
 The menu-bar popover and HUD favor glanceable readings; the main window gives
 evidence room to breathe. Reuse meanings and primitives across surfaces
@@ -48,18 +56,25 @@ without forcing every surface into the same density.
 
 Use existing CSS variables and components before introducing a new value.
 If a value represents a recurring meaning, add a semantic token in the relevant
-palette. Keep one-off geometry or visualization values with the feature that
-uses them. A new shared token needs a name that explains its job, theme behavior
-where relevant, and a real second use or a clear system role.
+palette. The existing exception for one-off visualization or geometry values
+requires a local comment explaining the constraint; it does not permit ad-hoc
+shared chrome. Token definitions in the owning CSS palette and package-sourced
+vendor artwork are also
+exceptions to the feature-code literal ban. A token name must explain its job
+and define theme behavior where relevant.
 
 ## Colour and surfaces
 
-Use semantic Tailwind utilities such as `bg-surface-window`, `text-label-secondary`,
-and `border-separator`. The palette in `tokens.css` resolves System, Light, and
-Dark themes; components should not choose their own theme branch. Check a
+**No raw colour in feature code:** no hex literals, ad-hoc `rgb()` or `hsl()`,
+or stock Tailwind colours such as `bg-blue-500` or `text-slate-400`. Use semantic
+utilities such as `bg-surface-window`, `text-label-secondary`, and
+`border-separator`, subject only to the exceptions above. Do not add manual
+`dark:` colour overrides; semantic tokens own both theme values. The palette in
+`tokens.css` resolves System, Light, and Dark. Check a
 colour on the surface where it appears, including translucent popovers over
-uncontrolled desktop backgrounds. Reduced transparency must leave content
-legible on a solid surface.
+uncontrolled desktop backgrounds. System must match the corresponding explicit
+Light or Dark palette. Reduced transparency must make window and popover
+surfaces solid and legible in every System, Light, and Dark branch.
 
 Choose a token for its meaning rather than the nearest-looking hue:
 
@@ -76,6 +91,11 @@ Choose a token for its meaning rather than the nearest-looking hue:
   Status and chart palettes have their own meanings. Do not turn ordinary
   metadata orange to make it look important.
 
+Status colours express conditions, never decoration. Use the corresponding
+`-text` token where provided for status text; a fill token may fail text contrast.
+Use tinted status backgrounds on translucent surfaces, not saturated bands.
+Do not layer a feature's own blur or opaque fill over the native material.
+
 Status must remain understandable from text, shape, or position when colour
 is unavailable. Burn Check failure, pass, and unassessed states use the
 feature palette in [tokens.css](src/styles/tokens.css) and the shared
@@ -90,23 +110,42 @@ and watermarks must not replace a visible source name when identity matters.
 
 ## Type, controls, and interaction
 
-Use the `type-*` scale in `typography.css`; type steps inherit the base
-line height from `base.css`. Most data, rows, and labels use body-sized text;
-titles and hero figures are deliberate exceptions. Set
+**No hard-coded type sizes:** do not use raw `font-size`, `text-[13px]`, or
+framework size utilities such as `text-sm` in feature code. Use the `type-*`
+scale in `typography.css`; type steps inherit the base
+line height from `base.css`. Use one body-sized data step per view; reserve
+other steps for hero figures, guidance, headings, and footnotes. Set
 hierarchy with weight and contrast before making type larger. Pair figures
 that users compare with tabular numerals, and use monospace where the reading
-behaves like an instrument. The scale is unlayered CSS, so a deliberate weight
+behaves like an instrument. Product prose uses the system sans stack; monospace
+is for machine text and the documented instrument/metric roles. The scale is
+unlayered CSS, so a deliberate weight
 override on a `type-*` class uses a Tailwind important modifier such as
-`font-medium!`.
+`font-medium!`. Weight modifiers must keep their `type-*` size. Italics are
+reserved for a placeholder sentence in an otherwise empty list.
+
+Settings uses `Pane` → `SectionGroup` → `Row` for its descending type hierarchy.
+Only the pane title is semibold; group and row hierarchy uses size and contrast.
+Do not rebuild that ladder per pane.
 
 Use [shared controls](src/components/ui/) for buttons, rows, tabs,
 disclosures, menus, tooltips, and scrolling. They provide hit areas, states,
-focus, and accessibility behavior. Use `rounded-control` for controls and the
-semantic radius for larger surfaces. A feature should not rebuild menu or
-tooltip material in its own stylesheet. Style headless-control states from
-their state attributes as well as pointer hover.
+focus, and accessibility behavior. Do not hand-roll their chrome. Control heights
+come from shared tokens and primitives. **No ad-hoc radii:** use named radii,
+not `rounded-md`, `rounded-lg`, or arbitrary pixel radii, except for the documented
+local-geometry cases above. Use `rounded-control` for controls.
 
-Use Lucide for ordinary interface icons. Give a meaningful icon an accessible
+Use `gap-*` between children, not `space-x-*` or `space-y-*`. Do not rebuild
+menu, tooltip, or scroll-fade material in feature CSS. Headless control states
+must use `[data-state]` and `[data-highlighted]`, not rely on `:hover`: passive
+notification windows may receive no pointer hover events. Use `InlineLink` for
+outbound prose links so a normal `href` cannot navigate the app webview.
+A `Banner` is one line, dismissible, has at most one action, and uses a polite
+status region. Permission notices are a separate, non-dismissible state.
+Buttons use the arrow cursor by default; full-row disclosures may use a pointer.
+
+Use Lucide with `currentColor` for ordinary interface icons. No emoji in product
+chrome: lists, labels, buttons, panes, or notifications. Give a meaningful icon an accessible
 name through its control or adjacent label; hide a decorative icon from
 assistive technology. Do not use an icon, colour, or tooltip as the only way
 to learn a critical result or action. Check text and icon contrast against the
@@ -122,15 +161,39 @@ updates after Tab and pointer input. Preserve it on custom controls. Keep
 selection distinct from focus. Dialogs, drawers, and menus need predictable
 initial focus, Escape dismissal, and focus restoration. Navigation by search
 may focus a destination; it must not silently change a setting or run an action.
+A popover surface change must focus its meaningful heading rather than leave
+focus on the body. Preserve roving keyboard navigation and valid `aria-controls`,
+`aria-labelledby`, and tab/panel roles. Do not suppress the keyboard focus ring.
+Escape dismisses transient popovers, not the nonmodal Settings window.
+Command-W or Control-W closes a decorated window.
 
 The global reduced-motion rule in `motion.css` stops animation and transition
 by default. Add motion only when it explains a change or gives useful feedback.
 Use the shared duration variables; in Tailwind, write
-`duration-[var(--duration-fast)]`, not a copied millisecond value.
-Do not animate navigation, resize corrections, or continuously changing
-readings merely to make them feel active. Ambient loops must stop under reduced
+`duration-[var(--duration-fast)]`, not a copied millisecond value. Do not use
+literal durations, inline easing curves, or bare transition utilities that
+silently inherit framework timings. Animation-specific timing stays with its
+owning keyframes. Preserve completion callbacks such as `animationend` when
+an action depends on them, including under reduced motion.
+Main-window view switches are immediate; do not animate navigation. Do not
+animate resize corrections or continuously changing readings merely to make
+them feel active. Ambient loops must stop under reduced
 motion and leave a static indication with the same meaning. Any essential
 reduced-motion exception belongs in motion.css with its reason.
+
+## Required states
+
+Every data-loading surface must handle the states that apply to it:
+
+- Empty: show a title and a line explaining why it is empty and what would fill it.
+- Loading: use content-shaped `Skeleton` placeholders, not a spinner over a blank
+  surface. Avoid layout jumps; mark the region `aria-busy` and placeholders
+  `aria-hidden`.
+- Error: say what failed and provide a next step.
+- Permission blocked: explain the missing access before a user-triggered consent
+  prompt. Keep the gap visible; do not treat it as a crash or hide the denied source.
+- Freshness: indexed data must show whether it is scanning and when it was last checked.
+- Progress and status changes: announce through a polite live region, not assertive.
 
 ## Layout and scaling
 
@@ -178,7 +241,9 @@ headline readings and [SegmentedMeter](src/components/ui/SegmentedMeter.tsx)
 for horizontal usage meters. Keep ranked figures visually consistent: their
 order already communicates magnitude. A chart needs direct names or a legend,
 units, readable axes, and a way to inspect exact values without relying on
-colour alone. Keep a category's hue stable across a view and distinguish
+colour alone. Chart series must resolve colours through CSS tokens. Keep feature
+chart palettes within their feature; do not borrow them for general product chrome.
+Comment new chart tokens with their meaning. Keep a category's hue stable across a view and distinguish
 layers with weight, opacity, or shape. Feature chart palettes live with their
 styles, including [session-analysis-colors.css](src/styles/session-analysis-colors.css)
 and [quota.css](src/views/main-window/quota/quota.css).

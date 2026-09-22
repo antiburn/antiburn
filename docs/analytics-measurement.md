@@ -36,9 +36,12 @@ persistent HUD.
 Core surfaces are `activity`, `session_detail`, `provider_preview`,
 `checks_preview`, `burn_checks`, `hud`, `hud_detail`, and `quota`. Count only
 their `surface_viewed` events with `detail=user` as deliberate core views.
-Settings-pane views do not qualify. Earlier builds could report an `insights`
-Settings pane and state; exclude that legacy value when comparing current
-core-use cohorts.
+Current Settings-pane views do not qualify. In app versions that had Settings →
+Insights, a visible `settings_pane_viewed` with `label=insights` also qualified
+as deliberate core use, with its visible state reported separately. Preserve
+that definition for historical cohorts. Segment the two definitions at the app
+version that removed the pane; do not join their engagement or return rates
+into one continuous trend or silently recast historical Insights visits.
 
 ## Core product measures
 
@@ -55,28 +58,35 @@ core-use cohorts.
 the visible session-detail view and state for the outcome. A cached result
 counts only when shown, and a background refresh is not engagement. Burn Checks
 `ready` requires a finding or clean result; an all-unassessed report is
-`empty`.
+`empty`. More generally, `ready` means usable data is visible, not merely a
+mounted component or successful IPC response. Classify `new` and `restart`
+setup flows from the explicit restart path and persisted onboarding state,
+never from whether an analytics ID was seen before. A quit and later resume
+can report another start with the persisted classification; exclude legacy
+unlabeled completions from new-versus-restart cohorts. Selecting an account,
+lane, or range within Quota stays in the same surface exposure; it does not
+create another visit.
 
 ## Feature and diagnostic measures
 
 Use these denominators for current events. The catalog defines each event's
 exact fields, suppression, and allowed values.
 
-| Question                                                 | Metric and limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Which Sessions filters are selected?                     | Distribution of `session_filter_selected` by filter and, for recognized agent filters, agent, among reporting installations that changed a filter. Restoration and reselecting the current filter emit nothing; this is choice among changers, not current filter prevalence.                                                                                                                                                                                                                                                                 |
-| Which interface sizes and routes are chosen?             | Distribution of `interface_scale_changed` by preset and Settings, shortcut, or menu route among reporting installations that saved a change. Restoration emits nothing, so this is not current preset adoption.                                                                                                                                                                                                                                                                                                                               |
-| Are project folder actions used and successful?          | Count settled `project_folder_action` attempts and failures by `open` or `copy`. The denominator is observed attempts, not sessions or panel views. OS acceptance of an open request does not prove the file manager displayed the folder.                                                                                                                                                                                                                                                                                                    |
-| Do Burn Checks actions complete?                         | Report Auto Fix reviews by typed result, confirmations against `ready` reviews, and typed completions against confirmations. Report successful prompt copies against `ready` preparations, with preparation failures separate. Allow in-flight attempts and late delivery to settle; a clipboard failure emits no copy success. An explicit retry is another attempt.                                                                                                                                                                         |
-| Do verified checks and recurrences become visible?       | Count distinct exposed installations by `(verified or recurred, passive or action)` from `burn_check_outcome_observed`, against deliberate Burn Checks exposures. The watch origin describes how it started; it does not establish that the action caused the result. Multiple targets with one tuple collapse within an exposure.                                                                                                                                                                                                            |
-| Is main-window navigation useful?                        | Count installations with `navigation_history_moved` among main-window viewers; count `app_search_opened` among those viewers. Compare `app_search_result_opened` with search opens by result category and report distinct installations too. A search result means accepted navigation, not loaded data, executed work, or a changed setting.                                                                                                                                                                                                 |
-| How close do usage windows run to limits?                | Report `usage_observed` bands by provider and short or long window. These are changed-state observations, not request counts or exact percentages. Provider failures and supplemental windows do not contribute. Non-authoritative windows may still report a coarse band.                                                                                                                                                                                                                                                                    |
-| How accurate are learned factors?                        | Distribute `limit_factor_observed` factor and residual bands by provider, lane, and mapped plan among reporting installations. Its 24-hour floor and first-account-per-provider/lane narrowing make event counts unsuitable as account or window counts. Keep model-scoped lanes separate without attempting to identify a model.                                                                                                                                                                                                             |
-| How accurate are closed quota windows?                   | Distribute `quota_window_closed` estimate bias, unexplained band, and reading coverage by provider, lane, and mapped plan, with reporting installations shown. This is a dollars-only estimate against the last provider reading after a window closes; it does not reconstruct the badge or forecast a reader saw. Only windows with an observed period ID, closed within the 14-day lookback, can report. A durable marker prevents retries, so a crash after marking can leave a missed event.                                             |
-| How common are unknown records or report-time incidents? | `unrecognized_records_observed`, `quota_incidents_observed`, and `provider_incidents_observed` describe completed Checks report requests from the popover or main window. They can record before the renderer presents the report. Their changed-state buckets do not measure population parser or incident rates and do not establish deliberate use. Missing `unrecognizedTypes` on an older event means the build predates that field, not that no unknown type existed.                                                                   |
-| Is a provider failure widespread?                        | For `provider_incidents_ingested`, report distinct installations by agent and incident kind per hour against installations that sent any event that hour. This is an ingest-time fleet signal, not a request failure rate: closed laptops, stale sessions, and opted-out installs contribute nothing. Its two-hour freshness window permits delayed reporting.                                                                                                                                                                                |
-| Did app resource use shift?                              | Compare `resource_usage_observed` bands by app version and OS using observed installation-hours, with installation counts and `none`/`partial`/`full` coverage alongside each distribution. Never use event count as the denominator. The shell process must run long enough to sample; CPU and memory omit renderers, the memory maximum is sampled rather than a true peak, I/O has platform-specific meanings, and missing measurements are not zero. A shift warrants regression investigation, not a claim about all users or causation. |
-| How many withdrawals were observed?                      | Count `analytics_opted_out` among configured, previously enabled installations that delivered the signal. Exclude it from engagement, activation, retention, visit, and time-spent measures. Offline, failed, unconfigured, environment-disabled, and crashed-before-delivery withdrawals can be missed; the signal cannot establish an opt-out rate for all installs.                                                                                                                                                                        |
+| Question                                                 | Metric and limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Which Sessions filters are selected?                     | Distribution of `session_filter_selected` by filter and, for recognized agent filters, agent, using all reporting installations on supporting versions as the denominator. Also show the distribution among observed changers. Restoration and reselecting the current filter emit nothing; a change does not measure current filter prevalence.                                                                                                                                                                                                                                                            |
+| Which interface sizes and routes are chosen?             | Distribution of `interface_scale_changed` by preset and Settings, shortcut, or menu route using all reporting installations on supporting versions as the denominator. Also show the distribution among observed changers. Restoration emits nothing, so this is not current preset adoption.                                                                                                                                                                                                                                                                                                               |
+| Are project folder actions used and successful?          | Count settled `project_folder_action` attempts and failures by `open` or `copy`. The denominator is observed attempts, not sessions or panel views. OS acceptance of an open request does not prove the file manager displayed the folder.                                                                                                                                                                                                                                                                                                                                                                  |
+| Do Burn Checks actions complete?                         | Report Auto Fix reviews by typed result, confirmations against `ready` reviews, and typed completions against confirmations. Report successful prompt copies against `ready` preparations, with preparation failures separate. Allow in-flight attempts and late delivery to settle; a clipboard failure emits no copy success. An explicit retry is another attempt.                                                                                                                                                                                                                                       |
+| Do verified checks and recurrences become visible?       | Count distinct exposed installations by `(verified or recurred, passive or action)` from `burn_check_outcome_observed`, against deliberate Burn Checks exposures. The watch origin describes how it started; it does not establish that the action caused the result. Multiple targets with one tuple collapse within an exposure.                                                                                                                                                                                                                                                                          |
+| Is main-window navigation useful?                        | Count installations with `navigation_history_moved` among main-window viewers; count `app_search_opened` among those viewers. Compare `app_search_result_opened` with search opens by result category and report distinct installations too. A search result means accepted navigation, not loaded data, executed work, or a changed setting.                                                                                                                                                                                                                                                               |
+| How close do usage windows run to limits?                | Report `usage_observed` bands by provider and short or long window. These are changed-state observations, not request counts or exact percentages. Provider failures and supplemental windows do not contribute. Non-authoritative windows may still report a coarse band.                                                                                                                                                                                                                                                                                                                                  |
+| How accurate are learned factors?                        | Distribute `limit_factor_observed` factor and residual bands by provider, lane, and mapped plan among reporting installations. Its 24-hour floor and first-account-per-provider/lane narrowing make event counts unsuitable as account or window counts. Keep model-scoped lanes separate without attempting to identify a model.                                                                                                                                                                                                                                                                           |
+| How accurate are closed quota windows?                   | Distribute `quota_window_closed` estimate bias, unexplained band, and reading coverage by provider, lane, and mapped plan, using reporting installations on supporting versions as the denominator, with their count and eligible closed-window counts shown separately. This is a dollars-only estimate against the last provider reading after a window closes; it does not reconstruct the badge or forecast a reader saw. Only windows with an observed period ID, closed within the 14-day lookback, can report. A durable marker prevents retries, so a crash after marking can leave a missed event. |
+| How common are unknown records or report-time incidents? | `unrecognized_records_observed`, `quota_incidents_observed`, and `provider_incidents_observed` describe completed Checks report requests from the popover or main window. They can record before the renderer presents the report. Their changed-state buckets do not measure population parser or incident rates and do not establish deliberate use. Missing `unrecognizedTypes` on an older event means the build predates that field, not that no unknown type existed.                                                                                                                                 |
+| Is a provider failure widespread?                        | For `provider_incidents_ingested`, report distinct installations by agent and incident kind per hour against installations that sent any event that hour. This is an ingest-time fleet signal, not a request failure rate: closed laptops, stale sessions, and opted-out installs contribute nothing. Its two-hour freshness window permits delayed reporting.                                                                                                                                                                                                                                              |
+| Did app resource use shift?                              | Compare `resource_usage_observed` bands by app version and OS using observed installation-hours, with installation counts and `none`/`partial`/`full` coverage alongside each distribution. Never use event count as the denominator. The shell process must run long enough to sample; CPU and memory omit renderers, the memory maximum is sampled rather than a true peak, I/O has platform-specific meanings, and missing measurements are not zero. A shift warrants regression investigation, not a claim about all users or causation.                                                               |
+| How many withdrawals were observed?                      | Count `analytics_opted_out` among configured, previously enabled installations that delivered the signal. Exclude it from engagement, activation, retention, visit, and time-spent measures. Offline, failed, unconfigured, environment-disabled, and crashed-before-delivery withdrawals can be missed; the signal cannot establish an opt-out rate for all installs.                                                                                                                                                                                                                                      |
 
 Surface state and Burn Checks outcome events require visible exposures. Hidden
 results, prewarm, remounts, refreshes, and background verification do not count
@@ -86,6 +96,62 @@ The Claude reset diagnostic is a separate, gated provider probe and does not
 measure use of a reset operation. It must not be mixed with the broader
 `usage_observed` measure. Avoid interpreting one event per changed state or
 bucket as the number of underlying occurrences.
+
+Every model-scoped weekly factor lane uses the single `detail=model` value.
+For one provider, all of its model-scoped lanes share the same `(provider,
+model)` suppression slot, so this event cannot estimate how many models or
+model lanes an installation has. Keep that lane separate from `short` and
+`long` in reports and segment its introduction by app version. Resource
+summaries and ingested incidents are background health signals; exclude them
+from engagement, activation, retention, visit, and time-spent measures.
+
+`provider_incidents_ingested` is a bounded background diagnostic owned by Dave
+Slutzkin. Review it by 2026-12-14 against an actual fleet-status or support
+decision and remove it if neither uses the signal. Its `(timestamp, kind)`
+content comparison and two-hour freshness gate bound re-ingest and backfill;
+at most five kind events can follow one publication. A closed laptop or an
+installation that never revisits affected evidence cannot report an outage.
+
+## Instrumentation safeguards
+
+Keep event properties in event-specific Rust types even when they serialize
+through shared `label`, `detail`, or `bucket` fields. Values are closed
+vocabularies, except the documented bounded and sanitized
+`unrecognizedTypes` list. Update the public catalog, privacy policy, and
+in-product disclosure when a value gains a new meaning, even if the wire field
+count stays the same. Resource bands can reveal coarse app work intensity and
+local data volume; preserve that disclosure on all three surfaces. Never send
+a settings snapshot or work content. Do not capture a new event after the
+opt-out commit; the one final pass may deliver previously queued rows.
+The opt-out signal is a fixed event queued before the preference changes; one
+bounded final drain may deliver it, then analytics state is deleted. A failed
+or offline final drain is an accepted miss and must not retry after disable.
+
+For an explicit operation, correlate attempt and result locally and emit
+exactly one terminal outcome per attempt. Automatic retries belong to that
+attempt; a later explicit retry is a new one. Allow in-flight work and late
+delivery before calculating outcome rates. Report unmatched attempts caused by
+process exit separately; do not treat missing completion as failure. Do not
+introduce persistent operation or work identifiers. A setting change proves
+an observed transition, not current prevalence across all installations. If a
+directional setting event is added, emit it only after a saved transition.
+Keep the existing `setting_toggled` meaning stable during migration, and do
+not count old and new events as separate actions.
+
+Add scoped scan, analysis, storage, or provider diagnostics only for a named
+reliability question that visible-state events cannot answer. Use fixed error
+categories and changed-state suppression. Do not make an analytics-only
+provider request for a presentation-state event. Give temporary diagnostics,
+including the Claude reset probe, an owner and review date so their traffic
+does not become permanent by default.
+
+Before increasing event volume, simulate repeated visits, preview use, and an
+offline backlog against the 50-event drain and 500-row queue. Preserve the
+queue-depth wake, bounded request budget, protected retry delays, opt-out
+recheck before every request, and silent delivery failure. Do not merely
+enlarge the queue or add a blocking exit flush. Monitor delivery lag,
+duplicate message IDs, rejection counts, and event mix in the collector
+separately from product engagement.
 
 ## Event review contract
 
@@ -103,10 +169,12 @@ Every added or changed event must document:
 6. Validation on the actual product path, not only a call to the tracker.
 
 Feature work must answer this contract with existing coverage, added coverage,
-or a concrete reason measurement is unnecessary. Avoid an unconditional
-heartbeat or events per poll, record, chart hover, scroll, or token update.
-For a new background diagnostic, state the owner, review date, and decision
-that warrants its volume and any provider traffic.
+or a concrete reason measurement is unnecessary. The goal is enough coverage
+to make decisions, not a fixed number of events per pull request. Do not use a
+CI rule that merely requires an analytics file to change in every feature PR.
+Avoid an unconditional heartbeat or events per poll, record, chart hover,
+scroll, or token update. For a new background diagnostic, state the owner,
+review date, and decision that warrants its volume and any provider traffic.
 
 Tests should prove that the user action produces the expected event, a failed
 operation cannot emit success, and remounts, prewarm, refreshes, and duplicate
@@ -115,4 +183,16 @@ flow has them. Validate exact allowed wire properties and rejected unknown
 values at the Rust boundary. Verify opt-out, environment disablement, absent
 configuration, and queue and retry bounds when those paths change. Run the
 analytics feature suite and relevant frontend tests. The catalog test checks
-event names; it cannot prove triggers, allowed values, or visible use.
+event names; it cannot prove triggers, allowed values, or visible use. Add
+event-specific property enums and a machine-readable schema check for exact
+names and values; behavior tests and review must still prove visibility.
+
+Validate configured release ingestion, retry deduplication, and delivery lag
+before treating source instrumentation as production measurement. Exercise a
+loopback flow through setup, Activity, previews, session detail, current Checks
+surfaces, return use, empty and error states, hidden prewarm, renderer
+recreation, automatic HUD restoration, and opt-out. Show reporting-installation
+counts and observation limits with production rates. Review at least two
+complete weeks of supported-version cohorts before choosing product changes.
+Assign each report and diagnostic a maintainer who checks whether it still
+supports a decision.

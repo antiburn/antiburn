@@ -442,8 +442,11 @@ sqlite3 ~/Library/Application\ Support/ai.antiburn.desktop/antiburn-debug.sqlite
 ```
 
 **Confirm opting out is a withdrawal, not a pause.** Turn the control off in
-Settings → Privacy. Wait up to 30 seconds, then re-run the query above. Both
-tables are empty: the queue is discarded and the identifier destroyed, so a
+Settings → Privacy. The setting saves a fixed `analytics_opted_out` signal,
+then allows one final delivery pass of up to 30 seconds. That pass can also
+deliver earlier queued events. Failed or offline delivery is not retried after
+disable. Wait up to 30 seconds, then re-run the query above. Both tables are
+empty: the remaining queue is discarded and the identifier destroyed, so a
 later opt-in starts an identity that cannot be linked to the old one.
 
 ## Where this lives in the code

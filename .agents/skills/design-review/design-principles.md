@@ -16,8 +16,10 @@ it does not maintain another copy of the design system.
 - Existing code establishes current behavior, not proof that the design is good.
   If no shared rule covers a problem, report a design risk with its user impact
   and a way to confirm it. Do not turn personal preference into a violation.
-- Do not flag raw values in the token layer, vendor brand artwork, or justified
-  feature geometry merely because they are literals. Read the owner's rationale.
+- Enforce the guide's explicit prohibitions, including raw feature colours,
+  stock colour and type utilities, ad-hoc radii, and copied transition timings.
+  Existing violations do not authorize new ones. Apply only the guide's stated
+  exceptions; a local preference or rationale alone cannot create an exception.
 - `scripts/check-design-drift.mjs` checks static theme completeness, System/explicit
   palette agreement, inherited type leading, and native/CSS window corners.
   It does not prove visual quality, accessibility, or all runtime theme behavior.
