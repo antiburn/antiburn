@@ -197,6 +197,7 @@ const LIVE_USAGE = {
           usedPercent: 40,
           startsAt: null,
           resetsAt: null,
+          elapsedFraction: null,
           hasNonzeroUsageInCurrentPeriod: false,
           forecast: LIVE_FORECAST,
         },

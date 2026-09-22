@@ -103,7 +103,9 @@ fn representative_paths(
 }
 
 const ID_TTL: Duration = Duration::from_secs(10 * 60);
-const TARGET_CACHE_LIMIT: usize = 100;
+/// Per-detector cap on cached target ids. Two full listings fit, so the ids a
+/// window still holds survive one background relist of the same check.
+const TARGET_CACHE_LIMIT: usize = 2 * MAX_TARGETS;
 const MAX_TARGETS: usize = 100;
 const MAX_CHECK_PROMPT_TARGETS: usize = 100;
 const MAX_PASSIVE_CANDIDATES: usize = 512;
@@ -139,6 +141,19 @@ struct CachedTarget {
     scope_key: String,
     physical_target_key: Option<String>,
     config: Option<CachedConfig>,
+}
+
+/// True when the reduced report still lists this resource target.
+fn resource_is_current(
+    report: &insights_report::ReducedReport,
+    resource: &CachedResourceTarget,
+) -> bool {
+    report
+        .resources
+        .detector(resource.finding.detector)
+        .into_iter()
+        .flat_map(|assessment| &assessment.targets)
+        .any(|candidate| resource_target_matches(&resource.target, candidate))
 }
 
 #[derive(Clone)]
@@ -232,8 +247,27 @@ struct PreparedAutoFix {
 
 #[derive(Default)]
 struct ControllerState {
-    targets: VecDeque<TimedTarget>,
+    /// Listed target ids, one bounded queue per detector so listing one check
+    /// never evicts the ids another check's window still holds.
+    targets: BTreeMap<DetectorId, VecDeque<TimedTarget>>,
     prepared: VecDeque<PreparedAutoFix>,
+}
+
+/// Caches one detector's freshly listed targets behind its own cap.
+fn cache_listed_targets(
+    state: &mut ControllerState,
+    detector: DetectorId,
+    entries: Vec<TimedTarget>,
+    now: i64,
+) {
+    let queue = state.targets.entry(detector).or_default();
+    queue.retain(|entry| now.saturating_sub(entry.created_at_epoch) <= ID_TTL.as_secs() as i64);
+    for entry in entries {
+        while queue.len() >= TARGET_CACHE_LIMIT {
+            queue.pop_front();
+        }
+        queue.push_back(entry);
+    }
 }
 
 pub struct RemediationController {
@@ -544,15 +578,7 @@ impl RemediationController {
             });
         }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
-        state.targets.retain(|entry| {
-            options.now.saturating_sub(entry.created_at_epoch) <= ID_TTL.as_secs() as i64
-        });
-        for entry in cached {
-            while state.targets.len() >= TARGET_CACHE_LIMIT {
-                state.targets.pop_front();
-            }
-            state.targets.push_back(entry);
-        }
+        cache_listed_targets(&mut state, detector, cached, options.now);
         Ok(BurnCheckTargetList {
             targets,
             sample_sessions: check_samples,
@@ -685,15 +711,7 @@ impl RemediationController {
             });
         }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
-        state.targets.retain(|entry| {
-            options.now.saturating_sub(entry.created_at_epoch) <= ID_TTL.as_secs() as i64
-        });
-        for entry in cached {
-            while state.targets.len() >= TARGET_CACHE_LIMIT {
-                state.targets.pop_front();
-            }
-            state.targets.push_back(entry);
-        }
+        cache_listed_targets(&mut state, detector, cached, options.now);
         Ok(BurnCheckTargetList {
             targets,
             sample_sessions: check_samples,
@@ -837,9 +855,7 @@ impl RemediationController {
         }
 
         // Validate every selected identity before this action records any watch.
-        for target in &targets {
-            self.revalidate(target)?;
-        }
+        self.revalidate_all(&targets)?;
 
         if targets
             .iter()
@@ -1584,7 +1600,8 @@ impl RemediationController {
         let state = self.state.lock().map_err(|_| ControllerError::Internal)?;
         let entry = state
             .targets
-            .iter()
+            .values()
+            .flatten()
             .find(|entry| entry.id == id)
             .ok_or(ControllerError::TargetNotFound)?;
         if now.saturating_sub(entry.created_at_epoch) > ID_TTL.as_secs() as i64 {
@@ -1593,24 +1610,56 @@ impl RemediationController {
         Ok(entry.value.clone())
     }
 
+    fn reduce_resource_report(
+        &self,
+        context: &BurnCheckTargetContext,
+    ) -> Result<insights_report::ReducedReport, ControllerError> {
+        insights_report::reduce_report_blocking(
+            &self.data_dir,
+            insights_report::ReportRequest {
+                environment_key: context.environment_key.clone(),
+                window: context.window,
+                computed_at_epoch: context.window.end_epoch,
+            },
+        )
+        .map_err(|_| ControllerError::Internal)
+    }
+
+    /// Revalidates a whole batch with one report reduce per distinct context,
+    /// instead of one reduce per target.
+    fn revalidate_all(&self, targets: &[CachedTarget]) -> Result<(), ControllerError> {
+        let mut reports: Vec<(BurnCheckTargetContext, insights_report::ReducedReport)> = Vec::new();
+        for target in targets {
+            let Some(resource) = &target.resource else {
+                self.revalidate(target)?;
+                continue;
+            };
+            let index = match reports
+                .iter()
+                .position(|(context, _)| *context == resource.context)
+            {
+                Some(index) => index,
+                None => {
+                    reports.push((
+                        resource.context.clone(),
+                        self.reduce_resource_report(&resource.context)?,
+                    ));
+                    reports.len() - 1
+                }
+            };
+            if !resource_is_current(&reports[index].1, resource) {
+                return Err(ControllerError::TargetChanged);
+            }
+        }
+        Ok(())
+    }
+
     fn revalidate(&self, target: &CachedTarget) -> Result<(), ControllerError> {
         if let Some(resource) = &target.resource {
-            let report = insights_report::reduce_report_blocking(
-                &self.data_dir,
-                insights_report::ReportRequest {
-                    environment_key: resource.context.environment_key.clone(),
-                    window: resource.context.window,
-                    computed_at_epoch: resource.context.window.end_epoch,
-                },
-            )
-            .map_err(|_| ControllerError::Internal)?;
-            let current = report
-                .resources
-                .detector(resource.finding.detector)
-                .into_iter()
-                .flat_map(|assessment| &assessment.targets)
-                .any(|candidate| resource_target_matches(&resource.target, candidate));
-            return current.then_some(()).ok_or(ControllerError::TargetChanged);
+            let report = self.reduce_resource_report(&resource.context)?;
+            return resource_is_current(&report, resource)
+                .then_some(())
+                .ok_or(ControllerError::TargetChanged);
         }
         for finding in &target.findings {
             match insights_report::revalidate_current_finding(&self.data_dir, finding) {

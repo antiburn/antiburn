@@ -242,8 +242,8 @@ describe("snoozed burn checks", () => {
       ],
     }
 
-    expect(activeChecksReport(report, new Set(["unusedSkills"])).estimatedTokenBurnBasisPoints).toBe(
-      900,
-    )
+    expect(
+      activeChecksReport(report, new Set(["unusedSkills"])).estimatedTokenBurnBasisPoints,
+    ).toBe(900)
   })
 })

@@ -353,7 +353,11 @@ export function BurnCheckTargetActions({
               ) : (
                 <Clipboard size={12} aria-hidden="true" />
               )}
-              {action.copied ? "Copied" : "Copy fix prompt"}
+              {action.copied
+                ? "Copied"
+                : action.busy === "copy"
+                  ? "Preparing…"
+                  : "Copy fix prompt"}
             </button>
           )}
         </div>

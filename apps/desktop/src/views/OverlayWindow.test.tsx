@@ -182,6 +182,7 @@ function summary(): LiveUsageSummaryPayload {
             usedPercent: 81,
             startsAt: null,
             resetsAt: new Date(at + 2 * 3_600_000).toISOString(),
+            elapsedFraction: 0.6,
             hasNonzeroUsageInCurrentPeriod: true,
             forecast: {
               unavailableReason: "sparseHistory",

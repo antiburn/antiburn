@@ -207,6 +207,24 @@ describe("BurnChecksSession", () => {
     })
   })
 
+  it("relists targets when a check comes back into view", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+    session.setTargetsVisible("oldModelUsage", true)
+    await vi.waitFor(() => expect(adapter.getTargets).toHaveBeenCalledOnce())
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().targets.oldModelUsage?.data).not.toBeNull(),
+    )
+
+    session.setTargetsVisible("oldModelUsage", false)
+    session.setTargetsVisible("oldModelUsage", true)
+
+    await vi.waitFor(() => expect(adapter.getTargets).toHaveBeenCalledTimes(2))
+    // The earlier list stays on screen while the fresh one loads.
+    expect(session.getSnapshot().targets.oldModelUsage?.data).not.toBeNull()
+  })
+
   it("does not refresh targets after their check is collapsed", async () => {
     const { adapter, session } = setup()
     sessions.push(session)

@@ -554,6 +554,13 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         });
     }
 
+    // The working week moves the pace marker on every weekly bar. Republish
+    // the held readings so the menu bar and each window follow the control,
+    // rather than waiting for the next collection.
+    if saved.working_week != previous.working_week && saved.live_usage_active() {
+        crate::usage_alerts::republish_after_settings_change(app);
+    }
+
     // The menu-bar free-space number follows its display preference on the
     // next poll tick; repainting here makes the toggle feel wired rather than
     // eventually-consistent.

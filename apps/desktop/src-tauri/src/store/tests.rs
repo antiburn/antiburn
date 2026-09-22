@@ -793,6 +793,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             skills_mcp_expanded: true,
             session_badge_metric: SessionBadgeMetric::WeeklyPercent,
             session_filter: "agent:codex".to_string(),
+            working_week: WorkingWeek::Five,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
@@ -810,6 +811,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(saved.disk_space_threshold_gb, 100);
     // Stored and returned verbatim; this side does not validate the id.
     assert_eq!(saved.session_filter, "agent:codex");
+    assert_eq!(saved.working_week, WorkingWeek::Five);
     // The empty milestone subset survives a round trip as "none selected",
     // not as a reset back to the defaults.
     assert!(!saved.milestones_weekly.any());

@@ -100,6 +100,7 @@ function expiredProviderData(): PopoverPeekData {
               usedPercent: 50,
               startsAt: null,
               resetsAt: null,
+              elapsedFraction: null,
               hasNonzeroUsageInCurrentPeriod: true,
               forecast: {
                 unavailableReason: "stale",

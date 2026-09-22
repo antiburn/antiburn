@@ -888,7 +888,7 @@ fn coverage_bucket(value: &str) -> Result<CoverageBucket> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::mpsc;
     use std::thread;
 
@@ -2414,6 +2414,18 @@ mod tests {
         started_at_epoch: i64,
         servers: &[&str],
     ) {
+        publish_unused_resources(store, session_id, started_at_epoch, servers, &[]);
+    }
+
+    /// Publishes one session that loaded but never used every listed MCP
+    /// server and skill.
+    pub(crate) fn publish_unused_resources(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        servers: &[&str],
+        skills: &[&str],
+    ) {
         publish_evidence_with_mutator(
             store,
             session_id,
@@ -2434,20 +2446,24 @@ mod tests {
                 let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
                     panic!("the Claude fixture must have complete context sources");
                 };
+                let unused = || LoadedSource {
+                    description: None,
+                    configured: true,
+                    available: true,
+                    injected: true,
+                    invoked: false,
+                    token_count: None,
+                    origin: EvidenceValue::Complete(SourceOrigin::User),
+                };
                 sources.mcp_coverage = EvidenceValue::Complete(());
                 for server in servers {
-                    sources.mcp_servers.insert(
-                        (*server).to_owned(),
-                        LoadedSource {
-                            description: None,
-                            configured: true,
-                            available: true,
-                            injected: true,
-                            invoked: false,
-                            token_count: None,
-                            origin: EvidenceValue::Complete(SourceOrigin::User),
-                        },
-                    );
+                    sources.mcp_servers.insert((*server).to_owned(), unused());
+                }
+                if !skills.is_empty() {
+                    sources.skill_coverage = EvidenceValue::Complete(());
+                }
+                for skill in skills {
+                    sources.skills.insert((*skill).to_owned(), unused());
                 }
             },
         );

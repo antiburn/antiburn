@@ -346,6 +346,7 @@ describe("UsagePane", () => {
       usedPercent: 17,
       startsAt: null,
       resetsAt: "2027-01-15T14:30:00Z",
+      elapsedFraction: null,
       hasNonzeroUsageInCurrentPeriod: true,
       forecast: {
         unavailableReason: "sparseHistory",
@@ -376,6 +377,7 @@ describe("UsagePane", () => {
                 role: "supplemental",
                 scopeModel: "code-review",
                 usedPercent: 0,
+                elapsedFraction: null,
                 hasNonzeroUsageInCurrentPeriod: false,
               }),
               window({
@@ -383,6 +385,7 @@ describe("UsagePane", () => {
                 role: "supplemental",
                 scopeModel: "something",
                 usedPercent: 0,
+                elapsedFraction: null,
                 hasNonzeroUsageInCurrentPeriod: false,
               }),
             ],

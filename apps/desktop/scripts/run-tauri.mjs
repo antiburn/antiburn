@@ -38,7 +38,7 @@ function processGroupExists() {
     return true
   } catch (error) {
     if (error?.code === "ESRCH") return false
-    throw error
+    return true
   }
 }
 

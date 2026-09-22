@@ -630,6 +630,15 @@ fn cursor_agent_subagent_parent(path: &Path) -> Option<String> {
     {
         return None;
     }
+    let transcript_root = path
+        .parent()?
+        .parent()?
+        .parent()?
+        .file_name()
+        .and_then(|name| name.to_str())?;
+    if transcript_root != "agent-transcripts" {
+        return None;
+    }
     let parent_id = path
         .parent()?
         .parent()?
@@ -1706,7 +1715,8 @@ fn parse_cursor_store_db_metadata(values: &[String]) -> Option<CursorStoreDbMeta
         parent_session_id = parent_session_id.or_else(|| {
             json.pointer("/subagentInfo/parentAgentId")
                 .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
+                .map(str::trim)
+                .filter(|id| is_safe_session_id(id))
                 .map(str::to_owned)
         });
         cwd = cwd.or_else(|| {
@@ -2739,6 +2749,11 @@ mod tests {
             "/home/.cursor/projects/workspace/agent-transcripts/../subagents/child.jsonl",
         );
         assert!(cursor_agent_subagent_parent(unsafe_parent).is_none());
+
+        let nested = Path::new(
+            "/home/.cursor/projects/workspace/agent-transcripts/parent-123/artifacts/subagents/child.jsonl",
+        );
+        assert!(cursor_agent_subagent_parent(nested).is_none());
     }
 
     #[tokio::test]
@@ -3016,7 +3031,7 @@ mod tests {
     fn cursor_store_db_metadata_proves_subagent_parent() {
         let metadata = parse_cursor_store_db_metadata(&[json!({
             "agentId": "child-456",
-            "subagentInfo": {"parentAgentId": "parent-123"},
+            "subagentInfo": {"parentAgentId": " parent-123 "},
         })
         .to_string()])
         .expect("session metadata");
@@ -3026,6 +3041,14 @@ mod tests {
         assert_eq!(observation.fork_kind, "subagent");
         assert_eq!(observation.detection_source, "store_db_subagent_info");
         assert_eq!(observation.confidence, 100);
+
+        let invalid = parse_cursor_store_db_metadata(&[json!({
+            "agentId": "child-456",
+            "subagentInfo": {"parentAgentId": "../parent-123"},
+        })
+        .to_string()])
+        .expect("session metadata");
+        assert!(cursor_store_db_subagent_observation(&invalid).is_none());
     }
 
     #[tokio::test]

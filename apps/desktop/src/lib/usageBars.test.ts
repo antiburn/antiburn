@@ -49,6 +49,7 @@ function usageWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsage
     usedPercent: 40,
     startsAt: null,
     resetsAt: new Date(NOW + 2 * 3_600_000).toISOString(),
+    elapsedFraction: null,
     hasNonzeroUsageInCurrentPeriod: true,
     forecast: {
       unavailableReason: "sparseHistory",
@@ -132,6 +133,7 @@ describe("deriveUsageBars", () => {
       role: "supplemental",
       scopeModel: "Opus",
       usedPercent: 0,
+      elapsedFraction: null,
       hasNonzeroUsageInCurrentPeriod: false,
     })
     expect(
@@ -172,26 +174,26 @@ describe("deriveUsageBars", () => {
     expect(providerBarColor("somebody-new")).toBe("var(--color-burn)")
   })
 
-  it("measures the notch from the snapshot's own time", () => {
-    // The window resets in two hours and its id states a five-hour period, so
-    // three of its five hours have gone.
-    const bars = deriveUsageBars(summary([provider()]))
+  it("puts the notch where the shell measured it", () => {
+    // The shell measures this against the days the reader works, so the bar
+    // reports the figure rather than deriving a second one from the clock.
+    const bars = deriveUsageBars(
+      summary([provider({ windows: [usageWindow({ elapsedFraction: 0.6 })] })]),
+    )
     expect(bars[0]!.expectedFraction).toBeCloseTo(0.6, 5)
   })
 
-  it("draws no notch when nothing states the window's period", () => {
+  it("draws no notch when the shell could not measure one", () => {
     // A notch placed from an assumed period is a claim the provider never
     // made, so there is no notch at all.
     const bars = deriveUsageBars(
-      summary([provider({ windows: [usageWindow({ id: "monthly", kind: "monthly" })] })]),
+      summary([
+        provider({
+          windows: [usageWindow({ id: "monthly", kind: "monthly", elapsedFraction: null })],
+        }),
+      ]),
     )
     expect(bars[0]!.expectedFraction).toBeNull()
-  })
-
-  it("draws no notch when the snapshot states no usable time", () => {
-    const broken = summary([provider()])
-    broken.generatedAt = "not a date"
-    expect(deriveUsageBars(broken)[0]!.expectedFraction).toBeNull()
   })
 })
 

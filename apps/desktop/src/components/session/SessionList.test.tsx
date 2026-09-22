@@ -148,6 +148,7 @@ function liveUsageWithWindow(
             usedPercent: 0,
             startsAt: null,
             resetsAt: null,
+            elapsedFraction: null,
             hasNonzeroUsageInCurrentPeriod: false,
             forecast: {
               unavailableReason: "sparseHistory",
@@ -333,6 +334,7 @@ describe("SessionList — rows", () => {
                 usedPercent: 20,
                 startsAt: null,
                 resetsAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+                elapsedFraction: null,
                 hasNonzeroUsageInCurrentPeriod: true,
                 forecast: {
                   unavailableReason: "sparseHistory",
@@ -383,6 +385,7 @@ describe("SessionList — rows", () => {
                 usedPercent: 0,
                 startsAt: null,
                 resetsAt: null,
+                elapsedFraction: null,
                 hasNonzeroUsageInCurrentPeriod: false,
                 forecast: {
                   unavailableReason: "sparseHistory",
