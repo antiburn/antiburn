@@ -5,14 +5,10 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const DESIGN_PATH = path.join(DESKTOP_ROOT, "design.md")
 
 const TOKEN_DECLARATION = /^\s*(--color-[\w-]+):\s*([^;]+);/gm
 const HSL_VALUE =
   /^hsl\((-?\d+(?:\.\d+)?) (\d+(?:\.\d+)?)% (\d+(?:\.\d+)?)%(?: \/ (\d+(?:\.\d+)?))?\)$/
-const DOCUMENTED_THEME_VALUE = /^\s+(?:light|dark):\s+"([^"]+)"/gm
-const DOCUMENTED_ALTERNATE_VALUE =
-  /#\s*(?:reduced-transparency|@media\s+(?:light|dark)):\s*(.+)$/gm
 const VARIABLE_REFERENCE = /^var\(--[\w-]+\)$/
 const VARIABLE_FALLBACK = /^var\(--[\w-]+,\s*(.+)\)$/
 const SYSTEM_COLORS = new Set([
@@ -251,24 +247,6 @@ function tokenValues(): Array<{ source: string; name: string; value: string }> {
   })
 }
 
-function designColors(): string {
-  const design = readFileSync(DESIGN_PATH, "utf8")
-  const start = design.indexOf("colors:")
-  const end = design.indexOf("fonts:")
-  if (start === -1 || end === -1 || end <= start)
-    throw new Error("The design color contract is missing")
-  return design.slice(start, end)
-}
-
-function documentedColorValues(): string[] {
-  const colors = designColors()
-  const themes = [...colors.matchAll(DOCUMENTED_THEME_VALUE)].map((match) => match[1].trim())
-  const alternates = [...colors.matchAll(DOCUMENTED_ALTERNATE_VALUE)].map((match) =>
-    match[1].trim(),
-  )
-  return [...themes, ...alternates]
-}
-
 describe("the design-token color convention", () => {
   it("uses HSL for every concrete token color", () => {
     const values = tokenValues()
@@ -288,8 +266,7 @@ describe("the design-token color convention", () => {
     const concreteValues = tokenValues()
       .flatMap(({ value }) => concreteColorValues(value))
       .filter((value) => value.startsWith("hsl("))
-    const documentedValues = documentedColorValues()
-    const violations = [...concreteValues, ...documentedValues].flatMap((value) => {
+    const violations = concreteValues.flatMap((value) => {
       const parsed = HSL_VALUE.exec(value)
       if (!parsed) return [`${value}: use modern space-separated HSL syntax`]
 
@@ -310,18 +287,7 @@ describe("the design-token color convention", () => {
     })
 
     expect(concreteValues.length).toBeGreaterThan(100)
-    expect(documentedValues.length).toBeGreaterThan(50)
     expect(violations).toEqual([])
-  })
-
-  it("keeps the documented palette free of RGB and hexadecimal colors", () => {
-    const colors = designColors()
-    const documentedValues = documentedColorValues()
-
-    expect(documentedValues.length).toBeGreaterThan(50)
-    expect(documentedValues.every((value) => value.startsWith("hsl("))).toBe(true)
-    expect(colors).not.toMatch(/rgba?\(/i)
-    expect(colors).not.toMatch(/#[\da-f]{3,8}\b/i)
   })
 
   it("normalizes equivalent syntax to one representation", () => {

@@ -582,7 +582,7 @@ body[data-transparent-window] #root {
 }
 
 /*
- * The tooltip shadow (`shadow.tooltip` in design.md) as a filter, because
+ * Use the tooltip shadow from controls.css as a filter because
  * `.bevel` owns `box-shadow` on the same element.
  */
 .hud-detail-card {

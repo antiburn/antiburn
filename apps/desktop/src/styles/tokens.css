@@ -1,6 +1,11 @@
 /* ==========================================================================
    Design tokens: color, surface, status, spacing, radius, control geometry.
 
+   Concrete token colors use modern HSL syntax. Keep the same 8-bit RGB
+   channels with the shortest value: at most one hue decimal, two saturation
+   and lightness decimals, and three alpha decimals. Use hue 0 for grays.
+   tests/design-token-colors.test.ts checks this convention.
+
    Two layers, on purpose:
 
    1. A raw palette of `--color-bg-*` / `--color-text-*` / `--color-*-val`
@@ -100,8 +105,7 @@
   --color-system-gold-text: var(--color-system-gold-text-val);
 
   /* The band that sweeps across a running session title. White in every
-     theme branch. Each branch restates it because the design contract reads
-     the explicit palettes. */
+     theme branch. Each static palette defines it for theme completeness. */
   --color-shimmer: var(--color-shimmer-val);
 
   /* Ink for vendor brand marks on agent rows. Deliberately firmer than
@@ -135,7 +139,7 @@
   --radius-popover: 10px;
   --radius-small: 4px;
 
-  /* The design contract's shadow.raised, for a segment or thumb that sits on
+  /* The raised shadow supports a segment or thumb that sits on
      a recessed track. Consume as `shadow-raised`. */
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04);
   --shadow-stats-card: inset 0 0 0 1px var(--color-stats-edge);
