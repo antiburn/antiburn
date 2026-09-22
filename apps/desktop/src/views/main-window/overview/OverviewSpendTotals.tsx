@@ -12,6 +12,7 @@ import {
 import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFigures"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
+import { useEntranceClass } from "./overviewEntrance"
 
 const SPANS: ReadonlyArray<{
   key: keyof ProviderUsageWindowsPayload
@@ -40,6 +41,11 @@ export function OverviewSpendTotals({
   totals: ProviderUsageWindowsPayload | null
   loading?: boolean
 }) {
+  const entrance = useEntranceClass(
+    "spend-totals",
+    "overview-figures-in",
+    !loading && totals != null,
+  )
   const cells: HeroFigureCell[] = SPANS.map((span) => ({
     key: span.key,
     label: (
@@ -68,7 +74,7 @@ export function OverviewSpendTotals({
     <section
       aria-label="Estimated local spend"
       aria-busy={loading || undefined}
-      className={loading || !totals ? undefined : "overview-figures-in"}
+      className={entrance}
     >
       <HeroFigures cells={cells} />
     </section>

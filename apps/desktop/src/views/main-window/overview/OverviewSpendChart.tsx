@@ -16,6 +16,7 @@ import {
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
+import { useEntranceClass } from "./overviewEntrance"
 
 import "./overview.css"
 
@@ -144,10 +145,11 @@ export function OverviewSpendChart({
   }
 
   const placeholder = loading || days.length === 0
+  const entrance = useEntranceClass("spend-chart", "overview-chart-in", !placeholder)
 
   return (
     <section
-      className={cn("overview-chart", !placeholder && "overview-chart-in")}
+      className={cn("overview-chart", entrance)}
       aria-label="Estimated spend by day"
       aria-busy={loading || undefined}
     >

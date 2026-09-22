@@ -7,6 +7,7 @@ import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFig
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
 import { planLabel } from "../../../lib/presentation/liveUsage"
+import { useEntranceClass } from "./overviewEntrance"
 
 export function OverviewAllowanceTotals({
   accounts: allAccounts,
@@ -19,6 +20,7 @@ export function OverviewAllowanceTotals({
   loading?: boolean
   error?: boolean
 }) {
+  const entrance = useEntranceClass("allowance-totals", "overview-figures-in", !loading)
   const accounts = allAccounts.filter(hasFigure)
   if (!loading && accounts.length === 0) {
     return (
@@ -58,11 +60,7 @@ export function OverviewAllowanceTotals({
         tooltip: utilizationTooltip(account, utilizationSpanDays),
       }))
   return (
-    <section
-      aria-label="Allowance"
-      aria-busy={loading}
-      className={loading ? undefined : "overview-figures-in"}
-    >
+    <section aria-label="Allowance" aria-busy={loading} className={entrance}>
       <HeroFigures cells={cells} />
     </section>
   )

@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, within } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 
 import type {
   ProviderAgentDayUsagePayload,
   ProviderUsageDayPayload,
 } from "../../../lib/providerUsageIpc"
 import { OverviewSpendChart } from "./OverviewSpendChart"
+import { resetEntrances } from "./overviewEntrance"
 
 function agent(
   agent: string,
@@ -52,6 +53,11 @@ function dayButtons() {
     screen.getByRole("group", { name: "Estimated spend for the past 30 days" }),
   ).getAllByRole("button")
 }
+
+beforeEach(() => {
+  // The entrance plays once a run, so each test starts from a first run.
+  resetEntrances()
+})
 
 describe("OverviewSpendChart", () => {
   it.each([
@@ -183,5 +189,21 @@ describe("OverviewSpendChart", () => {
     // beside it and the day labels below. A block without them is taller than
     // the plot it stands in for, and the page settles as the chart arrives.
     expect(region.children[1]!.className).toBe(whileLoading)
+  })
+
+  it("draws itself in once a run, not every time the reader comes back", () => {
+    const loaded = [day("2026-09-20", [agent("claude-code", 1)])]
+    const { unmount } = render(<OverviewSpendChart days={loaded} />)
+    expect(screen.getByRole("region", { name: "Estimated spend by day" })).toHaveClass(
+      "overview-chart-in",
+    )
+    unmount()
+
+    // The Overview is a tab the reader returns to. A reveal that replays on
+    // every visit reads as a wait rather than an arrival.
+    render(<OverviewSpendChart days={loaded} />)
+    expect(screen.getByRole("region", { name: "Estimated spend by day" })).not.toHaveClass(
+      "overview-chart-in",
+    )
   })
 })
