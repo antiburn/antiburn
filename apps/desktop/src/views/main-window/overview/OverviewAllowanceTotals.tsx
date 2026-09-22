@@ -7,7 +7,7 @@ import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFig
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
 import { planLabel } from "../../../lib/presentation/liveUsage"
-import { useEntranceClass } from "./overviewEntrance"
+import { useEntranceProps } from "./overviewEntrance"
 
 export function OverviewAllowanceTotals({
   accounts: allAccounts,
@@ -20,9 +20,11 @@ export function OverviewAllowanceTotals({
   loading?: boolean
   error?: boolean
 }) {
-  const entrance = useEntranceClass("allowance-totals", "overview-figures-in", !loading)
+  const entranceProps = useEntranceProps("allowance-totals", "overview-figures-in", !loading)
   const accounts = allAccounts.filter(hasFigure)
   if (!loading && accounts.length === 0) {
+    // This section carries no entrance class here, so its animation never
+    // runs. The key stays free for the real figures to draw in later.
     return (
       <section aria-label="Allowance">
         <p role={error ? "alert" : undefined} className="type-body text-label-secondary">
@@ -60,7 +62,7 @@ export function OverviewAllowanceTotals({
         tooltip: utilizationTooltip(account, utilizationSpanDays),
       }))
   return (
-    <section aria-label="Allowance" aria-busy={loading} className={entrance}>
+    <section aria-label="Allowance" aria-busy={loading} {...entranceProps}>
       <HeroFigures cells={cells} />
     </section>
   )

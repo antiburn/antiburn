@@ -137,14 +137,13 @@ describe("OverviewView metric preference", () => {
   })
 
   it.each([
-    ["a plan", [account], "allowance"],
-    ["no plan", [], "cost"],
-  ] as const)("opens on the unit %s left behind last run", (_label, accounts, expected) => {
-    const first = setup(usage)
-    first.update(allowance([...accounts]))
-    first.unmount()
-
-    // Second run, before any read has answered.
+    ["a plan", true, "allowance"],
+    ["no plan", false, "cost"],
+  ] as const)("opens on the unit %s left behind last run", (_label, hadPlan, expected) => {
+    // The session remembers the answer from a run's settled reads; this
+    // covers the view reading that memory back before any read of its own
+    // has answered.
+    writeOverviewViewPrefs({ hadSubscriptionPlan: hadPlan })
     setup(usage)
     expectMetric(expected)
     expectUsageState("shown")
@@ -156,7 +155,6 @@ describe("OverviewView metric preference", () => {
     expectMetric("allowance")
     view.update(allowance([]))
     expectMetric("cost")
-    expect(readOverviewViewPrefs().hadSubscriptionPlan).toBe(false)
   })
 
   it("defaults to subscription when a plan is already available", () => {
@@ -201,7 +199,6 @@ describe("OverviewView metric preference", () => {
     expect(readOverviewViewPrefs()).toEqual({
       metric: "cost",
       accountTabKey: "anthropic:account",
-      hadSubscriptionPlan: true,
     })
     view.unmount()
     render(<OverviewView {...view.props} />)

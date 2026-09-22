@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react"
+import { useState, useSyncExternalStore } from "react"
 
 import { cn } from "../../lib/cn"
 
@@ -46,11 +46,6 @@ export function OverviewView({
       (state.liveUsage?.providers.some((provider) => provider.plan != null) ?? false)
     : undefined
   const hasSubscriptionPlan = observedPlan ?? rememberedPlan
-
-  useEffect(() => {
-    if (observedPlan == null || observedPlan === rememberedPlan) return
-    writeOverviewViewPrefs({ hadSubscriptionPlan: observedPlan })
-  }, [observedPlan, rememberedPlan])
 
   const metric = selectedMetric ?? (hasSubscriptionPlan === false ? "cost" : "allowance")
   // On a first run there is no choice and nothing remembered, so the unit above

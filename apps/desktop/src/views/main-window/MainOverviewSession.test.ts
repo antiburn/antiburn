@@ -9,10 +9,13 @@ import type {
   SessionUpdatedPayload,
 } from "../../lib/ipc"
 import type {
+  AllowanceUsageAccountPayload,
   AllowanceUsageSummaryPayload,
+  LiveProviderUsagePayload,
   LiveUsageSummaryPayload,
   ProviderUsageSummaryPayload,
 } from "../../lib/providerUsageIpc"
+import { readOverviewViewPrefs, writeOverviewViewPrefs } from "./overview/overviewViewPrefs"
 import {
   MainOverviewSession,
   overviewUpdateTouchesTotals,
@@ -37,19 +40,50 @@ const usage = (generatedAt: string): ProviderUsageSummaryPayload => ({
   generatedAt,
 })
 
-const allowance = (generatedAt: string): AllowanceUsageSummaryPayload => ({
+const allowance = (
+  generatedAt: string,
+  accounts: AllowanceUsageAccountPayload[] = [],
+): AllowanceUsageSummaryPayload => ({
   utilizationSpanDays: 28,
-  accounts: [],
+  accounts,
   rangeStartEpoch: 0,
   rangeEndEpoch: 30 * 86400,
   generatedAt,
 })
 
-const liveUsage = (generatedAt: string): LiveUsageSummaryPayload => ({
-  providers: [],
+const liveUsage = (
+  generatedAt: string,
+  providers: LiveProviderUsagePayload[] = [],
+): LiveUsageSummaryPayload => ({
+  providers,
   errors: [],
   meters: [],
   generatedAt,
+})
+
+const accountWithPlan = (): AllowanceUsageAccountPayload => ({
+  provider: "anthropic",
+  displayName: "Claude",
+  accountKey: "account",
+  plan: { name: "max", tier: null },
+  utilization: null,
+  chart: { shortWindows: [], weeklyWindows: [], rolling: [] },
+})
+
+const liveProviderWithPlan = (): LiveProviderUsagePayload => ({
+  provider: "anthropic",
+  accountKey: "account",
+  displayName: "Claude",
+  support: "live",
+  freshness: "fresh",
+  sourceLabel: "Test",
+  observedAt: "2026-09-22T00:00:00Z",
+  windows: [],
+  extraUsage: null,
+  resetCredits: null,
+  plan: { name: "max", tier: null },
+  accountUuid: null,
+  accountEmail: null,
 })
 
 const entry = (sessionId: string, timestamp: string): ActivityEntryPayload => ({
@@ -112,6 +146,7 @@ interface SetupOptions {
   scanRunning?: boolean
   debounceMs?: number
   scanHoldCapMs?: number
+  rememberPlan?: (hadPlan: boolean) => void
 }
 
 function setup(
@@ -176,6 +211,7 @@ function setup(
     scanSource,
     debounceMs: options.debounceMs ?? TEST_DEBOUNCE_MS,
     scanHoldCapMs: options.scanHoldCapMs ?? TEST_SCAN_HOLD_CAP_MS,
+    ...(options.rememberPlan ? { rememberPlan: options.rememberPlan } : {}),
   })
   return {
     adapter,
@@ -209,6 +245,9 @@ beforeEach(() => {
     configurable: true,
     value: 7,
   })
+  // The production `rememberPlan` default reads and writes real prefs
+  // storage, so each test starts with no memory of a previous run.
+  localStorage.clear()
 })
 
 describe("MainOverviewSession", () => {
@@ -739,5 +778,81 @@ describe("MainOverviewSession", () => {
     expect(mainWindowContentReady).toHaveBeenCalledWith(7)
     expect(session.getSnapshot().usage?.generatedAt).toBe("second")
     stop()
+  })
+
+  it("remembers a plan once an allowance read lands", async () => {
+    const rememberPlan = vi.fn()
+    const { adapter, session } = setup(true, {}, { rememberPlan })
+    sessions.push(session)
+    vi.mocked(adapter.getAllowanceUsage).mockResolvedValue(
+      allowance("allowance-plan", [accountWithPlan()]),
+    )
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-plan"),
+    )
+    expect(rememberPlan).toHaveBeenCalledExactlyOnceWith(true)
+    stop()
+  })
+
+  it("remembers a plan from a live-usage push", async () => {
+    const rememberPlan = vi.fn()
+    const { session, meterChanged } = setup(true, {}, { rememberPlan })
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    // The first, plan-free reads already settled and remembered `false`.
+    rememberPlan.mockClear()
+
+    meterChanged(liveUsage("live-pushed", [liveProviderWithPlan()]))
+    expect(rememberPlan).toHaveBeenCalledExactlyOnceWith(true)
+    stop()
+  })
+
+  it("does not call rememberPlan again when a settled read repeats the same answer", async () => {
+    const rememberPlan = vi.fn()
+    const { adapter, session, scanFinished } = setup(true, {}, { rememberPlan })
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    expect(rememberPlan).toHaveBeenCalledExactlyOnceWith(false)
+
+    // A later read with no plan repeats the same answer already remembered.
+    scanFinished()
+    await vi.waitFor(() => expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2))
+    expect(rememberPlan).toHaveBeenCalledOnce()
+    stop()
+  })
+
+  it("starts from what a previous run remembered, in the production default", async () => {
+    // The default adapter's first allowance read has no plan, so a memory
+    // of `false` already agrees with it.
+    writeOverviewViewPrefs({ hadSubscriptionPlan: false })
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem")
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    // The first read repeats the remembered answer, so it must not write
+    // again: the constructor took its memory from the same prefs.
+    expect(setItemSpy).not.toHaveBeenCalled()
+
+    // A read that disagrees corrects the memory.
+    vi.mocked(adapter.getAllowanceUsage).mockResolvedValueOnce(
+      allowance("allowance-changed", [accountWithPlan()]),
+    )
+    session.refreshAllowance()
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-changed"),
+    )
+    expect(readOverviewViewPrefs().hadSubscriptionPlan).toBe(true)
+    stop()
+    setItemSpy.mockRestore()
   })
 })

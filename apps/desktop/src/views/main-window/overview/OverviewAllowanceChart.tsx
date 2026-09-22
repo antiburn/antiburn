@@ -14,7 +14,7 @@ import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { cn } from "../../../lib/cn"
 import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
-import { useEntranceClass } from "./overviewEntrance"
+import { useEntranceProps } from "./overviewEntrance"
 
 import "./overview.css"
 
@@ -91,7 +91,7 @@ function AllowancePlot({
   controls?: ReactNode
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const entrance = useEntranceClass("allowance-chart", "overview-chart-in", true)
+  const entranceProps = useEntranceProps("allowance-chart", "overview-chart-in", true)
   const width = useElementWidth(containerRef)
   const height = useElementHeight(containerRef)
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
@@ -144,7 +144,11 @@ function AllowancePlot({
         `${Math.round(lastRolling)} percent.`
 
   return (
-    <section className={cn("overview-chart", entrance)} aria-label="Allowance chart">
+    <section
+      {...entranceProps}
+      className={cn("overview-chart", entranceProps.className)}
+      aria-label="Allowance chart"
+    >
       <p className="sr-only">{summary}</p>
       <div className="overview-chart-legend mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
         <ChartLegend ariaLabel="Layers" items={LEGEND_ITEMS} />

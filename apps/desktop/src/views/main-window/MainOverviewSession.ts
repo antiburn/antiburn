@@ -20,6 +20,7 @@ import type {
   SessionLimitAllocationSummaryPayload,
 } from "../../lib/providerUsageIpc"
 import { scanStatusStore } from "../../lib/scanStatusStore"
+import { readOverviewViewPrefs, writeOverviewViewPrefs } from "./overview/overviewViewPrefs"
 
 export interface MainOverviewAdapter {
   getUsage(): Promise<ProviderUsageSummaryPayload>
@@ -74,11 +75,19 @@ export interface MainOverviewSessionOptions {
   scanSource?: MainOverviewScanSource
   debounceMs?: number
   scanHoldCapMs?: number
+  /** Told whenever a settled read finds a new answer to whether this reader
+   *  has a subscription plan. The production default remembers it for the
+   *  Overview's next run. */
+  rememberPlan?: (hadPlan: boolean) => void
 }
 
 const productionScanSource: MainOverviewScanSource = {
   getSnapshot: () => ({ running: scanStatusStore.getSnapshot()?.running ?? false }),
   subscribe: (listener) => scanStatusStore.subscribe(listener),
+}
+
+function rememberPlanInPrefs(hadPlan: boolean): void {
+  writeOverviewViewPrefs({ hadSubscriptionPlan: hadPlan })
 }
 
 const productionAdapter: MainOverviewAdapter = {
@@ -199,6 +208,12 @@ export class MainOverviewSession {
    *  passes run all day from watcher bursts, and holding on every one of
    *  them would starve the ordinary updates the page exists to show. */
   private scanSettled = false
+  private readonly rememberPlan: (hadPlan: boolean) => void
+  /** What the last settled read found out about this reader's plans, so the
+   *  page can open on the right unit next run instead of guessing. Starts
+   *  from the previous run's memory, so a read that repeats that answer does
+   *  not write it again. */
+  private rememberedPlan: boolean | undefined
 
   constructor(
     sessionList: MainOverviewSessionListSource,
@@ -210,6 +225,8 @@ export class MainOverviewSession {
     this.scanSource = options.scanSource ?? productionScanSource
     this.debounceMs = options.debounceMs ?? OVERVIEW_REFRESH_DEBOUNCE_MS
     this.scanHoldCapMs = options.scanHoldCapMs ?? OVERVIEW_SCAN_HOLD_CAP_MS
+    this.rememberPlan = options.rememberPlan ?? rememberPlanInPrefs
+    this.rememberedPlan = readOverviewViewPrefs().hadSubscriptionPlan
   }
 
   getSnapshot = (): MainOverviewSnapshot => this.snapshot
@@ -219,6 +236,25 @@ export class MainOverviewSession {
   private update(patch: Partial<MainOverviewSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...patch }
     for (const listener of this.listeners) listener()
+  }
+
+  /**
+   * Remember whether this reader turned out to have a subscription plan, so
+   * the Overview's next run can open on the right unit instead of guessing
+   * and correcting itself in front of the reader.
+   *
+   * Reads the snapshot just updated, so it must run after the `update` call
+   * for the read it reports on. Writes only when the answer differs from
+   * what the session last remembered, so a read that repeats the same
+   * answer costs nothing.
+   */
+  private notePlanObservation(): void {
+    const hadPlan =
+      (this.snapshot.allowance?.accounts.some((account) => account.plan != null) ?? false) ||
+      (this.snapshot.liveUsage?.providers.some((provider) => provider.plan != null) ?? false)
+    if (hadPlan === this.rememberedPlan) return
+    this.rememberedPlan = hadPlan
+    this.rememberPlan(hadPlan)
   }
 
   /** Reports once both reads have settled. Takes the renderer generation
@@ -295,6 +331,7 @@ export class MainOverviewSession {
           // Published straight away: the push is the figures, not a hint to
           // go and read them. Only the two reads it prompts are deferred.
           this.update({ liveUsage, liveUsageSettled: true })
+          this.notePlanObservation()
           this.scheduleRead("allowance")
           this.scheduleRead("allocations")
         }),
@@ -502,6 +539,7 @@ export class MainOverviewSession {
           this.allowanceSettled = true
           this.reportContentReadyOnceSettled()
           this.update({ allowance, allowanceLoading: false, allowanceError: false })
+          this.notePlanObservation()
         }
       } catch {
         // A failed read must not hide the cost totals beside the allowance.
