@@ -45,6 +45,8 @@ use crate::dto::{
 };
 pub(crate) mod local_usage;
 pub(crate) mod quota;
+#[cfg(test)]
+mod reader_routing_tests;
 
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
