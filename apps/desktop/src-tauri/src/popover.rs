@@ -716,7 +716,10 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
 
     match builder.build() {
         Ok(window) => {
-            crate::interface_scale::apply_window(&window, interface_scale)?;
+            if let Err(error) = crate::interface_scale::apply_window(&window, interface_scale) {
+                retire_failed_scale_window(&window, generation);
+                return Err(error);
+            }
             // Non-activating panel: opening the popover must not deactivate
             // the frontmost application. Applied here so a rebuild after a
             // destroy converts again.
@@ -771,6 +774,31 @@ fn destroy_window(window: &WebviewWindow) -> tauri::Result<()> {
         )));
     }
     window.destroy()
+}
+
+fn cancel_failed_scale_load(state: &PopoverState, generation: u64) -> bool {
+    let mut readiness = state.readiness();
+    if readiness.loading_generation() != Some(generation) {
+        return false;
+    }
+    readiness.reset();
+    drop(readiness);
+    state.timing.cancel_open();
+    if state.clear_prewarm_generation(generation) {
+        state.cancel_eviction();
+    }
+    true
+}
+
+fn retire_failed_scale_window(window: &WebviewWindow, generation: u64) {
+    let state = window.app_handle().state::<PopoverState>();
+    if !cancel_failed_scale_load(&state, generation) {
+        return;
+    }
+    // A later open retries destruction if the native window still owns its label.
+    if let Err(error) = destroy_window(window) {
+        ::tracing::warn!(event = "popover_scale_cleanup_failed", generation, error = %error);
+    }
 }
 
 enum WindowRequest {
@@ -1045,12 +1073,31 @@ fn request_toggle_window(app: &AppHandle, requested_at: Instant) -> tauri::Resul
     }
 }
 
+fn begin_rebuild_after_destroy(
+    state: &PopoverState,
+    window_exists: bool,
+    now: Instant,
+) -> Option<u64> {
+    // An old destruction callback must not reset a newer registered renderer.
+    if window_exists {
+        return None;
+    }
+    let generation = state.readiness().begin_deferred_build(now);
+    if generation.is_none() {
+        state.clear_prewarm();
+    }
+    generation
+}
+
 /// Build a deferred replacement after Tauri removes the old window label.
 pub fn rebuild_after_destroy(app: &AppHandle) {
     let state = app.state::<PopoverState>();
-    let generation = window_lifecycle::begin_deferred_build::<PopoverState>(app, Instant::now());
+    let generation = begin_rebuild_after_destroy(
+        &state,
+        app.get_webview_window(LABEL).is_some(),
+        Instant::now(),
+    );
     let Some(generation) = generation else {
-        state.clear_prewarm();
         return;
     };
     match build_window(app, generation) {
@@ -1651,6 +1698,7 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
         crate::interface_scale::apply_window(window, crate::interface_scale::current(app))
     {
         ::tracing::error!(event = "interface_scale_apply_failed", window = LABEL, error = %error);
+        retire_failed_scale_window(window, generation);
         return;
     }
     if let Some(expired) = state.expired_prewarm(now)
@@ -2013,6 +2061,107 @@ fn clamp(value: f64, min: f64, max: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scale_failure_cancels_loading_and_rejects_late_readiness() {
+        for prewarm in [false, true] {
+            let state = PopoverState::default();
+            let now = Instant::now();
+            let generation = if prewarm {
+                let PrewarmAction::StartLoading { generation } =
+                    state.readiness().request_prewarm(now)
+                else {
+                    panic!("a fresh prewarm starts loading");
+                };
+                state.mark_prewarm(generation, now);
+                generation
+            } else {
+                let OpenAction::StartLoading { generation } = state.readiness().request_open(now)
+                else {
+                    panic!("a fresh open starts loading");
+                };
+                generation
+            };
+            assert!(cancel_failed_scale_load(&state, generation));
+            assert_eq!(state.readiness().loading_generation(), None);
+            assert_eq!(state.prewarm_generation(), None);
+            assert_eq!(
+                state.readiness().renderer_ready(generation, now),
+                crate::window_readiness::ReadyAction::None
+            );
+            // Destruction does not retry a persistent scale failure automatically.
+            assert_eq!(state.readiness().begin_deferred_build(now), None);
+            assert!(matches!(
+                state.readiness().request_open(now),
+                OpenAction::StartLoading { generation: next } if next != generation
+            ));
+        }
+    }
+
+    #[test]
+    fn stale_scale_failure_preserves_the_newer_deferred_load() {
+        let state = PopoverState::default();
+        let now = Instant::now();
+        let OpenAction::StartLoading { generation: old } = state.readiness().request_open(now)
+        else {
+            panic!("a fresh open starts loading");
+        };
+        let later = now + Duration::from_secs(6);
+        let OpenAction::Rebuild { generation: new } = state.readiness().request_open(later) else {
+            panic!("a stale open starts a replacement");
+        };
+        state.mark_prewarm(new, later);
+        assert!(state.readiness().defer_build_until_destroyed(new));
+        assert!(!cancel_failed_scale_load(&state, old));
+        assert!(state.is_prewarm(new));
+        assert_eq!(state.readiness().begin_deferred_build(later), Some(new));
+    }
+
+    #[test]
+    fn delayed_scale_failure_destruction_preserves_a_new_renderer() {
+        for ready in [false, true] {
+            let state = PopoverState::default();
+            let now = Instant::now();
+            let OpenAction::StartLoading { generation: old } = state.readiness().request_open(now)
+            else {
+                panic!("a fresh open starts loading");
+            };
+            assert!(cancel_failed_scale_load(&state, old));
+            let OpenAction::StartLoading { generation: new } = state.readiness().request_open(now)
+            else {
+                panic!("a later open retries the failed load");
+            };
+            state.mark_prewarm(new, now);
+            if ready {
+                state.readiness().renderer_ready(new, now);
+            }
+            assert_eq!(begin_rebuild_after_destroy(&state, true, now), None);
+            assert!(state.is_prewarm(new));
+            if ready {
+                assert_eq!(state.readiness().ready_generation(), Some(new));
+            } else {
+                assert_eq!(state.readiness().loading_generation(), Some(new));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_scale_cleanup_can_defer_a_retry_until_the_label_is_free() {
+        let state = PopoverState::default();
+        let now = Instant::now();
+        let OpenAction::StartLoading { generation: old } = state.readiness().request_open(now)
+        else {
+            panic!("a fresh open starts loading");
+        };
+        assert!(cancel_failed_scale_load(&state, old));
+        let ToggleAction::StartLoading { generation: new } = state.readiness().toggle_open(now)
+        else {
+            panic!("the tray can retry a failed load");
+        };
+        assert!(state.readiness().defer_build_until_destroyed(new));
+        assert_eq!(begin_rebuild_after_destroy(&state, true, now), None);
+        assert_eq!(begin_rebuild_after_destroy(&state, false, now), Some(new));
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
