@@ -62,23 +62,8 @@ async function openFixture(
 
 async function expectNoHorizontalOverflow(page: Page) {
   await expect
-    .poll(() =>
-      page.locator("#root").evaluate((node) => ({
-        scrollWidth: node.scrollWidth,
-        clientWidth: node.clientWidth,
-      })),
-    )
-    .toEqual(
-      expect.objectContaining({
-        scrollWidth: expect.any(Number),
-        clientWidth: expect.any(Number),
-      }),
-    )
-  const dimensions = await page.locator("#root").evaluate((node) => ({
-    scrollWidth: node.scrollWidth,
-    clientWidth: node.clientWidth,
-  }))
-  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 1)
+    .poll(() => page.locator("#root").evaluate((node) => node.scrollWidth - node.clientWidth))
+    .toBeLessThanOrEqual(1)
 }
 
 async function expectControlsReachable(page: Page) {
@@ -114,6 +99,26 @@ async function capture(page: Page, name: string, testInfo: TestInfo) {
     animations: "disabled",
   })
 }
+
+test.describe("horizontal overflow assertion", () => {
+  test("retries until measured overflow clears", async ({ page }) => {
+    await page.setContent('<div id="root" style="width: 200px"></div>')
+    await page.locator("#root").evaluate((node) => {
+      let measurements = 0
+      Object.defineProperty(node, "scrollWidth", {
+        get: () => (++measurements < 3 ? 400 : 200),
+      })
+    })
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test("rejects persistent overflow", async ({ page }) => {
+    await page.setContent(
+      '<div id="root" style="width: 200px"><div style="width: 400px">Overflow</div></div>',
+    )
+    await expect(expectNoHorizontalOverflow(page)).rejects.toThrow(/toBeLessThanOrEqual/)
+  })
+})
 
 test.describe("interface-scale smoke", () => {
   test("the main navigation reaches Sessions and settings", async ({ page }, testInfo) => {
