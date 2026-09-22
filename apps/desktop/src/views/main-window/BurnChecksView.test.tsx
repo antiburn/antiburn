@@ -308,7 +308,10 @@ afterEach(() => {
   if (innerWidth) Object.defineProperty(window, "innerWidth", innerWidth)
 })
 
-describe("BurnChecksView", () => {
+// Every test in this suite renders the full Burn Checks view. CI runs this
+// file next to the other heavy view suites, so one test can take five times
+// its local run time. 15 s is the bound, not a target.
+describe("BurnChecksView", { timeout: 15_000 }, () => {
   it("keeps findings and actions hidden until snoozes are ready", () => {
     const state = vi
       .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
