@@ -82,6 +82,7 @@ function AllowancePlot({
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
   const rawId = useId()
   const clipId = `overview-allowance-clip-${rawId.replace(/:/g, "")}`
+  const fillId = `overview-allowance-fill-${rawId.replace(/:/g, "")}`
 
   const slots = chartDaySlots(rangeStartEpoch, rangeEndEpoch)
   const lastIndex = CHART_DAYS - 1
@@ -134,8 +135,8 @@ function AllowancePlot({
         <ChartLegend
           ariaLabel="Layers"
           items={[
-            { key: "short", label: "5-hour window", swatch: "bg-token-in/20" },
-            { key: "weekly", label: "Week", swatch: "bg-token-in/60" },
+            { key: "short", label: "5-hour window", swatch: "bg-context-stroke/20" },
+            { key: "weekly", label: "Week", swatch: "bg-context-stroke/60" },
             { key: "rolling", label: "Average usage", swatch: "bg-gray-500", shape: "line" },
           ]}
         />
@@ -150,6 +151,12 @@ function AllowancePlot({
                 <clipPath id={clipId}>
                   <rect x={plotLeft} y={plotTop} width={plotWidth} height={plotHeight} />
                 </clipPath>
+                {/* The session Context chart's fill: the blue is strongest under
+                    the line and fades out toward the baseline. */}
+                <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
+                  <stop offset={0} stopColor="var(--color-context-fill-top)" />
+                  <stop offset={1} stopColor="var(--color-context-fill-base)" />
+                </linearGradient>
               </defs>
 
               {GUIDE_PERCENTS.map((percent) => (
@@ -203,22 +210,24 @@ function AllowancePlot({
                       y={rect.y}
                       width={rect.width}
                       height={rect.height}
-                      className="fill-token-in/[0.18]"
+                      className="fill-context-stroke/[0.18]"
                     />
                   )
                 })}
 
-                <g className="opacity-50">
+                {/* The gradient carries its own alpha, so the group draws at
+                    full strength: a solid blue line over a fading fill. */}
+                <g>
                   {account.chart.weeklyWindows.map((window) => {
                     const area = weeklyAreaPath(window, x, y)
                     if (!area) return null
                     return (
                       <g key={`${window.lane}-${window.startsAtEpoch}`}>
-                        <path d={area} className="fill-token-in" stroke="none" />
+                        <path d={area} fill={`url(#${fillId})`} stroke="none" />
                         <path
                           d={weeklyTopLinePath(window, x, y)}
                           fill="none"
-                          className="stroke-token-in stroke-1"
+                          className="stroke-context-stroke stroke-1"
                         />
                       </g>
                     )
