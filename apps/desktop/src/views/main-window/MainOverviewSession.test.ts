@@ -20,6 +20,7 @@ import {
   MainOverviewSession,
   overviewUpdateTouchesTotals,
   type MainOverviewAdapter,
+  type MainOverviewBacklogSource,
   type MainOverviewScanSource,
   type MainOverviewSessionListSource,
 } from "./MainOverviewSession"
@@ -142,9 +143,16 @@ const TEST_DEBOUNCE_MS = 5
 /** Far enough out that only the test that asks for it ever reaches the cap. */
 const TEST_SCAN_HOLD_CAP_MS = 10_000
 
+/** Long enough, relative to `TEST_DEBOUNCE_MS`, to prove a throttled read
+ *  waits past several debounce intervals without flaking on timer jitter.
+ *  The production value is `OVERVIEW_BACKLOG_THROTTLE_MS`. */
+const TEST_BACKLOG_THROTTLE_MS = 25
+
 interface SetupOptions {
   scanRunning?: boolean
+  backlogActive?: boolean
   debounceMs?: number
+  backlogThrottleMs?: number
   scanHoldCapMs?: number
   rememberPlan?: (hadPlan: boolean) => void
 }
@@ -207,9 +215,20 @@ function setup(
       return () => scanListeners.delete(listener)
     },
   }
+  let backlogActive = options.backlogActive ?? false
+  const backlogListeners = new Set<() => void>()
+  const backlogSource: MainOverviewBacklogSource = {
+    getSnapshot: () => ({ active: backlogActive }),
+    subscribe: (listener: () => void) => {
+      backlogListeners.add(listener)
+      return () => backlogListeners.delete(listener)
+    },
+  }
   const session = new MainOverviewSession(sessionList, adapter, {
     scanSource,
+    backlogSource,
     debounceMs: options.debounceMs ?? TEST_DEBOUNCE_MS,
+    backlogThrottleMs: options.backlogThrottleMs ?? TEST_BACKLOG_THROTTLE_MS,
     scanHoldCapMs: options.scanHoldCapMs ?? TEST_SCAN_HOLD_CAP_MS,
     ...(options.rememberPlan ? { rememberPlan: options.rememberPlan } : {}),
   })
@@ -219,6 +238,10 @@ function setup(
     setScanRunning: (value: boolean) => {
       scanRunning = value
       for (const listener of scanListeners) listener()
+    },
+    setBacklogActive: (value: boolean) => {
+      backlogActive = value
+      for (const listener of backlogListeners) listener()
     },
     setVisible: (value: boolean) => visible(value),
     scanFinished: () => indexChangedHandler(indexChanged("scan_pass")),
@@ -709,6 +732,116 @@ describe("MainOverviewSession", () => {
     setScanRunning(true)
     entryChanged({ analysis: true })
     await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(3))
+    stop()
+  })
+
+  it("throttles event reads to once per interval while the insights backlog runs", async () => {
+    const { adapter, session, entryChanged } = setup(
+      true,
+      {},
+      {
+        backlogActive: true,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    // The first read is the one the reader is waiting for; the backlog does
+    // not hold it back.
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    for (let index = 0; index < 5; index += 1) entryChanged({ analysis: true })
+    // Well past the debounce, but short of the throttle: a plain debounce
+    // would have re-armed on every one of the five events and never fired.
+    await new Promise((resolve) => setTimeout(resolve, TEST_DEBOUNCE_MS * 4))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(session.getSnapshot().refreshing).toBe(false))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(2)
+    stop()
+  })
+
+  it("throttles a later burst again once the first one flushes", async () => {
+    const { adapter, session, entryChanged } = setup(
+      true,
+      {},
+      {
+        backlogActive: true,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    entryChanged({ analysis: true })
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(session.getSnapshot().refreshing).toBe(false))
+
+    entryChanged({ analysis: true })
+    await new Promise((resolve) => setTimeout(resolve, TEST_DEBOUNCE_MS * 4))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(3))
+    stop()
+  })
+
+  it("flushes pending reads after the debounce once the backlog drains", async () => {
+    const { adapter, session, entryChanged, setBacklogActive } = setup(
+      true,
+      {},
+      {
+        backlogActive: true,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    entryChanged({ analysis: true })
+    setBacklogActive(false)
+    // The debounce, not the throttle, now governs the pending read.
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    stop()
+  })
+
+  it("still holds throttled reads for the scan while both run together", async () => {
+    const { adapter, session, entryChanged, setScanRunning } = setup(
+      true,
+      {},
+      {
+        scanRunning: true,
+        backlogActive: true,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    entryChanged({ analysis: true })
+    // Neither the throttle nor the debounce releases this: only the scan
+    // ending does.
+    await new Promise((resolve) => setTimeout(resolve, TEST_BACKLOG_THROTTLE_MS * 2))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    setScanRunning(false)
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    stop()
+  })
+
+  it("runs the first read of an activation at once with the backlog active", async () => {
+    const { adapter, session } = setup(
+      true,
+      {},
+      {
+        backlogActive: true,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
     stop()
   })
 

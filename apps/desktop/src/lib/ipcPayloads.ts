@@ -211,6 +211,12 @@ export interface ScanStatus {
   reDescribed: number
 }
 
+/** Whether the insights worker pool has a backlog to drain right now.
+ *  Mirrors Rust `InsightsBacklog`. */
+export interface InsightsBacklog {
+  active: boolean
+}
+
 /**
  * Whether the local database is still accepting writes. Mirrors Rust
  * `StorageHealthStatus`.
