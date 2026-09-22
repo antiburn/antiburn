@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as ClipboardModule from "../../lib/clipboard"
 import type * as IpcModule from "../../lib/ipc"
 import type * as HygieneModule from "../../lib/useSessionHygiene"
+import * as SnoozedBurnChecks from "../../lib/snoozedBurnChecks"
 import type { SessionAnalysisPayload } from "../../lib/ipc"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import type { LocalSessionIdentity } from "../../lib/types/session"
@@ -107,6 +108,20 @@ beforeEach(() => {
 })
 
 describe("SessionPane — copy path", () => {
+  it("does not prepare a discussion prompt before snoozes are ready", async () => {
+    const hook = vi
+      .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+      .mockReturnValue({ status: "loading", records: [] })
+    pane("/tmp/session.jsonl")
+
+    await act(async () => fireEvent.click(screen.getByLabelText("Copy path"), { altKey: true }))
+    expect(mocks.writeClipboardText).toHaveBeenCalledWith("/tmp/session.jsonl")
+    expect(mocks.writeClipboardText).not.toHaveBeenCalledWith(
+      expect.stringContaining("fast mode"),
+    )
+    hook.mockRestore()
+  })
+
   it.each([
     "/Users/dev/.claude/projects/app/session-1.jsonl",
     "/Users/name with spaces/Éxamples/“quoted” & $PATH/transcript.jsonl",

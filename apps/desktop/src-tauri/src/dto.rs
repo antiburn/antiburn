@@ -18,8 +18,8 @@ use antiburn_local::analysis::{
     ToolDefinition, lookup_pricing,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, DetectorId, EfficiencyReport, NotAssessedReason, ReportCatalogs,
-    SessionBadge, model_family,
+    BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
+    ReportCatalogs, SessionBadge, model_family,
 };
 use antiburn_local::pricing::canonical_model_key;
 use serde::{Deserialize, Serialize};
@@ -836,6 +836,8 @@ pub struct SessionQuotaPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
+    /// The current remediation state. `None` means the category has no complete assessment.
+    pub lifecycle: Option<ChecksCategoryLifecyclePayload>,
     pub finding: u64,
     /// Agents with findings, or complete clean results when no finding exists.
     pub agents: Vec<String>,
@@ -843,6 +845,14 @@ pub struct ChecksCategoryPayload {
     pub unavailable: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChecksCategoryLifecyclePayload {
+    Failing,
+    AwaitingVerification,
+    Passing,
 }
 
 /// The bounded subset of the local report needed by the Checks feature.
@@ -854,6 +864,8 @@ pub struct ChecksReportPayload {
     pub pending_evidence: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
+    /// Aggregate burn for each detector bit mask in canonical `DetectorId` order.
+    pub estimated_token_burn_basis_points_by_detector_mask: Vec<Option<u16>>,
     pub categories: Vec<ChecksCategoryPayload>,
 }
 
@@ -1308,7 +1320,9 @@ pub enum BurnCheckRemediationOutcomePayload {
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckRemediationAttemptPayload {
     pub detector: BurnCheckDetectorId,
+    pub finding_id: String,
     pub watch_id: String,
+    pub remediation_cycle_id: String,
     pub display: BurnCheckDisplayFactsPayload,
     pub origin: AggregateWinOrigin,
     pub lifecycle: BurnCheckWatchLifecycle,
@@ -1404,7 +1418,7 @@ pub enum AutoFixSideEffect {
 )]
 pub enum ApplyPreparedBurnCheckOperationOutcome {
     AppliedAwaitingVerification { watch_id: String },
-    Applied,
+    AppliedVerificationUnavailable { watch_id: String },
     RecoveryNeeded { watch_id: String },
     Stale,
     Expired,
@@ -1422,10 +1436,12 @@ pub struct AggregateWinsPayload {
 #[serde(rename_all = "camelCase")]
 pub struct AggregateWinPayload {
     pub finding_id: String,
+    pub remediation_cycle_id: String,
     pub detector: BurnCheckDetectorId,
     pub origin: AggregateWinOrigin,
     pub display: BurnCheckDisplayFactsPayload,
     pub savings: AggregateSavingsPayload,
+    pub verified_boundary_ms: i64,
     pub starts_at_ms: i64,
     pub ends_at_ms: i64,
 }
@@ -1440,6 +1456,7 @@ pub enum AggregateWinOrigin {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateSavingsPayload {
+    pub status: BurnCheckSavingsPayload,
     pub token_savings: Option<u64>,
     pub api_equivalent_cost_avoided_usd: Option<f64>,
     pub improvement_count: Option<u64>,
@@ -2404,6 +2421,7 @@ impl From<crate::remediation::AggregateWins> for AggregateWinsPayload {
                 .into_iter()
                 .map(|win| AggregateWinPayload {
                     finding_id: win.finding_id,
+                    remediation_cycle_id: win.remediation_cycle_id,
                     detector: win.detector.into(),
                     origin: match win.origin.as_str() {
                         "passive" => AggregateWinOrigin::Passive,
@@ -2412,6 +2430,7 @@ impl From<crate::remediation::AggregateWins> for AggregateWinsPayload {
                     },
                     display: win.display.into(),
                     savings: AggregateSavingsPayload {
+                        status: win.savings.status.into(),
                         token_savings: win.savings.token_savings,
                         api_equivalent_cost_avoided_usd: win
                             .savings
@@ -2419,6 +2438,7 @@ impl From<crate::remediation::AggregateWins> for AggregateWinsPayload {
                         improvement_count: win.savings.improvement_count,
                         method: win.savings.method.map(Into::into),
                     },
+                    verified_boundary_ms: win.verified_boundary_ms,
                     starts_at_ms: win.starts_at_ms,
                     ends_at_ms: win.ends_at_ms,
                 })
@@ -2447,7 +2467,9 @@ impl From<crate::remediation::BurnCheckRemediationProgress>
                 .into_iter()
                 .map(|attempt| BurnCheckRemediationAttemptPayload {
                     detector: attempt.detector.into(),
+                    finding_id: attempt.finding_id,
                     watch_id: attempt.watch_id,
+                    remediation_cycle_id: attempt.remediation_cycle_id,
                     display: attempt.display.into(),
                     origin: match attempt.origin {
                         crate::remediation::RemediationOrigin::Passive => {
@@ -2487,16 +2509,34 @@ fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
 
 impl ChecksReportPayload {
     pub(crate) fn from_reduced_report(report: &crate::insights_report::ReducedReport) -> Self {
-        let mut payload = Self::from_report(
-            &report.report,
-            report.evidence_settled,
-            report.pending_evidence,
-        );
-        for detector in [
+        let resource_detectors = [
             DetectorId::UnusedMcpServers,
             DetectorId::UnusedBuiltInTools,
             DetectorId::UnusedSkills,
-        ] {
+        ];
+        let resource_tokens = resource_detectors.map(|detector| {
+            report
+                .resources
+                .measured_finding_tokens_by_session(detector)
+        });
+        let resource_assessments: [antiburn_local::insights::ResourceTokenBurnAssessment<'_>; 3] =
+            core::array::from_fn(|index| {
+                let detector = resource_detectors[index];
+                let assessment = report.resources.detector(detector);
+                antiburn_local::insights::ResourceTokenBurnAssessment {
+                    detector,
+                    finding_count: assessment.map_or(0, |value| value.unused_count),
+                    clean: assessment.is_some_and(|value| value.clean),
+                    tokens_by_session: resource_tokens[index].as_deref(),
+                }
+            });
+        let mut payload = Self::from_report_with_resources(
+            &report.report,
+            report.evidence_settled,
+            report.pending_evidence,
+            &resource_assessments,
+        );
+        for detector in resource_detectors {
             let Some(assessment) = report.resources.detector(detector) else {
                 continue;
             };
@@ -2512,13 +2552,10 @@ impl ChecksReportPayload {
             .iter()
             .cloned()
             .collect();
-            category.estimated_token_burn_basis_points =
-                assessment.estimated_token_burn_basis_points;
+            category.estimated_token_burn_basis_points = assessment
+                .estimated_token_burn_basis_points
+                .or(category.estimated_token_burn_basis_points);
         }
-        let resource_tokens = report.resources.measured_finding_tokens_by_session();
-        payload.estimated_token_burn_basis_points = report
-            .report
-            .estimated_token_burn_with_resource_tokens_by_session(resource_tokens.as_deref());
         payload
     }
 
@@ -2527,12 +2564,22 @@ impl ChecksReportPayload {
         evidence_settled: bool,
         pending_evidence: u64,
     ) -> Self {
+        Self::from_report_with_resources(report, evidence_settled, pending_evidence, &[])
+    }
+
+    fn from_report_with_resources(
+        report: &EfficiencyReport,
+        evidence_settled: bool,
+        pending_evidence: u64,
+        resources: &[antiburn_local::insights::ResourceTokenBurnAssessment<'_>],
+    ) -> Self {
         let categories = DetectorId::ALL
             .iter()
             .map(|&id| {
                 let counts = report.detectors[id.index()];
                 ChecksCategoryPayload {
                     id: id.into(),
+                    lifecycle: None,
                     finding: counts.finding,
                     agents: if counts.finding > 0 {
                         &report.finding_agents[id.index()]
@@ -2549,13 +2596,84 @@ impl ChecksReportPayload {
                 }
             })
             .collect();
+        let estimated_token_burn_basis_points_by_detector_mask =
+            aggregate_token_burn_table(report, resources);
+        let estimated_token_burn_basis_points = estimated_token_burn_basis_points_by_detector_mask
+            .last()
+            .copied()
+            .flatten();
         Self {
             evidence_settled,
             pending_evidence,
-            estimated_token_burn_basis_points: report.estimated_token_burn_basis_points,
+            estimated_token_burn_basis_points,
+            estimated_token_burn_basis_points_by_detector_mask,
             categories,
         }
     }
+}
+
+fn aggregate_token_burn_table(
+    report: &EfficiencyReport,
+    resources: &[antiburn_local::insights::ResourceTokenBurnAssessment<'_>],
+) -> Vec<Option<u16>> {
+    let mask_count = 1_usize << DetectorId::COUNT;
+    let (finding_detector_mask, clean_detector_mask) = aggregate_detector_masks(report, resources);
+    // Clean detectors have identical fallback behavior, so one bit represents them all.
+    let clean_representative = if clean_detector_mask == 0 {
+        0
+    } else {
+        1_u16 << clean_detector_mask.trailing_zeros()
+    };
+    let mut computed = vec![false; mask_count];
+    let mut values = vec![None; mask_count];
+
+    for mask in 0..mask_count {
+        let mask = mask as u16;
+        let relevant_mask = (mask & finding_detector_mask
+            | if mask & clean_detector_mask != 0 {
+                clean_representative
+            } else {
+                0
+            }) as usize;
+        if !computed[relevant_mask] {
+            values[relevant_mask] =
+                report.estimated_token_burn_for_active_detectors(relevant_mask as u16, resources);
+            computed[relevant_mask] = true;
+        }
+        values[mask as usize] = values[relevant_mask];
+    }
+
+    values
+}
+
+fn aggregate_detector_masks(
+    report: &EfficiencyReport,
+    resources: &[antiburn_local::insights::ResourceTokenBurnAssessment<'_>],
+) -> (u16, u16) {
+    DetectorId::ALL
+        .into_iter()
+        .fold((0, 0), |(finding_mask, clean_mask), detector| {
+            let (finding, clean) = resources
+                .iter()
+                .find(|assessment| assessment.detector == detector)
+                .map_or_else(
+                    || match &report.detector_statuses[detector.index()] {
+                        DetectorStatus::Findings(findings) => {
+                            (findings.finding_sessions > 0, false)
+                        }
+                        DetectorStatus::Clean => (false, true),
+                        DetectorStatus::NotAssessed(_) => (false, false),
+                    },
+                    |assessment| (assessment.finding_count > 0, assessment.clean),
+                );
+            if finding {
+                (finding_mask | (1 << detector.index()), clean_mask)
+            } else if clean {
+                (finding_mask, clean_mask | (1 << detector.index()))
+            } else {
+                (finding_mask, clean_mask)
+            }
+        })
 }
 
 /// Where the app came from and what it is running against.
@@ -3084,12 +3202,17 @@ mod tests {
             report.clean_agents[1].insert("opencode".to_owned());
             report.estimated_token_burn_basis_points = Some(1_625);
             report.detector_estimated_token_burn_basis_points[0] = Some(500);
+            report.assessed_sessions = 2;
             report.detector_statuses[0] = DetectorStatus::Findings(DetectorFindings {
-                finding_sessions: 2,
+                finding_sessions: 1,
                 examples: vec![SessionExample {
                     agent: "claude-code".to_owned(),
                     session_id: "session-1".to_owned(),
                 }],
+            });
+            report.detector_statuses[1] = DetectorStatus::Findings(DetectorFindings {
+                finding_sessions: 1,
+                examples: Vec::new(),
             });
             report.detectors[0] = DetectorCounts {
                 eligible: 4,
@@ -3116,8 +3239,17 @@ mod tests {
             assert!(value.get("providerIncidents").is_none());
             assert_eq!(value["evidenceSettled"], true);
             assert_eq!(value["pendingEvidence"], 0);
-            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
+            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_000);
+            let aggregates = value["estimatedTokenBurnBasisPointsByDetectorMask"]
+                .as_array()
+                .unwrap();
+            assert_eq!(aggregates.len(), 512);
+            assert_eq!(aggregates[0], serde_json::Value::Null);
+            assert_eq!(aggregates[1], 500);
+            assert_eq!(aggregates[2], 1_000);
+            assert_eq!(aggregates[3], 1_000);
             assert_eq!(value["categories"][0]["estimatedTokenBurnBasisPoints"], 500);
+            assert!(value["categories"][0]["lifecycle"].is_null());
             assert_eq!(
                 value["categories"][1]["estimatedTokenBurnBasisPoints"],
                 serde_json::Value::Null
@@ -3134,6 +3266,7 @@ mod tests {
                 [
                     "categories",
                     "estimatedTokenBurnBasisPoints",
+                    "estimatedTokenBurnBasisPointsByDetectorMask",
                     "evidenceSettled",
                     "pendingEvidence"
                 ]
@@ -3152,6 +3285,7 @@ mod tests {
                     "estimatedTokenBurnBasisPoints",
                     "finding",
                     "id",
+                    "lifecycle",
                     "unavailable",
                 ]
             );
@@ -3163,7 +3297,7 @@ mod tests {
                 serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4)).unwrap();
             assert_eq!(value["evidenceSettled"], false);
             assert_eq!(value["pendingEvidence"], 4);
-            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
+            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_000);
         }
 
         #[test]
@@ -3211,10 +3345,6 @@ mod tests {
                     "outcome": "appliedAwaitingVerification",
                     "watchId": "opaque-watch"
                 })
-            );
-            assert_eq!(
-                serde_json::to_value(ApplyPreparedBurnCheckOperationOutcome::Applied).unwrap(),
-                serde_json::json!({"outcome": "applied"})
             );
         }
 
@@ -3763,7 +3893,9 @@ mod tests {
             crate::remediation::BurnCheckRemediationProgress {
                 attempts: vec![crate::remediation::BurnCheckRemediationAttempt {
                     detector: DetectorId::OldModelUsage,
+                    finding_id: "finding".into(),
                     watch_id: "attempt".into(),
+                    remediation_cycle_id: "attempt".into(),
                     display: crate::remediation::BurnCheckDisplayFacts {
                         resource_kind: crate::remediation::BurnCheckResourceKind::Model,
                         resource_identity: Some("old".into()),
@@ -3790,6 +3922,13 @@ mod tests {
                     effective_boundary_ms: None,
                     verified_boundary_ms: None,
                     recurred_boundary_ms: None,
+                    environment_key: "native".into(),
+                    agent: "claude-code".into(),
+                    scope_kind: "project".into(),
+                    scope_key: "scope".into(),
+                    target_key: "target".into(),
+                    created_at_epoch: 1,
+                    prompt_action: false,
                 }],
             },
         );
@@ -3798,6 +3937,8 @@ mod tests {
         assert_eq!(value["attempts"][0]["lifecycle"], "waitingForPromptUse");
         assert_eq!(value["attempts"][0]["outcome"], "failed");
         assert_eq!(value["attempts"][0]["origin"], "action");
+        assert_eq!(value["attempts"][0]["findingId"], "finding");
+        assert_eq!(value["attempts"][0]["remediationCycleId"], "attempt");
         assert!(value["attempts"][0]["effectiveBoundaryMs"].is_null());
     }
 

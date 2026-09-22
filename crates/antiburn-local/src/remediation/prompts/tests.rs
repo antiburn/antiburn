@@ -357,7 +357,7 @@ fn prompt_uses_no_more_than_eight_identities() {
 }
 
 #[test]
-fn prompt_support_matrix_matches_all_five_phase_one_agents() {
+fn prompt_support_matrix_matches_agent_capabilities() {
     let supported = [
         (
             "claude",
@@ -389,6 +389,17 @@ fn prompt_support_matrix_matches_all_five_phase_one_agents() {
             ][..],
             [true, false, false, false, false, false, true, false, false],
         ),
+        (
+            "cursor",
+            &[
+                SourceFormat::CursorJsonl,
+                SourceFormat::CursorCliAgentJsonl,
+                SourceFormat::CursorCliStoreDb,
+                SourceFormat::CursorChatStoreDb,
+                SourceFormat::CursorIdeComposer,
+            ][..],
+            [false, false, false, false, false, false, true, false, false],
+        ),
     ];
     let causes = causes();
     for (agent, sources, expected) in supported {
@@ -414,20 +425,29 @@ fn prompt_support_matrix_matches_all_five_phase_one_agents() {
     }
     assert_eq!(
         recommendation_support(
-            "cursor",
-            SourceFormat::CursorJsonl,
-            DetectorId::OldModelUsage,
-        ),
-        Err(RemediationUnavailableReason::DeferredAgent)
-    );
-    assert_eq!(
-        recommendation_support(
             "opencode",
             SourceFormat::Uncharacterized,
             DetectorId::OldModelUsage,
         ),
         Err(RemediationUnavailableReason::UnsupportedSourceFormat)
     );
+}
+
+#[test]
+fn recognized_second_tier_agents_reach_capability_checks() {
+    for (agent, source) in [
+        ("copilot", SourceFormat::CopilotCliJsonl),
+        ("cline", SourceFormat::ClineMessagesContractV1),
+        ("kiro", SourceFormat::KiroCliV2Bundle),
+        ("amp", SourceFormat::AmpThreadJson),
+        ("windsurf", SourceFormat::DevinLocalSqlite),
+    ] {
+        assert_eq!(
+            recommendation_support(agent, source, DetectorId::OldModelUsage),
+            Err(RemediationUnavailableReason::CheckUnsupportedForAgent),
+            "{agent}/{source:?}"
+        );
+    }
 }
 
 #[test]

@@ -1154,8 +1154,8 @@ Never sum target occurrences or bounded sample counts to derive affected session
 Named findings retain provider marks, names, scopes, and resource-header actions.
 Put each check description in a full-width row below the header metrics. Actions follow in a
 separate row, so they do not reduce the description width. Order check and resource actions as
-Snooze or Unsnooze, Fix when available, then Copy fix prompt. Batch exact prompt targets when
-available. Use the check-level fallback when no exact prompt target is available.
+Snooze or Unsnooze, Fix when available, then Copy fix prompt. Batch selectable prompt targets.
+The check-level action can use generic text for those targets, but it returns no prompt without a target.
 Add a quiet “Snooze” action for each finding, including single findings.
 It opens the shared menu material with one week, one month, and forever choices.
 Its face stays transparent. The same `RemindLaterAction` becomes Unsnooze for a snoozed check;

@@ -32,7 +32,7 @@ use crate::analysis::interface::{
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
 use crate::analysis::records::{
-    RecordShape, extract_content_parts, parse_record, parse_ts, thread_identity_field,
+    RecordShape, extract_content_parts, parse_record, parse_ts, parse_usage, thread_identity_field,
 };
 use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
@@ -309,6 +309,7 @@ struct PiPolicy {
 
 const MAX_SUBAGENT_CALLS: usize = 1024;
 const MAX_WORKER_MESSAGES: usize = 4096;
+const MAX_LEGACY_ENTRIES: usize = 50_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PiSubagentCall {
@@ -322,6 +323,13 @@ struct PiSubagentCall {
 struct PiStreamState {
     admission: PiAdmission,
     admission_checked: bool,
+    /// The header version after applying Pi's documented read-time migrations.
+    /// Version 1 is the header's omitted-version form.
+    session_version: u8,
+    /// V1 migration creates a linear tree. Keep only its bounded identity map
+    /// so compaction indexes can resolve to the generated entry IDs.
+    legacy_entry_ids: Vec<String>,
+    legacy_migration_incomplete: bool,
     model: Option<String>,
     current_model: Option<String>,
     current_provider: Option<String>,
@@ -370,6 +378,7 @@ impl PiStreamState {
             PiAdmission::AwaitingHeader => {
                 let Some(reason) = pi_header_rejection(&value) else {
                     self.admission = PiAdmission::Accepted;
+                    self.session_version = pi_header_version(&value).expect("admitted Pi version");
                     self.observe_session_header(&value);
                     return;
                 };
@@ -380,6 +389,11 @@ impl PiStreamState {
     }
 
     fn observe(&mut self, value: Value, sink: &mut dyn RecordSink) {
+        let mut value = value;
+        self.migrate_entry(&mut value);
+        if let Some(reason) = pi_lineage_reason(&value) {
+            sink.record(NormalizedRecord::Unusable(reason));
+        }
         let id = thread_identity_field(&value, "id");
         let parent_id = thread_identity_field(&value, "parentId");
         if id.as_deref().is_some_and(|id| self.threads.contains(id)) {
@@ -414,6 +428,52 @@ impl PiStreamState {
                 provider: self.current_provider.clone(),
                 thinking_mode: self.current_thinking_mode.clone(),
             });
+        }
+    }
+
+    fn migrate_entry(&mut self, value: &mut Value) {
+        if self.session_version == 1 {
+            let Some(object) = value.as_object_mut() else {
+                return;
+            };
+            if self.legacy_entry_ids.len() < MAX_LEGACY_ENTRIES {
+                let id = format!("pi-v1-{}", self.legacy_entry_ids.len());
+                let parent_id = self.legacy_entry_ids.last().cloned();
+                object.insert("id".to_owned(), Value::String(id.clone()));
+                object.insert(
+                    "parentId".to_owned(),
+                    parent_id.map_or(Value::Null, Value::String),
+                );
+                self.legacy_entry_ids.push(id);
+            } else {
+                self.legacy_migration_incomplete = true;
+            }
+
+            if let Some(index) = object.get("firstKeptEntryIndex") {
+                let first_kept_id = index
+                    .as_u64()
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| self.legacy_entry_ids.get(index));
+                if let Some(first_kept_id) = first_kept_id {
+                    object.insert(
+                        "firstKeptEntryId".to_owned(),
+                        Value::String(first_kept_id.clone()),
+                    );
+                } else {
+                    self.legacy_migration_incomplete = true;
+                }
+                object.remove("firstKeptEntryIndex");
+            }
+        }
+
+        // V2 migration renames the old message role. V1 runs through this
+        // step after its IDs are synthesized, matching Pi's migration order.
+        if self.session_version <= 2
+            && value.get("type").and_then(Value::as_str) == Some("message")
+            && value.pointer("/message/role").and_then(Value::as_str) == Some("hookMessage")
+            && let Some(role) = value.pointer_mut("/message/role")
+        {
+            *role = Value::String("custom".to_owned());
         }
     }
 
@@ -479,8 +539,10 @@ impl PiStreamState {
             Some("message") => self.observe_message(value, thread_id, sink),
             Some("model_change") => self.observe_model_change(value, sink, false),
             Some("thinking_level_change") => self.observe_thinking_level_change(value, sink, false),
+            Some("usage") => self.observe_usage(value, thread_id, sink),
             Some("compaction") => self.observe_compaction(value, thread_id, sink),
-            Some("session_info") if is_inert_shape(value) => observe_inert(value, sink),
+            Some("branch_summary") => self.observe_branch_summary(value, thread_id, sink),
+            Some("session_info" | "label") if is_inert_shape(value) => observe_inert(value, sink),
             Some("custom" | "custom_message") if is_inert_shape(value) => {
                 observe_inert(value, sink)
             }
@@ -526,7 +588,15 @@ impl PiStreamState {
             }
             return;
         }
-        if !matches!(role, "user" | "assistant" | "toolResult") {
+        if matches!(role, "custom" | "branchSummary" | "compactionSummary") {
+            if is_inert_shape(value) {
+                observe_inert(value, sink);
+            } else {
+                unrecognized(role, sink);
+            }
+            return;
+        }
+        if !matches!(role, "user" | "assistant" | "toolResult" | "system") {
             unrecognized(role, sink);
             return;
         }
@@ -914,6 +984,10 @@ impl PiStreamState {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
         };
+        if value.get("tokensBefore").and_then(Value::as_u64).is_none() {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            return;
+        }
         let mut event = NormalizedEvent::new(Role::System);
         event.ts_ms = Some(timestamp);
         event.thread_id = thread_id;
@@ -921,8 +995,97 @@ impl PiStreamState {
         event.parent_uuid = thread_identity_field(value, "parentId");
         event.is_compaction_boundary = true;
         event.compaction_pre_tokens = value.get("tokensBefore").and_then(Value::as_u64);
+        event.usage = parse_usage(value.get("usage"));
         event.model = self.current_model.clone();
         event.thinking_mode = self.current_thinking_mode.clone();
+        self.emit_event(event, Vec::new(), sink);
+    }
+
+    fn observe_branch_summary(
+        &mut self,
+        value: &Value,
+        thread_id: Option<String>,
+        sink: &mut dyn RecordSink,
+    ) {
+        let mut shape_without_usage = value.clone();
+        if let Some(object) = shape_without_usage.as_object_mut() {
+            object.remove("usage");
+        }
+        if !is_inert_shape(&shape_without_usage) {
+            unrecognized("branch_summary", sink);
+            return;
+        }
+        if value.get("timestamp").and_then(parse_ts).is_none()
+            || value.get("summary").and_then(Value::as_str).is_none()
+            || value.get("fromId").and_then(Value::as_str).is_none()
+        {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            return;
+        }
+        let Some(usage) = value.get("usage") else {
+            observe_inert(value, sink);
+            return;
+        };
+        if usage.as_object().is_none() {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            return;
+        }
+        let mut event = NormalizedEvent::new(Role::System);
+        event.ts_ms = value.get("timestamp").and_then(parse_ts);
+        event.thread_id = thread_id;
+        event.uuid = thread_identity_field(value, "id");
+        event.parent_uuid = thread_identity_field(value, "parentId");
+        event.model = self.current_model.clone();
+        event.thinking_mode = self.current_thinking_mode.clone();
+        event.usage = parse_usage(Some(usage));
+        self.emit_event(event, Vec::new(), sink);
+    }
+
+    fn observe_usage(
+        &mut self,
+        value: &Value,
+        thread_id: Option<String>,
+        sink: &mut dyn RecordSink,
+    ) {
+        let Some(timestamp) = value.get("timestamp").and_then(parse_ts) else {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            return;
+        };
+        if value.get("usage").and_then(Value::as_object).is_none()
+            || value
+                .get("kind")
+                .and_then(Value::as_str)
+                .and_then(bounded_provider_hint_value)
+                .is_none()
+            || value
+                .get("model")
+                .and_then(Value::as_str)
+                .and_then(bounded_provider_hint_value)
+                .is_none()
+            || value
+                .get("provider")
+                .and_then(Value::as_str)
+                .and_then(bounded_provider_hint_value)
+                .is_none()
+        {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            return;
+        }
+
+        let mut event = NormalizedEvent::new(Role::System);
+        event.ts_ms = Some(timestamp);
+        event.thread_id = thread_id;
+        event.uuid = thread_identity_field(value, "id");
+        event.parent_uuid = thread_identity_field(value, "parentId");
+        event.model = value
+            .get("model")
+            .and_then(Value::as_str)
+            .and_then(bounded_provider_hint_value);
+        event.provider = value
+            .get("provider")
+            .and_then(Value::as_str)
+            .and_then(bounded_provider_hint_value);
+        event.usage = parse_usage(value.get("usage"));
         self.emit_event(event, Vec::new(), sink);
     }
 
@@ -962,6 +1125,9 @@ impl PiStreamState {
         if self.subagent_incomplete || self.subagent_calls.values().any(|call| !call.resolved) {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
+        if self.legacy_migration_incomplete {
+            coverage_gaps.push(PartialReason::AttributionIncomplete);
+        }
         coverage_gaps.sort_unstable();
         coverage_gaps.dedup();
         SessionSummary {
@@ -983,9 +1149,10 @@ fn pi_header_rejection(value: &Value) -> Option<PartialReason> {
     if value.get("type").and_then(Value::as_str) != Some("session") {
         return Some(PartialReason::UnrecognizedRecordType);
     }
-    let version = value.get("version");
-    if !version.is_some_and(|version| version.as_u64() == Some(3) || version.as_str() == Some("3"))
-    {
+    let Some(version) = pi_header_version(value) else {
+        return Some(PartialReason::UnrecognizedRecordType);
+    };
+    if !matches!(version, 1..=3) {
         return Some(PartialReason::UnrecognizedRecordType);
     }
     value
@@ -995,11 +1162,40 @@ fn pi_header_rejection(value: &Value) -> Option<PartialReason> {
         .then_some(PartialReason::MalformedRecord)
 }
 
+fn pi_header_version(value: &Value) -> Option<u8> {
+    match value.get("version") {
+        None => Some(1),
+        Some(Value::Number(version)) => version
+            .as_u64()
+            .and_then(|version| u8::try_from(version).ok()),
+        Some(Value::String(version)) => version.parse().ok(),
+        Some(_) => None,
+    }
+}
+
 fn pi_subagent_id<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value
         .get(key)?
         .as_str()
         .filter(|id| !id.is_empty() && id.len() <= crate::analysis::EVIDENCE_STRING_CAP)
+}
+
+fn pi_lineage_reason(value: &Value) -> Option<PartialReason> {
+    let valid_id = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty() && id.len() <= crate::analysis::EVIDENCE_STRING_CAP)
+    };
+    let raw_id = value.get("id")?;
+    if raw_id.is_null() || !valid_id("id") {
+        return Some(PartialReason::MalformedRecord);
+    }
+    let parent_id = value.get("parentId")?;
+    if !parent_id.is_null() && !valid_id("parentId") {
+        return Some(PartialReason::MalformedRecord);
+    }
+    None
 }
 
 // Pi permits invalid skill names with warnings. Retain only the bounded, path-free specification subset.
@@ -1049,8 +1245,19 @@ fn unrecognized(discriminator: &str, sink: &mut dyn RecordSink) {
 }
 
 fn is_inert_shape(value: &Value) -> bool {
-    let allowed_role =
-        (value.get("type").and_then(Value::as_str) == Some("message")).then_some("bashExecution");
+    let allowed_role = (value.get("type").and_then(Value::as_str) == Some("message"))
+        .then(|| {
+            value
+                .pointer("/message/role")
+                .and_then(Value::as_str)
+                .filter(|role| {
+                    matches!(
+                        *role,
+                        "bashExecution" | "custom" | "branchSummary" | "compactionSummary"
+                    )
+                })
+        })
+        .flatten();
     !has_shared_parser_signal(value, allowed_role)
 }
 
@@ -1694,6 +1901,53 @@ mod tests {
         let gaps = state.finish().coverage_gaps;
         assert_eq!(gaps, vec![PartialReason::AttributionIncomplete]);
         assert_eq!(gaps, resumed.finish().coverage_gaps);
+    }
+
+    #[test]
+    fn v1_migration_keeps_role_and_index_migrations_after_the_id_cap() {
+        let mut state = PiStreamState {
+            session_version: 1,
+            legacy_entry_ids: (0..MAX_LEGACY_ENTRIES)
+                .map(|index| format!("pi-v1-{index}"))
+                .collect(),
+            ..PiStreamState::default()
+        };
+        let mut value = json!({
+            "type": "message",
+            "firstKeptEntryIndex": 0,
+            "message": {"role": "hookMessage"}
+        });
+
+        state.migrate_entry(&mut value);
+
+        assert!(state.legacy_migration_incomplete);
+        assert!(value.get("id").is_none());
+        assert!(value.get("parentId").is_none());
+        assert_eq!(value["firstKeptEntryId"], "pi-v1-0");
+        assert!(value.get("firstKeptEntryIndex").is_none());
+        assert_eq!(
+            value.pointer("/message/role").and_then(Value::as_str),
+            Some("custom")
+        );
+    }
+
+    #[test]
+    fn v1_migration_marks_an_unresolved_first_kept_index_incomplete() {
+        let mut state = PiStreamState {
+            session_version: 1,
+            legacy_entry_ids: vec!["pi-v1-0".to_owned()],
+            ..PiStreamState::default()
+        };
+        let mut value = json!({
+            "type": "compaction",
+            "firstKeptEntryIndex": 4,
+        });
+
+        state.migrate_entry(&mut value);
+
+        assert!(state.legacy_migration_incomplete);
+        assert!(value.get("firstKeptEntryId").is_none());
+        assert!(value.get("firstKeptEntryIndex").is_none());
     }
 
     #[test]

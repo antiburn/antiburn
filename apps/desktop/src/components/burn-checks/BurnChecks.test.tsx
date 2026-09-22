@@ -85,7 +85,10 @@ describe("Burn Check components", () => {
   it("renders summary hierarchy and a trailing slot without a second status dial", () => {
     const value = presentation("finding", "clean", "notAssessed")
     const { container } = render(
-      <BurnCheckSummary presentation={value} trailing={<span>12% token burn</span>} />,
+      <BurnCheckSummary
+        presentation={value}
+        trailing={<span>12% estimated token burn</span>}
+      />,
     )
     expect(container.querySelector("svg")).toBeNull()
     const headline = screen.getByTestId("burn-check-headline")
@@ -102,7 +105,7 @@ describe("Burn Check components", () => {
       "aria-label",
       expect.stringContaining("Evidence incomplete"),
     )
-    expect(screen.getByText("12% token burn")).toBeInTheDocument()
+    expect(screen.getByText("12% estimated token burn")).toBeInTheDocument()
     expect(screen.getByLabelText(value.accessibleDescription)).toHaveClass(
       "min-h-10",
       "px-[var(--space-md)]",

@@ -359,6 +359,17 @@ async fn discover_agent_transcripts(
                 };
                 let metadata = chat_metadata.get(session_id).cloned().unwrap_or_default();
                 let label = path.to_string_lossy().to_string();
+                let fork_observation =
+                    cursor_agent_subagent_parent(&path).map(|parent_id| ForkObservation {
+                        parent_agent: "cursor".to_owned(),
+                        parent_agent_session_id: parent_id,
+                        fork_kind: "subagent".to_owned(),
+                        provider_fork_point_id: None,
+                        detection_source: "subagent_path".to_owned(),
+                        confidence: 100,
+                        inherited_item_count: None,
+                        extractor_version: "cursor-agent-subagent-v1".to_owned(),
+                    });
                 let source = SessionSource::Inline {
                     label,
                     content: prepend_cursor_metadata_line(
@@ -370,7 +381,7 @@ async fn discover_agent_transcripts(
                             title: metadata.title.as_deref(),
                             created_at: metadata.created_at,
                             updated_at: metadata.updated_at,
-                            fork_observation: None,
+                            fork_observation: fork_observation.as_ref(),
                             source_kind: "agent_transcript",
                         },
                     ),
@@ -607,6 +618,33 @@ async fn find_agent_transcript_workspace_key(
         }
     }
     None
+}
+
+/// Cursor stores a child transcript at
+/// `agent-transcripts/<parent-id>/subagents/<child-id>.jsonl`. The parent
+/// directory is a vendor-assigned session id, so this link is stronger than a
+/// content-prefix fork guess and needs no title heuristic.
+fn cursor_agent_subagent_parent(path: &Path) -> Option<String> {
+    if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl")
+        || path.parent()?.file_name().and_then(|name| name.to_str()) != Some("subagents")
+    {
+        return None;
+    }
+    let transcript_root = path
+        .parent()?
+        .parent()?
+        .parent()?
+        .file_name()
+        .and_then(|name| name.to_str())?;
+    if transcript_root != "agent-transcripts" {
+        return None;
+    }
+    let parent_id = path
+        .parent()?
+        .parent()?
+        .file_name()
+        .and_then(|name| name.to_str())?;
+    is_safe_session_id(parent_id).then(|| parent_id.to_owned())
 }
 
 /// Positive allowlist for an on-disk-sourced session id used in a
@@ -1349,6 +1387,12 @@ fn set_embedded_fork_observation(content: &mut String, observation: &ForkObserva
     let Ok(mut metadata) = serde_json::from_str::<Value>(first) else {
         return;
     };
+    if metadata
+        .get(FORK_OBSERVATION_KEY)
+        .is_some_and(|value| !value.is_null())
+    {
+        return;
+    }
     metadata[FORK_OBSERVATION_KEY] = serde_json::to_value(observation).unwrap_or(Value::Null);
     *content = format!("{metadata}\n{rest}");
 }
@@ -1502,8 +1546,9 @@ impl CursorStoreDbSnapshot {
         self,
         fork_observation: Option<&ForkObservation>,
     ) -> Option<CursorDiscoveredSession> {
-        let content =
-            build_cursor_store_db_content(&self.metadata, &self.records, fork_observation)?;
+        let explicit_observation = cursor_store_db_subagent_observation(&self.metadata);
+        let observation = explicit_observation.as_ref().or(fork_observation);
+        let content = build_cursor_store_db_content(&self.metadata, &self.records, observation)?;
         let metadata_updated_at = self
             .metadata
             .updated_at
@@ -1640,6 +1685,7 @@ fn cursor_store_db_fork_observation(
 #[derive(Debug, Clone)]
 struct CursorStoreDbMetadata {
     session_id: String,
+    parent_session_id: Option<String>,
     cwd: Option<String>,
     model: Option<String>,
     /// Title written by `cursor-agent`. Both `/rename` and the CLI's
@@ -1653,6 +1699,7 @@ struct CursorStoreDbMetadata {
 
 fn parse_cursor_store_db_metadata(values: &[String]) -> Option<CursorStoreDbMetadata> {
     let mut session_id = None;
+    let mut parent_session_id = None;
     let mut cwd = None;
     let mut model = None;
     let mut title = None;
@@ -1665,6 +1712,13 @@ fn parse_cursor_store_db_metadata(values: &[String]) -> Option<CursorStoreDbMeta
         };
         session_id = session_id
             .or_else(|| find_string_in_value(&json, &["agentId", "sessionId", "composerId", "id"]));
+        parent_session_id = parent_session_id.or_else(|| {
+            json.pointer("/subagentInfo/parentAgentId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| is_safe_session_id(id))
+                .map(str::to_owned)
+        });
         cwd = cwd.or_else(|| {
             find_string_in_value(
                 &json,
@@ -1687,12 +1741,32 @@ fn parse_cursor_store_db_metadata(values: &[String]) -> Option<CursorStoreDbMeta
 
     Some(CursorStoreDbMetadata {
         session_id: session_id?,
+        parent_session_id,
         cwd,
         model,
         title,
         created_at,
         updated_at,
     })
+}
+
+fn cursor_store_db_subagent_observation(
+    metadata: &CursorStoreDbMetadata,
+) -> Option<ForkObservation> {
+    metadata
+        .parent_session_id
+        .as_ref()
+        .filter(|parent_id| *parent_id != &metadata.session_id)
+        .map(|parent_id| ForkObservation {
+            parent_agent: "cursor".to_owned(),
+            parent_agent_session_id: parent_id.clone(),
+            fork_kind: "subagent".to_owned(),
+            provider_fork_point_id: None,
+            detection_source: "store_db_subagent_info".to_owned(),
+            confidence: 100,
+            inherited_item_count: None,
+            extractor_version: "cursor-store-db-v1".to_owned(),
+        })
 }
 
 fn build_cursor_store_db_content(
@@ -2656,6 +2730,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cursor_agent_subagent_path_proves_parent_session() {
+        let child = Path::new(
+            "/home/.cursor/projects/workspace/agent-transcripts/parent-123/subagents/child-456.jsonl",
+        );
+        assert_eq!(
+            cursor_agent_subagent_parent(child).as_deref(),
+            Some("parent-123")
+        );
+
+        let top_level = Path::new(
+            "/home/.cursor/projects/workspace/agent-transcripts/parent-123/parent-123.jsonl",
+        );
+        assert!(cursor_agent_subagent_parent(top_level).is_none());
+
+        let unsafe_parent = Path::new(
+            "/home/.cursor/projects/workspace/agent-transcripts/../subagents/child.jsonl",
+        );
+        assert!(cursor_agent_subagent_parent(unsafe_parent).is_none());
+
+        let nested = Path::new(
+            "/home/.cursor/projects/workspace/agent-transcripts/parent-123/artifacts/subagents/child.jsonl",
+        );
+        assert!(cursor_agent_subagent_parent(nested).is_none());
+    }
+
+    #[tokio::test]
+    async fn cursor_agent_discovery_embeds_subagent_parent_observation() {
+        let home = TempDir::new().unwrap();
+        let transcripts = home
+            .path()
+            .join(".cursor/projects/workspace/agent-transcripts");
+        let parent_id = "parent-123";
+        let child_id = "child-456";
+        let parent = transcripts
+            .join(parent_id)
+            .join(format!("{parent_id}.jsonl"));
+        let child = transcripts
+            .join(parent_id)
+            .join("subagents")
+            .join(format!("{child_id}.jsonl"));
+        tokio::fs::create_dir_all(parent.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(child.parent().unwrap())
+            .await
+            .unwrap();
+        let body = "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n";
+        tokio::fs::write(&parent, body).await.unwrap();
+        tokio::fs::write(&child, body).await.unwrap();
+
+        let logs =
+            discover_recent_in(home.path(), current_unix_epoch_for_tests(), 3600, None).await;
+        let child_content = logs
+            .iter()
+            .find_map(|log| {
+                let SessionSource::Inline { content, .. } = &log.source else {
+                    return None;
+                };
+                (scanner::parse_session_metadata_str(content)
+                    .session_id
+                    .as_deref()
+                    == Some(child_id))
+                .then_some(content.as_str())
+            })
+            .expect("child transcript should be discovered");
+        let observation = embedded_fork_observation(child_content).expect("parent observation");
+        assert_eq!(observation.parent_agent_session_id, parent_id);
+        assert_eq!(observation.fork_kind, "subagent");
+        assert_eq!(observation.detection_source, "subagent_path");
+        assert_eq!(observation.confidence, 100);
+    }
+
     #[tokio::test]
     async fn test_cursor_discovers_desktop_state_vscdb_sessions() {
         let home = TempDir::new().unwrap();
@@ -2878,6 +3025,30 @@ mod tests {
         dedupe_preserving_order(&mut ids);
 
         assert_eq!(ids, vec!["bubble-2", "bubble-10", "bubble-1"]);
+    }
+
+    #[test]
+    fn cursor_store_db_metadata_proves_subagent_parent() {
+        let metadata = parse_cursor_store_db_metadata(&[json!({
+            "agentId": "child-456",
+            "subagentInfo": {"parentAgentId": " parent-123 "},
+        })
+        .to_string()])
+        .expect("session metadata");
+        let observation = cursor_store_db_subagent_observation(&metadata).expect("parent link");
+
+        assert_eq!(observation.parent_agent_session_id, "parent-123");
+        assert_eq!(observation.fork_kind, "subagent");
+        assert_eq!(observation.detection_source, "store_db_subagent_info");
+        assert_eq!(observation.confidence, 100);
+
+        let invalid = parse_cursor_store_db_metadata(&[json!({
+            "agentId": "child-456",
+            "subagentInfo": {"parentAgentId": "../parent-123"},
+        })
+        .to_string()])
+        .expect("session metadata");
+        assert!(cursor_store_db_subagent_observation(&invalid).is_none());
     }
 
     #[tokio::test]
@@ -3216,6 +3387,29 @@ mod tests {
             embedded_fork_observation(content_by_id[unrelated_id]).is_none(),
             "a fork title without an exact copied prefix must fail closed"
         );
+    }
+
+    #[test]
+    fn title_fork_annotation_preserves_an_existing_observation() {
+        let existing = ForkObservation {
+            parent_agent: "cursor".to_owned(),
+            parent_agent_session_id: "declared-parent".to_owned(),
+            fork_kind: "subagent".to_owned(),
+            provider_fork_point_id: None,
+            detection_source: "store_db_subagent_info".to_owned(),
+            confidence: 100,
+            inherited_item_count: None,
+            extractor_version: "cursor-store-db-v1".to_owned(),
+        };
+        let replacement = ForkObservation {
+            parent_agent_session_id: "title-parent".to_owned(),
+            ..existing.clone()
+        };
+        let mut content = format!("{}\n{{}}", json!({FORK_OBSERVATION_KEY: existing}));
+
+        set_embedded_fork_observation(&mut content, &replacement);
+
+        assert_eq!(embedded_fork_observation(&content), Some(existing));
     }
 
     #[tokio::test]

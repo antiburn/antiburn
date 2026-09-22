@@ -6,15 +6,15 @@ listed here is not claimed — a cell that is absent means "not supported", not
 
 ## Platforms
 
-| Platform                                              | v1 support                                                                                                                                                                                                           |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS 13 or later (Apple silicon and Intel)           | Supported                                                                                                                                                                                                            |
-| macOS 12 or earlier                                   | Not supported; the bundle declares macOS 13 as its minimum                                                                                                                                                           |
-| Windows 11 (x86-64)                                   | Supported                                                                                                                                                                                                            |
-| Windows 10                                            | Not tested; no support claimed                                                                                                                                                                                       |
+| Platform                                              | v1 support                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| macOS 13 or later (Apple silicon and Intel)           | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| macOS 12 or earlier                                   | Not supported; the bundle declares macOS 13 as its minimum                                                                                                                                                                                                                                                                                                                                                                                 |
+| Windows 11 (x86-64)                                   | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Windows 10                                            | Not tested; no support claimed                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Linux, mainstream x86-64 desktops with a system tray  | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session-wide `GDK_BACKEND` that only restates the Wayland default (plain `wayland`, or a wayland-first list naming `x11`) is overridden for antiburn alone, `ANTIBURN_GDK_BACKEND` forces a backend explicitly, and a session with no X server leaves that placement to the compositor |
-| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application                                                                                                                                                                       |
-| Mobile                                                | Out of scope                                                                                                                                                                                                         |
+| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application                                                                                                                                                                                                                                                                                                                                                                                             |
+| Mobile                                                | Out of scope                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 ## Agents
 
@@ -22,19 +22,19 @@ antiburn reads session data that a coding agent has already written to disk.
 Plan limits are separate: antiburn can ask a provider for those figures as
 described in [Network](#network).
 
-| Agent          | Discovery                | Detailed session analysis               | Burn Check               | WSL           | Notes                                                                                                               |
-| -------------- | ------------------------ | --------------------------------------- | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Claude Code    | Supported                | Supported                               | Supported                | Supported     |                                                                                                                     |
-| Codex          | Supported                | Supported                               | Supported                | Supported     |                                                                                                                     |
-| OpenCode       | Supported                | Supported                               | Supported                | Supported     | WSL discovery uses bounded OpenCode CLI export. It is not disk-only access.                                         |
-| Cursor         | Supported                | Supported on characterized surfaces     | Finding-only O support   | Not supported | Other surfaces fail closed.                                                                                         |
-| GitHub Copilot | Supported                | Supported for completed CLI v1 sessions | Supported for S/O        | Not supported | IDE chat remains fail closed. Prompts, content, and tool arguments are not read.                                    |
-| Cline          | Supported                | Partial                                 | Finding-only S/O         | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                 |
-| Kiro           | Supported                | Safe V2 CLI facts only                  | Unavailable              | Not supported | V2 requires exact local `.json` and `.jsonl` siblings. V3, IDE stores, and manual `/chat save` exports fail closed. |
-| Amp            | Supported                | Partial                                 | Finding-only D/O         | Not supported | Thread JSON supports bounded depth and model findings; file-change records fail closed.                             |
-| Pi             | macOS and Linux only     | Supported for Pi V3 CLI sessions        | Supported                | Not supported | Includes `PI_AGENT_DIR`; excluded on native Windows and WSL.                                                        |
-| Antigravity    | Supported, **disk-only** | Supported on characterized surfaces     | Finding-only D/O support | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis.                                          |
-| Devin          | Supported, **disk-only** | Finding-only S                          | Finding-only S           | Not supported | Uses Devin Local migration-17 SQLite; legacy Windsurf roots keep the stable `windsurf` identity. Desktop ACP is child-only and optional. |
+| Agent          | Discovery                | Detailed session analysis             | Burn Check               | WSL           | Notes                                                                                                                                                                                                  |
+| -------------- | ------------------------ | ------------------------------------- | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude Code    | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                        |
+| Codex          | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                        |
+| OpenCode       | Supported                | Supported                             | Supported                | Supported     | WSL discovery uses bounded OpenCode CLI export. It is not disk-only access.                                                                                                                            |
+| Cursor         | Supported                | Supported on characterized surfaces   | Finding-only O support   | Not supported | Other surfaces fail closed.                                                                                                                                                                            |
+| GitHub Copilot | Supported                | Supported for accepted CLI v1 bundles | Supported for S/O        | Not supported | Requires the strict event and schema-v7 request-store bundle. D is unavailable because request depth is not retained. IDE chat remains fail closed. Prompts, content, and tool arguments are not read. |
+| Cline          | Supported                | Partial                               | Finding-only S/O         | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                                                                                                    |
+| Kiro           | Supported                | Safe V2 CLI facts only                | Unavailable              | Not supported | V2 requires exact local `.json` and `.jsonl` siblings. V3, IDE stores, and manual `/chat save` exports fail closed.                                                                                    |
+| Amp            | Supported                | Partial                               | Finding-only D/O         | Not supported | Thread JSON supports bounded depth and model findings; file-change records fail closed.                                                                                                                |
+| Pi             | macOS and Linux only     | Supported for Pi V1-V3 CLI sessions   | Supported                | Not supported | Includes `PI_AGENT_DIR`; documented V1/V2 migrations are normalized into the V3 reader; excluded on native Windows and WSL.                                                                            |
+| Antigravity    | Supported, **disk-only** | Supported on characterized surfaces   | Finding-only D/O support | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis.                                                                                                                             |
+| Devin          | Supported, **disk-only** | Finding-only S                        | Finding-only S           | Not supported | Uses Devin Local migration-17 SQLite; legacy Windsurf roots keep the stable `windsurf` identity. Desktop ACP is child-only and optional.                                                               |
 
 **Disk-only** means sessions come from the agent's own documented local files; the
 live language-server APIs those two editors expose aren't read, so a session that
@@ -43,23 +43,35 @@ exists only in memory will not appear.
 ## Burn Check remediation
 
 The main Burn checks workspace shows supported findings only for the agents and
-checks listed below. `Finding-only` means it cannot report a clean result. Safe
-bounded prompts cover the exact check matrix in
-[Burn Check Source Coverage](check-coverage.md#automatic-editor-support).
+checks listed below. The first-tier grouping is product documentation only; it
+does not change parsing, findings, prompts, Auto Fix, or verification. Those
+behaviors depend on the evidence and capabilities of each agent. `Finding-only`
+means it cannot report a clean result. Check codes are defined in
+[Burn Check Source Coverage](check-coverage.md#checks). The Auto Fix column below
+lists every reachable operation by check code; the
+[automatic editor matrix](check-coverage.md#automatic-editor-support) gives the
+exact binding limits. The same document has the exhaustive prompt matrix.
 
-| Agent          | Burn Check result | Auto Fix on macOS and Linux | Other current support         |
-| -------------- | ----------------- | --------------------------- | ----------------------------- |
-| Claude Code    | Supported         | Model and reasoning         | Prompts for all nine checks   |
-| Codex          | Supported         | Model and reasoning         | Prompts for all nine checks   |
-| OpenCode       | Supported         | Model                       | Prompts for D, S, K, O, and C |
-| Cursor         | Finding-only O    | None                        | Current M/K inventory; no remediation prompt |
-| GitHub Copilot | Supported S/O     | None                        | Current M/K inventory; no remediation prompt |
-| Cline          | Finding-only S/O  | None                        | Current M/K inventory; no remediation prompt |
-| Kiro           | Unavailable       | None                        | Current M/K inventory; no remediation prompt |
-| Amp            | Finding-only D/O  | None                        | Current M/K inventory; no remediation prompt |
-| Pi             | Supported         | Model and reasoning         | Prompts for D, T, S, O, and C |
-| Antigravity    | Finding-only D/O  | None                        | Current M/K inventory; prompts for D and O |
-| Devin          | Finding-only S    | None                        | Current M/K inventory; no remediation prompt |
+### First-tier product coverage
+
+| Agent       | Burn Check result | Auto Fix on macOS and Linux | Other current support                                       |
+| ----------- | ----------------- | --------------------------- | ----------------------------------------------------------- |
+| Claude Code | Supported         | D/T/S/M/B/K/O/F             | Prompts for all nine checks                                 |
+| Codex       | Supported         | D/T/S/M/K/O/F               | Prompts for all nine checks                                 |
+| OpenCode    | Supported         | D/S/M/K/O                   | Prompts for D, S, M, B, K, O, and C                         |
+| Cursor      | Finding-only O    | None                        | Current M/K inventory; prompts for characterized O findings |
+| Pi          | Supported         | D/T/O                       | Prompts for D, T, S, M, K, and O; B and C unavailable       |
+| Antigravity | Finding-only D/O  | None                        | Current M/K inventory; prompts for D and O                  |
+
+### Second-tier product coverage
+
+| Agent          | Burn Check result              | Auto Fix on macOS and Linux | Other current support                        |
+| -------------- | ------------------------------ | --------------------------- | -------------------------------------------- |
+| GitHub Copilot | S/O on accepted CLI v1 bundles | None                        | Current M/K inventory; no remediation prompt |
+| Cline          | Finding-only S/O               | None                        | Current M/K inventory; no remediation prompt |
+| Kiro           | Unavailable                    | None                        | Current M/K inventory; no remediation prompt |
+| Amp            | Finding-only D/O               | None                        | Current M/K inventory; no remediation prompt |
+| Devin          | Finding-only S                 | None                        | Current M/K inventory; no remediation prompt |
 
 Each Auto Fix changes one winning control after a separate review and
 confirmation. It changes a global or user control when projects inherit it, and
@@ -72,8 +84,9 @@ optional built-in tool. Claude project scope requires the exact bare tool name
 in `permissions.allow`. Model and reasoning edits remain pinned to their saved
 attribution, and Claude fast mode writes `false`. A controller-reported runtime
 or managed override can prevent an immediate behavior change; the review shows
-this warning. When an exact prompt is unavailable, Copy can provide a bounded
-generic fallback. Native Windows can read supported setting attribution but
+this warning. Check-level Copy can provide bounded generic text only when it can
+select at least one current target. Every returned prompt has a durable attempt
+reference. Native Windows can read supported setting attribution but
 cannot apply a change. Pi session discovery remains unavailable on native
 Windows. WSL is separate and cannot edit native host config. See the
 [implementation guide](remediation.md) for precedence, verification, savings,

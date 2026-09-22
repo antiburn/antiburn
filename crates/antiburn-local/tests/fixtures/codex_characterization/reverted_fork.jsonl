@@ -1,0 +1,9 @@
+{"timestamp":"2026-08-10T10:00:00Z","type":"session_meta","payload":{"session_id":"child","id":"child","forked_from_id":"parent","timestamp":"2026-08-10T09:59:59Z","thread_source":"user","source":"cli"}}
+{"timestamp":"2026-08-10T10:00:00Z","type":"session_meta","payload":{"session_id":"parent","id":"parent","timestamp":"2026-08-10T09:50:00Z","thread_source":"user","source":"cli"}}
+{"timestamp":"2026-08-10T10:00:00Z","type":"turn_context","payload":{"model":"gpt-parent","effort":"high"}}
+{"timestamp":"2026-08-10T10:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}
+{"timestamp":"2026-08-10T10:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"cached_input_tokens":700,"output_tokens":60,"total_tokens":960},"total_token_usage":{"input_tokens":900,"cached_input_tokens":700,"output_tokens":60,"total_tokens":960},"model_context_window":200000}}}
+{"timestamp":"2026-08-10T10:00:01Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-child","model_provider_id":"openai","reasoning_effort":"low","service_tier":"default"}}}
+{"timestamp":"2026-08-10T10:00:01Z","type":"event_msg","payload":{"type":"task_started","model_context_window":128000}}
+{"timestamp":"2026-08-10T10:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}
+{"timestamp":"2026-08-10T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340},"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340},"model_context_window":128000}}}

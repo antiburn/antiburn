@@ -9,12 +9,15 @@ import {
 } from "./checks"
 
 function category(overrides: Partial<ChecksCategoryPayload> = {}): ChecksCategoryPayload {
+  const finding = overrides.finding ?? 5
+  const clean = overrides.clean ?? 5
   return {
     id: "cacheChurn",
-    finding: 5,
-    clean: 5,
+    finding,
+    clean,
     unavailable: 0,
     estimatedTokenBurnBasisPoints: 1_250,
+    lifecycle: finding > 0 ? "failing" : clean > 0 ? "passing" : null,
     ...overrides,
   }
 }
@@ -49,7 +52,7 @@ describe("Checks presentation", () => {
 
   it("presents the same concise failed hero on every checks surface", () => {
     expect(checksHeroPresentation(checksPresentation(report([category()])))).toEqual({
-      result: "16% token burn",
+      result: "16% estimated token burn",
       summary: "1 check failed",
       state: "failed",
       tone: "text-system-red-text",
@@ -109,12 +112,102 @@ describe("Checks presentation", () => {
     expect(presentation.unavailable).toHaveLength(1)
   })
 
+  it("keeps a historically failing category in failures even when it also has clean evidence", () => {
+    const presentation = checksPresentation(
+      report([category({ finding: 1, clean: 8, unavailable: 0 })]),
+    )
+
+    expect(presentation.failures.map((item) => item.id)).toEqual(["cacheChurn"])
+    expect(presentation.wins).toEqual([])
+  })
+
+  it("uses the report lifecycle instead of historical counts for check groups", () => {
+    const presentation = checksPresentation(
+      report([
+        category({ id: "cacheChurn", finding: 0, clean: 8, lifecycle: "failing" }),
+        category({
+          id: "modelOverthinking",
+          finding: 4,
+          clean: 0,
+          lifecycle: "awaitingVerification",
+        }),
+        category({ id: "oldModelUsage", finding: 2, clean: 0, lifecycle: "passing" }),
+      ]),
+    )
+
+    expect(presentation.failures.map((item) => item.id)).toEqual(["cacheChurn"])
+    expect(presentation.awaiting?.map((item) => item.id)).toEqual(["modelOverthinking"])
+    expect(presentation.wins.map((item) => item.id)).toEqual(["oldModelUsage"])
+  })
+
   it("does not synthesize an estimate when cohort token totals are incomplete", () => {
     const presentation = checksPresentation({
       ...report([category()]),
       estimatedTokenBurnBasisPoints: null,
     })
     expect(presentation.estimate.tokenBurnBasisPoints).toBeNull()
+  })
+
+  it("separates active assessed, unavailable, and stored snoozed categories", () => {
+    const unavailable = category({
+      id: "unusedSkills",
+      finding: 0,
+      clean: 0,
+      unavailable: 4,
+      lifecycle: null,
+    })
+    const passed = category({ id: "oldModelUsage", finding: 0, clean: 4 })
+    const presentation = checksPresentation(
+      report([category(), passed, unavailable]),
+      false,
+      new Set(["unusedSkills"]),
+    )
+
+    expect(presentation.activeAssessed.map((item) => item.id)).toEqual([
+      "cacheChurn",
+      "oldModelUsage",
+    ])
+    expect(presentation.activeUnavailable).toEqual([])
+    expect(presentation.snoozed.map((item) => item.id)).toEqual(["unusedSkills"])
+    expect(presentation.noActiveChecks).toBe(false)
+  })
+
+  it("reports no active checks when only unavailable categories remain", () => {
+    const presentation = checksPresentation(
+      report([
+        category({
+          id: "unusedSkills",
+          finding: 0,
+          clean: 0,
+          unavailable: 4,
+          lifecycle: null,
+        }),
+      ]),
+    )
+
+    expect(presentation.activeAssessed).toEqual([])
+    expect(presentation.activeUnavailable.map((item) => item.id)).toEqual(["unusedSkills"])
+    expect(presentation.noActiveChecks).toBe(true)
+    expect(checksHeroPresentation(presentation).result).toBe("No active checks")
+  })
+
+  it("keeps the running presentation while evidence is unsettled", () => {
+    const presentation = checksPresentation({
+      ...report([
+        category({
+          finding: 0,
+          clean: 0,
+          unavailable: 4,
+          lifecycle: null,
+        }),
+      ]),
+      evidenceSettled: false,
+      pendingEvidence: 1,
+    })
+
+    expect(presentation.noActiveChecks).toBe(false)
+    expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
+    expect(presentation.burnChecks.headline).toBe("Running Burn Checks…")
   })
 
   it("floors basis-point estimates to whole percentages", () => {

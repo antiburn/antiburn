@@ -1,4 +1,4 @@
-import type { SessionHygienePayload } from "../insightsIpc"
+import type { BurnCheckDetectorId, SessionHygienePayload } from "../insightsIpc"
 import type { SessionAnalysisPayload } from "../ipc"
 import type { SessionSubject } from "../sessionSubject"
 import type { BillableTokens } from "../types/session"
@@ -16,6 +16,7 @@ import {
   sessionHygieneDocumentation,
   sessionHygieneStateLabel,
 } from "./sessionHygiene"
+import { visibleSessionHygieneChecks } from "../snoozedBurnChecks"
 
 export interface SessionDiscussionInput {
   subject: SessionSubject
@@ -24,6 +25,7 @@ export interface SessionDiscussionInput {
   loading: boolean
   refreshing: boolean
   error: boolean
+  snoozedDetectors?: ReadonlySet<BurnCheckDetectorId>
 }
 
 /** Keep metadata on one Markdown line and prevent it from adding Markdown structure. */
@@ -63,6 +65,7 @@ export function sessionDiscussionPrompt({
   loading,
   refreshing,
   error,
+  snoozedDetectors = new Set(),
 }: SessionDiscussionInput): string {
   const data = payload?.analysisPending ? null : payload
   const metrics = data?.summary?.sessions.find(
@@ -78,7 +81,10 @@ export function sessionDiscussionPrompt({
   const countScope = subject.subagent ? "Selected-transcript" : "Inclusive"
   const findings: string[] = []
   const otherChecks: string[] = []
-  for (const check of sessionHygieneChecks(hygiene)) {
+  for (const check of visibleSessionHygieneChecks(
+    sessionHygieneChecks(hygiene),
+    snoozedDetectors,
+  )) {
     const badge = hygiene.badges.find((item) => item.id === check.id)
     if (!badge) {
       otherChecks.push(`- Not assessed — ${check.name} (no result available).`)

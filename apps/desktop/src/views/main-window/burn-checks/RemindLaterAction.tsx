@@ -12,7 +12,9 @@ import {
 
 export function RemindLaterAction({ detector }: { detector: BurnCheckDetectorId }) {
   const snooze = (duration: SnoozeDuration) => void snoozeBurnCheck(detector, duration)
-  const snoozed = snoozedDetectorIds(useSnoozedBurnChecks()).has(detector)
+  const snoozes = useSnoozedBurnChecks()
+  if (snoozes.status !== "ready") return null
+  const snoozed = snoozedDetectorIds(snoozes.records).has(detector)
   if (snoozed)
     return (
       <button

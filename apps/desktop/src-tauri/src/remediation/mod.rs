@@ -1,6 +1,8 @@
 //! Exact burn-check targets and direct remediation actions.
 
 mod config;
+#[cfg(test)]
+mod coverage_contract;
 mod display;
 mod models;
 mod recovery;
@@ -22,14 +24,16 @@ use antiburn_local::model_catalog::{
 };
 use antiburn_local::pricing::ModelPricing;
 use antiburn_local::remediation::{
-    Finding, FindingAssessment, FindingCause, FindingUnavailableReason, OldModelSavingsEstimate,
-    OldModelSavingsInput, OldModelSavingsUnknownReason, OldModelVerificationTarget,
-    REMEDIATION_POLICY_REVISION, RemediationUnavailableReason, SAVINGS_METHOD_REVISION,
-    SavingsEstimateInput, SavingsEstimateMethod, SavingsInterval, SavingsValue, TargetAssessment,
+    Finding, FindingAssessment, FindingCause, FindingUnavailableReason, NamedResourceAssessment,
+    NamedResourceVerificationTarget, OldModelSavingsEstimate, OldModelSavingsInput,
+    OldModelSavingsUnknownReason, OldModelVerificationTarget, REMEDIATION_POLICY_REVISION,
+    RemediationUnavailableReason, SAVINGS_METHOD_REVISION, SavingsEstimateInput,
+    SavingsEstimateMethod, SavingsInterval, SavingsValue, TargetAssessment,
     VERIFICATION_METHOD_REVISION, VerificationOutcome, VerificationStage,
     VerificationUnknownReason, built_in_tool_remediation_supported, estimate_old_model_savings,
     estimate_savings, fallback_remediation_prompt, remediation_prompt,
-    verification_evidence_supported, verify_old_model, verify_prompt_watch,
+    verification_evidence_supported, verify_named_resource_watch, verify_old_model,
+    verify_prompt_watch,
 };
 use anyhow::{Context, Result};
 use hmac::{Hmac, KeyInit, Mac};
@@ -40,6 +44,7 @@ use crate::agent_config::{
     AgentConfigEditor, ConfigContext, ConfigOperation, ConfigScope, ConfigSetting,
     PreparedOperation,
 };
+use crate::dto::{ChecksCategoryLifecyclePayload, ChecksReportPayload};
 use crate::insights_report::{self, CurrentFinding, CurrentFindingsRequest};
 use crate::store::{PassiveRemediation, SessionKey};
 use crate::store::{
@@ -178,6 +183,25 @@ impl CachedTarget {
             .as_ref()
             .map_or_else(|| sample_sessions(&self.findings), |_| Vec::new())
     }
+
+    fn evidence_sessions(&self) -> Vec<BurnCheckSampleSession> {
+        self.resource.as_ref().map_or_else(
+            || sample_sessions(&self.findings),
+            |resource| {
+                resource
+                    .target
+                    .supporting_sessions
+                    .iter()
+                    .map(|session| BurnCheckSampleSession {
+                        environment_key: session.environment_key.clone(),
+                        agent: session.agent.clone(),
+                        session_id: session.session_id.clone(),
+                        observed_at_ms: session.observed_at_ms,
+                    })
+                    .collect()
+            },
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -197,6 +221,13 @@ struct TargetIdentity {
     scope_kind: String,
     scope_key: String,
     physical_target_key: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct TargetListOptions<'a> {
+    now: i64,
+    home: Option<&'a Path>,
+    cache_actions: bool,
 }
 
 struct TimedTarget {
@@ -254,7 +285,7 @@ impl RemediationController {
         }
     }
 
-    /// Returns one latest safe, retained remediation attempt for each detector.
+    /// Returns bounded retained remediation attempts by exact target and cycle.
     pub fn burn_check_remediation_progress(
         &self,
         store: &Store,
@@ -262,7 +293,7 @@ impl RemediationController {
         let records = store
             .remediations_with_display_snapshots(MAX_REMEDIATION_PROGRESS_RECORDS)
             .map_err(|_| ControllerError::PersistenceFailed)?;
-        let mut detectors = BTreeSet::new();
+        let mut seen = BTreeSet::new();
         let mut attempts = Vec::new();
         for retained in records {
             let Ok(definition) = parse_watch_definition(&retained.record.definition_json) else {
@@ -271,9 +302,6 @@ impl RemediationController {
             let Some(detector) = DetectorId::from_key(&definition.detector) else {
                 continue;
             };
-            if detectors.contains(&detector) {
-                continue;
-            }
             let Ok(snapshot) = parse_display_snapshot(&retained.snapshot.display_snapshot_json)
             else {
                 continue;
@@ -286,10 +314,15 @@ impl RemediationController {
                 "action" => RemediationOrigin::Action,
                 _ => continue,
             };
-            detectors.insert(detector);
+            let cycle_id = retained.record.remediation_id.clone();
+            if !seen.insert((snapshot.finding_id.clone(), cycle_id.clone())) {
+                continue;
+            }
             attempts.push(BurnCheckRemediationAttempt {
                 detector,
-                watch_id: retained.record.remediation_id,
+                finding_id: snapshot.finding_id,
+                watch_id: cycle_id.clone(),
+                remediation_cycle_id: cycle_id,
                 display: snapshot.display,
                 origin,
                 lifecycle: retained.record.state,
@@ -303,12 +336,22 @@ impl RemediationController {
                 effective_boundary_ms: retained.record.effective_boundary_ms,
                 verified_boundary_ms: retained.snapshot.verified_boundary_ms,
                 recurred_boundary_ms: retained.snapshot.recurred_boundary_ms,
+                environment_key: retained.record.environment_key,
+                agent: retained.record.agent,
+                scope_kind: retained.record.scope_kind,
+                scope_key: retained.record.scope_key,
+                target_key: retained.record.target_key,
+                created_at_epoch: retained.record.created_at_epoch,
+                prompt_action: definition.prompt_action,
             });
-            if attempts.len() == DetectorId::ALL.len() {
-                break;
-            }
         }
-        attempts.sort_by_key(|attempt| attempt.detector.index());
+        attempts.sort_by(|left, right| {
+            left.detector
+                .index()
+                .cmp(&right.detector.index())
+                .then_with(|| left.finding_id.cmp(&right.finding_id))
+                .then_with(|| left.remediation_cycle_id.cmp(&right.remediation_cycle_id))
+        });
         Ok(BurnCheckRemediationProgress { attempts })
     }
 
@@ -322,9 +365,55 @@ impl RemediationController {
             store,
             detector,
             context,
-            now_epoch(),
-            antiburn_local::paths::home_dir().as_deref(),
+            TargetListOptions {
+                now: now_epoch(),
+                home: antiburn_local::paths::home_dir().as_deref(),
+                cache_actions: true,
+            },
         )
+    }
+
+    /// Applies the current target lifecycle to report categories.
+    pub fn apply_category_lifecycles(
+        &self,
+        store: &Store,
+        report: &mut ChecksReportPayload,
+        environment_key: &str,
+    ) -> Result<(), ControllerError> {
+        let progress = self.burn_check_remediation_progress(store)?;
+        for category in &mut report.categories {
+            let mut action_boundaries = BTreeMap::new();
+            for attempt in progress.attempts.iter().filter(|attempt| {
+                attempt.detector == category.id.into()
+                    && attempt.origin == RemediationOrigin::Action
+                    && attempt.environment_key == environment_key
+            }) {
+                let Some(boundary_ms) = attempt.effective_boundary_ms else {
+                    continue;
+                };
+                action_boundaries
+                    .entry(attempt.agent.as_str())
+                    .and_modify(|current: &mut i64| *current = (*current).max(boundary_ms))
+                    .or_insert(boundary_ms);
+            }
+            let mut awaiting_evidence = false;
+            for (agent, boundary_ms) in action_boundaries {
+                if !insights_report::has_current_evidence_after(
+                    &self.data_dir,
+                    environment_key,
+                    agent,
+                    boundary_ms,
+                )
+                .map_err(|_| ControllerError::Internal)?
+                {
+                    awaiting_evidence = true;
+                    break;
+                }
+            }
+            category.lifecycle =
+                resolve_category_lifecycle(category.finding, category.clean, awaiting_evidence);
+        }
+        Ok(())
     }
 
     fn list_burn_check_targets_at(
@@ -332,8 +421,7 @@ impl RemediationController {
         store: &Store,
         detector: DetectorId,
         context: BurnCheckTargetContext,
-        now: i64,
-        home: Option<&Path>,
+        options: TargetListOptions<'_>,
     ) -> Result<BurnCheckTargetList, ControllerError> {
         if matches!(
             detector,
@@ -341,7 +429,7 @@ impl RemediationController {
                 | DetectorId::UnusedBuiltInTools
                 | DetectorId::UnusedSkills
         ) {
-            return self.list_resource_targets(store, detector, context, now, home);
+            return self.list_resource_targets(store, detector, context, options);
         }
         let page = insights_report::list_current_findings(
             &self.data_dir,
@@ -359,7 +447,8 @@ impl RemediationController {
                 .finding
                 .display()
                 .map_err(|_| ControllerError::Internal)?;
-            let (group_key, target) = self.resolve_target(store, finding, display.agent, home)?;
+            let (group_key, target) =
+                self.resolve_target(store, finding, display.agent, options.home)?;
             grouped
                 .entry(group_key)
                 .and_modify(|entry| {
@@ -381,7 +470,7 @@ impl RemediationController {
                 .or_insert(target);
         }
         let truncated = page.truncated || grouped.len() > MAX_TARGETS;
-        let expires = now.saturating_add(ID_TTL.as_secs() as i64);
+        let expires = options.now.saturating_add(ID_TTL.as_secs() as i64);
         let mut targets = Vec::new();
         let mut cached = Vec::new();
         for target in grouped.into_values().take(MAX_TARGETS) {
@@ -394,6 +483,8 @@ impl RemediationController {
                 .latest_remediation_for_target(
                     &target.findings[0].environment_key,
                     target.agent.slug(),
+                    &target.scope_kind,
+                    &target.scope_key,
                     &target.target_key,
                 )
                 .map_err(|_| ControllerError::Internal)?
@@ -410,7 +501,11 @@ impl RemediationController {
                     AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
                 ),
             };
-            let id = random_id().map_err(|_| ControllerError::Internal)?;
+            let id = if options.cache_actions {
+                random_id().map_err(|_| ControllerError::Internal)?
+            } else {
+                String::new()
+            };
             let target_samples = sample_sessions(&target.findings);
             targets.push(BurnCheckTarget {
                 finding_id: stable_finding_id(&target),
@@ -467,14 +562,23 @@ impl RemediationController {
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
-            cached.push(TimedTarget {
-                id,
-                value: target,
-                created_at_epoch: now,
+            if options.cache_actions {
+                cached.push(TimedTarget {
+                    id,
+                    value: target,
+                    created_at_epoch: options.now,
+                });
+            }
+        }
+        if !options.cache_actions {
+            return Ok(BurnCheckTargetList {
+                targets,
+                sample_sessions: check_samples,
+                truncated,
             });
         }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
-        cache_listed_targets(&mut state, detector, cached, now);
+        cache_listed_targets(&mut state, detector, cached, options.now);
         Ok(BurnCheckTargetList {
             targets,
             sample_sessions: check_samples,
@@ -487,8 +591,7 @@ impl RemediationController {
         store: &Store,
         detector: DetectorId,
         context: BurnCheckTargetContext,
-        now: i64,
-        home: Option<&Path>,
+        options: TargetListOptions<'_>,
     ) -> Result<BurnCheckTargetList, ControllerError> {
         let request = insights_report::ReportRequest {
             environment_key: context.environment_key.clone(),
@@ -496,27 +599,29 @@ impl RemediationController {
             computed_at_epoch: context.window.end_epoch,
         };
         #[cfg(test)]
-        let reduced = match home {
+        let reduced = match options.home {
             Some(home) => {
                 insights_report::reduce_report_blocking_with_home(&self.data_dir, request, home)
             }
             None => insights_report::reduce_report_blocking(&self.data_dir, request),
-        };
+        }
+        .map_err(|_| ControllerError::Internal)?;
         #[cfg(not(test))]
-        let reduced = insights_report::reduce_report_blocking(&self.data_dir, request);
-        let reduced = reduced.map_err(|_| ControllerError::Internal)?;
+        let reduced = insights_report::reduce_report_blocking(&self.data_dir, request)
+            .map_err(|_| ControllerError::Internal)?;
         let assessment = reduced
             .resources
             .detector(detector)
             .ok_or(ControllerError::Internal)?;
         let truncated = assessment.truncated || assessment.targets.len() > MAX_TARGETS;
-        let expires = now.saturating_add(ID_TTL.as_secs() as i64);
+        let expires = options.now.saturating_add(ID_TTL.as_secs() as i64);
         let mut targets = Vec::new();
         let mut cached = Vec::new();
         let mut check_samples = Vec::new();
         let mut seen_samples = BTreeSet::new();
         for resource in assessment.targets.iter().take(MAX_TARGETS) {
-            let target = self.resolve_resource_target(store, resource, context.clone(), home)?;
+            let target =
+                self.resolve_resource_target(store, resource, context.clone(), options.home)?;
             let display = target
                 .finding()
                 .display()
@@ -525,6 +630,8 @@ impl RemediationController {
                 .latest_remediation_for_target(
                     target.environment_key(),
                     target.agent.slug(),
+                    &target.scope_kind,
+                    &target.scope_key,
                     &target.target_key,
                 )
                 .map_err(|_| ControllerError::Internal)?
@@ -541,14 +648,19 @@ impl RemediationController {
                     AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
                 ),
             };
-            let id = random_id().map_err(|_| ControllerError::Internal)?;
+            let id = if options.cache_actions {
+                random_id().map_err(|_| ControllerError::Internal)?
+            } else {
+                String::new()
+            };
             let project_name = match &resource.scope {
                 insights_report::ResourceAssessmentScope::Project(root) => project_name(root),
                 insights_report::ResourceAssessmentScope::Global => None,
             };
             let target_samples = target.sample_sessions();
+            let evidence_samples = target.evidence_sessions();
             check_samples.extend(
-                target_samples
+                evidence_samples
                     .iter()
                     .filter(|sample| {
                         seen_samples.insert((
@@ -583,14 +695,23 @@ impl RemediationController {
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
-            cached.push(TimedTarget {
-                id,
-                value: target,
-                created_at_epoch: now,
+            if options.cache_actions {
+                cached.push(TimedTarget {
+                    id,
+                    value: target,
+                    created_at_epoch: options.now,
+                });
+            }
+        }
+        if !options.cache_actions {
+            return Ok(BurnCheckTargetList {
+                targets,
+                sample_sessions: check_samples,
+                truncated,
             });
         }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
-        cache_listed_targets(&mut state, detector, cached, now);
+        cache_listed_targets(&mut state, detector, cached, options.now);
         Ok(BurnCheckTargetList {
             targets,
             sample_sessions: check_samples,
@@ -606,7 +727,16 @@ impl RemediationController {
         context: BurnCheckTargetContext,
         home: &Path,
     ) -> Result<BurnCheckTargetList, ControllerError> {
-        self.list_burn_check_targets_at(store, detector, context, now_epoch(), Some(home))
+        self.list_burn_check_targets_at(
+            store,
+            detector,
+            context,
+            TargetListOptions {
+                now: now_epoch(),
+                home: Some(home),
+                cache_actions: true,
+            },
+        )
     }
 
     pub fn copy_prompt_fix_burn_check_target(
@@ -630,30 +760,21 @@ impl RemediationController {
                 )
             }),
         )?;
-        let definition = watch_definition(&target);
-        if !watch_verification_available(
-            &definition,
-            &target.scope_kind,
-            target.agent.slug(),
-            target.finding().detector,
-        ) {
-            let prompt = prompt_with_evidence_paths(&base_prompt, &paths, None)
-                .map_err(ControllerError::PromptUnavailable)?;
-            return Ok(PromptFixResult {
-                prompt,
-                watch: None,
-            });
-        }
-        let watch = self.start_watch(
+        let (reference, prompt_group_id) =
+            self.prompt_reference_for_targets(store, std::slice::from_ref(&target))?;
+        let prompt = prompt_with_evidence_paths(&base_prompt, &paths, Some(&reference))
+            .map_err(ControllerError::PromptUnavailable)?;
+        let (watches, prompt) = self.persist_prompt_watches(
             store,
-            &target,
-            RemediationState::WaitingForPromptUse,
-            None,
+            std::slice::from_ref(&target),
+            prompt_group_id.as_deref(),
+            &prompt,
             now,
         )?;
-        self.persist_display_snapshot(store, &watch, &target, "action", now.saturating_mul(1_000))?;
-        let prompt = prompt_with_evidence_paths(&base_prompt, &paths, Some(&watch.remediation_id))
-            .map_err(ControllerError::PromptUnavailable)?;
+        let watch = watches
+            .into_iter()
+            .next()
+            .ok_or(ControllerError::PersistenceFailed)?;
         Ok(PromptFixResult {
             prompt,
             watch: Some(public_watch(store, &watch)?.ok_or(ControllerError::PersistenceFailed)?),
@@ -666,39 +787,47 @@ impl RemediationController {
         detector: DetectorId,
         context: BurnCheckTargetContext,
     ) -> Result<CheckPromptFixResult, ControllerError> {
-        let report = insights_report::reduce_report_blocking(
-            &self.data_dir,
-            insights_report::ReportRequest {
-                environment_key: context.environment_key.clone(),
-                window: context.window,
-                computed_at_epoch: context.window.end_epoch,
-            },
-        )
-        .map_err(|_| ControllerError::Internal)?;
-        let antiburn_local::insights::DetectorStatus::Findings(findings) =
-            &report.report.detector_statuses[detector.index()]
-        else {
-            return Err(ControllerError::CheckPromptUnavailable);
-        };
-        if findings.finding_sessions == 0 {
+        let targets = self.list_burn_check_targets(store, detector, context)?;
+        let now = now_epoch();
+        if targets.targets.is_empty() {
             return Err(ControllerError::CheckPromptUnavailable);
         }
-        let paths = representative_paths(
+        if targets.truncated {
+            let base = fallback_remediation_prompt(detector)
+                .map_err(ControllerError::PromptUnavailable)?
+                .into_string();
+            let paths = representative_paths(
+                store,
+                targets.sample_sessions.iter().map(|sample| {
+                    SessionKey::new(&sample.environment_key, &sample.agent, &sample.session_id)
+                }),
+            )?;
+            let selected = targets
+                .targets
+                .iter()
+                .map(|target| self.cached_target(&target.action_id, now))
+                .collect::<Result<Vec<_>, _>>()?;
+            let (reference, prompt_group_id) =
+                self.prompt_reference_for_targets(store, &selected)?;
+            let prompt = prompt_with_evidence_paths(&base, &paths, Some(&reference))
+                .map_err(ControllerError::PromptUnavailable)?;
+            let (_, prompt) = self.persist_prompt_watches(
+                store,
+                &selected,
+                prompt_group_id.as_deref(),
+                &prompt,
+                now,
+            )?;
+            return Ok(CheckPromptFixResult { prompt });
+        }
+        self.copy_prompt_fix_burn_check_targets(
             store,
-            findings.examples.iter().map(|example| {
-                SessionKey::new(
-                    context.environment_key.as_str(),
-                    example.agent.as_str(),
-                    example.session_id.as_str(),
-                )
-            }),
-        )?;
-        let base = fallback_remediation_prompt(detector)
-            .map_err(ControllerError::PromptUnavailable)?
-            .into_string();
-        let prompt = prompt_with_evidence_paths(&base, &paths, None)
-            .map_err(ControllerError::PromptUnavailable)?;
-        Ok(CheckPromptFixResult { prompt })
+            &targets
+                .targets
+                .into_iter()
+                .map(|target| target.action_id)
+                .collect::<Vec<_>>(),
+        )
     }
 
     pub fn copy_prompt_fix_burn_check_targets(
@@ -732,9 +861,21 @@ impl RemediationController {
             .iter()
             .all(|target| target.finding().is_advisory_resource())
         {
+            let (reference, prompt_group_id) =
+                self.prompt_reference_for_targets(store, &targets)?;
             let base = fallback_remediation_prompt(detector)
                 .map_err(ControllerError::PromptUnavailable)?
                 .into_string();
+            let paths = representative_paths(
+                store,
+                targets.iter().flat_map(|target| {
+                    target.evidence_sessions().into_iter().map(|sample| {
+                        SessionKey::new(sample.environment_key, sample.agent, sample.session_id)
+                    })
+                }),
+            )?;
+            let base = prompt_with_evidence_paths(&base, &paths, None)
+                .map_err(ControllerError::PromptUnavailable)?;
             let items =
                 targets
                     .iter()
@@ -761,15 +902,23 @@ impl RemediationController {
                         ))
                     })
                     .collect::<Result<Vec<_>, ControllerError>>()?;
-            let prompt = format!("{base}\n\nUnused targets\n{}", items.join("\n"));
-            if prompt.len() > antiburn_local::remediation::MAX_PROMPT_BYTES {
-                return Err(ControllerError::PromptUnavailable(
-                    RemediationUnavailableReason::PromptSizeLimit,
-                ));
-            }
+            let prompt = prompt_with_evidence_paths(
+                &format!("{base}\n\nUnused targets\n{}", items.join("\n")),
+                &[],
+                Some(&reference),
+            )
+            .map_err(ControllerError::PromptUnavailable)?;
+            let (_, prompt) = self.persist_prompt_watches(
+                store,
+                &targets,
+                prompt_group_id.as_deref(),
+                &prompt,
+                now,
+            )?;
             return Ok(CheckPromptFixResult { prompt });
         }
 
+        let (reference, prompt_group_id) = self.prompt_reference_for_targets(store, &targets)?;
         let mut prompt_parts = Vec::with_capacity(targets.len());
         for target in &targets {
             let base = remediation_prompt(target.finding())
@@ -785,82 +934,18 @@ impl RemediationController {
                     )
                 }),
             )?;
-            // A fixed-size generated id proves the marker fits before any attempt is stored.
-            prompt_with_evidence_paths(&base, &paths, Some(&"0".repeat(48)))
-                .map_err(ControllerError::PromptUnavailable)?;
             prompt_parts.push((base, paths));
         }
-        let prompt_size = prompt_parts
-            .iter()
-            .enumerate()
-            .map(|(index, (base, paths))| {
-                prompt_with_evidence_paths(base, paths, Some(&"0".repeat(48)))
-                    .map(|prompt| format!("Exact target {}\n{prompt}", index + 1).len())
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(ControllerError::PromptUnavailable)?
-            .into_iter()
-            .sum::<usize>()
-            .saturating_add(2 * targets.len().saturating_sub(1));
-        if prompt_size > antiburn_local::remediation::MAX_PROMPT_BYTES {
-            return Err(ControllerError::PromptUnavailable(
-                RemediationUnavailableReason::PromptSizeLimit,
-            ));
-        }
-
-        let verification_available = targets.iter().all(|target| {
-            watch_verification_available(
-                &watch_definition(target),
-                &target.scope_kind,
-                target.agent.slug(),
-                target.finding().detector,
-            )
-        });
-        if !verification_available {
-            let sections = prompt_parts
-                .into_iter()
-                .enumerate()
-                .map(|(index, (base, paths))| {
-                    prompt_with_evidence_paths(&base, &paths, None)
-                        .map(|prompt| format!("Exact target {}\n{prompt}", index + 1))
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(ControllerError::PromptUnavailable)?;
-            return Ok(CheckPromptFixResult {
-                prompt: sections.join("\n\n"),
-            });
-        }
-
-        let watch_inputs = targets
-            .iter()
-            .map(|target| {
-                self.watch_input(target, RemediationState::WaitingForPromptUse, None, now)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let watches = store
-            .create_or_reuse_remediations(&watch_inputs)
-            .map_err(|_| ControllerError::PersistenceFailed)?
-            .ok_or(ControllerError::TargetChanged)?;
-
         let mut sections = Vec::with_capacity(targets.len());
-        for (index, ((target, (base, paths)), watch)) in targets
-            .iter()
-            .zip(prompt_parts)
-            .zip(watches.iter())
-            .enumerate()
-        {
-            self.persist_display_snapshot(
-                store,
-                watch,
-                target,
-                "action",
-                now.saturating_mul(1_000),
-            )?;
-            let prompt = prompt_with_evidence_paths(&base, &paths, Some(&watch.remediation_id))
+        for (index, (base, paths)) in prompt_parts.into_iter().enumerate() {
+            let prompt = prompt_with_evidence_paths(&base, &paths, None)
                 .map_err(ControllerError::PromptUnavailable)?;
             sections.push(format!("Exact target {}\n{prompt}", index + 1));
         }
-        let prompt = sections.join("\n\n");
+        let prompt = prompt_with_evidence_paths(&sections.join("\n\n"), &[], Some(&reference))
+            .map_err(ControllerError::PromptUnavailable)?;
+        let (_, prompt) =
+            self.persist_prompt_watches(store, &targets, prompt_group_id.as_deref(), &prompt, now)?;
         Ok(CheckPromptFixResult { prompt })
     }
 
@@ -884,6 +969,8 @@ impl RemediationController {
             .latest_remediation_for_target(
                 target.environment_key(),
                 target.agent.slug(),
+                &target.scope_kind,
+                &target.scope_key,
                 &target.target_key,
             )
             .map_err(|_| ControllerError::Internal)?
@@ -1052,13 +1139,14 @@ impl RemediationController {
             self.remove_prepared(prepared_operation_id);
             return Err(error);
         }
-        let watch = match self.start_watch(store, &target, RemediationState::Reserved, None, now) {
-            Ok(watch) => watch,
-            Err(error) => {
-                self.remove_prepared(prepared_operation_id);
-                return Err(error);
-            }
-        };
+        let watch =
+            match self.start_watch(store, &target, RemediationState::Reserved, None, now, None) {
+                Ok(watch) => watch,
+                Err(error) => {
+                    self.remove_prepared(prepared_operation_id);
+                    return Err(error);
+                }
+            };
         if watch.state != RemediationState::Reserved {
             self.remove_prepared(prepared_operation_id);
             return Err(ControllerError::AutoFixUnavailable(
@@ -1148,12 +1236,27 @@ impl RemediationController {
     }
 
     pub fn aggregate_wins(&self, store: &Store) -> Result<AggregateWins, ControllerError> {
+        let now_ms = now_epoch().saturating_mul(1_000);
+        let snoozed = store
+            .burn_check_snoozes()
+            .map_err(|_| ControllerError::PersistenceFailed)?
+            .into_iter()
+            .filter(|snooze| snooze.until.is_none_or(|until| until > now_ms))
+            .map(|snooze| DetectorId::from(snooze.detector))
+            .collect::<BTreeSet<_>>();
         let rows = store
-            .remediation_contributions(1_000)
+            .passed_remediation_contributions(1_000)
             .map_err(|_| ControllerError::PersistenceFailed)?;
         let wins = rows
             .into_iter()
+            .filter(|row| {
+                !snoozed
+                    .iter()
+                    .any(|detector| detector.key() == row.contribution.detector_id)
+            })
             .map(|row| {
+                let verified_boundary_ms = row.verified_boundary_ms;
+                let row = row.contribution;
                 let snapshot: StoredDisplaySnapshot =
                     serde_json::from_str(&row.display_snapshot_json)
                         .map_err(|_| ControllerError::Internal)?;
@@ -1168,10 +1271,12 @@ impl RemediationController {
                     .ok_or(ControllerError::Internal)?;
                 Ok(AggregateWin {
                     finding_id: snapshot.finding_id,
+                    remediation_cycle_id: row.remediation_id,
                     detector,
                     origin: row.origin,
                     display: snapshot.display,
                     savings,
+                    verified_boundary_ms,
                     starts_at_ms: row.starts_at_ms,
                     ends_at_ms: row.ends_at_ms,
                 })
@@ -1808,6 +1913,112 @@ impl RemediationController {
         }
     }
 
+    fn prompt_reference_for_targets(
+        &self,
+        store: &Store,
+        targets: &[CachedTarget],
+    ) -> Result<(String, Option<String>), ControllerError> {
+        if targets.is_empty() {
+            let group = random_id().map_err(|_| ControllerError::Internal)?;
+            return Ok((group.clone(), Some(group.clone())));
+        }
+        let existing = targets
+            .iter()
+            .map(|target| {
+                store
+                    .latest_action_remediation_for_target(
+                        target.environment_key(),
+                        target.agent.slug(),
+                        &target.scope_kind,
+                        &target.scope_key,
+                        &target.target_key,
+                    )
+                    .map_err(|_| ControllerError::Internal)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let active = existing
+            .iter()
+            .filter_map(Option::as_ref)
+            .filter(|watch| watch.state != RemediationState::Recurred)
+            .collect::<Vec<_>>();
+        if active.is_empty() {
+            let group = random_id().map_err(|_| ControllerError::Internal)?;
+            return Ok((group.clone(), Some(group)));
+        }
+        if active
+            .iter()
+            .any(|watch| watch.state != RemediationState::WaitingForPromptUse)
+        {
+            return Err(ControllerError::CheckPromptUnavailable);
+        }
+        let first_group = active[0].prompt_group_id.clone();
+        if let Some(group) = first_group.as_ref().filter(|group| {
+            active
+                .iter()
+                .all(|watch| watch.prompt_group_id.as_deref() == Some(group.as_str()))
+        }) {
+            return Ok((group.clone(), Some(group.clone())));
+        }
+        if targets.len() == 1 && active.len() == 1 {
+            return Ok((active[0].remediation_id.clone(), None));
+        }
+        Err(ControllerError::CheckPromptUnavailable)
+    }
+
+    fn persist_prompt_watches(
+        &self,
+        store: &Store,
+        targets: &[CachedTarget],
+        prompt_group_id: Option<&str>,
+        prompt: &str,
+        now: i64,
+    ) -> Result<(Vec<RemediationRecord>, String), ControllerError> {
+        if targets.is_empty() {
+            return Ok((Vec::new(), prompt.to_owned()));
+        }
+        let watch_inputs = targets
+            .iter()
+            .map(|target| {
+                let (mut remediation, guards) = self.watch_input(
+                    target,
+                    RemediationState::WaitingForPromptUse,
+                    None,
+                    now,
+                    prompt_group_id,
+                )?;
+                let mut result: serde_json::Value = serde_json::from_str(&remediation.result_json)
+                    .map_err(|_| ControllerError::Internal)?;
+                result["promptText"] = serde_json::Value::String(prompt.to_owned());
+                remediation.result_json = result.to_string();
+                Ok((remediation, guards))
+            })
+            .collect::<Result<Vec<_>, ControllerError>>()?;
+        let watches = store
+            .create_or_reuse_remediations(&watch_inputs)
+            .map_err(|_| ControllerError::PersistenceFailed)?
+            .ok_or(ControllerError::TargetChanged)?;
+        for (target, watch) in targets.iter().zip(watches.iter()) {
+            self.persist_display_snapshot(
+                store,
+                watch,
+                target,
+                "action",
+                now.saturating_mul(1_000),
+            )?;
+        }
+        let stored_prompt = watches
+            .first()
+            .and_then(|watch| stored_string(&watch.result_json, "promptText"))
+            .ok_or(ControllerError::PersistenceFailed)?;
+        if watches.iter().any(|watch| {
+            stored_string(&watch.result_json, "promptText").as_deref()
+                != Some(stored_prompt.as_str())
+        }) {
+            return Err(ControllerError::PersistenceFailed);
+        }
+        Ok((watches, stored_prompt))
+    }
+
     fn start_watch(
         &self,
         store: &Store,
@@ -1815,8 +2026,10 @@ impl RemediationController {
         state: RemediationState,
         boundary_ms: Option<i64>,
         now: i64,
+        prompt_group_id: Option<&str>,
     ) -> Result<RemediationRecord, ControllerError> {
-        let (remediation, guards) = self.watch_input(target, state, boundary_ms, now)?;
+        let (remediation, guards) =
+            self.watch_input(target, state, boundary_ms, now, prompt_group_id)?;
         store
             .create_or_reuse_remediation(&remediation, &guards)
             .map_err(|_| ControllerError::PersistenceFailed)?
@@ -1829,6 +2042,7 @@ impl RemediationController {
         state: RemediationState,
         boundary_ms: Option<i64>,
         now: i64,
+        prompt_group_id: Option<&str>,
     ) -> Result<(Remediation, Vec<RemediationEvidenceGuard>), ControllerError> {
         let definition = watch_definition(target);
         let result = if state == RemediationState::Reserved {
@@ -1855,6 +2069,8 @@ impl RemediationController {
             scope_kind: target.scope_kind.clone(),
             scope_key: target.scope_key.clone(),
             state,
+            origin: "action".into(),
+            prompt_group_id: prompt_group_id.map(str::to_owned),
             definition_json: serde_json::to_string(&definition)
                 .map_err(|_| ControllerError::Internal)?,
             result_json: result.to_string(),
@@ -1870,22 +2086,39 @@ impl RemediationController {
     }
 }
 
+fn resolve_category_lifecycle(
+    finding: u64,
+    clean: u64,
+    awaiting_evidence: bool,
+) -> Option<ChecksCategoryLifecyclePayload> {
+    if awaiting_evidence {
+        Some(ChecksCategoryLifecyclePayload::AwaitingVerification)
+    } else if finding > 0 {
+        Some(ChecksCategoryLifecyclePayload::Failing)
+    } else if clean > 0 {
+        Some(ChecksCategoryLifecyclePayload::Passing)
+    } else {
+        None
+    }
+}
+
 fn auto_fix_blocked_by_watch(watch: &WatchStatus) -> bool {
-    !matches!(
-        watch.lifecycle,
-        RemediationState::Recurred | RemediationState::WaitingForPromptUse
-    ) && !(watch.lifecycle == RemediationState::Watching
-        && (watch.origin == RemediationOrigin::Passive
-            || matches!(
-                watch.verification,
-                VerificationStatus::VerificationUnavailable
-            )))
+    watch.origin == RemediationOrigin::Action
+        && !matches!(watch.lifecycle, RemediationState::Recurred)
 }
 
 fn display_config_file(path: &Path, home: &Path) -> String {
     path.strip_prefix(home)
         .map(|relative| format!("~/{}", relative.display()))
         .unwrap_or_else(|_| path.display().to_string())
+}
+
+fn stored_string(value: &str, key: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(value)
+        .ok()?
+        .get(key)?
+        .as_str()
+        .map(str::to_owned)
 }
 
 const fn remediation_policy_is_current(definition: &WatchDefinition) -> bool {
@@ -1903,8 +2136,8 @@ fn watch_verification_available(
 ) -> bool {
     if !matches!(scope_kind, "global" | "project")
         || definition.detector != detector.key()
-        || !verification_evidence_supported(detector, definition.source_format.value())
         || !verification_source_matches_agent(agent, definition.source_format.value())
+        || !desktop_watch_verification_supported(detector, definition.source_format.value())
     {
         return false;
     }
@@ -1927,6 +2160,13 @@ fn watch_verification_available(
         DetectorId::OverpoweredSubagents => false,
         _ => false,
     }
+}
+
+fn desktop_watch_verification_supported(detector: DetectorId, source: SourceFormat) -> bool {
+    !matches!(
+        detector,
+        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools | DetectorId::UnusedSkills
+    ) && verification_evidence_supported(detector, source)
 }
 
 fn verification_source_matches_agent(agent: &str, source_format: SourceFormat) -> bool {

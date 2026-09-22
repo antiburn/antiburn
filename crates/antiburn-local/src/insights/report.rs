@@ -341,9 +341,7 @@ fn source_supports_finding(detector: DetectorId, format: crate::analysis::Source
             DetectorId::SessionsOverDepth | DetectorId::OldModelUsage,
         ) | (
             SourceFormat::CopilotCliJsonl,
-            DetectorId::SessionsOverDepth
-                | DetectorId::OverpoweredSubagents
-                | DetectorId::OldModelUsage,
+            DetectorId::OverpoweredSubagents | DetectorId::OldModelUsage,
         ) | (
             SourceFormat::ClineMessagesContractV1,
             DetectorId::OverpoweredSubagents | DetectorId::OldModelUsage,
@@ -370,7 +368,7 @@ pub fn clean_facts_complete(detector: DetectorId, evidence: &SessionEvidence) ->
         detector,
         DetectorId::UnusedSkills | DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools
     ) && evidence.coverage == EvidenceCoverage::Complete
-        && source_supports_clean(evidence.capabilities.source_format)
+        && source_supports_clean(detector, evidence.capabilities.source_format)
         && requirements(detector)
             .clean
             .iter()
@@ -378,42 +376,22 @@ pub fn clean_facts_complete(detector: DetectorId, evidence: &SessionEvidence) ->
 }
 
 /// Complete session facts permit clean results only for characterized source contracts.
-fn source_supports_clean(format: crate::analysis::SourceFormat) -> bool {
+fn source_supports_clean(detector: DetectorId, format: crate::analysis::SourceFormat) -> bool {
     use crate::analysis::SourceFormat;
-    match format {
-        SourceFormat::ClaudeJsonl
-        | SourceFormat::CodexRolloutJsonl
-        | SourceFormat::OpenCodeJsonl
-        | SourceFormat::OpenCodeSqliteV2
-        | SourceFormat::PiV3Jsonl
-        | SourceFormat::CopilotCliJsonl => true,
-        SourceFormat::CursorJsonl
-        | SourceFormat::CursorCliAgentJsonl
-        | SourceFormat::CursorCliStoreDb
-        | SourceFormat::CursorChatStoreDb
-        | SourceFormat::CursorIdeComposer
-        | SourceFormat::CursorLegacyChatJson
-        | SourceFormat::AntigravityJson
-        | SourceFormat::AntigravityBrainJsonl
-        | SourceFormat::AntigravityCascadeJson
-        | SourceFormat::AntigravityWorkspaceChatJson
-        | SourceFormat::AntigravitySqlite
-        | SourceFormat::CopilotIdeChatJson
-        | SourceFormat::ClineSessionJson
-        | SourceFormat::ClineMessagesContractV1
-        | SourceFormat::KiroSessionJson
-        | SourceFormat::KiroChat
-        | SourceFormat::KiroCliV2Bundle
-        | SourceFormat::KiroCliV3Bundle
-        | SourceFormat::KiroChatSaveExport
-        | SourceFormat::AmpThreadJson
-        | SourceFormat::AmpFileChanges
-        | SourceFormat::WindsurfWorkspaceJson
-        | SourceFormat::WindsurfMirrorJson
-        | SourceFormat::WindsurfCascadeProtobuf
-        | SourceFormat::DevinLocalSqlite
-        | SourceFormat::Uncharacterized => false,
-    }
+    matches!(
+        (format, detector),
+        (
+            SourceFormat::ClaudeJsonl
+                | SourceFormat::CodexRolloutJsonl
+                | SourceFormat::OpenCodeJsonl
+                | SourceFormat::OpenCodeSqliteV2
+                | SourceFormat::PiV3Jsonl,
+            _,
+        ) | (
+            SourceFormat::CopilotCliJsonl,
+            DetectorId::OverpoweredSubagents | DetectorId::OldModelUsage,
+        )
+    )
 }
 
 /// A clean claim is out of reach for `detector` when a clean fact is
@@ -513,7 +491,15 @@ pub struct EfficiencyReport {
     /// Each detector's token burn uses the same ratio.
     pub detector_estimated_token_burn_basis_points: [Option<u16>; DetectorId::COUNT],
     token_burn_denominator: Option<u128>,
-    non_resource_token_burn_by_session: Option<Vec<u128>>,
+    token_burn_by_detector_by_session: [Option<Vec<u128>>; DetectorId::COUNT],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResourceTokenBurnAssessment<'a> {
+    pub detector: DetectorId,
+    pub finding_count: u64,
+    pub clean: bool,
+    pub tokens_by_session: Option<&'a [(usize, u128)]>,
 }
 
 impl EfficiencyReport {
@@ -522,37 +508,88 @@ impl EfficiencyReport {
         token_burn_basis_points(tokens, self.token_burn_denominator?)
     }
 
-    /// Replaces resource-source burn while preserving the measured non-resource burn.
-    pub fn estimated_token_burn_with_resource_tokens_by_session(
+    /// Recomputes aggregate burn for the selected detectors without exposing session data.
+    pub fn estimated_token_burn_for_active_detectors(
         &self,
-        resource_tokens_by_session: Option<&[(usize, u128)]>,
+        active_detector_mask: u16,
+        resource_assessments: &[ResourceTokenBurnAssessment<'_>],
     ) -> Option<u16> {
-        let tokens = match (
-            self.non_resource_token_burn_by_session.as_deref(),
-            resource_tokens_by_session,
-        ) {
-            (Some(non_resource), Some(resources)) => {
-                let mut total = non_resource
-                    .iter()
-                    .copied()
-                    .try_fold(0_u128, u128::checked_add)?;
-                for (index, resource) in resources {
-                    let non_resource = non_resource.get(*index).copied().unwrap_or(0);
-                    total = total.checked_add(resource.saturating_sub(non_resource))?;
-                }
-                total
+        let mut non_resource_by_session = vec![0_u128; self.assessed_sessions as usize];
+        let mut resource_by_session = vec![0_u128; self.assessed_sessions as usize];
+        let mut measured_finding = false;
+        let mut fallback = None;
+
+        for detector in DetectorId::ALL {
+            if active_detector_mask & (1 << detector.index()) == 0 {
+                continue;
             }
-            (Some(non_resource), None) => non_resource
+            let resource = resource_assessments
                 .iter()
-                .copied()
-                .try_fold(0_u128, u128::checked_add)?,
-            (None, Some(resources)) => resources
-                .iter()
-                .map(|(_, tokens)| *tokens)
-                .try_fold(0_u128, u128::checked_add)?,
-            (None, None) => return None,
-        };
-        self.estimated_token_burn_for_attributed_tokens(tokens)
+                .find(|assessment| assessment.detector == detector);
+            let (finding_count, clean, contribution) = if let Some(resource) = resource {
+                (
+                    resource.finding_count,
+                    resource.clean,
+                    resource.tokens_by_session.and_then(|tokens| {
+                        let mut contribution = vec![0_u128; self.assessed_sessions as usize];
+                        for &(session, value) in tokens {
+                            let total = contribution.get_mut(session)?;
+                            *total = total.checked_add(value)?;
+                        }
+                        Some(contribution)
+                    }),
+                )
+            } else {
+                let (finding_count, clean) = match &self.detector_statuses[detector.index()] {
+                    DetectorStatus::Findings(findings) => (findings.finding_sessions, false),
+                    DetectorStatus::Clean => (0, true),
+                    DetectorStatus::NotAssessed(_) => (0, false),
+                };
+                (
+                    finding_count,
+                    clean,
+                    self.token_burn_by_detector_by_session[detector.index()].clone(),
+                )
+            };
+
+            if finding_count > 0 {
+                fallback = fallback.max(fallback_token_burn_basis_points(
+                    detector,
+                    finding_count,
+                    self.assessed_sessions,
+                ));
+                if self.token_burn_denominator.is_some()
+                    && let Some(contribution) = contribution
+                {
+                    measured_finding = true;
+                    let combined = if resource.is_some() {
+                        &mut resource_by_session
+                    } else {
+                        &mut non_resource_by_session
+                    };
+                    for (total, value) in combined.iter_mut().zip(contribution) {
+                        if resource.is_some() {
+                            *total = total.checked_add(value)?;
+                        } else {
+                            *total = (*total).max(value);
+                        }
+                    }
+                }
+            } else if clean {
+                fallback = fallback.max(Some(0));
+            }
+        }
+
+        if !measured_finding {
+            return fallback;
+        }
+        let numerator = non_resource_by_session
+            .into_iter()
+            .zip(resource_by_session)
+            .try_fold(0_u128, |total, (non_resource, resource)| {
+                total.checked_add(non_resource.max(resource))
+            })?;
+        self.estimated_token_burn_for_attributed_tokens(numerator)
     }
 }
 
@@ -1052,6 +1089,12 @@ struct TokenBurnAccumulator {
     source_complete: [bool; 3],
 }
 
+type TokenBurnResult = (
+    Option<u16>,
+    [Option<u16>; DetectorId::COUNT],
+    [Option<Vec<u128>>; DetectorId::COUNT],
+);
+
 impl TokenBurnAccumulator {
     fn new() -> Self {
         Self {
@@ -1144,15 +1187,9 @@ impl TokenBurnAccumulator {
         (self.total_complete && self.total_tokens > 0).then_some(self.total_tokens)
     }
 
-    fn finish(
-        self,
-        statuses: &[DetectorStatus; DetectorId::COUNT],
-    ) -> (
-        Option<u16>,
-        [Option<u16>; DetectorId::COUNT],
-        Option<Vec<u128>>,
-    ) {
+    fn finish(self, statuses: &[DetectorStatus; DetectorId::COUNT]) -> TokenBurnResult {
         let mut numerators = [None; DetectorId::COUNT];
+        let mut contributions = core::array::from_fn(|_| None);
         let mut combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_detector_by_session = vec![0_u128; self.sessions.len()];
@@ -1210,9 +1247,15 @@ impl TokenBurnAccumulator {
             let Some(total) = self.sessions.iter().try_fold(0_u128, |total, session| {
                 total.checked_add(value_for(session).unwrap_or(0))
             }) else {
-                return (None, [None; DetectorId::COUNT], None);
+                return empty_token_burn_result();
             };
             numerators[detector.index()] = Some(total);
+            contributions[detector.index()] = Some(
+                self.sessions
+                    .iter()
+                    .map(|session| value_for(session).unwrap_or(0))
+                    .collect(),
+            );
             for (index, session) in self.sessions.iter().enumerate() {
                 combined_by_session[index] =
                     combined_by_session[index].max(value_for(session).unwrap_or(0));
@@ -1247,7 +1290,7 @@ impl TokenBurnAccumulator {
                 for (session, tokens) in &aggregate.by_session {
                     let Some(total) = source_detector_by_session[*session].checked_add(*tokens)
                     else {
-                        return (None, [None; DetectorId::COUNT], None);
+                        return empty_token_burn_result();
                     };
                     source_detector_by_session[*session] = total;
                 }
@@ -1259,39 +1302,34 @@ impl TokenBurnAccumulator {
                 .iter()
                 .try_fold(0_u128, |total, value| total.checked_add(*value))
             else {
-                return (None, [None; DetectorId::COUNT], None);
+                return empty_token_burn_result();
             };
             numerators[detector.index()] = Some(total);
+            contributions[detector.index()] = Some(source_detector_by_session.clone());
             for (index, value) in source_detector_by_session.iter().enumerate() {
                 let Some(total) = source_combined_by_session[index].checked_add(*value) else {
-                    return (None, [None; DetectorId::COUNT], None);
+                    return empty_token_burn_result();
                 };
                 source_combined_by_session[index] = total;
             }
         }
-        let has_measured_non_resource_finding = [
-            DetectorId::SessionsOverDepth,
-            DetectorId::ModelOverthinking,
-            DetectorId::OverpoweredSubagents,
-            DetectorId::OldModelUsage,
-            DetectorId::OveruseOfFastMode,
-            DetectorId::CacheChurn,
-        ]
-        .into_iter()
-        .any(|detector| {
-            matches!(statuses[detector.index()], DetectorStatus::Findings(_))
-                && numerators[detector.index()].is_some()
-        });
-        let non_resource_token_burn_by_session =
-            has_measured_non_resource_finding.then(|| combined_by_session.clone());
         for (index, source_tokens) in source_combined_by_session.into_iter().enumerate() {
             combined_by_session[index] = combined_by_session[index].max(source_tokens);
         }
 
         let percentage =
             |numerator| denominator.and_then(|total| token_burn_basis_points(numerator, total));
+        let assessed_sessions = self.sessions.len() as u64;
         let estimates = core::array::from_fn(|index| match &statuses[index] {
-            DetectorStatus::Findings(_) => numerators[index].and_then(percentage),
+            DetectorStatus::Findings(findings) => {
+                numerators[index].and_then(percentage).or_else(|| {
+                    fallback_token_burn_basis_points(
+                        DetectorId::ALL[index],
+                        findings.finding_sessions,
+                        assessed_sessions,
+                    )
+                })
+            }
             DetectorStatus::Clean => Some(0),
             DetectorStatus::NotAssessed(_) => None,
         });
@@ -1304,10 +1342,46 @@ impl TokenBurnAccumulator {
                 .try_fold(0_u128, u128::checked_add)
                 .and_then(percentage)
         } else {
-            None
+            estimates.iter().flatten().copied().max()
         };
-        (combined, estimates, non_resource_token_burn_by_session)
+        (combined, estimates, contributions)
     }
+}
+
+fn empty_token_burn_result() -> TokenBurnResult {
+    (
+        None,
+        [None; DetectorId::COUNT],
+        core::array::from_fn(|_| None),
+    )
+}
+
+/// Returns a conservative proxy when a finding has no attributable token or pricing evidence.
+/// The proxy scales a detector-specific workload share by the finding rate.
+pub fn fallback_token_burn_basis_points(
+    detector: DetectorId,
+    finding_sessions: u64,
+    assessed_sessions: u64,
+) -> Option<u16> {
+    if finding_sessions == 0 || assessed_sessions == 0 {
+        return None;
+    }
+    let detector_share: u16 = match detector {
+        DetectorId::SessionsOverDepth => 1_000,
+        DetectorId::ModelOverthinking => 2_000,
+        DetectorId::OverpoweredSubagents => 2_500,
+        DetectorId::UnusedMcpServers
+        | DetectorId::UnusedBuiltInTools
+        | DetectorId::UnusedSkills => 500,
+        DetectorId::OldModelUsage => 1_500,
+        DetectorId::OveruseOfFastMode => 1_000,
+        DetectorId::CacheChurn => 1_000,
+    };
+    let scaled = u128::from(detector_share)
+        .checked_mul(u128::from(finding_sessions))?
+        .checked_add(u128::from(assessed_sessions / 2))?
+        / u128::from(assessed_sessions);
+    Some(scaled.clamp(1, u128::from(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS)) as u16)
 }
 
 fn token_burn_basis_points(numerator: u128, denominator: u128) -> Option<u16> {
@@ -1533,7 +1607,7 @@ impl EfficiencyReportAccumulator {
         let (
             estimated_token_burn_basis_points,
             detector_estimates,
-            non_resource_token_burn_by_session,
+            token_burn_by_detector_by_session,
         ) = self.token_burn.finish(&detector_statuses);
         EfficiencyReport {
             context,
@@ -1552,7 +1626,7 @@ impl EfficiencyReportAccumulator {
             estimated_token_burn_basis_points,
             detector_estimated_token_burn_basis_points: detector_estimates,
             token_burn_denominator,
-            non_resource_token_burn_by_session,
+            token_burn_by_detector_by_session,
         }
     }
 }

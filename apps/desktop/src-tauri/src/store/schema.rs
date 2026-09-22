@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1108,13 +1108,13 @@ CREATE INDEX session_recency_keyset
                 environment_key DESC, agent DESC);
 "#;
 
-/// v54 records a provider-stated refusal on the reading that carries it.
+/// v56 records a provider-stated refusal on the reading that carries it.
 ///
 /// A used figure of 100% is not a refusal. Only the provider saying it
 /// refused a request is one. Codex states this on the same `rate_limits`
 /// object the reading already comes from, so the observation row is where
 /// it belongs.
-const V54: &str = r#"
+const V56: &str = r#"
 ALTER TABLE provider_usage_observation ADD COLUMN refusal_kind TEXT;
 
 CREATE INDEX provider_usage_observation_refusal
@@ -1122,8 +1122,8 @@ CREATE INDEX provider_usage_observation_refusal
     WHERE refusal_kind IS NOT NULL;
 "#;
 
-/// v55 removes the allowance rollup after the Limits service replaces it.
-const V55: &str = r#"
+/// v57 removes the allowance rollup after the Limits service replaces it.
+const V57: &str = r#"
 DROP TABLE IF EXISTS provider_usage_period_rollup;
 "#;
 
@@ -1239,4 +1239,35 @@ CREATE TABLE quota_window_reported (
     period_id          INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
     reported_at_epoch  INTEGER NOT NULL
 ) STRICT;
+"#;
+
+/// v54 allows one independent passive and action attempt for a target.
+const V54: &str = r#"
+DROP INDEX remediation_active_target;
+
+CREATE UNIQUE INDEX remediation_active_passive_target
+    ON remediation (environment_key, agent, target_key)
+    WHERE state != 'recurred' AND origin = 'passive';
+CREATE UNIQUE INDEX remediation_active_action_target
+    ON remediation (environment_key, agent, target_key)
+    WHERE state != 'recurred' AND origin = 'action';
+
+ALTER TABLE remediation ADD COLUMN prompt_group_id TEXT CHECK (
+    prompt_group_id IS NULL OR length(prompt_group_id) BETWEEN 1 AND 256);
+CREATE INDEX remediation_prompt_group
+    ON remediation (prompt_group_id)
+    WHERE prompt_group_id IS NOT NULL;
+"#;
+
+/// v55 scopes active remediation cycles to the complete target identity.
+const V55: &str = r#"
+DROP INDEX remediation_active_passive_target;
+DROP INDEX remediation_active_action_target;
+
+CREATE UNIQUE INDEX remediation_active_passive_target
+    ON remediation (environment_key, agent, scope_kind, scope_key, target_key)
+    WHERE state != 'recurred' AND origin = 'passive';
+CREATE UNIQUE INDEX remediation_active_action_target
+    ON remediation (environment_key, agent, scope_kind, scope_key, target_key)
+    WHERE state != 'recurred' AND origin = 'action';
 "#;

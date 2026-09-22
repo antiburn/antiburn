@@ -33,6 +33,7 @@ impl SessionReader for AmpSessionReader {
         }
         SourceCapabilities {
             source_format: SourceFormat::AmpThreadJson,
+            request_context_tokens: true,
             timestamps_and_order: true,
             model_identity: true,
             token_classes: true,
@@ -142,12 +143,7 @@ fn parse_export(
             .ok_or_else(|| anyhow::anyhow!("Amp assistant message has no timestamp"))?;
         summary.started_at_ms.get_or_insert(timestamp);
         let (usage, total_input_tokens, max_input_tokens) = parse_usage(usage)?;
-        if total_input_tokens
-            != usage
-                .input_tokens
-                .checked_add(usage.cache_read_tokens)
-                .ok_or_else(|| anyhow::anyhow!("Amp input token total overflow"))?
-        {
+        if total_input_tokens != usage.context_tokens() {
             anyhow::bail!("Amp total input tokens do not reconcile");
         }
         summary.context_window = Some(max_input_tokens);
@@ -214,11 +210,15 @@ fn parse_export(
 
 fn parse_usage(value: Option<&Value>) -> anyhow::Result<(Usage, u64, u64)> {
     let value = value.ok_or_else(|| anyhow::anyhow!("Amp assistant message has no usage"))?;
+    let input_tokens = metric(value, "inputTokens")?;
+    let cache_creation_tokens = metric(value, "cacheCreationTokens")?;
     let usage = Usage {
-        input_tokens: metric(value, "inputTokens")?,
+        input_tokens: input_tokens
+            .checked_sub(cache_creation_tokens)
+            .ok_or_else(|| anyhow::anyhow!("Amp cache creation exceeds input tokens"))?,
         output_tokens: metric(value, "outputTokens")?,
         cache_read_tokens: metric(value, "cacheReadTokens")?,
-        cache_creation_tokens: metric(value, "cacheCreationTokens")?,
+        cache_creation_tokens,
         cache_creation_1h_tokens: 0,
     };
     Ok((
@@ -281,7 +281,7 @@ mod tests {
             session.events[0].message_id.as_deref(),
             Some("msg-synthetic-1")
         );
-        assert_eq!(session.events[0].usage.input_tokens, 12);
+        assert_eq!(session.events[0].usage.input_tokens, 11);
         assert_eq!(session.events[0].usage.cache_creation_tokens, 1);
     }
 
@@ -295,10 +295,16 @@ mod tests {
 
     #[test]
     fn invalid_totals_and_oversized_exports_fail_closed() {
-        let content = include_str!("../../../tests/fixtures/source_contracts/amp_export_v39.json")
-            .replace("\"totalInputTokens\":14", "\"totalInputTokens\":15");
-        let mut sink = SessionCollector::new("amp-code", "T-synthetic-39");
-        assert!(AmpSessionReader.visit(&input(&content), &mut sink).is_err());
+        for (field, replacement) in [
+            ("\"totalInputTokens\":14", "\"totalInputTokens\":15"),
+            ("\"cacheCreationTokens\":1", "\"cacheCreationTokens\":13"),
+        ] {
+            let content =
+                include_str!("../../../tests/fixtures/source_contracts/amp_export_v39.json")
+                    .replace(field, replacement);
+            let mut sink = SessionCollector::new("amp-code", "T-synthetic-39");
+            assert!(AmpSessionReader.visit(&input(&content), &mut sink).is_err());
+        }
 
         let oversized = "{".to_owned() + &" ".repeat(MAX_RECORD_BYTES) + "}";
         let mut sink = SessionCollector::new("amp-code", "T-synthetic-39");

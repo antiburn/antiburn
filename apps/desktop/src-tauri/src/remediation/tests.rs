@@ -46,6 +46,19 @@ const SOURCE_FORMATS: [SourceFormat; 32] = [
 ];
 
 #[test]
+fn aggregate_wins_rejects_malformed_snooze_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.save_burn_check_snoozes("not json").unwrap();
+    let controller = RemediationController::new(directory.path().to_owned());
+
+    assert!(matches!(
+        controller.aggregate_wins(&store),
+        Err(ControllerError::PersistenceFailed)
+    ));
+}
+
+#[test]
 fn publication_attribution_covers_supported_vendor_sources_and_settings() {
     struct Case {
         agent: AgentKind,
@@ -351,7 +364,7 @@ fn indexed_resource_target_enables_auto_fix_for_the_exact_effective_entry() {
     assert!(resolved.config.is_some());
     assert!(resolved.physical_target_key.is_some());
     let watch = controller
-        .start_watch(&store, &resolved, RemediationState::Reserved, None, 1)
+        .start_watch(&store, &resolved, RemediationState::Reserved, None, 1, None)
         .unwrap();
     assert_eq!(watch.state, RemediationState::Reserved);
 }
@@ -474,6 +487,76 @@ fn resource_targets_do_not_expose_supporting_sessions_as_samples() {
     };
 
     assert!(cached.sample_sessions().is_empty());
+}
+
+#[test]
+fn a_new_prompt_cycle_does_not_reuse_a_recurred_prompt_group() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store
+        .lock()
+        .execute(
+            "INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                effective_boundary_ms, verified_at_epoch, recurred_at_epoch,
+                origin, prompt_group_id)
+             VALUES ('recurred', 'target', 'native', 'claude-code', 'global', 'scope',
+                'recurred', '{\"version\":1}', '{\"version\":1}', 1, 3,
+                1000, 2, 3, 'action', 'old-group')",
+            [],
+        )
+        .unwrap();
+    let target = CachedTarget {
+        findings: Vec::new(),
+        resource: Some(CachedResourceTarget {
+            target: insights_report::UnusedResourceTarget {
+                agent: AgentKind::Claude,
+                kind: crate::agent_config::ResourceKind::Skill,
+                canonical_name: "review".into(),
+                scope: insights_report::ResourceAssessmentScope::Global,
+                observations: 1,
+                indexed: false,
+                replicated_tokens: Some(10),
+                estimated_token_burn_basis_points: Some(100),
+                supporting_sessions: Vec::new(),
+            },
+            context: BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 1,
+                },
+            },
+            finding: Finding::advisory_resource(
+                AgentKind::Claude,
+                SourceFormat::ClaudeJsonl,
+                FindingCause::UnusedSkill {
+                    skill: "review".into(),
+                    tokens: Some(10),
+                    cost_usd: None,
+                    pricing_revision: None,
+                },
+            )
+            .unwrap(),
+        }),
+        target_key: "target".into(),
+        canonical_identity: String::new(),
+        workspace_key: None,
+        agent: AgentKind::Claude,
+        scope_kind: "global".into(),
+        scope_key: "scope".into(),
+        physical_target_key: None,
+        config: None,
+    };
+    let controller = RemediationController::new(directory.path().to_owned());
+
+    let (reference, group) = controller
+        .prompt_reference_for_targets(&store, &[target])
+        .unwrap();
+
+    assert_ne!(reference, "old-group");
+    assert_eq!(group.as_deref(), Some(reference.as_str()));
 }
 
 #[cfg(not(windows))]
@@ -913,6 +996,7 @@ fn session_scope_identity_round_trips_to_the_verifier_hash() {
 fn verification_availability_matches_all_documented_source_cells() {
     let definition = |detector: DetectorId, source_format: SourceFormat| WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: detector.key().into(),
         canonical_identity: "target".into(),
         source_format: source_format.into(),
@@ -960,7 +1044,9 @@ fn verification_availability_matches_all_documented_source_cells() {
                 SourceFormat::PiV3Jsonl => AgentKind::Pi,
                 _ => AgentKind::Claude,
             };
-            let expected = verification_evidence_supported(detector, source_format);
+            let engine_supported = verification_evidence_supported(detector, source_format);
+            let desktop_supported = desktop_watch_verification_supported(detector, source_format);
+            let expected = engine_supported && desktop_supported;
             assert_eq!(
                 watch_verification_available(
                     &definition(detector, source_format),
@@ -971,6 +1057,14 @@ fn verification_availability_matches_all_documented_source_cells() {
                 expected,
                 "{detector:?} {source_format:?}"
             );
+            if matches!(
+                detector,
+                DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedBuiltInTools
+                    | DetectorId::UnusedSkills
+            ) {
+                assert!(!desktop_supported, "{detector:?} {source_format:?}");
+            }
             assert!(!watch_verification_available(
                 &definition(detector, source_format),
                 "session",
@@ -985,6 +1079,7 @@ fn verification_availability_matches_all_documented_source_cells() {
 fn verification_rejects_mismatched_agents_and_named_resources() {
     let mut definition = WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: DetectorId::OldModelUsage.key().into(),
         canonical_identity: "target".into(),
         source_format: SourceFormat::ClaudeJsonl.into(),
@@ -1096,6 +1191,27 @@ fn a_truncated_assessment_cannot_prove_a_fix() {
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
+}
+
+#[test]
+fn category_lifecycle_awaits_evidence_then_uses_current_findings() {
+    assert_eq!(
+        resolve_category_lifecycle(1, 0, true),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
+    );
+    assert_eq!(
+        resolve_category_lifecycle(0, 1, true),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
+    );
+    assert_eq!(
+        resolve_category_lifecycle(1, 0, false),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
+    );
+    assert_eq!(
+        resolve_category_lifecycle(0, 1, false),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::Passing)
+    );
+    assert_eq!(resolve_category_lifecycle(0, 0, false), None);
 }
 
 #[test]
@@ -1369,6 +1485,7 @@ fn display_limits_match_the_available_verification_evidence() {
 fn missing_or_changed_policy_cannot_verify_an_attempt() {
     let target = WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: DetectorId::OldModelUsage.key().into(),
         canonical_identity: "target".into(),
         source_format: SourceFormat::ClaudeJsonl.into(),
@@ -1416,6 +1533,7 @@ fn a_session_spanning_the_boundary_cannot_verify_a_fix() {
 fn only_explicit_same_route_controls_prove_generic_transitions() {
     let definition = WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: DetectorId::ModelOverthinking.key().into(),
         canonical_identity: "target".into(),
         source_format: SourceFormat::ClaudeJsonl.into(),
@@ -1517,11 +1635,29 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
     let snapshot = serde_json::to_string(&StoredDisplaySnapshot {
         version: 1,
         finding_id: "stable-finding".into(),
-        display,
+        display: display.clone(),
     })
     .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE remediation
+                SET origin = 'action', display_snapshot_json = ?2, verified_boundary_ms = 1000,
+                    result_json = '{\"version\":1,\"verification\":{\"status\":\"fixed\"}}'
+              WHERE remediation_id = ?1",
+            rusqlite::params!["attempt", snapshot],
+        )
+        .unwrap();
     let savings = serde_json::to_string(&AggregateSavings {
         version: 1,
+        status: SavingsStatus::Known {
+            method: SavingsMethod::OldModelPriceDifference,
+            method_revision: SAVINGS_METHOD_REVISION,
+            pricing_revision: "pricing".into(),
+            api_equivalent_cost_avoided_usd: 0.25,
+            measured_through_ms: 2_000,
+            recurrence_ms: None,
+        },
         token_savings: None,
         api_equivalent_cost_avoided_usd: Some(0.25),
         improvement_count: None,
@@ -1538,7 +1674,7 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
             rusqlite::params![DetectorId::OldModelUsage.key(), snapshot, savings],
         )
         .unwrap();
-    for index in 1..1_000 {
+    for index in 1..=1_000 {
         store
             .upsert_remediation_contribution(&RemediationContribution {
                 owner_key: format!("owner-{index:03}"),
@@ -1553,6 +1689,65 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
             })
             .unwrap();
     }
+    let other_snapshot = serde_json::to_string(&StoredDisplaySnapshot {
+        version: 1,
+        finding_id: "other-finding".into(),
+        display,
+    })
+    .unwrap();
+    store
+        .lock()
+        .execute(
+            "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms, verified_at_epoch, origin, display_snapshot_json,
+                    verified_boundary_ms)
+                 VALUES ('other-attempt', 'other-target', 'native', 'claude-code', 'project',
+                    'other-scope', 'fixed', '{\"version\":1}',
+                    '{\"version\":1,\"verification\":{\"status\":\"fixed\"}}',
+                    3, 8, 3000, 8, 'action', ?1, 4000)",
+            [&other_snapshot],
+        )
+        .unwrap();
+    store
+        .upsert_remediation_contribution(&RemediationContribution {
+            owner_key: "other-owner".into(),
+            remediation_id: "other-attempt".into(),
+            detector_id: DetectorId::CacheChurn.key().into(),
+            origin: "action".into(),
+            display_snapshot_json: other_snapshot,
+            facts_json: savings.clone(),
+            starts_at_ms: 3_000,
+            ends_at_ms: 8_000,
+            updated_at_ms: 8_000,
+        })
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms, verified_at_epoch, recurred_at_epoch)
+                 VALUES ('recurred-attempt', 'target', 'native', 'claude-code', 'project', 'scope',
+                         'recurred', '{\"version\":1}', '{\"version\":1}', 3, 4, 1000, 3, 4)",
+            [],
+        )
+        .unwrap();
+    store
+        .upsert_remediation_contribution(&RemediationContribution {
+            owner_key: "recurred-owner".into(),
+            remediation_id: "recurred-attempt".into(),
+            detector_id: DetectorId::OldModelUsage.key().into(),
+            origin: "action".into(),
+            display_snapshot_json: snapshot.clone(),
+            facts_json: savings.clone(),
+            starts_at_ms: 1_000,
+            ends_at_ms: 9_999,
+            updated_at_ms: 9_999,
+        })
+        .unwrap();
     let controller = RemediationController::new(directory.path().to_owned());
     let aggregate = controller.aggregate_wins(&store).unwrap();
     assert_eq!(aggregate.wins.len(), 1_000);
@@ -1560,15 +1755,42 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
         aggregate
             .wins
             .iter()
-            .all(|win| win.finding_id == "stable-finding")
+            .all(|win| matches!(win.finding_id.as_str(), "stable-finding" | "other-finding"))
     );
+    assert!(
+        aggregate
+            .wins
+            .iter()
+            .all(|win| matches!(win.verified_boundary_ms, 1_000 | 4_000))
+    );
+    assert!(
+        aggregate
+            .wins
+            .iter()
+            .any(|win| win.remediation_cycle_id == "other-attempt")
+    );
+
+    store
+        .save_burn_check_snoozes(
+            &serde_json::to_string(&[crate::dto::BurnCheckSnoozePayload {
+                detector: crate::dto::BurnCheckDetectorId::OldModelUsage,
+                scope: crate::dto::BurnCheckSnoozeScope::Check,
+                until: None,
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+    let visible = controller.aggregate_wins(&store).unwrap();
+    assert_eq!(visible.wins.len(), 1);
+    assert_eq!(visible.wins[0].remediation_cycle_id, "other-attempt");
+    store.save_burn_check_snoozes("[]").unwrap();
 
     store
         .lock()
         .execute(
             "UPDATE remediation_contribution
                     SET facts_json = '{\"version\":1,\"path\":\"private\"}'
-                  WHERE owner_key = 'owner'",
+                  WHERE owner_key = 'owner-999'",
             [],
         )
         .unwrap();
@@ -1576,6 +1798,119 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
         controller.aggregate_wins(&store),
         Err(ControllerError::Internal)
     ));
+}
+
+#[test]
+fn aggregate_wins_select_one_active_fixed_cycle_per_exact_target() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let snapshot = r#"{"version":1,"findingId":"same-finding","display":{"resourceKind":"model","resourceIdentity":"old-model","currentValue":"old-model","replacementValue":"new-model","scopeKind":"project","quantity":2,"quantityUnit":"turns","observationCount":1,"firstObservedAtMs":1000,"lastObservedAtMs":1000,"estimateMethod":"oldModelPriceDifference","estimatedOpportunity":null,"estimatedTokenBurnBasisPoints":null,"verificationLimit":"freshEvidenceFromSameSourceAndTarget"}}"#;
+    let savings = serde_json::to_string(&AggregateSavings {
+        version: 1,
+        status: SavingsStatus::Known {
+            method: SavingsMethod::OldModelPriceDifference,
+            method_revision: SAVINGS_METHOD_REVISION,
+            pricing_revision: "pricing".into(),
+            api_equivalent_cost_avoided_usd: 0.25,
+            measured_through_ms: 2_000,
+            recurrence_ms: None,
+        },
+        token_savings: None,
+        api_equivalent_cost_avoided_usd: Some(0.25),
+        improvement_count: None,
+        method: Some(BurnCheckEstimateMethod::OldModelPriceDifference),
+    })
+    .unwrap();
+    for (id, target, scope, origin, created, effective, verified) in [
+        ("passive", "target", "scope", "passive", 20, 1_000, 2_000),
+        ("action", "target", "scope", "action", 10, 1_000, 2_000),
+        (
+            "distinct",
+            "target",
+            "other-scope",
+            "passive",
+            30,
+            1_000,
+            2_000,
+        ),
+    ] {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms, verified_at_epoch, origin, display_snapshot_json,
+                    verified_boundary_ms)
+                 VALUES (?1, ?2, 'native', 'claude-code', 'project', ?3, 'fixed',
+                    '{\"version\":1}', '{\"version\":1,\"verification\":{\"status\":\"fixed\"}}',
+                    ?4, ?4, ?5, ?4, ?6, ?7, ?8)",
+                rusqlite::params![
+                    id, target, scope, created, effective, origin, snapshot, verified
+                ],
+            )
+            .unwrap();
+        store
+            .upsert_remediation_contribution(&RemediationContribution {
+                owner_key: format!("owner-{id}"),
+                remediation_id: id.into(),
+                detector_id: DetectorId::OldModelUsage.key().into(),
+                origin: origin.into(),
+                display_snapshot_json: snapshot.into(),
+                facts_json: savings.clone(),
+                starts_at_ms: effective,
+                ends_at_ms: verified,
+                updated_at_ms: verified,
+            })
+            .unwrap();
+    }
+
+    let controller = RemediationController::new(directory.path().to_owned());
+    let aggregate = controller.aggregate_wins(&store).unwrap();
+    assert_eq!(aggregate.wins.len(), 2);
+    assert!(
+        aggregate
+            .wins
+            .iter()
+            .any(|win| win.remediation_cycle_id == "action")
+    );
+    assert!(
+        aggregate
+            .wins
+            .iter()
+            .any(|win| win.remediation_cycle_id == "distinct")
+    );
+    assert!(
+        aggregate
+            .wins
+            .iter()
+            .all(|win| win.remediation_cycle_id != "passive")
+    );
+
+    store
+        .lock()
+        .execute(
+            "UPDATE remediation
+                SET effective_boundary_ms = 3000, verified_boundary_ms = 4000,
+                    created_at_epoch = 40, updated_at_epoch = 40, verified_at_epoch = 40
+              WHERE remediation_id = 'passive'",
+            [],
+        )
+        .unwrap();
+    let aggregate = controller.aggregate_wins(&store).unwrap();
+    assert_eq!(aggregate.wins.len(), 2);
+    assert!(
+        aggregate
+            .wins
+            .iter()
+            .any(|win| win.remediation_cycle_id == "passive")
+    );
+    assert!(
+        aggregate
+            .wins
+            .iter()
+            .all(|win| win.remediation_cycle_id != "action")
+    );
 }
 
 #[cfg(not(windows))]

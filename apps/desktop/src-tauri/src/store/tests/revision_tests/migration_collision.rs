@@ -26,7 +26,7 @@ fn prerelease_upgrade_preserves_incarnations_and_applies_main_migrations() {
         )
         .unwrap();
     let store = Store::from_connection(connection, Path::new("/tmp/legacy-v49").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 55);
+    assert_eq!(store.schema_version().unwrap(), 57);
     assert_eq!(counter(&store), 57);
     let key = SessionKey {
         environment_key: "native".into(),
@@ -85,7 +85,7 @@ fn prerelease_repair_rolls_back_if_a_main_migration_fails() {
         .execute_batch("DROP TRIGGER fail_history_delete")
         .unwrap();
     store.migrate().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 55);
+    assert_eq!(store.schema_version().unwrap(), 57);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn branch_allowance_versions_receive_main_quota_schema() {
             connection.execute_batch(sql).unwrap();
         }
         connection
-            .execute_batch(super::super::schema::MIGRATIONS[53])
+            .execute_batch(super::super::schema::MIGRATIONS[55])
             .unwrap();
         if version == 53 {
             connection
@@ -117,7 +117,7 @@ fn branch_allowance_versions_receive_main_quota_schema() {
         let store =
             Store::from_connection(connection, Path::new("/tmp/branch-allowance-schema").into())
                 .unwrap();
-        assert_eq!(store.schema_version().unwrap(), 55);
+        assert_eq!(store.schema_version().unwrap(), 57);
         let connection = store.lock();
         let table_exists = |name: &str| -> bool {
             connection
@@ -140,6 +140,6 @@ fn branch_allowance_versions_receive_main_quota_schema() {
         assert!(factor_sql.contains("lane LIKE 'model:%'"));
         drop(connection);
         store.migrate().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 55);
+        assert_eq!(store.schema_version().unwrap(), 57);
     }
 }

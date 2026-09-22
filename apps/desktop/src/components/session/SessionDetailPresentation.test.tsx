@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { SharedTooltipOwnerContext } from "../presentation/Tooltip"
 import { INITIAL_SESSION_HYGIENE } from "../../lib/presentation/sessionHygiene"
+import * as SnoozedBurnChecks from "../../lib/snoozedBurnChecks"
 import {
   inclusiveCostSubject,
   type LocalSessionCost,
@@ -237,6 +238,19 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByRole("group", { name: "Model overthinking" })).toHaveTextContent(
       "Passed",
     )
+  })
+
+  it("shows unavailable instead of check results when the snooze load fails", () => {
+    const hook = vi
+      .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+      .mockReturnValue({ status: "error", records: [] })
+    const detail = view({ cost: cost() })
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+
+    expect(screen.getByText("Session checks are unavailable.")).toBeVisible()
+    expect(screen.queryByLabelText("Session hygiene checks")).toBeNull()
+    detail.unmount()
+    hook.mockRestore()
   })
 
   it("keeps the Cost tab free of evidence-state chrome", () => {

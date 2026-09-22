@@ -2,9 +2,14 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { useSyncExternalStore } from "react"
 
-import type { BurnCheckDetectorId } from "./insightsIpc"
+import type {
+  BurnCheckDetectorId,
+  ChecksCategoryPayload,
+  ChecksReportPayload,
+} from "./insightsIpc"
 import { hasShell } from "./ipc"
 import type { SessionHygieneCheck } from "./presentation/sessionHygiene"
+import type { UnusedContextRow } from "./presentation/unusedContext"
 
 const SNOOZES_CHANGED_EVENT = "checks:snoozes-changed"
 
@@ -16,6 +21,11 @@ export interface SnoozedBurnCheck {
   until: number | null
 }
 
+export interface SnoozedBurnChecksState {
+  status: "loading" | "ready" | "error"
+  records: readonly SnoozedBurnCheck[]
+}
+
 const sessionDetectorIds: Partial<Record<SessionHygieneCheck["id"], BurnCheckDetectorId>> = {
   sessionOverdepth: "sessionsOverDepth",
   modelOverthinking: "modelOverthinking",
@@ -24,6 +34,18 @@ const sessionDetectorIds: Partial<Record<SessionHygieneCheck["id"], BurnCheckDet
   fastModeOveruse: "overuseOfFastMode",
   excessCacheRehydration: "cacheChurn",
 }
+
+const detectorIds: readonly BurnCheckDetectorId[] = [
+  "sessionsOverDepth",
+  "modelOverthinking",
+  "overpoweredSubagents",
+  "unusedMcpServers",
+  "unusedBuiltInTools",
+  "unusedSkills",
+  "oldModelUsage",
+  "overuseOfFastMode",
+  "cacheChurn",
+]
 
 export function snoozeUntil(duration: SnoozeDuration, from = new Date()): number | null {
   if (duration === "forever") return null
@@ -39,28 +61,91 @@ export function snoozeUntil(duration: SnoozeDuration, from = new Date()): number
   return until.getTime()
 }
 
-let snapshot: SnoozedBurnCheck[] = []
+let snapshot: SnoozedBurnChecksState = { status: "loading", records: [] }
 const listeners = new Set<() => void>()
 let expiryTimer: ReturnType<typeof setTimeout> | null = null
+let eventListenerStarted = false
+let stopEventListener: UnlistenFn | null = null
+let revision = 0
+let listenerGeneration = 0
+const serverSnapshot: SnoozedBurnChecksState = { status: "loading", records: [] }
 
 function scheduleExpiry(): void {
   if (expiryTimer) clearTimeout(expiryTimer)
-  const next = snapshot
+  expiryTimer = null
+  const next = snapshot.records
     .flatMap((snooze) => (snooze.until === null ? [] : [snooze.until]))
     .sort((left, right) => left - right)[0]
   if (next === undefined) return
-  expiryTimer = setTimeout(() => void refresh(), Math.max(0, next - Date.now()))
+  expiryTimer = setTimeout(
+    () => {
+      if (!hasShell()) {
+        publish(snapshot.records)
+        return
+      }
+      void refreshSnoozedBurnChecks()
+    },
+    Math.max(0, next - Date.now()),
+  )
 }
 
-function publish(next: SnoozedBurnCheck[]): void {
-  snapshot = next
+function publish(next: readonly SnoozedBurnCheck[]): void {
+  snapshot = {
+    status: "ready",
+    records: (next ?? []).filter(
+      (snooze) => snooze.until === null || snooze.until > Date.now(),
+    ),
+  }
   scheduleExpiry()
   for (const listener of listeners) listener()
 }
 
-async function refresh(): Promise<void> {
+function publishError(): void {
+  snapshot = { status: "error", records: snapshot.records }
+  for (const listener of listeners) listener()
+}
+
+export async function refreshSnoozedBurnChecks(): Promise<void> {
+  const requestRevision = ++revision
+  if (!hasShell()) {
+    publish([])
+    return
+  }
+  try {
+    const records = await invoke<SnoozedBurnCheck[]>("list_burn_check_snoozes")
+    if (requestRevision === revision) publish(records)
+  } catch {
+    if (requestRevision === revision) publishError()
+  }
+}
+
+function startEventListener(): void {
+  if (eventListenerStarted) return
+  eventListenerStarted = true
+  const generation = ++listenerGeneration
+  void refreshSnoozedBurnChecks()
   if (!hasShell()) return
-  publish(await invoke<SnoozedBurnCheck[]>("list_burn_check_snoozes"))
+  void listen<SnoozedBurnCheck[]>(SNOOZES_CHANGED_EVENT, (event) => {
+    if (generation !== listenerGeneration) return
+    revision += 1
+    publish(event.payload)
+  })
+    .then((unlisten) => {
+      if (eventListenerStarted && generation === listenerGeneration)
+        stopEventListener = unlisten
+      else unlisten()
+    })
+    .catch(() => {
+      if (eventListenerStarted && generation === listenerGeneration) publishError()
+    })
+}
+
+function stopListening(): void {
+  eventListenerStarted = false
+  listenerGeneration += 1
+  revision += 1
+  stopEventListener?.()
+  stopEventListener = null
 }
 
 export async function snoozeBurnCheck(
@@ -69,18 +154,60 @@ export async function snoozeBurnCheck(
 ): Promise<void> {
   const record: SnoozedBurnCheck = { detector, scope: "check", until: snoozeUntil(duration) }
   if (!hasShell()) return
-  publish(await invoke<SnoozedBurnCheck[]>("set_burn_check_snooze", { snooze: record }))
+  const requestRevision = ++revision
+  try {
+    const records = await invoke<SnoozedBurnCheck[]>("set_burn_check_snooze", {
+      snooze: record,
+    })
+    if (requestRevision === revision) publish(records)
+  } catch {
+    if (requestRevision === revision) publishError()
+  }
 }
 
 export async function unsnoozeBurnCheck(detector: BurnCheckDetectorId): Promise<void> {
   if (!hasShell()) return
-  publish(await invoke<SnoozedBurnCheck[]>("clear_burn_check_snooze", { detector }))
+  const requestRevision = ++revision
+  try {
+    const records = await invoke<SnoozedBurnCheck[]>("clear_burn_check_snooze", { detector })
+    if (requestRevision === revision) publish(records)
+  } catch {
+    if (requestRevision === revision) publishError()
+  }
 }
 
 export function snoozedDetectorIds(
-  records: readonly SnoozedBurnCheck[],
+  records: readonly SnoozedBurnCheck[] | null | undefined,
 ): ReadonlySet<BurnCheckDetectorId> {
-  return new Set(records.map((record) => record.detector))
+  return new Set((records ?? []).map((record) => record.detector))
+}
+
+/** Remove detector-level snoozes before deriving any report state. */
+export function visibleCheckCategories(
+  categories: readonly ChecksCategoryPayload[],
+  snoozed: ReadonlySet<BurnCheckDetectorId>,
+): ChecksCategoryPayload[] {
+  return categories.filter((category) => !snoozed.has(category.id))
+}
+
+export function activeChecksReport(
+  report: ChecksReportPayload,
+  snoozed: ReadonlySet<BurnCheckDetectorId>,
+): ChecksReportPayload {
+  if (snoozed.size === 0) return report
+  const categories = visibleCheckCategories(report.categories, snoozed)
+  if (categories.length === report.categories.length) return report
+  const activeDetectorIds = new Set(categories.map((category) => category.id))
+  const mask = detectorIds.reduce(
+    (value, detector, index) => value | (activeDetectorIds.has(detector) ? 1 << index : 0),
+    0,
+  )
+  return {
+    ...report,
+    categories,
+    estimatedTokenBurnBasisPoints:
+      report.estimatedTokenBurnBasisPointsByDetectorMask?.[mask] ?? null,
+  }
 }
 
 export function visibleSessionHygieneChecks(
@@ -93,33 +220,46 @@ export function visibleSessionHygieneChecks(
   })
 }
 
+/** Remove unused-resource rows whose detector is snoozed. */
+export function visibleUnusedContextRows(
+  rows: readonly UnusedContextRow[],
+  snoozed: ReadonlySet<BurnCheckDetectorId>,
+): UnusedContextRow[] {
+  return rows.filter((row) => {
+    const detector =
+      row.kind === "MCP server"
+        ? "unusedMcpServers"
+        : row.kind === "Built-in tool"
+          ? "unusedBuiltInTools"
+          : "unusedSkills"
+    return !snoozed.has(detector)
+  })
+}
+
 export function formatSnoozeUntil(until: number | null): string {
   if (until === null) return "Snoozed forever"
   return `Snoozed until ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(until)}`
 }
 
-export function useSnoozedBurnChecks(): readonly SnoozedBurnCheck[] {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener)
-      void refresh()
-      let stop: UnlistenFn | null = null
-      if (hasShell())
-        void listen<SnoozedBurnCheck[]>(SNOOZES_CHANGED_EVENT, (event) =>
-          publish(event.payload),
-        ).then((unlisten) => {
-          stop = unlisten
-        })
-      return () => {
-        listeners.delete(listener)
-        stop?.()
-        if (listeners.size === 0 && expiryTimer) {
-          clearTimeout(expiryTimer)
-          expiryTimer = null
-        }
+function subscribeSnoozedBurnChecks(listener: () => void): () => void {
+  listeners.add(listener)
+  startEventListener()
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) {
+      stopListening()
+      if (expiryTimer) {
+        clearTimeout(expiryTimer)
+        expiryTimer = null
       }
-    },
+    }
+  }
+}
+
+export function useSnoozedBurnChecks(): SnoozedBurnChecksState {
+  return useSyncExternalStore(
+    subscribeSnoozedBurnChecks,
     () => snapshot,
-    () => [],
+    () => serverSnapshot,
   )
 }

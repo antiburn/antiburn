@@ -313,6 +313,9 @@ impl AntigravitySessionReader {
                         sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
                         continue;
                     };
+                    if has_truncated_fields(&value) {
+                        sink.record(NormalizedRecord::Unusable(PartialReason::Oversized));
+                    }
                     state.observe(&value, suppress_usage, sink);
                 }
             }
@@ -532,6 +535,11 @@ impl AntigravityStreamState {
             self.observe_model(value);
             return;
         }
+        // The CLI records model changes inside USER_INPUT metadata, not in a
+        // top-level model field. Keep that state for later assistant steps.
+        if let Some(model) = model_from_user_settings(value) {
+            self.model = Some(model);
+        }
         let kind = normalize_type(value.get("type").and_then(Value::as_str).unwrap_or(""));
         if role_for(&kind).is_none() {
             sink.record(NormalizedRecord::Unusable(
@@ -594,6 +602,32 @@ fn model_from(value: &Value) -> Option<String> {
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_owned)
+}
+
+fn model_from_user_settings(value: &Value) -> Option<String> {
+    if normalize_type(value.get("type").and_then(Value::as_str).unwrap_or("")) != "USER_INPUT" {
+        return None;
+    }
+    let content = value.get("content").and_then(Value::as_str)?;
+    let settings = content.split_once("<USER_SETTINGS_CHANGE>")?.1;
+    let model = settings
+        .split_once("Model Selection")?
+        .1
+        .split_once(" to ")?
+        .1
+        .lines()
+        .next()?
+        .trim()
+        .trim_end_matches('.')
+        .trim();
+    (!model.is_empty() && model.len() <= MAX_MODEL_BYTES).then(|| model.to_owned())
+}
+
+fn has_truncated_fields(value: &Value) -> bool {
+    value
+        .get("truncated_fields")
+        .and_then(Value::as_array)
+        .is_some_and(|fields| !fields.is_empty())
 }
 
 fn open_database(path: &Path) -> anyhow::Result<Connection> {
@@ -1513,6 +1547,11 @@ impl<'de> Visitor<'de> for StepVisitor<'_> {
                     step.usage = parsed.usage;
                     step.partial |= parsed.partial;
                 }
+                "thinking" => {
+                    step.has_thinking = map
+                        .next_value_seed(RetainedStringSeed(&mut step))?
+                        .is_some_and(|thinking| !thinking.is_empty());
+                }
                 "tool_calls" => map.next_value_seed(ToolCallsSeed(&mut step))?,
                 "toolName" | "tool_name" | "name" => {
                     let name = map.next_value_seed(RetainedStringSeed(&mut step))?;
@@ -1588,6 +1627,7 @@ struct CascadeStep {
     inline_tool_name: Option<String>,
     inline_input: Option<Value>,
     has_content: bool,
+    has_thinking: bool,
     retained_bytes: usize,
     partial: bool,
 }
@@ -1633,6 +1673,7 @@ impl CascadeStep {
             .or(self.metadata_started_at.as_ref())
             .and_then(parse_ts);
         event.usage = self.usage;
+        event.has_thinking = self.has_thinking;
         if let Some(model) = self.model.filter(|model| !model.trim().is_empty()) {
             event.model = Some(model);
         } else {
@@ -2504,6 +2545,10 @@ fn step_to_event(step: &Value) -> Option<NormalizedEvent> {
     };
 
     let mut ev = NormalizedEvent::new(role);
+    ev.has_thinking = obj
+        .get("thinking")
+        .and_then(Value::as_str)
+        .is_some_and(|thinking| !thinking.is_empty());
 
     ev.ts_ms = obj
         .get("created_at")

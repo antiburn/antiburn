@@ -35,8 +35,9 @@ pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedRe
 #[cfg(test)]
 pub(crate) use findings::reduce_report_blocking_with_home;
 pub(crate) use findings::{
-    CurrentDetectorAssessment, ensure_not_cancelled, old_model_remediation_evidence,
-    publication_findings_in, remediation_assessments,
+    CurrentDetectorAssessment, RemediationAssessments, ensure_not_cancelled,
+    has_current_evidence_after, old_model_remediation_evidence, publication_findings_in,
+    remediation_assessments,
 };
 #[allow(unused_imports)]
 pub use findings::{ReportCancelled, is_cancelled, reduce_report, reduce_report_blocking};
@@ -369,8 +370,8 @@ fn reduce_with_state_on_snapshot(
                 depth_cap,
             };
             let mut resource_turn_probe = |context_tokens| {
-                if let Some(agent_kind) =
-                    agent_kind.filter(|agent| resources::first_tier_agents().contains(agent))
+                if let Some(agent_kind) = agent_kind
+                    .filter(|agent| resources::resource_assessment_agents().contains(agent))
                 {
                     resource_builder.observe_turn(
                         agent_kind,
@@ -400,7 +401,7 @@ fn reduce_with_state_on_snapshot(
                 &mut probes,
             )?;
             if let Some(agent_kind) =
-                agent_kind.filter(|agent| resources::first_tier_agents().contains(agent))
+                agent_kind.filter(|agent| resources::resource_assessment_agents().contains(agent))
             {
                 if project_root.is_none() {
                     resource_builder.mark_scan_failed(agent_kind);
@@ -454,7 +455,7 @@ fn reduce_with_state_on_snapshot(
                 .context("stored resource-use evidence is invalid")?;
             let agent: String = row.get(1)?;
             let Some(agent_kind) = crate::agents::kind_from_slug(&agent)
-                .filter(|agent| resources::first_tier_agents().contains(agent))
+                .filter(|agent| resources::resource_assessment_agents().contains(agent))
             else {
                 continue;
             };
@@ -504,7 +505,7 @@ fn reduce_with_state_on_snapshot(
     if let Some(home) = resource_home {
         scan_resource_inventories(&mut resource_builder, home, inventory_contexts);
     } else {
-        for agent in resources::first_tier_agents() {
+        for agent in resources::resource_assessment_agents() {
             resource_builder.mark_scan_failed(agent);
         }
     }
@@ -570,7 +571,7 @@ fn scan_resource_inventories(
     home: &Path,
     contexts: BTreeSet<(AgentKind, PathBuf, PathBuf)>,
 ) {
-    for agent in resources::first_tier_agents() {
+    for agent in resources::resource_assessment_agents() {
         let mut context = crate::agent_config::ConfigContext::native(agent, home, None);
         context.runtime_override_present = crate::remediation::runtime_override_present(agent);
         context.managed_configuration_present =
@@ -934,6 +935,7 @@ pub(crate) mod tests {
     fn old_model_attribution_keeps_global_and_project_targets_separate() {
         let definition = WatchDefinition {
             version: 1,
+            prompt_action: false,
             detector: "old_model_usage".into(),
             canonical_identity: "target".into(),
             source_format: "ClaudeJsonl".into(),
@@ -982,6 +984,7 @@ pub(crate) mod tests {
     fn routed_model_attribution_normalizes_config_values_and_requires_the_reviewed_route() {
         let definition = WatchDefinition {
             version: 1,
+            prompt_action: false,
             detector: "old_model_usage".into(),
             canonical_identity: "target".into(),
             source_format: "OpenCodeJsonl".into(),
@@ -1570,6 +1573,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn current_evidence_must_start_after_the_action_boundary() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_ready(&store, "before-boundary", 120);
+
+        assert!(
+            !has_current_evidence_after(data_dir.path(), "native", "claude-code", 120_000).unwrap()
+        );
+
+        publish_ready(&store, "after-boundary", 121);
+        assert!(
+            has_current_evidence_after(data_dir.path(), "native", "claude-code", 120_000).unwrap()
+        );
+        assert!(
+            !has_current_evidence_after(data_dir.path(), "native", "opencode", 120_000).unwrap()
+        );
+    }
+
+    #[test]
     fn opencode_cache_findings_for_one_route_return_one_environment_target() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
@@ -1800,6 +1822,7 @@ pub(crate) mod tests {
             );
             let definition = WatchDefinition {
                 version: 1,
+                prompt_action: false,
                 detector: "old_model_usage".into(),
                 canonical_identity: "identity".into(),
                 source_format: source.into(),
@@ -1851,6 +1874,8 @@ pub(crate) mod tests {
                 effective_boundary_ms: Some(100_000),
                 verified_at_epoch: None,
                 recurred_at_epoch: None,
+                origin: Some("action".into()),
+                prompt_group_id: None,
                 action_joined_at_ms: None,
             };
             let replacement = old_model_remediation_evidence(
@@ -1956,6 +1981,7 @@ pub(crate) mod tests {
             .unwrap();
         let definition = WatchDefinition {
             version: 1,
+            prompt_action: false,
             detector: "old_model_usage".into(),
             canonical_identity: "identity".into(),
             source_format: "ClaudeJsonl".into(),
@@ -2007,6 +2033,8 @@ pub(crate) mod tests {
             effective_boundary_ms: Some(100_000),
             verified_at_epoch: None,
             recurred_at_epoch: None,
+            origin: Some("action".into()),
+            prompt_group_id: None,
             action_joined_at_ms: None,
         };
         let replacement =
@@ -2171,6 +2199,7 @@ pub(crate) mod tests {
         );
         let definition = WatchDefinition {
             version: 1,
+            prompt_action: false,
             detector: "old_model_usage".into(),
             canonical_identity: "identity".into(),
             source_format: "ClaudeJsonl".into(),
@@ -2342,7 +2371,7 @@ pub(crate) mod tests {
             20.0
         );
         let retained_contribution = store.remediation_contributions(1_000).unwrap();
-        assert_eq!(retained_contribution.len(), 1);
+        assert!(retained_contribution.is_empty());
         for session_id in ["old-before-fix", "fix", "more-savings", "recurrence"] {
             assert!(
                 store
@@ -2900,7 +2929,7 @@ pub(crate) mod tests {
             assert_eq!(corrected.state, terminal_state);
             if terminal_state == crate::store::RemediationState::Recurred {
                 assert_eq!(result["verification"]["status"], "recurred");
-                assert_eq!(store.remediation_contributions(1_000).unwrap().len(), 1);
+                assert!(store.remediation_contributions(1_000).unwrap().is_empty());
             } else {
                 assert_eq!(result["verification"]["status"], "verificationUnavailable");
                 assert!(store.remediation_contributions(1_000).unwrap().is_empty());
@@ -2909,7 +2938,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn controller_action_joins_the_attempt_created_by_publication() {
+    fn controller_action_creates_a_distinct_attempt_from_publication() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         let project = data_dir.path().join("project");
@@ -2946,18 +2975,37 @@ pub(crate) mod tests {
             .copy_prompt_fix_burn_check_target(&store, &listed.targets[0].action_id)
             .unwrap();
         assert!(action.prompt.contains("Remediation reference: ABR-"));
-        assert_eq!(action.watch.as_ref().unwrap().watch_id, passive_id);
+        assert_eq!(
+            action.prompt.matches("Remediation reference: ABR-").count(),
+            1
+        );
+        let action_id = action.watch.as_ref().unwrap().watch_id.clone();
+        assert_ne!(action_id, passive_id);
         assert_eq!(
             action.watch.as_ref().unwrap().origin,
-            crate::remediation::RemediationOrigin::Passive
+            crate::remediation::RemediationOrigin::Action
         );
-        let joined = store.remediation(&passive_id).unwrap().unwrap();
-        assert_eq!(joined.action_joined_at_ms, None);
+        assert_eq!(
+            store.remediation(&passive_id).unwrap().unwrap().state,
+            crate::store::RemediationState::Watching
+        );
+        assert_eq!(
+            store.remediation(&action_id).unwrap().unwrap().state,
+            crate::store::RemediationState::WaitingForPromptUse
+        );
+        assert!(
+            store
+                .remediation(&action_id)
+                .unwrap()
+                .unwrap()
+                .prompt_group_id
+                .is_some()
+        );
         let count: i64 = store
             .lock()
             .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -2993,18 +3041,31 @@ pub(crate) mod tests {
             .prompt;
 
         assert!(prompt.contains("Unused targets"));
+        assert_eq!(prompt.matches("Remediation reference: ABR-").count(), 1);
         for resource in resources {
             assert!(prompt.contains(resource), "{prompt}");
         }
-        assert!(!prompt.contains("Remediation reference: ABR-"));
         assert_eq!(
             store
                 .lock()
                 .query_row("SELECT COUNT(*) FROM remediation", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            0
+            2
         );
+        let groups: Vec<Option<String>> = store
+            .lock()
+            .prepare(
+                "SELECT prompt_group_id FROM remediation
+                  WHERE origin = 'action' ORDER BY remediation_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], groups[1]);
         assert_eq!(
             controller.copy_prompt_fix_burn_check_targets(&store, &[]),
             Err(crate::remediation::ControllerError::CheckPromptUnavailable)
@@ -3012,7 +3073,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn resource_prompt_does_not_claim_detector_level_verification() {
+    fn resource_prompt_has_a_durable_group_marker_without_verification_claims() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "baseline", 120, &["server-a"]);
@@ -3030,15 +3091,18 @@ pub(crate) mod tests {
         let action = controller
             .copy_prompt_fix_burn_check_target(&store, &listed.targets[0].action_id)
             .unwrap();
-        assert!(action.watch.is_none());
-        assert!(!action.prompt.contains("Remediation reference: ABR-"));
+        assert!(action.watch.is_some());
+        assert_eq!(
+            action.prompt.matches("Remediation reference: ABR-").count(),
+            1
+        );
         assert_eq!(
             store
                 .lock()
                 .query_row("SELECT COUNT(*) FROM remediation", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            0
+            1
         );
         assert!(store.remediation_contributions(1_000).unwrap().is_empty());
     }
@@ -3136,7 +3200,7 @@ pub(crate) mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn verifiable_action_watch_blocks_prepare_while_unverifiable_watch_can_upgrade() {
+    fn any_active_action_watch_blocks_a_second_auto_fix() {
         let data_dir = TempDir::new().unwrap();
         let home = data_dir.path().join("home");
         let case = ReasoningFixture {
@@ -3182,16 +3246,12 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(
             listed.targets[0].auto_fix,
-            crate::remediation::AutoFixAvailability::Available
+            crate::remediation::AutoFixAvailability::Unavailable(
+                crate::remediation::AutoFixUnavailableReason::ActiveWatch
+            )
         );
-        let review = controller
-            .prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id)
-            .unwrap();
-        controller
-            .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
-            .unwrap();
         assert!(
-            std::fs::read_to_string(config_path)
+            !std::fs::read_to_string(config_path)
                 .unwrap()
                 .contains("medium")
         );
@@ -3235,9 +3295,11 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert!(fallback.prompt.contains("Failed check\nUnused MCP servers"));
-        assert!(fallback.prompt.contains(
-            "Representative session evidence (inspect only; not configuration edit targets):\n- \"/home/avery/.claude/older-finding.jsonl\""
-        ));
+        assert!(
+            !fallback
+                .prompt
+                .contains("/home/avery/.claude/older-finding.jsonl")
+        );
 
         let assessments = remediation_assessments(
             data_dir.path(),
@@ -3624,458 +3686,13 @@ pub(crate) mod tests {
             assert_eq!(category.clean, 0);
             assert_eq!(category.unavailable, 0);
             assert_eq!(category.agents, vec!["claude-code"]);
-            assert_eq!(category.estimated_token_burn_basis_points, None);
+            assert_eq!(category.estimated_token_burn_basis_points, Some(500));
         }
     }
 
-    mod cancellation {
-        use super::*;
+    mod cancellation;
 
-        #[test]
-        fn a_cancel_between_phases_stops_the_reduction_and_keeps_evidence_intact() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            publish_ready(&store, "ready", 120);
-            let key = SessionKey::new("native", "claude-code", "ready");
-            let before = store.evidence(&key).unwrap().unwrap();
-
-            let cancel = AtomicBool::new(false);
-            let error = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || cancel.store(true, Ordering::SeqCst),
-                &cancel,
-            )
-            .unwrap_err();
-            assert!(is_cancelled(&error));
-
-            // The durable evidence state is untouched: the store still
-            // opens and the row reads back unchanged.
-            let after = store.evidence(&key).unwrap().unwrap();
-            assert_eq!(after.status, before.status);
-            assert_eq!(after.evidence_json, before.evidence_json);
-            assert_eq!(after.claim_fence, before.claim_fence);
-
-            // A fresh reduction succeeds after the cancelled one.
-            let report = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            assert_eq!(report.assessed_sessions, 1);
-        }
-
-        #[test]
-        fn an_already_cancelled_request_stops_before_it_opens_a_snapshot() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            publish_ready(&store, "ready", 120);
-
-            // The flag is set before the call, so the first probe stops
-            // the reduction.
-            let cancel = AtomicBool::new(true);
-            let error =
-                reduce_on_snapshot(data_dir.path(), request(), &mut || {}, &cancel).unwrap_err();
-            assert!(is_cancelled(&error));
-        }
-
-        #[test]
-        fn cancellation_during_turn_iteration_stops_without_publishing_a_report() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            publish_evidence_with_turns(&store, "large", 120, PublishedEvidence::Ready, 100);
-            let key = SessionKey::new("native", "claude-code", "large");
-            let before = store.evidence(&key).unwrap().unwrap();
-            let cancel = AtomicBool::new(false);
-            let mut turns_scanned = 0;
-
-            let error = reduce_with_state_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &cancel,
-                &mut || {
-                    turns_scanned += 1;
-                    if turns_scanned == 10 {
-                        cancel.store(true, Ordering::SeqCst);
-                    }
-                },
-                None,
-            )
-            .unwrap_err();
-
-            assert!(is_cancelled(&error));
-            assert_eq!(turns_scanned, 10);
-            let after = store.evidence(&key).unwrap().unwrap();
-            assert_eq!(after.evidence_json, before.evidence_json);
-            assert_eq!(after.published_fence, before.published_fence);
-        }
-
-        #[test]
-        fn cancellation_before_turn_finalization_stops_without_publishing_a_report() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            publish_evidence_with_turns(&store, "large", 120, PublishedEvidence::Ready, 100);
-            let cancel = AtomicBool::new(false);
-            let mut probes = 0;
-
-            let error = reduce_with_state_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &cancel,
-                &mut || {
-                    probes += 1;
-                    if probes == 101 {
-                        cancel.store(true, Ordering::SeqCst);
-                    }
-                },
-                None,
-            )
-            .unwrap_err();
-
-            assert!(is_cancelled(&error));
-            assert_eq!(probes, 101);
-        }
-
-        #[test]
-        fn cancellation_during_finalization_stops_without_publishing_a_report() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            publish_evidence_with_turns(&store, "large", 120, PublishedEvidence::Ready, 100);
-            let cancel = AtomicBool::new(false);
-            let mut probes = 0;
-
-            let error = reduce_with_state_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &cancel,
-                &mut || {
-                    probes += 1;
-                    if probes == 102 {
-                        cancel.store(true, Ordering::SeqCst);
-                    }
-                },
-                None,
-            )
-            .unwrap_err();
-
-            assert!(is_cancelled(&error));
-            assert_eq!(probes, 102);
-        }
-    }
-
-    mod population {
-        use super::*;
-
-        // The evidence cohort now covers every AgentKind
-        // (crate::agents::evidence_cohort), so a real scan never leaves a
-        // session with no session_evidence row: `awaiting_provider_support`
-        // trends to zero once the widened-cohort migration backfills every
-        // existing session. The tests below still exercise DENOMINATOR_SQL's
-        // partitioning directly, by passing a literal `evidence_agents` list
-        // (`&[]` or `&["claude-code"]`) to `upsert_sessions`/`change_source`
-        // rather than the real `evidence_cohort()`, so they stay a synthetic,
-        // SQL-level pin of the bucket rather than a claim that production
-        // still produces that row shape.
-
-        #[test]
-        fn denominator_partitions_non_cohort_rows_by_reason() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-
-            publish_ready(&store, "processing", 120);
-            change_source(&store, "processing", &["claude-code"]);
-            let processing_claim = store
-                .claim_next_evidence(&["claude-code"], 20, 600)
-                .unwrap()
-                .unwrap();
-            assert_eq!(processing_claim.key.session_id, "processing");
-
-            publish_ready(&store, "failed", 121);
-            change_source(&store, "failed", &["claude-code"]);
-            let failed_claim = store
-                .claim_next_evidence(&["claude-code"], 20, 600)
-                .unwrap()
-                .unwrap();
-            assert_eq!(failed_claim.key.session_id, "failed");
-            assert!(
-                store
-                    .fail_evidence(
-                        &failed_claim,
-                        EvidenceFailure::Failed {
-                            revisions: ProjectionRevisions {
-                                parser_revision: PARSER_REVISION,
-                                analyzer_revision: ANALYZER_REVISION,
-                                metrics_schema_revision: METRICS_SCHEMA_REVISION,
-                                evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
-                            },
-                        },
-                        "synthetic terminal failure",
-                    )
-                    .unwrap()
-            );
-
-            publish_evidence(&store, "unsupported", 123, PublishedEvidence::Unsupported);
-
-            publish_ready(&store, "stale", 124);
-            change_source(&store, "stale", &[]);
-
-            let unknown_active = session("unknown-active", 150, "sv1:unknown-active");
-            let unknown_inactive = session("unknown-inactive", 99, "sv1:unknown-inactive");
-            store
-                .upsert_sessions(&[unknown_active, unknown_inactive], &[])
-                .unwrap();
-
-            publish_ready(&store, "ready", 125);
-
-            publish_ready(&store, "pending", 122);
-            change_source(&store, "pending", &["claude-code"]);
-
-            let report = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            let coverage = &report.context.coverage;
-
-            assert_eq!(coverage.discovered, 7);
-            assert_eq!(coverage.ready, 1);
-            assert_eq!(coverage.pending, 1);
-            assert_eq!(coverage.processing, 1);
-            assert_eq!(coverage.failed, 1);
-            assert_eq!(coverage.unsupported, 1);
-            assert_eq!(coverage.stale, 1);
-            assert_eq!(coverage.unknown_start, 1);
-            assert_eq!(report.assessed_sessions, 1);
-            assert!(coverage.is_consistent());
-
-            // The ready session has no assistant work. Unused-source checks
-            // exclude it instead of reporting a capability gap.
-            let all_examples: Vec<_> = report
-                .capability_gap_examples
-                .values()
-                .flat_map(|v| v.iter())
-                .collect();
-            assert!(all_examples.is_empty());
-
-            // The cohort session carries no assistant turns, so the
-            // zero-work denominator exclusion (CH-011b) keeps it out of
-            // all three unused-source denominators:
-            // Six capability-eligible detectors remain.
-            assert_eq!(
-                report
-                    .detectors
-                    .iter()
-                    .map(|counts| counts.eligible)
-                    .sum::<u64>(),
-                6
-            );
-            // Missing effort and speed signals are unavailable outcomes,
-            // not assessed results.
-            assert_eq!(
-                report
-                    .detectors
-                    .iter()
-                    .map(|counts| counts.assessed)
-                    .sum::<u64>(),
-                4
-            );
-            assert!(report.detectors.iter().all(|counts| {
-                counts.finding + counts.clean + counts.unavailable + counts.not_applicable == 1
-            }));
-        }
-
-        #[test]
-        fn stale_generation_evidence_never_joins_the_cohort() {
-            // `denominator_partitions_non_cohort_rows_by_reason` above pins
-            // the coverage bucket this row lands in. This test pins the
-            // narrower claim I5 asks for: `COHORT_SQL` itself excludes it,
-            // so the report's badge computation never runs on it.
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-
-            publish_ready(&store, "current", 120);
-            publish_ready(&store, "stale", 121);
-            // The source grows a new generation and no requeue has run yet:
-            // this row is still 'ready', with current revisions, but was
-            // analyzed against the generation the source has since moved
-            // past.
-            change_source(&store, "stale", &[]);
-
-            let report = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-
-            assert_eq!(report.context.coverage.discovered, 2);
-            assert_eq!(report.context.coverage.ready, 1);
-            assert_eq!(report.context.coverage.stale, 1);
-            assert_eq!(
-                report.assessed_sessions, 1,
-                "evidence analyzed against a superseded source generation must not join the cohort"
-            );
-        }
-
-        // Pi names the fixture agent, not a Pi-specific behavior:
-        // `reconcile_evidence_revisions(&crate::agents::evidence_cohort(), ..)`
-        // now enrolls every agent's late-joining session the same way, since
-        // the cohort covers all of them. This still exercises the real
-        // `evidence_cohort()` (unlike the other `population` tests above),
-        // so it pins that the widened cohort keeps moving a session with no
-        // evidence row out of `awaiting_provider_support`.
-        #[test]
-        fn pi_backfill_moves_awaiting_support_into_the_pending_queue() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            let mut pi = session("pi-backfill", 120, "sv1:pi-backfill");
-            pi.key.agent = "pi".to_owned();
-            pi.source_label = "/synthetic/pi-backfill.jsonl".to_owned();
-            store
-                .upsert_sessions(std::slice::from_ref(&pi), &[])
-                .unwrap();
-            store
-                .save_analysis(
-                    &AnalysisRecord {
-                        key: pi.key.clone(),
-                        model_breakdown_json: "{}".to_owned(),
-                        pricing_breakdown_json: "{}".to_owned(),
-                        inclusive_models_json: "[]".to_owned(),
-                        initial_context_json: None,
-                        source_summaries_json: None,
-                        provider_hints_json: None,
-                        source_fingerprint: "sv1:pi-backfill".to_owned(),
-                        pricing_generation: 1,
-                        analyzed_generation: 1,
-                        parser_revision: PARSER_REVISION,
-                        analyzer_revision: ANALYZER_REVISION,
-                        metrics_schema_revision: METRICS_SCHEMA_REVISION,
-                    },
-                    Some(120),
-                )
-                .unwrap();
-
-            let before = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            assert_eq!(before.context.coverage.pending, 1);
-            assert_eq!(before.context.coverage.awaiting_provider_support, 1);
-
-            assert_eq!(
-                store
-                    .reconcile_evidence_revisions(
-                        &crate::agents::evidence_cohort(),
-                        crate::analysis::projection_revisions(),
-                    )
-                    .unwrap(),
-                1
-            );
-            let after = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            assert_eq!(after.context.coverage.pending, 1);
-            assert_eq!(after.context.coverage.awaiting_provider_support, 0);
-        }
-
-        #[test]
-        fn unknown_start_rows_split_on_in_window_activity() {
-            // Each case seeds one row alone, so a reversed activity predicate
-            // cannot pass by counting the other row.
-            let active_dir = TempDir::new().unwrap();
-            let active_store = Store::open(active_dir.path()).unwrap();
-            let active = session("unknown-active", 150, "sv1:unknown-active");
-            active_store.upsert_sessions(&[active], &[]).unwrap();
-
-            let report = reduce_on_snapshot(
-                active_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            let coverage = &report.context.coverage;
-            assert_eq!(coverage.discovered, 1);
-            assert_eq!(coverage.unknown_start, 1);
-            assert_eq!(report.assessed_sessions, 0);
-            assert!(coverage.is_consistent());
-            assert_eq!(
-                report
-                    .detectors
-                    .iter()
-                    .map(|counts| counts.eligible + counts.assessed)
-                    .sum::<u64>(),
-                0
-            );
-
-            let inactive_dir = TempDir::new().unwrap();
-            let inactive_store = Store::open(inactive_dir.path()).unwrap();
-            let inactive = session("unknown-inactive", 99, "sv1:unknown-inactive");
-            inactive_store.upsert_sessions(&[inactive], &[]).unwrap();
-
-            let report = reduce_on_snapshot(
-                inactive_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            let coverage = &report.context.coverage;
-            assert_eq!(coverage.discovered, 0);
-            assert_eq!(coverage.unknown_start, 0);
-            assert_eq!(report.assessed_sessions, 0);
-            assert!(coverage.is_consistent());
-            assert_eq!(
-                report
-                    .detectors
-                    .iter()
-                    .map(|counts| counts.eligible + counts.assessed)
-                    .sum::<u64>(),
-                0
-            );
-        }
-
-        #[test]
-        fn report_excludes_sessions_from_another_environment() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            let mut other = session("other-environment", 150, "sv1:other-environment");
-            other.key.environment_key = "wsl:ubuntu".to_owned();
-            store.upsert_sessions(&[other], &[]).unwrap();
-
-            let report = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-
-            assert_eq!(report.context.coverage.discovered, 0);
-            assert_eq!(report.assessed_sessions, 0);
-            assert!(
-                report
-                    .detectors
-                    .iter()
-                    .all(|counts| { counts.eligible == 0 && counts.assessed == 0 })
-            );
-        }
-    }
+    mod population;
 
     #[test]
     fn report_keeps_gap_maps_and_examples_bounded() {

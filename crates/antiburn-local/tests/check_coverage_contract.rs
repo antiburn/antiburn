@@ -9,8 +9,83 @@ use antiburn_local::analysis::{
 use antiburn_local::insights::{
     BadgeStatus, CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport,
     EfficiencyReportAccumulator, ReportCatalogs, ReportContext, ReportWindow, clean_facts_complete,
-    eligible, session_badges,
+    eligible, fallback_token_burn_basis_points, session_badges,
 };
+use antiburn_local::model::AgentKind;
+use antiburn_local::remediation::{
+    BuiltInToolTokens, Finding, FindingCause, SavingsEstimateMethod, remediation_prompt,
+    verification_evidence_supported,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindingSupport {
+    Supported,
+    FindingOnly,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptSupport {
+    Supported,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoFixSupport {
+    Supported,
+    Conditional,
+    PromptOnly,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerificationSupport {
+    Supported,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BurnEstimateSupport {
+    Supported,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProductSupport {
+    finding: FindingSupport,
+    prompt: PromptSupport,
+    auto_fix: AutoFixSupport,
+    verification: VerificationSupport,
+    burn_estimate: BurnEstimateSupport,
+}
+
+const fn support(
+    finding: FindingSupport,
+    prompt: PromptSupport,
+    auto_fix: AutoFixSupport,
+    verification: VerificationSupport,
+    burn_estimate: BurnEstimateSupport,
+) -> ProductSupport {
+    ProductSupport {
+        finding,
+        prompt,
+        auto_fix,
+        verification,
+        burn_estimate,
+    }
+}
+
+const ESTIMATE_METHODS: [SavingsEstimateMethod; DetectorId::COUNT] = [
+    SavingsEstimateMethod::RepeatedContextAboveDepthCap,
+    SavingsEstimateMethod::AssumedOutputReduction,
+    SavingsEstimateMethod::WorkerModelPriceDifference,
+    SavingsEstimateMethod::McpDefinitionExposure,
+    SavingsEstimateMethod::BuiltInDefinitionReplication,
+    SavingsEstimateMethod::InjectedSkillDocument,
+    SavingsEstimateMethod::OldModelPriceDifference,
+    SavingsEstimateMethod::FastTierPricePremium,
+    SavingsEstimateMethod::CacheRehydrationPriceDifference,
+];
 
 macro_rules! source_formats {
     ($($variant:ident => $wire:literal),+ $(,)?) => {
@@ -232,17 +307,13 @@ fn approved_clean_gates_require_complete_facts() {
     let mut row = complete_evidence(SourceFormat::CopilotCliJsonl);
     row.capabilities = SourceCapabilities::copilot();
     row.capabilities.source_format = SourceFormat::CopilotCliJsonl;
-    for detector in [
-        DetectorId::SessionsOverDepth,
-        DetectorId::OverpoweredSubagents,
-    ] {
+    for detector in [DetectorId::OverpoweredSubagents, DetectorId::OldModelUsage] {
         assert!(clean_facts_complete(detector, &row), "{detector:?}");
     }
+    assert!(!eligible(DetectorId::SessionsOverDepth, &row));
+    assert!(!clean_facts_complete(DetectorId::SessionsOverDepth, &row));
     row.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
-    for detector in [
-        DetectorId::SessionsOverDepth,
-        DetectorId::OverpoweredSubagents,
-    ] {
+    for detector in [DetectorId::OverpoweredSubagents, DetectorId::OldModelUsage] {
         assert!(!clean_facts_complete(detector, &row), "{detector:?}");
     }
 }
@@ -343,7 +414,7 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     let check_matrix = markdown_table_rows(
         &check_coverage,
         "## Coverage Matrix",
-        "## Evidence Boundaries",
+        "## First-Tier Product Matrix",
     );
     assert_table_source_formats(&check_matrix, &expected, "check coverage matrix");
     for row in check_matrix {
@@ -359,6 +430,230 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     let session_matrix =
         markdown_table_rows(&session_coverage, "## Source Matrix", "## Provider Routes");
     assert_table_source_formats(&session_matrix, &expected, "session source matrix");
+}
+
+#[test]
+fn first_tier_product_matrix_has_one_typed_row_per_agent_and_check() {
+    let check_coverage = coverage_document("check-coverage.md");
+    const AGENTS: &[&str] = &[
+        "Claude Code",
+        "Codex",
+        "OpenCode",
+        "Pi",
+        "Cursor",
+        "Antigravity",
+    ];
+    const FINDINGS: &[&str] = &["Y", "FO", "N"];
+    const PROMPTS: &[&str] = &["Y", "N"];
+    const AUTO_FIXES: &[&str] = &["Y", "C", "P", "N"];
+    const VERIFICATIONS: &[&str] = &["Y", "N"];
+    const BURN_ESTIMATES: &[&str] = &["Y", "N"];
+
+    let rows = markdown_table_rows(
+        &check_coverage,
+        "## First-Tier Product Matrix",
+        "## Second-Tier Product Coverage",
+    );
+    let documented: BTreeSet<_> = rows.iter().map(|row| row[0].as_str()).collect();
+    let expected: BTreeSet<_> = AGENTS.iter().copied().collect();
+    assert_eq!(documented, expected, "first-tier product agents");
+    assert_eq!(
+        rows.len(),
+        AGENTS.len() * DetectorId::COUNT,
+        "one row per first-tier agent and check"
+    );
+
+    let mut keys = BTreeSet::new();
+    for row in &rows {
+        assert_eq!(row.len(), 8, "first-tier row has eight typed columns");
+        assert!(
+            detector_from_code(&row[1]).is_some(),
+            "invalid check: {row:?}"
+        );
+        assert!(
+            FINDINGS.contains(&row[2].as_str()),
+            "invalid finding: {row:?}"
+        );
+        assert!(
+            PROMPTS.contains(&row[3].as_str()),
+            "invalid prompt: {row:?}"
+        );
+        assert!(
+            AUTO_FIXES.contains(&row[4].as_str()),
+            "invalid Auto Fix: {row:?}"
+        );
+        assert!(
+            VERIFICATIONS.contains(&row[5].as_str()),
+            "invalid verification: {row:?}"
+        );
+        assert!(
+            BURN_ESTIMATES.contains(&row[6].as_str()),
+            "invalid estimate: {row:?}"
+        );
+        assert!(
+            !row[7].is_empty(),
+            "missing adjacent reachability limit: {row:?}"
+        );
+        assert!(
+            keys.insert((row[0].clone(), row[1].clone())),
+            "duplicate row: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
+    let check_coverage = coverage_document("check-coverage.md");
+    let rows = markdown_table_rows(
+        &check_coverage,
+        "## First-Tier Product Matrix",
+        "## Second-Tier Product Coverage",
+    );
+    let agents = [
+        ("Claude Code", AgentKind::Claude, SourceFormat::ClaudeJsonl),
+        ("Codex", AgentKind::Codex, SourceFormat::CodexRolloutJsonl),
+        ("OpenCode", AgentKind::OpenCode, SourceFormat::OpenCodeJsonl),
+        ("Pi", AgentKind::Pi, SourceFormat::PiV3Jsonl),
+        ("Cursor", AgentKind::Cursor, SourceFormat::CursorJsonl),
+        (
+            "Antigravity",
+            AgentKind::Antigravity,
+            SourceFormat::AntigravityBrainJsonl,
+        ),
+    ];
+
+    let remediation_rows = remediation_matrix_rows(&check_coverage);
+    for (agent_index, (label, agent, source)) in agents.into_iter().enumerate() {
+        for (detector_index, detector) in DetectorId::ALL.into_iter().enumerate() {
+            let row = rows
+                .iter()
+                .find(|row| row[0] == label && detector_from_code(&row[1]) == Some(detector))
+                .unwrap_or_else(|| panic!("missing first-tier row {label}/{detector:?}"));
+            let documented = parse_product_support_columns(row);
+
+            let evidence = complete_evidence(source);
+            // M/B/K product cells can be supplied by the desktop's current
+            // inventory. The engine session gate covers the other checks.
+            if !matches!(
+                detector,
+                DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedBuiltInTools
+                    | DetectorId::UnusedSkills
+            ) && !(agent_index == 3
+                && matches!(
+                    detector,
+                    DetectorId::OverpoweredSubagents | DetectorId::CacheChurn
+                ))
+            {
+                assert_eq!(
+                    eligible(detector, &evidence),
+                    !matches!(documented.finding, FindingSupport::Unavailable),
+                    "finding gate for {label}/{detector:?}"
+                );
+            }
+            if documented.verification == VerificationSupport::Supported {
+                assert!(
+                    verification_evidence_supported(detector, source),
+                    "engine verification evidence for {label}/{detector:?}"
+                );
+            }
+            assert_eq!(
+                documented.burn_estimate == BurnEstimateSupport::Supported,
+                documented.finding != FindingSupport::Unavailable
+                    && SavingsEstimateMethod::for_detector(detector)
+                        == ESTIMATE_METHODS[detector_index]
+                    && fallback_token_burn_basis_points(detector, 1, 1).is_some(),
+                "burn estimate gate for {label}/{detector:?}"
+            );
+            assert!(
+                documented.prompt == PromptSupport::Unavailable
+                    || documented.finding != FindingSupport::Unavailable,
+                "prompt requires a reachable finding for {label}/{detector:?}"
+            );
+
+            let source_row = remediation_rows
+                .iter()
+                .find(|row| row[0] == source_keys(source).0)
+                .unwrap_or_else(|| panic!("missing remediation row for {source:?}"));
+            let prompt_codes = parse_check_set(&source_row[1]);
+            assert_eq!(
+                prompt_codes.contains(&detector),
+                documented.prompt == PromptSupport::Supported,
+                "prompt recommendation and reachability for {label}/{detector:?}"
+            );
+            if matches!(
+                detector,
+                DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedBuiltInTools
+                    | DetectorId::UnusedSkills
+            ) {
+                let finding = Finding::advisory_resource(
+                    agent,
+                    source,
+                    resource_prompt_cause(agent, detector),
+                )
+                .expect("resource prompt fixture");
+                assert_eq!(
+                    remediation_prompt(&finding).is_ok(),
+                    documented.prompt == PromptSupport::Supported,
+                    "production recommendation for reachable resource {label}/{detector:?}"
+                );
+            }
+        }
+    }
+
+    for (agent, check, expected) in [
+        ("OpenCode", "M", AutoFixSupport::Conditional),
+        ("OpenCode", "B", AutoFixSupport::PromptOnly),
+        ("OpenCode", "K", AutoFixSupport::Conditional),
+        ("Pi", "M", AutoFixSupport::PromptOnly),
+        ("Pi", "B", AutoFixSupport::Unavailable),
+        ("Pi", "K", AutoFixSupport::PromptOnly),
+        ("Pi", "C", AutoFixSupport::Unavailable),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row[0] == agent && row[1] == check)
+            .unwrap_or_else(|| panic!("missing policy fixture {agent}/{check}"));
+        assert_eq!(parse_product_support_columns(row).auto_fix, expected);
+    }
+}
+
+#[test]
+fn source_format_remediation_matrix_is_exhaustive_and_typed() {
+    let check_coverage = coverage_document("check-coverage.md");
+    let rows = remediation_matrix_rows(&check_coverage);
+    let expected: BTreeSet<_> = SOURCE_FORMATS
+        .iter()
+        .map(|format| source_keys(*format).0)
+        .collect();
+    assert_table_source_formats(&rows, &expected, "source-format remediation matrix");
+
+    for row in rows {
+        assert_eq!(row.len(), 6, "remediation row has six typed columns");
+        for cell in &row[1..] {
+            parse_check_set(cell);
+        }
+        let prompts = parse_check_set(&row[1]);
+        let model = parse_check_set(&row[2]);
+        let reasoning = parse_check_set(&row[3]);
+        let other = parse_check_set(&row[4]);
+        let verification = parse_check_set(&row[5]);
+        assert!(
+            model
+                .iter()
+                .all(|check| *check == DetectorId::OldModelUsage)
+        );
+        assert!(
+            reasoning
+                .iter()
+                .all(|check| *check == DetectorId::ModelOverthinking)
+        );
+        assert!(model.is_subset(&prompts));
+        assert!(reasoning.is_subset(&prompts));
+        assert!(other.is_subset(&prompts));
+        assert!(verification.is_subset(&prompts));
+    }
 }
 
 #[test]
@@ -379,7 +674,7 @@ fn public_burn_check_table_keeps_fail_closed_readers_unavailable() {
     assert_eq!(results.get("Devin"), Some(&"Finding-only S".to_owned()));
     assert_eq!(
         results.get("GitHub Copilot"),
-        Some(&"Supported S/O".to_owned())
+        Some(&"S/O on accepted CLI v1 bundles".to_owned())
     );
 }
 
@@ -462,4 +757,110 @@ fn assert_table_source_formats(rows: &[Vec<String>], expected: &BTreeSet<&str>, 
         expected.len(),
         "{table} has duplicate source formats"
     );
+}
+
+fn parse_product_support_columns(row: &[String]) -> ProductSupport {
+    assert_eq!(row.len(), 8, "product row has eight values: {row:?}");
+    support(
+        match row[2].as_str() {
+            "Y" => FindingSupport::Supported,
+            "FO" => FindingSupport::FindingOnly,
+            "N" => FindingSupport::Unavailable,
+            value => panic!("invalid finding support {value}"),
+        },
+        match row[3].as_str() {
+            "Y" => PromptSupport::Supported,
+            "N" => PromptSupport::Unavailable,
+            value => panic!("invalid prompt support {value}"),
+        },
+        match row[4].as_str() {
+            "Y" => AutoFixSupport::Supported,
+            "C" => AutoFixSupport::Conditional,
+            "P" => AutoFixSupport::PromptOnly,
+            "N" => AutoFixSupport::Unavailable,
+            value => panic!("invalid Auto Fix support {value}"),
+        },
+        match row[5].as_str() {
+            "Y" => VerificationSupport::Supported,
+            "N" => VerificationSupport::Unavailable,
+            value => panic!("invalid verification support {value}"),
+        },
+        match row[6].as_str() {
+            "Y" => BurnEstimateSupport::Supported,
+            "N" => BurnEstimateSupport::Unavailable,
+            value => panic!("invalid burn estimate support {value}"),
+        },
+    )
+}
+
+fn remediation_matrix_rows(document: &str) -> Vec<Vec<String>> {
+    markdown_table_rows(
+        document,
+        "### Source-Format Remediation Matrix",
+        "| Scope and environment",
+    )
+}
+
+fn parse_check_set(value: &str) -> BTreeSet<DetectorId> {
+    if value == "None" {
+        return BTreeSet::new();
+    }
+    let values: Vec<_> = value.split('/').collect();
+    let checks: BTreeSet<_> = values
+        .iter()
+        .map(|value| {
+            detector_from_code(value).unwrap_or_else(|| panic!("invalid check code {value:?}"))
+        })
+        .collect();
+    assert_eq!(
+        checks.len(),
+        values.len(),
+        "duplicate check code in {value:?}"
+    );
+    checks
+}
+
+fn detector_from_code(value: &str) -> Option<DetectorId> {
+    match value {
+        "D" => Some(DetectorId::SessionsOverDepth),
+        "T" => Some(DetectorId::ModelOverthinking),
+        "S" => Some(DetectorId::OverpoweredSubagents),
+        "M" => Some(DetectorId::UnusedMcpServers),
+        "B" => Some(DetectorId::UnusedBuiltInTools),
+        "K" => Some(DetectorId::UnusedSkills),
+        "O" => Some(DetectorId::OldModelUsage),
+        "F" => Some(DetectorId::OveruseOfFastMode),
+        "C" => Some(DetectorId::CacheChurn),
+        _ => None,
+    }
+}
+
+fn resource_prompt_cause(agent: AgentKind, detector: DetectorId) -> FindingCause {
+    match detector {
+        DetectorId::UnusedMcpServers => FindingCause::UnusedMcpServer {
+            server: "docs".to_owned(),
+            tokens: Some(1),
+            cost_usd: None,
+            pricing_revision: None,
+        },
+        DetectorId::UnusedBuiltInTools => FindingCause::UnusedBuiltInTool {
+            tool: match agent {
+                AgentKind::Claude => "WebSearch",
+                AgentKind::Codex => "web_search",
+                AgentKind::OpenCode => "websearch",
+                _ => "read",
+            }
+            .to_owned(),
+            tokens: BuiltInToolTokens::Replicated(1),
+            cost_usd: None,
+            pricing_revision: None,
+        },
+        DetectorId::UnusedSkills => FindingCause::UnusedSkill {
+            skill: "review".to_owned(),
+            tokens: Some(1),
+            cost_usd: None,
+            pricing_revision: None,
+        },
+        _ => panic!("not a resource detector: {detector:?}"),
+    }
 }

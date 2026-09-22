@@ -123,6 +123,10 @@ pub struct Remediation {
     pub scope_kind: String,
     pub scope_key: String,
     pub state: RemediationState,
+    /// The purpose of a new row. Legacy rows may still have no origin in the database.
+    pub origin: String,
+    /// The copied-prompt group. Legacy and non-prompt actions have no group.
+    pub prompt_group_id: Option<String>,
     pub definition_json: String,
     pub result_json: String,
     pub created_at_epoch: i64,
@@ -163,6 +167,8 @@ pub struct RemediationRecord {
     pub effective_boundary_ms: Option<i64>,
     pub verified_at_epoch: Option<i64>,
     pub recurred_at_epoch: Option<i64>,
+    pub origin: Option<String>,
+    pub prompt_group_id: Option<String>,
     pub action_joined_at_ms: Option<i64>,
 }
 

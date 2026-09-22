@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    AppendOnlyGuarantee, CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue,
-    MemoryTurnRowStore, PartialReason, RawSource, SessionCollector, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceClaim, SourceFormat,
-    SourceKind, TurnRowSink, TurnRowStore, reader_for,
+    AppendOnlyGuarantee, CompositeSink, ContentKind, EvidenceCoverage, EvidenceSource,
+    EvidenceValue, MemoryTurnRowStore, NormalizedEvent, NormalizedRecord, PartialReason, RawSource,
+    RecordSink, SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SessionSummary, SourceClaim, SourceFormat, SourceKind, ToolClass,
+    TurnContent, TurnRowSink, TurnRowStore, reader_for,
 };
 use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, head_hash_of};
 use antiburn_local::insights::{
@@ -188,5 +189,107 @@ fn source_classification_reads_metadata_not_payload_text() {
     assert_eq!(
         reader_for("cursor").capabilities(&source).source_format,
         SourceFormat::CursorJsonl
+    );
+}
+
+#[derive(Default)]
+struct CursorRecordingSink {
+    events: Vec<NormalizedEvent>,
+    contents: Vec<TurnContent>,
+}
+
+impl RecordSink for CursorRecordingSink {
+    fn record(&mut self, record: NormalizedRecord) {
+        match record {
+            NormalizedRecord::MetricsEvent(event) => self.events.push(*event),
+            NormalizedRecord::TurnContent(content) => self.contents.push(*content),
+            NormalizedRecord::Observation(_) | NormalizedRecord::Unusable(_) => {}
+        }
+    }
+
+    fn finish(&mut self, _summary: SessionSummary) {}
+}
+
+#[test]
+fn cursor_agent_content_blocks_capture_clean_text_tools_and_results() {
+    let source = include_str!("fixtures/cursor_characterization/agent_content_blocks.jsonl");
+    let session_input = input(RawSource::Jsonl(source.to_owned()));
+    let mut sink = CursorRecordingSink::default();
+
+    reader_for("cursor")
+        .visit(&session_input, &mut sink)
+        .unwrap();
+
+    assert_eq!(sink.events.len(), 4);
+    assert_eq!(sink.events[1].tools.len(), 1);
+    assert_eq!(
+        sink.events[1].tools[0].category,
+        antiburn_local::analysis::ToolCategory::Test
+    );
+    assert_eq!(sink.events[2].role, antiburn_local::analysis::Role::Tool);
+    assert_eq!(sink.contents.len(), 3);
+    assert_eq!(sink.contents[0].parts[0].kind, ContentKind::UserText);
+    assert_eq!(sink.contents[0].parts[0].text, "run the focused tests");
+    assert_eq!(sink.contents[1].parts[0].kind, ContentKind::Thinking);
+    assert_eq!(sink.contents[1].parts[1].kind, ContentKind::ToolInput);
+    assert_eq!(sink.contents[2].parts[0].kind, ContentKind::ToolResult);
+    assert_eq!(sink.contents[2].parts[0].text, "test result: ok");
+    assert_eq!(sink.contents[2].parts[1].text, "finished");
+
+    let mut string_sink = CursorRecordingSink::default();
+    reader_for("cursor")
+        .visit(
+            &input(RawSource::Jsonl(
+                r#"{"role":"assistant","message":{"content":"plain text"}}"#.to_owned(),
+            )),
+            &mut string_sink,
+        )
+        .unwrap();
+    assert_eq!(string_sink.contents[0].parts[0].text, "plain text");
+}
+
+#[test]
+fn every_accepted_cursor_tool_call_spelling_emits_a_call_and_input() {
+    for kind in ["tool_use", "tool-use", "toolCall", "tool-call", "tool_call"] {
+        let source = format!(
+            r#"{{"role":"assistant","model":"test-model","timestamp":1000,"content":[{{"type":"{kind}","name":"read_file","input":{{"path":"README.md"}}}}]}}"#
+        );
+        let mut sink = CursorRecordingSink::default();
+        reader_for("cursor")
+            .visit(&input(RawSource::Jsonl(source)), &mut sink)
+            .unwrap();
+
+        assert_eq!(sink.events[0].tools.len(), 1, "{kind}");
+        assert_eq!(sink.events[0].tools[0].name, "read_file", "{kind}");
+        assert_eq!(sink.contents[0].parts.len(), 1, "{kind}");
+        assert_eq!(
+            sink.contents[0].parts[0].kind,
+            ContentKind::ToolInput,
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn resource_tool_calls_remain_unclassified_without_resource_metadata() {
+    let input = input(RawSource::Jsonl(
+        include_str!("fixtures/cursor_characterization/unclassified_resource_calls.jsonl")
+            .to_owned(),
+    ));
+    let evidence = evidence(&input);
+    let tools = match evidence.tools {
+        EvidenceValue::Complete(tools)
+        | EvidenceValue::Partial {
+            observed: tools, ..
+        } => tools,
+        EvidenceValue::Unsupported => panic!("cursor tool evidence must be available"),
+    };
+
+    assert_eq!(tools.by_name.len(), 5);
+    assert!(
+        tools
+            .by_name
+            .values()
+            .all(|tool| tool.calls == 1 && tool.class == ToolClass::Unclassified)
     );
 }

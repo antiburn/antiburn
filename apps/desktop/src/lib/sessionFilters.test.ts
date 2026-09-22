@@ -223,6 +223,20 @@ describe("sessionFilterCounts", () => {
     ])
   })
 
+  it("removes snoozed findings from both filter rows and sidebar counts", () => {
+    const failing = entry({ sessionId: "failing" })
+    const hygiene = new Map(hygieneSnapshotFor(failing, hygienePayload(0, 1)))
+    const snoozed = new Set(["sessionsOverDepth"] as const)
+
+    expect(matchesSessionFilter(failing, hygiene, { kind: "failing" }, snoozed)).toBe(false)
+    expect(matchesSessionFilter(failing, hygiene, { kind: "passing" }, snoozed)).toBe(false)
+    expect(filterSessionEntries([failing], hygiene, { kind: "failing" }, snoozed)).toEqual([])
+    expect(sessionFilterCounts([failing], hygiene, snoozed)).toMatchObject({
+      failing: 0,
+      passing: 0,
+    })
+  })
+
   it("gives an unrecognized agent slug a title-cased display name", () => {
     const counts = sessionFilterCounts([entry({ agent: "future-agent" })], EMPTY_HYGIENE)
     expect(counts.agents).toEqual([

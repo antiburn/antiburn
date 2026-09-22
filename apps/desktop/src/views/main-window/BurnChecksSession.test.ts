@@ -15,7 +15,22 @@ const report = (burn: number): ChecksReportPayload => ({
   evidenceSettled: true,
   pendingEvidence: 0,
   estimatedTokenBurnBasisPoints: burn,
+  estimatedTokenBurnBasisPointsByDetectorMask: [],
   categories: [],
+})
+
+const passingReport = (detector: "oldModelUsage" = "oldModelUsage"): ChecksReportPayload => ({
+  ...report(100),
+  categories: [
+    {
+      id: detector,
+      lifecycle: "passing",
+      finding: 0,
+      clean: 1,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: null,
+    },
+  ],
 })
 
 function deferred<T>() {
@@ -31,6 +46,7 @@ function deferred<T>() {
 function setup(visibleInitially = true, overrides: Partial<BurnChecksAdapter> = {}) {
   let visible: (value: boolean) => void = () => undefined
   let changed: () => void = () => undefined
+  let snoozesChanged: () => void = () => undefined
   const adapter: BurnChecksAdapter = {
     getReport: vi.fn().mockResolvedValue(report(100)),
     getAggregateWins: vi.fn().mockResolvedValue({ wins: [] }),
@@ -45,6 +61,10 @@ function setup(visibleInitially = true, overrides: Partial<BurnChecksAdapter> = 
       changed = handler
       return vi.fn()
     }),
+    onSnoozesChanged: vi.fn(async (handler) => {
+      snoozesChanged = handler
+      return vi.fn()
+    }),
     ...overrides,
   }
   const session = new BurnChecksSession(adapter)
@@ -55,6 +75,7 @@ function setup(visibleInitially = true, overrides: Partial<BurnChecksAdapter> = 
     stop,
     setVisible: (value: boolean) => visible(value),
     changed: () => changed(),
+    snoozesChanged: () => snoozesChanged(),
   }
 }
 
@@ -97,6 +118,34 @@ describe("BurnChecksSession", () => {
     expect(vi.mocked(adapter.getReport).mock.calls[2]?.[0]).not.toBe(
       vi.mocked(adapter.getReport).mock.calls[0]?.[0],
     )
+  })
+
+  it("publishes the first report while one changed event waits for a follow-up", async () => {
+    const first = deferred<ChecksReportPayload | null>()
+    const second = deferred<ChecksReportPayload | null>()
+    const { adapter, session, changed } = setup(true, {
+      getReport: vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise),
+    })
+    sessions.push(session)
+    await vi.waitFor(() => expect(adapter.getReport).toHaveBeenCalledOnce())
+
+    changed()
+    changed()
+    first.resolve(report(100))
+
+    await vi.waitFor(() =>
+      expect(session.getSnapshot()).toMatchObject({
+        report: { estimatedTokenBurnBasisPoints: 100 },
+        loading: false,
+      }),
+    )
+    await vi.waitFor(() => expect(adapter.getReport).toHaveBeenCalledTimes(2))
+
+    second.resolve(report(200))
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().report?.estimatedTokenBurnBasisPoints).toBe(200),
+    )
+    expect(adapter.getReport).toHaveBeenCalledTimes(2)
   })
 
   it("retains report and target data after refresh failures", async () => {
@@ -277,14 +326,46 @@ describe("BurnChecksSession", () => {
     })
   })
 
+  it("does not record verified outcomes from retained target watches", async () => {
+    noteInteraction.mockClear()
+    const { adapter, session } = setup(true, {
+      getReport: vi.fn().mockResolvedValue(passingReport()),
+      getTargets: vi.fn().mockResolvedValue({
+        targets: [
+          {
+            findingId: "historical-finding",
+            watch: {
+              origin: "action",
+              verification: { status: "fixed" },
+            },
+          } as never,
+        ],
+        samples: [],
+        truncated: false,
+      }),
+    })
+    sessions.push(session)
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+
+    session.setTargetsVisible("oldModelUsage", true)
+    await vi.waitFor(() => expect(adapter.getTargets).toHaveBeenCalledOnce())
+
+    expect(noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "verified" }),
+    )
+  })
+
   it("records only visible Burn Checks outcomes and deduplicates coarse results", async () => {
     noteInteraction.mockClear()
-    const { adapter, session, setVisible } = setup(false)
+    const { adapter, session, setVisible } = setup(false, {
+      getReport: vi.fn().mockResolvedValue(passingReport()),
+    })
     sessions.push(session)
     vi.mocked(adapter.getAggregateWins).mockResolvedValue({
       wins: [
         {
           findingId: "private-win",
+          remediationCycleId: "private-cycle",
           detector: "oldModelUsage",
           origin: "passive",
           display: {
@@ -304,11 +385,13 @@ describe("BurnChecksSession", () => {
             verificationLimit: "freshEvidenceFromSameSourceAndTarget",
           },
           savings: {
+            status: { status: "unavailable" },
             tokenSavings: null,
             apiEquivalentCostAvoidedUsd: null,
             improvementCount: 1,
             method: null,
           },
+          verifiedBoundaryMs: 2,
           startsAtMs: 1,
           endsAtMs: 2,
         },
@@ -335,5 +418,185 @@ describe("BurnChecksSession", () => {
     expect(
       noteInteraction.mock.calls.flatMap(([interaction]) => Object.keys(interaction)),
     ).not.toContain("findingId")
+  })
+
+  it("records verified outcomes only for visible active unsnoozed Passed checks", async () => {
+    noteInteraction.mockClear()
+    const { session } = setup(true, {
+      getReport: vi.fn().mockResolvedValue(passingReport()),
+      getSnoozedDetectors: vi.fn().mockResolvedValue(new Set(["modelOverthinking"])),
+      getAggregateWins: vi.fn().mockResolvedValue({
+        wins: [
+          {
+            findingId: "active-finding",
+            remediationCycleId: "active-cycle",
+            detector: "oldModelUsage",
+            origin: "action",
+            display: {} as never,
+            savings: {
+              status: { status: "unavailable" },
+              tokenSavings: null,
+              apiEquivalentCostAvoidedUsd: null,
+              improvementCount: null,
+              method: null,
+            },
+            verifiedBoundaryMs: 2,
+            startsAtMs: 1,
+            endsAtMs: 2,
+          },
+          {
+            findingId: "active-finding",
+            remediationCycleId: "active-cycle",
+            detector: "oldModelUsage",
+            origin: "passive",
+            display: {} as never,
+            savings: {} as never,
+            verifiedBoundaryMs: 3,
+            startsAtMs: 1,
+            endsAtMs: 3,
+          },
+          {
+            findingId: "snoozed-finding",
+            remediationCycleId: "snoozed-cycle",
+            detector: "modelOverthinking",
+            origin: "passive",
+            display: {} as never,
+            savings: {
+              status: { status: "unavailable" },
+              tokenSavings: null,
+              apiEquivalentCostAvoidedUsd: null,
+              improvementCount: null,
+              method: null,
+            },
+            verifiedBoundaryMs: 2,
+            startsAtMs: 1,
+            endsAtMs: 2,
+          },
+        ],
+      }),
+    })
+    sessions.push(session)
+
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+    await vi.waitFor(() =>
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "burnCheckOutcomeObserved",
+        outcome: "verified",
+        origin: "action",
+      }),
+    )
+    expect(
+      noteInteraction.mock.calls.filter(
+        ([interaction]) => interaction.kind === "burnCheckOutcomeObserved",
+      ),
+    ).toHaveLength(1)
+    expect(noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "verified", origin: "passive" }),
+    )
+  })
+
+  it("does not let an older snooze read expose a newly snoozed outcome", async () => {
+    noteInteraction.mockClear()
+    const older = deferred<ReadonlySet<"oldModelUsage">>()
+    const newer = deferred<ReadonlySet<"oldModelUsage">>()
+    const getSnoozedDetectors = vi
+      .fn()
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise)
+    const { session, snoozesChanged } = setup(true, {
+      getReport: vi.fn().mockResolvedValue(passingReport()),
+      getSnoozedDetectors,
+      getAggregateWins: vi.fn().mockResolvedValue({
+        wins: [
+          {
+            findingId: "finding",
+            remediationCycleId: "cycle",
+            detector: "oldModelUsage",
+            origin: "action",
+            display: {} as never,
+            savings: {} as never,
+            verifiedBoundaryMs: 2,
+            startsAtMs: 1,
+            endsAtMs: 2,
+          },
+        ],
+      }),
+    })
+    sessions.push(session)
+    await vi.waitFor(() => expect(getSnoozedDetectors).toHaveBeenCalledOnce())
+    snoozesChanged()
+    newer.resolve(new Set(["oldModelUsage"]))
+    await newer.promise
+    older.resolve(new Set())
+    await older.promise
+    await Promise.resolve()
+
+    expect(noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "burnCheckOutcomeObserved" }),
+    )
+  })
+
+  it("does not report outcomes when the latest snooze read fails", async () => {
+    noteInteraction.mockClear()
+    const { session } = setup(true, {
+      getReport: vi.fn().mockResolvedValue(passingReport()),
+      getSnoozedDetectors: vi.fn().mockRejectedValue(new Error("Unavailable")),
+      getAggregateWins: vi.fn().mockResolvedValue({
+        wins: [
+          {
+            findingId: "finding",
+            remediationCycleId: "cycle",
+            detector: "oldModelUsage",
+            origin: "action",
+            display: {} as never,
+            savings: {} as never,
+            verifiedBoundaryMs: 2,
+            startsAtMs: 1,
+            endsAtMs: 2,
+          },
+        ],
+      }),
+    })
+    sessions.push(session)
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+    await Promise.resolve()
+
+    expect(noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "burnCheckOutcomeObserved" }),
+    )
+  })
+
+  it("does not report a Passed pair from a hidden or non-passing check", async () => {
+    noteInteraction.mockClear()
+    const { session } = setup(true, {
+      getReport: vi.fn().mockResolvedValue(report(100)),
+      getAggregateWins: vi.fn().mockResolvedValue({
+        wins: [
+          {
+            findingId: "finding",
+            remediationCycleId: "cycle",
+            detector: "oldModelUsage",
+            origin: "passive",
+            display: {} as never,
+            savings: {
+              tokenSavings: null,
+              apiEquivalentCostAvoidedUsd: null,
+              improvementCount: null,
+              method: null,
+            },
+            verifiedBoundaryMs: 2,
+            startsAtMs: 1,
+            endsAtMs: 2,
+          },
+        ],
+      }),
+    })
+    sessions.push(session)
+
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+    await Promise.resolve()
+    expect(noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "burnCheckOutcomeObserved" }),
+    )
   })
 })

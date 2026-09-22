@@ -74,6 +74,20 @@ fn record_text(value: &Value) -> String {
     }
 }
 
+/// Returns true for Claude lifecycle records that carry no normalized event.
+/// Keep this allowlist local because these records are Claude-specific and
+/// some other JSONL vendors use the same top-level `system` discriminator.
+fn is_claude_eventless(value: &Value) -> bool {
+    match value.get("type").and_then(Value::as_str) {
+        Some("fork-context-ref") => true,
+        Some("system") => matches!(
+            value.get("subtype").and_then(Value::as_str),
+            Some("away_summary" | "stop_hook_summary" | "turn_duration")
+        ),
+        _ => false,
+    }
+}
+
 /// Parses a Claude `uuid` string into a compact `u128`. Reads the hex
 /// digits only and ignores dashes, case-insensitive. Returns `None` when
 /// `uuid` holds anything but exactly 32 hex digits, so a non-standard
@@ -911,6 +925,22 @@ impl ClaudeSessionReader {
                         );
                     }
 
+                    if is_claude_eventless(&value) {
+                        if is_inert_recognized_eventless(&value) {
+                            continue;
+                        }
+                        sink.record(NormalizedRecord::Observation(Box::new(
+                            EvidenceObservation::UnrecognizedType {
+                                discriminator: record_discriminator(&value),
+                                inert: false,
+                            },
+                        )));
+                        sink.record(NormalizedRecord::Unusable(
+                            crate::analysis::framing::PartialReason::UnrecognizedRecordType,
+                        ));
+                        continue;
+                    }
+
                     let Some(mut event) = parse_record(&value, RecordShape::Claude) else {
                         let allowlisted = is_recognized_eventless(&value);
                         let structurally_inert = if allowlisted {
@@ -1722,6 +1752,19 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct OrderedRecordSink {
+        records: Vec<NormalizedRecord>,
+    }
+
+    impl RecordSink for OrderedRecordSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            self.records.push(record);
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
     /// Collects every `TurnContent` record a visit emits, in order.
     #[derive(Default)]
     struct ContentCapturingSink {
@@ -2030,6 +2073,40 @@ mod tests {
         });
         let ev = parse_record(&other, RecordShape::Claude).expect("system record should parse");
         assert!(!ev.is_compaction_boundary);
+    }
+
+    #[test]
+    fn non_inert_claude_eventless_records_report_before_unusable() {
+        let source = concat!(
+            r#"{"type":"system","subtype":"away_summary","usage":{"input_tokens":1}}"#,
+            "\n",
+        );
+        let mut sink = OrderedRecordSink::default();
+
+        ClaudeSessionReader
+            .visit_reader(
+                BufReader::new(source.as_bytes()),
+                &|| false,
+                &mut sink,
+                &HashSet::new(),
+                ClaudeStreamState::default(),
+            )
+            .expect("read must succeed");
+
+        assert_eq!(sink.records.len(), 3);
+        assert!(matches!(
+            &sink.records[1],
+            NormalizedRecord::Observation(observation)
+                if matches!(
+                    observation.as_ref(),
+                    EvidenceObservation::UnrecognizedType { discriminator, inert: false }
+                        if discriminator == "system"
+                )
+        ));
+        assert!(matches!(
+            &sink.records[2],
+            NormalizedRecord::Unusable(PartialReason::UnrecognizedRecordType)
+        ));
     }
 
     /* ------------------------------------------------------------------

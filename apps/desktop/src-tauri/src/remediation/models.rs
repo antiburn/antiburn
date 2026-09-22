@@ -202,7 +202,7 @@ pub enum VerificationReason {
     PhysicalTargetChanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(
     tag = "status",
     rename_all = "camelCase",
@@ -213,6 +213,7 @@ pub enum SavingsStatus {
         #[serde(default)]
         method_revision: Option<u32>,
     },
+    #[default]
     Unavailable,
     Unknown {
         reason: SavingsUnknownReason,
@@ -250,7 +251,7 @@ pub struct BurnCheckTargetList {
     pub truncated: bool,
 }
 
-/// The latest retained remediation attempt for one detector.
+/// One retained remediation attempt for one exact target and cycle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BurnCheckRemediationProgress {
     pub attempts: Vec<BurnCheckRemediationAttempt>,
@@ -259,7 +260,10 @@ pub struct BurnCheckRemediationProgress {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BurnCheckRemediationAttempt {
     pub detector: DetectorId,
+    pub finding_id: String,
     pub watch_id: String,
+    /// The durable remediation ID that identifies this remediation cycle.
+    pub remediation_cycle_id: String,
     pub display: BurnCheckDisplayFacts,
     pub origin: RemediationOrigin,
     pub lifecycle: RemediationState,
@@ -269,6 +273,13 @@ pub struct BurnCheckRemediationAttempt {
     pub effective_boundary_ms: Option<i64>,
     pub verified_boundary_ms: Option<i64>,
     pub recurred_boundary_ms: Option<i64>,
+    pub(crate) environment_key: String,
+    pub(crate) agent: String,
+    pub(crate) scope_kind: String,
+    pub(crate) scope_key: String,
+    pub(crate) target_key: String,
+    pub(crate) created_at_epoch: i64,
+    pub(crate) prompt_action: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,22 +365,136 @@ pub struct AggregateWins {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateWin {
     pub finding_id: String,
+    /// The durable remediation ID that produced this savings contribution.
+    pub remediation_cycle_id: String,
     pub detector: DetectorId,
     pub origin: String,
     pub display: BurnCheckDisplayFacts,
     pub savings: AggregateSavings,
+    /// The exact evidence boundary that established this cycle's current pass.
+    pub verified_boundary_ms: i64,
     pub starts_at_ms: i64,
     pub ends_at_ms: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AggregateSavings {
     pub version: u32,
+    pub status: SavingsStatus,
     pub token_savings: Option<u64>,
     pub api_equivalent_cost_avoided_usd: Option<f64>,
     pub improvement_count: Option<u64>,
     pub method: Option<BurnCheckEstimateMethod>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AggregateSavingsFields {
+    version: u32,
+    #[serde(default = "pending_savings_status")]
+    status: SavingsStatus,
+    token_savings: Option<u64>,
+    api_equivalent_cost_avoided_usd: Option<f64>,
+    improvement_count: Option<u64>,
+    method: Option<BurnCheckEstimateMethod>,
+}
+
+impl Serialize for AggregateSavings {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if matches!(self.status, SavingsStatus::Unavailable)
+            && self.api_equivalent_cost_avoided_usd.is_some()
+        {
+            return Err(serde::ser::Error::custom(
+                "unavailable savings cannot include an avoided cost",
+            ));
+        }
+        AggregateSavingsFields {
+            version: self.version,
+            status: self.status.clone(),
+            token_savings: self.token_savings,
+            api_equivalent_cost_avoided_usd: self.api_equivalent_cost_avoided_usd,
+            improvement_count: self.improvement_count,
+            method: self.method,
+        }
+        .serialize(serializer)
+    }
+}
+
+fn pending_savings_status() -> SavingsStatus {
+    SavingsStatus::Pending {
+        method_revision: None,
+    }
+}
+
+impl<'de> Deserialize<'de> for AggregateSavings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let fields = AggregateSavingsFields::deserialize(deserializer)?;
+        if matches!(fields.status, SavingsStatus::Unavailable)
+            && fields.api_equivalent_cost_avoided_usd.is_some()
+        {
+            return Err(serde::de::Error::custom(
+                "unavailable savings cannot include an avoided cost",
+            ));
+        }
+        Ok(Self {
+            version: fields.version,
+            status: fields.status,
+            token_savings: fields.token_savings,
+            api_equivalent_cost_avoided_usd: fields.api_equivalent_cost_avoided_usd,
+            improvement_count: fields.improvement_count,
+            method: fields.method,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_aggregate_savings_default_to_pending() {
+        let savings: AggregateSavings = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "apiEquivalentCostAvoidedUsd": 0.25,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            savings.status,
+            SavingsStatus::Pending {
+                method_revision: None
+            }
+        );
+        assert_eq!(savings.api_equivalent_cost_avoided_usd, Some(0.25));
+    }
+
+    #[test]
+    fn explicit_aggregate_savings_status_is_preserved() {
+        let savings: AggregateSavings = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "status": {"status": "unavailable"},
+        }))
+        .unwrap();
+
+        assert_eq!(savings.status, SavingsStatus::Unavailable);
+    }
+
+    #[test]
+    fn unavailable_aggregate_savings_cannot_have_an_avoided_cost() {
+        let result = serde_json::from_value::<AggregateSavings>(serde_json::json!({
+            "version": 1,
+            "status": {"status": "unavailable"},
+            "apiEquivalentCostAvoidedUsd": 0.25,
+        }));
+
+        assert!(result.is_err());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

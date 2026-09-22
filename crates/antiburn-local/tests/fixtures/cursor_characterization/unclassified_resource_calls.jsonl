@@ -1,0 +1,2 @@
+{"sessionId":"cursor-resource-calls","cursor_source":"agent_transcript"}
+{"role":"assistant","model":"test-model","timestamp":1000,"content":[{"type":"tool-use","name":"docs_search","input":{}},{"type":"tool-use","name":"foo_bar_search","input":{}},{"type":"tool-use","name":"deploy","input":{}},{"type":"tool-use","name":"review","input":{}},{"type":"tool-use","name":"unrelated_call","input":{}}]}

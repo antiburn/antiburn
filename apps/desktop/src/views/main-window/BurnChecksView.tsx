@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react"
 
 import { isMacOS } from "../../lib/platform"
+import { refreshSnoozedBurnChecks, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { Skeleton } from "../../components/ui/Skeleton"
@@ -21,10 +22,12 @@ export function BurnChecksView({
     session.getSnapshot,
   )
   const report = state.report
-  if (!report)
+  const snoozes = useSnoozedBurnChecks()
+  const unavailable = state.error || snoozes.status === "error"
+  if (!report || snoozes.status !== "ready")
     return (
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
-        {state.error && isMacOS() && (
+        {unavailable && isMacOS() && (
           <div
             className="main-window-empty-titlebar"
             data-tauri-drag-region
@@ -32,13 +35,21 @@ export function BurnChecksView({
           />
         )}
         <h1 className="sr-only">Burn checks</h1>
-        {state.error ? (
+        {unavailable ? (
           <div className="flex flex-1 items-center justify-center text-center">
             <div>
               <p role="alert" className="type-body text-label-secondary">
-                Burn checks are unavailable.
+                {snoozes.status === "error"
+                  ? "Could not load snoozed checks."
+                  : "Burn checks are unavailable."}
               </p>
-              <button type="button" onClick={session.refresh} className="ui-push-button mt-3">
+              <button
+                type="button"
+                onClick={
+                  snoozes.status === "error" ? refreshSnoozedBurnChecks : session.refresh
+                }
+                className="ui-push-button mt-3"
+              >
                 Retry
               </button>
             </div>

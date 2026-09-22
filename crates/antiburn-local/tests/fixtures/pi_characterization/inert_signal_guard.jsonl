@@ -1,4 +1,4 @@
-{"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z","usage":{"input":9,"output":8,"cacheRead":7,"cacheWrite":6}}
+{"type":"session","version":3,"id":"inert-signal-session","timestamp":"2026-01-01T00:00:00Z","usage":{"input":9,"output":8,"cacheRead":7,"cacheWrite":6}}
 {"type":"session_info","id":"isg-1","parentId":null,"timestamp":"2026-01-01T00:00:01Z","speed":"fast"}
 {"type":"custom","id":"isg-2","parentId":"isg-1","timestamp":"2026-01-01T00:00:02Z","customType":"extension-guard","data":{"tool_calls":[{"name":"synthetic-hidden-tool"}]}}
 {"type":"custom","id":"isg-3","parentId":"isg-2","timestamp":"2026-01-01T00:00:03Z","usage":{"input":9}}

@@ -250,6 +250,216 @@ fn incomplete_no_finding_assessment_cannot_verify_a_fix() {
     );
 }
 
+fn named_resource_target(detector: DetectorId, resource: &str) -> NamedResourceVerificationTarget {
+    NamedResourceVerificationTarget {
+        detector,
+        source_format: SourceFormat::ClaudeJsonl,
+        agent: "claude-code".to_owned(),
+        project_scope: "project-a".to_owned(),
+        resource: resource.to_owned(),
+    }
+}
+
+fn named_resource_assessment(
+    detector: DetectorId,
+    evidence: NamedResourceEvidence,
+) -> NamedResourceAssessment {
+    NamedResourceAssessment {
+        observed_at_ms: 101,
+        source_format: SourceFormat::ClaudeJsonl,
+        agent: "claude-code".to_owned(),
+        project_scope: "project-a".to_owned(),
+        evidence: match detector {
+            DetectorId::UnusedMcpServers
+            | DetectorId::UnusedBuiltInTools
+            | DetectorId::UnusedSkills => evidence,
+            _ => unreachable!(),
+        },
+    }
+}
+
+#[test]
+fn named_mcp_built_in_and_skill_targets_pass_when_absent_from_current_inventory() {
+    for (detector, resource) in [
+        (DetectorId::UnusedMcpServers, "Server-A"),
+        (DetectorId::UnusedBuiltInTools, "Web Search"),
+        (DetectorId::UnusedSkills, "Team:Review"),
+    ] {
+        let result = verify_named_resource_watch(
+            &named_resource_target(detector, resource),
+            VerificationStage::Watching,
+            100,
+            &[named_resource_assessment(
+                detector,
+                NamedResourceEvidence::Complete {
+                    resources: vec![NamedResourceObservation {
+                        resource: "different-resource".to_owned(),
+                        used: true,
+                    }],
+                },
+            )],
+        );
+        assert_eq!(result.outcome, VerificationOutcome::Fixed);
+        assert_eq!(result.observed_at_ms, Some(101));
+    }
+}
+
+#[test]
+fn named_targets_match_the_normalized_name_and_remain_unresolved_when_present() {
+    for (detector, target_resource, observed_resource) in [
+        (DetectorId::UnusedMcpServers, "Server-A", " server-a "),
+        (DetectorId::UnusedBuiltInTools, "web-search", "Web Search"),
+        (DetectorId::UnusedSkills, "Team:Review", "team:review"),
+    ] {
+        let result = verify_named_resource_watch(
+            &named_resource_target(detector, target_resource),
+            VerificationStage::Watching,
+            100,
+            &[named_resource_assessment(
+                detector,
+                NamedResourceEvidence::Complete {
+                    resources: vec![NamedResourceObservation {
+                        resource: observed_resource.to_owned(),
+                        used: false,
+                    }],
+                },
+            )],
+        );
+        assert_eq!(result.outcome, VerificationOutcome::StillUnresolved);
+    }
+}
+
+#[test]
+fn named_target_recurrence_requires_the_exact_target_and_complete_evidence() {
+    let target = named_resource_target(DetectorId::UnusedSkills, "review");
+    let recurred = verify_named_resource_watch(
+        &target,
+        VerificationStage::Fixed,
+        100,
+        &[named_resource_assessment(
+            target.detector,
+            NamedResourceEvidence::Complete {
+                resources: vec![NamedResourceObservation {
+                    resource: "review".to_owned(),
+                    used: false,
+                }],
+            },
+        )],
+    );
+    assert_eq!(recurred.outcome, VerificationOutcome::Recurred);
+
+    let unrelated = verify_named_resource_watch(
+        &target,
+        VerificationStage::Fixed,
+        100,
+        &[named_resource_assessment(
+            target.detector,
+            NamedResourceEvidence::Complete {
+                resources: vec![NamedResourceObservation {
+                    resource: "other".to_owned(),
+                    used: false,
+                }],
+            },
+        )],
+    );
+    assert_eq!(unrelated.outcome, VerificationOutcome::Fixed);
+}
+
+#[test]
+fn named_target_incomplete_or_mismatched_evidence_stays_awaiting() {
+    let target = named_resource_target(DetectorId::UnusedMcpServers, "server-a");
+    let evidence = [
+        NamedResourceEvidence::HistoricalObservedSubset {
+            resources: vec![NamedResourceObservation {
+                resource: "server-a".to_owned(),
+                used: false,
+            }],
+        },
+        NamedResourceEvidence::Partial,
+        NamedResourceEvidence::Capped,
+        NamedResourceEvidence::Ambiguous,
+    ];
+    for evidence in evidence {
+        let result = verify_named_resource_watch(
+            &target,
+            VerificationStage::Watching,
+            100,
+            &[named_resource_assessment(target.detector, evidence)],
+        );
+        assert_eq!(
+            result.outcome,
+            VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+        );
+    }
+
+    let malformed = verify_named_resource_watch(
+        &target,
+        VerificationStage::Watching,
+        100,
+        &[named_resource_assessment(
+            target.detector,
+            NamedResourceEvidence::Complete {
+                resources: vec![NamedResourceObservation {
+                    resource: String::new(),
+                    used: false,
+                }],
+            },
+        )],
+    );
+    assert!(matches!(malformed.outcome, VerificationOutcome::Unknown(_)));
+
+    for (source_format, agent, project_scope) in [
+        (SourceFormat::CodexRolloutJsonl, "claude-code", "project-a"),
+        (SourceFormat::ClaudeJsonl, "codex", "project-a"),
+        (SourceFormat::ClaudeJsonl, "claude-code", "project-b"),
+    ] {
+        let mut assessment = named_resource_assessment(
+            target.detector,
+            NamedResourceEvidence::Complete {
+                resources: Vec::new(),
+            },
+        );
+        assessment.source_format = source_format;
+        assessment.agent = agent.to_owned();
+        assessment.project_scope = project_scope.to_owned();
+        let result =
+            verify_named_resource_watch(&target, VerificationStage::Watching, 100, &[assessment]);
+        assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
+    }
+
+    let missing = verify_named_resource_watch(&target, VerificationStage::Watching, 100, &[]);
+    assert!(matches!(missing.outcome, VerificationOutcome::Unknown(_)));
+}
+
+#[test]
+fn historical_resource_subsets_cannot_verify_absence_or_recurrence() {
+    let target = named_resource_target(DetectorId::UnusedSkills, "review");
+    for (stage, resources) in [
+        (VerificationStage::Watching, Vec::new()),
+        (
+            VerificationStage::Fixed,
+            vec![NamedResourceObservation {
+                resource: "review".to_owned(),
+                used: false,
+            }],
+        ),
+    ] {
+        let result = verify_named_resource_watch(
+            &target,
+            stage,
+            100,
+            &[named_resource_assessment(
+                target.detector,
+                NamedResourceEvidence::HistoricalObservedSubset { resources },
+            )],
+        );
+        assert_eq!(
+            result.outcome,
+            VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+        );
+    }
+}
+
 #[test]
 fn verification_matrix_matches_the_documented_positive_proof_cells() {
     use SourceFormat::{

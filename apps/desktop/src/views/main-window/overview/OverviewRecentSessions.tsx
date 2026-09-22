@@ -217,7 +217,8 @@ export function OverviewRecentSessions({
       clockSnapshot,
     ) * 1_000
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(entries ?? []))
-  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   // Keyed the same way the Sessions list keys its allocation lookup, but for
   // the weekly lane alone: Recent shows the overall weekly share, never a
   // model-scoped supplemental window.
@@ -237,7 +238,7 @@ export function OverviewRecentSessions({
   return (
     <section
       aria-label="Recent sessions"
-      aria-busy={loading || undefined}
+      aria-busy={loading || snoozes.status === "loading" || undefined}
       className="flex flex-col gap-[var(--space-sm)]"
     >
       <div className="flex items-baseline justify-between">
@@ -252,12 +253,15 @@ export function OverviewRecentSessions({
           <ArrowRight size={12} strokeWidth={2} aria-hidden="true" />
         </button>
       </div>
-
-      {entries?.length === 0 ? (
+      {snoozes.status === "error" ? (
+        <p role="status" className="type-callout text-label-secondary">
+          Recent sessions are unavailable.
+        </p>
+      ) : entries?.length === 0 && snoozes.status === "ready" ? (
         <p className="type-callout text-label-secondary">No sessions yet.</p>
       ) : (
         <div className="overview-recent-rows grid grid-cols-[auto_1fr_auto_auto_auto] @max-[720px]:grid-cols-[auto_1fr_auto_auto] gap-y-1.5">
-          {entries
+          {entries && snoozes.status === "ready"
             ? entries.map((entry) => (
                 <OverviewRecentSessionRow
                   key={localSessionKey(

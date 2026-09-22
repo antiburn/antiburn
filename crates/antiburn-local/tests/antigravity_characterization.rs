@@ -3,7 +3,7 @@ use std::sync::Arc;
 use antiburn_local::analysis::{
     CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue, MemoryTurnRowStore, RawSource,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceFormat, SourceKind, TurnRowSink, TurnRowStore, reader_for,
+    SourceFormat, SourceKind, ToolCategory, ToolClass, TurnRowSink, TurnRowStore, reader_for,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorCounts, DetectorId, EfficiencyReportAccumulator, ModelRegistry,
@@ -232,4 +232,94 @@ fn companion_parse_gaps_do_not_hide_database_findings() {
         assert_eq!(report.finding, 1);
         assert_eq!(report.clean, 0);
     }
+}
+
+#[test]
+fn cli_transcript_recovers_settings_model_thinking_tools_and_clipped_coverage() {
+    let mut input = input(RawSource::Jsonl(
+        include_str!("fixtures/antigravity_characterization/cli_realistic.jsonl").to_owned(),
+    ));
+    input.source_format = SourceFormat::AntigravityBrainJsonl;
+
+    let session = reader_for("antigravity").normalize(&input).unwrap();
+    assert_eq!(session.model.as_deref(), Some("old-model"));
+    assert!(session.events.iter().any(|event| event.has_thinking));
+    assert_eq!(session.events[2].tools.len(), 1);
+    assert_eq!(session.events[2].tools[0].category, ToolCategory::Read);
+    assert_eq!(session.events[3].role, antiburn_local::analysis::Role::Tool);
+
+    let evidence = evidence(&input);
+    assert!(matches!(evidence.coverage, EvidenceCoverage::Partial(_)));
+    assert_eq!(old_model_report(evidence).finding, 1);
+}
+
+#[test]
+fn cascade_transcript_preserves_thinking_and_nested_tool_calls() {
+    let mut input = input(RawSource::Jsonl(
+        include_str!("fixtures/antigravity_characterization/cascade_thinking.json").to_owned(),
+    ));
+    input.source_format = SourceFormat::AntigravityCascadeJson;
+
+    let session = reader_for("antigravity").normalize(&input).unwrap();
+    assert_eq!(session.events.len(), 2);
+    assert!(session.events[1].has_thinking);
+    assert_eq!(session.events[1].model.as_deref(), Some("gemini-3.6-flash"));
+    assert_eq!(session.events[1].tools.len(), 1);
+    assert_eq!(session.events[1].tools[0].category, ToolCategory::Read);
+}
+
+#[test]
+fn depth_finding_survives_complete_and_incomplete_antigravity_evidence() {
+    let over_depth = r#"{"type":"PLANNER_RESPONSE","model":"test-model","created_at":1000,"usage":{"input_tokens":400001}}"#;
+    for (content, expected_incomplete) in [
+        (over_depth.to_owned(), false),
+        (format!("{over_depth}\n{{\"type\":\"FUTURE\"}}"), true),
+    ] {
+        let evidence = evidence(&input(RawSource::Jsonl(content)));
+        let incomplete = matches!(evidence.coverage, EvidenceCoverage::Partial(_));
+        assert_eq!(incomplete, expected_incomplete);
+        let mut report = EfficiencyReportAccumulator::new();
+        report.observe_session(evidence);
+        let counts = report
+            .finish(ReportContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 2_000_000_000,
+                },
+                computed_at_epoch: 2_000_000_000,
+                parser_revision: 1,
+                analyzer_revision: 1,
+                evidence_schema_revision: 1,
+                coverage: CoverageCounts::default(),
+            })
+            .detectors[DetectorId::SessionsOverDepth.index()];
+        assert_eq!(counts.finding, 1);
+        assert_eq!(counts.clean, 0);
+        assert_eq!(counts.unavailable, 0, "incomplete={incomplete}");
+    }
+}
+
+#[test]
+fn resource_tool_calls_remain_unclassified_without_resource_metadata() {
+    let input = input(RawSource::Jsonl(
+        include_str!("fixtures/antigravity_characterization/unclassified_resource_calls.jsonl")
+            .to_owned(),
+    ));
+    let evidence = evidence(&input);
+    let tools = match evidence.tools {
+        EvidenceValue::Complete(tools)
+        | EvidenceValue::Partial {
+            observed: tools, ..
+        } => tools,
+        EvidenceValue::Unsupported => panic!("antigravity tool evidence must be available"),
+    };
+
+    assert_eq!(tools.by_name.len(), 5);
+    assert!(
+        tools
+            .by_name
+            .values()
+            .all(|tool| tool.calls == 1 && tool.class == ToolClass::Unclassified)
+    );
 }

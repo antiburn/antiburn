@@ -56,7 +56,9 @@ function applyAnalytics(
   if (outcome.outcome === "appliedAwaitingVerification") {
     return "applied_awaiting_verification"
   }
-  if (outcome.outcome === "applied") return "applied_verification_unavailable"
+  if (outcome.outcome === "appliedVerificationUnavailable") {
+    return "applied_verification_unavailable"
+  }
   return outcome.outcome === "recoveryNeeded" ? "recovery_needed" : outcome.outcome
 }
 
@@ -144,7 +146,7 @@ function applyMessage(
   if (!outcome) return `${progress}The next change could not be applied.`
   switch (outcome.outcome) {
     case "appliedAwaitingVerification":
-    case "applied":
+    case "appliedVerificationUnavailable":
       return ""
     case "recoveryNeeded":
       return `${progress}The last write has an uncertain result. Review the config before another change.`
@@ -250,12 +252,13 @@ export function BurnCheckTargetChooserDialog({
         )
         if (
           !outcome ||
-          (outcome.outcome !== "appliedAwaitingVerification" && outcome.outcome !== "applied")
+          (outcome.outcome !== "appliedAwaitingVerification" &&
+            outcome.outcome !== "appliedVerificationUnavailable")
         ) {
           failed = outcome
           break
         }
-        verificationUnavailable ||= outcome.outcome === "applied"
+        verificationUnavailable ||= outcome.outcome === "appliedVerificationUnavailable"
         applied += 1
         setAppliedCount(applied)
       }
@@ -276,7 +279,7 @@ export function BurnCheckTargetChooserDialog({
     setStatus(
       failed
         ? applyMessage(failed, applied, prepared.length)
-        : `${applied} ${applied === 1 ? "change" : "changes"} applied.${verificationUnavailable ? " Current evidence cannot verify one or more fixes." : ""}`,
+        : `${applied} ${applied === 1 ? "change" : "changes"} applied.${verificationUnavailable ? " Verification is unavailable for these checks." : ""}`,
     )
     setStep("result")
     refresh()

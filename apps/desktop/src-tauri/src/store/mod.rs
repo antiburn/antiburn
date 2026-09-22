@@ -64,7 +64,7 @@ use antiburn_local::analysis::{
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
 
-use crate::dto::DeferredPermissionDir;
+use crate::dto::{BurnCheckSnoozePayload, DeferredPermissionDir};
 
 pub use model::{
     ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
@@ -481,6 +481,32 @@ impl Store {
             tx.commit()?;
             current = 54;
         }
+        // Main used v54 and v55 for allowance changes before this branch used
+        // those versions for remediation changes. Complete the remediation
+        // shape before applying the appended migrations.
+        if (current == 54 || current == 55)
+            && guard.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('provider_usage_observation')
+                    WHERE name = 'refusal_kind')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let tx = guard.transaction()?;
+            let remediation_ready: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('remediation')
+                    WHERE name = 'prompt_group_id')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !remediation_ready {
+                tx.execute_batch(schema::MIGRATIONS[53])?;
+                tx.execute_batch(schema::MIGRATIONS[54])?;
+            }
+            tx.pragma_update(None, "user_version", 56)?;
+            tx.commit()?;
+            current = 56;
+        }
         for (index, sql) in schema::MIGRATIONS.iter().enumerate() {
             let version = index as i64 + 1;
             if version <= current {
@@ -594,11 +620,20 @@ impl Store {
         );
     }
 
-    /// Read the serialized burn-check snooze ledger.
-    pub fn burn_check_snoozes(&self) -> Result<String> {
-        Ok(self
-            .internal_value(BURN_CHECK_SNOOZES_KEY)
-            .unwrap_or_else(|| "[]".to_owned()))
+    /// Read the burn-check snooze ledger. A missing ledger is empty.
+    pub fn burn_check_snoozes(&self) -> Result<Vec<BurnCheckSnoozePayload>> {
+        let connection = self.lock();
+        let stored = connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = ?1",
+                params![BURN_CHECK_SNOOZES_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        stored
+            .map(|value| serde_json::from_str(&value).context("invalid burn-check snooze ledger"))
+            .transpose()
+            .map(Option::unwrap_or_default)
     }
 
     /// Replace the bounded burn-check snooze ledger.

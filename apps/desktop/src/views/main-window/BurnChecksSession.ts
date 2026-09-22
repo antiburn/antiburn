@@ -1,16 +1,16 @@
 import {
   cancelChecksReport,
   getBurnCheckAggregateWins,
-  getBurnCheckRemediationProgress,
   getChecksReport,
   listBurnCheckTargets,
   onChecksReportChanged,
   type AggregateWinsPayload,
   type BurnCheckDetectorId,
-  type BurnCheckRemediationProgressPayload,
   type BurnCheckTargetListPayload,
   type ChecksReportPayload,
 } from "../../lib/insightsIpc"
+import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
 import {
   getMainWindowVisible,
   noteInteraction,
@@ -21,23 +21,30 @@ import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 export interface BurnChecksAdapter {
   getReport(consumerId: string): Promise<ChecksReportPayload | null>
   getAggregateWins(): Promise<AggregateWinsPayload | null>
-  getRemediationProgress?(): Promise<BurnCheckRemediationProgressPayload | null>
   getTargets(detector: BurnCheckDetectorId): Promise<BurnCheckTargetListPayload | null>
   cancelReport(consumerId: string): Promise<void>
   getVisible(): Promise<boolean>
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
   onChanged(handler: () => void): Promise<() => void>
+  getSnoozedDetectors?(): Promise<ReadonlySet<BurnCheckDetectorId>>
+  onSnoozesChanged?(handler: () => void): Promise<() => void>
 }
 
 const productionAdapter: BurnChecksAdapter = {
   getReport: (consumerId) => getChecksReport(consumerId),
   getAggregateWins: () => getBurnCheckAggregateWins(),
-  getRemediationProgress: () => getBurnCheckRemediationProgress(),
   getTargets: (detector) => listBurnCheckTargets(detector),
   cancelReport: (consumerId) => cancelChecksReport(consumerId),
   getVisible: () => getMainWindowVisible(),
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
   onChanged: (handler) => onChecksReportChanged(handler),
+  getSnoozedDetectors: async () => {
+    const snoozes = await invoke<Array<{ detector: BurnCheckDetectorId }>>(
+      "list_burn_check_snoozes",
+    )
+    return new Set(snoozes.map((snooze) => snooze.detector))
+  },
+  onSnoozesChanged: (handler) => listen("checks:snoozes-changed", handler),
 }
 
 interface BurnCheckTargetState {
@@ -50,7 +57,6 @@ export interface BurnChecksSnapshot {
   active: boolean
   report: ChecksReportPayload | null
   aggregate: AggregateWinsPayload | null
-  remediationProgress: BurnCheckRemediationProgressPayload | null
   loading: boolean
   refreshing: boolean
   error: boolean
@@ -66,7 +72,6 @@ export class BurnChecksSession {
     active: false,
     report: null,
     aggregate: null,
-    remediationProgress: null,
     loading: false,
     refreshing: false,
     error: false,
@@ -79,6 +84,8 @@ export class BurnChecksSession {
   private generation = 0
   private workVersion = 0
   private refreshVersion = 0
+  private reportVersion = 0
+  private aggregateVersion = 0
   private visible = false
   private initialized = false
   private refreshTask: Promise<void> | null = null
@@ -90,6 +97,9 @@ export class BurnChecksSession {
   private readonly visibleTargets = new Set<BurnCheckDetectorId>()
   private readonly observedTargets = new Set<BurnCheckDetectorId>()
   private readonly observedOutcomes = new Set<string>()
+  private snoozedDetectors = new Set<BurnCheckDetectorId>()
+  private snoozesLoaded = false
+  private snoozeRevision = 0
 
   constructor(adapter: BurnChecksAdapter = productionAdapter) {
     this.adapter = adapter
@@ -140,9 +150,21 @@ export class BurnChecksSession {
       this.listen(
         generation,
         this.adapter.onChanged(() => {
-          if (generation === this.generation) this.refresh()
+          if (generation !== this.generation) return
+          this.reloadSnoozes()
+          this.refresh()
         }),
       ),
+      ...(this.adapter.onSnoozesChanged
+        ? [
+            this.listen(
+              generation,
+              this.adapter.onSnoozesChanged(() => {
+                if (generation === this.generation) this.reloadSnoozes()
+              }),
+            ),
+          ]
+        : []),
     ])
     const revision = visibilityRevision
     const visible = await this.adapter.getVisible().catch(() => false)
@@ -172,6 +194,7 @@ export class BurnChecksSession {
       origin: "user",
       state: this.reportState(),
     })
+    this.reloadSnoozes()
     this.observeOutcomes()
     this.consumerId = `main-burn-checks-${++nextConsumer}`
     this.refresh()
@@ -181,7 +204,6 @@ export class BurnChecksSession {
   }
 
   refresh = (): void => {
-    this.refreshVersion += 1
     this.refreshDirty = true
     if (!this.snapshot.active || this.refreshTask) return
     this.refreshTask = this.runRefresh().finally(() => {
@@ -194,30 +216,32 @@ export class BurnChecksSession {
     while (this.refreshDirty && this.snapshot.active) {
       this.refreshDirty = false
       const work = this.workVersion
-      const version = this.refreshVersion
+      const version = ++this.refreshVersion
       const consumerId = this.consumerId
       if (!consumerId) return
       this.update({
+        aggregate: null,
         loading: !this.snapshot.report,
         refreshing: !!this.snapshot.report,
       })
-      void this.loadAggregate(work, version)
-      void this.loadRemediationProgress(work, version)
+      this.aggregateVersion = 0
       try {
         const report = await this.adapter.getReport(consumerId)
-        if (work !== this.workVersion || version !== this.refreshVersion) continue
+        if (work !== this.workVersion || consumerId !== this.consumerId) continue
         if (!report) throw new Error("Checks are unavailable")
+        this.reportVersion = version
         this.update({ report, loading: false, refreshing: false, error: false })
         this.exposure.observe(
           this.reportState() ?? "empty",
           this.exposureGeneration ?? undefined,
         )
+        void this.loadAggregate(work, version)
         this.observeOutcomes()
         for (const detector of this.visibleTargets) {
           this.loadTargets(detector, true)
         }
       } catch {
-        if (work === this.workVersion && version === this.refreshVersion) {
+        if (work === this.workVersion && consumerId === this.consumerId) {
           this.update({ loading: false, refreshing: false, error: true })
           this.exposure.observe("error", this.exposureGeneration ?? undefined)
         }
@@ -234,27 +258,12 @@ export class BurnChecksSession {
         version === this.refreshVersion &&
         this.snapshot.active
       ) {
+        this.aggregateVersion = version
         this.update({ aggregate })
         this.observeOutcomes()
       }
     } catch {
       // Aggregate savings are optional and must not hide the checks report.
-    }
-  }
-
-  private async loadRemediationProgress(work: number, version: number): Promise<void> {
-    try {
-      const remediationProgress = await this.adapter.getRemediationProgress?.()
-      if (
-        remediationProgress &&
-        work === this.workVersion &&
-        version === this.refreshVersion &&
-        this.snapshot.active
-      ) {
-        this.update({ remediationProgress })
-      }
-    } catch {
-      // Remediation progress is optional and must not hide the checks report.
     }
   }
 
@@ -344,6 +353,42 @@ export class BurnChecksSession {
     }
   }
 
+  private async loadSnoozes(revision: number, work: number): Promise<void> {
+    let loaded = false
+    try {
+      const snoozedDetectors = await this.adapter.getSnoozedDetectors?.()
+      if (
+        !this.snapshot.active ||
+        revision !== this.snoozeRevision ||
+        work !== this.workVersion
+      )
+        return
+      this.snoozedDetectors = new Set(snoozedDetectors ?? [])
+      loaded = true
+    } catch {
+      // Do not report outcomes when the active snooze state is unknown.
+    } finally {
+      if (
+        this.snapshot.active &&
+        revision === this.snoozeRevision &&
+        work === this.workVersion
+      ) {
+        this.snoozesLoaded = loaded
+        if (loaded) this.observeOutcomes()
+      }
+    }
+  }
+
+  private reloadSnoozes(): void {
+    const revision = ++this.snoozeRevision
+    if (!this.adapter.getSnoozedDetectors) {
+      this.snoozesLoaded = true
+      return
+    }
+    this.snoozesLoaded = false
+    void this.loadSnoozes(revision, this.workVersion)
+  }
+
   dispose = (): void => {
     this.generation += 1
     this.workVersion += 1
@@ -354,6 +399,9 @@ export class BurnChecksSession {
     this.visibleTargets.clear()
     this.observedTargets.clear()
     this.observedOutcomes.clear()
+    this.snoozedDetectors = new Set()
+    this.snoozesLoaded = false
+    this.snoozeRevision += 1
     this.exposure.conceal("burn_checks", this.exposureGeneration ?? undefined)
     this.exposureGeneration = null
     for (const stop of this.stops.splice(0)) stop()
@@ -372,16 +420,31 @@ export class BurnChecksSession {
   }
 
   private observeOutcomes(): void {
-    if (!this.snapshot.active) return
-    for (const win of this.snapshot.aggregate?.wins ?? []) {
-      this.observeOutcome("verified", win.origin)
+    if (!this.snapshot.active || !this.snoozesLoaded) return
+    const passedDetectors = new Set(
+      (this.snapshot.report?.categories ?? [])
+        .filter(
+          (category) =>
+            category.lifecycle === "passing" && !this.snoozedDetectors.has(category.id),
+        )
+        .map((category) => category.id),
+    )
+    if (this.aggregateVersion === this.reportVersion) {
+      const verifiedCycles = new Set<string>()
+      for (const win of this.snapshot.aggregate?.wins ?? []) {
+        if (!passedDetectors.has(win.detector)) continue
+        const cycle = JSON.stringify([win.detector, win.findingId, win.remediationCycleId])
+        if (verifiedCycles.has(cycle)) continue
+        verifiedCycles.add(cycle)
+        this.observeOutcome("verified", win.origin)
+      }
     }
     for (const detector of this.observedTargets) {
+      if (this.snoozedDetectors.has(detector)) continue
       for (const target of this.snapshot.targets[detector]?.data?.targets ?? []) {
         const watch = target.watch
         if (!watch) continue
         const status = watch.verification.status
-        if (status === "fixed") this.observeOutcome("verified", watch.origin)
         if (status === "recurred") this.observeOutcome("recurred", watch.origin)
       }
     }

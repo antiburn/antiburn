@@ -19,7 +19,7 @@ function summaryEstimate(presentation: ChecksPresentation): string | null {
   const basisPoints = presentation.estimate.tokenBurnBasisPoints
   return basisPoints == null || presentation.failures.length === 0
     ? null
-    : `${formatTokenBurnPercent(basisPoints)} token burn`
+    : `${formatTokenBurnPercent(basisPoints)} estimated token burn`
 }
 
 export function ChecksSummary({
@@ -158,6 +158,7 @@ export function ChecksPeek({
   pendingEvidence?: number | undefined
 }) {
   const { failures, wins, estimate } = presentation
+  const awaiting = presentation.awaiting ?? []
   const hero = checksHeroPresentation(presentation)
   const hasFindings = hero.state === "failed"
   const completePass = hero.state === "passed"
@@ -220,6 +221,15 @@ export function ChecksPeek({
             Failed checks
           </h2>
           <CheckRows checks={failures} />
+        </section>
+      )}
+
+      {awaiting.length > 0 && (
+        <section className="mt-4" aria-labelledby="awaiting-checks">
+          <h2 id="awaiting-checks" className="px-1 type-caption text-label-tertiary">
+            Awaiting verification
+          </h2>
+          <CheckRows checks={awaiting} />
         </section>
       )}
 

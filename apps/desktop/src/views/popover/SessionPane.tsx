@@ -16,6 +16,7 @@ import {
 import { performProjectFolderAction } from "../../lib/projectFolder"
 import { agentSupportsAnalysis } from "../../lib/presentation/agents"
 import { sessionDiscussionPrompt } from "../../lib/presentation/sessionDiscussionPrompt"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import type { SessionSubject } from "../../lib/sessionSubject"
 import {
   inclusiveCostSubject,
@@ -248,6 +249,8 @@ export function SessionPane({
   }
   const hygieneBySession = useSessionHygiene(active ? [hygieneIdentity] : [])
   const hygiene = sessionHygieneFor(hygieneBySession, hygieneIdentity)
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   const handleCopyDiscussionPrompt = useCallback(async () => {
     if (!sourcePath) throw new Error("No source path")
     const prompt = sessionDiscussionPrompt({
@@ -257,9 +260,10 @@ export function SessionPane({
       loading,
       refreshing,
       error,
+      snoozedDetectors,
     })
     await writeClipboardText(prompt)
-  }, [sourcePath, subject, payload, hygiene, loading, refreshing, error])
+  }, [sourcePath, subject, payload, hygiene, loading, refreshing, error, snoozedDetectors])
   const { cost, costSplit } = payload
     ? toLocalCost(subject, payload)
     : { cost: null, costSplit: null }
@@ -362,7 +366,9 @@ export function SessionPane({
         ? {
             onRevealSource: handleReveal,
             onCopySourcePath: handleCopyPath,
-            onCopyDiscussionPrompt: handleCopyDiscussionPrompt,
+            ...(snoozes.status === "ready"
+              ? { onCopyDiscussionPrompt: handleCopyDiscussionPrompt }
+              : {}),
           }
         : {})}
       {...(projectPath

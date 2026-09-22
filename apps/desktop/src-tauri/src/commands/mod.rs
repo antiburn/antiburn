@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, ProviderHint, SessionEvidence,
@@ -1174,6 +1174,7 @@ pub async fn get_checks_report(
     window: tauri::WebviewWindow,
     consumer_id: String,
 ) -> CommandResult<ChecksReportPayload> {
+    let started_at = Instant::now();
     if !matches!(window.label(), popover::LABEL | crate::main_window::LABEL) {
         return Err(fail("only Checks surfaces can read the Checks report"));
     }
@@ -1186,8 +1187,9 @@ pub async fn get_checks_report(
     let request = insights_report_request(epoch_now());
     let reduced = app
         .state::<InsightsController>()
-        .checks_report(data_dir, request, consumer_id)
+        .checks_report(data_dir, request.clone(), consumer_id)
         .await?;
+    let reduction_ms = started_at.elapsed().as_millis() as u64;
     // The report carries three measurements that no other command reduces:
     // unknown record vocabulary, quota incidents, and provider incidents.
     // Each recorder compares the outcome against the last one it sent, so
@@ -1195,7 +1197,20 @@ pub async fn get_checks_report(
     crate::analytics::record_unrecognized_records(app, &reduced.report.unrecognized_records);
     crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
     crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
-    let payload = ChecksReportPayload::from_reduced_report(&reduced);
+    let mut payload = ChecksReportPayload::from_reduced_report(&reduced);
+    app.state::<RemediationController>()
+        .apply_category_lifecycles(
+            &app.state::<Store>(),
+            &mut payload,
+            &request.environment_key,
+        )
+        .map_err(fail)?;
+    ::tracing::debug!(
+        event = "checks_report_finished",
+        duration_ms = started_at.elapsed().as_millis() as u64,
+        reduction_ms,
+        lifecycle_ms = started_at.elapsed().as_millis() as u64 - reduction_ms,
+    );
     #[cfg(debug_assertions)]
     let payload = {
         let mut payload = payload;
@@ -1207,9 +1222,9 @@ pub async fn get_checks_report(
 
 fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
     let now_ms = epoch_now() * 1_000;
-    let stored = store.burn_check_snoozes().map_err(fail)?;
-    let snoozes: Vec<BurnCheckSnoozePayload> = serde_json::from_str(&stored).unwrap_or_default();
-    Ok(snoozes
+    Ok(store
+        .burn_check_snoozes()
+        .map_err(fail)?
         .into_iter()
         .filter(|snooze| snooze.until.is_none_or(|until| until > now_ms))
         .collect())
@@ -1387,7 +1402,9 @@ fn apply_prepared_outcome(
                 watch_id: result.watch_id,
             }
         } else {
-            ApplyPreparedBurnCheckOperationOutcome::Applied
+            ApplyPreparedBurnCheckOperationOutcome::AppliedVerificationUnavailable {
+                watch_id: result.watch_id,
+            }
         }),
         Err(ControllerError::RecoveryNeeded { watch_id }) => {
             Ok(ApplyPreparedBurnCheckOperationOutcome::RecoveryNeeded { watch_id })
@@ -1547,7 +1564,7 @@ pub async fn copy_prompt_fix_burn_check_target(
     Ok(outcome)
 }
 
-/// Returns a bounded generic prompt when no exact prompt target is available.
+/// Returns one bounded prompt for selectable current targets.
 #[tauri::command]
 pub async fn copy_prompt_fix_burn_check(
     window: tauri::WebviewWindow,
@@ -2430,6 +2447,14 @@ mod tests {
     }
 
     #[test]
+    fn burn_check_snooze_command_rejects_malformed_stored_state() {
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-snooze-command-test")).unwrap();
+        store.save_burn_check_snoozes("not json").unwrap();
+
+        assert!(current_burn_check_snoozes(&store).is_err());
+    }
+
+    #[test]
     fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent() {
         use crate::remediation::{
             AutoFixAvailability, BurnCheckDisplayFacts, BurnCheckResourceKind,
@@ -2658,7 +2683,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_fix_success_distinguishes_verifiable_changes() {
+    fn auto_fix_success_reports_verification_availability() {
         assert!(matches!(
             apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
                 watch_id: "watch".into(),
@@ -2673,7 +2698,7 @@ mod tests {
                 verification_available: false,
             }))
             .unwrap(),
-            ApplyPreparedBurnCheckOperationOutcome::Applied
+            ApplyPreparedBurnCheckOperationOutcome::AppliedVerificationUnavailable { .. }
         ));
     }
 

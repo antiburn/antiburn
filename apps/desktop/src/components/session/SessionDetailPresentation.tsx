@@ -3,6 +3,7 @@ import {
   snoozedDetectorIds,
   useSnoozedBurnChecks,
   visibleSessionHygieneChecks,
+  visibleUnusedContextRows,
 } from "../../lib/snoozedBurnChecks"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
@@ -726,12 +727,17 @@ export function SessionDetailPresentation({
     [],
   )
   const modelPairs = modelRunShortPairs(modelRuns)
-  const hygieneChecks = visibleSessionHygieneChecks(
-    sessionHygieneChecks(hygiene),
-    snoozedDetectorIds(useSnoozedBurnChecks()),
-  )
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
+  const hygieneChecks =
+    snoozes.status === "ready"
+      ? visibleSessionHygieneChecks(sessionHygieneChecks(hygiene), snoozedDetectors)
+      : []
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
-  const unusedContextRows = unusedContextRowsFor(hygiene)
+  const unusedContextRows =
+    snoozes.status === "ready"
+      ? visibleUnusedContextRows(unusedContextRowsFor(hygiene), snoozedDetectors)
+      : []
 
   const handleAdjacentKey = (event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>) => {
     if (!active || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey)
@@ -1136,6 +1142,15 @@ export function SessionDetailPresentation({
                         collapsePassing={false}
                         inlineGuidance
                       />
+                    </section>
+                  )}
+
+                  {snoozes.status === "error" && (
+                    <section className="shrink-0">
+                      <TabSectionHeading>Checks</TabSectionHeading>
+                      <p role="status" className="type-callout text-label-secondary">
+                        Session checks are unavailable.
+                      </p>
                     </section>
                   )}
 

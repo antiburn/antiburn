@@ -8,10 +8,10 @@ use time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
 use crate::analysis::interface::{
-    NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionReader,
-    SessionSummary, VisitOutcome,
+    ContentKind, ContentPart, NormalizedRecord, RawSource, RecordSink, SessionCollector,
+    SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome,
 };
-use crate::analysis::model::{NormalizedSession, Role};
+use crate::analysis::model::{NormalizedSession, Role, ToolCall};
 use crate::analysis::records::{RecordShape, parse_record, parse_ts};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
@@ -157,12 +157,22 @@ fn visit_cursor_reader(
                 event.model = model_from(&value)
                     .map(str::to_owned)
                     .or_else(|| header_model.clone());
+                add_cursor_tool_calls(&value, &mut event);
+                if is_cursor_tool_result_only(&value) {
+                    event.role = Role::Tool;
+                }
                 attribution_incomplete |= event.ts_ms.is_none()
                     || (event.role == Role::Assistant && event.model.is_none());
                 if event.uuid.is_none() {
                     event.uuid = cursor_record_id(&value).map(str::to_owned);
                 }
+                let content = cursor_content_parts(&value, event.role);
                 sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+                if !content.is_empty() {
+                    sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                        parts: content,
+                    })));
+                }
             }
             FramedRecord::Skipped(RecordSkip::ReadFailed { index, kind }) => {
                 anyhow::bail!("Cursor record {index} read failed: {kind:?}");
@@ -204,6 +214,172 @@ fn model_from(value: &Value) -> Option<&str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("default"))
+}
+
+fn cursor_content(value: &Value) -> Option<&Value> {
+    value
+        .pointer("/message/content")
+        .or_else(|| value.get("content"))
+}
+
+fn add_cursor_tool_calls(value: &Value, event: &mut crate::analysis::model::NormalizedEvent) {
+    let Some(Value::Array(blocks)) = cursor_content(value) else {
+        return;
+    };
+    let mut parsed_names = event
+        .tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<Vec<_>>();
+    for block in blocks {
+        let kind = block.get("type").and_then(Value::as_str).unwrap_or("");
+        if !is_cursor_tool_call_kind(kind) {
+            continue;
+        }
+        let name = block
+            .get("name")
+            .or_else(|| block.get("tool"))
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty());
+        let input = block.get("input").or_else(|| block.get("arguments"));
+        if let Some(name) = name {
+            if let Some(index) = parsed_names.iter().position(|parsed| parsed == name) {
+                parsed_names.swap_remove(index);
+                continue;
+            }
+            event.tools.push(ToolCall::with_command(
+                name,
+                input
+                    .and_then(|value| value.get("command"))
+                    .and_then(Value::as_str),
+            ));
+        }
+    }
+}
+
+fn is_cursor_tool_call_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "tool_use" | "tool-use" | "toolCall" | "tool-call" | "tool_call"
+    )
+}
+
+fn is_cursor_tool_result_only(value: &Value) -> bool {
+    let Some(Value::Array(blocks)) = cursor_content(value) else {
+        return false;
+    };
+    !blocks.is_empty()
+        && blocks.iter().all(|block| {
+            matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("tool_result" | "tool-result" | "command_output")
+            )
+        })
+}
+
+fn cursor_content_parts(value: &Value, role: Role) -> Vec<ContentPart> {
+    let Some(content) = cursor_content(value) else {
+        return Vec::new();
+    };
+    let Value::Array(blocks) = content else {
+        return cursor_text_part(Some(content), role).into_iter().collect();
+    };
+    let mut parts = Vec::new();
+    for block in blocks {
+        collect_cursor_content_part(block, role, &mut parts);
+    }
+    parts
+}
+
+fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<ContentPart>) {
+    let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "text" => {
+            if let Some(text) = value.get("text").and_then(Value::as_str)
+                && let Some(text) = cursor_text(role, text)
+            {
+                parts.push(ContentPart::new(cursor_text_kind(role), text));
+            }
+        }
+        "thinking" => {
+            if let Some(text) = value.get("thinking").and_then(Value::as_str) {
+                parts.push(ContentPart::new(ContentKind::Thinking, text));
+            }
+        }
+        kind if is_cursor_tool_call_kind(kind) => {
+            let input = value
+                .get("input")
+                .or_else(|| value.get("arguments"))
+                .and_then(compact_json_text);
+            if let Some(input) = input {
+                parts.push(ContentPart::new(ContentKind::ToolInput, input));
+            }
+        }
+        "tool_result" | "tool-result" => {
+            if let Some(content) = value.get("content") {
+                if let Some(text) = content.as_str() {
+                    parts.push(ContentPart::new(ContentKind::ToolResult, text));
+                } else if let Some(blocks) = content.as_array() {
+                    for block in blocks {
+                        collect_cursor_content_part(block, Role::Tool, parts);
+                    }
+                }
+            }
+            if let Some(output) = value.get("output").and_then(Value::as_str) {
+                parts.push(ContentPart::new(ContentKind::ToolResult, output));
+            }
+        }
+        "command_output" => {
+            if let Some(output) = value.get("output").and_then(Value::as_str) {
+                parts.push(ContentPart::new(ContentKind::ToolResult, output));
+            }
+        }
+        "redacted" => {}
+        _ => {
+            if let Some(text) = value.get("text").and_then(Value::as_str)
+                && let Some(text) = cursor_text(role, text)
+            {
+                parts.push(ContentPart::new(cursor_text_kind(role), text));
+            }
+        }
+    }
+}
+
+fn cursor_text_part(value: Option<&Value>, role: Role) -> Option<ContentPart> {
+    value
+        .and_then(Value::as_str)
+        .and_then(|text| cursor_text(role, text))
+        .map(|text| ContentPart::new(cursor_text_kind(role), text))
+}
+
+fn cursor_text_kind(role: Role) -> ContentKind {
+    match role {
+        Role::User => ContentKind::UserText,
+        Role::Tool => ContentKind::ToolResult,
+        Role::Assistant | Role::System => ContentKind::AssistantText,
+    }
+}
+
+fn cursor_text(role: Role, text: &str) -> Option<String> {
+    let text = if role == Role::User {
+        text.split_once("<user_query>")
+            .map(|(_, text)| {
+                text.split_once("</user_query>")
+                    .map_or(text, |(text, _)| text)
+            })
+            .unwrap_or(text)
+    } else {
+        text
+    };
+    let text = text.trim();
+    (!text.is_empty() && text != "[REDACTED]").then(|| text.to_owned())
+}
+
+fn compact_json_text(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| serde_json::to_string(value).ok())
 }
 
 fn embedded_timestamp(value: &Value) -> Option<i64> {

@@ -28,12 +28,14 @@ function category(
   clean: number,
   unavailable = 0,
 ): ChecksReportPayload["categories"][number] {
+  const lifecycle = finding > 0 ? "failing" : clean > 0 ? "passing" : null
   return {
     id: "cacheChurn",
     finding,
     clean,
     unavailable,
     estimatedTokenBurnBasisPoints: null,
+    lifecycle,
   }
 }
 

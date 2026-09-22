@@ -8,6 +8,7 @@ import {
   type SidebarNavItem,
 } from "../components/ui/SidebarNav"
 import { openSettingsWindow } from "../lib/ipc"
+import type { BurnCheckDetectorId } from "../lib/insightsIpc"
 import {
   parseSessionFilterId,
   sessionFilterCounts,
@@ -15,6 +16,7 @@ import {
   type SessionFilter,
 } from "../lib/sessionFilters"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../lib/snoozedBurnChecks"
 import {
   sessionHygieneIdentities,
   useSessionHygiene,
@@ -72,9 +74,10 @@ function sessionFilterChild(
 function sessionFilterChildren(
   entries: SessionListEntry[] | null,
   hygiene: SessionHygieneSnapshot,
+  snoozed: ReadonlySet<BurnCheckDetectorId>,
 ): SidebarNavChildItem[] {
   const loaded = entries !== null
-  const counts = sessionFilterCounts(entries ?? [], hygiene)
+  const counts = sessionFilterCounts(entries ?? [], hygiene, snoozed)
   return [
     sessionFilterChild({ kind: "notable" }, "Notable Sessions", counts.notable, loaded),
     sessionFilterChild({ kind: "material" }, "Material Sessions", counts.material, loaded),
@@ -153,6 +156,8 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   // this request's key. Always live, so the sidebar's counts stay current
   // even while another section is on screen.
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(activity.entries ?? []))
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   const availableSections: readonly MainWindowSection[] = sections ?? [
     {
       id: "overview",
@@ -199,7 +204,11 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       id: "activity",
       label: "Sessions",
       icon: MessagesSquare,
-      children: sessionFilterChildren(activity.entries, hygieneBySession),
+      children: sessionFilterChildren(
+        snoozes.status === "ready" ? activity.entries : null,
+        hygieneBySession,
+        snoozedDetectors,
+      ),
       render: ({ active }) => (
         <MainActivityView
           active={active}

@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use antiburn_local::analysis::{
     EvidenceValue, InitialContextBreakdown, SessionEvidence, SourceOrigin, ToolClass,
 };
-use antiburn_local::insights::{DetectorId, EfficiencyReport, SessionTokenBurnEvidence};
+use antiburn_local::insights::{
+    DetectorId, EfficiencyReport, SessionTokenBurnEvidence, fallback_token_burn_basis_points,
+};
 use antiburn_local::model::AgentKind;
 
 use crate::agent_config::{
@@ -96,23 +98,20 @@ impl ResourceAssessment {
         self.detectors.get(&detector)
     }
 
-    pub(crate) fn measured_finding_tokens_by_session(&self) -> Option<Vec<(usize, u128)>> {
-        let mut measured = false;
-        let mut totals = BTreeMap::<usize, u128>::new();
-        for assessment in self.detectors.values() {
-            if assessment.unused_count == 0 {
-                continue;
-            }
-            let Some(by_session) = &assessment.replicated_tokens_by_session else {
-                continue;
-            };
-            measured = true;
-            for (session, tokens) in by_session {
-                let total = totals.entry(*session).or_default();
-                *total = total.checked_add(*tokens)?;
-            }
-        }
-        measured.then(|| totals.into_iter().collect())
+    pub(crate) fn measured_finding_tokens_by_session(
+        &self,
+        detector: DetectorId,
+    ) -> Option<Vec<(usize, u128)>> {
+        let assessment = self.detectors.get(&detector)?;
+        (assessment.unused_count > 0)
+            .then_some(assessment.replicated_tokens_by_session.as_ref())
+            .flatten()
+            .map(|tokens| {
+                tokens
+                    .iter()
+                    .map(|(&session, &value)| (session, value))
+                    .collect()
+            })
     }
 }
 
@@ -122,6 +121,12 @@ struct CandidateState {
     scope: ResourceAssessmentScope,
     observations: u64,
     supporting_sessions: Vec<ResourceSupportingSession>,
+}
+
+enum CandidateMatch {
+    None,
+    Unique(ResourceTargetKey),
+    Ambiguous(Vec<ResourceTargetKey>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -181,7 +186,7 @@ pub(crate) struct ResourceAssessmentBuilder {
 
 impl ResourceAssessmentBuilder {
     pub(crate) fn mark_window_incomplete(&mut self) {
-        for agent in first_tier_agents() {
+        for agent in resource_assessment_agents() {
             for kind in resource_kinds() {
                 self.limited.insert((agent, kind));
             }
@@ -400,21 +405,19 @@ impl ResourceAssessmentBuilder {
         let mut used = BTreeSet::new();
         let mut ambiguous = BTreeSet::new();
         for (key, samples) in &self.uses {
-            let matching = self.matching_candidates(key);
-            if matching.len() == 1 {
-                let candidate = matching.into_iter().next().expect("one matching candidate");
-                used.insert(candidate.clone());
-                if let Some(state) = self.candidates.get_mut(&candidate) {
-                    merge_samples(&mut state.supporting_sessions, samples.iter().cloned());
-                }
-            } else if matching.len() > 1 {
-                for candidate in matching {
-                    if key.kind == ResourceKind::McpServer
-                        && matches!(key.agent, AgentKind::OpenCode | AgentKind::Pi)
-                    {
-                        ambiguous.insert(candidate.clone());
+            match self.matching_candidates(key) {
+                CandidateMatch::None => {}
+                CandidateMatch::Unique(candidate) => {
+                    used.insert(candidate.clone());
+                    if let Some(state) = self.candidates.get_mut(&candidate) {
+                        merge_samples(&mut state.supporting_sessions, samples.iter().cloned());
                     }
-                    self.limited.insert((candidate.agent, candidate.kind));
+                }
+                CandidateMatch::Ambiguous(candidates) => {
+                    for candidate in candidates {
+                        ambiguous.insert(candidate.clone());
+                        self.limited.insert((candidate.agent, candidate.kind));
+                    }
                 }
             }
         }
@@ -503,10 +506,21 @@ impl ResourceAssessmentBuilder {
                 .replicated_tokens_by_session
                 .as_ref()
                 .and_then(|tokens| tokens.values().copied().try_fold(0_u128, u128::checked_add));
-            assessment.estimated_token_burn_basis_points = assessment
-                .replicated_tokens
-                .and_then(|tokens| report.estimated_token_burn_for_attributed_tokens(tokens));
-            let relevant_agents = first_tier_agents()
+            assessment.estimated_token_burn_basis_points = if assessment.unused_count > 0 {
+                assessment
+                    .replicated_tokens
+                    .and_then(|tokens| report.estimated_token_burn_for_attributed_tokens(tokens))
+                    .or_else(|| {
+                        fallback_token_burn_basis_points(
+                            detector,
+                            assessment.unused_count,
+                            report.assessed_sessions,
+                        )
+                    })
+            } else {
+                None
+            };
+            let relevant_agents = resource_assessment_agents()
                 .into_iter()
                 .filter(|agent| {
                     self.cohort_agents.contains(agent)
@@ -672,6 +686,17 @@ impl ResourceAssessmentBuilder {
                             ObservedScope::Context(context.project_root.map(Path::to_owned)),
                             ObservedIdentityKind::ToolName,
                         );
+                    }
+                    if matches!(context.agent, AgentKind::Cursor | AgentKind::Antigravity) {
+                        for kind in [ResourceKind::McpServer, ResourceKind::Skill] {
+                            self.add_use(
+                                context,
+                                kind,
+                                name,
+                                ObservedScope::Context(context.project_root.map(Path::to_owned)),
+                                ObservedIdentityKind::ToolName,
+                            );
+                        }
                     }
                 }
             }
@@ -912,7 +937,7 @@ impl ResourceAssessmentBuilder {
         merge_samples(samples, [session_sample(context)]);
     }
 
-    fn matching_candidates(&self, observed: &ObservedUseKey) -> Vec<ResourceTargetKey> {
+    fn matching_candidates(&self, observed: &ObservedUseKey) -> CandidateMatch {
         let named = self
             .candidates
             .keys()
@@ -923,7 +948,7 @@ impl ResourceAssessmentBuilder {
             })
             .cloned()
             .collect::<Vec<_>>();
-        match &observed.scope {
+        let matching = match &observed.scope {
             ObservedScope::Global => named
                 .into_iter()
                 .filter(|candidate| candidate.scope == ResourceAssessmentScope::Global)
@@ -944,7 +969,7 @@ impl ResourceAssessmentBuilder {
                         .cloned()
                         .collect::<Vec<_>>();
                     if !project.is_empty() {
-                        return project;
+                        return candidate_match(project);
                     }
                 }
                 named
@@ -952,7 +977,8 @@ impl ResourceAssessmentBuilder {
                     .filter(|candidate| candidate.scope == ResourceAssessmentScope::Global)
                     .collect()
             }
-        }
+        };
+        candidate_match(matching)
     }
 
     fn replicated_tokens_by_session(
@@ -995,8 +1021,10 @@ impl ResourceAssessmentBuilder {
         self.measured_resources.iter().try_fold(
             None::<BTreeMap<usize, u128>>,
             |total, (observed, tokens)| {
-                let matching = self.matching_candidates(observed);
-                if matching.len() == 1 && matching[0] == *key {
+                if matches!(
+                    self.matching_candidates(observed),
+                    CandidateMatch::Unique(candidate) if candidate == *key
+                ) {
                     let mut total = total.unwrap_or_default();
                     for (session, tokens) in tokens {
                         let entry = total.entry(*session).or_default();
@@ -1022,6 +1050,14 @@ impl ResourceAssessmentBuilder {
                 })
             }),
         }
+    }
+}
+
+fn candidate_match(candidates: Vec<ResourceTargetKey>) -> CandidateMatch {
+    match candidates.len() {
+        0 => CandidateMatch::None,
+        1 => CandidateMatch::Unique(candidates.into_iter().next().expect("one candidate")),
+        _ => CandidateMatch::Ambiguous(candidates),
     }
 }
 
@@ -1054,8 +1090,7 @@ fn identity_matches(candidate: &ResourceTargetKey, observed: &ObservedUseKey) ->
         ResourceKind::Skill => {
             let observed = normalize_name(&observed.name);
             candidate.normalized_name == observed
-                || (matches!(candidate.agent, AgentKind::Claude | AgentKind::Codex)
-                    && !observed.contains(':')
+                || (!observed.contains(':')
                     && candidate
                         .normalized_name
                         .rsplit_once(':')
@@ -1087,6 +1122,12 @@ fn mcp_tool_matches(agent: AgentKind, server: &str, tool: &str) -> bool {
                 })
                 .collect::<String>();
             tool.starts_with(&format!("mcp_{server}_"))
+        }
+        AgentKind::Cursor | AgentKind::Antigravity => {
+            tool == server
+                || tool.strip_prefix(server).is_some_and(|suffix| {
+                    matches!(suffix.as_bytes(), [b'_' | b'-' | b'.' | b':', _, ..])
+                })
         }
         _ => false,
     }
@@ -1198,7 +1239,10 @@ const fn resource_kinds() -> [ResourceKind; 3] {
     ]
 }
 
-pub(crate) const fn first_tier_agents() -> [AgentKind; 11] {
+/// Agents with resource evidence and inventory support.
+///
+/// Product tiers do not limit evidence assessment or remediation.
+pub(crate) const fn resource_assessment_agents() -> [AgentKind; 11] {
     [
         AgentKind::Claude,
         AgentKind::Codex,

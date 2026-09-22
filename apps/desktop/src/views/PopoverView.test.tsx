@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { PopoverView } from "./PopoverView"
+import * as SnoozedBurnChecks from "../lib/snoozedBurnChecks"
 
 /**
  * The popover's flow, driven entirely through the mocked command layer.
@@ -224,6 +225,7 @@ const CHECKS_REPORT = {
       clean: 7,
       unavailable: 0,
       estimatedTokenBurnBasisPoints: 1_250,
+      lifecycle: "failing",
     },
     {
       id: "sessionsOverDepth",
@@ -231,6 +233,7 @@ const CHECKS_REPORT = {
       clean: 14,
       unavailable: 0,
       estimatedTokenBurnBasisPoints: 0,
+      lifecycle: "passing",
     },
   ],
 }
@@ -356,6 +359,23 @@ describe("PopoverView", () => {
     expect(
       invoke.mock.calls.filter(([command]) => command === "popover_content_ready"),
     ).toHaveLength(1)
+  })
+
+  it("does not flash stored session checks while snoozes are loading or unavailable", async () => {
+    const hook = vi
+      .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+      .mockReturnValue({ status: "loading", records: [] })
+    const view = render(<PopoverView />)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("list_recent_sessions", expect.anything()),
+    )
+    expect(screen.queryByText("Wire the tray popover")).toBeNull()
+    expect(screen.queryByText(/7 checks found issues/)).toBeNull()
+
+    hook.mockReturnValue({ status: "error", records: [] })
+    view.rerender(<PopoverView />)
+    expect(screen.getByText("Activity is unavailable.")).toBeVisible()
+    hook.mockRestore()
   })
 
   it("renders the backend limit allocation for a session row", async () => {

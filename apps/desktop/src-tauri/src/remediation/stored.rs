@@ -9,6 +9,8 @@ use super::{BurnCheckDisplayFacts, SavingsStatus, VerificationStatus};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WatchDefinition {
     pub version: u32,
+    #[serde(default)]
+    pub prompt_action: bool,
     pub detector: String,
     pub canonical_identity: String,
     pub source_format: StoredSourceFormat,
@@ -205,10 +207,14 @@ mod tests {
         );
         let stable = parse_watch_definition(&definition("claude_jsonl")).unwrap();
         assert_eq!(stable.source_format.value(), SourceFormat::ClaudeJsonl);
+        assert!(!stable.prompt_action);
         assert!(
             serde_json::to_string(&stable)
                 .unwrap()
                 .contains(r#""sourceFormat":"claude_jsonl""#)
         );
+        let activated = definition("ClaudeJsonl")
+            .replace(r#""version":1"#, r#""version":1,"promptAction":true"#);
+        assert!(parse_watch_definition(&activated).unwrap().prompt_action);
     }
 }

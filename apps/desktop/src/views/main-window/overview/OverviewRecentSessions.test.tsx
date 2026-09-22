@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionListEntry } from "../../../components/session/SessionList"
+import * as SnoozedBurnChecks from "../../../lib/snoozedBurnChecks"
 import { OverviewRecentSessions } from "./OverviewRecentSessions"
 
 function entry(sessionId: string, title: string): SessionListEntry {
@@ -97,6 +98,26 @@ describe("OverviewRecentSessions", () => {
       />,
     )
     expect(within(panel).getByText("No sessions yet.")).toBeVisible()
+  })
+
+  it("withholds rows until snoozes load and shows the unavailable state after failure", () => {
+    const hook = vi
+      .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+      .mockReturnValue({ status: "loading", records: [] })
+    const props = {
+      entries: [entry("s1", "Stored failing session")],
+      onSelect: vi.fn(),
+      onOpenAll: vi.fn(),
+      metric: "cost" as const,
+    }
+    const view = render(<OverviewRecentSessions {...props} />)
+    expect(screen.queryByText("Stored failing session")).toBeNull()
+
+    hook.mockReturnValue({ status: "error", records: [] })
+    view.rerender(<OverviewRecentSessions {...props} />)
+    expect(screen.getByText("Recent sessions are unavailable.")).toBeVisible()
+    expect(screen.queryByText("No sessions yet.")).toBeNull()
+    hook.mockRestore()
   })
 
   it("gives the list and the loading skeleton the same row class and count, so the height query hides the same rows either way", () => {

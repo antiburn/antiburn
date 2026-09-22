@@ -4,6 +4,7 @@ import type {
   ChecksReportPayload,
 } from "../insightsIpc"
 import { aggregateBurnCheckPresentation, type BurnCheckPresentation } from "./burnChecks"
+import { activeChecksReport } from "../snoozedBurnChecks"
 
 export const CHECK_LABELS: Record<BurnCheckDetectorId, string> = {
   sessionsOverDepth: "Session overdepth",
@@ -22,10 +23,15 @@ interface ChecksEstimate {
 }
 
 export interface ChecksPresentation {
+  activeAssessed: ChecksCategoryPayload[]
+  activeUnavailable: ChecksCategoryPayload[]
+  snoozed: ChecksCategoryPayload[]
   failures: ChecksCategoryPayload[]
+  awaiting?: ChecksCategoryPayload[]
   wins: ChecksCategoryPayload[]
   unavailable: ChecksCategoryPayload[]
   refreshUnavailable: boolean
+  noActiveChecks?: boolean
   burnChecks: BurnCheckPresentation
   estimate: ChecksEstimate
 }
@@ -44,19 +50,41 @@ function estimateOrder(category: ChecksCategoryPayload): number {
 export function checksPresentation(
   report: ChecksReportPayload,
   refreshUnavailable = false,
+  snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
 ): ChecksPresentation {
+  const activeReport = activeChecksReport(report, snoozed)
+  const activeAssessed = activeReport.categories.filter(
+    (category) => category.lifecycle != null,
+  )
+  const activeUnavailable = activeReport.categories.filter(
+    (category) => category.lifecycle == null,
+  )
+  const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
+  const noActiveChecks = report.evidenceSettled && activeAssessed.length === 0
+  const burnChecks = aggregateBurnCheckPresentation(activeReport, refreshUnavailable)
   return {
-    failures: report.categories
-      .filter((category) => category.finding > 0)
+    activeAssessed,
+    activeUnavailable,
+    snoozed: snoozedCategories,
+    failures: activeAssessed
+      .filter((category) => category.lifecycle === "failing")
       .sort((left, right) => estimateOrder(right) - estimateOrder(left)),
-    wins: report.categories.filter((category) => category.finding === 0 && category.clean > 0),
-    unavailable: report.categories.filter(
-      (category) => category.finding === 0 && category.clean === 0,
+    awaiting: activeAssessed.filter(
+      (category) => category.lifecycle === "awaitingVerification",
     ),
+    wins: activeAssessed.filter((category) => category.lifecycle === "passing"),
+    unavailable: activeUnavailable,
     refreshUnavailable,
-    burnChecks: aggregateBurnCheckPresentation(report, refreshUnavailable),
+    noActiveChecks,
+    burnChecks: noActiveChecks
+      ? {
+          ...burnChecks,
+          headline: "No active checks",
+          accessibleDescription: "No active Burn Checks.",
+        }
+      : burnChecks,
     estimate: {
-      tokenBurnBasisPoints: report.estimatedTokenBurnBasisPoints,
+      tokenBurnBasisPoints: activeReport.estimatedTokenBurnBasisPoints,
     },
   }
 }
@@ -64,16 +92,31 @@ export function checksPresentation(
 export function checksHeroPresentation(
   presentation: ChecksPresentation,
 ): ChecksHeroPresentation {
+  if (presentation.noActiveChecks) {
+    return { result: "No active checks", summary: null, state: "pending", tone: "text-label" }
+  }
   const failureCount = presentation.failures.length
   if (failureCount > 0) {
     const failed = `${failureCount} check${failureCount === 1 ? "" : "s"} failed`
     const basisPoints = presentation.estimate.tokenBurnBasisPoints
     return {
       result:
-        basisPoints == null ? failed : `${formatTokenBurnPercent(basisPoints)} token burn`,
+        basisPoints == null
+          ? failed
+          : `${formatTokenBurnPercent(basisPoints)} estimated token burn`,
       summary: basisPoints == null ? null : failed,
       state: "failed",
       tone: basisPoints == null ? "text-system-red-text" : tokenBurnTone(basisPoints),
+    }
+  }
+
+  const awaitingCount = presentation.awaiting?.length ?? 0
+  if (awaitingCount > 0) {
+    return {
+      result: "Awaiting verification",
+      summary: `${awaitingCount} check${awaitingCount === 1 ? "" : "s"} awaiting verification`,
+      state: "pending",
+      tone: "text-label",
     }
   }
 

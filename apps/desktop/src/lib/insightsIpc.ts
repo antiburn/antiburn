@@ -24,6 +24,8 @@ export interface ChecksCategoryPayload {
   agents?: string[]
   /** Stable category identifier, e.g. `sessionsOverDepth`. */
   id: BurnCheckDetectorId
+  /** The current remediation state. Null means the category is not fully assessed. */
+  lifecycle?: ChecksCategoryLifecycle | null
   /** Applicable sessions with a confirmed finding. */
   finding: number
   /** Applicable sessions with complete evidence and no finding. */
@@ -34,6 +36,8 @@ export interface ChecksCategoryPayload {
   estimatedTokenBurnBasisPoints: number | null
 }
 
+export type ChecksCategoryLifecycle = "failing" | "awaitingVerification" | "passing"
+
 /** The bounded subset of the local report needed by All checks. */
 export interface ChecksReportPayload {
   /** False while this report snapshot still has queued or running evidence work. */
@@ -42,6 +46,8 @@ export interface ChecksReportPayload {
   pendingEvidence: number
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
+  /** Aggregate burn indexed by the active detector bit mask in canonical detector order. */
+  estimatedTokenBurnBasisPointsByDetectorMask?: Array<number | null>
   categories: ChecksCategoryPayload[]
 }
 
@@ -269,10 +275,12 @@ export interface BurnCheckTargetListPayload {
 
 export type BurnCheckRemediationOutcome = "failed" | "passed"
 
-/** The latest retained remediation attempt for each detector. */
+/** Bounded retained remediation attempts by exact target and remediation cycle. */
 export interface BurnCheckRemediationAttemptPayload {
   detector: BurnCheckDetectorId
+  findingId: string
   watchId: string
+  remediationCycleId: string
   display: BurnCheckDisplayFactsPayload
   origin: "passive" | "action"
   lifecycle: BurnCheckWatchLifecycle
@@ -336,7 +344,7 @@ export type PrepareAutoFixBurnCheckTargetOutcome =
 
 export type ApplyPreparedBurnCheckOperationOutcome =
   | { outcome: "appliedAwaitingVerification"; watchId: string }
-  | { outcome: "applied" }
+  | { outcome: "appliedVerificationUnavailable"; watchId: string }
   | { outcome: "recoveryNeeded"; watchId: string }
   | { outcome: "stale" }
   | { outcome: "expired" }
@@ -363,15 +371,18 @@ export type CopyPromptFixBurnCheckOutcome =
 
 export interface AggregateWinPayload {
   findingId: string
+  remediationCycleId: string
   detector: BurnCheckDetectorId
   origin: "passive" | "action"
   display: BurnCheckDisplayFactsPayload
   savings: {
+    status: BurnCheckSavingsPayload
     tokenSavings: number | null
     apiEquivalentCostAvoidedUsd: number | null
     improvementCount: number | null
     method: BurnCheckEstimateMethod | null
   }
+  verifiedBoundaryMs: number
   startsAtMs: number
   endsAtMs: number
 }

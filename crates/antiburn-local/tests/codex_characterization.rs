@@ -93,11 +93,15 @@ fn fixture(name: &str) -> &'static str {
         "task_complete_errors" => {
             include_str!("fixtures/codex_characterization/task_complete_errors.jsonl")
         }
+        "reverted_fork" => include_str!("fixtures/codex_characterization/reverted_fork.jsonl"),
+        "eventless_protocol_records" => {
+            include_str!("fixtures/codex_characterization/eventless_protocol_records.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 23] {
+fn fixture_names() -> [&'static str; 25] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -122,6 +126,8 @@ fn fixture_names() -> [&'static str; 23] {
         "cache_write_tokens",
         "collab_agent_records",
         "task_complete_errors",
+        "reverted_fork",
+        "eventless_protocol_records",
     ]
 }
 
@@ -879,6 +885,68 @@ fn unresolved_fork_matches_batch_and_attributes_all_usage() {
     assert_eq!(metrics.metrics().tokens_in, 200);
     assert_eq!(metrics.metrics().peak_context_tokens, 700);
     assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+}
+
+#[test]
+fn legacy_reverted_fork_without_an_owned_boundary_is_partial() {
+    let input = SessionInput {
+        agent: "codex".to_owned(),
+        session_id: "legacy-unresolved-revert".to_owned(),
+        source: RawSource::Jsonl(
+            concat!(
+                r#"{"timestamp":"2026-08-10T10:00:00Z","type":"session_meta","payload":{"id":"child","forked_from_id":"parent"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-08-10T10:00:00Z","type":"session_meta","payload":{"id":"parent"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-08-10T10:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"output_tokens":1,"total_tokens":901}}}}"#,
+            )
+            .to_owned(),
+        ),
+        fork_parent_session_id: None,
+        source_format: Default::default(),
+    };
+    let (coverage, reasons, _) = collect(&input);
+    let (_, metrics) = composite(&input);
+    assert_eq!(coverage, RecordCoverage::Partial);
+    assert!(reasons.contains(&PartialReason::AttributionIncomplete));
+    assert_eq!(metrics.metrics().tokens_in, 0);
+}
+
+#[test]
+fn reverted_fork_skips_the_replayed_parent_usage_after_its_owned_boundary() {
+    let input = input("reverted_fork");
+    let (coverage, reasons, streamed) = collect(&input);
+    let normalized = normalize_source(&input).unwrap();
+
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert_eq!(streamed, normalized);
+    assert_eq!(streamed.events.len(), 3);
+    assert_eq!(
+        streamed
+            .events
+            .iter()
+            .map(|event| event.usage.context_tokens())
+            .sum::<u64>(),
+        300
+    );
+    assert_eq!(streamed.context_window, Some(128_000));
+    assert_eq!(streamed.model.as_deref(), Some("gpt-child"));
+}
+
+#[test]
+fn protocol_lifecycle_and_interagent_records_are_eventless() {
+    let (coverage, reasons, session) = collect(&input("eventless_protocol_records"));
+    let (evidence, metrics) = composite(&input("eventless_protocol_records"));
+
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert!(session.events.is_empty());
+    assert_eq!(metrics.metrics().event_count, 0);
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+    assert_eq!(evidence.diagnostics.records_unusable, 0);
+    assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
+    assert!(evidence.diagnostics.unrecognized_types.is_empty());
 }
 
 #[test]

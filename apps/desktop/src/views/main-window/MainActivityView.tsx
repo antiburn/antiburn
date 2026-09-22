@@ -50,13 +50,17 @@ export function MainActivityView({
     session.getSnapshot,
     session.getSnapshot,
   )
-  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
-  const filteredEntries = filterSessionEntries(
-    state.entries ?? [],
-    hygieneBySession,
-    state.filter,
-    snoozedDetectors,
-  )
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
+  const filteredEntries =
+    snoozes.status === "ready"
+      ? filterSessionEntries(
+          state.entries ?? [],
+          hygieneBySession,
+          state.filter,
+          snoozedDetectors,
+        )
+      : []
   const ordered = orderedActivityEntries({ ...state, entries: filteredEntries }).filter(
     (entry) => entry.sessionId,
   )
@@ -103,7 +107,11 @@ export function MainActivityView({
               Could not save the badge preference. Try again.
             </p>
           )}
-          {state.entries === null ? (
+          {snoozes.status === "error" ? (
+            <p role="status" className="px-4 py-2 type-body text-label-secondary">
+              Sessions are unavailable.
+            </p>
+          ) : state.entries === null || snoozes.status === "loading" ? (
             <p role="status" className="px-4 py-2 type-body text-label-secondary">
               {state.listError ? "Sessions are unavailable." : "Loading sessions…"}
             </p>

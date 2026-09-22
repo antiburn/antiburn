@@ -1,0 +1,5 @@
+{"sessionId":"cursor-agent-content","cursor_source":"agent_transcript"}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>run the focused tests</user_query><context>private context omitted</context>"}]}}
+{"role":"assistant","message":{"content":[{"type":"thinking","thinking":"I will inspect the test command."},{"type":"tool-use","name":"Shell","input":{"command":"cargo test -p antiburn-local"}},{"type":"text","text":"I am running the focused tests."}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"test result: ok"}]},{"type":"command_output","output":"finished"}]}}
+{"role":"assistant","message":{"content":[{"type":"redacted","data":"[REDACTED]"}]}}

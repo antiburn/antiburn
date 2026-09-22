@@ -259,8 +259,8 @@ export function aggregateBurnCheckPresentation(
 ): BurnCheckPresentation {
   const counts = report.categories.reduce<BurnCheckCounts>(
     (result, category) => {
-      if (category.finding > 0) result.failed += 1
-      else if (category.clean > 0) result.passed += 1
+      if (category.lifecycle === "failing") result.failed += 1
+      else if (category.lifecycle === "passing") result.passed += 1
       else result.unassessed += 1
       return result
     },

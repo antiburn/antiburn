@@ -2,6 +2,7 @@ import { Component, useState, useSyncExternalStore } from "react"
 
 import { ProviderGlyph } from "../components/providerUsage/ProviderUsagePrimitives"
 import { Skeleton } from "../components/ui/Skeleton"
+import { useSnoozedBurnChecks } from "../lib/snoozedBurnChecks"
 import {
   getPopoverPeekState,
   popoverPeekConcealed,
@@ -192,8 +193,11 @@ function candidateContent(
 }
 
 function PeekPayloadContent({ payload }: { payload: PeekPayload }) {
+  const snoozes = useSnoozedBurnChecks()
   if (payload.kind === "unavailable") return <PeekUnavailable />
   if (payload.data.kind === "checks") {
+    if (snoozes.status === "loading") return <ProviderPeekSkeleton />
+    if (snoozes.status === "error") return <PeekUnavailable />
     return (
       <ChecksPeek
         presentation={payload.data.presentation}

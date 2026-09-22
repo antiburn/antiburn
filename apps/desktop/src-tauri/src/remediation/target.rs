@@ -37,6 +37,7 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
     });
     WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: target.finding().detector.key().into(),
         canonical_identity: target.canonical_identity.clone(),
         source_format: target.finding().source_format.into(),

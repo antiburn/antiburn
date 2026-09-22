@@ -31,6 +31,7 @@ import {
   type PopoverPeekTarget,
 } from "../lib/popoverPeekIpc"
 import { checksPresentation } from "../lib/presentation/checks"
+import { snoozedDetectorIds, useSnoozedBurnChecks } from "../lib/snoozedBurnChecks"
 import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
 import { PopoverSession } from "./popover/PopoverSession"
 import { ChecksSummary } from "./popover/ChecksView"
@@ -120,9 +121,12 @@ export function PopoverView() {
   const peekPresentation: PopoverPeekData | undefined = state.usage
     ? { kind: "provider", summary: state.usage, live: state.liveUsage }
     : undefined
-  const checks = state.checksReport
-    ? checksPresentation(state.checksReport, state.checksUnavailable)
-    : null
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
+  const checks =
+    state.checksReport && snoozes.status === "ready"
+      ? checksPresentation(state.checksReport, state.checksUnavailable, snoozedDetectors)
+      : null
 
   const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(state.entries ?? []))
@@ -208,7 +212,7 @@ export function PopoverView() {
               <ChecksSummary
                 active={false}
                 presentation={checks}
-                reportUnavailable={state.checksUnavailable}
+                reportUnavailable={state.checksUnavailable || snoozes.status === "error"}
                 onPreview={() => void peekTriggers.leave()}
                 onLeave={() => void peekTriggers.leave()}
                 onOpen={() => {
@@ -266,11 +270,16 @@ export function PopoverView() {
         </div>
 
         <div className="min-h-0 flex-1">
-          {state.entries == null ? (
+          {state.entries == null || snoozes.status === "loading" ? (
             <ActivitySkeleton />
+          ) : snoozes.status === "error" ? (
+            <p role="status" className="px-4 py-3 type-callout text-label-secondary">
+              Activity is unavailable.
+            </p>
           ) : (
             <SessionList
               entries={state.entries}
+              snoozedDetectors={snoozedDetectors}
               days={windowDays}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return
