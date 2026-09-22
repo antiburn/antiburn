@@ -121,7 +121,7 @@ const WIDTH: f64 = 380.0;
 
 /// Corner radius of the popover window, in logical pixels.
 ///
-/// This is `rounded.popover` from `apps/desktop/design.md`. The window corner
+/// This is `--radius-popover` from `apps/desktop/src/styles/tokens.css`. The window corner
 /// and the card corners inside it must agree, so change both together.
 /// `scripts/check-design-drift.mjs` reads this constant and fails if the two
 /// numbers differ.

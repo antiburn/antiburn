@@ -1,55 +1,59 @@
 # antiburn desktop
 
-The antiburn desktop application: a main window and menu-bar / system-tray
-companion around the local [`antiburn-local`](../../crates/antiburn-local) engine.
+The desktop app combines a main window and menu-bar / system-tray companion
+around the local [`antiburn-local`](../../crates/antiburn-local) engine. It
+shows coding-agent activity, session analysis, usage limits, and estimated costs.
 
-The app discovers the coding-agent sessions already on this machine, analyzes
-them with the engine, and shows activity, per-session analysis, and
-API-equivalent cost estimates. Everything runs on the device, as you: antiburn
-needs no antiburn account, server, or backend of any kind, and nothing about
-your sessions is uploaded. It downloads public model prices from models.dev at
-startup and hourly while running; the request contains no session data or
-credentials. It also makes two calls to a service of ours, neither of which it
-depends on: the updater plugin, registered in release builds only, asking
-whether a newer version exists; and the anonymised analytics
-channel in [`src-tauri/src/analytics`](src-tauri/src/analytics),
-which reports the documented product events in official release builds. The Ready
-screen explains it, and Settings → Privacy provides the opt-out. The analytics
-client is excluded from default source and development builds.
+Use this README to build the app and find the owner of a change. Detailed
+behavior belongs in the linked architecture guides and source modules. Update
+this file when setup steps or ownership boundaries change.
 
-## Layout
+## Architecture and source map
 
-```text
-design.md       The design contract: tokens, type scale, motion, platform rules
-src/            React 19 + TypeScript frontend (Vite, Tailwind v4)
-  components/
-    ui/         Shared presentation primitives (no app state, no IPC)
-  lib/          Route selection, the typed IPC surface, presentation helpers
-  styles/       The design foundation, imported by src/styles.css
-  views/        One component per window, plus its panes
-tests/          Checks that must not live inside the tree they check
-scripts/        Icon generator (see src-tauri/icons/README.md)
-src-tauri/      The Tauri 2 shell: windows, tray, store, scan, commands
-  src/agent_config/ Safe agent config resolution and exact file edits
-  src/remediation/ Burn Check targets, watches, recovery, and vendor policy
-  capabilities/ Webview permission grants
-  icons/        Generated app and tray artwork
-```
+- [`src/`](src/) contains the React frontend. Shared presentation primitives
+  live in `components/ui/`; feature views and their external stores own visible
+  state. Native commands and events cross typed boundaries in `lib/`.
+- [`src-tauri/`](src-tauri/) contains the Tauri shell: windows, tray, settings,
+  scanning, local storage, and feature services. It is a standalone Cargo
+  workspace with its own lockfile. This keeps shell dependencies outside the
+  engine's dependency boundary.
+- [`src/styles/`](src/styles/) and feature stylesheets own exact visual values.
+  Read the [design guide](design.md) before styling work.
+- [`tests/`](tests/) holds checks that must live outside the source tree they
+  inspect. Feature tests otherwise live alongside their owners.
 
-Read [`design.md`](design.md) before any styling work. Component code uses the
-semantic Tailwind utilities it defines (`bg-surface`, `text-label`,
-`type-body`, …) rather than raw values.
+| Changing                                            | Read first                                                                                                            |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Navigation, search, or main-window integration      | [Navigation boundaries](../../docs/main-window-navigation.md)                                                         |
+| Window creation, readiness, visibility, or teardown | [Renderer lifecycle](../../docs/window-renderer-lifecycle.md)                                                         |
+| HUD placement or passive native interaction         | [HUD states](../../docs/hud-states.md)                                                                                |
+| Scan publication or live session state              | [Session lifecycle](../../docs/session-lifecycle-events.md), [scan policy](src-tauri/src/scan/mod.rs)                 |
+| Agent discovery or parsing                          | [Session coverage](../../docs/session-coverage.md)                                                                    |
+| Burn Checks or remediation                          | [Check coverage](../../docs/check-coverage.md), [remediation safety](../../docs/remediation.md)                       |
+| Notifications                                       | [Notification policy](src-tauri/src/notifications.rs), [OS permission boundary](../../docs/os-notification-gating.md) |
+| Analytics                                           | [Public catalog](../../docs/analytics.md), [measurement and review rules](../../docs/analytics-measurement.md)        |
+| Interface size or native geometry                   | [Scaling QA](../../docs/runbooks/interface-scale-qa.md)                                                               |
+| Icons                                               | [Icon generation](src-tauri/icons/README.md)                                                                          |
 
-Interface size is configured in Settings → Appearance or through View → Zoom In,
-Zoom Out, and Actual Size. It applies across app windows independently of OS display
-scaling. The preset contract lives in `interface-scale.json`; native window owners
-apply it before reveal. See the [scaling QA runbook](../../docs/runbooks/interface-scale-qa.md)
-for the browser matrix, boundary checks, and required native-platform validation.
+## What keeps the app local
 
-`src-tauri` is a **standalone Cargo workspace** with its own `Cargo.lock`. It is
-deliberately not joined with the engine's workspace: the engine resolves under
-its own dependency boundary that keeps it free of any service of ours, and the
-shell's app-framework dependencies must not leak into that resolution.
+Session discovery and analysis run on the device. The local SQLite database
+can contain transcript-derived content; the source transcripts are not modified
+or deleted. Provider integrations use credentials issued by those providers.
+Public model prices come from models.dev without session data or credentials.
+
+The project-operated network channels are release update checks and optional
+anonymised analytics. Neither is required to use local analysis. Analytics is
+excluded from default source builds; configured official builds disclose it
+and offer an opt-out in Settings → Privacy. See the
+[privacy policy](../../docs/privacy-policy.md) and
+[analytics disclosure](../../docs/analytics.md) for the maintained boundaries.
+
+The Tauri content security policy restricts renderer networking. The shell owns
+provider access, analytics delivery, and reviewed file edits. Auto Fix requires
+review and confirmation, revalidates its exact target, and preserves a backup
+before replacing an existing configuration file. Follow the
+[remediation guide](../../docs/remediation.md) when changing that boundary.
 
 ## Prerequisites
 
@@ -123,226 +127,23 @@ See [`docs/debugging.md`](../../docs/debugging.md) for development modes,
 debug-profile isolation, developer tools, logs, onboarding tests, sample
 notifications, and the updater simulator.
 
-## What keeps the app local
-
-The Tauri content security policy limits renderer connections to the local app
-and IPC. The Rust analytics module tests consent, endpoint injection, and the
-payload schema. `cargo-deny` rejects known telemetry dependencies in the local
-engine. Release and dependency checks run through the required CI gate.
-
-Burn Check remediation stays local. After a separate review and confirmation,
-each Auto Fix changes one winning control. It uses the global or user control
-for inherited values and a project control only for an exact explicit project
-setting or resource. It never creates project config or batches scalar layers.
-The approved missing-file exception creates global Claude Code settings only
-for an eligible optional built-in tool. Findings that share one global target
-across projects are grouped, and every project context is revalidated. Model and
-reasoning targets remain pinned to publication attribution. Claude fast mode
-writes `false`. Before replacing an existing config file, Auto Fix leaves its
-exact prior content in a sibling `.bak` file. Copy provides a bounded fallback
-when an exact prompt is not available. See the
-[remediation guide](../../docs/remediation.md) for supported agents, safety
-checks, recovery, bounds, and privacy.
-
-## Shell behavior
-
-See [Desktop window renderer lifecycle](../../docs/window-renderer-lifecycle.md)
-for the shared readiness handshake, onboarding prewarm, popover eviction,
-Settings teardown, and the memory rules behind those policies.
-
-- **Main window.** Explicit launch opens the main window after onboarding.
-  It uses native window controls and participates in application switching.
-  Closing hides it while monitoring continues, except on Windows and Linux
-  when the system-tray icon is hidden; closing then exits. Opening it again
-  reuses the renderer. On macOS, switching away and Command-Tabbing back restores a main
-  window that was closed or minimized earlier. Restoration uses the native
-  unminimize operation. Tray interactions and login startup stay quiet.
-  The initial content size is
-  1100×600 logical pixels with a normal minimum of 1000×560. The initial outer
-  frame is capped at 85% of each usable display dimension. Saved user sizes
-  retain their dimensions within the available work area. The navigation shell
-  uses a persistent 220px sidebar with dense desktop rows. Burn checks is the
-  default section. Sessions shows the session list and selected detail. The
-  sidebar Settings action opens the existing Settings window. Command+,
-  (Control+, on Windows and Linux) opens it from the main window, onboarding,
-  and popover; see the [main-window validation runbook](../../docs/runbooks/main-window.md).
-- **Tray item.** Primary click toggles the popover. Secondary click opens a
-  menu with Open antiburn, Pin Window, Settings, and Quit. Native application
-  menus also provide Quit. On macOS, the antiburn application menu provides
-  Settings... with Command+,. Explicit Quit stops the application. Closing the
-  main window does not exit unless the system-tray icon is hidden on Windows
-  or Linux. On macOS the
-  item stays highlighted for as long as the popover is open: the system's own
-  highlight is momentary and lets go on mouse-up, so the shell drives it, and
-  clears it again on every path that puts the popover away.
-  The dot mark also shows the lowest remaining displayable provider allowance:
-  bright dots remain and depleted dots stay dim. It starts full on launch,
-  then moves to the cached reading without opening a provider connection.
-  Unknown or disabled live usage keeps the ordinary full mark. General settings
-  can hide this item immediately. Hiding it also unpins and closes its popover.
-- **Popover.** 380pt wide, frameless, always on top, hidden from the taskbar.
-  It is created on demand and anchored under its menu-bar item on each
-  open, flipping above the item and clamping to the display when there is no
-  room below. On macOS it follows the reader to every Space, including a
-  full-screen Space. Hover previews use a passive companion panel with the same
-  Space behavior. Their native `NSPanel` and `WKWebView` are created directly,
-  without Wry or window-class conversion. Preview creation and presentation
-  preserve the active application and keyboard recipient. The popover hides
-  when it loses focus, when Escape is pressed, on a second click of the menu-bar
-  item, and — on macOS —
-  on a click anywhere outside the app, which catches the Finder desktop:
-  clicking it makes no window key, so no focus change is reported at all.
-- **Pin.** The tray menu's first item suspends all four of those dismissals,
-  and reads Unpin Window while it does. The state is in memory only: a pin
-  means "keep this on screen while I work", and a relaunch ends that work.
-  Pinning also re-shows the popover, because opening the tray menu is what
-  took focus away from it in the first place.
-- **First run.** A 680×480 decorated window of its own, opened at launch while
-  onboarding is unfinished — a fresh install should not have to discover the
-  menu-bar glyph before it is told anything. While
-  it is unfinished the tray click goes here rather than to the popover, which
-  has nothing to show yet, and antiburn is an ordinary Dock application so the
-  window can be reached again once something else takes focus. Finishing it
-  puts the onboarding window away and opens the main window. The existing
-  notification still identifies the menu-bar companion.
-- **Settings.** An ordinary decorated window, created on demand and destroyed
-  on close. A source list on the left, one pane on the right; every control
-  writes through immediately, so there is no Save button and no dirty state.
-  General → Application controls the menu-bar or system-tray icon. macOS also
-  controls Dock visibility and always keeps at least one entry point visible.
-  Windows and Linux keep the ordinary application launcher as their recovery
-  route when the system-tray icon is hidden. Closing the main window then exits
-  the app instead of leaving an invisible resident process.
-- **Popover lifetime.** Finishing onboarding starts one hidden renderer before
-  the onboarding window retires. After it becomes ready, the handoff renderer
-  stays warm for up to 60 seconds. The first reveal consumes that lease; later
-  dismissals hide the resident renderer without scheduling destruction.
-- **Local store.** One SQLite database under the app data directory
-  (`ai.antiburn.desktop`, or `ai.antiburn.desktop.debug` for a development
-  build — see above) holds preferences, scan roots, and the local session data
-  needed for visibility and analysis. That data may include content copied
-  from a transcript, but remains on the device; the agent's source transcript
-  is never modified or deleted. Migrations are embedded and versioned by the
-  `user_version` pragma.
-- **Scanning.** A single background task refreshes what the app knows: once at
-  launch (after onboarding), shortly after a watched transcript changes, every
-  five minutes as a reconciliation fallback, and on demand. A metadata poll
-  checks active native file sessions every five seconds and waits fifteen
-  seconds when none are active. It detects writes that produce no watcher event.
-  Watcher and metadata-poll refreshes
-  target the affected sessions or agents. A full pass over unchanged sources
-  costs stat calls, not transcript reads. Passes never overlap and are bounded.
-  CPU, memory, and disk I/O are product constraints: background work must be no
-  more frequent or intensive than the visible feature requires. See the policy
-  at the top of `src-tauri/src/scan/mod.rs`.
-- **Notifications.** Six kinds, all posted by the shell and never by the webview
-  (which is granted no notification permission): an automatic update, a failed
-  scan, low disk space, a crossed usage milestone, the first-run menu-bar
-  location, and the settings pane's own test. The test and first-run location
-  bypass the master switch because both follow a direct reader action. Other
-  kinds use the master preference and their own gate, and nothing repeats. See
-  the policy at the top of
-  `src-tauri/src/notifications.rs`. Delivery is antiburn's own always-on-top
-  window rather than the platform's notification centre: the `antiburn-nudge`
-  crate under `src-tauri/crates/nudge/`, applied at the seam in
-  `src-tauri/src/nudges.rs`. Nothing about a notification leaves the machine.
-  Usage milestones default to every 10% and compare limit consumed with the
-  share of the current limit window that has elapsed. Settings offers every 5%
-  step when a reader wants different milestones. Every successful live reading
-  checks for a crossing, and the hidden background monitor checks at most every
-  five minutes. A notification names the crossed milestone separately from the
-  provider's current percentage when usage moves past it between readings.
-- **Attention.** The popover shows a banner above the activity list when a
-  repository cannot be read (which opens Settings at Sources) or when the local
-  database rejects a write (which retries with a scan). Both are derived from
-  shell-reported signals in `src/lib/attention.ts`; there is no speculative
-  banner kind.
-- **Theme.** Follows the operating system through `color-scheme` and Tailwind's
-  `prefers-color-scheme` dark variant.
-- **macOS.** The app starts with regular activation and a Dock icon. General
-  settings can hide the Dock immediately when the menu-bar icon remains
-  visible. A delayed state-aware retry covers macOS transitions that happen
-  within one second of showing the Dock icon.
-
-Settings, onboarding, and native macOS hover previews have dedicated HTML and
-TypeScript entries. The resident shell uses URL fragments for the nudge and overlay, with the popover
-as its default. Each window owns one surface until the shell releases it.
-
 ## Known gaps
 
-These build-level limits affect desktop development:
+These limits affect development and native validation:
 
-- On macOS, Wry 0.55.1 activates the application during webview creation even
-  when the window requests `focused(false)`. Other Tauri-created surfaces,
-  including a cold popover, retain this upstream limitation. macOS hover
-  previews bypass Wry and create their nonactivating panel and WebKit view
-  directly. Wry remains an official crates.io transitive dependency.
-- The popover is opaque and square-cornered. Rounded, translucent chrome needs
-  `macOSPrivateApi` plus transparent-window support, and arrives with the
-  design system.
-- The updater plugin is registered in release builds only, so development
-  performs no update checks or downloads.
-- `bundle.createUpdaterArtifacts` is `true`, which means a **bundle** build
-  signs its updater artifact and therefore needs `TAURI_SIGNING_PRIVATE_KEY` in
-  the environment. Nothing in CI or the everyday `cargo`/`pnpm` checks bundles,
-  so this only affects running `tauri build` by hand; `dev:bundle` already turns
-  the artifact off through the debug config, and a release-profile bundle
-  without a key needs `--config '{"bundle":{"createUpdaterArtifacts":false}}'`.
-- Launch at login is applied only by builds carrying the Cargo `distribution`
-  feature, which CI sets for packaged releases. macOS 13+ uses the system's
-  main-app service, Windows uses the per-user Run key, and Linux writes an
-  escaped Desktop Entry. New installs are asked on the Ready step (default on),
-  General reflects the same preference, and development runs — including
-  `cargo run --release` — never change the machine's login items.
-- Agent icons use three tiers, in `src/lib/agentIcon.tsx`: a brand mark for
-  agents with a recorded vendor logo, a letter tile for known agents without
-  one, and a neutral surface glyph only for `generic-agent`. Original
-  per-agent artwork beyond vendor marks is a later stream.
-
-### Main window feature boundary
-
-`MainWindowView` registers sections with a renderer that receives an `active` flag. Unvisited
-sections do not mount; visited sections stay mounted while hidden. Future feature adapters
-must combine this flag with window visibility before doing presentation work.
-
-`MainWindowLayout` supplies the persistent sidebar and workspace. `CollectionDetailPane`
-supplies independent collection/detail viewports and selection by stable item ID. Features
-provide `items` and `renderDetail`; an optional `renderCollection` slot receives `selectedId`,
-`select`, and `openDetail` and owns its viewport. The default list supports keyboard selection
-and Enter-to-detail-region focus. Controlled `selection` and `onSelectionChange` let a feature
-own navigation history. `detailOwnsViewport` embeds a view with an existing scroll container.
-
-Sessions uses `MainActivitySession`, an independent external store. Its list subscription loads
-the shared session index while the main window is visible, so Overview, the sidebar, and the
-Sessions section consume one bounded list and one refresh lifecycle. It coalesces shell events
-and rejects stale responses. The detail subscription loads cached usage for the visible Sessions
-surface and loads quota and analysis only for the selected subject. Native `main:visibility-changed` events and the initial
-`get_main_window_visible` snapshot suspend list and detail work on hide or minimize; blur does
-not suspend it. Section inactivity suspends detail work while the visible main-window list
-continues to refresh. Resume reconciles the list and any active detail data. This adds no
-scanner or provider polling.
-
-`SessionList` accepts opt-in `selectedKey`, `onSelect`, `onOpenDetail`, and `active` props.
-`SessionPane` accepts `embedded` and `active`; embedded confirmation does not hold the popover.
-Shared subject identity and analysis loading live in `lib/sessionSubject.ts`. Existing
-menu-bar callers retain their defaults. Session removal reports a typed lifecycle
-observation; the projection bridge emits `session:index-changed` with cause
-`removed` so both windows refresh their local views. See the
-[session lifecycle contract](../../docs/session-lifecycle-events.md).
-
-Overview uses the same main-window session list for its recent sessions. Its
-Subscription chart and utilization figures use the Limits account lanes,
-resolved periods, shared meter allocation, and learned estimates through the
-same quota query. The overview summarizes account-wide weekly and five-hour
-lanes; model-specific lanes remain available in Limits. Utilization covers
-periods overlapping the latest 60 calendar days, including an incomplete
-current period. Unknown periods do not count as zero. The daily chart shows
-30 days and compares them with the preceding 30 days. Limit hits use separate
-provider-refusal evidence; a full meter alone does not establish a refusal.
-
-Burn checks uses `BurnChecksSession`, a second independent external store. It owns a distinct
-Checks report consumer, combines section activity with main-window visibility, and loads target
-details only for opened checks. It coalesces refreshes, rejects stale results, and keeps prior data
-after a refresh error. Its snapshot subscription reports bounded visible-state and outcome
-analytics. Actions report only reviewed closed outcomes. They never report work data, target values,
-paths, identifiers, exact tokens, or exact costs.
+- Tauri-created macOS webviews retain Wry's creation-time activation limitation,
+  even with `focused(false)`. Native hover previews bypass Wry. A passive reveal
+  does not prove that cold creation preserves focus; validate both paths using
+  the [renderer lifecycle guide](../../docs/window-renderer-lifecycle.md).
+- The real updater runs only in release builds. Use the debug simulator for UI
+  work and signed artifacts for delivery validation. See
+  [debugging](../../docs/debugging.md#test-the-updater-interface).
+- Release bundle builds create signed updater artifacts and require
+  `TAURI_SIGNING_PRIVATE_KEY`. `dev:bundle` disables these artifacts through the
+  debug config. For an unsigned local release-profile bundle, pass
+  `--config '{"bundle":{"createUpdaterArtifacts":false}}'` to the Tauri build.
+  Ordinary frontend builds and Cargo checks do not bundle the app.
+- Launch at login changes OS state only in packaged builds with the Cargo
+  `distribution` feature. A release-profile development run does not enable
+  that integration. Test packaged behavior through the
+  [release runbook](../../docs/runbooks/release.md).

@@ -42,17 +42,19 @@ explicit maintainer agreement first.
 
 ## Desktop design
 
-Read `apps/desktop/design.md` before styling work in `apps/desktop`. Its YAML
-front matter defines the tokens, and its listed stylesheets are the source of
-truth.
+Read `apps/desktop/design.md` before styling work in `apps/desktop`. It explains
+design intent and shared rules. CSS owns exact token values; shared components
+own control appearance and behavior.
 
-Use the documented semantic utilities: `bg-/text-/border-<token>`, the `type-*`
-scale, `rounded-control`, and `duration-*`. Do not hard-code colors, type sizes,
-radii, or durations.
+Use semantic utilities: `bg-/text-/border-<token>`, the `type-*` scale, named
+radii, and `duration-[var(--duration-*)]`. Reuse shared primitives. Keep justified
+one-off visualization or native geometry values with their owner and explain
+non-obvious constraints there.
 
-When a token or stylesheet changes, update `apps/desktop/design.md` in the same
-change. Add each new stylesheet to its `sources:` list. CI checks this contract
-with `scripts/check-design-drift.mjs`.
+Update `apps/desktop/design.md` when a shared design rule or rationale changes.
+Do not copy token values, stylesheet inventories, or feature layouts into it.
+`scripts/check-design-drift.mjs` discovers CSS and checks theme completeness,
+System/explicit palette agreement, shared type leading, and native/CSS corners.
 
 ## Desktop navigation
 

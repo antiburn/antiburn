@@ -1,6 +1,6 @@
 ---
 name: design-review
-description: Review one antiburn desktop window against the antiburn design system. Captures the live window per surface and per theme, then reports ranked design findings (Blocker/High/Medium/Nitpick) tied to the tokens and rules in apps/desktop/design.md. Use when asked to design-review a window, pane, or surface, run a design pass, critique the UI, or check the desktop app against the design system.
+description: Review one antiburn desktop window against the antiburn design system. Captures the live window per surface and per theme, then reports ranked design findings (Blocker/High/Medium/Nitpick) tied to apps/desktop/design.md and the owning CSS or component. Use when asked to design-review a window, pane, or surface, run a design pass, critique the UI, or check the desktop app against the design system.
 disable-model-invocation: true
 ---
 
@@ -11,10 +11,10 @@ checks it against the design system, and returns a ranked list of what to fix.
 The method comes from OneRedOak's design-review agent. The rules are antiburn's
 own.
 
-Scope: the Tauri desktop app in `apps/desktop`. The app has four windows, and
-each window is a fixed size. There is no responsive breakpoint pass, because
-there are no fluid widths to break at. The equivalent pass here walks every
-window, every surface inside it, and every theme.
+Scope: the Tauri desktop app in `apps/desktop`, including the main window,
+tray popover, HUD, Settings, onboarding, and notifications. Review the chosen
+surface at supported widths and interface sizes as well as across themes.
+Read current routes and window owners for dimensions; do not assume fixed sizes.
 
 ## Before you start: you need a running app
 
@@ -42,8 +42,9 @@ and the themes. Do NOT grade data-dependent states from it, and never report
 
 ## Step 1: load the rulebook
 
-Read `design-principles.md` in this skill folder. It defines confirmed
-violations and design risks.
+Read `apps/desktop/design.md` for shared design rules and its source map.
+Read `design-principles.md` in this skill folder for evidence standards,
+review questions, and severity. Exact values belong to CSS and components.
 
 ## Step 2: capture the window, per surface and per theme
 
@@ -52,24 +53,23 @@ surface and repeat the worst surface in each theme. For one surface, capture
 that surface in each relevant theme. List every untested surface/theme pair and
 its reason in Checked scope and limits.
 
-**The surface pass.** Capture every surface the chosen window can show:
-
-| Window | Size | Surfaces to capture |
-|---|---|---|
-| Tray popover | 380 wide; 700 tall, 780 on Usage | `activity`, `session`, `usage` (`lib/popoverHeight.ts`) |
-| Settings | 960 × 680, fixed | 7 panes: General, Privacy, Notifications, Usage, Sources, Appearance, About |
-| Onboarding | 680 × 480 | 5 steps: welcome, sources, repositories, scan, ready |
-| Notification | 344 wide, always on top | resting and expanded (the card expands on hover) |
+**The surface pass.** Identify the chosen window's current surfaces from its
+navigation metadata and components. Capture the relevant panes, selected and
+unselected details, menus, and expanded states. For resizable surfaces, check
+constrained and wide layouts; for native surfaces, check supported interface
+sizes. Record actual window size and interface size with the captures. Use
+`docs/runbooks/interface-scale-qa.md` for scaling checks.
 
 **The theme pass.** Repeat the surface that carries the most colour in each of
-these four conditions:
+these conditions:
 
 1. Light.
 2. Dark.
-3. Reduced transparency. Every window and popover surface turns solid.
-4. Reduced motion. The global clamp stops animation.
+3. System, confirming it follows the OS theme.
+4. Reduced transparency. Every window and popover surface turns solid.
+5. Reduced motion. The global clamp stops animation.
 
-The selected surface needs all four theme checks. If a check cannot run, record
+The selected surface needs all applicable appearance checks. If a check cannot run, record
 the surface, theme, and reason in Checked scope and limits.
 
 Switch light and dark from the app's own Appearance pane. Switch reduced
@@ -92,13 +92,14 @@ Walk these dimensions. Check each one against `design-principles.md`.
 2. Information architecture. Does the content sit in the right window? Is the
    pane order right? Does every deep link land where it claims?
 3. Surfaces and geometry. All surfaces of the window. Clipping, overflow, a
-   surface that outgrows its fixed height, a scroll area with no edge treatment.
-4. Colour and tokens. Semantic utilities only. No raw hex, no ad-hoc `rgb()`.
-5. Typography. The `type-*` ladder, the settings type ladder, `tabular-nums` on
+   surface that outgrows its available viewport, a scroll area with no edge treatment.
+4. Colour and tokens. Semantic utilities, with the guide's exceptions for
+   token definitions, vendor artwork, and justified feature values.
+5. Typography. The shared `type-*` scale, hierarchy, and `tabular-nums` on
    figures, no hardcoded sizes.
 6. Primitives. The real `ui/` components, and the `ui-*` classes under them.
 7. State taxonomy. Empty, loading, error, permission-blocked, first-run.
-8. Themes and materials. Light, dark, and reduced transparency.
+8. Themes and materials. Light, Dark, System, and reduced transparency.
 9. Motion. Token durations, the reduced-motion clamp, ambient loops.
 10. Accessibility (WCAG 2.1 AA). Contrast, keyboard-only focus, `role` and
     `aria` wiring, never colour alone.
@@ -125,15 +126,10 @@ asks.
 ## The passes
 
 Run one window, or one surface of a window, per invocation. This keeps the
-context small and the findings specific. For a full sweep, work through this
-order:
-
-1. Popover, activity surface. The window most readers see most.
-2. Popover, session analytics.
-3. Popover, usage. The one surface that exceeds the default height.
-4. Settings, pane by pane.
-5. Onboarding, step by step.
-6. The notification window, resting and expanded.
+context small and the findings specific. For a full sweep, cover the main-window
+views, popover surfaces, HUD,
+Settings panes, onboarding steps, and notification states. Derive the current
+inventory from the app and prioritize the surfaces used most often.
 
 ## Severity
 
@@ -146,6 +142,6 @@ Blocker. New UI is held to AA from the start.
 ## Principles
 
 - Live window first. Grade what the app draws, then confirm it in the code.
-- Be specific. Tie every finding to a rule number and to a token or a file.
+- Be specific. Tie every finding to a guide section or source rule and to a token or file.
 - Show evidence. Give a screenshot or a quoted class for each finding.
 - Assume competence. State the problem, its impact, and a fix. Do not lecture.

@@ -32,7 +32,7 @@ const NUDGE_HEIGHT: f64 = 168.0;
 
 /// Corner radius of the macOS notification window, in logical pixels.
 ///
-/// This is `rounded.popover` from `apps/desktop/design.md`. The material and
+/// This is `--radius-popover` from `apps/desktop/src/styles/tokens.css`. The material and
 /// the clipped webview surface must agree. `scripts/check-design-drift.mjs`
 /// checks this copy against the design token.
 #[cfg(target_os = "macos")]

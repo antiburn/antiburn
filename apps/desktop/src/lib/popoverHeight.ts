@@ -47,12 +47,12 @@ export function prefersReducedMotion(): boolean {
 }
 
 /**
- * The design system's slow duration (`--duration-slow`, `design.md`), in
+ * The design system's slow duration (`--duration-slow`, `styles/tokens.css`), in
  * milliseconds, for a JS-driven animation that cannot consume the CSS custom
  * property directly (a Recharts `animationDuration`, say).
  *
  * Read from the live custom property rather than a copied number, so the
- * token stays the one source of truth. Falls back to the token's documented
+ * token stays the one source of truth. Falls back to the token's default
  * value where the property is unset, such as a test environment with no
  * stylesheet loaded.
  */

@@ -1,604 +1,118 @@
-# Product analytics audit and measurement plan
+# Analytics measurement definitions
 
-Audited on 2026-09-08 at `3ce2b1da`. This is a source audit, not an analysis of
-production event volumes. The collector, warehouse, release secrets, and live
-dashboards were not inspected. The findings below preserve the state at that
-revision. [analytics.md](analytics.md) is the catalog of implemented events.
+This document defines how to interpret the current analytics events and review
+changes to them. The [public analytics catalog](analytics.md) owns the complete
+event inventory, payload fields, triggers, delivery behavior, and disclosure.
+Source instrumentation does not by itself establish collector ingestion or a
+production report.
 
-At the audited revision, events established that some installations ran,
-completed setup, and opened sessions. They could not establish how often people
-deliberately used the app, which surfaces provided value, or whether a feature
-was unused because its data never loaded.
+## Reporting population and time
 
-## Implementation status
+Report **installations observed through delivered events**, not people or all
+installations. `anonymousId` rotates after 30 days and resets after opt-out and
+re-enable. A first-seen ID is not necessarily a new install. Do not add a stable
+identifier or join rotations using IP, user-agent, or device information.
+Opted-out and unconfigured builds are unobserved, and offline or failed delivery
+can omit events. Analytics therefore cannot establish total users, opt-out
+rates, uninstalls, or precise long-term retention.
 
-The first delivered analytics set is implemented in the current source. The closed catalog now records
-successful surface and Settings-pane visibility, visible surface outcomes,
-deliberately viewed provider states, and classified setup starts and
-completions. `no_credentials` is an accepted provider-state value but remains
-dormant because the current product boundary cannot prove it. The queue now
-wakes at a bounded depth and uses protected drain and retry delays. The reviewed
-Burn Checks instrumentation is implemented as of 2026-09-10. Its typed-operation
-review UI is implemented as of 2026-09-15. Other proposals remain unimplemented. Collector verification, production
-reports, and cohort review remain operational work.
+Use `originalTimestamp` for behavior, deduplicate retries by `messageId`, and
+allow a documented late-arrival window before finalizing cohorts. Show the
+number of reporting installations with each rate. Segment by app version and OS;
+restrict each denominator to versions and platforms that support the feature.
+When an event or its vocabulary changes, earlier events cannot be reclassified
+from a coarse or missing value. In particular, older setup completions have no
+`new`/`restart` label, older limit-factor events cannot identify Claude Max
+tiers or OpenAI Pro Lite, and older unknown-record events have no
+`unrecognizedTypes` list.
 
-The limit-factor plan mapping was refined on 2026-09-11. Claude's `max` plan
-can report `max_5x` or `max_20x` from its reviewed tier, and OpenAI's
-`prolite` plan now has its own value. Existing coarse values remain the
-fallback for absent or unrecognized inputs. Reports must segment this change
-by the first app version that contains it; earlier `max` and `other` events
-cannot be split retrospectively.
+The wire `sessionId` groups captured analytics events. Background events can
+extend it, while silence can split one process run. It is neither a visit nor
+attention duration. For visit frequency, group only deliberate interaction
+events by installation with a documented 30-minute inactivity gap; exclude
+background events. Do not infer time spent from gaps, tray visibility, or a
+persistent HUD.
 
-The opt-out withdrawal event is implemented with the consent transition. Its
-durable queue row records the fixed signal before the stored preference changes;
-one bounded final drain may deliver it, then local analytics state is deleted.
-An offline or failed drain is an accepted miss and never retries after disable.
-Use `antiburn.analytics_opted_out` to count observed withdrawals among
-configured installations that had analytics enabled, and exclude it from
-engagement, activation, retention, visit, and time-spent denominators. Segment
-reports at the app-version boundary where this event ships. Missing identity,
-environment-disabled, unconfigured, and crashed-before-delivery cases remain
-unobserved; the event carries no properties beyond the standard envelope.
+Core surfaces are `activity`, `session_detail`, `provider_preview`,
+`checks_preview`, `burn_checks`, `hud`, `hud_detail`, and `quota`. Count only
+their `surface_viewed` events with `detail=user` as deliberate core views.
+Settings-pane views do not qualify. Earlier builds could report an `insights`
+Settings pane and state; exclude that legacy value when comparing current
+core-use cohorts.
 
-Application interface size changes are implemented at the native persistence
-boundary. The product question is which supported sizes readers choose and
-whether they find the Settings, keyboard, or native-menu route. Reports use
-the distribution of `antiburn.interface_scale_changed` by preset and source
-among reporting installations. This guides preset and control placement; it
-does not measure current adoption because automatic restoration emits nothing.
-The event fires only after an atomic saved transition to another allowlisted
-preset. Its `label` is one of `90`, `100`, `110`, `125`, `150`, `175`, or
-`200`; its `detail` is `settings`, `shortcut`, or `menu`. Edge shortcuts,
-repeated selections, startup restoration, generic Settings saves, failed
-requests, and renderer reconciliation emit nothing. Maximum volume is one
-event per successful user-requested change. It excludes window bounds, display
-details, DPI, content, and work identifiers. Reports segment at the first app
-version that includes this event.
+## Core product measures
 
-## Coverage at the audited revision
+| Question                          | Definition and decision limit                                                                                                                                                                                                                                                                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Do readers deliberately return?   | Daily and weekly distinct reporting IDs with a user-origin core `surface_viewed`. Exclude setup, Settings-only visits, automatic restores, mere nudge display, and all background events. This measures observed repeat attention, not passive meter reading.                                                    |
+| Does setup lead to visible value? | Among distinct IDs completing a `new` setup flow, count those who see `ready` data on a user-initiated core exposure within 24 hours. Report `empty`, `error`, and `loading_timeout` alongside `ready`. A resumed flow can emit another start; repeated flows from one ID are not independent new installations. |
+| Which features reach readers?     | For each core surface, divide distinct IDs with a deliberate view by engaged reporting IDs on supported builds. Report `ready` reach separately from view reach. A visible view does not imply useful data.                                                                                                      |
+| Do readers return after value?    | Among IDs first reaching deliberate `ready` data after new setup, report observed return on day 1 and day 7 through deliberate core views. Include only cohorts whose full observation window has elapsed. Rotation and delivery loss bias return downward.                                                      |
+| Where does visible use fail?      | For each surface, report distinct exposed IDs with `empty`, `error`, or `loading_timeout` states against distinct exposed IDs. A later `ready` can follow a timeout; state categories can overlap. Compare explicit operation attempts with their typed terminal outcomes separately.                            |
+| Does passive monitoring work?     | Report successful automatic HUD exposure, available data, and deliberate detail use separately. Current events do not establish HUD enablement prevalence or whether a reader looked at a persistent display. A saved preference does not prove its OS integration works.                                        |
 
-The closed catalog had nine events. Envelope fields provided event IDs, rotating
-installation IDs, application analytics session IDs, capture and send times,
-app version, OS, and architecture. Properties were fixed labels and coarse
-buckets; the Claude diagnostic had nine additional optional fields.
+`session_opened` records an Activity-card intent before detail data loads. Use
+the visible session-detail view and state for the outcome. A cached result
+counts only when shown, and a background refresh is not engagement. Burn Checks
+`ready` requires a finding or clean result; an all-unassessed report is
+`empty`.
 
-| Current event                            | Actual trigger and dimensions                                                                                                                                                                                                                               | What it answers and misses                                                                                                                                                         |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `antiburn.app_launched`                  | Shell setup; no event-specific properties.                                                                                                                                                                                                                  | Reports launches, including unattended startup. Does not measure visits, continued use, or a new installation.                                                                     |
-| `antiburn.onboarding_step_viewed`        | `OnboardingSession.noteOnboardingStep`; four fixed steps, once per step per flow instance.                                                                                                                                                                  | Shows setup progress. Has no new-versus-restarted flow distinction or failure reason.                                                                                              |
-| `antiburn.onboarding_finished`           | After the finish command saves settings. Explicit setup restarts can emit another completion.                                                                                                                                                               | Shows completed setup, not first useful data or unique new installations.                                                                                                          |
-| `antiburn.scan_completed`                | Full discovery pass; first outcome or changed count bucket relative to the previous reported outcome. Scoped passes emit nothing.                                                                                                                           | Shows coarse discovery health and inventory. Is not an interaction or a scan-attempt counter.                                                                                      |
-| `antiburn.setting_toggled`               | Saved changes to `live_usage`, `notifications`, `launch_at_login`, `tray_icon`, `dock_icon`, or `discovery_paused`; key only.                                                                                                                               | Shows use of six controls. Does not show direction, current adoption, other settings, or success of OS integration.                                                                |
-| `antiburn.session_opened`                | Activity-card handler before analysis loads; agent category and native/WSL.                                                                                                                                                                                 | Measures list-to-detail intent. Does not establish that detail loaded, or cover related sessions, subagents, or newer/older navigation.                                            |
-| `antiburn.error_occurred`                | Full scan failure, with `scan_failed`; repeated identical outcomes suppressed.                                                                                                                                                                              | Shows some discovery failures. Misses scoped failures and other feature failures; cannot supply an operation failure rate.                                                         |
-| `antiburn.unrecognized_records_observed` | Nonempty unknown-record summary returned to Settings Insights; changed category/count bucket within the process. Clean results reset suppression without an event.                                                                                          | Diagnoses reader-selected cohorts. Does not count all Insights visits or population parser failure rates.                                                                          |
-| `antiburn.claude_limit_reset_observed`   | Changed Claude reset diagnostic after normal usage refresh, with a separate five-minute cooldown and additional enablement gates.                                                                                                                           | Answers a narrow provider experiment question. Does not establish that anyone viewed usage or used a reset.                                                                        |
-| `antiburn.quota_incidents_observed`      | Settings → Insights report with an assessed quota-pressure section; fires per limit kind, only when that kind's bucketed hit count changes within the process.                                                                                              | Diagnoses reader-selected cohorts read afterward. Does not count incidents at ingest time; see `antiburn.provider_incidents_ingested` below for that.                              |
-| `antiburn.provider_incidents_observed`   | Settings → Insights report with an assessed provider-incidents section; fires per incident kind, only when that kind's bucketed hit count changes within the process.                                                                                       | Diagnoses reader-selected cohorts read afterward. Does not count incidents at ingest time; see `antiburn.provider_incidents_ingested` below for that.                              |
-| `antiburn.provider_incidents_ingested`   | The durable evidence worker publishes a session whose evidence gained an incident within the last two hours that its previously published evidence did not carry; fires per incident kind present, content-deduplicated against the previous evidence blob. | Counts incidents at ingest time, independent of whether a reader ever opens Insights. Counts installations that ingested a failure, not requests; a closed laptop reports nothing. |
+## Feature and diagnostic measures
 
-Evidence: [event schema](../apps/desktop/src-tauri/src/analytics/event.rs),
-[recording and delivery](../apps/desktop/src-tauri/src/analytics/mod.rs),
-[shell commands](../apps/desktop/src-tauri/src/commands.rs),
-[launch](../apps/desktop/src-tauri/src/lib.rs),
-[scan scope](../apps/desktop/src-tauri/src/scan/mod.rs),
-[onboarding](../apps/desktop/src/views/onboarding/OnboardingSession.ts), and
-[activity-card handler](../apps/desktop/src/views/PopoverView.tsx).
+Use these denominators for current events. The catalog defines each event's
+exact fields, suppression, and allowed values.
 
-## Findings, in priority order
+| Question                                                 | Metric and limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Which Sessions filters are selected?                     | Distribution of `session_filter_selected` by filter and, for recognized agent filters, agent, among reporting installations that changed a filter. Restoration and reselecting the current filter emit nothing; this is choice among changers, not current filter prevalence.                                                                                                                                                                                                                                                                 |
+| Which interface sizes and routes are chosen?             | Distribution of `interface_scale_changed` by preset and Settings, shortcut, or menu route among reporting installations that saved a change. Restoration emits nothing, so this is not current preset adoption.                                                                                                                                                                                                                                                                                                                               |
+| Are project folder actions used and successful?          | Count settled `project_folder_action` attempts and failures by `open` or `copy`. The denominator is observed attempts, not sessions or panel views. OS acceptance of an open request does not prove the file manager displayed the folder.                                                                                                                                                                                                                                                                                                    |
+| Do Burn Checks actions complete?                         | Report Auto Fix reviews by typed result, confirmations against `ready` reviews, and typed completions against confirmations. Report successful prompt copies against `ready` preparations, with preparation failures separate. Allow in-flight attempts and late delivery to settle; a clipboard failure emits no copy success. An explicit retry is another attempt.                                                                                                                                                                         |
+| Do verified checks and recurrences become visible?       | Count distinct exposed installations by `(verified or recurred, passive or action)` from `burn_check_outcome_observed`, against deliberate Burn Checks exposures. The watch origin describes how it started; it does not establish that the action caused the result. Multiple targets with one tuple collapse within an exposure.                                                                                                                                                                                                            |
+| Is main-window navigation useful?                        | Count installations with `navigation_history_moved` among main-window viewers; count `app_search_opened` among those viewers. Compare `app_search_result_opened` with search opens by result category and report distinct installations too. A search result means accepted navigation, not loaded data, executed work, or a changed setting.                                                                                                                                                                                                 |
+| How close do usage windows run to limits?                | Report `usage_observed` bands by provider and short or long window. These are changed-state observations, not request counts or exact percentages. Provider failures and supplemental windows do not contribute. Non-authoritative windows may still report a coarse band.                                                                                                                                                                                                                                                                    |
+| How accurate are learned factors?                        | Distribute `limit_factor_observed` factor and residual bands by provider, lane, and mapped plan among reporting installations. Its 24-hour floor and first-account-per-provider/lane narrowing make event counts unsuitable as account or window counts. Keep model-scoped lanes separate without attempting to identify a model.                                                                                                                                                                                                             |
+| How accurate are closed quota windows?                   | Distribute `quota_window_closed` estimate bias, unexplained band, and reading coverage by provider, lane, and mapped plan, with reporting installations shown. This is a dollars-only estimate against the last provider reading after a window closes; it does not reconstruct the badge or forecast a reader saw. Only windows with an observed period ID, closed within the 14-day lookback, can report. A durable marker prevents retries, so a crash after marking can leave a missed event.                                             |
+| How common are unknown records or report-time incidents? | `unrecognized_records_observed`, `quota_incidents_observed`, and `provider_incidents_observed` describe completed Checks report requests from the popover or main window. They can record before the renderer presents the report. Their changed-state buckets do not measure population parser or incident rates and do not establish deliberate use. Missing `unrecognizedTypes` on an older event means the build predates that field, not that no unknown type existed.                                                                   |
+| Is a provider failure widespread?                        | For `provider_incidents_ingested`, report distinct installations by agent and incident kind per hour against installations that sent any event that hour. This is an ingest-time fleet signal, not a request failure rate: closed laptops, stale sessions, and opted-out installs contribute nothing. Its two-hour freshness window permits delayed reporting.                                                                                                                                                                                |
+| Did app resource use shift?                              | Compare `resource_usage_observed` bands by app version and OS using observed installation-hours, with installation counts and `none`/`partial`/`full` coverage alongside each distribution. Never use event count as the denominator. The shell process must run long enough to sample; CPU and memory omit renderers, the memory maximum is sampled rather than a true peak, I/O has platform-specific meanings, and missing measurements are not zero. A shift warrants regression investigation, not a claim about all users or causation. |
+| How many withdrawals were observed?                      | Count `analytics_opted_out` among configured, previously enabled installations that delivered the signal. Exclude it from engagement, activation, retention, visit, and time-spent measures. Offline, failed, unconfigured, environment-disabled, and crashed-before-delivery withdrawals can be missed; the signal cannot establish an opt-out rate for all installs.                                                                                                                                                                        |
 
-1. **There is no deliberate-use denominator.** Popover reveals, Settings pane
-   views, provider/check previews, and HUD detail views are absent. A person
-   reading the tray meter can get value without any recorded interaction. A
-   person opening the popover daily without a session-card click is also almost
-   invisible. Do not equate background operation with engagement.
-2. **Intent has almost no outcome coverage.** Session-card clicks precede
-   analysis. There is no general distinction between useful data, empty data,
-   loading that stalls, and a failed view. Live provider failures, source access
-   trouble, and analysis failures can make a feature appear simply unwanted.
-3. **The analytics session is an event-activity window.** Every queued event
-   calls `current_session_id`, including background scans and diagnostics.
-   Background changes can keep it alive; silence can split one process run.
-   Neither its count nor its first-to-last timestamp measures engaged visits or
-   time spent. Adding events would change these measures again.
-4. **Feature adoption and intervention results are missing.** HUD enablement,
-   notification actions, source setup, report refresh, session actions, and
-   update actions have no complete measurement. Four setting keys without
-   direction cannot show enablement or abandonment. A saved preference also
-   does not prove that the corresponding feature works.
-5. **More events can expose delivery limits.** The queue keeps the newest 500
-   rows. After a 60-second initial delay, a flush sends up to 50 sequential
-   requests, then waits 15 minutes. Healthy sustained capacity is approximately
-   200 events/hour, less when requests are slow. One failed request stops a
-   drain; five failed attempts discard its row. Short-lived installs can leave
-   events queued until a later launch, and overflow drops earlier funnel steps.
-   Increased volume needs a delivery load test, not just more call sites.
-6. **Documentation and tests do not fully enforce semantics.** The catalog test
-   checks that event names occur in the document; it does not validate trigger
-   behavior, property vocabularies, or whether new features have coverage.
-   `Facts` uses static strings, not event-specific property enums. The renderer
-   IPC is more restrictive, but TypeScript still accepts any string for agent.
-   Default Cargo tests exclude most analytics tests; CI does run the enabled
-   suite on Linux.
-
-Documentation discrepancies found at the audit revision:
-
-- `CONTRIBUTING.md` said analytics waits until onboarding completes, whereas
-  `allowed` has no onboarding gate. This audit corrects the contributor text to
-  match the implementation and public policy.
-- The public scan row says exact count changes and once-a-minute visible scans.
-  The code uses count buckets from full passes; it runs full reconciliation
-  about every five minutes, while watcher-driven scoped passes emit no scan
-  analytics.
-- Public identifier descriptions say `sessionId` is never written to disk. Its
-  live generator state is memory-only, but each serialized queued payload
-  includes the ID on disk. Public descriptions of inactivity also need to say
-  analytics-event inactivity, not imply user inactivity.
-
-The foundation documentation change corrected those disclosures. The implemented catalog
-implementation status is separate from these historical findings.
-
-## Measurement definitions
-
-Use reporting installations, not people. Installation IDs rotate after 30 days
-and reset after opt-out/re-enable. Do not add a stable identifier or use IP,
-user-agent, or device information to join rotations.
-
-| Question                                           | Definition after the first implementation                                                                                                                                                                                                          | Decision supported                                               |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Are people deliberately returning?                 | Daily/weekly distinct `anonymousId` with a user-initiated core `surface_viewed` event or `settings_pane_viewed` for `insights`. Exclude setup, other Settings-only visits, automatic restores, nudges merely appearing, and all background events. | Whether the core utility earns repeat attention.                 |
-| Does setup lead to visible value?                  | Among distinct IDs completing a new setup flow, fraction that see a core surface with `ready` data within 24 hours of completion. Also report empty, error, and timeout outcomes.                                                                  | Whether to improve setup or the first data experience.           |
-| Which features get used?                           | Distinct IDs viewing each core surface divided by engaged reporting IDs in the same interval and supporting versions/platforms. Separate ready-data reach from view reach.                                                                         | Which surfaces merit investment or improved discovery.           |
-| Do users return after value?                       | Among IDs first reaching ready data after new setup, observed return on day 1 and day 7 using deliberate core views. Include only cohorts whose full observation window has elapsed.                                                               | Whether activation translates into observed repeat use.          |
-| Where does the experience fail?                    | Per surface, fraction of reporting exposed IDs with empty, error, or loading-timeout states. For explicit operations, compare terminal outcomes with attempts separately.                                                                          | Which reliability issues block adoption.                         |
-| Does passive monitoring remain enabled and useful? | Report HUD/meter enablement, successful automatic exposure, data availability, and deliberate detail use separately.                                                                                                                               | Whether passive display features are configured and functioning. |
-
-Use capture time for behavior, deduplicate retries by `messageId`, and allow a
-documented late-arrival window before finalizing cohorts. Segment by app version
-and OS so older builds and unsupported features do not enter new-event
-denominators. Installation rotation and missing delivery bias retention
-downward; a first-seen ID is not necessarily a new install. Opted-out and
-unconfigured builds are unobserved, so analytics cannot establish total users,
-opt-out rates, uninstalls, or precise long-term retention.
-
-For activation and return cohorts, require ready data on a user-initiated
-exposure. Automatic HUD restoration can establish that the display works, but
-does not establish that the user has reached value through deliberate use.
-
-For visit frequency, group only deliberate interaction events by installation
-with a documented 30-minute inactivity gap in analysis. Ignore background events
-when constructing visits. Keep the existing wire `sessionId` unchanged initially
-and document its actual meaning. Do not infer attention duration from gaps.
-Neither tray visibility nor a persistent HUD proves that someone looked at it.
-
-## Event additions and proposals
-
-All names below use the `antiburn.` prefix. The implemented dimensions are
-implemented closed vocabularies, not arbitrary strings or permission to upload
-payloads. Use event-specific Rust types even when serializing into existing
-`label`, `detail`, and `bucket` fields. Update disclosures for new meanings even
-when the wire field count stays unchanged.
-
-### Visible use and value (implemented)
-
-| Event/change                                       | Trigger and safe dimensions                                                                                                                                                                                                              | Owner and volume rule                                                                                                                                                                                                                                                          |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `surface_viewed`                                   | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, `settings`, or `quota`. `detail`: `user` or `automatic`.                                      | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                          |
-| `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the eight existing Settings pane IDs.                                                                                                                                                   | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                              |
-| `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary, plus `insights`; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response. | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`. |
-| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`.      | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `no_credentials` remains dormant. No account, plan name, balance, quota value, or raw response.                                       |
-| `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                           | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                         |
-
-`surface_state_observed` also needs a closed `properties.origin` value of `user`
-or `automatic`, inherited from its exposure. This optional wire field lets
-reports separate deliberate value from passive display without guessing from
-neighboring timestamps. It stays absent on unrelated events.
-
-`unrecognized_records_observed` also carries `properties.unrecognizedTypes`,
-from the next release after 0.5.0: up to 16 unknown transcript record type
-names, sanitized (ASCII, bounded length, a fixed character set, a shared
-`<rejected>` sentinel for anything that fails that check) rather than mapped
-to a reviewed closed vocabulary. This is the one field on the closed catalog
-that is not a reviewed enum value, because the product question it answers —
-which new record type names an agent has started writing — cannot be answered
-by a value chosen in advance. Change-only suppression now compares the
-sanitized type list alongside the label and bucket, so a newly observed name
-is a reportable change even when both stay the same. It stays absent on every
-other event, and on an event from an app version that predates it.
-
-Define the start classification from the explicit restart path and existing
-onboarding state, not from whether the analytics identifier has been seen.
-Analyze setup progress by distinct installation and ordered times; repeated
-flows in one observation window are not independent new installations. Earlier
-`onboarding_finished` events have no classification label. Exclude those legacy
-events from new-versus-restart cohorts instead of treating a missing label as
-`new`.
-
-Keep `session_opened` as the existing activity-card intent event. Pair it with
-visible session detail and data state for the activation funnel. Record visible
-detail navigation from related sessions and subagents without transmitting a
-session ID or title. Cached ready data counts when actually shown; a background
-cache refresh does not count as a view.
-
-The existing seams are
-[popover reveal/hide](../apps/desktop/src-tauri/src/popover.rs),
-[popover data and navigation](../apps/desktop/src/views/popover/PopoverSession.ts),
-[preview controller](../apps/desktop/src/views/popover/PopoverPeekController.ts),
-[Settings navigation](../apps/desktop/src/views/settings/SettingsWindowSession.ts),
-[Insights controller](../apps/desktop/src/views/settings/InsightsSession.ts), and
-[HUD controller](../apps/desktop/src/views/overlay/OverlaySession.ts).
-Carry an internal exposure generation through readiness and loading callbacks
-to reject duplicates and stale results. It need not leave the process.
-
-### Adoption and actions (proposed)
-
-| Proposed event                                | Trigger and safe dimensions                                                                                                                                                                                                                                                                                                            | Owner and volume rule                                                                                                                                                                                                                         |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `setting_changed`                             | Successfully saved change; allowlist product toggles such as live usage, notifications, discovery, launch at login, app presence, and HUD enablement. Fixed `enabled`/`disabled` state.                                                                                                                                                | The relevant persistence boundary. Emit only an actual transition. Keep existing `setting_toggled` semantics stable while migrating dashboards; do not count both as separate actions.                                                        |
-| `action_requested`, `action_completed`        | A deliberate operation starts, then reaches success, failure, or cancellation. Initial action vocabulary: manual scan, report refresh, source add/remove, source permission request, reveal source, diagnostics export, delete local session data, and clear local index. `detail` on completion: `success`, `failed`, or `cancelled`. | UI handler owns intent; operation boundary owns outcome. One pair per explicit attempt; automatic retries remain one attempt. Do not send action arguments, file paths, exported data, or exact deletion counts.                              |
-| `notification_shown`, `notification_actioned` | Actual display and explicit action; fixed notification kind and action vocabulary.                                                                                                                                                                                                                                                     | Nudge lifecycle after display succeeds, not when delivery is requested. Suppress duplicate display callbacks; separate test/location nudges from product alerts. Never send message text, actor, provider account, or usage milestone values. |
-| `update_action_completed`                     | User-requested check, installation, or restart request reaches its known result; fixed action and outcome.                                                                                                                                                                                                                             | Update controller. Do not treat a restart request as verified installation; confirm running versions through later launch events. Suppress background polling and progress callbacks.                                                         |
-
-The setting values and additional provider categories expand today's disclosure;
-update it before shipping. Do not report analytics opt-out after withdrawal or
-send a settings snapshot. Change events establish adoption among observed
-changers, not prevalence across all installs. Use observed HUD exposure for
-existing adopters; add a narrowly scoped state observation only if a specific
-prevalence question still cannot be answered.
-
-For operation success rates, correlate each attempt locally and emit exactly
-one terminal outcome. Compare aggregate counts only after allowing in-flight
-attempts and late delivery to settle. Process exits can leave unmatched
-attempts; expose that category instead of treating every missing completion as
-failure. Do not introduce persistent operation or work identifiers.
-
-### Targeted diagnostics and measurement quality
-
-#### Session filters (implemented 2026-09-12)
-
-The product question is which Sessions sidebar filters readers actually use,
-and whether harness filters concentrate on one agent. The metric is the
-distribution of `antiburn.session_filter_selected` by `label` (and, for the
-`agent` label, by `detail`), using reporting installations as the denominator.
-This supports deciding whether the fixed filter set earns its sidebar space and
-whether a harness filter is worth the row it takes.
-
-The owning boundary is the setter behind the sidebar selection (in the main
-window's activity controller). It fires only when the persisted filter
-actually changes — never when the window loads and restores the persisted
-selection, and never twice for a click that reselects the current filter. The
-closed `label` vocabulary is `notable`, `material`, `agent`, `failing`,
-`passing`, `all`. `detail` carries the selected harness slug only when
-`label=agent`, and only when the harness is one of antiburn's fixed agent
-enum's values; an unrecognized harness — a slug newer than this build's
-agent list — reports `label=agent` with no `detail` rather than widening the
-vocabulary or dropping the event. No session id, title, repository, count, or
-cost travels with it.
-
-Validation: a test resolves the interaction for a known agent (`detail` set)
-and for a non-agent filter and an unrecognized agent (both with no `detail`),
-and a frontend test confirms the setter is a no-op — no persistence write, no
-event — when the requested filter matches the current one, including the
-initial load path that only restores the persisted value.
-
-#### Limit-factor plan mapping (implemented 2026-09-11)
-
-The product question is whether learned factor accuracy differs across the
-provider plans that the Usage surface already identifies. The metric is the
-distribution of `antiburn.limit_factor_observed` by provider, lane, and mapped
-plan, using reporting installations as the denominator. This supports plan
-mix and estimate-quality decisions without sending account or billing data.
-
-The factor learner owns the trigger. It passes the plan and tier from the
-latest learned point to the analytics boundary. The event carries only the
-closed `plan` values `free`, `pro`, `max`, `max_5x`, `max_20x`, `team`,
-`enterprise`, `plus`, `prolite`, `business`, `edu`, `unknown`, and `other`.
-Claude's Max tier values and OpenAI's Pro Lite value require their matching
-provider; unknown or absent input uses the existing coarse fallback.
-
-The existing first-per-provider/lane rule and 24-hour minimum remain in force.
-The deduplication tuple includes the mapped plan, so a tier change is eligible
-under the existing changed-tuple rule. Background learning keeps its current
-cadence and maximum volume. Historical coarse values cannot be reclassified;
-reports segment the refined mapping at its first app-version boundary.
-
-#### Model-scoped weekly lane detail (implemented 2026-09-16)
-
-The factor learner now tracks a lane for a provider's supplemental weekly
-window scoped to one model, such as Claude's "Fable" limit, alongside the
-existing five-hour and weekly account lanes. The product question is whether
-this app's estimate accuracy for a model-scoped lane differs from the
-account-wide ones, without ever naming the model itself.
-
-`antiburn.limit_factor_observed`'s `detail` property gains one closed value,
-`model`, reported for every `model:<slug>` lane the learning pass touches; the
-model name and its slug never reach the event. The existing `short` and `long`
-values are unchanged. The first-per-pair rule, the 24-hour minimum between
-events for the same pair, and the plan and band mappings all apply to the
-`(provider, "model")` pair itself: every model-scoped lane for one provider
-maps to the single detail value `model`, so all of a provider's model lanes
-share this one dedup slot, and the model name is never part of the key.
-Reports segment `detail=model` from `short` and `long` at this app version's
-boundary; no historical event can be reclassified.
-
-#### Burn Checks integration (implemented 2026-09-10)
-
-| Product question and decision                                                                                                                                                            | Metric and denominator                                                                                                                                                                                                   | Trigger and closed fields                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Suppression and maximum volume                                                                                                                                                                                                                                                                                                                                              |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Does deliberate Burn Checks use reach usable results? Improve discovery or report reliability.                                                                                           | Distinct reporting installations with `burn_checks` `ready`, `empty`, `error`, or `loading_timeout`, divided by installations with a user-origin `burn_checks` `surface_viewed`, on app versions from 2026-09-10 onward. | The main-window section is both selected and natively visible. `surface_viewed` uses `label=burn_checks`, `detail=user`. `surface_state_observed` uses `label=burn_checks`, the four existing state values, and `origin=user`. Ready requires a finding or clean result; an all-unassessed report is empty.                                                                                                                                                                     | Hidden sections, stale results, remounts, and refreshes do not create exposures. Each state occurs once per exposure. Maximum: one view and four state events per exposure.                                                                                                                                                                                                 |
-| Do readers proceed from Auto Fix review to confirmation, and what result follows? Improve review copy or operation reliability.                                                          | Confirmations divided by `burn_check_auto_fix_reviewed` with `detail=ready`; each typed completion outcome divided by confirmations. Allow in-flight and late-delivery time before finalizing.                           | A Fix request completes with review `detail`: `ready`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`. Apply selection emits `burn_check_auto_fix_confirmed`. Completion `detail`: `applied_awaiting_verification`, `applied_verification_unavailable`, `recovery_needed`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`.                                                                                                                              | Busy controls suppress duplicate concurrent requests. Each explicit retry is a new attempt. Maximum: one review event per Fix request, one confirmation and one completion per Apply request. No automatic retry emits another event.                                                                                                                                       |
-| Does prompt preparation reach a usable clipboard result? Improve prompt preparation or clipboard handling.                                                                               | Successful `burn_check_prompt_copied` divided by `burn_check_prompt_prepared` with `detail=ready`. Report preparation failures separately.                                                                               | A Copy fix prompt request emits preparation `detail`: `ready`, `stale`, `expired`, `unavailable`, or `failed`. A successful clipboard write emits `burn_check_prompt_copied` with no properties.                                                                                                                                                                                                                                                                                | A clipboard failure emits no copy event. Clipboard retry reuses the prepared prompt and emits no second preparation event. Busy and copied controls suppress duplicate calls. Maximum: one preparation and one successful copy for one rendered action. A non-named check submits selected current targets once.                                                            |
-| Do later Passed transitions and recurrences become visible, and did their independent watch start passively or from an action? Improve verification coverage without claiming causation. | Distinct reporting installations with each `(detail, origin)` tuple among deliberate Burn Checks exposures. Use exposed installations as the denominator. Never use background transitions as visits.                    | `burn_check_outcome_observed`: `detail=verified` originates only from a backend active win for a visibly Passing, unsnoozed detector. The backend win is an exact current fixed cycle with a fixed result and verified boundary. `detail=recurred` records a visible regression from a deliberately expanded, unsnoozed target and does not require that detector to remain Passed. `origin=passive` or `action` describes how that watch started and does not claim causation. | Background evaluation, hidden sections, snoozed checks, unloaded target rows, and refresh callbacks emit nothing. Deduplicate the coarse `(detail, origin)` tuple per exposure, without sending target or remediation-cycle identifiers. Multiple active cycles with the same tuple collapse to one event. Maximum: four events per exposure, independent of finding count. |
-
-These events use only the existing `detail` and `origin` wire fields. They never
-include prompts, resource or model strings from work, paths, finding, action,
-watch, reference, or sample IDs, exact token or cost values, private errors, or
-evidence revisions. Product reports must segment at the 2026-09-10 app-version
-boundary and show reporting installation counts.
-
-The target-based M/B/K flow needs no new event or property. Existing surface,
-Auto Fix, prompt, and outcome events measure the same user actions without
-resource names, kinds, estimates, scopes, paths, definitions, or session IDs.
-
-Add scoped scan, analysis, storage, or provider diagnostics only for a named
-reliability question that visible-state events cannot answer. Use fixed error
-categories and changed-state suppression. Do not add an unconditional heartbeat
-or events per poll, transcript record, chart hover, scroll tick, or token update.
-Give temporary diagnostics, including the Claude reset probe, an owner and
-review date so experiments do not become permanent noise or provider traffic.
-
-The first narrow background-summary exception is
-`antiburn.resource_usage_observed`. It answers: "Does a supported app version
-introduce an antiburn resource regression?" Compare each fixed resource band by
-app version and operating system. Use observed installation-hours as the
-denominator and show `none`, `partial`, and `full` coverage beside each
-distribution. Report the number of observed installations and hours. Do not
-substitute event count for either denominator. Exclude this event from
-engagement, activation, retention, visit, and time-spent definitions.
-
-The shell samples only its own process CPU, platform-specific memory, process
-read/write counters, and logical SQLite database and WAL file sizes. It uses a
-five-minute cadence, skips missed ticks, never overlaps reads, emits no per-sample
-event, and takes no resource measurement while analytics is disabled. A delayed
-read can be followed soon by the next scheduled tick. The event contains one typed,
-thirteen-field closed summary after at least one enabled monotonic hour with a
-sample. Suspension or a delayed tick can make the reporting window longer.
-Missing measurements stay unavailable and carry coverage; they never become
-zero. Full coverage means every attempted sample or interval succeeded, not
-that every instant was measured or no tick was missed. Counter rates are elapsed-time weighted over independently valid
-intervals. The sampled memory maximum is not a true peak. CPU and memory cover
-the shell process, not renderers or whole-app totals. Linux I/O can include
-accounting inherited from waited-for child processes. Windows I/O is all shell-process
-I/O, not physical disk traffic. No metric measures the whole machine, and the event
-does not enumerate renderers. There is no shutdown catch-up summary.
-
-Interpret changes with survivor and consent bias: a process must remain running
-long enough to contribute usable samples, and opted-out installations are
-unobserved. A distribution shift supports regression investigation, not a claim
-about all users or a causal conclusion. Resource bands can reveal coarse app
-work intensity and data volume, so the public catalog, privacy policy, and
-in-product disclosure name that consequence.
-
-The second background exception is `antiburn.provider_incidents_ingested`. It
-answers: "When a provider degrades, is a given user's failure part
-of a wider outage?" The metric is distinct reporting installations per
-`(agent, incident kind)` per hour, compared against installations that sent
-any event that hour; the decision it supports is telling a reader in-app and
-telling support, during a live incident, whether a capacity or server failure
-is fleet-wide or local to them — something the report-time
-`quota_incidents_observed` and `provider_incidents_observed` events cannot do,
-because they fire only when a reader happens to open Settings → Insights,
-possibly days later. The trigger and owning boundary is a background
-completed outcome: the durable evidence worker publishes a session's evidence
-(`insights_worker::apply_outcome`, the `PassOutcome::Published` arm) — never a
-per-record, per-poll, per-scan, or UI-driven trigger. Its properties are
-`label` (the agent that recorded the session, the same fixed list
-`session_opened` uses), `detail` (the incident kind — `capacity`,
-`server_error`, `connection`, `rate_limit`, or `usage_limit`), and `bucket`
-(the bucketed count of newly reported incidents for that pair in this
-publish); it carries no model name, session id, timestamp, path, or message
-text. Two mandatory filters bound its dedup and volume: an incident is new
-only when its `(ts_ms, kind)` pair is absent from the session's previously
-published evidence (so a revision-bump re-ingest of unchanged evidence
-reports nothing, and file growth reports only the appended incidents), and it
-must fall within `INGESTED_INCIDENT_FRESHNESS_MS` (two hours) of the worker's
-publish clock (bounding first-install backfill, a parser reclassification of
-old records, and an unreadable previous evidence blob). There is no
-in-memory suppression map — dedup is entirely by content — and the maximum
-volume is five events per publish, one per kind present. The owner is Dave
-Slutzkin; review date 2026-12-14, to confirm whether the signal is used in a
-fleet status view or a support workflow, or should be removed. Validation
-drives the real `apply_outcome` path against a store and asserts its computed
-result, the same boundary `insights_worker::process_next_work` hands to
-`analytics::record_provider_incidents_ingested` — this codebase has no
-`tauri::AppHandle` test harness, so, like `record_quota_incidents` and
-`record_provider_incidents` before it, the `allowed(app)` gate itself is
-exercised by inspection rather than by an app-driven test.
-
-This event counts installations that ingested a failure, not requests: a
-closed laptop, or an installation that never re-scans the affected session,
-reports nothing even during a real outage. The two-hour freshness window
-means a late ingest can report up to two hours after the actual incident, and
-opted-out installations are unobserved. Segment reports at the app version
-this event ships in.
-
-The implemented delivery changes add bounded queue-depth-triggered draining, protected retry backoff, and
-a request budget. Before expanding volume further, simulate normal repeated
-visits, preview use, and an offline backlog against the 50-event drain and
-500-row queue. Preserve the opt-out recheck before each request and silent
-failure. Do not merely increase queue size or add a blocking exit flush. Monitor
-delivery lag, duplicate message IDs, rejection counts, and event mix in the
-collector separately from product engagement.
+Surface state and Burn Checks outcome events require visible exposures. Hidden
+results, prewarm, remounts, refreshes, and background verification do not count
+as use. Provider states are shown only on Activity, deliberate previews, or a
+user-opened HUD; `no_credentials` is an allowed but currently dormant state.
+The Claude reset diagnostic is a separate, gated provider probe and does not
+measure use of a reset operation. It must not be mixed with the broader
+`usage_observed` measure. Avoid interpreting one event per changed state or
+bucket as the number of underlying occurrences.
 
 ## Event review contract
 
 Every added or changed event must document:
 
 1. The product question, intended metric, denominator, and decision it supports.
-2. The exact trigger and owning boundary, including whether it records intent,
-   visibility, a completed outcome, or background health.
-3. Every allowed property and value, serialization shape, and exclusion of
-   user/work identifiers and content. Do not pass DTOs directly to analytics.
+2. The exact trigger and owning boundary: intent, visibility, completed outcome,
+   or background health.
+3. Every allowed property and value, serialization shape, and exclusion of work
+   identifiers and content. Do not pass product DTOs directly to analytics.
 4. Duplicate suppression, cancellation, hidden-window behavior, retries,
    automatic restores, and expected maximum volume for the measured flow.
-5. The public catalog/disclosure changes and the app-version boundary when
-   semantics change. Do not silently reuse an event name for a new meaning.
-6. Validation of the actual product path, not just a call to the tracker.
+5. The [public catalog](analytics.md) and disclosure changes, plus the app-version
+   boundary when semantics change. Do not reuse an event name for a new meaning.
+6. Validation on the actual product path, not only a call to the tracker.
 
 Feature work must answer this contract with existing coverage, added coverage,
-or a concrete reason measurement is unnecessary. The goal is sufficient
-coverage to make decisions, not a fixed event count per pull request.
+or a concrete reason measurement is unnecessary. Avoid an unconditional
+heartbeat or events per poll, record, chart hover, scroll, or token update.
+For a new background diagnostic, state the owner, review date, and decision
+that warrants its volume and any provider traffic.
 
 Tests should prove that the user action produces the expected event, a failed
 operation cannot emit success, and remounts, prewarm, refreshes, and duplicate
-callbacks do not invent use. Exercise canceled and stale requests where the
+callbacks do not invent use. Exercise cancellation and stale results where the
 flow has them. Validate exact allowed wire properties and rejected unknown
 values at the Rust boundary. Verify opt-out, environment disablement, absent
-configuration, and queue/retry bounds when those paths change. Keep tests in
-the enabled-feature suite as well as relevant frontend tests.
-
-Strengthen the catalog check in a follow-up: use event-specific property enums
-and a machine-readable schema to validate exact names and values against the
-public catalog. A schema check cannot establish that a view was truly visible;
-behavior tests and PR review still own that requirement. Avoid a CI rule that
-merely requires an analytics file to change in every feature PR.
-
-## Delivery sequence and acceptance
-
-1. The source now contains the disclosure corrections, implemented events, and
-   bounded delivery changes. Establish baseline collector queries by app version.
-   Verify configured release ingestion, retry deduplication, and delivery delay.
-   Do not claim production behavior from source alone.
-2. Verify the implemented events with a loopback recording of setup → activity → preview →
-   session detail → Settings Insights → return visit. Also exercise empty/error
-   data, hidden prewarm, renderer recreation, automatic HUD restore, and opt-out.
-   Assert the expected sequence and absence of duplicate use events.
-3. Build engagement, activation, feature reach, observed day-1/day-7 return, and
-   visible reliability reports using the definitions above. Show reporting
-   installation counts and observation limits alongside percentages.
-4. Review at least two complete weeks of supported-version cohorts, then choose
-   follow-up actions based on observed gaps. Assign each report and diagnostic a
-   maintainer; review whether its events still support an actual decision.
-
-The historical audit changed documentation, current public disclosures, and
-contributor expectations. The implemented catalog and the reviewed Burn Checks
-integration now add runtime instrumentation with bounded delivery behavior.
-Collector configuration, dashboards, and the remaining proposed work remain
-described above.
-
-### Project folder action review — 2026-09-16
-
-Question: do readers use project folder open/copy, and which action fails?
-The renderer reports each settled explicit action with closed `open`/`copy` and
-`succeeded`/`failed` values. No hover event or path-derived property is collected.
-Session details and Burn Check project rows share the same action reporting.
-Concurrent presses are suppressed until an action settles; a later retry is a
-new attempt. Full paths stay in local IPC and the clipboard or native opener.
-The denominator is observed attempts per action, not all sessions or panel
-views. Native opener acceptance does not prove file-manager visibility. The
-existing consent and build gates apply; offline delivery and opt-out remain
-unobserved. Tests cover clipboard and opener success/failure separately from
-transcript actions and reject unknown analytics values and extra path fields.
-
-### Quota screen — 2026-09-16
-
-Question: do readers open the new Quota screen, and does it present usable
-data? The main window's Quota section adds a `quota` value to the existing
-`surface_viewed` and `surface_state_observed` label vocabularies, following
-the same rules as every other main-window section: one `surface_viewed` per
-deliberate show, and at most one `ready`/`empty`/`error`/`loading_timeout` per
-distinct state per exposure. Selecting an account, lane, or range preset does
-not start a new exposure; it stays the same visit. No provider, account,
-lane, dollar figure, or session identity is collected. The existing consent
-and build gates apply.
-
-### Quota window accuracy — 2026-09-18
-
-Question: for each closed quota window, did the dollars-only estimate land
-close to the provider's own meter, and how much of the meter's rise stayed
-unexplained under the shared-meter model? The metric is the distribution of
-`antiburn.quota_window_closed`'s `estimateBias` and `unexplainedBand` by
-provider, lane, and mapped plan, using reporting installations as the
-denominator. This supports decisions about factor-learning accuracy and the
-shared-meter model without sending dollar amounts, exact percentages, or
-account identifiers.
-
-The existing background factor-learning pass (`usage_alerts.rs`'s scheduled
-pass and `provider_usage/live/mod.rs`'s live pass) owns the trigger, the same
-pass that already reports `antiburn.limit_factor_observed`. It now also names
-every `(provider, account, lane)` pair it touched. For each touched pair, the
-event boundary looks for windows that closed within the last 14 days, carry
-an observed `period_id` (never a cadence-extrapolated or turn-gap-inferred
-one), and have no durable `quota_window_reported` marker yet. This records a
-completed outcome for the window, not a live estimate: the badge and forecast
-a user actually saw during the window are not reconstructed or corrected
-after the fact.
-
-The event carries the same closed `label`/`detail`/`plan`/`usageBand`
-vocabulary as `antiburn.limit_factor_observed`, plus three fields scoped to
-this event alone: `estimateBias` (the dollars-only estimate against the
-window's last reading, signed and banded by powers of five and twenty, or
-`unknown` with no reading or no factor point), `unexplainedBand` (the
-shared-meter model's unexplained rise as a share of the last reading), and
-`readingCoverage` (whether a reading covered the window's own end, within an
-hour). `bucket` reports the window's count of
-meter regressions. No dollar amount, exact percentage, account, model name,
-session, or timestamp reaches the event; the pure `share_period` function
-that derives the shared-vs-estimated split never receives an account key,
-only readings, bucketed dollars, and factor points already scoped to one
-lane.
-
-A window reports at most once, ever: the store marks it reported before the
-event is handed to the tracker, so a crash, a disabled build, or a later pass
-over the same lane cannot report it twice, and a window whose facts could not
-be computed is left unmarked for a later retry rather than reported blind. A
-window that never closes, or closes outside the 14-day lookback, never
-reports. There is no cancellation path — the pass either finds the window
-already marked or does not, and consent is checked once per pass rather than
-per window. Expected volume is bounded by the number of quota windows an
-install closes, at most a handful per lane per week, well under the existing
-factor-observed volume.
-
-This is a new event, not a reused name, so there is no prior semantic to
-preserve. `docs/analytics.md` and `docs/privacy-policy.md` list the event and
-its three new properties; the wire-payload test now pins thirty-one total
-properties and the catalog tests (`the_documented_catalog_matches_the_code`,
-`every_document_that_counts_the_fields_counts_the_same_number`,
-`no_variant_escapes_the_catalog`) enforce that the code and the documented
-catalog agree.
-
-Tests prove: an open window reports nothing
-(`an_open_window_reports_nothing`); a window closed outside the lookback
-reports nothing (`a_window_closed_more_than_the_lookback_ago_reports_nothing`);
-a disabled pass reports nothing and writes no marker
-(`a_disabled_pass_reports_nothing_and_writes_no_marker`); a closed, eligible
-window reports exactly once and leaves a marker row
-(`a_closed_window_reports_once_and_the_marker_row_exists`); and a second pass
-over the same window, with its marker already written, reports nothing
-(`a_second_pass_over_the_same_closed_window_reports_nothing`). The three new
-banding functions (`estimate_bias`, `unexplained_band`, `reading_coverage`)
-are unit tested directly in `event.rs` against their boundary values. The
-marker table itself is proven durable and idempotent
-(`marking_a_quota_window_reported_is_idempotent_and_durable`) and pruned with
-its period, alongside the existing residual and learn-cursor rows
-(`finite_retention_prunes_the_residual_and_learn_cursor_with_their_period`).
-This validates the store-level path the real pass takes; there is no Tauri
-`AppHandle` mock in this codebase, so the consent-gated wrapper itself is
-exercised the same way every other analytics emitter's wrapper is — by
-review, not by an automated test — following existing precedent.
-
-## Main-window navigation and search (2026-09-17)
-
-These three events use the existing opt-out and closed-property pipeline. Segment results
-at the app version that introduces this catalog; older versions have no comparable signal.
-
-| Question and decision                                                                     | Metric and denominator                                                                                              | Trigger, owner, and exclusions                                                                                                                                                                                                                                                                   |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Does unified history help navigation? Improve its placement and keyboard discoverability. | Reporting installations with `navigation_history_moved` among main-window viewers.                                  | Navigation store after a successful Back/Forward move, `label=back/forward`. No boundary, disabled-control, ordinary destination, external target, or automatic restore event.                                                                                                                   |
-| Is global search discoverable? Improve the trigger and shortcut.                          | Installations with `app_search_opened` among main-window viewers.                                                   | Main-window open handler, once per closed-to-open user transition, no properties. No remount, repeated shortcut while open, or background event.                                                                                                                                                 |
-| Which destinations does search help readers reach? Improve catalog coverage.              | `app_search_result_opened` divided by `app_search_opened`, grouped by category; also report distinct installations. | Main-window result handler after navigation is accepted or Settings open resolves. `label=view/setting/check`. No query, identifier, title, path, or setting value. A failed Settings request emits no success. The palette suppresses concurrent activation; explicit retries are new attempts. |
-
-Each interaction emits at most one event of its type. Closing or canceling search adds no event.
-These events measure navigation, not execution, time spent, successful data loading, or changed
-settings. Test user paths, rejected navigation, boundary no-ops, and strict Rust
-property validation. Queries and session data never enter the analytics payload.
+configuration, and queue and retry bounds when those paths change. Run the
+analytics feature suite and relevant frontend tests. The catalog test checks
+event names; it cannot prove triggers, allowed values, or visible use.

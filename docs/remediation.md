@@ -1,10 +1,11 @@
 # Burn Check Remediation
 
-Implementation status: complete as of 2026-09-10. Real-machine validation is a
-release check.
-
-This guide describes the current implementation. See
-[`check-coverage.md`](check-coverage.md) for evidence limits and
+This guide explains who owns a remediation action, how it moves from a finding
+to a safe edit or prompt, and which evidence can verify its result. Use it when
+changing action flow, file safety, durable attempts, or the user-visible result.
+See
+[`check-coverage.md`](check-coverage.md) for the maintained agent/check support,
+source-format remediation, attribution, verification, and savings matrices, and
 [`session-coverage.md`](session-coverage.md) for source parsing.
 
 ## Architecture
@@ -37,8 +38,12 @@ The flow is check to finding to target to action:
 3. The desktop reads current findings and groups equal canonical targets.
 4. The desktop returns safe display facts for every visible target.
 5. The target reports prompt and Auto Fix availability separately.
-6. A target prompt action starts or reuses a durable action attempt. A check-level prompt gives all selected targets one prompt-group ID while each target keeps an independent attempt. A check-level Copy fallback can describe selectable current targets without claiming an exact edit.
-7. An Auto Fix action prepares one edit, waits for confirmation, and then starts or joins an attempt.
+6. A target prompt action starts or reuses a durable action attempt. A
+   check-level prompt gives selected targets one prompt-group ID while each
+   target keeps an independent attempt. A Copy fallback can describe current
+   targets without claiming an exact edit.
+7. An Auto Fix action prepares one edit, waits for confirmation, and then starts
+   or joins an attempt.
 8. Later winning evidence dirties matching attempts.
 9. The evidence worker verifies each dirty attempt and stores one contribution when proof exists.
 
@@ -193,8 +198,12 @@ appears in captured user content does not start verification.
 
 Auto Fix uses two explicit steps.
 
-1. `prepare_auto_fix_burn_check_target` revalidates the evidence and effective setting. It prepares exact replacement bytes and returns a bounded semantic review.
-2. `apply_prepared_burn_check_operation` accepts only the prepared-operation ID. It revalidates evidence, scope, precedence, selector, file identity, and original bytes before replacement.
+1. `prepare_auto_fix_burn_check_target` revalidates the evidence and effective
+   setting. It prepares exact replacement bytes and returns a bounded semantic
+   review.
+2. `apply_prepared_burn_check_operation` accepts only the prepared-operation ID.
+   It revalidates evidence, scope, precedence, selector, file identity, and
+   original bytes before replacement.
 
 Before Auto Fix replaces an existing config file, it atomically writes the exact
 pre-update bytes to a sibling `<config-file>.bak` and syncs that backup. A safe
@@ -237,117 +246,33 @@ target remains blocked and cannot start a second write.
 Repeated confirmation returns the saved result only for the same completed
 prepared operation. Expired, evicted, or failed operations cannot be reused.
 
-## Support Matrix
+## Support And Eligibility
 
-The check codes are D session overdepth, T model overthinking, S overpowered
-subagents, M unused MCP servers, B unused built-in tools, K unused skills, O old
-model usage, F fast mode overuse, and C cache churn.
+The maintained support baseline is in:
 
-### Finding And Prompt
+- [First-tier product matrix](check-coverage.md#first-tier-product-matrix):
+  reachable findings, prompts, Auto Fix, verification, and estimates by agent/check.
+- [Source-format remediation matrix](check-coverage.md#source-format-remediation-matrix):
+  accepted source limits.
+- [Automatic editor support](check-coverage.md#automatic-editor-support):
+  exact settings and platforms.
+- [Passive verification](check-coverage.md#passive-verification):
+  eligible discovery watches.
+- [Evidence boundaries](check-coverage.md#evidence-boundaries) and
+  [config attribution contracts](check-coverage.md#config-attribution-contracts):
+  the rationale behind those cells.
 
-Prompt support matches implemented finding shapes for the five remediation
-agents. Source coverage can still block a finding for one session.
+A source or check without evidence remains unavailable even when its agent has an
+editor. Prompt eligibility does not imply an exact file edit. A whole-check resource
+prompt lists every selected target; selection is limited to 100 and each resource label
+to 256 bytes before JSON escaping. The 64 KiB prompt bound includes the complete
+selected list. The built-in-tool policy suggests only optional specialized tools; it
+never suggests disabling shell, file, search, task, agent, or subagent tools.
 
-| Agent and accepted source                                                                                 | D   | T   | S   | M   | B   | K   | O   | F   | C   |
-| --------------------------------------------------------------------------------------------------------- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
-| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | No  |
-| Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
-| Cursor, characterized Cursor JSONL and store sources                                                      | No  | No  | No  | No  | No  | No  | Yes | No  | No  |
-
-`AntigravityWorkspaceChatJson` is uncharacterized and has no prompt support.
-Other source formats have no remediation prompt support. Cursor prompt support
-is limited to characterized O findings and remains source-gated.
-
-### Auto Fix
-
-| Agent       | Model       | Reasoning            | Exact source                                       |
-| ----------- | ----------- | -------------------- | -------------------------------------------------- |
-| Claude Code | Auto Fix    | Auto Fix to `medium` | `ClaudeJsonl`                                      |
-| Codex       | Auto Fix    | Auto Fix to `medium` | `CodexRolloutJsonl`                                |
-| OpenCode    | Auto Fix    | Unavailable          | `OpenCodeJsonl`, `OpenCodeSqliteV2`                |
-| Pi          | Auto Fix    | Auto Fix to `medium` | `PiV3Jsonl`                                        |
-| Antigravity | Unavailable | Unavailable          | No accepted source binds one safe physical control |
-
-Model Auto Fix applies only to a reviewed obsolete model and its reviewed
-replacement. Reasoning Auto Fix applies only to a reviewed above-cap level when
-`medium` is a valid below-cap value. Resource Auto Fix requires indexed
-provenance plus one exact current enabled resource, effective scope, value, and
-physical key. M can disable one such MCP server for Claude Code, Codex, or
-OpenCode when its production policy and exact binding both resolve. Claude appends only
-`mcp__<name>__*` to an existing same-scope deny list. Codex sets only
-`mcp_servers.<name>.enabled = false`. OpenCode has a safe exact
-`mcp.<name>.enabled` editor, and its current resource assessment can supply M
-findings; inventory-only or unresolved targets remain prompt-only. Antigravity
-remains unavailable until public source and precedence evidence identify one
-winning persisted field. Cursor never edits its private store or invokes its CLI.
-B can disable one exact optional specialized Claude Code built-in tool from a standard
-settings file. A project target requires the exact bare tool name in
-`permissions.allow`; inherited tools use the global target. It can add a missing
-deny list or create a missing global settings file. It adds the canonical tool
-name only, never a wildcard or a
-general permission rule. Shell, read, write, edit, search, and subagent tools
-remain measured but never receive an Auto Fix or a targeted disable prompt.
-OpenCode and Pi core tools do not have a reachable automatic B edit. OpenCode
-can still produce allowlisted current-inventory B findings and prompts. Pi core
-tools never become B targets.
-Codex B Auto Fix is unavailable because its documented app-tool controls do not
-identify one built-in tool. OpenCode skill targets can receive Auto Fix when
-indexed provenance and one exact standard skill winner resolve to the V2
-permission control. Other skill, worker, depth, speed, and cache edits remain
-prompt-only or unavailable.
-
-The B detector and prompt policy has a stricter scope than vendor controls:
-Claude Code `WebSearch`, `WebFetch`, `Workflow`, `ReportFindings`, and `ScheduleWakeup`, Codex `web_search`, and OpenCode
-`websearch` and `webfetch` are the only eligible suggestion targets. A vendor
-may permit configuration of other tools, but antiburn never suggests disabling
-shell, file, search, task, agent, or subagent tools.
-
-A whole-check resource prompt lists every selected target. Target selection is
-limited to 100 and each resource label is limited to 256 bytes before JSON
-escaping. The 64 KiB prompt limit covers this maximum list and the fixed prompt
-text without omitting a selected resource.
-
-Claude fast-mode Auto Fix writes `fastMode: false` to the one winning control.
-It does not remove the key, because removal could expose an inherited global
-`true` value.
-
-macOS and Linux can read, attribute, prepare, and apply. Native Windows can read
-and attribute the setting, but it cannot prepare or apply an edit. Windows apply
-needs reviewed ACL, reparse-point, sharing, file-identity, replacement, and
-recovery behavior. WSL has a separate environment key. It does not read or edit
-the native host config.
-
-### Verification And Savings
-
-| Check | Claude Code                          | Codex                                | OpenCode                             | Pi                                   | Cursor      | Antigravity |
-| ----- | ------------------------------------ | ------------------------------------ | ------------------------------------ | ------------------------------------ | ----------- | ----------- |
-| D     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
-| T     | Verified improvement                 | Verified improvement                 | Unavailable                          | Verified improvement                 | Unavailable | Unavailable |
-| S     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
-| M     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
-| B     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
-| K     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
-| O     | Verified improvement and USD savings | Verified improvement and USD savings | Verified improvement and USD savings | Verified improvement and USD savings | Unavailable | Unavailable |
-| F     | Verified improvement                 | Verified improvement                 | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
-| C     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
-
-D is tied to one historical session. S is tied to one call and worker. Later
-work has a different identity. Historical M, B, and K subsets fail closed and
-cannot prove absence. The engine could verify against a complete, bounded later
-current inventory for the exact agent and scope, but the desktop does not supply
-that input to watches, so product verification remains unavailable. C has no
-durable session-route control. OpenCode
-lacks historical reasoning and speed controls. Pi lacks an effective speed
-control. Antigravity has positive-only D and O evidence but no attributed
-physical model target.
-
-T requires a complete later assessment with an explicit lower level on the same
-route and model. F requires an explicit standard tier on the same route, model,
-and delegated scope. O requires actual replacement use on the same attributed
-physical target, scope, provider, and API.
+Auto Fix requires current evidence bound to one reviewed control, an editor that
+supports the setting and platform, and successful prepare/apply checks. Native Windows
+has read attribution but no apply path; WSL never edits native host configuration. An
+unavailable Auto Fix leaves a supported prompt action available.
 
 ## Verification And Recurrence
 
@@ -431,27 +356,11 @@ management group, where Unsnooze restores the underlying state. When every
 assessed check is snoozed, active surfaces show `No active checks` instead of a
 passing or unassessed result.
 
-All nine estimate methods are implemented as typed calculations:
-
-| Check | Method                            | Unit                  | Required inputs                                                            |
-| ----- | --------------------------------- | --------------------- | -------------------------------------------------------------------------- |
-| D     | `RepeatedContextAboveDepthCap`    | Literal input tokens  | Observed request tokens and the reviewed depth cap                         |
-| T     | `AssumedOutputReduction`          | Assumed output tokens | Observed output and an explicit basis-point assumption                     |
-| S     | `WorkerModelPriceDifference`      | API-equivalent USD    | Exact worker tokens, old and alternative rates, route, revision, and owner |
-| M     | `McpDefinitionExposure`           | Literal input tokens  | Definition tokens and compatible request count                             |
-| B     | `BuiltInDefinitionReplication`    | Literal input tokens  | Catalog-backed replicated definition tokens                                |
-| K     | `InjectedSkillDocument`           | Literal input tokens  | Full document tokens and compatible request count                          |
-| O     | `OldModelPriceDifference`         | API-equivalent USD    | Eligible token classes, both model rates, pricing revision, and owner      |
-| F     | `FastTierPricePremium`            | API-equivalent USD    | Eligible tokens and same-route fast and standard rates                     |
-| C     | `CacheRehydrationPriceDifference` | API-equivalent USD    | Repeated paid tokens, paid and cache-read rates, and pricing revision      |
-
-`CacheClassTokens` and `Improvements` are also distinct supported units. The
-current confirmed contribution path uses improvement counts and O dollars. It
-does not convert price differences into token reductions.
-
-Known zero and negative values stay known. Missing evidence, assumptions,
-comparisons, rates, revisions, or ownership stays unavailable. Overflow stays
-unavailable.
+The nine typed methods, their units, required inputs, and numeric limits are maintained
+in the [savings contracts](check-coverage.md#savings-contracts). Missing inputs, rates,
+revisions, or ownership remain unavailable; known zero and negative values remain known.
+The current confirmed contribution path uses improvement counts and eligible O dollars.
+It does not convert price differences into token reductions.
 
 ## Overlap And Retention
 
@@ -478,8 +387,9 @@ contributions.
 
 Target listing scans at most 512 current sessions and retains at most 512 raw
 findings. It returns at most 100 grouped targets and three sample handles per
-target. The action cache holds 100 targets. Each winning publication retains at
-most 100 findings per detector, selects at most 100 fairly across detectors, and
+target. The action cache holds up to 200 target IDs per detector, so one relist
+does not evict the IDs still held by a window. Each winning publication retains
+at most 100 findings per detector, selects at most 100 fairly across detectors, and
 enrolls only verification-eligible passive attempts.
 
 The prepared cache holds at most eight operations and 4 MiB of retained bytes.
@@ -511,7 +421,8 @@ To add a check operation:
 5. Add publication attribution only when evidence matches one effective physical control.
 6. Add the private config operation and semantic review fields.
 7. Add characterization, unavailable, correction, retention, privacy, and bound tests.
-8. Update `check-coverage.md` and this guide.
+8. Update `check-coverage.md` when support changes. Update this guide when the
+   action flow, safety rules, or user-visible result changes.
 
 To add a vendor operation:
 
@@ -519,9 +430,10 @@ To add a vendor operation:
 2. Implement or extend `VendorConfig` for files, precedence, selectors, parsing, and minimal edits.
 3. Keep vendor branches out of shared lifecycle, persistence, and atomic-write code.
 4. Reject every unreviewed override, managed layer, dynamic value, and ambiguous scope.
-5. Test global and project precedence, the actual cwd, the trusted root, prepare/apply conflicts, semantic readback, and recovery.
+5. Test global and project precedence, the actual cwd, the trusted root,
+   prepare/apply conflicts, semantic readback, and recovery.
 6. Add every source, setting, scope, environment, and platform cell to table-driven tests.
-7. Update the support matrices and state each unavailable case.
+7. Update the support matrices in `check-coverage.md` and state each unavailable case.
 
 ## Local Tests
 
