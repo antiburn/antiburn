@@ -493,7 +493,9 @@ export function QuotaView({
     })
   }
   if (windowCount > 1) {
-    const ofWindows = `of ${windowCount} ${windowWord(selectedLane, windowCount)}`
+    // Count the windows that hold an estimate, not every window on show.
+    const sampled = endValues.length
+    const ofWindows = `of ${sampled} ${windowWord(selectedLane, sampled)}`
     const word = windowWord(selectedLane, 1)
     figureCells.push(
       {
