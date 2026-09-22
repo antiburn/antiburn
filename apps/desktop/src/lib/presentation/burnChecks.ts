@@ -52,7 +52,7 @@ export interface BurnCheckPresentation {
   refreshFailed: boolean
   headline: string
   headlineTone: "failure" | "neutral"
-  compactPhrases: BurnCheckPhrase[]
+  compactPhrase: BurnCheckPhrase
   breakdownPhrases: BurnCheckPhrase[]
   contextPhrases: string[]
   accessibleDescription: string
@@ -67,27 +67,12 @@ interface PresentationFacts {
   refreshFailed: boolean
 }
 
-function compactPhrases(counts: BurnCheckCounts): BurnCheckPhrase[] {
-  const phrases: BurnCheckPhrase[] = []
-  if (counts.failed > 0) {
-    phrases.push({
-      outcome: "failed",
-      text: `${counts.failed} failed`,
-    })
-  }
-  if (counts.passed > 0) {
-    phrases.push({
-      outcome: "passed",
-      text: `${counts.passed} passed`,
-    })
-  }
-  if (counts.unassessed > 0) {
-    phrases.push({
-      outcome: "unassessed",
-      text: `${counts.unassessed} not assessed`,
-    })
-  }
-  return phrases
+function compactPhrase(counts: BurnCheckCounts, headline: string): BurnCheckPhrase {
+  const assessed = counts.failed + counts.passed
+  if (assessed === 0) return { outcome: "status", text: headline }
+  if (counts.failed > 0)
+    return { outcome: "failed", text: `${counts.failed}/${assessed} failed` }
+  return { outcome: "passed", text: `${counts.passed}/${assessed} passed` }
 }
 
 function breakdownPhrases(counts: BurnCheckCounts): BurnCheckPhrase[] {
@@ -178,9 +163,6 @@ function presentation(facts: PresentationFacts): BurnCheckPresentation {
     ;({ state, headline } = lifecycleState(facts.lifecycle))
   }
 
-  const compact = hasResults
-    ? compactPhrases(facts.counts)
-    : [{ outcome: "status" as const, text: headline }]
   const breakdown = breakdownPhrases(facts.counts)
   const context = contextPhrases(facts, hasResults)
   const total = facts.counts.failed + facts.counts.passed + facts.counts.unassessed
@@ -206,7 +188,7 @@ function presentation(facts: PresentationFacts): BurnCheckPresentation {
       state === "allFailed" || state === "mixed" || facts.counts.failed > 0
         ? "failure"
         : "neutral",
-    compactPhrases: compact,
+    compactPhrase: compactPhrase(facts.counts, headline),
     breakdownPhrases: breakdown,
     contextPhrases: context,
     accessibleDescription,
@@ -218,8 +200,29 @@ function sessionLifecycle(state: SessionHygieneEvidenceState): BurnCheckLifecycl
   return state === "failed" ? "unavailable" : state
 }
 
+function sentenceCaseTitle(title: string): string {
+  const second = title[1]
+  const isLowerCaseLetter =
+    second !== undefined && second === second.toLowerCase() && second !== second.toUpperCase()
+  return isLowerCaseLetter ? title[0]!.toLowerCase() + title.slice(1) : title
+}
+
+function sessionAccessibleDescription(
+  checks: readonly Pick<SessionHygieneCheck, "status" | "title">[],
+  counts: BurnCheckCounts,
+): string {
+  const assessed = counts.failed + counts.passed
+  const intro = `${assessed} session burn check${assessed === 1 ? "" : "s"}.`
+  if (counts.failed === 0) return `${intro} All passed.`
+  const titles = checks
+    .filter((check) => check.status === "finding")
+    .map((check) => sentenceCaseTitle(check.title))
+    .join(", ")
+  return `${intro} ${counts.failed} failed: ${titles}.`
+}
+
 export function sessionBurnCheckPresentation(
-  checks: readonly Pick<SessionHygieneCheck, "status">[],
+  checks: readonly Pick<SessionHygieneCheck, "status" | "title">[],
   evidenceState: SessionHygieneEvidenceState,
 ): BurnCheckPresentation {
   const counts = checks.reduce<BurnCheckCounts>(
@@ -231,13 +234,23 @@ export function sessionBurnCheckPresentation(
     },
     { failed: 0, passed: 0, unassessed: 0 },
   )
-  return presentation({
+  const base = presentation({
     scope: "sessionChecks",
     counts,
     evidenceComplete: evidenceState === "ready" && counts.unassessed === 0,
     lifecycle: sessionLifecycle(evidenceState),
     refreshFailed: evidenceState === "failed" && counts.failed + counts.passed > 0,
   })
+  if (counts.failed + counts.passed === 0) return base
+  const coverage = counts.unassessed > 0 ? [`${counts.unassessed} not assessed`] : []
+  const context = [...coverage, ...base.contextPhrases]
+  return {
+    ...base,
+    accessibleDescription: [
+      sessionAccessibleDescription(checks, counts),
+      ...context.map((phrase) => `${phrase}.`),
+    ].join(" "),
+  }
 }
 
 export function aggregateBurnCheckPresentation(

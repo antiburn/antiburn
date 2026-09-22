@@ -464,6 +464,49 @@ impl Store {
             tx.commit()?;
             current = 51;
         }
+        // Branch builds assigned v52 to the refusal column before main used
+        // v52 for model lanes. Apply the main migrations to that shape.
+        if (current == 52 || current == 53)
+            && guard.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('provider_usage_observation')
+                    WHERE name = 'refusal_kind')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let tx = guard.transaction()?;
+            tx.execute_batch(schema::MIGRATIONS[51])?;
+            tx.execute_batch(schema::MIGRATIONS[52])?;
+            tx.pragma_update(None, "user_version", 54)?;
+            tx.commit()?;
+            current = 54;
+        }
+        // Main used v54 and v55 for allowance changes before this branch used
+        // those versions for remediation changes. Complete the remediation
+        // shape before applying the appended migrations.
+        if (current == 54 || current == 55)
+            && guard.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('provider_usage_observation')
+                    WHERE name = 'refusal_kind')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let tx = guard.transaction()?;
+            let remediation_ready: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('remediation')
+                    WHERE name = 'prompt_group_id')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !remediation_ready {
+                tx.execute_batch(schema::MIGRATIONS[53])?;
+                tx.execute_batch(schema::MIGRATIONS[54])?;
+            }
+            tx.pragma_update(None, "user_version", 56)?;
+            tx.commit()?;
+            current = 56;
+        }
         for (index, sql) in schema::MIGRATIONS.iter().enumerate() {
             let version = index as i64 + 1;
             if version <= current {

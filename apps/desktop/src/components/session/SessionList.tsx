@@ -26,16 +26,15 @@ import {
   type PresentableModelRun,
 } from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
-import { sessionBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 import { visibleSessionHygieneChecks } from "../../lib/snoozedBurnChecks"
 import { sessionHygieneFor, type SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
-import { BurnCheckStatus } from "../burn-checks/BurnCheckStatus"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { SessionStatusBar } from "./SessionStatusBar"
 import { SessionTooltipOwner } from "./SessionTooltipOwner"
-import { SessionCostBadge, type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
+import type { SessionCostBadgeProps } from "./metrics/SessionCostBadge"
+import { roundedLimitPercent, type SessionLimitBadgeInfo } from "./metrics/SessionLimitBadge"
 import { CountPill } from "../ui/CountPill"
 import { ScrollPane } from "../ui/ScrollPane"
 import { ListDisplayToolbar } from "../ui/ListDisplayToolbar"
@@ -83,6 +82,9 @@ export interface SessionListEntry {
   forkChildCount?: number | undefined
   /** Display values for the cost pill; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
+  /** Every billable token the session used, by the same measure as the
+   *  Overview totals. Absent or zero renders no tokens figure. */
+  totalTokens?: number | undefined
   /** Parent model runs followed by runs used only by sub-agents. */
   modelRuns?: PresentableModelRun[] | undefined
 }
@@ -135,6 +137,59 @@ function primaryLine(entry: SessionListEntry): string {
   if (title) return title
   if (entry.sessionId) return `Session ${entry.sessionId.slice(0, 7)}`
   return agentDisplayName(entry.agent)
+}
+
+/**
+ * A session row's title: its name with fade truncation, plus fork
+ * relationship badges. Shared by the full card and other row shapes.
+ */
+export function SessionRowTitle({
+  active,
+  className = "",
+  entry,
+}: {
+  active: boolean
+  className?: string
+  entry: SessionListEntry
+}) {
+  const primary = primaryLine(entry)
+  return (
+    <div className={cn("relative z-10 flex min-w-0 flex-1 items-center gap-x-1", className)}>
+      <TruncatedText
+        // One ink for every title. The shimmer overlay is the only
+        // difference an active session shows.
+        className="min-w-0 type-body font-medium! text-label"
+        text={primary}
+        lines={1}
+        shimmer={entry.isActive && active}
+        scrollOnHover
+      />
+
+      {entry.hasForkParent && (
+        <Tooltip label="Forked from another session" delayMs={500}>
+          <span
+            className="inline-flex shrink-0 text-label-tertiary"
+            aria-label="Forked from another session"
+          >
+            <GitFork size={12} strokeWidth={2} aria-hidden="true" />
+          </span>
+        </Tooltip>
+      )}
+      {!!entry.forkChildCount && (
+        <Tooltip
+          label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+          delayMs={500}
+        >
+          <span
+            className="inline-flex shrink-0 text-label-tertiary"
+            aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+          >
+            <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
+          </span>
+        </Tooltip>
+      )}
+    </div>
+  )
 }
 
 type BadgeMetric = "cost" | "weeklyPercent" | "fiveHourPercent"
@@ -198,21 +253,30 @@ function providerConfirmsNoWindow(
   )
 }
 
-function sessionLimitBadge(
+/** The map key one session's allocation is stored under, for one lane. */
+export function sessionLimitAllocationKey(
+  agent: string,
+  sessionId: string,
+  wslDistro: string | null | undefined,
+  laneMetric: SessionLimitAllocationPayload["metric"],
+): string {
+  return `${localSessionKey(agent, sessionId, wslDistro)}:${laneMetric}`
+}
+
+export function sessionLimitBadge(
   metric: Exclude<BadgeMetric, "cost">,
   agent: string,
   liveUsage: LiveUsageSummaryPayload | undefined,
   allocation?: SessionLimitAllocationPayload,
-): {
-  label: string
-  percent: number | null
-  provider?: string
-  windowId?: string
-  unknown?: boolean
-} {
+): SessionLimitBadgeInfo {
   if (allocation && Number.isFinite(allocation.percent)) {
+    const n = roundedLimitPercent(allocation.percent)
+    const label =
+      metric === "weeklyPercent"
+        ? `This session used about ${n}% of your ${allocation.displayName} weekly limit, across all models. Estimated.`
+        : `This session used about ${n}% of your ${allocation.displayName} 5-hour limit. Estimated.`
     return {
-      label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
+      label,
       percent: allocation.percent,
       provider: allocation.provider,
       windowId: allocation.windowId,
@@ -275,6 +339,73 @@ function groupHeadingId(label: string): string {
   return `activity-${label.replaceAll(" ", "-").toLowerCase()}`
 }
 
+export interface SessionRowInteractiveState {
+  clickable: boolean
+  selectionMode: boolean
+  tabIndex?: number | undefined
+  selected?: boolean | undefined
+  busy?: boolean | undefined
+  onSelect?: (() => void) | undefined
+  onOpen?: (() => void) | undefined
+  onOpenDetail?: (() => void) | undefined
+}
+
+/**
+ * Click, keyboard, and accessibility wiring shared by every clickable
+ * session row shape.
+ */
+export function sessionRowInteractiveProps({
+  clickable,
+  selectionMode,
+  tabIndex,
+  selected = false,
+  busy = false,
+  onSelect,
+  onOpen,
+  onOpenDetail,
+}: SessionRowInteractiveState) {
+  if (!clickable) return {}
+  return {
+    role: "button" as const,
+    tabIndex: tabIndex ?? 0,
+    "aria-current": selected ? ("true" as const) : undefined,
+    "aria-busy": busy || undefined,
+    "aria-disabled": busy || undefined,
+    "data-session-row": "",
+    onClick: selectionMode
+      ? (event: React.MouseEvent<HTMLDivElement>) => {
+          if (busy) return
+          const target = event.target as Element
+          const nestedControl = target.closest(
+            'button, a, input, select, textarea, [role="button"]',
+          )
+          if (nestedControl && nestedControl !== event.currentTarget) return
+          event.currentTarget.focus()
+          onSelect?.()
+        }
+      : () => {
+          if (!busy) onOpen?.()
+        },
+    onKeyDown: (event: React.KeyboardEvent) => {
+      // Only when the row itself has focus: a nested control's Enter
+      // belongs to that control, not to the card behind it.
+      if (
+        event.currentTarget === event.target &&
+        (event.key === "Enter" || event.key === " ")
+      ) {
+        event.preventDefault()
+        if (busy) return
+        if (selectionMode) {
+          if (event.key === "Enter") onOpenDetail?.()
+          else onSelect?.()
+        } else {
+          onOpen?.()
+        }
+      }
+    },
+  }
+}
+
 export interface SessionRowProps {
   snoozedDetectors?: ReadonlySet<BurnCheckDetectorId>
   entry: SessionListEntry
@@ -291,21 +422,7 @@ export interface SessionRowProps {
   showCost?: boolean
   showAgentLabel?: boolean
   busy?: boolean
-  /**
-   * One line: the status, the title, the first model, the time and the
-   * cost. For a summary list outside Sessions, where the card's second
-   * line and the vendor watermark would cost more height than they earn.
-   */
-  compact?: boolean
-  limitBadge?:
-    | {
-        label: string
-        percent: number | null
-        provider?: string
-        windowId?: string
-        unknown?: boolean
-      }
-    | undefined
+  limitBadge?: SessionLimitBadgeInfo | undefined
 }
 
 /**
@@ -313,8 +430,7 @@ export interface SessionRowProps {
  * cost, and last activity time.
  *
  * The whole card opens the session analysis. Unsupported agents open an empty
- * analysis state that explains why no data is available. The compact form
- * keeps the same controls on one line.
+ * analysis state that explains why no data is available.
  */
 export function SessionRow({
   entry,
@@ -332,12 +448,10 @@ export function SessionRow({
   showCost = true,
   showAgentLabel = false,
   busy = false,
-  compact = false,
   snoozedDetectors = new Set(),
 }: SessionRowProps) {
   const selectionMode = !!entry.sessionId && !!onSelect
   const clickable = !!onOpen || selectionMode
-  const primary = primaryLine(entry)
   const modelRuns = entry.modelRuns ?? []
   const modelPairs = modelRunShortPairs(modelRuns)
   const modelNames = modelRunNames(modelRuns)
@@ -390,85 +504,18 @@ export function SessionRow({
       )}
     </div>
   )
-  const titleContent = (
-    <div className="relative z-10 flex min-w-0 flex-1 items-center gap-x-1">
-      <TruncatedText
-        // One ink for every title. The shimmer overlay is the only
-        // difference an active session shows.
-        className="min-w-0 type-body font-medium! text-label"
-        text={primary}
-        lines={1}
-        shimmer={entry.isActive && active}
-        scrollOnHover
-      />
+  const titleContent = <SessionRowTitle entry={entry} active={active} />
 
-      {entry.hasForkParent && (
-        <Tooltip label="Forked from another session" delayMs={500}>
-          <span
-            className="inline-flex shrink-0 text-label-tertiary"
-            aria-label="Forked from another session"
-          >
-            <GitFork size={12} strokeWidth={2} aria-hidden="true" />
-          </span>
-        </Tooltip>
-      )}
-      {!!entry.forkChildCount && (
-        <Tooltip
-          label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
-          delayMs={500}
-        >
-          <span
-            className="inline-flex shrink-0 text-label-tertiary"
-            aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
-          >
-            <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
-          </span>
-        </Tooltip>
-      )}
-    </div>
-  )
-
-  const interactiveProps = clickable
-    ? {
-        role: "button" as const,
-        tabIndex: tabIndex ?? 0,
-        "aria-current": selected ? ("true" as const) : undefined,
-        "aria-busy": busy || undefined,
-        "aria-disabled": busy || undefined,
-        "data-session-row": "",
-        onClick: selectionMode
-          ? (event: React.MouseEvent<HTMLDivElement>) => {
-              if (busy) return
-              const target = event.target as Element
-              const nestedControl = target.closest(
-                'button, a, input, select, textarea, [role="button"]',
-              )
-              if (nestedControl && nestedControl !== event.currentTarget) return
-              event.currentTarget.focus()
-              onSelect?.()
-            }
-          : () => {
-              if (!busy) onOpen?.()
-            },
-        onKeyDown: (event: React.KeyboardEvent) => {
-          // Only when the row itself has focus: a nested control's Enter
-          // belongs to that control, not to the card behind it.
-          if (
-            event.currentTarget === event.target &&
-            (event.key === "Enter" || event.key === " ")
-          ) {
-            event.preventDefault()
-            if (busy) return
-            if (selectionMode) {
-              if (event.key === "Enter") onOpenDetail?.()
-              else onSelect?.()
-            } else {
-              onOpen?.()
-            }
-          }
-        },
-      }
-    : {}
+  const interactiveProps = sessionRowInteractiveProps({
+    clickable,
+    selectionMode,
+    tabIndex,
+    selected,
+    busy,
+    onSelect,
+    onOpen,
+    onOpenDetail,
+  })
 
   const cardStateClassName = cn(
     selected ? "bg-surface-selected/60" : "bg-session-card",
@@ -479,46 +526,6 @@ export function SessionRow({
       !selected &&
       "hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
   )
-
-  if (compact) {
-    const presentation = sessionBurnCheckPresentation(hygieneChecks, hygiene.evidenceState)
-    const cost = showCost ? entry.cost : undefined
-    return (
-      <div
-        className={cn(
-          "session-card group relative isolate flex w-full min-w-0 items-center gap-x-3 overflow-hidden",
-          "rounded-[var(--radius-popover)] px-3 py-2",
-          cardStateClassName,
-        )}
-        data-session-row-compact=""
-        {...interactiveProps}
-      >
-        {entry.isActive && <span className="sr-only">Active session</span>}
-        <Tooltip label={presentation.accessibleDescription} delayMs={150}>
-          <BurnCheckStatus presentation={presentation} omitUnassessed className="shrink-0" />
-        </Tooltip>
-        {titleContent}
-        {firstModel && (
-          <span
-            aria-label={contextDescription}
-            className="shrink-0 whitespace-nowrap type-callout text-label-tertiary"
-          >
-            <span className="font-semibold! text-label-secondary">{firstModel.model}</span>
-          </span>
-        )}
-        {entry.timestamp && (
-          <time
-            dateTime={entry.timestamp}
-            aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
-            className="shrink-0 whitespace-nowrap font-mono type-metadata tabular-nums text-label-tertiary"
-          >
-            {relativeTime(entry.timestamp, { compact: true })}
-          </time>
-        )}
-        {cost && <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />}
-      </div>
-    )
-  }
 
   return (
     <div
@@ -692,7 +699,12 @@ export function SessionList({
   const selectedMetric = badgeMetric
   const allocationBySession = new Map(
     (sessionLimitAllocations?.allocations ?? []).map((allocation) => [
-      `${localSessionKey(allocation.agent, allocation.sessionId, allocation.wslDistro)}:${allocation.metric}`,
+      sessionLimitAllocationKey(
+        allocation.agent,
+        allocation.sessionId,
+        allocation.wslDistro,
+        allocation.metric,
+      ),
       allocation,
     ]),
   )
@@ -1034,11 +1046,14 @@ export function SessionList({
                                         liveUsage,
                                         virtualItem.item.entry.sessionId
                                           ? allocationBySession.get(
-                                              `${localSessionKey(
+                                              sessionLimitAllocationKey(
                                                 virtualItem.item.entry.agent,
                                                 virtualItem.item.entry.sessionId,
                                                 virtualItem.item.entry.wslDistro,
-                                              )}:${selectedMetric === "weeklyPercent" ? "weekly" : "fiveHour"}`,
+                                                selectedMetric === "weeklyPercent"
+                                                  ? "weekly"
+                                                  : "fiveHour",
+                                              ),
                                             )
                                           : undefined,
                                       ),

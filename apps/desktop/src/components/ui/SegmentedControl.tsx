@@ -15,7 +15,9 @@ export type SegmentedControlVariant = "segmented" | "text-tabs" | "raised-tabs" 
  *  `variant="text-tabs"` drops the pill chrome for a run of plain labels. The
  *  selected label takes the accent blue and an underline in the same blue —
  *  the same control and the same keyboard contract, for places where a filled
- *  segment would be too loud.
+ *  segment would be too loud. `size` sets its row height and label scale:
+ *  `"regular"` (the default) is a 24px row at `type-footnote`, and `"large"`
+ *  is a 28px row at `type-body`. Every other variant ignores `size`.
  *
  *  `variant="raised-tabs"` is the segmented view picker: a recessed neutral
  *  pill track with the selected segment raised on the hot brand fill, white
@@ -37,6 +39,7 @@ export function SegmentedControl<T extends string>({
   semantics = "radio",
   idPrefix,
   variant = "segmented",
+  size = "regular",
   disabled = false,
 }: {
   options: ReadonlyArray<SegmentedOption<T>>
@@ -49,9 +52,12 @@ export function SegmentedControl<T extends string>({
   semantics?: "radio" | "tabs"
   idPrefix?: string
   variant?: SegmentedControlVariant
+  /** Row height and label scale for `variant="text-tabs"` only. */
+  size?: "regular" | "large"
   disabled?: boolean
 }) {
   const textTabs = variant === "text-tabs"
+  const textTabsLarge = textTabs && size === "large"
   const raisedTabs = variant === "raised-tabs"
   const nativeTabs = variant === "native-tabs"
   // The native track fills its row unless the caller opts out.
@@ -79,7 +85,11 @@ export function SegmentedControl<T extends string>({
       data-variant={variant}
       className={
         textTabs
-          ? cn("inline-flex h-6 items-center gap-3 whitespace-nowrap", className)
+          ? cn(
+              "inline-flex items-center whitespace-nowrap",
+              textTabsLarge ? "h-7 gap-4" : "h-6 gap-3",
+              className,
+            )
           : raisedTabs
             ? // A full-round track: the segments inside are pills, so the
               // outer curve matches them at any padding.
@@ -151,7 +161,8 @@ export function SegmentedControl<T extends string>({
             className={
               textTabs
                 ? cn(
-                    "type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
+                    textTabsLarge ? "type-body" : "type-footnote",
+                    "relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
                     selected
                       ? "font-medium text-accent"
                       : "text-label-tertiary hover:text-label-secondary",

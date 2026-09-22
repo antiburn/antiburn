@@ -10,10 +10,10 @@
  */
 export function relativeTime(
   isoString: string | null | undefined,
-  options?: { compact?: boolean },
+  options?: { compact?: boolean; now?: number },
 ): string {
   if (!isoString) return "never"
-  const ms = Date.now() - new Date(isoString).getTime()
+  const ms = (options?.now ?? Date.now()) - new Date(isoString).getTime()
   if (Number.isNaN(ms)) return "never"
   if (ms < 0) return options?.compact ? "now" : "just now"
   const secs = Math.floor(ms / 1000)

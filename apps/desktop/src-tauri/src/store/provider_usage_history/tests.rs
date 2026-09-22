@@ -30,6 +30,7 @@ mod history_tests {
         used_percent: Option<f64>,
     ) -> ProviderUsageSnapshot {
         ProviderUsageSnapshot {
+            refusal_kind: None,
             provider: "anthropic",
             account: Some(account.into()),
             account_uuid: None,
@@ -675,6 +676,36 @@ mod history_tests {
         assert_eq!(
             history.observations[0].plan_tier.as_deref(),
             Some("standard")
+        );
+    }
+    /// A refusal is a fact the first reading of a moment can miss. The
+    /// Store the refusal with its observation.
+    #[test]
+    fn a_refusal_reaches_a_stored_reading_of_the_same_moment() {
+        let store = store();
+        let start = NOW - 18_000;
+        let quiet = snapshot(
+            ACCOUNT_A,
+            start + 600,
+            "five-hour",
+            Some(start),
+            Some(NOW),
+            Some(100.0),
+        );
+        let mut refused = quiet.clone();
+        refused.refusal_kind = Some("usage_limit_reached".to_string());
+
+        store.record_provider_usage_snapshots(&[quiet]).unwrap();
+        let changed = store.record_provider_usage_snapshots(&[refused]).unwrap();
+        assert_eq!(changed.len(), 1);
+
+        let history = store
+            .provider_usage_period_history(changed[0])
+            .unwrap()
+            .expect("the period exists");
+        assert_eq!(
+            history.observations[0].refusal_kind.as_deref(),
+            Some("usage_limit_reached")
         );
     }
 }

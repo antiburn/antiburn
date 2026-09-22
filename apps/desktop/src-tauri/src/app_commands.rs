@@ -22,6 +22,7 @@ macro_rules! with_app_commands {
             commands::get_consent_diagnostics => "get_consent_diagnostics",
             commands::get_checks_report => "get_checks_report",
             commands::get_folder_permissions => "get_folder_permissions",
+            commands::usage::get_allowance_usage => "get_allowance_usage",
             commands::get_burn_check_aggregate_wins => "get_burn_check_aggregate_wins",
             commands::get_burn_check_remediation_progress => "get_burn_check_remediation_progress",
             hud_commands::get_hud_detail_state => "get_hud_detail_state",

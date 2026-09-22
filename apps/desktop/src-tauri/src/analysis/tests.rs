@@ -3,6 +3,21 @@ use super::*;
 mod claude_parent_child;
 
 #[test]
+fn cached_total_tokens_sums_every_model_and_component() {
+    let json = r#"{
+        "claude-opus-4-6": {"input_tokens": 10, "output_tokens": 20, "cache_read_tokens": 5, "cache_creation_tokens": 3},
+        "claude-haiku-4-5": {"input_tokens": 1, "output_tokens": 2, "cache_read_tokens": 0, "cache_creation_tokens": 0}
+    }"#;
+    assert_eq!(cached_total_tokens(json), 41);
+}
+
+#[test]
+fn cached_total_tokens_reads_unparseable_json_as_zero() {
+    assert_eq!(cached_total_tokens("not json"), 0);
+    assert_eq!(cached_total_tokens("{}"), 0);
+}
+
+#[test]
 fn cursor_chat_database_uses_its_own_source_format() {
     let source = SessionSource::ProviderDb {
         agent: AgentKind::Cursor,

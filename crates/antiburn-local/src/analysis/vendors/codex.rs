@@ -1129,6 +1129,7 @@ fn task_complete_observation(value: &Value, model: Option<&str>) -> Option<Evide
             severity: QuotaHitSeverity::HardHit,
             model: model.map(ToOwned::to_owned),
             reset_ts_ms: None,
+            reset_clock: None,
             utilization_pct: None,
             confidence: QuotaConfidence::Observed,
         })),
@@ -1138,6 +1139,7 @@ fn task_complete_observation(value: &Value, model: Option<&str>) -> Option<Evide
             severity: QuotaHitSeverity::HardHit,
             model: model.map(ToOwned::to_owned),
             reset_ts_ms: None,
+            reset_clock: None,
             utilization_pct: None,
             confidence: QuotaConfidence::Observed,
         })),
@@ -2624,7 +2626,7 @@ mod tests {
         // variants' `http_status_code` to a `ServerError` or `Connection`
         // provider incident, through the new `transport_incident_kind`
         // helper; this changed the fingerprinted byte range.
-        const EXPECTED_FINGERPRINT: u64 = 15_020_827_323_135_020_933;
+        const EXPECTED_FINGERPRINT: u64 = 738_113_492_623_469_583;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();

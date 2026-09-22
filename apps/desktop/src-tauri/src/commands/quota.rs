@@ -153,10 +153,27 @@ fn quota_usage(
 /// [`quota_usage`]'s body, over a borrowed [`Store`] rather than an
 /// [`tauri::AppHandle`], so it can run against an in-memory store in a test
 /// without standing up a Tauri app.
-fn quota_usage_for_store(
+pub(super) fn quota_usage_for_store(
     store: &Store,
     now: i64,
     request: QuotaUsageRequest,
+) -> CommandResult<QuotaUsagePayload> {
+    let input = store
+        .quota_turn_input(request.range_start_epoch, request.range_end_epoch)
+        .map_err(fail)?
+        .ok_or_else(|| "too much turn activity in this range".to_string())?;
+    let model_scope = request
+        .lane
+        .strip_prefix(crate::store::provider_limit::MODEL_LANE_PREFIX);
+    let dollars = input.for_account(&request.provider, &request.account_key, model_scope);
+    quota_usage_with_turn_dollars(store, now, request, &dollars)
+}
+
+pub(super) fn quota_usage_with_turn_dollars(
+    store: &Store,
+    now: i64,
+    request: QuotaUsageRequest,
+    dollars: &crate::store::provider_limit::AccountTurnDollars,
 ) -> CommandResult<QuotaUsagePayload> {
     let QuotaUsageRequest {
         provider,
@@ -206,16 +223,7 @@ fn quota_usage_for_store(
         .factor_points_for_lane(&provider, &account_key, &lane)
         .map_err(fail)?;
 
-    let bucketed = store
-        .attributed_turn_dollars_by_bucket(
-            &provider,
-            &account_key,
-            model_scope,
-            range_start_epoch,
-            range_end_epoch,
-        )
-        .map_err(fail)?
-        .ok_or_else(|| "too much turn activity in this range".to_string())?;
+    let bucketed = dollars.by_bucket(model_scope);
 
     // Assign each bucket to the period whose `[start, reset)` contains its
     // start. A bucket that straddles a reset lands in the period containing
@@ -538,18 +546,7 @@ fn session_quota_for_store(
             continue;
         };
 
-        // A plan is per account, not per lane: the first lane whose newest
-        // observation names one speaks for the whole account.
-        let mut plan: Option<LiveProviderPlan> = None;
-        for lane in &account.lanes {
-            if let Some((Some(name), tier)) = store
-                .latest_observation_plan(provider, &account_key, &lane.lane)
-                .map_err(fail)?
-            {
-                plan = Some(LiveProviderPlan { name, tier });
-                break;
-            }
-        }
+        let plan = account_plan(store, provider, &account_key, &account.lanes)?;
 
         for lane in &account.lanes {
             let lane_duration = crate::store::provider_limit::lane_duration_seconds(&lane.lane);
@@ -710,6 +707,25 @@ fn session_quota_for_store(
         entries,
         generated_at: iso_from_epoch(Some(now)),
     })
+}
+
+/// A plan is per account, not per lane: the first lane whose newest
+/// observation names one speaks for the whole account.
+pub(super) fn account_plan(
+    store: &Store,
+    provider: &str,
+    account_key: &str,
+    lanes: &[crate::store::provider_limit::QuotaAccountLane],
+) -> CommandResult<Option<LiveProviderPlan>> {
+    for lane in lanes {
+        if let Some((Some(name), tier)) = store
+            .latest_observation_plan(provider, account_key, &lane.lane)
+            .map_err(fail)?
+        {
+            return Ok(Some(LiveProviderPlan { name, tier }));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1726,6 +1742,116 @@ mod tests {
             entry.percent.unwrap() <= 100.0 + 1e-6,
             "a straddling tail bucket must not push the session's percent past 100, got {}",
             entry.percent.unwrap()
+        );
+    }
+
+    #[test]
+    fn overview_allowance_uses_the_same_account_wide_period_as_limits() {
+        const DAY: i64 = 86_400;
+        let now = 70 * DAY;
+        let store = memory_store();
+        let account_key = account('v');
+        let reset = now + DAY;
+        let period_id = insert_weekly_period(&store, &account_key, reset);
+        insert_weekly_observation(&store, period_id, &account_key, now - 3 * DAY, 0.0);
+        insert_weekly_observation(&store, period_id, &account_key, now - DAY, 20.0);
+        insert_weekly_observation(&store, period_id, &account_key, now - 12 * 3_600, 50.0);
+
+        let bound = insert_session(&store, "overview-bound");
+        bind_account(&store, &bound, &account_key);
+        insert_turn(&store, &bound, (now - 2 * DAY) * 1_000, 100_000);
+        let unbound = insert_session(&store, "overview-unbound");
+        seen_account(&store, &account_key);
+        seen_account(&store, &account('w'));
+        insert_turn(&store, &unbound, (now - 2 * DAY + 3_600) * 1_000, 100_000);
+
+        let fable_period_id = {
+            let connection = store.lock();
+            connection
+                .execute(
+                    "INSERT INTO provider_usage_period (
+                     provider, account_key, window_id, window_kind, window_role,
+                     scope_key, scope_label, duration_seconds, starts_at_epoch,
+                     resets_at_epoch, first_observed_epoch, last_observed_epoch
+                 ) VALUES (?1, ?2, 'weekly-fable', 'weekly', 'supplemental',
+                           'model:fable', 'Fable', NULL, NULL, ?3, ?3, ?3)",
+                    params![PROVIDER, account_key, reset],
+                )
+                .expect("adds a model-scoped lane");
+            connection.last_insert_rowid()
+        };
+        store
+            .lock()
+            .execute(
+                "INSERT INTO provider_usage_observation (
+                     period_id, provider, account_key, window_id, window_kind, window_role,
+                     scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                     is_authoritative, confidence, source_id, plan, plan_tier
+                 ) VALUES (?1, ?2, ?3, 'weekly-fable', 'weekly', 'supplemental',
+                           'model:fable', 'Fable', ?4, ?5, 1, 1, 'high', 'test', NULL, NULL)",
+                params![fable_period_id, PROVIDER, account_key, now - DAY, 40.0],
+            )
+            .expect("inserts a synthetic model-scoped observation");
+
+        let bounds = crate::provider_usage::window_bounds(now, 0);
+        let limits = quota_usage_for_store(
+            &store,
+            now,
+            QuotaUsageRequest {
+                provider: PROVIDER.to_string(),
+                account_key: account_key.clone(),
+                lane: LANE_WEEKLY.to_string(),
+                range_start_epoch: bounds.previous_30_days_start - 7 * DAY,
+                range_end_epoch: now + 1,
+            },
+        )
+        .expect("Limits computes the weekly period");
+        let shared = limits
+            .periods
+            .iter()
+            .find(|period| period.period_id == Some(period_id))
+            .expect("shared period exists");
+        assert_eq!(shared.estimated_percent, Some(50.0));
+        assert!(!shared.contributions.is_empty());
+        assert!(!shared.unattributed_buckets.is_empty());
+        assert_eq!(shared.unexplained_percent, Some(30.0));
+
+        let overview = super::super::usage::allowance_usage_for_store(&store, now, 0)
+            .expect("Overview computes the same account");
+        let account = overview
+            .accounts
+            .iter()
+            .find(|account| account.account_key == account_key)
+            .expect("account appears");
+        assert_eq!(overview.range_start_epoch, bounds.last_30_days_start);
+        assert_eq!(overview.range_end_epoch, now);
+        assert_eq!(overview.utilization_span_days, 28);
+
+        // The window opened less than seven days ago (it resets a day from
+        // now), so the rolling line has not reached its start yet and the
+        // headline states no figure.
+        assert_eq!(account.utilization, None);
+
+        // The chart still draws both weekly-style areas, from the same
+        // shared period Limits computed above: its last level equals
+        // `estimated_percent`, because both sum the same buckets.
+        let weekly_area = account
+            .chart
+            .weekly_windows
+            .iter()
+            .find(|window| window.lane == "weekly")
+            .expect("the account-wide weekly window draws");
+        assert_eq!(
+            weekly_area.points.last().map(|point| point.percent),
+            shared.estimated_percent
+        );
+        assert!(
+            account
+                .chart
+                .weekly_windows
+                .iter()
+                .any(|window| window.lane == "model:fable"),
+            "the model-scoped window draws its own area"
         );
     }
 }

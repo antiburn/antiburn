@@ -25,6 +25,7 @@
     "allow-get-quota-accounts",
     "allow-get-quota-usage",
     "allow-get-checks-report",
+    "allow-get-allowance-usage",
     "allow-get-burn-check-aggregate-wins",
     "allow-get-burn-check-remediation-progress",
     "allow-get-main-window-visible",

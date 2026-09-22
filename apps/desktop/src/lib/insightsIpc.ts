@@ -251,7 +251,7 @@ export interface BurnCheckTargetPayload {
 /** Bounded display metadata plus an opaque, expiring route to one local session. */
 export interface BurnCheckSamplePayload extends Omit<
   ActivityEntryPayload,
-  "sessionId" | "wslDistro"
+  "sessionId" | "wslDistro" | "totalTokens"
 > {
   navigationHandle: string
   title: string

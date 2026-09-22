@@ -33,8 +33,8 @@ function surfaceOf(payload: Pick<ActivityEntryPayload, "surface" | "agent">): Ag
  * against — the row's high-cost flag then reads as false, never as an error.
  */
 export function toActivityEntry(
-  payload: Omit<ActivityEntryPayload, "sessionId" | "wslDistro"> &
-    Partial<Pick<ActivityEntryPayload, "sessionId" | "wslDistro">>,
+  payload: Omit<ActivityEntryPayload, "sessionId" | "wslDistro" | "totalTokens"> &
+    Partial<Pick<ActivityEntryPayload, "sessionId" | "wslDistro" | "totalTokens">>,
   highCostThreshold: number | null = null,
 ): SessionListEntry {
   return {
@@ -48,6 +48,7 @@ export function toActivityEntry(
     ...(payload.title ? { title: payload.title } : {}),
     hasForkParent: payload.hasForkParent,
     forkChildCount: payload.forkChildCount,
+    totalTokens: payload.totalTokens,
     modelRuns: payload.modelRuns,
     cost: payload.cost
       ? {

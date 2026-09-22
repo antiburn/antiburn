@@ -2236,6 +2236,7 @@ mod enabled {
                 account_email: None,
                 plan: None,
                 plan_tier: None,
+                refusal_kind: None,
                 observed_at: time::OffsetDateTime::UNIX_EPOCH,
                 source: crate::provider_usage::live::model::UsageSource {
                     id: "fixture",

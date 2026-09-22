@@ -305,6 +305,7 @@ mod tests {
 
     fn snapshot(observed_at: OffsetDateTime, percent: f64) -> ProviderUsageSnapshot {
         ProviderUsageSnapshot {
+            refusal_kind: None,
             provider: crate::provider_usage::providers::ANTHROPIC,
             account: None,
             account_uuid: None,

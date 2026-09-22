@@ -79,6 +79,7 @@ where
 #[cfg(test)]
 pub(crate) use local_usage::session_limit_allocations;
 pub(crate) use local_usage::{cached_live_usage, provider_priced_models, provider_usage_summary};
+pub(crate) mod usage;
 
 /// Version stamp of the active runtime pricing catalog.
 #[tauri::command]
@@ -709,6 +710,10 @@ pub(crate) fn activity_entry(
         .as_ref()
         .map(|record| analysis::cached_inclusive_model_runs(&record.inclusive_models_json))
         .unwrap_or_default();
+    let total_tokens = analysis
+        .as_ref()
+        .map(|record| analysis::cached_total_tokens(&record.model_breakdown_json))
+        .unwrap_or(0);
 
     Ok(ActivityEntry {
         agent: session.key.agent.clone(),
@@ -722,6 +727,7 @@ pub(crate) fn activity_entry(
         has_fork_parent: session.fork_parent_session_id.is_some(),
         fork_child_count: store.fork_children(&session.key)?.len() as u32,
         cost,
+        total_tokens,
         models,
         model_runs,
     })
@@ -2392,7 +2398,11 @@ fn presentable(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::time::Duration;
+
+    use antiburn_local::analysis::price_breakdown;
+    use antiburn_local::pricing::ModelTokens;
 
     use super::*;
 

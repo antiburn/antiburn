@@ -339,6 +339,13 @@ pub struct ProviderUsageSnapshot {
     /// A finer-grained tier within `plan`, when the source stated one. For
     /// example Claude's `rateLimitTier`. Never inferred.
     pub plan_tier: Option<String>,
+    /// The refusal the provider stated on this reading, when it stated one.
+    ///
+    /// A used figure of 100% is not a refusal. Only this field says the
+    /// provider refused a request. The value is the provider's own label,
+    /// kept verbatim: the vocabulary is not pinned, so any non-null value
+    /// counts as a refusal and none is given a meaning here.
+    pub refusal_kind: Option<String>,
     /// When the underlying fact was observed — not when it was read.
     pub observed_at: OffsetDateTime,
     /// Provenance, confidence, and freshness.

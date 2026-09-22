@@ -18,7 +18,11 @@ fn memory_store() -> Store {
 }
 
 fn insert_session(store: &Store, session_id: &str) -> SessionKey {
-    let key = SessionKey::new("native", AGENT, session_id);
+    insert_session_for_agent(store, session_id, AGENT)
+}
+
+fn insert_session_for_agent(store: &Store, session_id: &str, agent: &str) -> SessionKey {
+    let key = SessionKey::new("native", agent, session_id);
     store
         .upsert_sessions(
             &[SessionRecord {
@@ -1089,7 +1093,7 @@ fn v52_widens_the_lane_check_and_resets_the_model_lane_cursor() {
 
     let store = Store::from_connection(connection, Path::new("/tmp/antiburn-v52-test").into())
         .expect("migration reaches the head");
-    assert_eq!(store.schema_version().unwrap(), 55);
+    assert_eq!(store.schema_version().unwrap(), 57);
 
     let connection = store.lock();
     let samples: i64 = connection
@@ -1258,6 +1262,7 @@ fn bucketed_query_groups_turns_by_fifteen_minute_bucket() {
     // bucket. claude-opus-4-6 test pricing: 5e-6 dollars per input token.
     assert!((first_bucket.usd - 1.0).abs() < 1e-9);
     assert_eq!(first_bucket.turn_count, 2);
+    assert_eq!(first_bucket.account, Resolved::Bound(account('a')));
 }
 
 #[test]
@@ -1480,5 +1485,123 @@ fn quota_accounts_reports_label_has_factor_and_the_current_open_period() {
     assert_eq!(
         lane_after_reset.current_period, None,
         "a period that has already reset is not the current one"
+    );
+}
+
+#[test]
+fn shared_turn_input_preserves_model_speed_and_account_scopes_without_a_store_lock() {
+    let store = memory_store();
+    let key = insert_session(&store, "mixed-models");
+    bind_account(&store, &key, &account('a'));
+    insert_turn(&store, &key, 100_000, 100_000);
+    insert_turn(&store, &key, 200_000, 100_000);
+    store
+        .lock()
+        .execute("UPDATE turn SET speed = 'fast' WHERE ts_ms = 200000", [])
+        .unwrap();
+    insert_turn_with_model(&store, &key, 300_000, 100_000, "claude-fable-5-1");
+    let other = insert_session(&store, "other-account");
+    bind_account(&store, &other, &account('b'));
+    insert_turn(&store, &other, 100_000, 500_000);
+
+    let input = store.quota_turn_input(0, 2_000).unwrap().unwrap();
+    let expected = store
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 2_000, Some("Opus"))
+        .unwrap()
+        .unwrap();
+    let expected_usd = expected[0].input_usd;
+    let _guard = store.lock();
+    let dollars = input.for_account(PROVIDER, &account('a'), None);
+    let all = dollars.by_bucket(None);
+    let opus = dollars.by_bucket(Some("Opus"));
+    let fable = dollars.by_bucket(Some("Fable"));
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].key, key);
+    assert_eq!(all[0].turn_count, 3);
+    assert_eq!(opus[0].turn_count, 2);
+    assert!((opus[0].usd - expected_usd).abs() < 1e-9);
+    assert!((all[0].usd - opus[0].usd - fable[0].usd).abs() < 1e-9);
+    assert!(dollars.by_bucket(Some("unmatched-model")).is_empty());
+    assert_eq!(
+        input
+            .for_account(PROVIDER, &account('b'), None)
+            .by_bucket(None)[0]
+            .key,
+        other
+    );
+}
+
+#[test]
+fn shared_turn_input_keeps_provider_bindings_separate_and_preserves_unknown_accounts() {
+    let store = memory_store();
+    let claude = insert_session(&store, "claude");
+    bind_account(&store, &claude, &account('a'));
+    store.lock().execute(
+        "INSERT INTO session_provider_account
+         SELECT environment_key, agent, session_id, 'openai', ?1, provenance, confidence, first_seen_at
+         FROM session_provider_account WHERE agent = ?2 AND session_id = ?3",
+        params![account('b'), AGENT, claude.session_id],
+    ).unwrap();
+    insert_turn(&store, &claude, 100_000, 100_000);
+    let codex = insert_session_for_agent(&store, "codex", "codex");
+    bind_account(&store, &codex, &account('b'));
+    store
+        .lock()
+        .execute(
+            "UPDATE session_provider_account SET provider = 'openai' WHERE agent = 'codex'",
+            [],
+        )
+        .unwrap();
+    insert_turn_with_model(&store, &codex, 100_000, 100_000, "gpt-6-astra");
+    let unbound = insert_session(&store, "unbound");
+    insert_turn(&store, &unbound, 100_000, 100_000);
+    observe_account(&store, &account('a'));
+    observe_account(&store, &account('b'));
+    let input = store.quota_turn_input(0, 2_000).unwrap().unwrap();
+    let anthropic = input
+        .for_account(PROVIDER, &account('a'), None)
+        .by_bucket(None);
+    assert_eq!(anthropic.len(), 2);
+    assert!(
+        anthropic
+            .iter()
+            .any(|row| row.key == claude && row.account == Resolved::Bound(account('a')))
+    );
+    assert!(
+        anthropic
+            .iter()
+            .any(|row| row.key == unbound && row.account == Resolved::Unbound)
+    );
+    let openai = input
+        .for_account("openai", &account('b'), None)
+        .by_bucket(None);
+    assert_eq!(openai.len(), 1);
+    assert_eq!(openai[0].key, codex);
+    assert_eq!(openai[0].account, Resolved::Bound(account('b')));
+}
+
+#[test]
+fn shared_turn_input_keeps_the_group_limit_before_account_or_model_filtering() {
+    let store = memory_store();
+    let key = insert_session(&store, "many-buckets");
+    observe_account(&store, &account('a'));
+    insert_turn(&store, &key, 100_000, 1);
+    {
+        let connection = store.lock();
+        connection.execute(
+            "WITH RECURSIVE buckets(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM buckets WHERE n < ?1)
+             INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+                 thread_id, turn_index, scope, role, ts_ms, model, input_tokens,
+                 cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
+             SELECT 'native', ?2, ?3, 1, 'synthetic', 'synthetic', n, 'main', 'assistant',
+                 n * 900000 + 100000, ?4, 1, 0, 0, 0, 0 FROM buckets",
+            params![MAX_ATTRIBUTION_GROUPS as i64, AGENT, key.session_id, MODEL],
+        ).unwrap();
+    }
+    assert!(
+        store
+            .quota_turn_input(0, (MAX_ATTRIBUTION_GROUPS as i64 + 1) * 900)
+            .unwrap()
+            .is_none()
     );
 }

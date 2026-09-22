@@ -236,8 +236,6 @@
   --space-md: 12px;
   --space-lg: 16px;
   --space-xl: 20px;
-  /* Group separation in a settings-style pane, where 20px left titled groups
-     reading as one run of rows. */
   --space-2xl: 24px;
 
   /* Control geometry */

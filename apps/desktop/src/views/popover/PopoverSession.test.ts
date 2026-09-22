@@ -150,6 +150,7 @@ function activityEntry(overrides: Partial<ActivityEntryPayload> = {}): ActivityE
     cost: null,
     models: [],
     modelRuns: [],
+    totalTokens: 0,
     ...overrides,
   }
 }

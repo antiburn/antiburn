@@ -26,7 +26,7 @@ fn prerelease_upgrade_preserves_incarnations_and_applies_main_migrations() {
         )
         .unwrap();
     let store = Store::from_connection(connection, Path::new("/tmp/legacy-v49").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 55);
+    assert_eq!(store.schema_version().unwrap(), 57);
     assert_eq!(counter(&store), 57);
     let key = SessionKey {
         environment_key: "native".into(),
@@ -85,5 +85,61 @@ fn prerelease_repair_rolls_back_if_a_main_migration_fails() {
         .execute_batch("DROP TRIGGER fail_history_delete")
         .unwrap();
     store.migrate().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 55);
+    assert_eq!(store.schema_version().unwrap(), 57);
+}
+
+#[test]
+fn branch_allowance_versions_receive_main_quota_schema() {
+    for version in [52, 53] {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &super::super::schema::MIGRATIONS[..51] {
+            connection.execute_batch(sql).unwrap();
+        }
+        connection
+            .execute_batch(super::super::schema::MIGRATIONS[55])
+            .unwrap();
+        if version == 53 {
+            connection
+                .execute_batch(
+                    "CREATE TABLE provider_usage_period_rollup (
+                        period_id INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+                        peak_used_percent REAL,
+                        last_used_percent REAL,
+                        observation_count INTEGER NOT NULL,
+                        refusal_count INTEGER NOT NULL
+                    ) STRICT;",
+                )
+                .unwrap();
+        }
+        connection
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+        let store =
+            Store::from_connection(connection, Path::new("/tmp/branch-allowance-schema").into())
+                .unwrap();
+        assert_eq!(store.schema_version().unwrap(), 57);
+        let connection = store.lock();
+        let table_exists = |name: &str| -> bool {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [name],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert!(table_exists("quota_window_reported"));
+        assert!(!table_exists("provider_usage_period_rollup"));
+        let factor_sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'provider_limit_factor_sample'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(factor_sql.contains("lane LIKE 'model:%'"));
+        drop(connection);
+        store.migrate().unwrap();
+        assert_eq!(store.schema_version().unwrap(), 57);
+    }
 }

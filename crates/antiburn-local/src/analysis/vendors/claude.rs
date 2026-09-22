@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::analysis::evidence::{
     ProviderIncident, ProviderIncidentKind, QuotaConfidence, QuotaHitSeverity, QuotaIncident,
-    QuotaLimitKind,
+    QuotaLimitKind, QuotaResetClock,
 };
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::{ClaudeContextAccumulator, parse_markdown_bullet};
@@ -42,6 +42,10 @@ use crate::discovery::SubagentMeta;
 /// that actually ran, distinct from a `<command-name>` that merely typed the
 /// skill's slash command.
 const SKILL_BASE_MARKER: &str = "Base directory for this skill:";
+
+/// The longest IANA zone name the reset parser accepts. Real names are far
+/// shorter. The bound stops a malformed text from holding a large string.
+const MAX_RESET_ZONE_LEN: usize = 64;
 
 /// Flatten a record's message text — string content, or the `text` of its content
 /// blocks — for scanning `<command-name>` tags and skill base-directory markers.
@@ -271,9 +275,13 @@ fn skill_resource_observations(value: &Value) -> Vec<EvidenceObservation> {
 /// Maps one failed-API-request `assistant` record to a quota incident or a
 /// provider incident. Reviewed against the harness version `2.1.270`
 /// bundle; the same top-level shape was seen back to at least `2.1.185`.
-/// Reads only `type`, `isApiErrorMessage`, `timestamp`, `apiErrorStatus`,
-/// and `error`. Never reads `message.content[].text`: that field holds
-/// free, unpinned error text the project never stores.
+/// Reads `type`, `isApiErrorMessage`, `timestamp`, `apiErrorStatus`, and
+/// `error`. A quota incident also reads `message.content[].text` through
+/// [`quota_text_detail`], which is the only place the limit family and the
+/// stated reset time appear. That text is free and unpinned, so the parser
+/// keeps none of it: it stores the two parsed values and drops the string.
+/// A failed match costs only those two values; `apiErrorStatus` still
+/// proves the refusal.
 ///
 /// `apiErrorStatus` (an HTTP status) wins over `error` (Claude Code's own
 /// coarser classification) when both are present. `error: "unknown"` with
@@ -304,29 +312,9 @@ fn api_error_observation(value: &Value, last_model: Option<&str>) -> Option<Evid
     let kind = match (status, error) {
         (Some(529), _) => ProviderIncidentKind::Capacity,
         (Some(500..=599), _) => ProviderIncidentKind::ServerError,
-        (Some(429), _) => {
-            return Some(EvidenceObservation::QuotaIncident(QuotaIncident {
-                ts_ms,
-                limit_kind: QuotaLimitKind::RateLimit,
-                severity: QuotaHitSeverity::HardHit,
-                model,
-                reset_ts_ms: None,
-                utilization_pct: None,
-                confidence: QuotaConfidence::Observed,
-            }));
-        }
+        (Some(429), _) => return Some(quota_observation(value, ts_ms, model)),
         (None, Some("server_error")) => ProviderIncidentKind::ServerError,
-        (None, Some("rate_limit")) => {
-            return Some(EvidenceObservation::QuotaIncident(QuotaIncident {
-                ts_ms,
-                limit_kind: QuotaLimitKind::RateLimit,
-                severity: QuotaHitSeverity::HardHit,
-                model,
-                reset_ts_ms: None,
-                utilization_pct: None,
-                confidence: QuotaConfidence::Observed,
-            }));
-        }
+        (None, Some("rate_limit")) => return Some(quota_observation(value, ts_ms, model)),
         _ => return None,
     };
     Some(EvidenceObservation::ProviderIncident(ProviderIncident {
@@ -334,6 +322,85 @@ fn api_error_observation(value: &Value, last_model: Option<&str>) -> Option<Evid
         kind,
         model,
     }))
+}
+
+/// Builds the quota incident for one Claude limit error. The message text
+/// carries the limit family and the stated reset time. The record's own
+/// fields carry everything else.
+fn quota_observation(value: &Value, ts_ms: i64, model: Option<String>) -> EvidenceObservation {
+    let (limit_kind, reset_clock) = quota_text_detail(&record_text(value));
+    EvidenceObservation::QuotaIncident(QuotaIncident {
+        ts_ms,
+        limit_kind,
+        severity: QuotaHitSeverity::HardHit,
+        model,
+        reset_ts_ms: None,
+        reset_clock,
+        utilization_pct: None,
+        confidence: QuotaConfidence::Observed,
+    })
+}
+
+/// Names the limit family and reads the stated reset time from one Claude
+/// limit-error text. An example text is
+/// `You've hit your session limit · resets 2:30pm (Australia/Sydney)`.
+///
+/// The harness writes this text for the user and can change it. An
+/// unrecognized family becomes [`QuotaLimitKind::RateLimit`], which is what
+/// the status code alone proves.
+fn quota_text_detail(text: &str) -> (QuotaLimitKind, Option<QuotaResetClock>) {
+    let limit_kind = if text.contains("weekly limit") {
+        QuotaLimitKind::Weekly
+    } else if text.contains("session limit") {
+        QuotaLimitKind::RollingWindow
+    } else {
+        QuotaLimitKind::RateLimit
+    };
+    (limit_kind, parse_reset_clock(text))
+}
+
+/// Reads the `resets <time> (<zone>)` part of a Claude limit-error text.
+///
+/// The time is a local clock time with a named zone. The parser keeps both
+/// and resolves neither. An instant needs a zone database, and this crate
+/// holds none. Returns `None` for any text that does not match exactly.
+fn parse_reset_clock(text: &str) -> Option<QuotaResetClock> {
+    let (clock, rest) = text.split_once("resets ")?.1.split_once(" (")?;
+    let (zone, after) = rest.split_once(')')?;
+    // The doc above promises an exact match. Text after the zone means the
+    // harness wrote a shape this parser does not know, so the clock it reads
+    // is a guess. A guess here becomes a stated wait on the Overview.
+    if !after.trim().is_empty() {
+        return None;
+    }
+    let zone_is_name = !zone.is_empty()
+        && zone.len() <= MAX_RESET_ZONE_LEN
+        && zone
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/_+-".contains(&byte));
+    if !zone_is_name {
+        return None;
+    }
+    let clock = clock.trim().to_ascii_lowercase();
+    let split = clock.len().checked_sub(2)?;
+    // The suffix is ASCII, so `split` is always a character boundary.
+    let past_noon = match &clock.as_bytes()[split..] {
+        b"am" => 0u8,
+        b"pm" => 12u8,
+        _ => return None,
+    };
+    let (hour, minute) = match clock[..split].split_once(':') {
+        Some((hour, minute)) => (hour.parse::<u8>().ok()?, minute.parse::<u8>().ok()?),
+        None => (clock[..split].parse::<u8>().ok()?, 0),
+    };
+    if !(1..=12).contains(&hour) || minute > 59 {
+        return None;
+    }
+    Some(QuotaResetClock {
+        hour: (hour % 12) + past_noon,
+        minute,
+        zone: zone.to_owned(),
+    })
 }
 
 /// The `uuid` set to skip when replaying `path`: everything
@@ -2591,5 +2658,119 @@ mod tests {
             panic!("expected a ProviderIncident observation");
         };
         assert_eq!(incident.model, None);
+    }
+
+    /// Pins the limit text shapes seen in real transcripts: a whole hour,
+    /// a half hour, and a morning reset.
+    #[test]
+    fn quota_text_detail_reads_the_session_limit_and_its_reset_clock() {
+        let cases = [
+            (
+                "You've hit your session limit · resets 2pm (Australia/Sydney)",
+                14,
+                0,
+            ),
+            (
+                "You've hit your session limit · resets 2:30pm (Australia/Sydney)",
+                14,
+                30,
+            ),
+            (
+                "You've hit your session limit · resets 9:15am (Australia/Sydney)",
+                9,
+                15,
+            ),
+            (
+                "You've hit your session limit · resets 12am (Australia/Sydney)",
+                0,
+                0,
+            ),
+            (
+                "You've hit your session limit · resets 12pm (Australia/Sydney)",
+                12,
+                0,
+            ),
+        ];
+        for (text, hour, minute) in cases {
+            let (limit_kind, clock) = quota_text_detail(text);
+            assert_eq!(limit_kind, QuotaLimitKind::RollingWindow, "{text}");
+            assert_eq!(
+                clock,
+                Some(QuotaResetClock {
+                    hour,
+                    minute,
+                    zone: "Australia/Sydney".to_owned(),
+                }),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn quota_text_detail_names_the_weekly_limit() {
+        let (limit_kind, clock) =
+            quota_text_detail("You've hit your weekly limit · resets 4pm (America/New_York)");
+        assert_eq!(limit_kind, QuotaLimitKind::Weekly);
+        assert_eq!(clock.expect("a reset clock").zone, "America/New_York");
+    }
+
+    /// An unreadable text still yields an incident. The status code proves
+    /// the refusal, so only the family and the clock are lost.
+    #[test]
+    fn quota_text_detail_falls_back_when_the_text_does_not_match() {
+        for text in [
+            "API Error: 429 rate limit",
+            "You've hit your session limit · resets soon",
+            "You've hit your session limit · resets 25pm (Australia/Sydney)",
+            "You've hit your session limit · resets 2pm (Australia Sydney)",
+            // Text after the zone is a shape this parser does not know, so
+            // the clock it reads is a guess.
+            "You've hit your session limit · resets 2pm (Australia/Sydney) or later",
+            "",
+        ] {
+            let (_, clock) = quota_text_detail(text);
+            assert_eq!(clock, None, "{text}");
+        }
+        let (limit_kind, _) = quota_text_detail("API Error: 429 rate limit");
+        assert_eq!(limit_kind, QuotaLimitKind::RateLimit);
+
+        // Only whitespace follows the zone, so the text still matches.
+        let (_, clock) =
+            quota_text_detail("You've hit your session limit · resets 2pm (Australia/Sydney)  ");
+        assert!(clock.is_some());
+    }
+
+    #[test]
+    fn api_error_observation_maps_a_session_limit_to_a_quota_incident() {
+        let value = serde_json::json!({
+            "type": "assistant",
+            "isApiErrorMessage": true,
+            "timestamp": "2026-09-14T03:43:00Z",
+            "error": "rate_limit",
+            "apiErrorStatus": 429,
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "You've hit your session limit \u{b7} resets 2pm (Australia/Sydney)",
+                }],
+            },
+        });
+        let observation = api_error_observation(&value, Some("claude-sonnet-4-6"))
+            .expect("a 429 status must map to a quota incident");
+        let EvidenceObservation::QuotaIncident(incident) = observation else {
+            panic!("expected a QuotaIncident observation");
+        };
+        assert_eq!(incident.limit_kind, QuotaLimitKind::RollingWindow);
+        assert_eq!(incident.severity, QuotaHitSeverity::HardHit);
+        assert_eq!(incident.reset_ts_ms, None);
+        assert_eq!(
+            incident.reset_clock,
+            Some(QuotaResetClock {
+                hour: 14,
+                minute: 0,
+                zone: "Australia/Sydney".to_owned(),
+            })
+        );
     }
 }

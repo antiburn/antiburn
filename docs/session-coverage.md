@@ -135,6 +135,14 @@ Newly discovered repositories remain enabled by default.
 | `DevinLocalSqlite`             | Devin         | `~/.local/share/devin/cli/sessions.db`                                                                                  | Read-only WAL-visible transaction; requires migration 17 and the reviewed `sessions`, `message_nodes`, `subagent_heads`, and `tool_call_state` columns; one source per `sessions.id`; active path follows `main_chain_id`; freshness fingerprints include all reader inputs  | Timestamped messages, models, deduplicated tool calls, and exact `run_subagent` child relations when child agent ID, child chain node, and actual child model agree; ACP schema 6 is optional child-only context                                                                        | Partial; S findings only, no D/C or clean result                                                                        |
 | `Uncharacterized`              | Unknown agent | Generic JSONL fallback                                                                                                  | No native source contract; bounded generic framing                                                                                                                                                                                                                           | No detector-grade fact contract                                                                                                                                                                                                                                                         | Uncharacterized                                                                                                         |
 
+The Claude API-error fixture also characterizes quota limit families and reset
+clocks in `isApiErrorMessage` text. Session-limit and weekly-limit messages
+retain their family, hour, minute, and named time zone without retaining the
+message text. The desktop resolves the clock against the incident timestamp;
+a missing or unusable reset does not erase the observed refusal. This shape
+adds no clean-result eligibility. See the quota incident contract in
+[check coverage](check-coverage.md).
+
 ## Provider Routes
 
 Provider identity, API shape, and model identity are separate facts. A model

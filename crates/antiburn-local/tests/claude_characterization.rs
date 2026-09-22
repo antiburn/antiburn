@@ -7,8 +7,8 @@ use antiburn_local::analysis::{
     ANALYZER_REVISION, CompositeSink, ContextWindowSource, CoverageReason,
     EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource, EvidenceValue, MAX_RECORD_BYTES,
     MemoryTurnRowStore, NormalizedSession, OrderingObservation, PARSER_REVISION, PartialReason,
-    ProviderIncidentKind, QuotaHitSeverity, QuotaLimitKind, RawSource, RecordCoverage,
-    SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    ProviderIncidentKind, QuotaHitSeverity, QuotaLimitKind, QuotaResetClock, RawSource,
+    RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
     SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
     TurnRowStore, TurnScope, analyze_session, analyze_sources_with, merge_metrics,
     merge_subagent_events, normalize_source, reader_for,
@@ -745,6 +745,11 @@ fn a_missing_delegated_model_blocks_a_clean_overpowered_subagents_claim() {
 /// a non-429 4xx, a non-integer status falling back to a non-`server_error`/
 /// `rate_limit` label, an ordinary record without `isApiErrorMessage`, and a
 /// record with no top-level `timestamp`) produces nothing.
+///
+/// A quota record's message text names the limit family and the reset
+/// clock. `session limit` is a `RollingWindow` and `weekly limit` is
+/// `Weekly`; a text the parser cannot read stays `RateLimit` with no
+/// clock, because the status code alone still proves the refusal.
 #[test]
 fn api_error_records_map_only_the_reviewed_shapes() {
     let composite = stream_composite(&input("api_error_records"));
@@ -766,6 +771,7 @@ fn api_error_records_map_only_the_reviewed_shapes() {
                 incident.limit_kind,
                 incident.severity,
                 incident.model.clone(),
+                incident.reset_clock.clone(),
             )
         })
         .collect();
@@ -776,13 +782,37 @@ fn api_error_records_map_only_the_reviewed_shapes() {
                 1_767_607_205_000,
                 QuotaLimitKind::RateLimit,
                 QuotaHitSeverity::HardHit,
-                Some("claude-sonnet-4-6".to_owned())
+                Some("claude-sonnet-4-6".to_owned()),
+                None
             ),
             (
                 1_767_607_206_000,
                 QuotaLimitKind::RateLimit,
                 QuotaHitSeverity::HardHit,
-                Some("claude-sonnet-4-6".to_owned())
+                Some("claude-sonnet-4-6".to_owned()),
+                None
+            ),
+            (
+                1_767_607_213_000,
+                QuotaLimitKind::RollingWindow,
+                QuotaHitSeverity::HardHit,
+                Some("claude-sonnet-4-6".to_owned()),
+                Some(QuotaResetClock {
+                    hour: 14,
+                    minute: 30,
+                    zone: "Australia/Sydney".to_owned(),
+                })
+            ),
+            (
+                1_767_607_214_000,
+                QuotaLimitKind::Weekly,
+                QuotaHitSeverity::HardHit,
+                Some("claude-sonnet-4-6".to_owned()),
+                Some(QuotaResetClock {
+                    hour: 9,
+                    minute: 0,
+                    zone: "America/New_York".to_owned(),
+                })
             ),
         ]
     );

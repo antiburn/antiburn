@@ -167,7 +167,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         <OverviewView
           active={active}
           session={overviewSession}
-          onOpenBurnChecks={() => selectSection("burnChecks")}
           onOpenSessions={() => selectSection("activity")}
           onSelectSession={(entry) => {
             // Select first, so Sessions mounts with the subject already set

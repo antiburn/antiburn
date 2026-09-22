@@ -451,6 +451,22 @@ pub enum QuotaConfidence {
     Observed,
 }
 
+/// A local wall-clock reset time that a source states in free text.
+///
+/// The engine records the stated time and its named zone. It does not
+/// resolve them to an instant: a zone database is a large dependency and
+/// this crate stays free of one. The application resolves the clock.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaResetClock {
+    /// The hour of the day, 0 through 23.
+    pub hour: u8,
+    /// The minute of the hour, 0 through 59.
+    pub minute: u8,
+    /// The IANA zone name the text states, for example `Australia/Sydney`.
+    pub zone: String,
+}
+
 /// One transcript-observed quota or rate-limit incident.
 /// The session identity carries the provider attribution.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -461,6 +477,11 @@ pub struct QuotaIncident {
     pub severity: QuotaHitSeverity,
     pub model: Option<String>,
     pub reset_ts_ms: Option<i64>,
+    /// The local reset time the source states in free text, when it states
+    /// one and gives no instant. Old persisted evidence has no field here,
+    /// so it deserializes as `None`.
+    #[serde(default)]
+    pub reset_clock: Option<QuotaResetClock>,
     pub utilization_pct: Option<u8>,
     pub confidence: QuotaConfidence,
 }
@@ -572,6 +593,11 @@ impl SourceCapabilities {
     /// `error: "server_error"` with no status). `ProviderIncidentKind::Connection`
     /// stays unset for Claude: its `error: "unknown"` label is too broad to
     /// claim a connection failure without reading the message text.
+    ///
+    /// A quota incident also reads the record's message text for the limit
+    /// family and the stated reset clock. The reader keeps the two parsed
+    /// values and drops the text. An unreadable text still yields the
+    /// incident, because the status code alone proves the refusal.
     pub fn claude() -> Self {
         Self {
             source_format: SourceFormat::ClaudeJsonl,

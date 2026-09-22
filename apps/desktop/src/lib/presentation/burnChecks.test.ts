@@ -8,7 +8,7 @@ import {
 } from "./burnChecks"
 
 function sessionStatuses(...statuses: Array<"finding" | "clean" | "notAssessed">) {
-  return statuses.map((status) => ({ status }))
+  return statuses.map((status) => ({ status, title: "Check result" }))
 }
 
 function report(
@@ -44,7 +44,7 @@ describe("sessionBurnCheckPresentation", () => {
     const passed = sessionBurnCheckPresentation(sessionStatuses("clean", "clean"), "ready")
     expect(passed.state).toBe("allPassed")
     expect(passed.headline).toBe("All Burn Checks passed")
-    expect(passed.compactPhrases.map((phrase) => phrase.text)).toEqual(["2 passed"])
+    expect(passed.compactPhrase.text).toBe("2/2 passed")
     expect(passed.indicator.kind).toBe("pass")
 
     const failed = sessionBurnCheckPresentation(sessionStatuses("finding", "finding"), "ready")
@@ -53,13 +53,13 @@ describe("sessionBurnCheckPresentation", () => {
     expect(failed.indicator.kind).toBe("fail")
   })
 
-  it("pluralizes mixed compact phrases without repeating the noun", () => {
+  it("counts failed checks against assessed checks", () => {
     const value = sessionBurnCheckPresentation(
       sessionStatuses("finding", "clean", "clean", "clean"),
       "ready",
     )
     expect(value.headline).toBe("Some Burn Checks failed")
-    expect(value.compactPhrases.map((phrase) => phrase.text)).toEqual(["1 failed", "3 passed"])
+    expect(value.compactPhrase.text).toBe("1/4 failed")
     expect(value.breakdownPhrases.map((phrase) => phrase.text)).toEqual([
       "1 failed",
       "3 passed",
@@ -73,16 +73,13 @@ describe("sessionBurnCheckPresentation", () => {
     )
     expect(value.state).toBe("assessedPassed")
     expect(value.headline).toBe("All assessed Burn Checks passed")
-    expect(value.compactPhrases.map((phrase) => phrase.text)).toEqual([
-      "2 passed",
-      "1 not assessed",
-    ])
+    expect(value.compactPhrase.text).toBe("2/2 passed")
     expect(value.breakdownPhrases.map((phrase) => phrase.text)).toEqual([
       "2 passed",
       "1 not assessed",
     ])
     expect(value.indicator.kind).toBe("pass")
-    expect(value.accessibleDescription).toContain("3 session checks")
+    expect(value.accessibleDescription).toContain("2 session burn checks")
   })
 
   it.each([
@@ -96,7 +93,7 @@ describe("sessionBurnCheckPresentation", () => {
   ] as const)("maps %s evidence with no result to %s", (lifecycle, expected) => {
     const value = sessionBurnCheckPresentation([], lifecycle)
     expect(value.headline).toBe(expected)
-    expect(value.compactPhrases).toEqual([{ outcome: "status", text: expected }])
+    expect(value.compactPhrase).toEqual({ outcome: "status", text: expected })
   })
 
   it("preserves results and discloses stale, growing, and failed refreshes", () => {
@@ -115,9 +112,23 @@ describe("sessionBurnCheckPresentation", () => {
     ])
   })
 
+  it("names failures and discloses unassessed checks and stale evidence", () => {
+    const value = sessionBurnCheckPresentation(
+      [
+        { status: "finding", title: "Session overdepth detected" },
+        { status: "finding", title: "MCP setup issue" },
+        { status: "notAssessed", title: "Unknown" },
+      ],
+      "stale",
+    )
+    expect(value.accessibleDescription).toBe(
+      "2 session burn checks. 2 failed: session overdepth detected, MCP setup issue. 1 not assessed. Refreshing. Evidence incomplete.",
+    )
+  })
+
   it("keeps processing separate from unavailable and unassessed counts", () => {
     const value = sessionBurnCheckPresentation(sessionStatuses("clean"), "processing")
-    expect(value.compactPhrases.map((phrase) => phrase.text)).toEqual(["1 passed"])
+    expect(value.compactPhrase.text).toBe("1/1 passed")
     expect(value.counts.unassessed).toBe(0)
     expect(value.contextPhrases).toEqual(["Running", "Evidence incomplete"])
   })
@@ -150,7 +161,7 @@ describe("aggregateBurnCheckPresentation", () => {
   it("retains results when a refresh fails", () => {
     const value = aggregateBurnCheckPresentation(report([category(2, 3)]), true)
     expect(value.counts.failed).toBe(1)
-    expect(value.compactPhrases[0]?.text).toBe("1 failed")
+    expect(value.compactPhrase.text).toBe("1/1 failed")
     expect(value.contextPhrases).toContain("Refresh unavailable")
   })
 

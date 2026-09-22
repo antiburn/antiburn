@@ -89,6 +89,7 @@ fn entry(session_id: &str) -> ActivityEntry {
         has_fork_parent: false,
         fork_child_count: 0,
         cost: None,
+        total_tokens: 0,
         models: Vec::new(),
         model_runs: Vec::new(),
     }

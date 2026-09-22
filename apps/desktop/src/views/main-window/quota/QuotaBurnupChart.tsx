@@ -2,7 +2,7 @@ import { memo, useId, useRef } from "react"
 
 import { AXIS_TICK } from "../../../components/session/analysis/chartLabels"
 import type { QuotaPeriodPayload } from "../../../lib/providerUsageIpc"
-import { axisDayLabel } from "../../../lib/presentation/overviewChart"
+import { axisDayLabel } from "../../../lib/presentation/chartDates"
 import { traceEvent } from "../../../lib/perfTrace"
 import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
 import {

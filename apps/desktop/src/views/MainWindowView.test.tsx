@@ -19,17 +19,12 @@ vi.mock("./main-window/BurnChecksView", () => ({
 }))
 vi.mock("./main-window/OverviewView", () => ({
   OverviewView: ({
-    onOpenBurnChecks,
     onSelectSession,
   }: {
-    onOpenBurnChecks: () => void
     onSelectSession: (entry: SessionListEntry) => void
   }) => (
     <div>
       <p>Overview workspace</p>
-      <button type="button" onClick={onOpenBurnChecks}>
-        Open Burn checks
-      </button>
       <button type="button" onClick={() => onSelectSession(overviewMocks.recentEntry)}>
         Recent session
       </button>
@@ -217,9 +212,6 @@ describe("MainWindowView", () => {
     expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
     expect(activitySession().selectEntry).toHaveBeenCalledWith(overviewMocks.recentEntry)
     expect(activitySession().setFilter).toHaveBeenCalledWith({ kind: "all" })
-    fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
-    fireEvent.click(screen.getByRole("button", { name: "Open Burn checks" }))
-    expect(screen.getByRole("tab", { name: "Checks" })).toHaveAttribute("aria-selected", "true")
   })
 
   it("opens the existing Settings window without changing the selected section", () => {
