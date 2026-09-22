@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { toActivityEntry } from "../../lib/activityEntries"
 import type { SessionListEntry } from "../../components/session/SessionList"
 
-import type { ChecksReportPayload } from "../../lib/insightsIpc"
 import type {
   ActivityEntryPayload,
   SessionIndexChangedPayload,
   SessionUpdatedPayload,
 } from "../../lib/ipc"
 import type {
+  AllowanceUsageSummaryPayload,
   LiveUsageSummaryPayload,
   ProviderUsageSummaryPayload,
 } from "../../lib/providerUsageIpc"
@@ -26,18 +26,19 @@ const usage = (generatedAt: string): ProviderUsageSummaryPayload => ({
   generatedAt,
 })
 
+const allowance = (generatedAt: string): AllowanceUsageSummaryPayload => ({
+  utilizationSpanDays: 28,
+  accounts: [],
+  rangeStartEpoch: 0,
+  rangeEndEpoch: 30 * 86400,
+  generatedAt,
+})
+
 const liveUsage = (generatedAt: string): LiveUsageSummaryPayload => ({
   providers: [],
   errors: [],
   meters: [],
   generatedAt,
-})
-
-const report = (pendingEvidence: number): ChecksReportPayload => ({
-  evidenceSettled: pendingEvidence === 0,
-  pendingEvidence,
-  estimatedTokenBurnBasisPoints: null,
-  categories: [],
 })
 
 const entry = (sessionId: string, timestamp: string): ActivityEntryPayload => ({
@@ -54,6 +55,7 @@ const entry = (sessionId: string, timestamp: string): ActivityEntryPayload => ({
   cost: null,
   models: [],
   modelRuns: [],
+  totalTokens: 0,
 })
 
 const indexChanged = (
@@ -91,9 +93,8 @@ function deferred<T>() {
 function setup(visibleInitially = true, overrides: Partial<MainOverviewAdapter> = {}) {
   let visible: (value: boolean) => void = () => undefined
   let indexChangedHandler: (change: SessionIndexChangedPayload) => void = () => undefined
-  let liveChanged: (value: LiveUsageSummaryPayload) => void = () => undefined
-  let reportChanged: () => void = () => undefined
   let updated: (change: SessionUpdatedPayload) => void = () => undefined
+  let liveUsageChanged: (value: LiveUsageSummaryPayload) => void = () => undefined
   let entries: SessionListEntry[] = [
     entry("b", "2026-09-13T10:00:00Z"),
     entry("d", "2026-09-14T08:00:00Z"),
@@ -109,21 +110,19 @@ function setup(visibleInitially = true, overrides: Partial<MainOverviewAdapter> 
     },
   }
   const adapter: MainOverviewAdapter = {
+    getSessionLimitAllocations: vi
+      .fn()
+      .mockResolvedValue({ allocations: [], generatedAt: "first" }),
     getUsage: vi.fn().mockResolvedValue(usage("first")),
+    getAllowanceUsage: vi.fn().mockResolvedValue(allowance("allowance-first")),
     getLiveUsage: vi.fn().mockResolvedValue(liveUsage("live-first")),
-    getChecksReport: vi.fn().mockResolvedValue(report(0)),
-    cancelChecksReport: vi.fn().mockResolvedValue(undefined),
     getVisible: vi.fn().mockResolvedValue(visibleInitially),
     onVisible: vi.fn(async (handler) => {
       visible = handler
       return vi.fn()
     }),
     onLiveUsageChanged: vi.fn(async (handler) => {
-      liveChanged = handler
-      return vi.fn()
-    }),
-    onChecksReportChanged: vi.fn(async (handler) => {
-      reportChanged = handler
+      liveUsageChanged = handler
       return vi.fn()
     }),
     onSessionIndexChanged: vi.fn(async (handler) => {
@@ -145,8 +144,8 @@ function setup(visibleInitially = true, overrides: Partial<MainOverviewAdapter> 
     invalidated: () => indexChangedHandler(indexChanged("invalidated")),
     indexChanged: (cause: SessionIndexChangedPayload["cause"]) =>
       indexChangedHandler(indexChanged(cause)),
-    liveChanged: (value: LiveUsageSummaryPayload) => liveChanged(value),
-    reportChanged: () => reportChanged(),
+    meterChanged: (value: LiveUsageSummaryPayload = liveUsage("live-pushed")) =>
+      liveUsageChanged(value),
     entryChanged: (facets?: Partial<SessionUpdatedPayload["facets"]>) =>
       updated(update(entry("e", "2026-09-14T09:00:00Z"), facets)),
     setEntries: (next: ActivityEntryPayload[]) => {
@@ -255,6 +254,88 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
+  it("coalesces allowance changes behind one in-flight quota read", async () => {
+    const { adapter, session, scanFinished, meterChanged, setVisible } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    const pending = deferred<AllowanceUsageSummaryPayload>()
+    vi.mocked(adapter.getAllowanceUsage).mockReturnValueOnce(pending.promise)
+    meterChanged()
+    await vi.waitFor(() => expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2))
+    scanFinished()
+    meterChanged()
+    scanFinished()
+    expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2)
+    setVisible(false)
+    pending.resolve(allowance("stale"))
+    await vi.waitFor(() => expect(session.getSnapshot().active).toBe(false))
+    expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first")
+    expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2)
+    setVisible(true)
+    await vi.waitFor(() => expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    stop()
+  })
+
+  it("takes a live-usage push while active and still refreshes the allowance", async () => {
+    const { adapter, session, meterChanged, setVisible } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-first"),
+    )
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    vi.mocked(adapter.getAllowanceUsage).mockResolvedValueOnce(allowance("allowance-pushed"))
+    meterChanged(liveUsage("live-pushed"))
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-pushed")
+    expect(session.getSnapshot().liveUsageSettled).toBe(true)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-pushed"),
+    )
+    // A push while the section is inactive answers for a screen nobody sees.
+    setVisible(false)
+    meterChanged(liveUsage("live-hidden"))
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-pushed")
+    stop()
+  })
+
+  it("does not let a slow live-usage read overwrite a newer push", async () => {
+    const pending = deferred<LiveUsageSummaryPayload>()
+    const { adapter, session, meterChanged, scanFinished } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-first"),
+    )
+    vi.mocked(adapter.getLiveUsage).mockReturnValueOnce(pending.promise)
+    // Starts a read that stays in flight, then a push lands before it answers.
+    scanFinished()
+    meterChanged(liveUsage("live-pushed"))
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-pushed")
+    pending.resolve(liveUsage("live-stale"))
+    await pending.promise
+    await Promise.resolve()
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-pushed")
+    stop()
+  })
+
+  it("settles liveUsage after a failed read with no source to show", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    vi.mocked(adapter.getLiveUsage).mockRejectedValueOnce(new Error("Unavailable"))
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().liveUsageSettled).toBe(true))
+    expect(session.getSnapshot().liveUsage).toBeNull()
+    stop()
+  })
+
   it("keeps the last usage after a failed read and flags the error", async () => {
     const { adapter, session, scanFinished } = setup()
     sessions.push(session)
@@ -269,44 +350,89 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
-  it("rejects a hidden read's result and takes pushed live usage only while active", async () => {
+  it("keeps the last allowance figures after a failed read", async () => {
+    // The cost totals and the allowance totals are separate reads. A failed
+    // allowance read must not blank the page the reader is looking at.
+    const { adapter, session, scanFinished } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().allowance).not.toBeNull())
+    expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first")
+    vi.mocked(adapter.getAllowanceUsage).mockRejectedValueOnce(new Error("Unavailable"))
+    scanFinished()
+    // The mock records the call before the rejection reaches the catch, so
+    // the test waits for the state it checks.
+    await vi.waitFor(() => expect(session.getSnapshot().allowanceError).toBe(true))
+    expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first")
+    expect(session.getSnapshot().usageError).toBe(false)
+    stop()
+  })
+
+  it("marks a failed first allowance read, and stops its loading state", async () => {
+    // With no figures to keep, the page must state the failure. A loading
+    // state that never ends states a read that is still in flight.
+    const { adapter, session } = setup()
+    sessions.push(session)
+    vi.mocked(adapter.getAllowanceUsage).mockRejectedValueOnce(new Error("Unavailable"))
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().allowanceError).toBe(true))
+    expect(session.getSnapshot().allowance).toBeNull()
+    expect(session.getSnapshot().allowanceLoading).toBe(false)
+    stop()
+  })
+
+  it("rejects a hidden read's result", async () => {
     const pending = deferred<ProviderUsageSummaryPayload>()
-    const { adapter, session, setVisible, liveChanged } = setup()
+    const { adapter, session, setVisible } = setup()
     sessions.push(session)
     const stop = session.subscribe(() => undefined)
     await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
     vi.mocked(adapter.getUsage).mockReturnValueOnce(pending.promise)
     session.refresh()
     setVisible(false)
-    liveChanged(liveUsage("live-hidden"))
     pending.resolve(usage("hidden"))
     await Promise.resolve()
     expect(session.getSnapshot().usage?.generatedAt).toBe("first")
-    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-first")
     setVisible(true)
-    liveChanged(liveUsage("live-pushed"))
-    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-pushed")
     await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(3))
     stop()
   })
 
-  it("reads the checks report under its own consumer and releases it when inactive", async () => {
-    const { adapter, session, setVisible, reportChanged } = setup()
+  it("serializes usage reads across an unsubscribe and resubscribe", async () => {
+    const pending = deferred<ProviderUsageSummaryPayload>()
+    const { adapter, session } = setup(true, {
+      getUsage: vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(usage("new")),
+    })
     sessions.push(session)
     const stop = session.subscribe(() => undefined)
-    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
-    const consumerId = vi.mocked(adapter.getChecksReport).mock.calls[0]?.[0]
-    expect(consumerId).toMatch(/^main-home-\d+$/)
-    vi.mocked(adapter.getChecksReport).mockResolvedValueOnce(report(2))
-    reportChanged()
-    await vi.waitFor(() => expect(session.getSnapshot().report?.pendingEvidence).toBe(2))
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledOnce())
+    stop()
+    const stopAgain = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().active).toBe(true))
     expect(adapter.getUsage).toHaveBeenCalledOnce()
-    setVisible(false)
-    expect(adapter.cancelChecksReport).toHaveBeenCalledWith(consumerId)
+    pending.resolve(usage("old"))
+    await vi.waitFor(() => expect(session.getSnapshot().usage?.generatedAt).toBe("new"))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(2)
+    stopAgain()
+  })
+
+  it("refreshes session allocations on provider updates and retains them after a failed read", async () => {
+    const { adapter, session, meterChanged } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().sessionLimitAllocations).not.toBeNull())
+    const first = session.getSnapshot().sessionLimitAllocations
+    vi.mocked(adapter.getSessionLimitAllocations).mockRejectedValueOnce(
+      new Error("Unavailable"),
+    )
+    meterChanged()
+    await vi.waitFor(() => expect(adapter.getSessionLimitAllocations).toHaveBeenCalledTimes(2))
+    expect(session.getSnapshot().sessionLimitAllocations).toBe(first)
     stop()
   })
 
-  it("keeps the three newest sessions and reads updates from the shared source", async () => {
+  it("keeps the six newest sessions and reads updates from the shared source", async () => {
     const { adapter, session, entryChanged, setEntries } = setup()
     sessions.push(session)
     const stop = session.subscribe(() => undefined)
@@ -315,12 +441,26 @@ describe("MainOverviewSession", () => {
       "d",
       "c",
       "b",
+      "a",
     ])
-    setEntries([entry("e", "2026-09-14T09:00:00Z")])
+    setEntries([
+      entry("g", "2026-09-14T13:00:00Z"),
+      entry("f", "2026-09-14T12:00:00Z"),
+      entry("e", "2026-09-14T11:00:00Z"),
+      entry("d2", "2026-09-14T10:00:00Z"),
+      entry("c2", "2026-09-14T09:00:00Z"),
+      entry("b2", "2026-09-14T08:00:00Z"),
+      entry("a2", "2026-09-14T07:00:00Z"),
+    ])
     entryChanged({ title: true })
     await vi.waitFor(() =>
       expect(session.getSnapshot().recentSessions?.map((item) => item.sessionId)).toEqual([
+        "g",
+        "f",
         "e",
+        "d2",
+        "c2",
+        "b2",
       ]),
     )
     expect(adapter.getUsage).toHaveBeenCalledOnce()

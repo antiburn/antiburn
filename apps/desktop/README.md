@@ -321,6 +321,16 @@ observation; the projection bridge emits `session:index-changed` with cause
 `removed` so both windows refresh their local views. See the
 [session lifecycle contract](../../docs/session-lifecycle-events.md).
 
+Overview uses the same main-window session list for its recent sessions. Its
+Subscription chart and utilization figures use the Limits account lanes,
+resolved periods, shared meter allocation, and learned estimates through the
+same quota query. The overview summarizes account-wide weekly and five-hour
+lanes; model-specific lanes remain available in Limits. Utilization covers
+periods overlapping the latest 60 calendar days, including an incomplete
+current period. Unknown periods do not count as zero. The daily chart shows
+30 days and compares them with the preceding 30 days. Limit hits use separate
+provider-refusal evidence; a full meter alone does not establish a refusal.
+
 Burn checks uses `BurnChecksSession`, a second independent external store. It owns a distinct
 Checks report consumer, combines section activity with main-window visibility, and loads target
 details only for opened checks. It coalesces refreshes, rejects stale results, and keeps prior data

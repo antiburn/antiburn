@@ -53,6 +53,9 @@ pub struct ActivityEntry {
     /// session launched. The value is absent when no model in the combined
     /// breakdown has a price. This field never holds a partial total.
     pub cost: Option<SessionCost>,
+    /// Input, cache-creation, output, and cache-read tokens, summed across
+    /// every model. The count covers every sub-agent this session launched.
+    pub total_tokens: u64,
     /// Every model that contributed billable tokens.
     pub models: Vec<String>,
     /// Parent model runs come before runs used only by sub-agents.
@@ -416,10 +419,20 @@ pub struct ProviderUsage {
     pub last_activity_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAgentDayUsage {
+    pub agent: String,
+    #[serde(flatten)]
+    pub usage: ProviderUsageWindow,
+}
+
 /// Totals for one local calendar day, across every attributed provider.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageDay {
+    #[serde(default)]
+    pub agents: Vec<ProviderAgentDayUsage>,
     /// The reader's calendar date, `YYYY-MM-DD`.
     pub local_date: String,
     #[serde(flatten)]
@@ -444,6 +457,106 @@ pub struct ProviderUsageSummary {
     /// The thirty days before `days`, in the same shape. They feed no total
     /// and no provider row: they exist so a view can compare like with like.
     pub previous_days: Vec<ProviderUsageDay>,
+    /// ISO-8601 stamp of the moment this snapshot was computed.
+    pub generated_at: String,
+}
+
+/// The trailing 28-day pooled utilization: the tuned percentile, by nearest
+/// rank, of every account-wide quota window's capped estimate that pools at
+/// `now` — the rolling chart's own last point, so the two never drift.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceUtilization {
+    pub utilization_percent: f64,
+    /// How many weekly windows pooled into this figure.
+    pub weekly_window_count: u32,
+    /// How many 5-hour windows pooled into this figure.
+    pub short_window_count: u32,
+    /// How many model-scoped weekly windows pooled into this figure.
+    pub model_window_count: u32,
+}
+
+/// One provider account's subscription chart.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceUsageAccount {
+    pub provider: String,
+    pub display_name: String,
+    pub account_key: String,
+    /// The plan the account's newest observation names, or `None` before any
+    /// observation names one.
+    pub plan: Option<LiveProviderPlan>,
+    /// The headline figure. `None` when no window in the trailing span has
+    /// an estimate.
+    pub utilization: Option<AllowanceUtilization>,
+    pub chart: AllowanceChart,
+}
+
+/// The three drawn layers of one account's allowance chart.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceChart {
+    /// 5-hour windows, ascending by start.
+    pub short_windows: Vec<AllowanceWindowPeak>,
+    /// Weekly and model-scoped weekly windows, ascending by start.
+    pub weekly_windows: Vec<AllowanceWindowLevels>,
+    /// The rolling utilization step line, ascending by time.
+    pub rolling: Vec<AllowanceRollingPoint>,
+}
+
+/// One 5-hour window's column: its span, and the highest level it reached.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceWindowPeak {
+    pub starts_at_epoch: i64,
+    pub resets_at_epoch: i64,
+    /// The window's own `estimated_percent`, capped at 100.
+    pub peak_percent: f64,
+}
+
+/// One weekly (or model-scoped weekly) window's rising area.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceWindowLevels {
+    /// `"weekly"` for the account-wide window, or `"model:<slug>"` for a
+    /// model-scoped one.
+    pub lane: String,
+    pub starts_at_epoch: i64,
+    pub resets_at_epoch: i64,
+    /// Hourly, cumulative, capped at 100. The first point is always zero at
+    /// `starts_at_epoch`.
+    pub points: Vec<AllowanceLevelPoint>,
+}
+
+/// One point of a weekly window's cumulative level.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceLevelPoint {
+    pub at_epoch: i64,
+    pub percent: f64,
+}
+
+/// One point of the rolling utilization step line.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceRollingPoint {
+    pub at_epoch: i64,
+    /// Null ends the line when no window remains in the pool.
+    pub percent: Option<f64>,
+}
+
+/// The allowance chart for every account, as one snapshot.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceUsageSummary {
+    /// One entry for each provider account this app has quota evidence for.
+    pub accounts: Vec<AllowanceUsageAccount>,
+    /// The trailing span the headline `utilization` pools.
+    pub utilization_span_days: u32,
+    /// Start of the visible 30-day chart range.
+    pub range_start_epoch: i64,
+    /// End of the visible chart range: `now`.
+    pub range_end_epoch: i64,
     /// ISO-8601 stamp of the moment this snapshot was computed.
     pub generated_at: String,
 }

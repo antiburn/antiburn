@@ -159,16 +159,28 @@ describe("OverviewProviderLimits", () => {
 
   it("shows one quiet line when no provider reports anything", () => {
     render(<OverviewProviderLimits live={liveSummary({ providers: [] })} />)
-    expect(screen.getByText(/No provider limits to show/)).toBeInTheDocument()
+    expect(screen.getByText(/No providers set up for limits yet/)).toBeInTheDocument()
     expect(screen.queryByText("Live")).toBeNull()
   })
 
   it("holds placeholders while loading", () => {
-    render(<OverviewProviderLimits live={null} loading />)
+    const { container } = render(<OverviewProviderLimits live={null} loading />)
+    expect(screen.queryByText(/No providers set up/)).toBeNull()
+    expect(container.querySelector(".animate-pulse")).not.toBeNull()
     expect(screen.getByRole("region", { name: "Provider limits" })).toHaveAttribute(
       "aria-busy",
       "true",
     )
     expect(screen.queryByRole("group")).toBeNull()
+  })
+
+  it("says there is nothing to show when the read answers with nothing", () => {
+    // A failed read leaves no summary and stops the loading state. The panel
+    // must answer, because a permanent skeleton states a read in progress.
+    render(<OverviewProviderLimits live={null} loading={false} />)
+    expect(screen.getByText(/No providers set up for limits yet/)).toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Provider limits" })).not.toHaveAttribute(
+      "aria-busy",
+    )
   })
 })

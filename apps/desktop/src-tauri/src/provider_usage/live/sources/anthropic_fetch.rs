@@ -1280,6 +1280,7 @@ fn snapshot_from_cache(
     credentials: &ClaudeCredentials,
 ) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
+        refusal_kind: None,
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some(cached.account.clone()),
         account_uuid: Some(cached.account),
@@ -1310,6 +1311,7 @@ fn fetch_live(
     let identity = resolve_identity(transport, &credentials.access_token, claude_json_path);
 
     Ok(ProviderUsageSnapshot {
+        refusal_kind: None,
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: identity.uuid.clone(),
         account_uuid: identity.uuid,

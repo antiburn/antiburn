@@ -141,6 +141,7 @@ impl LocalUsageTransport for LocalProbe {
                             status.windows,
                         );
                         return Ok(Some(ProviderUsageSnapshot {
+                            refusal_kind: None,
                             provider: crate::provider_usage::providers::GOOGLE,
                             account: status.account,
                             account_uuid: None,

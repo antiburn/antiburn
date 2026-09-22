@@ -57,6 +57,10 @@ use crate::provider_usage::live::model::{UsageScope, UsageWindow, UsageWindowKin
 /// multi-megabyte session log costs one bounded read.
 const TAIL_BYTES: u64 = 64 * 1024;
 
+/// The label a spend-cap refusal carries. Codex states a boolean, not a
+/// name, so the reader supplies one fixed label for it.
+pub(crate) const SPEND_CONTROL_REFUSAL: &str = "spend_control";
+
 /// The newest rate-limit reading a Codex rollout file holds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RolloutReading {
@@ -67,6 +71,8 @@ pub struct RolloutReading {
     pub plan: Option<String>,
     /// The account-wide windows the event reported.
     pub windows: Vec<UsageWindow>,
+    /// The refusal the event stated, when it stated one.
+    pub refusal_kind: Option<String>,
 }
 
 /// The newest rate-limit reading a Codex rollout file on this machine holds,
@@ -102,6 +108,7 @@ pub fn latest_reading(sessions_root: &Path, now: OffsetDateTime) -> Option<Rollo
         observed_at,
         plan,
         windows,
+        refusal_kind: parse_refusal_kind(rate_limits),
     })
 }
 
@@ -243,6 +250,34 @@ fn find_reading_line(tail: &[u8]) -> Option<Value> {
 /// an account-wide [`UsageWindow`]. Any window missing its duration or
 /// percentage, or carrying a percentage outside `0..=100`, fails the whole
 /// reading — the same fail-closed rule every other parser here uses.
+/// The refusal a `rate_limits` object states, when it states one.
+///
+/// Codex carries two markers. `rate_limit_reached_type` names a rate-limit
+/// refusal and `spend_control_reached` names a spend-cap refusal. Both read
+/// as `null` on every reading that was served.
+///
+/// The parser keeps `rate_limit_reached_type` verbatim and never gives a
+/// value a meaning: the vocabulary is not pinned, and no reading in hand
+/// states one. A `spend_control_reached` with no rate-limit label becomes
+/// the fixed label `spend_control`. Any non-null value is a refusal.
+pub(crate) fn parse_refusal_kind(rate_limits: &Value) -> Option<String> {
+    let rate_limit = rate_limits
+        .get("rate_limit_reached_type")
+        .filter(|value| !value.is_null());
+    if let Some(rate_limit) = rate_limit {
+        return Some(match rate_limit.as_str() {
+            Some(label) => label.to_owned(),
+            None => rate_limit.to_string(),
+        });
+    }
+    let spend_control = rate_limits
+        .get("spend_control_reached")
+        .filter(|value| !value.is_null())
+        .filter(|value| value.as_bool() != Some(false));
+    spend_control?;
+    Some(SPEND_CONTROL_REFUSAL.to_owned())
+}
+
 pub(crate) fn parse_windows(
     rate_limits: &Value,
     observed_at: OffsetDateTime,
@@ -345,6 +380,53 @@ mod tests {
             "secondary": Value::Null,
             "plan_type": plan,
         })
+    }
+
+    /// Every reading Codex has written so far states both markers as
+    /// `null`. A served reading is never a refusal, whatever it used.
+    #[test]
+    fn a_served_reading_states_no_refusal() {
+        let served = json!({
+            "limit_id": "codex",
+            "primary": {"used_percent": 100.0, "window_minutes": 300},
+            "rate_limit_reached_type": Value::Null,
+            "spend_control_reached": Value::Null,
+        });
+        assert_eq!(parse_refusal_kind(&served), None);
+        assert_eq!(parse_refusal_kind(&json!({})), None);
+    }
+
+    /// The rate-limit label is kept verbatim. The vocabulary is not pinned,
+    /// so the parser gives no value a meaning.
+    #[test]
+    fn a_stated_rate_limit_refusal_keeps_its_own_label() {
+        for label in ["primary", "secondary", "something_new"] {
+            let refused = json!({"rate_limit_reached_type": label});
+            assert_eq!(parse_refusal_kind(&refused), Some(label.to_owned()));
+        }
+    }
+
+    /// A spend cap states a boolean, so the parser supplies the label. A
+    /// `false` is not a refusal.
+    #[test]
+    fn a_spend_cap_refusal_takes_the_fixed_label() {
+        let reached = json!({"spend_control_reached": true});
+        assert_eq!(
+            parse_refusal_kind(&reached),
+            Some(SPEND_CONTROL_REFUSAL.to_owned())
+        );
+        let not_reached = json!({"spend_control_reached": false});
+        assert_eq!(parse_refusal_kind(&not_reached), None);
+    }
+
+    /// The rate-limit label wins when a reading states both.
+    #[test]
+    fn a_rate_limit_label_wins_over_a_spend_cap() {
+        let both = json!({
+            "rate_limit_reached_type": "primary",
+            "spend_control_reached": true,
+        });
+        assert_eq!(parse_refusal_kind(&both), Some("primary".to_owned()));
     }
 
     /// Writes `sessions_root/<year>/<month>/<day>/<name>` with `contents`,

@@ -131,6 +131,10 @@ tauri-plugin-single-instance = "2"
 # Emits structured shell events through the process subscriber.
 tracing = "0.1"
 # RFC 3339 stamps for the store's own timestamps.
+# The reset time a Claude limit error states is a local clock and a zone
+# name. Resolving it to an instant needs a zone database, which `time`
+# does not carry.
+jiff = "0.2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # The scan scheduler, and the timer the consented-analytics flusher sleeps on.
 # Excludes `net` and `process`: this crate never opens a socket or spawns a

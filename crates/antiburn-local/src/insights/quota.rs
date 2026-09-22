@@ -169,6 +169,7 @@ mod tests {
             severity: QuotaHitSeverity::HardHit,
             model: Some(model.to_owned()),
             reset_ts_ms: None,
+            reset_clock: None,
             utilization_pct: None,
             confidence: QuotaConfidence::Observed,
         }

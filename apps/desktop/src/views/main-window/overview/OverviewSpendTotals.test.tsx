@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
 import type { ProviderUsageWindowPayload } from "../../../lib/providerUsageIpc"
@@ -19,6 +19,28 @@ function window(
 }
 
 describe("OverviewSpendTotals", () => {
+  it("says the figure is an estimate antiburn makes, not a bill", () => {
+    // A dollar figure reads as a bill. The tooltip names where the number
+    // comes from and what it cannot know.
+    render(
+      <OverviewSpendTotals
+        totals={{
+          today: window(),
+          week: window(),
+          monthToDate: window(),
+          last30Days: window(),
+        }}
+      />,
+    )
+    const today = screen.getByText("Today", { selector: "[aria-hidden]" }).closest("[tabindex]")
+
+    fireEvent.focus(today!)
+
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Estimated cost, at list price, of the tokens you used since midnight/,
+    )
+  })
+
   it("shows a spend figure with its token count and sessions for each span", () => {
     render(
       <OverviewSpendTotals
@@ -32,7 +54,7 @@ describe("OverviewSpendTotals", () => {
     )
     const today = screen.getByText("Today", { selector: "[aria-hidden]" }).closest("div")!
     expect(today).toHaveTextContent("$42.80")
-    expect(today).toHaveTextContent("1.50M · 4 sessions")
+    expect(today).toHaveTextContent("4 sessions · 1.50M tokens")
     expect(today).not.toHaveTextContent("partial")
     const week = screen.getByText("7 days", { selector: "[aria-hidden]" }).closest("div")!
     expect(week).toHaveTextContent("$218")

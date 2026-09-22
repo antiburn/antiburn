@@ -179,7 +179,7 @@
     },
     "provenance": {
       "analyzerRevision": 24,
-      "evidenceSchemaRevision": 20,
+      "evidenceSchemaRevision": 21,
       "harnessVersion": {
         "state": "complete",
         "value": null
@@ -234,6 +234,7 @@
             "confidence": "observed",
             "limitKind": "rate_limit",
             "model": "gpt-6-astra",
+            "resetClock": null,
             "resetTsMs": null,
             "severity": "hard_hit",
             "tsMs": 1767607207000,
@@ -243,6 +244,7 @@
             "confidence": "observed",
             "limitKind": "usage_limit",
             "model": "gpt-6-astra",
+            "resetClock": null,
             "resetTsMs": null,
             "severity": "hard_hit",
             "tsMs": 1767607208000,
@@ -251,7 +253,7 @@
         ]
       }
     },
-    "schemaRevision": 20,
+    "schemaRevision": 21,
     "subagents": {
       "state": "complete",
       "value": {

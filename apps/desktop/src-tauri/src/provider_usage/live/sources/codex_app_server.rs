@@ -284,6 +284,7 @@ pub fn fetch(now: OffsetDateTime) -> Result<Option<ProviderUsageSnapshot>, Provi
     }
 
     Ok(Some(ProviderUsageSnapshot {
+        refusal_kind: None,
         provider: crate::provider_usage::providers::OPENAI,
         account: None,
         account_uuid: None,

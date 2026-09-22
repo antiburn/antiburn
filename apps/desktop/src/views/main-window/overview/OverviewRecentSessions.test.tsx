@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, within } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionListEntry } from "../../../components/session/SessionList"
 import { OverviewRecentSessions } from "./OverviewRecentSessions"
@@ -15,7 +15,38 @@ function entry(sessionId: string, title: string): SessionListEntry {
   }
 }
 
+afterEach(() => vi.useRealTimers())
+
 describe("OverviewRecentSessions", () => {
+  it("updates idle ages, pauses when inactive, and displays new activity", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-14T08:03:00Z"))
+    const item = entry("s1", "Current session")
+    const props = {
+      entries: [item],
+      onSelect: vi.fn(),
+      onOpenAll: vi.fn(),
+      metric: "cost" as const,
+    }
+    const { rerender } = render(<OverviewRecentSessions {...props} />)
+    expect(screen.getByText("3m ago")).toBeVisible()
+    act(() => vi.advanceTimersByTime(120_000))
+    expect(screen.getByText("5m ago")).toBeVisible()
+    rerender(<OverviewRecentSessions {...props} active={false} />)
+    act(() => vi.advanceTimersByTime(120_000))
+    expect(screen.getByText("5m ago")).toBeInTheDocument()
+    rerender(<OverviewRecentSessions {...props} />)
+    expect(screen.getByText("7m ago")).toBeVisible()
+    rerender(
+      <OverviewRecentSessions
+        {...props}
+        entries={[{ ...item, timestamp: new Date().toISOString(), isActive: true }]}
+      />,
+    )
+    expect(screen.getByText("active")).toBeVisible()
+    expect(screen.queryByText("7m ago")).toBeNull()
+  })
+
   it("renders one session row per entry and reports the clicked entry", () => {
     const onSelect = vi.fn()
     const onOpenAll = vi.fn()
@@ -25,11 +56,20 @@ describe("OverviewRecentSessions", () => {
       entry("s3", "Count Codex spawn_agent calls"),
     ]
     render(
-      <OverviewRecentSessions entries={entries} onSelect={onSelect} onOpenAll={onOpenAll} />,
+      <OverviewRecentSessions
+        metric="cost"
+        entries={entries}
+        onSelect={onSelect}
+        onOpenAll={onOpenAll}
+      />,
     )
     const panel = screen.getByRole("region", { name: "Recent sessions" })
     const rows = within(panel).getAllByRole("button", { name: /Refine|Simplify|Count/ })
     expect(rows).toHaveLength(3)
+    fireEvent.keyDown(rows[0]!, { key: "Enter" })
+    expect(onSelect).toHaveBeenLastCalledWith(entries[0])
+    fireEvent.keyDown(rows[2]!, { key: " " })
+    expect(onSelect).toHaveBeenLastCalledWith(entries[2])
     fireEvent.click(rows[1]!)
     expect(onSelect).toHaveBeenCalledWith(entries[1])
     fireEvent.click(within(panel).getByRole("button", { name: "All sessions" }))
@@ -38,11 +78,52 @@ describe("OverviewRecentSessions", () => {
 
   it("explains an empty list and marks the panel busy while it loads", () => {
     const { rerender } = render(
-      <OverviewRecentSessions entries={null} loading onSelect={vi.fn()} onOpenAll={vi.fn()} />,
+      <OverviewRecentSessions
+        metric="cost"
+        entries={null}
+        loading
+        onSelect={vi.fn()}
+        onOpenAll={vi.fn()}
+      />,
     )
     const panel = screen.getByRole("region", { name: "Recent sessions" })
     expect(panel).toHaveAttribute("aria-busy", "true")
-    rerender(<OverviewRecentSessions entries={[]} onSelect={vi.fn()} onOpenAll={vi.fn()} />)
+    rerender(
+      <OverviewRecentSessions
+        metric="cost"
+        entries={[]}
+        onSelect={vi.fn()}
+        onOpenAll={vi.fn()}
+      />,
+    )
     expect(within(panel).getByText("No sessions yet.")).toBeVisible()
+  })
+
+  it("gives the list and the loading skeleton the same row class and count, so the height query hides the same rows either way", () => {
+    const { container, rerender } = render(
+      <OverviewRecentSessions
+        metric="cost"
+        entries={null}
+        loading
+        onSelect={vi.fn()}
+        onOpenAll={vi.fn()}
+      />,
+    )
+    const skeleton = container.querySelector(".overview-recent-rows")
+    expect(skeleton?.children).toHaveLength(6)
+
+    const entries = Array.from({ length: 6 }, (_, index) =>
+      entry(`s${index}`, `Session ${index}`),
+    )
+    rerender(
+      <OverviewRecentSessions
+        metric="cost"
+        entries={entries}
+        onSelect={vi.fn()}
+        onOpenAll={vi.fn()}
+      />,
+    )
+    const list = container.querySelector(".overview-recent-rows")
+    expect(list?.children).toHaveLength(6)
   })
 })

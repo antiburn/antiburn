@@ -201,7 +201,7 @@ describe("SessionList — rows", () => {
     expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
     expect(badge).toHaveAttribute(
       "aria-label",
-      "Estimated share of your Claude weekly limit. This session uses 5% or more of your limit.",
+      "This session used about 12.3% of your Claude weekly limit, across all models. Estimated. This session uses 5% or more of your limit.",
     )
   })
 
@@ -230,7 +230,7 @@ describe("SessionList — rows", () => {
     const badge = screen.getByText("102.5%")
     expect(badge).toHaveAttribute(
       "aria-label",
-      "Estimated share of your Claude weekly limit. This session uses 5% or more of your limit.",
+      "This session used about 102.5% of your Claude weekly limit, across all models. Estimated. This session uses 5% or more of your limit.",
     )
   })
 
@@ -747,7 +747,7 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "session-pending" })] })
     const verdict = screen.getByLabelText(/Running Burn Checks/)
     expect(verdict).toHaveTextContent("Running Burn Checks…")
-    expect(screen.queryByLabelText(/All Burn Checks passed/)).toBeNull()
+    expect(screen.queryByLabelText(/6 session burn checks. All passed/)).toBeNull()
   })
 
   it("renders finding and clean statuses from the hygiene snapshot prop", () => {
@@ -773,8 +773,8 @@ describe("SessionList — rows", () => {
       ]),
     })
 
-    expect(screen.getByLabelText(/Some Burn Checks failed/)).toHaveTextContent(
-      "1 failed·5 passed",
+    expect(screen.getByLabelText(/6 session burn checks. 1 failed/)).toHaveTextContent(
+      "1/6 failed",
     )
   })
 
@@ -805,9 +805,9 @@ describe("SessionList — rows", () => {
       ]),
     })
 
-    const verdict = screen.getByLabelText(/All Burn Checks passed/)
-    expect(verdict).toHaveTextContent("All 6 passed")
-    expect(screen.getByText("All 6 passed")).toHaveClass("text-burn-check-pass-fill")
+    const verdict = screen.getByLabelText(/6 session burn checks. All passed/)
+    expect(verdict).toHaveTextContent("6/6 passed")
+    expect(screen.getByText("6/6 passed")).toHaveClass("text-burn-check-pass-fill")
     expect(
       screen.getByText("Primary clean title").closest("[data-session-status-bar]"),
     ).toBeNull()
@@ -836,7 +836,7 @@ describe("SessionList — rows", () => {
       ]),
     })
 
-    expect(screen.getByLabelText(/Refreshing/)).toHaveTextContent("1 failed·5 passed")
+    expect(screen.getByLabelText(/Refreshing/)).toHaveTextContent("1/6 failed")
     expect(screen.queryByText("Refreshing Burn Checks…")).toBeNull()
   })
 
@@ -1147,7 +1147,7 @@ describe("SessionList — shared tooltips", () => {
         ],
       ]),
     })
-    const status = await screen.findByLabelText(/Some Burn Checks failed/)
+    const status = await screen.findByLabelText(/6 session burn checks. 1 failed/)
     const cost = screen.getByLabelText("Estimated cost $2.40")
     const fork = screen.getByLabelText("Forked from another session")
     const repository = screen.getByText("avery/widgets +1")

@@ -660,6 +660,7 @@ fn rollout_snapshot(
     auth: &CodexAuth,
 ) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
+        refusal_kind: reading.refusal_kind,
         provider: crate::provider_usage::providers::OPENAI,
         account: auth.account_id.clone(),
         account_uuid: auth.account_id.clone(),
@@ -802,6 +803,7 @@ fn build_snapshot(
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
     let usage = codex::parse_wham_usage(body, now)?;
     Ok(ProviderUsageSnapshot {
+        refusal_kind: None,
         provider: crate::provider_usage::providers::OPENAI,
         account: account_id.clone(),
         account_uuid: account_id,

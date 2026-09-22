@@ -354,6 +354,7 @@ impl LiveUsageSource for Broken {
 
 fn snapshot(freshness: Freshness, observed: i64, percent: f64) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
+        refusal_kind: None,
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
         account_uuid: None,
@@ -801,6 +802,7 @@ fn weekly_scoped_snapshot(
     resets_at: i64,
 ) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
+        refusal_kind: None,
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
         account_uuid: None,

@@ -2790,5 +2790,25 @@ pub fn price_cached_breakdown(
     (price_breakdown(&pricing), sorted_models(&models))
 }
 
+/// Sum input, cache-creation, output, and cache-read tokens across every
+/// model in a cached breakdown.
+///
+/// The breakdown covers the parent transcript and every sub-agent. Unparseable
+/// JSON reads as zero, the same "no evidence yet" reading the rest of this
+/// cache uses.
+pub fn cached_total_tokens(model_breakdown_json: &str) -> u64 {
+    let Ok(models) = serde_json::from_str::<HashMap<String, ModelTokens>>(model_breakdown_json)
+    else {
+        return 0;
+    };
+    models.values().fold(0u64, |total, tokens| {
+        total
+            .saturating_add(tokens.input_tokens)
+            .saturating_add(tokens.cache_creation_tokens)
+            .saturating_add(tokens.output_tokens)
+            .saturating_add(tokens.cache_read_tokens)
+    })
+}
+
 #[cfg(test)]
 mod tests;

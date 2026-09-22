@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-allowance-usage"
+description = "Enables the get_allowance_usage command without any pre-configured scope."
+commands.allow = ["get_allowance_usage"]
+
+[[permission]]
+identifier = "deny-get-allowance-usage"
+description = "Denies the get_allowance_usage command without any pre-configured scope."
+commands.deny = ["get_allowance_usage"]

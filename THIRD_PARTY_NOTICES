@@ -450,6 +450,10 @@ itertools@0.15.0 | MIT OR Apache-2.0 | https://github.com/rust-itertools/itertoo
 itoa@1.0.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/itoa
 javascriptcore-rs-sys@1.1.1 | MIT | https://github.com/tauri-apps/javascriptcore-rs
 javascriptcore-rs@1.1.2 | MIT | https://github.com/tauri-apps/javascriptcore-rs
+jiff-core@0.1.0 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
+jiff-tzdb-platform@0.1.3 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
+jiff-tzdb@0.1.8 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
+jiff@0.2.35 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 json-patch@3.0.1 | MIT OR Apache-2.0 | https://github.com/idubrov/json-patch
 jsonptr@0.6.3 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr
 keyboard-types@0.7.0 | MIT OR Apache-2.0 | https://github.com/pyfisch/keyboard-types
@@ -1539,6 +1543,10 @@ Used by:
   aho-corasick@1.1.5
   byteorder-lite@0.1.0
   byteorder@1.5.0
+  jiff-core@0.1.0
+  jiff-tzdb-platform@0.1.3
+  jiff-tzdb@0.1.8
+  jiff@0.2.35
   memchr@2.8.3
   walkdir@2.5.0
 

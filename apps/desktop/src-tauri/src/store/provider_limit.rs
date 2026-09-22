@@ -360,7 +360,6 @@ const ATTRIBUTED_TURN_BUCKET_SQL: &str = "SELECT g.environment_key, g.agent, g.s
                   FROM session_provider_account spa
                  WHERE spa.environment_key = g.environment_key
                    AND spa.agent = g.agent AND spa.session_id = g.session_id
-                   AND spa.provider = ?4
             ), '[]'),
             g.model, g.speed,
             g.input_tokens, g.cache_read_tokens, g.cache_write_tokens,
@@ -552,20 +551,34 @@ impl Store {
         from_epoch: i64,
         to_epoch: i64,
     ) -> Result<Option<Vec<BucketedSessionDollars>>> {
+        Ok(self.quota_turn_input(from_epoch, to_epoch)?.map(|input| {
+            input
+                .for_account(provider, account_key, model_scope)
+                .by_bucket(model_scope)
+        }))
+    }
+
+    pub(crate) fn quota_turn_input(
+        &self,
+        from_epoch: i64,
+        to_epoch: i64,
+    ) -> Result<Option<QuotaTurnInput>> {
         if to_epoch <= from_epoch {
-            return Ok(Some(Vec::new()));
+            return Ok(Some(QuotaTurnInput::default()));
         }
-        let known = self.provider_known_accounts(provider)?;
+        let started = std::time::Instant::now();
         let connection = self.lock();
-        attributed_turn_dollars_by_bucket_in(
-            &connection,
-            provider,
-            account_key,
-            from_epoch,
-            to_epoch,
-            model_scope,
-            &known,
-        )
+        let wait_ms = started.elapsed().as_millis() as u64;
+        let read_started = std::time::Instant::now();
+        let input = read_quota_turn_input(&connection, from_epoch, to_epoch)?;
+        drop(connection);
+        tracing::debug!(
+            wait_ms,
+            read_ms = read_started.elapsed().as_millis() as u64,
+            groups = input.as_ref().map(|input| input.rows.len()),
+            "read quota turn input"
+        );
+        Ok(input)
     }
 
     /// Ascending, minute-rounded epochs of every turn in `(from_epoch,
@@ -1638,7 +1651,7 @@ fn row_to_period(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderUsagePerio
 /// resolved to, if any, and the dollars its tokens price to.
 ///
 /// Shared by [`attributed_turn_dollars_between_in`] and
-/// [`attributed_turn_dollars_by_bucket_in`], so learning and the quota
+/// [`QuotaTurnInput::for_account`], so learning and the quota
 /// screen's contribution chart cannot disagree about how a group is priced
 /// or which account it belongs to.
 struct PricedTurnGroup {
@@ -1657,8 +1670,7 @@ struct PricedTurnGroup {
 /// function itself stays under a handful of parameters.
 struct TurnGroupRow<'a> {
     agent: &'a str,
-    accounts_json: &'a str,
-    known: Option<&'a BTreeSet<String>>,
+    resolved_account: Option<String>,
     hints_json: Option<&'a str>,
     model: Option<&'a str>,
     speed: Option<&'a str>,
@@ -1670,7 +1682,7 @@ struct TurnGroupRow<'a> {
     turn_count: i64,
 }
 
-/// Resolve one group's account and price its tokens, or `None` when it
+/// Price one group's tokens, or return `None` when it
 /// carries no model, no billable tokens, or a model outside `model_scope`.
 ///
 /// `None` here means "this row prices to nothing": the caller drops it
@@ -1683,7 +1695,7 @@ fn price_turn_row(
     model_scope: Option<&str>,
     row: &TurnGroupRow<'_>,
 ) -> Option<PricedTurnGroup> {
-    let resolved_account = resolve_account(row.accounts_json, row.known);
+    let resolved_account = row.resolved_account.clone();
     let model = row.model.map(str::trim).filter(|model| !model.is_empty())?;
     if let Some(scope) = model_scope
         && !model_matches_scope(model, scope)
@@ -1778,8 +1790,7 @@ fn attributed_turn_dollars_between_in(
             model_scope,
             &TurnGroupRow {
                 agent: &key.agent,
-                accounts_json: &accounts_json,
-                known: known_accounts.get(&key.agent),
+                resolved_account: resolve_account(&accounts_json, known_accounts.get(&key.agent)),
                 hints_json: hints_json.as_deref(),
                 model: model.as_deref(),
                 speed: speed.as_deref(),
@@ -1808,99 +1819,179 @@ fn attributed_turn_dollars_between_in(
     Ok(Some(by_session.into_values().collect()))
 }
 
-/// Backs [`Store::attributed_turn_dollars_by_bucket`]: same grouping and
-/// pricing as [`attributed_turn_dollars_between_in`], additionally split by
-/// 15-minute bucket, and keeping unbound sessions instead of dropping them.
-fn attributed_turn_dollars_by_bucket_in(
+// Keep model and speed groups until pricing and lane selection finish.
+#[derive(Default)]
+pub(crate) struct QuotaTurnInput {
+    rows: Vec<BucketTurnRow>,
+    known_accounts: HashMap<(String, String), BTreeSet<String>>,
+}
+
+struct BucketTurnRow {
+    key: SessionKey,
+    hints_json: Option<String>,
+    accounts_json: String,
+    model: Option<String>,
+    speed: Option<String>,
+    input_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    output_tokens: i64,
+    turn_count: i64,
+    cache_write_1h_tokens: i64,
+    bucket_start_epoch: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderAccountObservation {
+    provider: String,
+    account_key: String,
+}
+
+pub(crate) struct AccountTurnDollars {
+    rows: Vec<(Option<String>, BucketedSessionDollars)>,
+}
+
+impl QuotaTurnInput {
+    pub(crate) fn for_account(
+        &self,
+        provider: &str,
+        account_key: &str,
+        model_scope: Option<&str>,
+    ) -> AccountTurnDollars {
+        let mut rows = Vec::new();
+        for row in &self.rows {
+            let bound = serde_json::from_str::<Vec<ProviderAccountObservation>>(&row.accounts_json)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|observation| {
+                    observation.provider == provider && observation.account_key.len() == 64
+                })
+                .map(|observation| observation.account_key)
+                .collect();
+            let resolved = resolve_bound_account(
+                Some(&bound),
+                self.known_accounts
+                    .get(&(provider.to_string(), row.key.agent.clone())),
+            );
+            let account = match resolved.as_deref() {
+                Some(value) if value == account_key => Resolved::Bound(value.to_string()),
+                Some(_) => continue,
+                None => Resolved::Unbound,
+            };
+            let Some(priced) = price_turn_row(
+                provider,
+                model_scope,
+                &TurnGroupRow {
+                    agent: &row.key.agent,
+                    resolved_account: resolved,
+                    hints_json: row.hints_json.as_deref(),
+                    model: row.model.as_deref(),
+                    speed: row.speed.as_deref(),
+                    input_tokens: row.input_tokens,
+                    cache_read_tokens: row.cache_read_tokens,
+                    cache_write_tokens: row.cache_write_tokens,
+                    output_tokens: row.output_tokens,
+                    cache_write_1h_tokens: row.cache_write_1h_tokens,
+                    turn_count: row.turn_count,
+                },
+            ) else {
+                continue;
+            };
+            rows.push((
+                row.model.clone(),
+                BucketedSessionDollars {
+                    key: row.key.clone(),
+                    bucket_start_epoch: row.bucket_start_epoch,
+                    usd: priced.input_usd
+                        + priced.output_usd
+                        + priced.cache_read_usd
+                        + priced.cache_write_usd,
+                    turn_count: priced.turn_count,
+                    account,
+                },
+            ));
+        }
+        AccountTurnDollars { rows }
+    }
+}
+
+impl AccountTurnDollars {
+    pub(crate) fn by_bucket(&self, model_scope: Option<&str>) -> Vec<BucketedSessionDollars> {
+        let mut buckets: HashMap<(SessionKey, i64), BucketedSessionDollars> = HashMap::new();
+        for (model, row) in &self.rows {
+            if let Some(scope) = model_scope
+                && !model
+                    .as_deref()
+                    .is_some_and(|model| model_matches_scope(model.trim(), scope))
+            {
+                continue;
+            }
+            let entry = buckets
+                .entry((row.key.clone(), row.bucket_start_epoch))
+                .or_insert_with(|| BucketedSessionDollars {
+                    usd: 0.0,
+                    turn_count: 0,
+                    ..row.clone()
+                });
+            entry.usd += row.usd;
+            entry.turn_count += row.turn_count;
+        }
+        buckets.into_values().collect()
+    }
+}
+
+fn read_quota_turn_input(
     connection: &Connection,
-    provider: &str,
-    account_key: &str,
     from_epoch: i64,
     to_epoch: i64,
-    model_scope: Option<&str>,
-    known_accounts: &HashMap<String, BTreeSet<String>>,
-) -> Result<Option<Vec<BucketedSessionDollars>>> {
+) -> Result<Option<QuotaTurnInput>> {
     let start_ms = from_epoch.saturating_mul(1_000).saturating_add(1);
     let end_ms = to_epoch.saturating_mul(1_000);
     let mut statement = connection.prepare(ATTRIBUTED_TURN_BUCKET_SQL)?;
-    let mut rows = statement.query(params![
+    let mut query = statement.query(params![
         start_ms,
         end_ms,
-        (MAX_ATTRIBUTION_GROUPS + 1) as i64,
-        provider,
+        (MAX_ATTRIBUTION_GROUPS + 1) as i64
     ])?;
-    let mut by_bucket: HashMap<(SessionKey, i64), (f64, i64, Resolved)> = HashMap::new();
-    let mut group_count = 0usize;
-    while let Some(row) = rows.next()? {
-        group_count += 1;
-        if group_count > MAX_ATTRIBUTION_GROUPS {
+    let mut rows = Vec::new();
+    while let Some(row) = query.next()? {
+        if rows.len() == MAX_ATTRIBUTION_GROUPS {
             return Ok(None);
         }
-        let key = SessionKey::new(
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        );
-        let hints_json: Option<String> = row.get(3)?;
-        let accounts_json: String = row.get(4)?;
-        let model: Option<String> = row.get(5)?;
-        let speed: Option<String> = row.get(6)?;
-        let input_tokens: i64 = row.get(7)?;
-        let cache_read_tokens: i64 = row.get(8)?;
-        let cache_write_tokens: i64 = row.get(9)?;
-        let output_tokens: i64 = row.get(10)?;
-        let turn_count: i64 = row.get(11)?;
-        let cache_write_1h_tokens: i64 = row.get(12)?;
-        let bucket_index: i64 = row.get(13)?;
-
-        let Some(priced) = price_turn_row(
-            provider,
-            model_scope,
-            &TurnGroupRow {
-                agent: &key.agent,
-                accounts_json: &accounts_json,
-                known: known_accounts.get(&key.agent),
-                hints_json: hints_json.as_deref(),
-                model: model.as_deref(),
-                speed: speed.as_deref(),
-                input_tokens,
-                cache_read_tokens,
-                cache_write_tokens,
-                output_tokens,
-                cache_write_1h_tokens,
-                turn_count,
-            },
-        ) else {
-            continue;
-        };
-        let resolved = match &priced.resolved_account {
-            Some(resolved) if resolved == account_key => Resolved::Bound(resolved.clone()),
-            Some(_) => continue,
-            None => Resolved::Unbound,
-        };
-        let total_usd =
-            priced.input_usd + priced.output_usd + priced.cache_read_usd + priced.cache_write_usd;
-        let bucket_start_epoch = bucket_index * CONTRIBUTION_BUCKET_SECS;
-        let entry = by_bucket
-            .entry((key, bucket_start_epoch))
-            .or_insert((0.0, 0, resolved));
-        entry.0 += total_usd;
-        entry.1 += priced.turn_count;
+        rows.push(BucketTurnRow {
+            key: SessionKey::new(
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ),
+            hints_json: row.get(3)?,
+            accounts_json: row.get(4)?,
+            model: row.get(5)?,
+            speed: row.get(6)?,
+            input_tokens: row.get(7)?,
+            cache_read_tokens: row.get(8)?,
+            cache_write_tokens: row.get(9)?,
+            output_tokens: row.get(10)?,
+            turn_count: row.get(11)?,
+            cache_write_1h_tokens: row.get(12)?,
+            bucket_start_epoch: row.get::<_, i64>(13)? * CONTRIBUTION_BUCKET_SECS,
+        });
     }
-    Ok(Some(
-        by_bucket
-            .into_iter()
-            .map(
-                |((key, bucket_start_epoch), (usd, turn_count, account))| BucketedSessionDollars {
-                    key,
-                    bucket_start_epoch,
-                    usd,
-                    turn_count,
-                    account,
-                },
-            )
-            .collect(),
-    ))
+    let mut known_accounts: HashMap<(String, String), BTreeSet<String>> = HashMap::new();
+    let mut statement =
+        connection.prepare("SELECT provider, agent, account_key FROM provider_account_seen")?;
+    let mut query = statement.query([])?;
+    while let Some(row) = query.next()? {
+        known_accounts
+            .entry((row.get(0)?, row.get(1)?))
+            .or_default()
+            .insert(row.get(2)?);
+    }
+    Ok(Some(QuotaTurnInput {
+        rows,
+        known_accounts,
+    }))
 }
 
 #[cfg(test)]

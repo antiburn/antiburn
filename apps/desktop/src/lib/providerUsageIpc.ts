@@ -51,8 +51,13 @@ export interface ProviderUsagePayload {
   lastActivityAt: string | null
 }
 
+export interface ProviderAgentDayUsagePayload extends ProviderUsageWindowPayload {
+  agent: string
+}
+
 /** One local calendar day's totals across every provider. Mirrors Rust `ProviderUsageDay`. */
 export interface ProviderUsageDayPayload extends ProviderUsageWindowPayload {
+  agents?: ProviderAgentDayUsagePayload[]
   /** The reader's calendar date, `YYYY-MM-DD`. */
   localDate: string
 }
@@ -503,6 +508,98 @@ export interface LiveUsageMeterPayload {
   carrierLabel?: string
 }
 
+/**
+ * The trailing 28-day pooled utilization: the tuned percentile, by nearest
+ * rank, of every account-wide quota window's capped estimate that pools at
+ * "now" — the same figure the rolling chart line's last point states.
+ * Mirrors Rust `AllowanceUtilization`.
+ */
+export interface AllowanceUtilizationPayload {
+  utilizationPercent: number
+  /** How many weekly windows pooled into this figure. */
+  weeklyWindowCount: number
+  /** How many 5-hour windows pooled into this figure. */
+  shortWindowCount: number
+  /** How many model-scoped weekly windows pooled into this figure. */
+  modelWindowCount: number
+}
+
+/** One provider account's subscription chart. Mirrors Rust
+ * `AllowanceUsageAccount`. */
+export interface AllowanceUsageAccountPayload {
+  provider: string
+  displayName: string
+  accountKey: string
+  /** The plan the account's newest observation names, or null before any
+   * observation names one. */
+  plan: LiveUsagePlanPayload | null
+  /** The headline figure. Null when no window in the trailing span has an
+   * estimate. */
+  utilization: AllowanceUtilizationPayload | null
+  chart: AllowanceChartPayload
+}
+
+/** The three drawn layers of one account's allowance chart. Mirrors Rust
+ * `AllowanceChart`. */
+interface AllowanceChartPayload {
+  /** 5-hour windows, ascending by start. */
+  shortWindows: AllowanceWindowPeakPayload[]
+  /** Weekly and model-scoped weekly windows, ascending by start. */
+  weeklyWindows: AllowanceWindowLevelsPayload[]
+  /** The rolling utilization step line, ascending by time. */
+  rolling: AllowanceRollingPointPayload[]
+}
+
+/** One 5-hour window's column: its span, and the highest level it reached.
+ * Mirrors Rust `AllowanceWindowPeak`. */
+export interface AllowanceWindowPeakPayload {
+  startsAtEpoch: number
+  resetsAtEpoch: number
+  /** The window's own `estimatedPercent`, capped at 100. */
+  peakPercent: number
+}
+
+/** One weekly (or model-scoped weekly) window's rising area. Mirrors Rust
+ * `AllowanceWindowLevels`. */
+export interface AllowanceWindowLevelsPayload {
+  /** `"weekly"` for the account-wide window, or `"model:<slug>"` for a
+   * model-scoped one. */
+  lane: string
+  startsAtEpoch: number
+  resetsAtEpoch: number
+  /** Hourly, cumulative, capped at 100. The first point is always zero at
+   * `startsAtEpoch`. */
+  points: AllowanceLevelPointPayload[]
+}
+
+/** One point of a weekly window's cumulative level. Mirrors Rust
+ * `AllowanceLevelPoint`. */
+interface AllowanceLevelPointPayload {
+  atEpoch: number
+  percent: number
+}
+
+/** One point of the rolling utilization step line. Mirrors Rust
+ * `AllowanceRollingPoint`. */
+export interface AllowanceRollingPointPayload {
+  atEpoch: number
+  /** Null ends the line when no window remains in the pool. */
+  percent: number | null
+}
+
+/** The allowance chart for every account, as one snapshot. Mirrors Rust
+ * `AllowanceUsageSummary`. */
+export interface AllowanceUsageSummaryPayload {
+  /** One entry for each provider account this app has quota evidence for. */
+  accounts: AllowanceUsageAccountPayload[]
+  /** The trailing span the headline `utilization` pools. */
+  utilizationSpanDays: number
+  /** Start of the visible 30-day chart range. */
+  rangeStartEpoch: number
+  /** End of the visible chart range: "now". */
+  rangeEndEpoch: number
+  generatedAt: string
+}
 type LiveLoginCarrier =
   | "claudeCredentialsFile"
   | "claudeKeychain"

@@ -8,7 +8,7 @@ import { BurnCheckSummary } from "./BurnCheckSummary"
 
 function presentation(...statuses: Array<"finding" | "clean" | "notAssessed">) {
   return sessionBurnCheckPresentation(
-    statuses.map((status) => ({ status })),
+    statuses.map((status) => ({ status, title: "Check result" })),
     "ready",
   )
 }
@@ -42,18 +42,12 @@ describe("Burn Check components", () => {
     )
     expect(passedAngle).toBeCloseTo(failedAngle * 2, 5)
     expect(unassessedAngle).toBeCloseTo(failedAngle, 5)
-    expect(screen.getByText("1 failed")).toHaveClass(
+    expect(screen.getByText("1/3 failed")).toHaveClass(
       "font-semibold!",
       "text-burn-check-failure-text",
     )
-    expect(screen.getByText("2 passed")).toHaveClass("text-burn-check-pass-fill")
-    expect(screen.getByText("2 passed")).not.toHaveClass("font-semibold!")
-    expect(screen.getByText("1 not assessed")).toBeInTheDocument()
-    const separators = container.querySelectorAll("[data-burn-check-separator]")
-    expect(separators).toHaveLength(2)
-    expect(separators[0]).toHaveTextContent("·")
-    expect(separators[0]?.textContent).toBe("·")
-    expect(separators[0]).toHaveClass("mx-0.5", "inline-block")
+    expect(screen.queryByText("2 passed")).not.toBeInTheDocument()
+    expect(screen.queryByText("1 not assessed")).not.toBeInTheDocument()
     expect(container.querySelector("[data-burn-check-indicator-wrap]")).toHaveClass(
       "translate-y-px",
     )

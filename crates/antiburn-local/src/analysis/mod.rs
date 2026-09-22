@@ -63,10 +63,10 @@ pub use evidence::{
     EvidenceCoverage, EvidenceSource, EvidenceValue, FAST_SPEED_KEY, LoadedSource,
     ModelControlObservation, ModelEvidence, ModelTokens, ModelTransition, OrderingObservation,
     ParseDiagnostics, ProviderIncident, ProviderIncidentKind, QuotaConfidence, QuotaHitSeverity,
-    QuotaIncident, QuotaLimitKind, RelationConfidence, RepeatedContext, RepeatedContextAccounting,
-    SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
-    SessionProviderEvidence, SessionQuotaEvidence, SessionTimeRange, SignalCoverage,
-    SourceAcceptance, SourceCapabilities, SourceFormat, SourceKind, SubagentChild,
+    QuotaIncident, QuotaLimitKind, QuotaResetClock, RelationConfidence, RepeatedContext,
+    RepeatedContextAccounting, SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity,
+    SessionProvenance, SessionProviderEvidence, SessionQuotaEvidence, SessionTimeRange,
+    SignalCoverage, SourceAcceptance, SourceCapabilities, SourceFormat, SourceKind, SubagentChild,
     SubagentEvidence, SubagentExample, ToolClass, ToolDefinition, ToolEvidence, ToolUse,
     TurnCounts,
 };
@@ -282,7 +282,10 @@ pub const METRICS_SCHEMA_REVISION: i64 = 9;
 // +1 for nested resource evidence and paired parent-call and child-model observations.
 // +1 for the provider_incidents evidence group.
 // +1 for the DevinLocalSqlite source-format wire value in persisted evidence.
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 20;
+// +1 for `QuotaIncident::reset_clock`, the local reset time a Claude limit
+// error states. A stored analysis from revision 20 has no clock, so it must
+// rerun before the overage figures can report a wait.
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 21;
 /// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
 /// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
 /// evidence replay, not the published `SessionEvidence` shape itself.

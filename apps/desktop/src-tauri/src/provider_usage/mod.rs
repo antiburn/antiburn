@@ -25,6 +25,7 @@
 //!    session that ran across midnight counts entirely in the day it last
 //!    touched. The views say so.
 
+pub mod allowance;
 pub(crate) mod codex_rollout_history;
 pub(crate) mod factor;
 pub mod live;
@@ -41,8 +42,9 @@ use antiburn_local::pricing::ModelTokens;
 use time::{Date, OffsetDateTime, Time, UtcOffset};
 
 use crate::dto::{
-    ProviderAgentUsage, ProviderUsage, ProviderUsageDay, ProviderUsageStaleness,
-    ProviderUsageState, ProviderUsageSummary, ProviderUsageWindow, ProviderUsageWindows,
+    ProviderAgentDayUsage, ProviderAgentUsage, ProviderUsage, ProviderUsageDay,
+    ProviderUsageStaleness, ProviderUsageState, ProviderUsageSummary, ProviderUsageWindow,
+    ProviderUsageWindows,
 };
 use crate::store::{UsageEvidenceRecord, iso_from_epoch};
 
@@ -80,10 +82,10 @@ pub struct WindowBounds {
 
 /// Seconds in one local day. Daylight-saving changes are ignored here, as
 /// they are in [`window_bounds`].
-const DAY: i64 = 86_400;
+pub(crate) const DAY: i64 = 86_400;
 
 /// Days in each of the two daily series.
-const SERIES_DAYS: usize = 30;
+pub(crate) const SERIES_DAYS: usize = 30;
 
 impl WindowBounds {
     /// The earliest instant any window reaches back to.
@@ -142,7 +144,7 @@ pub fn lookback_start(now: i64, utc_offset_minutes: i32) -> i64 {
 }
 
 /// A validated [`UtcOffset`], falling back to UTC for anything implausible.
-fn local_offset(minutes: i32) -> UtcOffset {
+pub(crate) fn local_offset(minutes: i32) -> UtcOffset {
     let minutes = minutes.clamp(-MAX_OFFSET_MINUTES, MAX_OFFSET_MINUTES);
     UtcOffset::from_whole_seconds(minutes * 60).unwrap_or(UtcOffset::UTC)
 }
@@ -193,7 +195,7 @@ fn day_index(epoch: i64, start: i64) -> Option<usize> {
 }
 
 /// The reader's calendar date for the day that starts at `day_start`.
-fn local_date(day_start: i64, offset: UtcOffset) -> String {
+pub(crate) fn local_date(day_start: i64, offset: UtcOffset) -> String {
     let date: Date = OffsetDateTime::from_unix_timestamp(day_start)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH)
         .to_offset(offset)
@@ -207,13 +209,21 @@ fn local_date(day_start: i64, offset: UtcOffset) -> String {
 }
 
 /// Turn a run of daily buckets into their wire shape.
-fn days_of(buckets: &[Bucket], start: i64, offset: UtcOffset) -> Vec<ProviderUsageDay> {
+fn days_of(buckets: &[DayBucket], start: i64, offset: UtcOffset) -> Vec<ProviderUsageDay> {
     buckets
         .iter()
         .enumerate()
         .map(|(index, bucket)| ProviderUsageDay {
             local_date: local_date(start + index as i64 * DAY, offset),
-            usage: window_of(bucket),
+            usage: window_of(&bucket.total),
+            agents: bucket
+                .agents
+                .iter()
+                .map(|(agent, usage)| ProviderAgentDayUsage {
+                    agent: agent.clone(),
+                    usage: window_of(usage),
+                })
+                .collect(),
         })
         .collect()
 }
@@ -232,6 +242,12 @@ struct Bucket {
     pricing: BTreeMap<String, ModelTokens>,
     pricing_incomplete: bool,
     session_count: u32,
+}
+
+#[derive(Debug, Default)]
+struct DayBucket {
+    total: Bucket,
+    agents: BTreeMap<String, Bucket>,
 }
 
 impl Bucket {
@@ -545,8 +561,10 @@ pub fn summarize(
     let bounds = window_bounds(now, utc_offset_minutes);
     let offset = local_offset(utc_offset_minutes);
     let mut accumulators: BTreeMap<(&'static str, Option<String>), Accumulator> = BTreeMap::new();
-    let mut days: Vec<Bucket> = (0..SERIES_DAYS).map(|_| Bucket::default()).collect();
-    let mut previous_days: Vec<Bucket> = (0..SERIES_DAYS).map(|_| Bucket::default()).collect();
+    let mut session_counts: BTreeMap<String, [u32; 4]> = BTreeMap::new();
+    let mut days: Vec<DayBucket> = (0..SERIES_DAYS).map(|_| DayBucket::default()).collect();
+    let mut previous_days: Vec<DayBucket> =
+        (0..SERIES_DAYS).map(|_| DayBucket::default()).collect();
 
     for record in rows {
         let membership = Membership::of(record.updated_at_epoch, &bounds);
@@ -565,6 +583,22 @@ pub fn summarize(
             None
         };
         let mut day = day.map(|(series, index)| &mut series[index]);
+        if let Some(day) = day.as_deref_mut() {
+            day.total.session_count = day.total.session_count.saturating_add(1);
+            let agent = day.agents.entry(record.agent.clone()).or_default();
+            agent.session_count = agent.session_count.saturating_add(1);
+        }
+        if membership.in_a_window() {
+            let counts = session_counts.entry(record.agent.clone()).or_default();
+            for (count, included) in counts.iter_mut().zip([
+                membership.today,
+                membership.week,
+                membership.month,
+                membership.last_30_days,
+            ]) {
+                *count = count.saturating_add(u32::from(included));
+            }
+        }
 
         let breakdown = breakdown_of(record);
         let pricing_breakdown = pricing_breakdown_of(record);
@@ -635,14 +669,16 @@ pub fn summarize(
             }
             pricing_incomplete |=
                 token_totals(attributed.models.values()) != token_totals(pricing_models.values());
-            if let Some(bucket) = day.as_deref_mut() {
-                bucket.session_count = bucket.session_count.saturating_add(1);
-                bucket.pricing_incomplete |= pricing_incomplete;
-                for (model, tokens) in &attributed.models {
-                    bucket.add_tokens(model, tokens);
-                }
-                for (model, tokens) in &pricing_models {
-                    bucket.add_pricing_tokens(model, tokens);
+            if let Some(day) = day.as_deref_mut() {
+                let agent = day.agents.entry(record.agent.clone()).or_default();
+                for bucket in [&mut day.total, agent] {
+                    bucket.pricing_incomplete |= pricing_incomplete;
+                    for (model, tokens) in &attributed.models {
+                        bucket.add_tokens(model, tokens);
+                    }
+                    for (model, tokens) in &pricing_models {
+                        bucket.add_pricing_tokens(model, tokens);
+                    }
                 }
             }
             // The comparison period feeds the daily series and nothing else:
@@ -753,15 +789,16 @@ pub fn summarize(
             .then_with(|| a.account_key.cmp(&b.account_key))
     });
 
-    let totals = providers
-        .iter()
-        .fold(ProviderUsageWindows::default(), |mut totals, provider| {
-            add_window(&mut totals.today, &provider.windows.today);
-            add_window(&mut totals.week, &provider.windows.week);
-            add_window(&mut totals.month_to_date, &provider.windows.month_to_date);
-            add_window(&mut totals.last_30_days, &provider.windows.last_30_days);
-            totals
-        });
+    let mut totals =
+        providers
+            .iter()
+            .fold(ProviderUsageWindows::default(), |mut totals, provider| {
+                add_window(&mut totals.today, &provider.windows.today);
+                add_window(&mut totals.week, &provider.windows.week);
+                add_window(&mut totals.month_to_date, &provider.windows.month_to_date);
+                add_window(&mut totals.last_30_days, &provider.windows.last_30_days);
+                totals
+            });
     let mut agents: BTreeMap<String, ProviderUsageWindows> = BTreeMap::new();
     for provider in &providers {
         for entry in &provider.agents {
@@ -772,6 +809,18 @@ pub fn summarize(
             add_window(&mut windows.last_30_days, &entry.windows.last_30_days);
         }
     }
+
+    // A session can use more than one provider. Count it once in combined totals.
+    let mut total_counts = [0_u32; 4];
+    for (agent, counts) in session_counts {
+        if let Some(windows) = agents.get_mut(&agent) {
+            set_session_counts(windows, counts);
+        }
+        for (total, count) in total_counts.iter_mut().zip(counts) {
+            *total = total.saturating_add(count);
+        }
+    }
+    set_session_counts(&mut totals, total_counts);
 
     tracing::debug!(
         providers = providers.len(),
@@ -793,6 +842,20 @@ pub fn summarize(
         days: days_of(&days, bounds.last_30_days_start, offset),
         previous_days: days_of(&previous_days, bounds.previous_30_days_start, offset),
         generated_at: iso_from_epoch(Some(now)),
+    }
+}
+
+fn set_session_counts(windows: &mut ProviderUsageWindows, counts: [u32; 4]) {
+    for (window, count) in [
+        &mut windows.today,
+        &mut windows.week,
+        &mut windows.month_to_date,
+        &mut windows.last_30_days,
+    ]
+    .into_iter()
+    .zip(counts)
+    {
+        window.session_count = count;
     }
 }
 

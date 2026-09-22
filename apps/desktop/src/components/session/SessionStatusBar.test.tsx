@@ -87,9 +87,9 @@ afterEach(cleanup)
 describe("SessionStatusBar", () => {
   it("shows the complete pass wording with a cyan terminal tick", () => {
     render(<SessionStatusBar checks={ALL_PASSED} />)
-    const verdict = screen.getByLabelText(/All Burn Checks passed/)
-    expect(verdict).toHaveTextContent("All 6 passed")
-    expect(screen.getByText("All 6 passed")).toHaveClass(
+    const verdict = screen.getByLabelText(/6 session burn checks. All passed/)
+    expect(verdict).toHaveTextContent("6/6 passed")
+    expect(screen.getByText("6/6 passed")).toHaveClass(
       "font-semibold!",
       "text-burn-check-pass-fill",
     )
@@ -101,18 +101,16 @@ describe("SessionStatusBar", () => {
 
   it("uses result-first mixed wording and failure ink", () => {
     render(<SessionStatusBar checks={CHECKS} />)
-    const verdict = screen.getByLabelText(/Some Burn Checks failed/)
-    expect(verdict).toHaveTextContent("1 failed·5 passed")
-    expect(screen.getByText("1 failed")).toHaveClass("text-burn-check-failure-text")
-    expect(screen.getByText("5 passed")).toHaveClass("text-burn-check-pass-fill")
-    expect(screen.getByText("5 passed")).not.toHaveClass("font-semibold!")
+    const verdict = screen.getByLabelText(/6 session burn checks. 1 failed/)
+    expect(verdict).toHaveTextContent("1/6 failed")
+    expect(screen.getByText("1/6 failed")).toHaveClass("text-burn-check-failure-text")
     expect(verdict.querySelectorAll("circle")).toHaveLength(2)
   })
 
   it("omits unavailable checks from compact wording", () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    const verdict = screen.getByLabelText(/6 session checks/)
-    expect(verdict).toHaveTextContent("1 failed·4 passed")
+    const verdict = screen.getByLabelText(/5 session burn checks/)
+    expect(verdict).toHaveTextContent("1/5 failed")
     expect(verdict).not.toHaveTextContent("not assessed")
   })
 
@@ -123,9 +121,9 @@ describe("SessionStatusBar", () => {
         : check,
     )
     render(<SessionStatusBar checks={checks} />)
-    const verdict = screen.getByLabelText(/All assessed Burn Checks passed/)
-    expect(verdict).toHaveTextContent("All 5 passed")
-    expect(screen.getByText("All 5 passed")).toHaveClass("text-burn-check-pass-fill")
+    const verdict = screen.getByLabelText(/5 session burn checks. All passed/)
+    expect(verdict).toHaveTextContent("5/5 passed")
+    expect(screen.getByText("5/5 passed")).toHaveClass("text-burn-check-pass-fill")
     expect(verdict.querySelector('[data-burn-check-indicator="pass"]')).not.toBeNull()
   })
 
@@ -136,8 +134,8 @@ describe("SessionStatusBar", () => {
       ink: "system-red-text" as const,
     }))
     render(<SessionStatusBar checks={allFailed} />)
-    const verdict = screen.getByLabelText(/All Burn Checks failed/)
-    expect(verdict).toHaveTextContent("6 failed")
+    const verdict = screen.getByLabelText(/6 session burn checks. 6 failed/)
+    expect(verdict).toHaveTextContent("6/6 failed")
     expect(verdict.querySelector('[data-burn-check-indicator="fail"]')).not.toBeNull()
   })
 
@@ -162,14 +160,14 @@ describe("SessionStatusBar", () => {
 
   it("shows the verdict, not the state text, once at least one check is assessed", () => {
     render(<SessionStatusBar checks={CHECKS} evidenceState="processing" />)
-    const verdict = screen.getByLabelText(/Burn Checks incomplete/)
-    expect(verdict).toHaveTextContent("1 failed·5 passed")
+    const verdict = screen.getByLabelText(/Evidence incomplete/)
+    expect(verdict).toHaveTextContent("1/6 failed")
   })
 
   it("prefixes the transient state onto an assessed but stale verdict", () => {
     render(<SessionStatusBar checks={CHECKS} evidenceState="stale" />)
     const verdict = screen.getByLabelText(/Refreshing/)
-    expect(verdict).toHaveTextContent("1 failed·5 passed")
+    expect(verdict).toHaveTextContent("1/6 failed")
   })
 
   it("uses only the assessed checks for a singular result", () => {
@@ -185,8 +183,8 @@ describe("SessionStatusBar", () => {
       },
     ]
     render(<SessionStatusBar checks={oneAssessed} />)
-    const verdict = screen.getByLabelText(/3 session checks/)
-    expect(verdict).toHaveTextContent("1 failed")
+    const verdict = screen.getByLabelText(/1 session burn check/)
+    expect(verdict).toHaveTextContent("1/1 failed")
   })
 
   it("names a settled result when no checks were assessed", () => {
@@ -252,7 +250,7 @@ describe("SessionStatusBar", () => {
 
   it("keeps unavailable checks in the tooltip detail", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    fireEvent.focus(screen.getByLabelText(/6 session checks/))
+    fireEvent.focus(screen.getByLabelText(/5 session burn checks/))
 
     expect(await screen.findByText("Burn Checks")).toHaveClass(
       "type-callout",
@@ -281,7 +279,7 @@ describe("SessionStatusBar", () => {
 
   it("uses the Burn Check status icons without repeating their labels", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    fireEvent.focus(screen.getByLabelText(/6 session checks/))
+    fireEvent.focus(screen.getByLabelText(/5 session burn checks/))
 
     await screen.findByText("Burn Checks")
     const marks = document.querySelectorAll("[data-burn-check-tooltip-mark]")

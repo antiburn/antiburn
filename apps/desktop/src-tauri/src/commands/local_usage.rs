@@ -295,6 +295,13 @@ pub async fn get_live_usage(
 /// Keep this reader cache-only because synchronous popover IPC calls it.
 /// Never read provider metadata or start subprocesses here.
 pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
+    let summary = collected_live_usage(app);
+    #[cfg(debug_assertions)]
+    let summary = crate::tray::simulate_codex_only(app, summary);
+    summary
+}
+
+fn collected_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
     let settings = app
         .try_state::<Store>()
         .and_then(|store| store.settings().ok());
