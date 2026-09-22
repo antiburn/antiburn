@@ -16,6 +16,7 @@ import {
   MainOverviewSession,
   overviewUpdateTouchesTotals,
   type MainOverviewAdapter,
+  type MainOverviewScanSource,
   type MainOverviewSessionListSource,
 } from "./MainOverviewSession"
 
@@ -90,7 +91,24 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function setup(visibleInitially = true, overrides: Partial<MainOverviewAdapter> = {}) {
+/** Long enough to prove the debounce coalesces, short enough not to slow the
+ *  suite. The production value is `OVERVIEW_REFRESH_DEBOUNCE_MS`. */
+const TEST_DEBOUNCE_MS = 5
+
+/** Far enough out that only the test that asks for it ever reaches the cap. */
+const TEST_SCAN_HOLD_CAP_MS = 10_000
+
+interface SetupOptions {
+  scanRunning?: boolean
+  debounceMs?: number
+  scanHoldCapMs?: number
+}
+
+function setup(
+  visibleInitially = true,
+  overrides: Partial<MainOverviewAdapter> = {},
+  options: SetupOptions = {},
+) {
   let visible: (value: boolean) => void = () => undefined
   let indexChangedHandler: (change: SessionIndexChangedPayload) => void = () => undefined
   let updated: (change: SessionUpdatedPayload) => void = () => undefined
@@ -135,10 +153,27 @@ function setup(visibleInitially = true, overrides: Partial<MainOverviewAdapter> 
     }),
     ...overrides,
   }
-  const session = new MainOverviewSession(sessionList, adapter)
+  let scanRunning = options.scanRunning ?? false
+  const scanListeners = new Set<() => void>()
+  const scanSource: MainOverviewScanSource = {
+    getSnapshot: () => ({ running: scanRunning }),
+    subscribe: (listener: () => void) => {
+      scanListeners.add(listener)
+      return () => scanListeners.delete(listener)
+    },
+  }
+  const session = new MainOverviewSession(sessionList, adapter, {
+    scanSource,
+    debounceMs: options.debounceMs ?? TEST_DEBOUNCE_MS,
+    scanHoldCapMs: options.scanHoldCapMs ?? TEST_SCAN_HOLD_CAP_MS,
+  })
   return {
     adapter,
     session,
+    setScanRunning: (value: boolean) => {
+      scanRunning = value
+      for (const listener of scanListeners) listener()
+    },
     setVisible: (value: boolean) => visible(value),
     scanFinished: () => indexChangedHandler(indexChanged("scan_pass")),
     invalidated: () => indexChangedHandler(indexChanged("invalidated")),
@@ -240,17 +275,36 @@ describe("MainOverviewSession", () => {
     sessions.push(session)
     const stop = session.subscribe(() => undefined)
     await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
-    const pending = deferred<ProviderUsageSummaryPayload>()
-    vi.mocked(adapter.getUsage).mockReturnValueOnce(pending.promise)
     scanFinished()
     invalidated()
     scanFinished()
+    // Nothing yet: the burst is still arriving.
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(session.getSnapshot().refreshing).toBe(false))
+    // One read for the three events, not one each.
     expect(adapter.getUsage).toHaveBeenCalledTimes(2)
+    stop()
+  })
+
+  it("coalesces a burst that spans an in-flight read", async () => {
+    const { adapter, session, scanFinished, invalidated } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    const pending = deferred<ProviderUsageSummaryPayload>()
+    vi.mocked(adapter.getUsage).mockReturnValueOnce(pending.promise)
+    scanFinished()
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
     expect(session.getSnapshot().refreshing).toBe(true)
     expect(session.getSnapshot().loading).toBe(false)
+    // Events either side of a read in flight still collapse into one more.
+    invalidated()
+    scanFinished()
     pending.resolve(usage("second"))
     await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(3))
     await vi.waitFor(() => expect(session.getSnapshot().refreshing).toBe(false))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(3)
     stop()
   })
 
@@ -479,6 +533,106 @@ describe("MainOverviewSession", () => {
     await vi.waitFor(() => expect(session.getSnapshot().refreshing).toBe(false))
     entryChanged({ title: true })
     expect(adapter.getUsage).toHaveBeenCalledTimes(3)
+    stop()
+  })
+
+  it("holds event reads while the first scan pass runs, then reads once", async () => {
+    const { adapter, session, scanFinished, entryChanged, setScanRunning } = setup(
+      true,
+      {},
+      {
+        scanRunning: true,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    // The first read is the one the reader is waiting for; the pass running
+    // does not hold it back.
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    for (let index = 0; index < 5; index += 1) entryChanged({ analysis: true })
+    scanFinished()
+    await new Promise((resolve) => setTimeout(resolve, TEST_DEBOUNCE_MS * 4))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    setScanRunning(false)
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(session.getSnapshot().refreshing).toBe(false))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(2)
+    stop()
+  })
+
+  it("holds the live-usage push's reads but publishes its figures at once", async () => {
+    const { adapter, session, meterChanged, setScanRunning } = setup(
+      true,
+      {},
+      {
+        scanRunning: true,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
+    )
+    expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(1)
+
+    vi.mocked(adapter.getAllowanceUsage).mockResolvedValue(allowance("allowance-pushed"))
+    meterChanged(liveUsage("live-pushed"))
+    // The push is the figures, not a hint to go and read them.
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("live-pushed")
+    await new Promise((resolve) => setTimeout(resolve, TEST_DEBOUNCE_MS * 4))
+    expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(1)
+
+    setScanRunning(false)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-pushed"),
+    )
+    stop()
+  })
+
+  it("gives up the hold at the cap when no pass ever finishes", async () => {
+    const { adapter, session, entryChanged } = setup(
+      true,
+      {},
+      {
+        scanRunning: true,
+        scanHoldCapMs: TEST_DEBOUNCE_MS,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    entryChanged({ analysis: true })
+    // The pass never reports its end, so only the cap can release this.
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    stop()
+  })
+
+  it("does not hold for a later pass in the same activation", async () => {
+    const { adapter, session, entryChanged, setScanRunning } = setup(
+      true,
+      {},
+      {
+        scanRunning: true,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    setScanRunning(false)
+    entryChanged({ analysis: true })
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(session.getSnapshot().refreshing).toBe(false))
+
+    // A scoped pass from a watcher burst must not stall the ordinary updates
+    // this page exists to show.
+    setScanRunning(true)
+    entryChanged({ analysis: true })
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(3))
     stop()
   })
 
