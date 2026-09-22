@@ -4,7 +4,7 @@
 
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::*;
 
@@ -51,10 +51,11 @@ fn a_write_through_the_reader_fails_read_only_instead_of_panicking() {
     );
 }
 
-/// The property the reader exists for: a read through it finishes quickly
-/// even while another thread holds the writer's own lock for far longer.
+/// The property the reader exists for: a read through it completes while
+/// another thread holds the writer's own lock, and the lock stays held until
+/// the reader reports back, so no timing bound is involved.
 #[test]
-fn a_reader_read_does_not_wait_on_a_500ms_writer_lock_hold() {
+fn a_reader_read_completes_while_the_writer_lock_is_held() {
     let (_directory, writer) = file_backed_store();
     writer
         .upsert_sessions(&[session("seen", 1_000)], &crate::agents::evidence_cohort())
@@ -64,27 +65,32 @@ fn a_reader_read_does_not_wait_on_a_500ms_writer_lock_hold() {
         .expect("opens a reader");
 
     let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
     let held = thread::spawn(move || {
         let guard = writer.lock();
         ready_tx.send(()).expect("signals the guard is held");
-        thread::sleep(Duration::from_millis(500));
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
         drop(guard);
     });
     ready_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("the writer thread holds its lock");
 
-    let started = Instant::now();
-    let found = reader
-        .session(&SessionKey::new("native", "claude-code", "seen"))
-        .expect("the reader's own connection does not wait on the writer's mutex");
-    let elapsed = started.elapsed();
-
-    assert!(found.is_some(), "the reader still sees the committed row");
-    assert!(
-        elapsed < Duration::from_millis(200),
-        "a reader read took {elapsed:?} while the writer held its lock for 500 ms"
-    );
-
+    let (done_tx, done_rx) = mpsc::channel();
+    let reading = thread::spawn(move || {
+        let found = reader
+            .session(&SessionKey::new("native", "claude-code", "seen"))
+            .expect("the reader's own connection does not wait on the writer's mutex");
+        let _ = done_tx.send(found);
+    });
+    let result = done_rx.recv_timeout(Duration::from_secs(2));
+    // Release the writer only after the reader answered or timed out, then
+    // join both threads before judging the result, so a failure reports the
+    // timeout rather than a hung test.
+    let _ = release_tx.send(());
     held.join().expect("the writer thread finishes");
+    reading.join().expect("the reader thread finishes");
+
+    let found = result.expect("the reader answered while the writer lock was held");
+    assert!(found.is_some(), "the reader still sees the committed row");
 }
