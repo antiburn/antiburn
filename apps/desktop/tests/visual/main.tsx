@@ -1,6 +1,7 @@
 import { StrictMode, type ComponentType } from "react"
 import { createRoot } from "react-dom/client"
 import { installFocusModality } from "../../src/lib/focusModality"
+import { setHudTokenMapEnabled } from "../../src/lib/overlayWindow"
 
 import "../../src/styles.css"
 import "./visual.css"
@@ -26,6 +27,7 @@ function querySurface(): Surface {
 
 function configureDocument(): void {
   const params = new URLSearchParams(window.location.search)
+  setHudTokenMapEnabled(params.get("map") === "on")
   const scale = Number(params.get("scale")) || 100
   const theme = params.get("theme") === "dark" ? "dark" : "light"
   document.documentElement.dataset.theme = theme

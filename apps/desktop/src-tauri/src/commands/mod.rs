@@ -2480,7 +2480,7 @@ mod tests {
 
     #[test]
     fn hud_locking_commands_dispatch_to_blocking_workers() {
-        let source = include_str!("hud_commands.rs");
+        let source = include_str!("../hud_commands.rs");
         for name in [
             "hide_overlay_window",
             "resize_overlay_window",
@@ -2510,10 +2510,10 @@ mod tests {
 
     #[test]
     fn hud_notch_reads_do_not_dispatch_mutations_to_the_main_thread() {
-        let source = include_str!("hud_commands.rs");
+        let source = include_str!("../hud_commands.rs");
         assert!(!source.contains("on_main_value(&app, antiburn_hud::settle_after_drag)"));
         assert!(!source.contains("move |app| antiburn_hud::restore_dock(app, dock)"));
-        let restore = include_str!("hud.rs")
+        let restore = include_str!("../hud.rs")
             .split_once("pub fn restore_at_launch(")
             .unwrap()
             .1;
@@ -2529,8 +2529,8 @@ mod tests {
 
     #[test]
     fn hud_hover_intent_stays_synchronous_and_outside_the_resize_lock() {
-        let commands = include_str!("hud_commands.rs");
-        let hud = include_str!("../crates/hud/src/lib.rs");
+        let commands = include_str!("../hud_commands.rs");
+        let hud = include_str!("../../crates/hud/src/lib.rs");
         for name in ["show_hud_detail", "hide_hud_detail"] {
             assert!(commands.contains(&format!("pub fn {name}(")));
         }

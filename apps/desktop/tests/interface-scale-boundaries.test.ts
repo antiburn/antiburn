@@ -111,7 +111,7 @@ describe("interface scale ownership", () => {
 
   it("keeps HUD database and resize locks outside main-thread reconciliation", () => {
     expect(read("src-tauri/src/interface_scale.rs")).not.toContain("crate::hud::")
-    const command = read("src-tauri/src/commands.rs")
+    const command = read("src-tauri/src/commands/mod.rs")
       .split("pub async fn set_interface_scale(")[1]!
       .split("pub async fn restart_onboarding(")[0]!
     const worker = command.indexOf("let hud_error = run_blocking(move ||")
