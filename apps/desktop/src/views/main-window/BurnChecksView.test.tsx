@@ -1423,26 +1423,26 @@ describe("BurnChecksView", () => {
   it("uses backend prepare, apply, and prompt commands without duplicate actions", async () => {
     const { adapter, session } = setup()
     const fix = await screen.findByRole("button", { name: "Fix" })
+    vi.useFakeTimers()
     fireEvent.click(fix)
     fireEvent.click(fix)
     expect(commands.prepare).toHaveBeenCalledOnce()
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    await act(async () => undefined)
+    const dialog = screen.getByRole("dialog", { name: "Review change" })
     expect(dialog).toHaveTextContent("Claude Code · Model · Global configuration")
     expect(dialog).toHaveTextContent("~/.claude/settings.json · model")
     expect(dialog).toHaveTextContent("claude-opus-4-6 → claude-sonnet-5")
     expect(dialog).toHaveTextContent("Responses can change")
     expect(dialog).toHaveTextContent("previous content in a sibling .bak file")
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled(),
-    )
+    await act(async () => undefined)
+    expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled()
     expect(commands.apply).toHaveBeenCalledWith("prepared-1")
-    await waitFor(() => expect(fix).toHaveFocus())
+    expect(fix).toHaveFocus()
 
     fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
-    await waitFor(() =>
-      expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt"),
-    )
+    await act(async () => undefined)
+    expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
     expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"])
     expect(commands.copy).not.toHaveBeenCalled()
     const copied = screen.getByRole("button", { name: "Copied" })
@@ -1473,13 +1473,13 @@ describe("BurnChecksView", () => {
       truncated: false,
     })
     const refreshCount = vi.mocked(adapter.getTargets).mock.calls.length
-    session.loadTargets("unusedMcpServers", true)
-    await waitFor(() =>
-      expect(vi.mocked(adapter.getTargets).mock.calls.length).toBeGreaterThan(refreshCount),
+    await act(async () => session.loadTargets("unusedMcpServers", true))
+    expect(vi.mocked(adapter.getTargets).mock.calls.length).toBeGreaterThan(refreshCount)
+    expect(session.getSnapshot().targets.unusedMcpServers?.data?.targets[0]?.actionId).toBe(
+      "action-new",
     )
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
-    )
+    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled()
     expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
 
     vi.mocked(adapter.getTargets).mockResolvedValueOnce({
@@ -1499,10 +1499,11 @@ describe("BurnChecksView", () => {
       samples: [],
       truncated: false,
     })
-    session.loadTargets("unusedMcpServers", true)
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
+    await act(async () => session.loadTargets("unusedMcpServers", true))
+    expect(session.getSnapshot().targets.unusedMcpServers?.data?.targets[0]?.actionId).toBe(
+      "action-next-attempt",
     )
+    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
   }, 10_000)
 
