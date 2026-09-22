@@ -209,7 +209,8 @@ pub fn restore_dock(_app: &tauri::AppHandle, _settings: DockSettings) {}
 /// Returns the settled dock state, or `None` for a stale/cancelled drop.
 #[cfg(target_os = "macos")]
 pub fn settle_after_drag(app: &AppHandle, revision: u64) -> Option<DockSettings> {
-    let _ = super::drag_lifecycle_guard(revision)?;
+    // Keep the guard bound until settlement ends; `_` drops it immediately.
+    let _lifecycle = super::drag_lifecycle_guard(revision)?;
     let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) else {
         super::cancel_pending_drag(revision);
         return None;
