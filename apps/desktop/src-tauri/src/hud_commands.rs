@@ -65,7 +65,11 @@ pub async fn tear_off_overlay(app: tauri::AppHandle) -> CommandResult<bool> {
     crate::main_window::on_main_value(&app, |_| antiburn_hud::refresh_notch()).await?;
     run_blocking(move || {
         let was_docked = antiburn_hud::begin_drag(&app, revision);
-        crate::hud::save_dock(&app.state::<Store>(), antiburn_hud::dock_settings());
+        crate::hud::save_tear_off_dock(
+            &app.state::<Store>(),
+            antiburn_hud::dock_settings(),
+            revision,
+        );
         Ok(was_docked)
     })
     .await

@@ -60,10 +60,9 @@ pub fn current(app: &tauri::AppHandle) -> InterfaceScale {
 
 pub fn initialization_script(scale: InterfaceScale) -> String {
     let percent = scale.percent();
-    let factor = scale.factor();
     format!(
         r#"globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__ = {percent};
-const applyAntiburnInterfaceScale = () => document.documentElement?.style.setProperty('--interface-scale', '{factor}');
+const applyAntiburnInterfaceScale = () => document.documentElement?.style.setProperty('--interface-scale', String(globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__ / 100));
 applyAntiburnInterfaceScale();
 document.addEventListener('DOMContentLoaded', applyAntiburnInterfaceScale, {{ once: true }});"#
     )

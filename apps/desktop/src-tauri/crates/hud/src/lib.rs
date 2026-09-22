@@ -21,11 +21,11 @@ pub use dock::{
     wake_overlay,
 };
 pub use island::{
-    IslandPhase, IslandState, begin_drag, expand_island, island_overlay, island_state,
-    island_wanted_off_notch, reclaim_island, refresh_notch, set_fake_notch,
+    IslandPhase, IslandState, expand_island, island_overlay, island_state, island_wanted_off_notch,
+    reclaim_island, refresh_notch, set_fake_notch,
 };
 use std::sync::Mutex;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 use std::sync::MutexGuard;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -258,9 +258,40 @@ pub fn visibility_request_is_current(request: VisibilityRequest) -> bool {
 }
 
 // Worker-only lifecycle serialization encloses resize operations, never the
-// reverse. It prevents one restore from docking another reopen's window.
+// reverse. Open, hide, drag begin, and settlement share this lock.
 #[cfg(target_os = "macos")]
 static LIFECYCLE_APPLY_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(any(target_os = "macos", test))]
+fn lock_current_drag<'a>(
+    lock: &'a Mutex<()>,
+    drag: &DragState,
+    revision: u64,
+) -> Option<MutexGuard<'a, ()>> {
+    let guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    drag.is_current(revision).then_some(guard)
+}
+
+#[cfg(target_os = "macos")]
+fn drag_lifecycle_guard(revision: u64) -> Option<MutexGuard<'static, ()>> {
+    debug_assert!(
+        !tauri_nspanel::objc2_foundation::NSThread::isMainThread_class(),
+        "HUD lifecycle locks must stay off the UI thread"
+    );
+    lock_current_drag(&LIFECYCLE_APPLY_LOCK, &DRAG_STATE, revision)
+}
+
+/// Apply drag setup on a worker after earlier native lifecycle work finishes.
+/// New intent can arrive during accepted work; its worker applies afterward.
+pub fn begin_drag(app: &AppHandle, revision: u64) -> bool {
+    #[cfg(target_os = "macos")]
+    let Some(_lifecycle) = drag_lifecycle_guard(revision) else {
+        return false;
+    };
+    island::begin_drag(app, revision)
+}
 
 /// True from the start of a HUD drag until the drop settles.
 ///
@@ -318,7 +349,8 @@ pub fn drag_revision() -> u64 {
     DRAG_STATE.revision()
 }
 
-pub(crate) fn drag_is_current(revision: u64) -> bool {
+/// True when this revision is the latest drag and its drop has not settled.
+pub fn drag_is_current(revision: u64) -> bool {
     DRAG_STATE.is_current(revision)
 }
 
@@ -1233,8 +1265,63 @@ fn cursor_over_frame(
 
 #[cfg(test)]
 mod drag_flag_tests {
-    use super::{DragState, cancel_pending_drag_state};
+    use super::{DragState, cancel_pending_drag_state, lock_current_drag};
     use std::sync::Mutex;
+
+    #[test]
+    fn a_queued_lifecycle_operation_rechecks_drag_intent_after_locking() {
+        let gate = std::sync::Arc::new(Mutex::new(()));
+        let drag = std::sync::Arc::new(DragState::new());
+        let old = drag.start();
+        let guard = gate.lock().unwrap();
+        let (queued_tx, queued_rx) = std::sync::mpsc::channel();
+        let worker = {
+            let gate = gate.clone();
+            let drag = drag.clone();
+            std::thread::spawn(move || {
+                queued_tx.send(()).unwrap();
+                lock_current_drag(&gate, &drag, old).is_some()
+            })
+        };
+        queued_rx
+            .recv_timeout(super::Duration::from_secs(5))
+            .unwrap();
+        let latest = drag.start();
+        drop(guard);
+        assert!(!worker.join().unwrap());
+        assert!(drag.is_current(latest));
+    }
+
+    #[test]
+    fn a_new_drag_applies_after_an_accepted_lifecycle_operation() {
+        let gate = std::sync::Arc::new(Mutex::new(()));
+        let drag = std::sync::Arc::new(DragState::new());
+        let applied = std::sync::Arc::new(super::AtomicU64::new(0));
+        let old = drag.start();
+        let guard = lock_current_drag(&gate, &drag, old).unwrap();
+        let (requested_tx, requested_rx) = std::sync::mpsc::channel();
+        let worker = {
+            let gate = gate.clone();
+            let drag = drag.clone();
+            let applied = applied.clone();
+            std::thread::spawn(move || {
+                let latest = drag.start();
+                requested_tx.send(latest).unwrap();
+                let _guard = lock_current_drag(&gate, &drag, latest).unwrap();
+                applied.store(latest, super::Ordering::SeqCst);
+            })
+        };
+        let latest = requested_rx
+            .recv_timeout(super::Duration::from_secs(5))
+            .unwrap();
+        assert!(!drag.is_current(old));
+        assert!(gate.try_lock().is_err());
+        // Accepted work can finish after new intent; the newer worker applies last.
+        applied.store(old, super::Ordering::SeqCst);
+        drop(guard);
+        worker.join().unwrap();
+        assert_eq!(applied.load(super::Ordering::SeqCst), latest);
+    }
 
     #[test]
     fn the_flag_follows_the_drag() {
@@ -1598,7 +1685,7 @@ fn build_detail(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
 #[cfg(target_os = "macos")]
 fn interface_scale_initialization_script(interface_scale: f64) -> String {
     format!(
-        "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale','{interface_scale}'),{{once:true}});",
+        "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale',String(globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__/100)),{{once:true}});",
         (interface_scale * 100.0).round() as u16,
     )
 }

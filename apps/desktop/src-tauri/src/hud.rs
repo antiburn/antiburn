@@ -62,6 +62,17 @@ pub(crate) fn request_drag() -> u64 {
     DRAG_PERSISTENCE.start(antiburn_hud::request_drag)
 }
 
+/// Save drag setup only before its drop settles or a newer drag starts.
+pub(crate) fn save_tear_off_dock(store: &Store, dock: DockSettings, revision: u64) {
+    let _guard = DRAG_PERSISTENCE
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if antiburn_hud::drag_is_current(revision) {
+        save_dock(store, dock);
+    }
+}
+
 /// The shape of the stored value. A different number means a value this build
 /// cannot read, and the HUD starts again from its default position.
 const PLACEMENTS_VERSION: u32 = 1;
@@ -268,6 +279,57 @@ pub fn reconcile_interface_scale(_app: &AppHandle, _factor: f64) -> tauri::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tear_off_saves_require_a_current_active_drag() {
+        for newer_drag in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open_in_memory(dir.path()).unwrap();
+            let revision = request_drag();
+            let (captured_tx, captured_rx) = std::sync::mpsc::channel();
+            let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+            let delayed = {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    let captured = antiburn_hud::dock_settings();
+                    captured_tx.send(()).unwrap();
+                    resume_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    save_tear_off_dock(&store, captured, revision);
+                })
+            };
+            captured_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let settled_revision = if newer_drag { request_drag() } else { revision };
+            antiburn_hud::end_drag();
+            let parked = DockSettings {
+                docked: true,
+                edge: antiburn_hud::DockEdge::Left,
+                island: false,
+            };
+            save_settled_drop(&store, None, Some(parked), settled_revision);
+            assert_eq!(load_dock(&store), parked);
+            resume_tx.send(()).unwrap();
+            delayed.join().unwrap();
+            assert_eq!(load_dock(&store), parked, "newer_drag={newer_drag}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let revision = request_drag();
+        let undocked = antiburn_hud::dock_settings();
+        save_dock(
+            &store,
+            DockSettings {
+                docked: true,
+                ..undocked
+            },
+        );
+        save_tear_off_dock(&store, undocked, revision);
+        antiburn_hud::end_drag();
+        assert_eq!(load_dock(&store), undocked);
+    }
 
     #[test]
     fn a_delayed_drop_cannot_persist_after_a_new_drag_starts() {

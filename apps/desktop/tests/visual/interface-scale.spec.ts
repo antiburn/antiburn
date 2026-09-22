@@ -158,6 +158,60 @@ test.describe("interface-scale smoke", () => {
   })
 })
 
+test.describe("interface-scale resize focus", () => {
+  for (const theme of ["light", "dark"] as const) {
+    for (const returnToCollection of [false, true]) {
+      test(`${theme}: preserves ${returnToCollection ? "collection" : "detail"} focus when compact`, async ({
+        page,
+      }, testInfo) => {
+        await page.setViewportSize({ width: 1280, height: 860 })
+        await openFixture(page, "main", { theme })
+        await selectNavigationItem(page, "main", "Sessions")
+        const row = page
+          .getByRole("tabpanel", { name: "Sessions", exact: true })
+          .locator("[data-session-row]")
+          .filter({ hasText: "Make every interface scale reachable" })
+        await row.click()
+        const detail = page.locator("[data-detail-pane]")
+        await expect(detail).toBeVisible()
+        await detail.focus()
+        await expect
+          .poll(() => detail.evaluate((node) => node.contains(document.activeElement)))
+          .toBe(true)
+        if (returnToCollection) await row.focus()
+        await page.setViewportSize({ width: 850, height: 860 })
+        await expect(page.locator(".main-window-collection-detail")).toHaveAttribute(
+          "data-single-pane",
+          "true",
+        )
+        if (returnToCollection) {
+          await expect(row).toBeFocused()
+          await expect(row).toBeVisible()
+        } else {
+          await expect(detail).toBeVisible()
+          await expect
+            .poll(() => detail.evaluate((node) => node.contains(document.activeElement)))
+            .toBe(true)
+          await expect(page.getByRole("button", { name: "Back to sessions" })).toBeVisible()
+        }
+        await expect
+          .poll(() =>
+            page.evaluate(() => {
+              const active = document.activeElement as HTMLElement | null
+              return active !== document.body && active?.checkVisibility() === true
+            }),
+          )
+          .toBe(true)
+        await capture(
+          page,
+          `compact-focus-${theme}-${returnToCollection ? "collection" : "detail"}`,
+          testInfo,
+        )
+      })
+    }
+  }
+})
+
 test.describe("interface-scale keyboard", () => {
   test.use({
     viewport: { width: 320, height: 240 },

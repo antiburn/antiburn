@@ -69,7 +69,7 @@ where
         let window = {
             let interface_scale = self.interface_scale();
             let script = format!(
-                "Object.defineProperty(globalThis, \"__ANTIBURN_WINDOW_GENERATION__\", {{ value: {renderer_generation}, writable: false, configurable: false }});globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale','{interface_scale}'),{{once:true}});",
+                "Object.defineProperty(globalThis, \"__ANTIBURN_WINDOW_GENERATION__\", {{ value: {renderer_generation}, writable: false, configurable: false }});globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale',String(globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__/100)),{{once:true}});",
                 (interface_scale * 100.0).round() as u16,
             );
             let builder = WebviewWindowBuilder::new(

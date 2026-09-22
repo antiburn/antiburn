@@ -109,7 +109,7 @@ fn build_nudge_window(
     let mut builder =
         WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#/nudge".into()))
             .initialization_script(format!(
-                "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale','{interface_scale}'),{{once:true}});",
+                "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale',String(globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__/100)),{{once:true}});",
                 (interface_scale * 100.0).round() as u16,
             ))
             .title("antiburn")
@@ -230,21 +230,27 @@ fn place_at_menu_bar_anchor(
     let tray_w = tray_size_phys.width / scale;
     let tray_h = tray_size_phys.height / scale;
 
-    let area = Rect {
-        x: monitor.position().x as f64 / scale,
-        y: monitor.position().y as f64 / scale,
-        w: monitor.size().width as f64 / scale,
-        h: monitor.size().height as f64 / scale,
-    };
-    let margin = NUDGE_MARGIN * interface_scale;
-    let w = (NUDGE_WIDTH * interface_scale).min((area.w - 2.0 * margin).max(1.0));
-    let h = (content_height.max(1.0) * interface_scale).min((area.h - 2.0 * margin).max(1.0));
-    let x = tray_x + (tray_w / 2.0) - (w / 2.0);
-    // The tray rect spans the full menu bar, so its bottom edge is the menu bar's
-    // bottom edge — the same baseline `place_native_corner` insets from.
-    let y = tray_y + tray_h + NUDGE_ANCHOR_MENU_BAR_GAP * interface_scale;
+    let work_area = monitor.work_area();
+    let frame = geometry::anchored_frame(
+        Rect {
+            x: work_area.position.x as f64 / scale,
+            y: work_area.position.y as f64 / scale,
+            w: work_area.size.width as f64 / scale,
+            h: work_area.size.height as f64 / scale,
+        },
+        Rect {
+            x: tray_x,
+            y: tray_y,
+            w: tray_w,
+            h: tray_h,
+        },
+        NUDGE_WIDTH * interface_scale,
+        content_height * interface_scale,
+        NUDGE_MARGIN * interface_scale,
+        NUDGE_ANCHOR_MENU_BAR_GAP * interface_scale,
+    );
 
-    set_frame(window, w, h, x, y);
+    set_frame(window, frame.w, frame.h, frame.x, frame.y);
     true
 }
 

@@ -304,7 +304,7 @@ impl NativeObjects {
             );
             let mut script = super::bridge::initialization_script(generation, &policy);
             script.push_str(&format!(
-                "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale','{interface_scale}'),{{once:true}});",
+                "globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__={};document.addEventListener('DOMContentLoaded',()=>document.documentElement?.style.setProperty('--interface-scale',String(globalThis.__ANTIBURN_INTERFACE_SCALE_PERCENT__/100)),{{once:true}});",
                 (interface_scale * 100.0).round() as u16,
             ));
             let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(

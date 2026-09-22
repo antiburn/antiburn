@@ -106,6 +106,12 @@ export function CollectionDetailPane<T extends CollectionItem>({
           return () => observer.disconnect()
         }}
         tabIndex={-1}
+        onFocus={() => {
+          if (!compact) {
+            setDetailOpen(false)
+            setDismissedExternalRevealRevision(externalDetailRevealRevision ?? null)
+          }
+        }}
         onBlur={(event) => {
           if (
             event.target === event.currentTarget ||
@@ -152,6 +158,7 @@ export function CollectionDetailPane<T extends CollectionItem>({
           })
         }}
         onFocus={(event) => {
+          if (selected !== null) setDetailOpen(true)
           if (event.target === event.currentTarget)
             event.currentTarget
               .querySelector<HTMLElement>("[data-detail-focus-target]")

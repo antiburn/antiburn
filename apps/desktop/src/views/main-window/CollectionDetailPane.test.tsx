@@ -23,6 +23,68 @@ function Workspace({ entries = items }: { entries?: CollectionItem[] }) {
 describe("CollectionDetailPane", () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it("returns to the wide collection after external detail and accepts a newer reveal", async () => {
+    vi.stubGlobal("innerWidth", 1200)
+    function ExternalWorkspace({ revision }: { revision: number }) {
+      return (
+        <CollectionDetailPane
+          title="Collection"
+          items={items}
+          selection={items[0]!}
+          externalDetailRevealRevision={revision}
+          emptyMessage="Nothing here"
+          detailEmptyMessage="Select an item"
+          renderDetail={(item) => item.label}
+        />
+      )
+    }
+    const { rerender } = render(<ExternalWorkspace revision={1} />)
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "First item" })).toHaveFocus(),
+    )
+    const row = screen.getByRole("option", { name: "First item" })
+    fireEvent.click(row)
+    vi.stubGlobal("innerWidth", 850)
+    fireEvent(window, new Event("resize"))
+    expect(row).toHaveFocus()
+    expect(row).toBeVisible()
+    rerender(<ExternalWorkspace revision={2} />)
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "First item" })).toHaveFocus(),
+    )
+  })
+
+  it.each([false, true])(
+    "keeps focus visible across compact layout after returning to collection: %s",
+    (returnToCollection) => {
+      vi.stubGlobal("innerWidth", 1200)
+      render(
+        <CollectionDetailPane
+          title="Collection"
+          items={items}
+          emptyMessage="Nothing here"
+          detailEmptyMessage="Select an item"
+          renderDetail={() => <button>Detail action</button>}
+        />,
+      )
+      const row = screen.getByRole("option", { name: "First item" })
+      fireEvent.click(row)
+      const action = screen.getByRole("button", { name: "Detail action" })
+      fireEvent.focus(action)
+      action.focus()
+      expect(action).toHaveFocus()
+      if (returnToCollection) {
+        fireEvent.focus(row)
+        row.focus()
+      }
+
+      vi.stubGlobal("innerWidth", 850)
+      fireEvent(window, new Event("resize"))
+      expect(returnToCollection ? row : action).toHaveFocus()
+      expect(document.activeElement).toBeVisible()
+    },
+  )
+
   it("does not steal focus from a collection control after Back and a resize", async () => {
     vi.stubGlobal("innerWidth", 550)
     render(
