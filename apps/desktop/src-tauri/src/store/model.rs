@@ -614,6 +614,74 @@ impl NudgePlacement {
     }
 }
 
+/// The days of the week the reader works.
+///
+/// This exists because a weekly allowance does not refill on a schedule that
+/// matches the reader. A reader who works Monday to Friday reaches Friday
+/// evening with the whole week spent, and a marker that measures plain clock
+/// time says they are only 71% through. The marker is right about the calendar
+/// and wrong about the reader.
+///
+/// The variants name whole days, not a count. A count cannot move a marker: it
+/// scales the elapsed time and the total time by the same factor and gives
+/// back the number it started with. What helps is knowing *which* days do not
+/// count, so the marker holds still across them.
+///
+/// `Seven` is the default, so an install that never opens this setting keeps
+/// exactly the behaviour it had before the setting existed.
+///
+/// A reader whose week is neither Monday-first nor contiguous — Tuesday to
+/// Saturday, say — is not served by these three. A `Custom` variant with its
+/// own day set can be added here later; the stored value is a name and not a
+/// number, so that addition needs no migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkingWeek {
+    /// Monday to Friday. Saturday and Sunday do not count.
+    Five,
+    /// Monday to Saturday. Sunday does not count.
+    Six,
+    /// Every day counts. The default, and the behaviour before this setting.
+    #[default]
+    Seven,
+}
+
+impl WorkingWeek {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkingWeek::Five => "five",
+            WorkingWeek::Six => "six",
+            WorkingWeek::Seven => "seven",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "five" => Some(WorkingWeek::Five),
+            "six" => Some(WorkingWeek::Six),
+            "seven" => Some(WorkingWeek::Seven),
+            _ => None,
+        }
+    }
+
+    /// Whether the reader works on `weekday`.
+    pub fn includes(self, weekday: time::Weekday) -> bool {
+        match self {
+            WorkingWeek::Seven => true,
+            WorkingWeek::Six => weekday != time::Weekday::Sunday,
+            WorkingWeek::Five => {
+                !matches!(weekday, time::Weekday::Saturday | time::Weekday::Sunday)
+            }
+        }
+    }
+
+    /// Whether every day counts. The caller can then use plain clock time and
+    /// skip the day-by-day walk.
+    pub fn is_every_day(self) -> bool {
+        self == WorkingWeek::Seven
+    }
+}
+
 /// When the menu bar shows the free-disk-space number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -968,6 +1036,9 @@ pub struct AppSettings {
     /// this release does not recognize is the renderer's to fall back on.
     #[serde(default = "default_session_filter")]
     pub session_filter: String,
+    /// The days the reader works, which is what the elapsed marker, the pace
+    /// verdict, and the runway are measured against. See [`WorkingWeek`].
+    pub working_week: WorkingWeek,
 }
 
 /// The persisted id for the unfiltered "All Sessions" view.
@@ -1030,6 +1101,9 @@ impl Default for AppSettings {
             skills_mcp_expanded: false,
             session_badge_metric: SessionBadgeMetric::default(),
             session_filter: default_session_filter(),
+            // Every day counts, so an install that never opens this setting
+            // keeps the behaviour it had before the setting existed.
+            working_week: WorkingWeek::Seven,
         }
     }
 }

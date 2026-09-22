@@ -36,6 +36,8 @@ function isUnusedResourceDetector(detector: BurnCheckDetectorId) {
   )
 }
 
+const CLICK_AGAIN_STATUS = "The list was refreshed. Click again to copy."
+
 export function CheckPromptAction({
   detector,
   targets,
@@ -45,16 +47,27 @@ export function CheckPromptAction({
   targets: BurnCheckTargetPayload[]
   refresh: () => void
 }) {
-  const [busy, setBusy] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [prompt, setPrompt] = useState<string | null>(null)
-  const [status, setStatus] = useState<string | null>(null)
   const promptTargets = isUnusedResourceDetector(detector)
     ? targets
     : targets.filter((target) => target.promptFix.status === "available")
   const currentKey = promptTargets.length
     ? promptTargets.map((target) => target.actionId).join(":")
     : `fallback:${detector}`
+  const [attempt, setAttempt] = useState(currentKey)
+  const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [prompt, setPrompt] = useState<string | null>(null)
+  const [status, setStatus] = useState<string | null>(null)
+  if (attempt !== currentKey) {
+    // The target ids changed under us (a refresh listed the check again).
+    // Drop the attempt state. The "click again" message stays because it
+    // asked for this reload; any other status is about the old list.
+    setAttempt(currentKey)
+    setBusy(false)
+    setCopied(false)
+    setPrompt(null)
+    if (status !== CLICK_AGAIN_STATUS) setStatus(null)
+  }
   const key = useRef("")
   const copiedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleCopiedReset = (startedKey: string) => {
@@ -101,7 +114,7 @@ export function CheckPromptAction({
         if (key.current !== startedKey) return
         if (outcome?.outcome !== "promptReady") {
           setBusy(false)
-          setStatus("Checking the current change.")
+          setStatus(CLICK_AGAIN_STATUS)
           refresh()
           return
         }
@@ -141,7 +154,7 @@ export function CheckPromptAction({
         ) : (
           <Clipboard size={12} aria-hidden="true" />
         )}
-        {copied ? "Copied" : "Copy fix prompt"}
+        {copied ? "Copied" : busy ? "Preparing…" : "Copy fix prompt"}
       </button>
       {status && (
         <p role="alert" className="mt-3 type-callout text-label-secondary">
@@ -207,12 +220,7 @@ export function CheckDetailActions({
     <div className="flex flex-wrap items-start gap-2">
       {reportRow && <RemindLaterAction detector={detector} />}
       <FixAction targets={targets} refresh={refresh} />
-      <CheckPromptAction
-        key={targets.map((target) => target.actionId).join(":")}
-        detector={detector}
-        targets={targets}
-        refresh={refresh}
-      />
+      <CheckPromptAction detector={detector} targets={targets} refresh={refresh} />
     </div>
   )
 }

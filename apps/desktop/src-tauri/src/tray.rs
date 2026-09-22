@@ -1364,6 +1364,7 @@ mod tests {
             used_percent,
             starts_at: None,
             resets_at: None,
+            elapsed_fraction: None,
             has_nonzero_usage_in_current_period: false,
             forecast: LiveUsageForecast::default(),
         }

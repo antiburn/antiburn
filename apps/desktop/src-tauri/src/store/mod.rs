@@ -75,7 +75,7 @@ pub use model::{
     RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
     RepositoryRecord, Revision, SessionActivityKey, SessionBadgeMetric, SessionKey, SessionRecord,
     SourcePublishMode, SourcePublishOutcome, SourceVersionState, ThemePreference,
-    UsageEvidenceRecord,
+    UsageEvidenceRecord, WorkingWeek,
 };
 pub(crate) use remediation::{
     PassiveRemediation, RemediationContribution, RemediationDisplaySnapshot,
@@ -3259,6 +3259,13 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("sessionFilter")
             .cloned()
             .unwrap_or_else(|| defaults.session_filter.clone()),
+        // An unreadable or unknown value falls back to the default, which
+        // counts every day. A preference this side cannot read is not an
+        // instruction to hold a marker still.
+        working_week: stored
+            .get("workingWeek")
+            .and_then(|value| WorkingWeek::parse(value))
+            .unwrap_or(defaults.working_week),
     }
     .normalized())
 }
@@ -3370,6 +3377,7 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         settings.session_badge_metric.as_str()
     ])?;
     put.execute(params!["sessionFilter", settings.session_filter.as_str()])?;
+    put.execute(params!["workingWeek", settings.working_week.as_str()])?;
     Ok(())
 }
 

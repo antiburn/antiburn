@@ -30,6 +30,7 @@ function liveWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageW
     usedPercent: 42,
     startsAt: "2027-01-15T10:00:00Z",
     resetsAt: "2027-01-15T15:00:00Z",
+    elapsedFraction: 0.4,
     hasNonzeroUsageInCurrentPeriod: true,
     forecast: FORECAST,
     ...overrides,

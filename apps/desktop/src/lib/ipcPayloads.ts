@@ -136,6 +136,8 @@ export interface AppSettings {
    * id this release does not recognize parses back to `all`.
    */
   sessionFilter: string
+  /** Weeks start on Monday. */
+  workingWeek: "five" | "six" | "seven"
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */

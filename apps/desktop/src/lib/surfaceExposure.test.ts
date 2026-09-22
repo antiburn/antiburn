@@ -39,6 +39,7 @@ function provider(freshness: "fresh" | "stale" = "fresh") {
         usedPercent: 20,
         startsAt: "2026-09-07T20:00:00Z",
         resetsAt: "2026-09-08T01:00:00Z",
+        elapsedFraction: null,
         hasNonzeroUsageInCurrentPeriod: true,
         forecast: {
           unavailableReason: null,

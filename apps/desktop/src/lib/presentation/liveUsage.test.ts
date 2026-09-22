@@ -44,8 +44,6 @@ import {
 } from "./liveUsage"
 
 const NOW = Date.parse("2027-01-15T12:00:00Z")
-const DAY_MS = 24 * 3_600_000
-const WEEK_MS = 7 * DAY_MS
 
 /** Sparse history is the resting state of a source that only moves when an
     agent runs, so it is what a fixture defaults to. */
@@ -72,6 +70,7 @@ function window(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageWindo
     usedPercent: 81,
     startsAt: null,
     resetsAt: "2027-01-15T14:30:00Z",
+    elapsedFraction: null,
     hasNonzeroUsageInCurrentPeriod: false,
     forecast: NO_FORECAST,
     ...overrides,
@@ -262,118 +261,20 @@ describe("plan labels", () => {
 })
 
 describe("the elapsed marker", () => {
-  it("takes the period from the window’s own name when the provider states no start", () => {
-    // The provider states a reset but no start, so without this the marker
-    // would never appear at all. `five-hour` is not a guess about the period:
-    // the id states it, and the start is five hours before the reset.
-    expect(
-      liveWindowElapsed(
-        window({ id: "five-hour", startsAt: null, resetsAt: "2027-01-15T14:00:00Z" }),
-        NOW,
-      ),
-    ).toBeCloseTo(0.6)
+  // The shell measures this now, because a weekly window counts only the days
+  // the reader works and that preference lives on the shell side. The period
+  // rules that used to live here moved with it — see the Rust tests beside
+  // `implied_period` and `elapsed_fraction` in `provider_usage/live/mod.rs`,
+  // and `provider_usage/live/working_week.rs` for the working-week arithmetic.
+  it("reports what the reading carries", () => {
+    expect(liveWindowElapsed(window({ elapsedFraction: 0.6 }))).toBeCloseTo(0.6)
+    expect(liveWindowElapsed(window({ elapsedFraction: 1 }))).toBe(1)
   })
 
-  it("refuses to guess a period the window’s name does not state", () => {
-    // "Seven days before the reset" would be a guess dressed as a
-    // measurement — a weekly boundary is the provider's own.
-    expect(
-      liveWindowElapsed(window({ id: "seven-day", role: "primaryLong", startsAt: null }), NOW),
-    ).toBeNull()
-    expect(
-      liveWindowElapsed(window({ id: "weekly-some-model", startsAt: null }), NOW),
-    ).toBeNull()
-    expect(liveWindowElapsed(window({ resetsAt: null }), NOW)).toBeNull()
-  })
-
-  it("prefers a stated start over an implied one", () => {
-    expect(
-      liveWindowElapsed(
-        window({
-          id: "five-hour",
-          startsAt: "2027-01-15T11:00:00Z",
-          resetsAt: "2027-01-15T13:00:00Z",
-        }),
-        NOW,
-      ),
-    ).toBeCloseTo(0.5)
-  })
-
-  it("takes a weekly period from the window’s kind, the same way five-hour comes from its id", () => {
-    // Seven days is what "weekly" means, not a guess about this particular
-    // window's boundary.
-    const resetsAt = new Date(NOW + 0.4 * WEEK_MS).toISOString()
-    expect(
-      liveWindowElapsed(
-        window({
-          id: "seven-day",
-          role: "primaryLong",
-          kind: "weekly",
-          startsAt: null,
-          resetsAt,
-        }),
-        NOW,
-      ),
-    ).toBeCloseTo(0.6)
-  })
-
-  it("takes a daily period from the window’s kind", () => {
-    const resetsAt = new Date(NOW + 0.25 * DAY_MS).toISOString()
-    expect(
-      liveWindowElapsed(window({ id: "daily", kind: "daily", startsAt: null, resetsAt }), NOW),
-    ).toBeCloseTo(0.75)
-  })
-
-  it("still refuses to guess a monthly period: a month’s length genuinely varies", () => {
-    expect(
-      liveWindowElapsed(window({ id: "monthly", kind: "monthly", startsAt: null }), NOW),
-    ).toBeNull()
-    expect(
-      liveWindowElapsed(window({ id: "billing", kind: "billingCycle", startsAt: null }), NOW),
-    ).toBeNull()
-  })
-
-  it("prefers a stated start over a kind-implied one", () => {
-    expect(
-      liveWindowElapsed(
-        window({
-          id: "seven-day",
-          kind: "weekly",
-          startsAt: "2027-01-15T11:00:00Z",
-          resetsAt: "2027-01-15T13:00:00Z",
-        }),
-        NOW,
-      ),
-    ).toBeCloseTo(0.5)
-  })
-
-  it("measures the clock’s progress through the provider’s own period", () => {
-    const marked = window({
-      id: "seven-day",
-      startsAt: "2027-01-15T10:00:00Z",
-      resetsAt: "2027-01-15T14:00:00Z",
-    })
-    // Two hours into a four-hour window.
-    expect(liveWindowElapsed(marked, NOW)).toBeCloseTo(0.5)
-  })
-
-  it("clamps to the period rather than reporting past its end", () => {
-    const done = window({
-      id: "seven-day",
-      startsAt: "2027-01-15T06:00:00Z",
-      resetsAt: "2027-01-15T08:00:00Z",
-    })
-    expect(liveWindowElapsed(done, NOW)).toBe(1)
-  })
-
-  it("refuses a window whose dates make no sense", () => {
-    const backwards = window({
-      id: "seven-day",
-      startsAt: "2027-01-15T14:00:00Z",
-      resetsAt: "2027-01-15T10:00:00Z",
-    })
-    expect(liveWindowElapsed(backwards, NOW)).toBeNull()
-    expect(liveWindowElapsed(window({ id: "seven-day", startsAt: "tuesday" }), NOW)).toBeNull()
+  it("draws no marker when the shell could not measure one", () => {
+    // A monthly window is the everyday case: a month is 28 to 31 days, so
+    // there is no period to measure against.
+    expect(liveWindowElapsed(window({ elapsedFraction: null }))).toBeNull()
   })
 })
 
@@ -631,6 +532,7 @@ describe("hiding unused model quota limits", () => {
       role: "supplemental",
       scopeModel: "Fable",
       usedPercent: null,
+      elapsedFraction: null,
       hasNonzeroUsageInCurrentPeriod: true,
     })
     expect(isUsageWindowVisible(usedEarlierThisPeriod)).toBe(true)

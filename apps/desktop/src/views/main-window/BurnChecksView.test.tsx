@@ -1341,6 +1341,77 @@ describe("BurnChecksView", () => {
     expect(commands.copyBatch).toHaveBeenCalledOnce()
   })
 
+  it("shows a busy label while the check prompt is prepared", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof commands.copyBatch>>>()
+    commands.copyBatch.mockReturnValueOnce(pending.promise)
+    render(<CheckPromptAction detector="unusedSkills" targets={[target]} refresh={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
+    expect(await screen.findByRole("button", { name: "Preparing…" })).toBeDisabled()
+
+    pending.resolve({ outcome: "promptReady", prompt: "Batch backend prompt" })
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeDisabled()
+    expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
+  })
+
+  it("keeps the click-again message after a stale id refreshes the list", async () => {
+    commands.copyBatch.mockResolvedValueOnce({ outcome: "unavailable" })
+    const refresh = vi.fn()
+    const { rerender } = render(
+      <CheckPromptAction detector="unusedSkills" targets={[target]} refresh={refresh} />,
+    )
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The list was refreshed. Click again to copy.",
+    )
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(commands.writeClipboardText).not.toHaveBeenCalled()
+
+    // The refresh lists the check again with new ids. The message must survive that.
+    rerender(
+      <CheckPromptAction
+        detector="unusedSkills"
+        targets={[{ ...target, actionId: "action-new" }]}
+        refresh={refresh}
+      />,
+    )
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The list was refreshed. Click again to copy.",
+    )
+    const copy = screen.getByRole("button", { name: "Copy fix prompt" })
+    expect(copy).toBeEnabled()
+
+    fireEvent.click(copy)
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeDisabled()
+    expect(commands.copyBatch).toHaveBeenLastCalledWith(["action-new"])
+    expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("clears an error message when the list refreshes with new ids", async () => {
+    commands.copyBatch.mockRejectedValueOnce(new Error("prepare failed"))
+    const { rerender } = render(
+      <CheckPromptAction detector="unusedSkills" targets={[target]} refresh={vi.fn()} />,
+    )
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not prepare the prompt. Try again.",
+    )
+
+    // The error was about the old list. A relist with new ids drops it.
+    rerender(
+      <CheckPromptAction
+        detector="unusedSkills"
+        targets={[{ ...target, actionId: "action-new" }]}
+        refresh={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+  })
+
   it("keeps an open review when the expiring action handle rotates", async () => {
     const { adapter, session } = setup()
     fireEvent.click(await screen.findByRole("button", { name: "Fix" }))

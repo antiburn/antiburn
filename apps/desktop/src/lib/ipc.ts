@@ -76,6 +76,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   skillsMcpExpanded: false,
   sessionBadgeMetric: "cost",
   sessionFilter: "all",
+  workingWeek: "seven",
 }
 
 /** Tell the shell that React committed this renderer generation. */
