@@ -1577,3 +1577,68 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
         Err(ControllerError::Internal)
     ));
 }
+
+#[cfg(not(windows))]
+#[test]
+fn listing_another_check_keeps_the_first_checks_target_ids() {
+    // A full listing of one check (100 targets) used to fill the whole
+    // shared id cache, so listing any other check evicted its ids and the
+    // first copy on the way back failed. Ids now live per check.
+    let data_dir = tempfile::TempDir::new().unwrap();
+    let store = Store::open(data_dir.path()).unwrap();
+    let servers = (0..100)
+        .map(|index| format!("server-{index:03}"))
+        .collect::<Vec<_>>();
+    let server_names = servers.iter().map(String::as_str).collect::<Vec<_>>();
+    crate::insights_report::tests::publish_unused_resources(
+        &store,
+        "first",
+        120,
+        &server_names,
+        &["skill-a"],
+    );
+    // An empty home keeps the listing to the published resources, not the
+    // skills installed on the machine running the tests.
+    let home = data_dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let controller = RemediationController::new(data_dir.path().to_owned());
+    let context = || BurnCheckTargetContext {
+        environment_key: "native".into(),
+        window: ReportWindow {
+            start_epoch: 100,
+            end_epoch: 200,
+        },
+    };
+
+    let servers_listed = controller
+        .list_burn_check_targets_with_home(&store, DetectorId::UnusedMcpServers, context(), &home)
+        .unwrap();
+    assert_eq!(servers_listed.targets.len(), 100);
+    let action_ids = servers_listed
+        .targets
+        .iter()
+        .map(|target| target.action_id.clone())
+        .collect::<Vec<_>>();
+
+    let skills_listed = controller
+        .list_burn_check_targets_with_home(&store, DetectorId::UnusedSkills, context(), &home)
+        .unwrap();
+    assert_eq!(skills_listed.targets.len(), 1);
+
+    let prompt = controller
+        .copy_prompt_fix_burn_check_targets(&store, &action_ids)
+        .unwrap()
+        .prompt;
+    assert!(prompt.contains("server-000"), "{prompt}");
+    assert!(prompt.contains("server-099"), "{prompt}");
+
+    // A background relist of the same check keeps the ids a window still holds.
+    controller
+        .list_burn_check_targets_with_home(&store, DetectorId::UnusedMcpServers, context(), &home)
+        .unwrap();
+    assert!(
+        controller
+            .copy_prompt_fix_burn_check_targets(&store, &action_ids)
+            .is_ok()
+    );
+}
