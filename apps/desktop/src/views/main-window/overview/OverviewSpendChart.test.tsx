@@ -157,4 +157,19 @@ describe("OverviewSpendChart", () => {
     rerender(<OverviewSpendChart days={[]} />)
     expect(screen.queryByRole("group")).toBeNull()
   })
+
+  it("stands a flat block in for the chart, and fades the chart in over it", () => {
+    const { rerender } = render(<OverviewSpendChart days={[]} loading />)
+    const region = screen.getByRole("region", { name: "Estimated spend by day" })
+    const placeholder = region.querySelector(".overview-chart-placeholder")
+    expect(placeholder).not.toBeNull()
+    // A pulse on an empty chart draws the eye to the one thing with nothing
+    // to read on it.
+    expect(placeholder).not.toHaveClass("animate-pulse")
+    expect(region).not.toHaveClass("overview-chart-in")
+
+    rerender(<OverviewSpendChart days={[day("2026-09-20", [agent("claude-code", 1)])]} />)
+    expect(region.querySelector(".overview-chart-placeholder")).toBeNull()
+    expect(region).toHaveClass("overview-chart-in")
+  })
 })

@@ -6,6 +6,39 @@
   min-block-size: 0;
 }
 
+/*
+ * A stand-in for the chart while its data arrives. Flat on purpose: a pulsing
+ * skeleton pulled the eye to the one part of the page with nothing to read on
+ * it yet, which is the opposite of what a placeholder is for.
+ */
+
+.overview-chart-placeholder {
+  flex: 1 1 auto;
+  min-block-size: var(--overview-chart-height);
+  border-radius: var(--radius-small);
+  background-color: var(--color-surface-tertiary);
+}
+
+/*
+ * The chart's entrance. It replaces the placeholder in one frame, and the fade
+ * softens the swap so the chart reads as having arrived rather than snapped
+ * into place. Neutralized by the reduced-motion clamp in `motion.css`.
+ */
+
+@keyframes overview-chart-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.overview-chart-in {
+  animation: overview-chart-in var(--duration-slow) ease-out both;
+}
+
 /* Keep this container on the grid item. The grid sets its size. */
 
 .overview-viewport {

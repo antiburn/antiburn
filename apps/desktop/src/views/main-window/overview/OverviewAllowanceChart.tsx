@@ -12,7 +12,6 @@ import { AXIS_TICK } from "../../../components/session/analysis/chartLabels"
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
-import { Skeleton } from "../../../components/ui/Skeleton"
 import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
 
 import "./overview.css"
@@ -46,7 +45,7 @@ export function OverviewAllowanceChart({
     return (
       <section className="overview-chart" aria-label="Allowance chart" aria-busy={loading}>
         {loading ? (
-          <Skeleton className="block min-h-(--overview-chart-height) w-full flex-1" />
+          <div aria-hidden="true" className="overview-chart-placeholder" />
         ) : (
           <p className="type-body text-label-secondary">No allowance history to chart yet.</p>
         )}
@@ -129,7 +128,7 @@ function AllowancePlot({
         `${Math.round(lastRolling)} percent.`
 
   return (
-    <section className="overview-chart" aria-label="Allowance chart">
+    <section className="overview-chart overview-chart-in" aria-label="Allowance chart">
       <p className="sr-only">{summary}</p>
       <div className="mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
         <ChartLegend

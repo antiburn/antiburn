@@ -4,6 +4,7 @@ import type {
   ProviderUsageDayPayload,
   ProviderUsageWindowPayload,
 } from "../../../lib/providerUsageIpc"
+import { cn } from "../../../lib/cn"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { axisDayLabel, dayLabel } from "../../../lib/presentation/chartDates"
 import {
@@ -15,7 +16,6 @@ import {
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
-import { Skeleton } from "../../../components/ui/Skeleton"
 
 import "./overview.css"
 
@@ -143,14 +143,16 @@ export function OverviewSpendChart({
       ?.focus()
   }
 
+  const placeholder = loading || days.length === 0
+
   return (
     <section
-      className="overview-chart"
+      className={cn("overview-chart", !placeholder && "overview-chart-in")}
       aria-label="Estimated spend by day"
       aria-busy={loading || undefined}
     >
-      {loading || days.length === 0 ? (
-        <Skeleton className="block min-h-(--overview-chart-height) w-full flex-1" />
+      {placeholder ? (
+        <div aria-hidden="true" className="overview-chart-placeholder" />
       ) : (
         <>
           <ChartLegend

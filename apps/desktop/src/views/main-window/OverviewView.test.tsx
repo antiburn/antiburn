@@ -14,12 +14,15 @@ vi.mock("./overview/OverviewUsage", () => ({
   OverviewUsage: ({
     metric,
     onMetricChange,
+    loading,
   }: {
     metric: OverviewMetric
     onMetricChange: (metric: OverviewMetric) => void
+    loading?: boolean
   }) => (
     <div>
       <output aria-label="Usage metric">{metric}</output>
+      <output aria-label="Usage state">{loading ? "held" : "shown"}</output>
       <button onClick={() => onMetricChange("cost")}>Cost</button>
       <button onClick={() => onMetricChange("allowance")}>Subscription</button>
     </div>
@@ -64,6 +67,16 @@ function allowance(accounts: AllowanceUsageAccountPayload[]): Partial<MainOvervi
   }
 }
 
+/** A local usage summary, so `loading` turns on the unit being unresolved
+ *  rather than on the spend figures being unread. */
+const usage: Partial<MainOverviewSnapshot> = {
+  usage: {
+    totals: { today: [], week: [], month: [] },
+    days: [],
+    generatedAt: "",
+  } as unknown as MainOverviewSnapshot["usage"],
+}
+
 function setup(initial: Partial<MainOverviewSnapshot> = {}) {
   const session = new MainOverviewSession({
     getSnapshot: () => ({ entries: [] }),
@@ -99,15 +112,51 @@ function expectMetric(metric: OverviewMetric) {
   expect(screen.getByLabelText("Usage metric")).toHaveTextContent(metric)
 }
 
+function expectUsageState(state: "held" | "shown") {
+  expect(screen.getByLabelText("Usage state")).toHaveTextContent(state)
+}
+
 describe("OverviewView metric preference", () => {
-  it("defaults to cost without a known plan and does not save the default", () => {
-    const view = setup()
-    expectMetric("cost")
+  it("settles on cost once the read comes back without a plan", () => {
+    const view = setup(usage)
     view.update(allowance([]))
     expectMetric("cost")
     view.update(allowance([{ ...account, plan: null }]))
     expectMetric("cost")
     expect(readOverviewViewPrefs().metric).toBeUndefined()
+  })
+
+  it("holds the figures until it knows which unit to show them in", () => {
+    const view = setup(usage)
+    // Nothing chosen, nothing remembered and nothing read: the unit on screen
+    // is a guess, so the figures wait rather than land under the wrong tab.
+    expectUsageState("held")
+    view.update(allowance([account]))
+    expectMetric("allowance")
+    expectUsageState("shown")
+  })
+
+  it.each([
+    ["a plan", [account], "allowance"],
+    ["no plan", [], "cost"],
+  ] as const)("opens on the unit %s left behind last run", (_label, accounts, expected) => {
+    const first = setup(usage)
+    first.update(allowance([...accounts]))
+    first.unmount()
+
+    // Second run, before any read has answered.
+    setup(usage)
+    expectMetric(expected)
+    expectUsageState("shown")
+  })
+
+  it("corrects a remembered answer that no longer holds", () => {
+    writeOverviewViewPrefs({ hadSubscriptionPlan: true })
+    const view = setup(usage)
+    expectMetric("allowance")
+    view.update(allowance([]))
+    expectMetric("cost")
+    expect(readOverviewViewPrefs().hadSubscriptionPlan).toBe(false)
   })
 
   it("defaults to subscription when a plan is already available", () => {
@@ -117,8 +166,8 @@ describe("OverviewView metric preference", () => {
   })
 
   it.each(["history", "live"] as const)("uses a plan that arrives later from %s", (source) => {
-    const view = setup()
-    expectMetric("cost")
+    const view = setup(usage)
+    expectUsageState("held")
     view.update(
       source === "history"
         ? allowance([account])
@@ -152,6 +201,7 @@ describe("OverviewView metric preference", () => {
     expect(readOverviewViewPrefs()).toEqual({
       metric: "cost",
       accountTabKey: "anthropic:account",
+      hadSubscriptionPlan: true,
     })
     view.unmount()
     render(<OverviewView {...view.props} />)
@@ -168,8 +218,8 @@ describe("OverviewView metric preference", () => {
 
   it("treats an invalid saved metric as no preference", () => {
     localStorage.setItem("antiburn.overview.view.v1", JSON.stringify({ metric: "invalid" }))
-    const view = setup()
-    expectMetric("cost")
+    const view = setup(usage)
+    expectUsageState("held")
     view.update(allowance([account]))
     expectMetric("allowance")
   })
