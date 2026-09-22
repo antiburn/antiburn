@@ -61,6 +61,7 @@ use antiburn_local::analysis::{
     query_model_breakdown, query_model_runs, query_pricing_breakdown, query_source_resume,
     query_turn_facts, query_turn_rows,
 };
+use antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
 
@@ -324,6 +325,25 @@ const FORK_LINEAGE_UUID_CAP: usize = 8;
 
 /// Keep each watcher lookup below SQLite's host-parameter limit.
 const SOURCE_LABEL_LOOKUP_CHUNK_SIZE: usize = 500;
+
+/// [`Store::active_native_file_source_labels`]'s query, pulled out for the
+/// same reason as [`RECENT_SESSIONS_SQL`]: a schema test can pin it to the
+/// `session_recency_keyset` index. `?1` is the active window's cutoff epoch,
+/// exclusive, and the leading `WHERE` term names the index's own `COALESCE`
+/// expression so the planner can seek the range instead of scanning every row.
+///
+/// `INDEXED BY session_recency_keyset` is deliberate, not just a test
+/// convenience, for the same reason as `sessions_owning_turn_uuids_sql`'s own
+/// hint: on almost every install `environment_key = 'native'` matches nearly
+/// every row, so the equality-first `session_insights_window` index the
+/// planner would otherwise prefer barely narrows the scan. The active window
+/// is only a few minutes wide, so seeking the recency index straight to its
+/// cutoff is far cheaper regardless of how many sessions a reader has.
+const ACTIVE_NATIVE_FILE_SOURCE_LABELS_SQL: &str = "SELECT source_label
+       FROM session INDEXED BY session_recency_keyset
+      WHERE COALESCE(updated_at_epoch, 0) > ?1
+        AND environment_key = 'native'
+        AND source_kind = 'file'";
 
 /// Build the indexed query for one chunk of native file source labels.
 fn native_file_session_activity_keys_sql(source_label_count: usize) -> String {
@@ -1466,6 +1486,20 @@ impl Store {
             }
         }
         Ok(matches)
+    }
+
+    /// Source labels — native file sessions' own transcript paths — of every
+    /// native file session [`crate::analysis::is_active`] still counts as
+    /// active as of `now`.
+    ///
+    /// Takes the lock only for this query; a caller stats the returned paths
+    /// outside it.
+    pub fn active_native_file_source_labels(&self, now: i64) -> Result<Vec<String>> {
+        let connection = self.lock();
+        let cutoff = now.saturating_sub(ACTIVE_SESSION_WINDOW_SECS);
+        let mut statement = connection.prepare(ACTIVE_NATIVE_FILE_SOURCE_LABELS_SQL)?;
+        let rows = statement.query_map(params![cutoff], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Return one file session by its complete activity identity.

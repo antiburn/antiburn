@@ -81,6 +81,17 @@ selected value from the accepted root and descendant `session`, `message`, and
 `part` cluster in stable table and row order. This detects a content change even
 when row counts and saved timestamps do not change.
 
+## Desktop Refresh
+
+The desktop watcher requests a scoped refresh when a native source changes.
+A metadata poll also checks active native file sessions every five seconds.
+It compares file size and modification time because a writer can keep a file
+open without a watcher notification. The poll waits fifteen seconds when no
+native file session is active. It stops refresh work when discovery is paused.
+Changed paths use the existing scoped refresh queue and admission limits.
+The full scan remains the fallback for inactive files and WSL sources.
+This changes refresh timing, not accepted source formats or check eligibility.
+
 ## Review Scope
 
 The reviewed targets are OpenCode, Pi, Codex, Claude Code, and Antigravity.

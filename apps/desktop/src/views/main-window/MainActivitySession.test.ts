@@ -875,6 +875,7 @@ describe("MainActivitySession", () => {
   })
 
   it("refreshes quota when the open subject's entry changes and on a live-usage push", async () => {
+    mocks.listRecentSessions.mockResolvedValue([entry("one")])
     const { session } = start()
     await ready(session)
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(1))

@@ -132,7 +132,8 @@ export interface SessionListProps {
   hygieneBySession?: SessionHygieneSnapshot
 }
 
-function primaryLine(entry: SessionListEntry): string {
+/** The name a row shows for a session: its title, else a short id, else its agent. */
+export function primaryLine(entry: SessionListEntry): string {
   const title = entry.title?.trim()
   if (title) return title
   if (entry.sessionId) return `Session ${entry.sessionId.slice(0, 7)}`
@@ -143,7 +144,7 @@ function primaryLine(entry: SessionListEntry): string {
  * A session row's title: its name with fade truncation, plus fork
  * relationship badges. Shared by the full card and other row shapes.
  */
-export function SessionRowTitle({
+function SessionRowTitle({
   active,
   className = "",
   entry,

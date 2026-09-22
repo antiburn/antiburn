@@ -43,15 +43,6 @@ function point(x: number, y: number): string {
   return `${num(x)} ${num(y)}`
 }
 
-/** The stack drawn beneath `bandIndex`, and the band's own top, for one
- *  row. A null value counts as zero for the stack sum. */
-function stackAt(row: QuotaSeriesRow, bandKeys: readonly string[], bandIndex: number): Stack {
-  let below = 0
-  for (let index = 0; index < bandIndex; index++) below += row[bandKeys[index]!] ?? 0
-  const raw = row[bandKeys[bandIndex]!]
-  return { below, top: below + (raw ?? 0), active: raw != null && raw > 0 }
-}
-
 /**
  * One edge (top or bottom) of a run, as scaled coordinate strings: one
  * point per retained row, at its own time and its own value, drawing a
@@ -67,20 +58,32 @@ function edgeCoords(
   return retained.map((k) => point(x(rows[k]!.t), y(valueAt(k))))
 }
 
-/**
- * One band's fill path: every maximal run of consecutive active rows becomes
- * its own `M ... Z` subpath in the returned `d`, a straight-edged trapezoid
- * on top at the band's cumulative height and on the bottom at the stack
- * beneath it.
- */
-export function quotaBandPath(
+export function quotaBandPaths(
   rows: readonly QuotaSeriesRow[],
   bandKeys: readonly string[],
-  bandIndex: number,
+  x: (t: number) => number,
+  y: (v: number) => number,
+): PathResult[] {
+  // Reuse the cumulative totals so each band does not sum all lower bands again.
+  const totals = rows.map(() => 0)
+  return bandKeys.map((key) => {
+    const stacks = rows.map((row, index) => {
+      const below = totals[index]!
+      const raw = row[key]
+      const top = below + (raw ?? 0)
+      totals[index] = top
+      return { below, top, active: raw != null && raw > 0 }
+    })
+    return bandPathFromStacks(rows, stacks, x, y)
+  })
+}
+
+function bandPathFromStacks(
+  rows: readonly QuotaSeriesRow[],
+  stacks: readonly Stack[],
   x: (t: number) => number,
   y: (v: number) => number,
 ): PathResult {
-  const stacks = rows.map((row) => stackAt(row, bandKeys, bandIndex))
   const subpaths: string[] = []
   let vertices = 0
   let i = 0
@@ -161,7 +164,7 @@ export function quotaStackTopPath(
 /**
  * The chart's bands in stack order — each top session, then the shared
  * "other", "unattributed", and "unexplained" bands — with the class and
- * fill each one draws with. One source, so `quotaBandPath`'s `bandKeys` and
+ * fill each one draws with. One source, so `quotaBandPaths`'s `bandKeys` and
  * the chart's rendered `<path>`s always agree on stack order.
  *
  * `unexplainedFill` is the caller's own hatch `<pattern>` reference

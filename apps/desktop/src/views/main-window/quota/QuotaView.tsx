@@ -451,7 +451,7 @@ export function QuotaView({
   // fetch to find them. Building the series walks every sample and bucket in
   // range, so this must not redo that work on every hover change; the
   // top-sessions list below shares `series`, so both agree on which sessions
-  // rank in the chart's top five.
+  // rank among the chart's selected sessions.
   const { displayPeriods, displayRange, series } = useMemo(() => {
     if (!usage) return { displayPeriods: [], displayRange: null, series: null }
     const fetched = { startEpoch: usage.rangeStartEpoch, endEpoch: usage.rangeEndEpoch }
@@ -711,6 +711,9 @@ export function QuotaView({
                   className="flex min-h-0 flex-1 flex-col"
                   data-quota-highlight={highlightToken}
                 >
+                  {hoveredTopIndex != null && (
+                    <style>{`[data-quota-highlight="s${hoveredTopIndex}"] .quota-area-s${hoveredTopIndex} { opacity: 1; }`}</style>
+                  )}
                   <Profiler id="quota-chart" onRender={onRenderChart}>
                     <QuotaBurnupChart
                       rangeStartEpoch={displayRange.startEpoch}

@@ -110,6 +110,7 @@ use crate::session_lifecycle::{self, AnonymousCover, AnonymousGen};
 use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
+pub mod live_poll;
 pub mod scoped;
 pub mod watch;
 

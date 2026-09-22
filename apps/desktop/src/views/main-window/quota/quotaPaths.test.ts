@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { quotaBandPath, quotaBandSpecs, quotaStackTopPath } from "./quotaPaths"
+import { quotaBandPaths, quotaBandSpecs, quotaStackTopPath } from "./quotaPaths"
 import { QUOTA_HUE_COUNT, type QuotaSeriesRow, type QuotaTopSession } from "./quotaSeries"
 
 /** A minimal row: `t` and any session/band values the test needs, with
@@ -27,7 +27,17 @@ const x = (t: number) => t
 const yInverted = (v: number) => 100 - v
 const yIdentity = (v: number) => v
 
-describe("quotaBandPath", () => {
+function quotaBandPath(
+  rows: readonly QuotaSeriesRow[],
+  keys: readonly string[],
+  index: number,
+  scaleX: (value: number) => number,
+  scaleY: (value: number) => number,
+) {
+  return quotaBandPaths(rows, keys, scaleX, scaleY)[index]!
+}
+
+describe("quotaBandPaths", () => {
   it("ramps between rows with a straight edge, closing to a point where the value returns to zero", () => {
     const rows = [row(0, { a: 0 }), row(1, { a: 10 }), row(2, { a: 20 }), row(3, { a: 0 })]
     const { d, vertices } = quotaBandPath(rows, ["a"], 0, x, yInverted)

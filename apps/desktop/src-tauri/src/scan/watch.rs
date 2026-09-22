@@ -7,6 +7,9 @@
 //! makes reconciliation trivial: a missed or coalesced event costs nothing
 //! beyond the delay to the next tick.
 //!
+//! A writer can change an open transcript without a watcher notification.
+//! [`super::live_poll`] checks metadata for active native file sessions.
+//!
 //! # Roots
 //!
 //! Each agent lists its discovery roots and indexed-title files.
