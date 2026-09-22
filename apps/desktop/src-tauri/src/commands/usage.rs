@@ -78,6 +78,12 @@ pub(super) fn allowance_usage_for_store(
     let mut accounts = Vec::new();
     let quota_accounts = store.quota_accounts(now).map_err(fail)?;
     let mut turn_input = None;
+    // One scan for every account's five-hour lane, instead of the full
+    // range-and-resolve `attributed_turn_epochs` query this request would
+    // otherwise run once per account.
+    let turn_minutes = store
+        .attributed_turn_minutes(fetch_start, now.saturating_add(1))
+        .map_err(fail)?;
     for account in quota_accounts {
         let input = match &mut turn_input {
             Some(input) => input,
@@ -109,6 +115,7 @@ pub(super) fn allowance_usage_for_store(
                     range_end_epoch: now.saturating_add(1),
                 },
                 &dollars,
+                Some(&turn_minutes),
             )?;
             let periods = usage.periods.into_iter().filter(|period| {
                 period.resets_at_epoch > fetch_start && period.starts_at_epoch <= now
