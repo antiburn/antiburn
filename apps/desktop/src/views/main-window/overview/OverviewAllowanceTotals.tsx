@@ -32,13 +32,20 @@ export function OverviewAllowanceTotals({
     )
   }
 
+  // Each placeholder wraps a sample of the line it stands in for, so it takes
+  // that line's own height. Fixed heights here were shorter than the real
+  // figures, and everything below the section shifted down as they landed.
   const cells: HeroFigureCell[] = loading
     ? [
         {
           key: "loading",
-          label: <Skeleton className="h-3 w-24" />,
-          figure: <Skeleton className="h-8 w-28" />,
-          caption: <Skeleton className="h-3 w-36 max-w-full" />,
+          label: <Skeleton className="w-24">Provider</Skeleton>,
+          figure: (
+            <Skeleton className="w-28">
+              <SegmentFigure>00%</SegmentFigure>
+            </Skeleton>
+          ),
+          caption: <Skeleton className="w-36 max-w-full">Average subscription usage</Skeleton>,
         },
       ]
     : accounts.map((account) => ({
@@ -51,7 +58,11 @@ export function OverviewAllowanceTotals({
         tooltip: utilizationTooltip(account, utilizationSpanDays),
       }))
   return (
-    <section aria-label="Allowance" aria-busy={loading}>
+    <section
+      aria-label="Allowance"
+      aria-busy={loading}
+      className={loading ? undefined : "overview-figures-in"}
+    >
       <HeroFigures cells={cells} />
     </section>
   )

@@ -7,25 +7,63 @@
 }
 
 /*
- * A stand-in for the chart while its data arrives. Flat on purpose: a pulsing
- * skeleton pulled the eye to the one part of the page with nothing to read on
- * it yet, which is the opposite of what a placeholder is for.
+ * Placeholders on the usage section hold their space and little else. A solid
+ * fill drew the eye to the parts of the page with nothing to read on them yet,
+ * which is the opposite of what a placeholder is for, so what is left is a
+ * wash barely above the background. Mixed from the shared placeholder colour
+ * rather than written flat, so it still follows the theme.
  */
+
+.overview-usage {
+  --overview-placeholder-fill: color-mix(
+    in oklab,
+    var(--color-surface-tertiary) 30%,
+    transparent
+  );
+  --overview-entrance-duration: 700ms;
+}
 
 .overview-chart-placeholder {
   flex: 1 1 auto;
   min-block-size: var(--overview-chart-height);
   border-radius: var(--radius-small);
-  background-color: var(--color-surface-tertiary);
+  background-color: var(--overview-placeholder-fill, transparent);
+}
+
+/* The shared `Skeleton` carries a Tailwind fill and a pulse of its own. Inside
+   the usage section both give way to the wash above. Two classes deep, so the
+   utility loses on specificity and needs no `!important`. */
+
+.overview-usage [data-placeholder] {
+  background-color: var(--overview-placeholder-fill);
+  animation: none;
 }
 
 /*
- * The chart's entrance. It replaces the placeholder in one frame, and the fade
- * softens the swap so the chart reads as having arrived rather than snapped
- * into place. Neutralized by the reduced-motion clamp in `motion.css`.
+ * The chart's entrance: a reveal from the left, the way the session detail's
+ * context chart draws itself in. `backwards` rather than `both`, so the clip
+ * applies before the animation starts but is gone once it ends and cannot
+ * crop anything that later overflows the chart. Neutralized by the
+ * reduced-motion clamp in `motion.css`, which lands it on the finished state.
  */
 
 @keyframes overview-chart-in {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+.overview-chart-in {
+  animation: overview-chart-in var(--overview-entrance-duration, 700ms) ease-out backwards;
+}
+
+/* The headline figures above it have nothing to sweep across, so they fade. */
+
+@keyframes overview-figures-in {
   from {
     opacity: 0;
   }
@@ -35,8 +73,8 @@
   }
 }
 
-.overview-chart-in {
-  animation: overview-chart-in var(--duration-slow) ease-out both;
+.overview-figures-in {
+  animation: overview-figures-in var(--overview-entrance-duration, 700ms) ease-out backwards;
 }
 
 /* Keep this container on the grid item. The grid sets its size. */

@@ -49,16 +49,27 @@ export function OverviewSpendTotals({
       </>
     ),
     tooltip: spendTooltip(span.span),
+    // The placeholders wrap a sample of the line they stand in for, so they
+    // take that line's own height and nothing below the section shifts as the
+    // real figures land.
     ...(loading || !totals
       ? {
-          figure: <Skeleton className="h-8 w-28" />,
-          caption: <Skeleton className="h-3 w-36 max-w-full" />,
+          figure: (
+            <Skeleton className="w-28">
+              <SegmentFigure>$0.00</SegmentFigure>
+            </Skeleton>
+          ),
+          caption: <Skeleton className="w-36 max-w-full">0 tokens, 0 sessions</Skeleton>,
         }
       : spendCell(totals[span.key])),
   }))
 
   return (
-    <section aria-label="Estimated local spend" aria-busy={loading || undefined}>
+    <section
+      aria-label="Estimated local spend"
+      aria-busy={loading || undefined}
+      className={loading || !totals ? undefined : "overview-figures-in"}
+    >
       <HeroFigures cells={cells} />
     </section>
   )

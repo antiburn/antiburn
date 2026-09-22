@@ -108,6 +108,47 @@ describe("OverviewUsage", () => {
     ).not.toBeInTheDocument()
   })
 
+  it("sizes the loading figures from the lines they stand in for", () => {
+    render(
+      <OverviewUsage
+        metric="allowance"
+        onMetricChange={vi.fn()}
+        totals={null}
+        days={[]}
+        allowance={null}
+        allowanceLoading
+      />,
+    )
+    const region = screen.getByRole("region", { name: "Allowance" })
+    const placeholders = region.querySelectorAll("[data-placeholder]")
+    expect(placeholders.length).toBeGreaterThan(0)
+    // A placeholder with nothing inside it falls back to a fixed height, which
+    // is shorter than the figure it hides and shifts the page down as the real
+    // one lands. Each must wrap a sample of its own line instead.
+    for (const placeholder of placeholders) {
+      expect(placeholder.textContent?.trim()).not.toBe("")
+      expect(placeholder).toHaveClass("text-transparent")
+    }
+  })
+
+  it("holds the chart's legend row open while the chart is still loading", () => {
+    render(
+      <OverviewUsage
+        metric="allowance"
+        onMetricChange={vi.fn()}
+        totals={null}
+        days={[]}
+        allowance={null}
+        allowanceLoading
+      />,
+    )
+    const chart = screen.getByRole("region", { name: "Allowance chart" })
+    expect(chart.querySelector(".overview-chart-placeholder")).not.toBeNull()
+    // Reserved rather than drawn: without it the rest of the page sits a row
+    // too high until the plot arrives.
+    expect(chart.querySelector(".invisible")).not.toBeNull()
+  })
+
   it("hands the page the unit the reader picked", () => {
     const onMetricChange = renderTotals()
     fireEvent.click(screen.getByRole("radio", { name: "Cost" }))

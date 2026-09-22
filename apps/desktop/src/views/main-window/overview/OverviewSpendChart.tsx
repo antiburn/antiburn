@@ -152,7 +152,17 @@ export function OverviewSpendChart({
       aria-busy={loading || undefined}
     >
       {placeholder ? (
-        <div aria-hidden="true" className="overview-chart-placeholder" />
+        <>
+          {/* The agent legend, held open so the rest of the page does not shift
+              down when the chart replaces this. */}
+          <div aria-hidden="true" className="invisible mb-(--space-sm)">
+            <ChartLegend
+              ariaLabel="Agents"
+              items={[{ key: "placeholder", label: "Agent", swatch: "bg-transparent" }]}
+            />
+          </div>
+          <div aria-hidden="true" className="overview-chart-placeholder" />
+        </>
       ) : (
         <>
           <ChartLegend
