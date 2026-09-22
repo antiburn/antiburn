@@ -13,6 +13,7 @@ import {
   type SessionIndexChangedPayload,
   type SessionUpdatedPayload,
 } from "../../lib/ipc"
+import { insightsBacklogStore } from "../../lib/insightsBacklogStore"
 import type {
   AllowanceUsageSummaryPayload,
   LiveUsageSummaryPayload,
@@ -49,6 +50,14 @@ export interface MainOverviewScanSource {
   subscribe(listener: () => void): () => void
 }
 
+/** Whether the insights worker pool has a backlog to drain, and a way to
+ *  hear when that changes. Narrowed to the one field this page acts on, like
+ *  `MainOverviewScanSource`. */
+export interface MainOverviewBacklogSource {
+  getSnapshot(): { active: boolean }
+  subscribe(listener: () => void): () => void
+}
+
 /**
  * How long an event-driven read waits for the burst around it to stop.
  *
@@ -68,12 +77,25 @@ const OVERVIEW_REFRESH_DEBOUNCE_MS = 300
  */
 const OVERVIEW_SCAN_HOLD_CAP_MS = 15_000
 
+/**
+ * How long the page throttles its reads while the insights worker pool has a
+ * backlog to drain.
+ *
+ * One read every 5 s still reads as progress to a reader watching the page.
+ * The worker's per-session events land a few hundred milliseconds apart while
+ * a backlog drains. That gap is longer than `OVERVIEW_REFRESH_DEBOUNCE_MS`, so
+ * the debounce fires between events and the page reads after almost every one.
+ */
+const OVERVIEW_BACKLOG_THROTTLE_MS = 5_000
+
 /** Which of the page's reads an event asked for. */
 type OverviewReadKind = "totals" | "allowance" | "allocations"
 
 export interface MainOverviewSessionOptions {
   scanSource?: MainOverviewScanSource
+  backlogSource?: MainOverviewBacklogSource
   debounceMs?: number
+  backlogThrottleMs?: number
   scanHoldCapMs?: number
   /** Told whenever a settled read finds a new answer to whether this reader
    *  has a subscription plan. The production default remembers it for the
@@ -87,6 +109,15 @@ const productionScanSource: MainOverviewScanSource = {
   // first read of an activation runs regardless.
   getSnapshot: () => ({ running: scanStatusStore.getSnapshot()?.running ?? true }),
   subscribe: (listener) => scanStatusStore.subscribe(listener),
+}
+
+const productionBacklogSource: MainOverviewBacklogSource = {
+  // The store snapshot is null until its first load resolves. Unlike the
+  // scan hold, the throttle is an optimisation, not a correctness
+  // requirement: treating that gap as "not active" costs a wrong guess a few
+  // extra reads only, so this defaults to false rather than to true.
+  getSnapshot: () => ({ active: insightsBacklogStore.getSnapshot()?.active ?? false }),
+  subscribe: (listener) => insightsBacklogStore.subscribe(listener),
 }
 
 function rememberPlanInPrefs(hadPlan: boolean): void {
@@ -200,11 +231,17 @@ export class MainOverviewSession {
   private allowanceSettled = false
   private contentReadyReported = false
   private readonly scanSource: MainOverviewScanSource
+  private readonly backlogSource: MainOverviewBacklogSource
   private readonly debounceMs: number
+  private readonly backlogThrottleMs: number
   private readonly scanHoldCapMs: number
   /** The reads events have asked for and the debounce has not run yet. */
   private readonly pendingReads = new Set<OverviewReadKind>()
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
+  /** Armed while the backlog is active and reads are pending. A single
+   *  trailing timer: later events while it is armed do not reset it, so a
+   *  steady stream of them still flushes once per `backlogThrottleMs`. */
+  private throttleTimer: ReturnType<typeof setTimeout> | null = null
   private scanHoldTimer: ReturnType<typeof setTimeout> | null = null
   /** True once a scan pass has finished, or the cap has fired, since the
    *  page became active. The hold applies to the first pass only: scoped
@@ -226,7 +263,9 @@ export class MainOverviewSession {
     this.sessionList = sessionList
     this.adapter = adapter
     this.scanSource = options.scanSource ?? productionScanSource
+    this.backlogSource = options.backlogSource ?? productionBacklogSource
     this.debounceMs = options.debounceMs ?? OVERVIEW_REFRESH_DEBOUNCE_MS
+    this.backlogThrottleMs = options.backlogThrottleMs ?? OVERVIEW_BACKLOG_THROTTLE_MS
     this.scanHoldCapMs = options.scanHoldCapMs ?? OVERVIEW_SCAN_HOLD_CAP_MS
     this.rememberPlan = options.rememberPlan ?? rememberPlanInPrefs
     this.rememberedPlan = readOverviewViewPrefs().hadSubscriptionPlan
@@ -330,6 +369,15 @@ export class MainOverviewSession {
       ),
       this.listen(
         generation,
+        Promise.resolve(
+          this.backlogSource.subscribe(() => {
+            if (generation !== this.generation) return
+            this.onBacklogStateChanged()
+          }),
+        ),
+      ),
+      this.listen(
+        generation,
         this.adapter.onLiveUsageChanged((liveUsage) => {
           if (generation !== this.generation || !this.snapshot.active) return
           // The push carries the newest figures. A read still in flight
@@ -400,7 +448,7 @@ export class MainOverviewSession {
       this.armScanHoldCap()
       return
     }
-    this.armDebounce()
+    this.armDeferredFlush()
   }
 
   private holdingForScan(): boolean {
@@ -416,6 +464,17 @@ export class MainOverviewSession {
     }, this.debounceMs)
   }
 
+  /** A single trailing timer: while it is armed, later events do not reset
+   *  it, so a steady stream of them still flushes once per interval instead
+   *  of never. */
+  private armThrottle(): void {
+    if (this.throttleTimer) return
+    this.throttleTimer = setTimeout(() => {
+      this.throttleTimer = null
+      this.flushReads()
+    }, this.backlogThrottleMs)
+  }
+
   private armScanHoldCap(): void {
     if (this.scanHoldTimer) return
     this.scanHoldTimer = setTimeout(() => {
@@ -429,6 +488,20 @@ export class MainOverviewSession {
     this.releaseScanHold()
   }
 
+  /** The insights backlog draining is not a hold: it only changes which
+   *  timer pending reads wait on. Once it drains, any reads still pending
+   *  switch from the 5 s throttle to the ordinary debounce, so they land
+   *  soon after rather than waiting out a throttle interval that no longer
+   *  applies. */
+  private onBacklogStateChanged(): void {
+    if (this.backlogSource.getSnapshot().active) return
+    if (this.throttleTimer) {
+      clearTimeout(this.throttleTimer)
+      this.throttleTimer = null
+    }
+    if (this.pendingReads.size > 0) this.armDebounce()
+  }
+
   /** Stop holding for the rest of this activation, and run what queued up. */
   private releaseScanHold(): void {
     if (this.scanSettled) return
@@ -437,7 +510,15 @@ export class MainOverviewSession {
       clearTimeout(this.scanHoldTimer)
       this.scanHoldTimer = null
     }
-    if (this.pendingReads.size > 0) this.armDebounce()
+    if (this.pendingReads.size > 0) this.armDeferredFlush()
+  }
+
+  /** Which timer picks up reads that just became free to schedule: the
+   *  throttle while the insights backlog is still active, the ordinary
+   *  debounce otherwise. */
+  private armDeferredFlush(): void {
+    if (this.backlogSource.getSnapshot().active) this.armThrottle()
+    else this.armDebounce()
   }
 
   private flushReads(): void {
@@ -467,6 +548,10 @@ export class MainOverviewSession {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
+    }
+    if (this.throttleTimer) {
+      clearTimeout(this.throttleTimer)
+      this.throttleTimer = null
     }
     if (this.scanHoldTimer) {
       clearTimeout(this.scanHoldTimer)

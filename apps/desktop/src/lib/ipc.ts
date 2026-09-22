@@ -18,6 +18,7 @@ import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./type
 import type {
   AppInfo,
   AppSettings,
+  InsightsBacklog,
   RepositoryItemPayload,
   ScanStatus,
   StorageHealthPayload,
@@ -657,6 +658,12 @@ export async function getScanStatus(): Promise<ScanStatus | null> {
   return invoke<ScanStatus>("get_scan_status")
 }
 
+/** Whether the insights worker pool has a backlog to drain right now. */
+export async function getInsightsBacklog(): Promise<InsightsBacklog | null> {
+  if (!hasShell()) return null
+  return invoke<InsightsBacklog>("get_insights_backlog")
+}
+
 /**
  * Ask the scan in flight to stop at its next phase boundary.
  *
@@ -859,6 +866,21 @@ export async function onLiveUsageChanged(
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<LiveUsageSummaryPayload>(LIVE_USAGE_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/** Event the insights worker emits when its pool-wide backlog starts or
+ *  drains. Mirrors the `INSIGHTS_BACKLOG_CHANGED_EVENT` Rust constant in
+ *  `src-tauri/src/commands/mod.rs`. */
+const INSIGHTS_BACKLOG_CHANGED_EVENT = "insights-backlog-changed"
+
+/** Subscribe to the insights backlog starting or draining. The result unsubscribes. */
+export async function onInsightsBacklogChanged(
+  handler: (backlog: InsightsBacklog) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<InsightsBacklog>(INSIGHTS_BACKLOG_CHANGED_EVENT, (event) =>
     handler(event.payload),
   )
 }

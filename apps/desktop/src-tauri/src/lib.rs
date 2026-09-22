@@ -843,7 +843,7 @@ mod tests {
         use std::time::Duration;
 
         use crate::analysis::{EvidencePass, PassOutcome, PassSignal, SessionAnalysis};
-        use crate::insights_worker::{PassFuture, WorkerHandle, worker_loop};
+        use crate::insights_worker::{PassFuture, WorkerHandle, WorkerLoopSignals, worker_loop};
         use crate::store::{EvidenceStatus, SessionKey, SessionRecord, Store};
 
         let store = Arc::new(
@@ -918,7 +918,10 @@ mod tests {
                 &|| 100,
                 &runner,
                 &|key| task_announced.lock().unwrap().push(key.clone()),
-                &|| {},
+                &WorkerLoopSignals {
+                    idle: &|| {},
+                    backlog: &|_| {},
+                },
                 &|_, _| {},
             )
             .await;
