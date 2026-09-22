@@ -1613,6 +1613,23 @@ async fn a_wake_releases_the_idle_wait() {
         .unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn await_ramp_reports_content_ready_when_already_notified() {
+    let ramp = Notify::new();
+    ramp.notify_one();
+    let (reason, elapsed) = await_ramp(&ramp, Duration::from_secs(30)).await;
+    assert_eq!(reason, "content_ready");
+    assert_eq!(elapsed, Duration::ZERO);
+}
+
+#[tokio::test(start_paused = true)]
+async fn await_ramp_reports_timeout_when_never_notified() {
+    let ramp = Notify::new();
+    let (reason, elapsed) = await_ramp(&ramp, Duration::from_secs(30)).await;
+    assert_eq!(reason, "timeout");
+    assert_eq!(elapsed, Duration::from_secs(30));
+}
+
 /* --------------------------------------------------------------------
  * `antiburn.provider_incidents_ingested`: `apply_outcome`'s `ingested`
  * result.

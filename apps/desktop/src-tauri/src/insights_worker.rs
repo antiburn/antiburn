@@ -26,6 +26,10 @@ pub(crate) const LEASE_RENEW_SECS: u64 = 60;
 pub(crate) const IDLE_POLL_SECS: u64 = 60;
 /// Parse several independent transcripts at once without saturating the machine.
 const WORKER_CONCURRENCY: usize = 4;
+/// How long `spawn` waits for the main window's first content-ready
+/// notification before ramping to full concurrency on its own. Covers a
+/// launch that never opens the main window (tray-only, HUD).
+const WORKER_RAMP_SECS: u64 = 30;
 pub(crate) const BACKOFF_BASE_SECS: i64 = 30;
 pub(crate) const BACKOFF_MAX_SECS: i64 = 900;
 pub(crate) const MAX_EVIDENCE_ATTEMPTS: i64 = 5;
@@ -57,6 +61,8 @@ struct Backlog {
 pub struct WorkerHandle {
     wake: Notify,
     backlog: Mutex<Backlog>,
+    /// Ends `spawn`'s launch-time throttle early. See [`notify_ramp`].
+    ramp: Notify,
 }
 
 impl WorkerHandle {
@@ -200,15 +206,50 @@ fn run_record_pass_with(
     )
 }
 
+/// The first minute after a cold launch runs one worker, so the main
+/// window's first paint competes with a single parse thread rather than
+/// [`WORKER_CONCURRENCY`]. Full concurrency resumes as soon as the main
+/// window reports its content ready, or after [`WORKER_RAMP_SECS`],
+/// whichever comes first.
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut workers = JoinSet::new();
-        for _ in 0..WORKER_CONCURRENCY {
+        workers.spawn(run_worker(app.clone()));
+        let handle = app.state::<WorkerHandle>();
+        let (reason, elapsed) =
+            await_ramp(&handle.ramp, Duration::from_secs(WORKER_RAMP_SECS)).await;
+        for _ in 1..WORKER_CONCURRENCY {
             workers.spawn(run_worker(app.clone()));
         }
+        ::tracing::info!(
+            event = "insights_worker_ramped",
+            workers = WORKER_CONCURRENCY,
+            reason,
+            elapsed_ms = elapsed.as_millis() as u64
+        );
         while workers.join_next().await.is_some() {}
     })
+}
+
+/// Waits for `ramp` or `timeout`, whichever comes first. A small function
+/// so a test with paused time can drive both branches directly. Times
+/// itself against tokio's own clock, not [`Instant`], so a paused-time test
+/// sees the timeout branch's elapsed time as the requested timeout instead
+/// of the real time the wait actually took.
+async fn await_ramp(ramp: &Notify, timeout: Duration) -> (&'static str, Duration) {
+    let started = tokio::time::Instant::now();
+    tokio::select! {
+        () = ramp.notified() => ("content_ready", started.elapsed()),
+        () = tokio::time::sleep(timeout) => ("timeout", started.elapsed()),
+    }
+}
+
+/// Ends [`spawn`]'s launch-time throttle. The main window's
+/// `main_window::content_ready` calls this on its first report; a launch
+/// that never opens the main window ramps on [`WORKER_RAMP_SECS`] instead.
+pub fn notify_ramp(app: &tauri::AppHandle) {
+    app.state::<WorkerHandle>().ramp.notify_one();
 }
 
 async fn run_worker(app: tauri::AppHandle) {

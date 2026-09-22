@@ -1414,6 +1414,10 @@ fn renderer_ready_on_main(app: &AppHandle, generation: u64) {
 /// settle after a reveal. Mirrors [`crate::popover::content_ready`].
 pub fn content_ready(window: &WebviewWindow, generation: u64) {
     let app = window.app_handle();
+    // Ends the insights worker's launch-time ramp throttle regardless of
+    // whether this report is the one that gets logged below: the window
+    // having content is what the ramp waits for, not the log dedup.
+    crate::insights_worker::notify_ramp(app);
     let Some(state) = app.try_state::<MainWindowState>() else {
         return;
     };
