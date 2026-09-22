@@ -151,6 +151,14 @@ export interface AppSettings {
    * id this release does not recognize parses back to `all`.
    */
   sessionFilter: string
+  /**
+   * The days the reader works. The elapsed marker, the pace verdict, and the
+   * runway measure time against these days only.
+   *
+   * `seven` counts every day, which is the behaviour before this setting
+   * existed. The weeks start on Monday.
+   */
+  workingWeek: "five" | "six" | "seven"
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -315,6 +323,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   skillsMcpExpanded: false,
   sessionBadgeMetric: "cost",
   sessionFilter: "all",
+  workingWeek: "seven",
 }
 
 /** Tell the shell that React committed this renderer generation. */

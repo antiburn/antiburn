@@ -118,10 +118,6 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
     .filter((group) => group.windows.length > 0)
 
   const multiProvider = withBars.length > 1
-  // The notch measures from the snapshot's own time, not the wall clock. A
-  // snapshot that states no usable time gets no notch, because a notch drawn
-  // from an assumed time is a claim the provider did not make.
-  const generatedAt = response ? Date.parse(response.generatedAt) : Number.NaN
 
   return withBars.flatMap((group) =>
     group.windows.map((window) => ({
@@ -135,9 +131,7 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
       percent: window.usedPercent!,
       resetsAt: resetDate(window.resetsAt),
       color: providerBarColor(group.provider.provider),
-      expectedFraction: Number.isNaN(generatedAt)
-        ? null
-        : liveWindowElapsed(window, generatedAt),
+      expectedFraction: liveWindowElapsed(window),
     })),
   )
 }

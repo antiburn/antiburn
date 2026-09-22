@@ -47,6 +47,7 @@
 use time::{Duration, OffsetDateTime};
 
 use super::model::{Confidence, Freshness};
+use super::working_week::WorkingClock;
 
 /// The shortest span of readings that can support a rate.
 ///
@@ -179,6 +180,7 @@ pub fn usage_forecast(
     now: OffsetDateTime,
     current_freshness: Freshness,
     current_confidence: Confidence,
+    clock: WorkingClock,
 ) -> UsageForecast {
     if current_freshness == Freshness::Stale {
         return UsageForecast::unavailable(ForecastUnavailableReason::Stale);
@@ -217,9 +219,9 @@ pub fn usage_forecast(
         ),
         unavailable_reason: None,
         consumption_rate: Some(rate.percent_per_hour),
-        pace_ratio: pace_ratio(rate, used_percent, resets_at, now),
+        pace_ratio: pace_ratio(rate, used_percent, resets_at, now, clock),
         pace_trend: pace_trend(&short, &recent),
-        estimated_exhaustion_at: estimated_exhaustion_at(now, used_percent, rate),
+        estimated_exhaustion_at: estimated_exhaustion_at(now, used_percent, rate, clock),
     }
 }
 
@@ -261,14 +263,19 @@ fn crosses_transition(previous: &UsageSample, current: &UsageSample) -> bool {
 /// The current rate over the rate that would land exactly at the reset.
 ///
 /// One is on track. Two is twice as fast as the allowance can afford.
+///
+/// `clock` decides which hours before the reset count. A reader on a five-day
+/// week has no hours left on a Saturday, and the pace stays unknown until the
+/// next working day.
 pub fn pace_ratio(
     recent_rate: ConsumptionRate,
     used_percent: Option<f64>,
     resets_at: Option<OffsetDateTime>,
     now: OffsetDateTime,
+    clock: WorkingClock,
 ) -> Option<f64> {
     let remaining = 100.0 - used_percent?;
-    let hours = (resets_at? - now).as_seconds_f64() / 3600.0;
+    let hours = clock.span(now, resets_at?).as_seconds_f64() / 3600.0;
     if !(0.0..=100.0).contains(&remaining) || hours <= 0.0 {
         return None;
     }
@@ -296,18 +303,23 @@ pub fn pace_trend(short: &[UsageSample], long: &[UsageSample]) -> Option<f64> {
 }
 
 /// When the allowance runs out at the recent rate.
+///
+/// The rate is a working-hours rate, so `clock` spreads it over working days
+/// only. A reader who stops on Friday does not run out on Sunday.
 pub fn estimated_exhaustion_at(
     now: OffsetDateTime,
     used_percent: Option<f64>,
     recent_rate: ConsumptionRate,
+    clock: WorkingClock,
 ) -> Option<OffsetDateTime> {
     let remaining = 100.0 - used_percent?;
     if !(0.0..=100.0).contains(&remaining) || recent_rate.percent_per_hour <= 0.0 {
         return None;
     }
-    now.checked_add(Duration::seconds_f64(
-        remaining / recent_rate.percent_per_hour * 3600.0,
-    ))
+    clock.advance(
+        now,
+        Duration::seconds_f64(remaining / recent_rate.percent_per_hour * 3600.0),
+    )
 }
 
 /// Whether trustworthy history shows non-zero usage anywhere in a window's
@@ -389,6 +401,11 @@ mod tests {
         OffsetDateTime::from_unix_timestamp(NOW + offset_secs).expect("valid timestamp")
     }
 
+    /// These tests describe the seven-day behaviour, so every day counts.
+    fn clock() -> WorkingClock {
+        WorkingClock::every_day(time::UtcOffset::UTC)
+    }
+
     fn sample(offset_secs: i64, percent: f64) -> UsageSample {
         UsageSample {
             observed_at: at(offset_secs),
@@ -405,6 +422,7 @@ mod tests {
             at(0),
             Freshness::Fresh,
             Confidence::High,
+            clock(),
         )
     }
 
@@ -461,6 +479,7 @@ mod tests {
             at(0),
             Freshness::Stale,
             Confidence::High,
+            clock(),
         );
         assert_eq!(
             result.unavailable_reason,
@@ -535,14 +554,17 @@ mod tests {
         };
         // 50 left, 10 hours to reset: 5/hour affordable against 10/hour actual.
         assert_eq!(
-            pace_ratio(rate, Some(50.0), Some(at(36_000)), at(0)),
+            pace_ratio(rate, Some(50.0), Some(at(36_000)), at(0), clock()),
             Some(2.0)
         );
         // A reset already past cannot anchor a pace.
-        assert_eq!(pace_ratio(rate, Some(50.0), Some(at(-1)), at(0)), None);
+        assert_eq!(
+            pace_ratio(rate, Some(50.0), Some(at(-1)), at(0), clock()),
+            None
+        );
         // Nothing left and time still running.
         assert_eq!(
-            pace_ratio(rate, Some(100.0), Some(at(3_600)), at(0)),
+            pace_ratio(rate, Some(100.0), Some(at(3_600)), at(0), clock()),
             Some(f64::INFINITY)
         );
     }
@@ -572,7 +594,7 @@ mod tests {
         };
         // 40 left at 10/hour is four hours.
         assert_eq!(
-            estimated_exhaustion_at(at(0), Some(60.0), rate),
+            estimated_exhaustion_at(at(0), Some(60.0), rate, clock()),
             Some(at(14_400))
         );
         // A rate of nothing never exhausts anything.
@@ -583,7 +605,8 @@ mod tests {
                 ConsumptionRate {
                     percent_per_hour: 0.0,
                     changed_samples: 0
-                }
+                },
+                clock()
             ),
             None
         );

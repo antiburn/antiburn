@@ -5,6 +5,7 @@ import { Pane } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
 import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
+import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { createExternalStore } from "../../lib/externalStore"
@@ -21,6 +22,7 @@ import {
   getLiveUsage,
   onLiveUsageChanged,
   refreshLiveUsage,
+  type AppSettings,
   type LiveUsageMeterPayload,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
@@ -39,8 +41,22 @@ import {
 } from "../../lib/presentation/liveUsage"
 import type { AppSettingsController } from "./useAppSettings"
 
+type WorkingWeek = AppSettings["workingWeek"]
+
 /** How often the pane re-asks while on screen. Matches the popover. */
 const USAGE_VISIBLE_POLL_MS = 60_000
+
+/**
+ * The working weeks a reader can pick. Each one starts on Monday.
+ *
+ * Three choices, not seven switches. A reader who works Tuesday to Saturday is
+ * not served yet, and the stored value leaves room to add that later.
+ */
+const WORKING_WEEKS: readonly { value: WorkingWeek; label: string }[] = [
+  { value: "five", label: "5 days" },
+  { value: "six", label: "6 days" },
+  { value: "seven", label: "7 days" },
+]
 
 /**
  * Usage: where the plan limits come from, and the one switch that turns it
@@ -175,6 +191,23 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
           <Row
             label="With this off"
             description="antiburn makes none of these requests and shows no plan limits at all."
+          />
+        </Card>
+      </SectionGroup>
+
+      <SectionGroup title="Your working week">
+        <Card>
+          <Row
+            label="Days you work"
+            description="Spreads your weekly allowance over these days, so a quiet weekend does not read as falling behind. Weeks start Monday. This does not change 5-hour limits."
+            trailing={
+              <SegmentedControl
+                options={WORKING_WEEKS}
+                value={settings?.workingWeek ?? "seven"}
+                onChange={(next) => void update({ workingWeek: next })}
+                ariaLabel="Days you work each week"
+              />
+            }
           />
         </Card>
       </SectionGroup>
