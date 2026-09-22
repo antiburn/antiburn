@@ -724,7 +724,9 @@ export class MainActivitySession {
       .then((saved) => {
         if (version === this.settingsVersion) this.update({ settings: saved })
       })
-      .catch(() => this.update({ settingsError: true }))
+      .catch(() => {
+        if (version === this.settingsVersion) this.update({ settingsError: true })
+      })
     if (this.restoringNavigation && !this.reportRestoredFilterSelection) return
     noteInteraction(
       filter.kind === "agent"

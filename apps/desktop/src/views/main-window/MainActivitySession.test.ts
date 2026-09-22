@@ -693,6 +693,58 @@ describe("MainActivitySession", () => {
     })
   })
 
+  it.each(["response-first", "event-first"])(
+    "keeps optimistic filter history stable when settings arrive %s",
+    async (order) => {
+      const { session } = start()
+      await ready(session)
+      const navigation = new MainWindowNavigationSession(session)
+      navigation.select("activity")
+      const pending = deferred<typeof DEFAULT_SETTINGS>()
+      mocks.setSettings.mockReturnValueOnce(pending.promise)
+      session.setFilter({ kind: "notable" })
+      const snapshot = navigation.getSnapshot()
+      const saved = { ...session.getSnapshot().settings }
+      expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
+      if (order === "event-first") mocks.events.get("settings")!(saved)
+      pending.resolve(saved)
+      await pending.promise
+      if (order === "response-first") mocks.events.get("settings")!(saved)
+      expect(navigation.getSnapshot()).toBe(snapshot)
+      expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
+      navigation.back()
+      expect(navigation.getSnapshot().destination.filter).toEqual({ kind: "all" })
+      navigation.forward()
+      expect(navigation.getSnapshot().destination.filter).toEqual({ kind: "notable" })
+    },
+  )
+
+  it("ignores a rejected filter write after a newer filter succeeds", async () => {
+    const { session } = start()
+    await ready(session)
+    let reject!: (error: Error) => void
+    const pending = new Promise<typeof DEFAULT_SETTINGS>((_, fail) => {
+      reject = fail
+    })
+    mocks.setSettings.mockReturnValueOnce(pending)
+    session.setFilter({ kind: "notable" })
+    session.setFilter({ kind: "failing" })
+    await Promise.resolve()
+    reject(new Error("stale save failed"))
+    await pending.catch(() => undefined)
+    await Promise.resolve()
+    expect(session.getSnapshot().filter).toEqual({ kind: "failing" })
+    expect(session.getSnapshot().settingsError).toBe(false)
+  })
+
+  it("reports a rejected current filter write", async () => {
+    const { session } = start()
+    await ready(session)
+    mocks.setSettings.mockRejectedValueOnce(new Error("save failed"))
+    session.setFilter({ kind: "notable" })
+    await vi.waitFor(() => expect(session.getSnapshot().settingsError).toBe(true))
+  })
+
   it("does nothing when the requested filter already matches", async () => {
     const { session } = start()
     await ready(session)

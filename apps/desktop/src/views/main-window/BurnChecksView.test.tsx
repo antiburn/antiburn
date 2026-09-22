@@ -1146,6 +1146,27 @@ describe("BurnChecksView", () => {
     expect(row).toHaveAttribute("aria-pressed", "false")
     view.rerender(
       <BurnChecksView
+        active={false}
+        session={session}
+        focusedCheck="unusedMcpServers"
+        focusRevision={1}
+      />,
+    )
+    view.rerender(
+      <BurnChecksView
+        active
+        session={session}
+        focusedCheck="unusedMcpServers"
+        focusRevision={1}
+      />,
+    )
+    expect(row).toHaveAttribute("aria-pressed", "false")
+    expect(screen.getByRole("button", { name: /Unused skills, / })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
+    view.rerender(
+      <BurnChecksView
         active
         session={session}
         focusedCheck="unusedMcpServers"
@@ -1197,6 +1218,24 @@ describe("BurnChecksView", () => {
       screen.getByText("This check has not been assessed for the available sessions."),
     ).toBeVisible()
     expect(screen.getByRole("button", { name: /Excess cache rehydration/ })).toHaveFocus()
+    view.rerender(
+      <BurnChecksView
+        active={false}
+        session={session}
+        focusedCheck="cacheChurn"
+        focusRevision={1}
+      />,
+    )
+    view.rerender(
+      <BurnChecksView active session={session} focusedCheck="cacheChurn" focusRevision={1} />,
+    )
+    expect(screen.getByRole("button", { name: /Excess cache rehydration/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
+    expect(
+      screen.getByText("This check has not been assessed for the available sessions."),
+    ).toBeVisible()
   })
 
   it("allows ordinary selection after searching for an absent check", async () => {

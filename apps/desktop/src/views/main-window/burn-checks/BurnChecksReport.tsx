@@ -458,12 +458,14 @@ function CheckTrigger({
 }
 
 export function BurnChecksReport({
+  active,
   report,
   session,
   state,
   focusedCheck,
   focusRevision,
 }: {
+  active: boolean
   report: ChecksReportPayload
   session: BurnChecksSession
   state: BurnChecksSnapshot
@@ -505,7 +507,7 @@ export function BurnChecksReport({
     passedPreference: null,
   }))
   const [snoozedOpen, setSnoozedOpen] = useState(false)
-  if (ui.reportKey !== reportKey) {
+  if (active && ui.reportKey !== reportKey) {
     setUi((value) => ({
       ...value,
       reportKey,
@@ -524,21 +526,17 @@ export function BurnChecksReport({
       setSnoozedOpen(true)
   }
   const searchRequest = focusedCheck ? `${focusedCheck}:${focusRevision ?? 0}` : null
-  if (ui.searchRequest !== searchRequest) {
+  if (focusedCheck && ui.searchRequest !== searchRequest) {
     setUi((value) => ({
       ...value,
       searchRequest,
-      ...(focusedCheck
-        ? {
-            selectedId: focusedCheck,
-            deliberateIds: new Set([...value.deliberateIds, focusedCheck]),
-            passedPreference: activeWins.some((check) => check.id === focusedCheck)
-              ? true
-              : value.passedPreference,
-          }
-        : {}),
+      selectedId: focusedCheck,
+      deliberateIds: new Set([...value.deliberateIds, focusedCheck]),
+      passedPreference: activeWins.some((check) => check.id === focusedCheck)
+        ? true
+        : value.passedPreference,
     }))
-    if (focusedCheck && snoozedIds.has(focusedCheck)) setSnoozedOpen(true)
+    if (snoozedIds.has(focusedCheck)) setSnoozedOpen(true)
   }
   const lastFocus = useRef<string | null>(null)
   const passedOpen = ui.passedPreference ?? activeFailures.length === 0

@@ -7,8 +7,8 @@ vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }))
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => native }))
 afterEach(() => vi.restoreAllMocks())
 beforeEach(() => {
-  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows NT 10.0")
   vi.resetAllMocks()
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows NT 10.0")
   native.startDragging.mockResolvedValue(undefined)
   native.toggleMaximize.mockResolvedValue(undefined)
 })
@@ -37,6 +37,7 @@ function setup() {
   return clicked
 }
 it("drags only the shared top region and supports double-click maximize", () => {
+  expect(navigator.userAgent).toBe("Windows NT 10.0")
   setup()
   const space = screen.getByText("Header space")
   fireEvent.mouseDown(space, { clientY: 12, button: 0, detail: 1 })

@@ -96,7 +96,7 @@ quiet login on an upgraded installation. macOS uses the native login event.
 Check the 1100×600 default and 1000×560 minimum with light and dark themes.
 
 - The sidebar stays visible and 220px wide throughout resizing on all platforms. Saved collapse preferences are ignored.
-- Overview opens by default. Overview, Burn checks, and Sessions share history; Settings appears at the bottom.
+- Overview opens by default. Overview, Limits, Sessions, and Checks share history; Settings appears at the bottom.
 - The Settings sidebar action opens the existing Settings window. Command+, (Control+, on Windows/Linux) opens it from the main window, onboarding, and popover.
 - Check readable 28px rows and independent vertical content scrolling without horizontal overflow.
 - Restore an older saved 560×420 window; it expands to at least 1000×560 when the display allows.

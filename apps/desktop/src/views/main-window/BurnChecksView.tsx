@@ -129,6 +129,7 @@ export function BurnChecksView({
         </p>
       )}
       <BurnChecksReport
+        active={active}
         report={report}
         session={session}
         state={state}
