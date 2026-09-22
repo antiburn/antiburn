@@ -134,6 +134,67 @@ describe("createExternalStore", () => {
     expect(store.getSnapshot()).toBe("initial")
   })
 
+  it("a push that arrives while load is pending wins over the load result", async () => {
+    const loadPending = deferred<string>()
+    const load = vi.fn(() => loadPending.promise)
+    let push: ((value: string) => void) | undefined
+    const subscribe = vi.fn(async (set: (value: string) => void) => {
+      push = set
+      return () => {}
+    })
+    const store = createExternalStore({ initial: "initial", load, subscribe })
+
+    store.subscribe(() => {})
+    await flush()
+
+    // The subscription is attached (and here, resolved) before load settles.
+    expect(push).toBeDefined()
+    push?.("pushed")
+    expect(store.getSnapshot()).toBe("pushed")
+
+    loadPending.resolve("loaded")
+    await flush()
+
+    // The load result arrived after the push, but the push is the newer
+    // value, so the stale load result must not overwrite it.
+    expect(store.getSnapshot()).toBe("pushed")
+  })
+
+  it("a push that arrives during the subscribe handshake is not lost", async () => {
+    const handshake = deferred<() => void>()
+    const subscribe = vi.fn((set: (value: string) => void) => {
+      // The channel delivers an update before its own connect promise settles.
+      set("pushed")
+      return handshake.promise
+    })
+    const load = vi.fn(async () => "loaded")
+    const store = createExternalStore({ initial: "initial", load, subscribe })
+
+    store.subscribe(() => {})
+    await flush()
+
+    expect(store.getSnapshot()).toBe("pushed")
+
+    handshake.resolve(() => {})
+    await flush()
+
+    // load runs once the handshake settles; its result must not overwrite
+    // the push that arrived first.
+    expect(store.getSnapshot()).toBe("pushed")
+  })
+
+  it("publishes the loaded value when nothing else arrived first", async () => {
+    const unlisten = vi.fn()
+    const subscribe = vi.fn(async () => unlisten)
+    const load = vi.fn(async () => "loaded")
+    const store = createExternalStore({ initial: "initial", load, subscribe })
+
+    store.subscribe(() => {})
+    await flush()
+
+    expect(store.getSnapshot()).toBe("loaded")
+  })
+
   it("set publishes a value directly, without going through load", async () => {
     const load = vi.fn(async () => "from load")
     const store = createExternalStore({ initial: "initial", load })
