@@ -592,14 +592,15 @@ impl MainWindowState {
             .take()
             .unwrap_or((OpenKind::WarmReopen, now));
         drop(presentation);
-        if let Some(generation) = generation {
-            *lock(&self.content_origin) = Some(ContentOrigin {
-                generation,
-                kind,
-                requested_at,
-                reported: false,
-            });
-        }
+        // Write on every reveal, even a generationless one, so a stale
+        // origin from an earlier generation cannot satisfy a late
+        // `mark_content_ready` for a reveal that never named one.
+        *lock(&self.content_origin) = generation.map(|generation| ContentOrigin {
+            generation,
+            kind,
+            requested_at,
+            reported: false,
+        });
         (kind, now.saturating_duration_since(requested_at))
     }
 
@@ -2147,6 +2148,19 @@ mod tests {
         let now = Instant::now();
         state.finish_reveal(now, None);
         assert_eq!(state.mark_content_ready(1, now), None);
+    }
+
+    #[test]
+    fn a_generationless_reveal_clears_a_stale_origin_from_an_earlier_generation() {
+        let state = state();
+        let now = Instant::now();
+        state.finish_reveal(now, Some(7));
+
+        // A later reveal with no generation must clear the earlier origin,
+        // not leave it standing for a late report to match against.
+        state.finish_reveal(now, None);
+
+        assert_eq!(state.mark_content_ready(7, now), None);
     }
 
     #[test]

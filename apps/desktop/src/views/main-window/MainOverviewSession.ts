@@ -279,14 +279,14 @@ export class MainOverviewSession {
       void this.loadLiveUsage(work, version, ++this.liveUsageVersion)
       try {
         const usage = await this.adapter.getUsage()
+        if (work !== this.workVersion || version !== this.refreshVersion) continue
         this.usageSettled = true
         this.reportContentReadyOnceSettled()
-        if (work !== this.workVersion || version !== this.refreshVersion) continue
         this.update({ usage, loading: false, refreshing: false, usageError: false })
       } catch {
-        this.usageSettled = true
-        this.reportContentReadyOnceSettled()
         if (work === this.workVersion && version === this.refreshVersion) {
+          this.usageSettled = true
+          this.reportContentReadyOnceSettled()
           this.update({ loading: false, refreshing: false, usageError: true })
         }
       }
@@ -333,16 +333,16 @@ export class MainOverviewSession {
       this.update({ allowanceLoading: !this.snapshot.allowance })
       try {
         const allowance = await this.adapter.getAllowanceUsage()
-        this.allowanceSettled = true
-        this.reportContentReadyOnceSettled()
         if (work === this.workVersion && !this.allowanceDirty) {
+          this.allowanceSettled = true
+          this.reportContentReadyOnceSettled()
           this.update({ allowance, allowanceLoading: false, allowanceError: false })
         }
       } catch {
         // A failed read must not hide the cost totals beside the allowance.
-        this.allowanceSettled = true
-        this.reportContentReadyOnceSettled()
         if (work === this.workVersion && !this.allowanceDirty) {
+          this.allowanceSettled = true
+          this.reportContentReadyOnceSettled()
           this.update({ allowanceLoading: false, allowanceError: true })
         }
       }

@@ -555,4 +555,35 @@ describe("MainOverviewSession", () => {
     await vi.waitFor(() => expect(mainWindowContentReady).toHaveBeenCalledOnce())
     stop()
   })
+
+  it("does not settle content ready for a usage read superseded before it resolves", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    const firstUsage = deferred<ProviderUsageSummaryPayload>()
+    const secondUsage = deferred<ProviderUsageSummaryPayload>()
+    vi.mocked(adapter.getUsage)
+      .mockReturnValueOnce(firstUsage.promise)
+      .mockReturnValueOnce(secondUsage.promise)
+    const stop = session.subscribe(() => undefined)
+
+    // Allowance settles on the first pass, so only the usage read is left
+    // gating content ready.
+    await vi.waitFor(() => expect(session.getSnapshot().allowance).not.toBeNull())
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledOnce())
+
+    // A second refresh starts, and only then does the first read resolve:
+    // it is superseded before it settles.
+    session.refresh()
+    firstUsage.resolve(usage("stale"))
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    expect(mainWindowContentReady).not.toHaveBeenCalled()
+    expect(session.getSnapshot().usage).toBeNull()
+
+    // The current read settling reports, carrying its own value.
+    secondUsage.resolve(usage("second"))
+    await vi.waitFor(() => expect(mainWindowContentReady).toHaveBeenCalledOnce())
+    expect(mainWindowContentReady).toHaveBeenCalledWith(7)
+    expect(session.getSnapshot().usage?.generatedAt).toBe("second")
+    stop()
+  })
 })

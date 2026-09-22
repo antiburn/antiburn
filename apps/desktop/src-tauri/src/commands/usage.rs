@@ -80,10 +80,9 @@ pub(super) fn allowance_usage_for_store(
     let mut turn_input = None;
     // One scan for every account's five-hour lane, instead of the full
     // range-and-resolve `attributed_turn_epochs` query this request would
-    // otherwise run once per account.
-    let turn_minutes = store
-        .attributed_turn_minutes(fetch_start, now.saturating_add(1))
-        .map_err(fail)?;
+    // otherwise run once per account. Deferred until the first five-hour
+    // lane needs it, so a request with no five-hour lane skips the scan.
+    let mut turn_minutes: Option<crate::store::provider_limit::TurnMinutes> = None;
     for account in quota_accounts {
         let input = match &mut turn_input {
             Some(input) => input,
@@ -104,6 +103,13 @@ pub(super) fn allowance_usage_for_store(
             let Some(kind) = account_lane(&lane.lane) else {
                 continue;
             };
+            if lane.lane == crate::store::provider_limit::LANE_FIVE_HOUR && turn_minutes.is_none() {
+                turn_minutes = Some(
+                    store
+                        .attributed_turn_minutes(fetch_start, now.saturating_add(1))
+                        .map_err(fail)?,
+                );
+            }
             let usage = super::quota::quota_usage_with_turn_dollars(
                 store,
                 now,
@@ -115,7 +121,7 @@ pub(super) fn allowance_usage_for_store(
                     range_end_epoch: now.saturating_add(1),
                 },
                 &dollars,
-                Some(&turn_minutes),
+                turn_minutes.as_ref(),
             )?;
             let periods = usage.periods.into_iter().filter(|period| {
                 period.resets_at_epoch > fetch_start && period.starts_at_epoch <= now
@@ -271,7 +277,14 @@ fn overlaps_visible_range(period: &QuotaPeriodPayload, range_start: i64, now: i6
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use rusqlite::params;
+
     use super::*;
+
+    const PROVIDER: &str = "anthropic";
+    const ACCOUNT_KEY: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     #[test]
     fn model_scoped_lane_classifies_for_pooling() {
@@ -282,5 +295,34 @@ mod tests {
         assert_eq!(account_lane("model:fable"), Some(AccountLane::Model));
         assert_ne!(account_lane("model:fable"), account_lane("weekly"));
         assert_eq!(account_lane("unknown"), None);
+    }
+
+    /// An account with only a weekly period has no five-hour lane, so the
+    /// shared turn-minutes scan has nothing to fill. The request still
+    /// resolves and reports an empty five-hour payload for that account,
+    /// instead of failing or fabricating a short window.
+    #[test]
+    fn no_five_hour_lane_returns_empty_short_windows_without_a_scan() {
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-usage-commands-test"))
+            .expect("opens store");
+        let now = 1_800_000_000_i64;
+        let resets_at = now + 7 * 24 * 60 * 60;
+        store
+            .lock()
+            .execute(
+                "INSERT INTO provider_usage_period (
+                     provider, account_key, window_id, window_kind, window_role,
+                     scope_key, scope_label, duration_seconds, starts_at_epoch,
+                     resets_at_epoch, first_observed_epoch, last_observed_epoch
+                 ) VALUES (?1, ?2, 'weekly', 'weekly', 'primaryLong',
+                           'account', 'account', NULL, NULL, ?3, ?3, ?3)",
+                params![PROVIDER, ACCOUNT_KEY, resets_at],
+            )
+            .expect("inserts a synthetic weekly period");
+
+        let summary = allowance_usage_for_store(&store, now, 0).expect("resolves the summary");
+
+        assert_eq!(summary.accounts.len(), 1);
+        assert!(summary.accounts[0].chart.short_windows.is_empty());
     }
 }
