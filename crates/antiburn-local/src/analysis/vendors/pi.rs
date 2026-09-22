@@ -436,30 +436,31 @@ impl PiStreamState {
             let Some(object) = value.as_object_mut() else {
                 return;
             };
-            if self.legacy_entry_ids.len() >= MAX_LEGACY_ENTRIES {
+            if self.legacy_entry_ids.len() < MAX_LEGACY_ENTRIES {
+                let id = format!("pi-v1-{}", self.legacy_entry_ids.len());
+                let parent_id = self.legacy_entry_ids.last().cloned();
+                object.insert("id".to_owned(), Value::String(id.clone()));
+                object.insert(
+                    "parentId".to_owned(),
+                    parent_id.map_or(Value::Null, Value::String),
+                );
+                self.legacy_entry_ids.push(id);
+            } else {
                 self.legacy_migration_incomplete = true;
-                return;
             }
 
-            let id = format!("pi-v1-{}", self.legacy_entry_ids.len());
-            let parent_id = self.legacy_entry_ids.last().cloned();
-            object.insert("id".to_owned(), Value::String(id.clone()));
-            object.insert(
-                "parentId".to_owned(),
-                parent_id.map_or(Value::Null, Value::String),
-            );
-            self.legacy_entry_ids.push(id);
-
-            if let Some(index) = object
-                .get("firstKeptEntryIndex")
-                .and_then(Value::as_u64)
-                .and_then(|index| usize::try_from(index).ok())
-            {
-                if let Some(first_kept_id) = self.legacy_entry_ids.get(index) {
+            if let Some(index) = object.get("firstKeptEntryIndex") {
+                let first_kept_id = index
+                    .as_u64()
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| self.legacy_entry_ids.get(index));
+                if let Some(first_kept_id) = first_kept_id {
                     object.insert(
                         "firstKeptEntryId".to_owned(),
                         Value::String(first_kept_id.clone()),
                     );
+                } else {
+                    self.legacy_migration_incomplete = true;
                 }
                 object.remove("firstKeptEntryIndex");
             }
@@ -1900,6 +1901,53 @@ mod tests {
         let gaps = state.finish().coverage_gaps;
         assert_eq!(gaps, vec![PartialReason::AttributionIncomplete]);
         assert_eq!(gaps, resumed.finish().coverage_gaps);
+    }
+
+    #[test]
+    fn v1_migration_keeps_role_and_index_migrations_after_the_id_cap() {
+        let mut state = PiStreamState {
+            session_version: 1,
+            legacy_entry_ids: (0..MAX_LEGACY_ENTRIES)
+                .map(|index| format!("pi-v1-{index}"))
+                .collect(),
+            ..PiStreamState::default()
+        };
+        let mut value = json!({
+            "type": "message",
+            "firstKeptEntryIndex": 0,
+            "message": {"role": "hookMessage"}
+        });
+
+        state.migrate_entry(&mut value);
+
+        assert!(state.legacy_migration_incomplete);
+        assert!(value.get("id").is_none());
+        assert!(value.get("parentId").is_none());
+        assert_eq!(value["firstKeptEntryId"], "pi-v1-0");
+        assert!(value.get("firstKeptEntryIndex").is_none());
+        assert_eq!(
+            value.pointer("/message/role").and_then(Value::as_str),
+            Some("custom")
+        );
+    }
+
+    #[test]
+    fn v1_migration_marks_an_unresolved_first_kept_index_incomplete() {
+        let mut state = PiStreamState {
+            session_version: 1,
+            legacy_entry_ids: vec!["pi-v1-0".to_owned()],
+            ..PiStreamState::default()
+        };
+        let mut value = json!({
+            "type": "compaction",
+            "firstKeptEntryIndex": 4,
+        });
+
+        state.migrate_entry(&mut value);
+
+        assert!(state.legacy_migration_incomplete);
+        assert!(value.get("firstKeptEntryId").is_none());
+        assert!(value.get("firstKeptEntryIndex").is_none());
     }
 
     #[test]

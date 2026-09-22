@@ -25,69 +25,77 @@ const child = spawn(command, args, {
   env: { ...localEnv, ...process.env },
   stdio: "inherit",
   shell: isWindows,
+  detached: !isWindows,
 })
 
 let shutdownSignal = null
 let forceKillTimer = null
-let trackedDescendants = []
 
-function readDescendants(rootPid) {
-  const result = spawnSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" })
-  const children = new Map()
-  for (const line of result.stdout?.split("\n") ?? []) {
-    const [pid, parentPid] = line.trim().split(/\s+/).map(Number)
-    if (!Number.isInteger(pid) || !Number.isInteger(parentPid)) continue
-    const siblings = children.get(parentPid) ?? []
-    siblings.push(pid)
-    children.set(parentPid, siblings)
-  }
-  const descendants = []
-  const pending = [...(children.get(rootPid) ?? [])]
-  while (pending.length > 0) {
-    const pid = pending.pop()
-    descendants.push(pid)
-    pending.push(...(children.get(pid) ?? []))
-  }
-  return descendants.reverse()
-}
-
-function signalProcesses(pids, signal) {
-  for (const pid of pids) {
-    try {
-      process.kill(pid, signal)
-    } catch (error) {
-      if (error?.code !== "ESRCH") throw error
-    }
+function processGroupExists() {
+  if (!child.pid) return false
+  try {
+    process.kill(-child.pid, 0)
+    return true
+  } catch (error) {
+    if (error?.code === "ESRCH") return false
+    throw error
   }
 }
 
 function signalChild(signal) {
-  if (!child.pid || child.exitCode != null || child.signalCode != null) return
+  if (!child.pid || (isWindows && (child.exitCode != null || child.signalCode != null))) return
   if (isWindows) {
     const args = ["/pid", String(child.pid), "/t"]
     if (signal === "SIGKILL") args.push("/f")
     spawnSync("taskkill", args, { stdio: "ignore" })
     return
   }
-  trackedDescendants = readDescendants(child.pid)
-  signalProcesses([...trackedDescendants, child.pid], signal)
+  try {
+    process.kill(-child.pid, signal)
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error
+  }
 }
 
-const descendantTimer = isWindows
-  ? null
-  : setInterval(() => {
-      if (child.pid && child.exitCode == null && child.signalCode == null) {
-        trackedDescendants = readDescendants(child.pid)
-      }
-    }, 100)
-descendantTimer?.unref()
+function scheduleForceKill() {
+  if (forceKillTimer) clearTimeout(forceKillTimer)
+  forceKillTimer = setTimeout(() => {
+    forceKillTimer = null
+    signalChild("SIGKILL")
+  }, 5_000)
+}
+
+function finishChildExit(code, signal) {
+  const exitSignal = shutdownSignal ?? signal
+  if (exitSignal) process.kill(process.pid, exitSignal)
+  else process.exitCode = code ?? 1
+}
+
+function cleanupAfterExit(code, signal) {
+  if (isWindows) {
+    finishChildExit(code, signal)
+    return
+  }
+
+  signalChild("SIGTERM")
+  setTimeout(() => {
+    if (!processGroupExists()) {
+      finishChildExit(code, signal)
+      return
+    }
+    forceKillTimer = setTimeout(() => {
+      forceKillTimer = null
+      signalChild("SIGKILL")
+      finishChildExit(code, signal)
+    }, 5_000)
+  }, 100)
+}
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.once(signal, () => {
     shutdownSignal = signal
     signalChild(signal)
-    forceKillTimer = setTimeout(() => signalChild("SIGKILL"), 5_000)
-    forceKillTimer.unref()
+    scheduleForceKill()
   })
 }
 
@@ -98,14 +106,7 @@ child.on("error", (error) => {
 
 child.on("exit", (code, signal) => {
   if (forceKillTimer) clearTimeout(forceKillTimer)
-  if (descendantTimer) clearInterval(descendantTimer)
-  if (!isWindows) {
-    signalProcesses(trackedDescendants, "SIGTERM")
-    signalProcesses(trackedDescendants, "SIGKILL")
-  }
-  const exitSignal = shutdownSignal ?? signal
-  if (exitSignal) process.kill(process.pid, exitSignal)
-  else process.exitCode = code ?? 1
+  cleanupAfterExit(code, signal)
 })
 
 process.on("exit", () => signalChild("SIGTERM"))

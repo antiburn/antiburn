@@ -60,7 +60,7 @@ export function checksPresentation(
     (category) => category.lifecycle == null,
   )
   const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
-  const noActiveChecks = activeAssessed.length === 0
+  const noActiveChecks = report.evidenceSettled && activeAssessed.length === 0
   const burnChecks = aggregateBurnCheckPresentation(activeReport, refreshUnavailable)
   return {
     activeAssessed,

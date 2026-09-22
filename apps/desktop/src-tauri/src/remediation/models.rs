@@ -377,16 +377,124 @@ pub struct AggregateWin {
     pub ends_at_ms: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AggregateSavings {
     pub version: u32,
-    #[serde(default)]
     pub status: SavingsStatus,
     pub token_savings: Option<u64>,
     pub api_equivalent_cost_avoided_usd: Option<f64>,
     pub improvement_count: Option<u64>,
     pub method: Option<BurnCheckEstimateMethod>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AggregateSavingsFields {
+    version: u32,
+    #[serde(default = "pending_savings_status")]
+    status: SavingsStatus,
+    token_savings: Option<u64>,
+    api_equivalent_cost_avoided_usd: Option<f64>,
+    improvement_count: Option<u64>,
+    method: Option<BurnCheckEstimateMethod>,
+}
+
+impl Serialize for AggregateSavings {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if matches!(self.status, SavingsStatus::Unavailable)
+            && self.api_equivalent_cost_avoided_usd.is_some()
+        {
+            return Err(serde::ser::Error::custom(
+                "unavailable savings cannot include an avoided cost",
+            ));
+        }
+        AggregateSavingsFields {
+            version: self.version,
+            status: self.status.clone(),
+            token_savings: self.token_savings,
+            api_equivalent_cost_avoided_usd: self.api_equivalent_cost_avoided_usd,
+            improvement_count: self.improvement_count,
+            method: self.method,
+        }
+        .serialize(serializer)
+    }
+}
+
+fn pending_savings_status() -> SavingsStatus {
+    SavingsStatus::Pending {
+        method_revision: None,
+    }
+}
+
+impl<'de> Deserialize<'de> for AggregateSavings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let fields = AggregateSavingsFields::deserialize(deserializer)?;
+        if matches!(fields.status, SavingsStatus::Unavailable)
+            && fields.api_equivalent_cost_avoided_usd.is_some()
+        {
+            return Err(serde::de::Error::custom(
+                "unavailable savings cannot include an avoided cost",
+            ));
+        }
+        Ok(Self {
+            version: fields.version,
+            status: fields.status,
+            token_savings: fields.token_savings,
+            api_equivalent_cost_avoided_usd: fields.api_equivalent_cost_avoided_usd,
+            improvement_count: fields.improvement_count,
+            method: fields.method,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_aggregate_savings_default_to_pending() {
+        let savings: AggregateSavings = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "apiEquivalentCostAvoidedUsd": 0.25,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            savings.status,
+            SavingsStatus::Pending {
+                method_revision: None
+            }
+        );
+        assert_eq!(savings.api_equivalent_cost_avoided_usd, Some(0.25));
+    }
+
+    #[test]
+    fn explicit_aggregate_savings_status_is_preserved() {
+        let savings: AggregateSavings = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "status": {"status": "unavailable"},
+        }))
+        .unwrap();
+
+        assert_eq!(savings.status, SavingsStatus::Unavailable);
+    }
+
+    #[test]
+    fn unavailable_aggregate_savings_cannot_have_an_avoided_cost() {
+        let result = serde_json::from_value::<AggregateSavings>(serde_json::json!({
+            "version": 1,
+            "status": {"status": "unavailable"},
+            "apiEquivalentCostAvoidedUsd": 0.25,
+        }));
+
+        assert!(result.is_err());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

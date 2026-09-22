@@ -191,6 +191,25 @@ describe("Checks presentation", () => {
     expect(checksHeroPresentation(presentation).result).toBe("No active checks")
   })
 
+  it("keeps the running presentation while evidence is unsettled", () => {
+    const presentation = checksPresentation({
+      ...report([
+        category({
+          finding: 0,
+          clean: 0,
+          unavailable: 4,
+          lifecycle: null,
+        }),
+      ]),
+      evidenceSettled: false,
+      pendingEvidence: 1,
+    })
+
+    expect(presentation.noActiveChecks).toBe(false)
+    expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
+    expect(presentation.burnChecks.headline).toBe("Running Burn Checks…")
+  })
+
   it("floors basis-point estimates to whole percentages", () => {
     expect(formatTokenBurnPercent(1_625)).toBe("16%")
     expect(formatTokenBurnPercent(1_250)).toBe("12%")

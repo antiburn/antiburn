@@ -225,4 +225,25 @@ describe("snoozed burn checks", () => {
     )
     expect(report.estimatedTokenBurnBasisPoints).toBe(850)
   })
+
+  it("preserves the estimate when snoozing an absent category", () => {
+    const report = {
+      evidenceSettled: true,
+      pendingEvidence: 0,
+      estimatedTokenBurnBasisPoints: 900,
+      categories: [
+        {
+          id: "cacheChurn" as const,
+          finding: 1,
+          clean: 0,
+          unavailable: 0,
+          estimatedTokenBurnBasisPoints: 900,
+        },
+      ],
+    }
+
+    expect(activeChecksReport(report, new Set(["unusedSkills"])).estimatedTokenBurnBasisPoints).toBe(
+      900,
+    )
+  })
 })

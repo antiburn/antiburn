@@ -724,7 +724,7 @@ describe("BurnChecksView", () => {
       )
     })
 
-    it("shows no active checks when every assessed check is snoozed", async () => {
+    it("keeps running checks visible when every assessed check is snoozed", async () => {
       mockSnoozes([
         { detector: "oldModelUsage", scope: "check", until: null },
         { detector: "unusedSkills", scope: "check", until: null },
@@ -736,7 +736,7 @@ describe("BurnChecksView", () => {
       expect(screen.queryByRole("button", { name: /Unused skills/ })).not.toBeInTheDocument()
       expect(screen.queryByRole("heading", { name: "Failed checks 1" })).not.toBeInTheDocument()
       expect(screen.queryByRole("region", { name: "Savings" })).not.toBeInTheDocument()
-      expect(screen.getByText("No active checks.")).toBeVisible()
+      expect(screen.queryByText("No active checks.")).not.toBeInTheDocument()
     })
 
     it("moves focus to the Snoozed trigger before hiding a focused row", async () => {

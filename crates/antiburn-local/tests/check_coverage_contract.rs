@@ -434,7 +434,7 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
 
 #[test]
 fn first_tier_product_matrix_has_one_typed_row_per_agent_and_check() {
-    const CHECK_COVERAGE: &str = include_str!("../../../docs/check-coverage.md");
+    let check_coverage = coverage_document("check-coverage.md");
     const AGENTS: &[&str] = &[
         "Claude Code",
         "Codex",
@@ -450,7 +450,7 @@ fn first_tier_product_matrix_has_one_typed_row_per_agent_and_check() {
     const BURN_ESTIMATES: &[&str] = &["Y", "N"];
 
     let rows = markdown_table_rows(
-        CHECK_COVERAGE,
+        &check_coverage,
         "## First-Tier Product Matrix",
         "## Second-Tier Product Coverage",
     );
@@ -503,9 +503,9 @@ fn first_tier_product_matrix_has_one_typed_row_per_agent_and_check() {
 
 #[test]
 fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
-    const CHECK_COVERAGE: &str = include_str!("../../../docs/check-coverage.md");
+    let check_coverage = coverage_document("check-coverage.md");
     let rows = markdown_table_rows(
-        CHECK_COVERAGE,
+        &check_coverage,
         "## First-Tier Product Matrix",
         "## Second-Tier Product Coverage",
     );
@@ -522,7 +522,7 @@ fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
         ),
     ];
 
-    let remediation_rows = remediation_matrix_rows(CHECK_COVERAGE);
+    let remediation_rows = remediation_matrix_rows(&check_coverage);
     for (agent_index, (label, agent, source)) in agents.into_iter().enumerate() {
         for (detector_index, detector) in DetectorId::ALL.into_iter().enumerate() {
             let row = rows
@@ -621,8 +621,8 @@ fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
 
 #[test]
 fn source_format_remediation_matrix_is_exhaustive_and_typed() {
-    const CHECK_COVERAGE: &str = include_str!("../../../docs/check-coverage.md");
-    let rows = remediation_matrix_rows(CHECK_COVERAGE);
+    let check_coverage = coverage_document("check-coverage.md");
+    let rows = remediation_matrix_rows(&check_coverage);
     let expected: BTreeSet<_> = SOURCE_FORMATS
         .iter()
         .map(|format| source_keys(*format).0)

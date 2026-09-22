@@ -862,6 +862,12 @@ impl ClaudeSessionReader {
                         if is_inert_recognized_eventless(&value) {
                             continue;
                         }
+                        sink.record(NormalizedRecord::Observation(Box::new(
+                            EvidenceObservation::UnrecognizedType {
+                                discriminator: record_discriminator(&value),
+                                inert: false,
+                            },
+                        )));
                         sink.record(NormalizedRecord::Unusable(
                             crate::analysis::framing::PartialReason::UnrecognizedRecordType,
                         ));
@@ -869,8 +875,7 @@ impl ClaudeSessionReader {
                     }
 
                     let Some(mut event) = parse_record(&value, RecordShape::Claude) else {
-                        let allowlisted =
-                            is_claude_eventless(&value) || is_recognized_eventless(&value);
+                        let allowlisted = is_recognized_eventless(&value);
                         let structurally_inert = if allowlisted {
                             is_inert_recognized_eventless(&value)
                         } else {
@@ -1680,6 +1685,19 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct OrderedRecordSink {
+        records: Vec<NormalizedRecord>,
+    }
+
+    impl RecordSink for OrderedRecordSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            self.records.push(record);
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
     /// Collects every `TurnContent` record a visit emits, in order.
     #[derive(Default)]
     struct ContentCapturingSink {
@@ -1988,6 +2006,40 @@ mod tests {
         });
         let ev = parse_record(&other, RecordShape::Claude).expect("system record should parse");
         assert!(!ev.is_compaction_boundary);
+    }
+
+    #[test]
+    fn non_inert_claude_eventless_records_report_before_unusable() {
+        let source = concat!(
+            r#"{"type":"system","subtype":"away_summary","usage":{"input_tokens":1}}"#,
+            "\n",
+        );
+        let mut sink = OrderedRecordSink::default();
+
+        ClaudeSessionReader
+            .visit_reader(
+                BufReader::new(source.as_bytes()),
+                &|| false,
+                &mut sink,
+                &HashSet::new(),
+                ClaudeStreamState::default(),
+            )
+            .expect("read must succeed");
+
+        assert_eq!(sink.records.len(), 3);
+        assert!(matches!(
+            &sink.records[1],
+            NormalizedRecord::Observation(observation)
+                if matches!(
+                    observation.as_ref(),
+                    EvidenceObservation::UnrecognizedType { discriminator, inert: false }
+                        if discriminator == "system"
+                )
+        ));
+        assert!(matches!(
+            &sink.records[2],
+            NormalizedRecord::Unusable(PartialReason::UnrecognizedRecordType)
+        ));
     }
 
     /* ------------------------------------------------------------------

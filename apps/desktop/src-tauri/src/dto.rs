@@ -18,8 +18,8 @@ use antiburn_local::analysis::{
     ToolDefinition, lookup_pricing,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, DetectorId, EfficiencyReport, NotAssessedReason, ReportCatalogs,
-    SessionBadge, model_family,
+    BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
+    ReportCatalogs, SessionBadge, model_family,
 };
 use antiburn_local::pricing::canonical_model_key;
 use serde::{Deserialize, Serialize};
@@ -2503,9 +2503,64 @@ fn aggregate_token_burn_table(
     report: &EfficiencyReport,
     resources: &[antiburn_local::insights::ResourceTokenBurnAssessment<'_>],
 ) -> Vec<Option<u16>> {
-    (0..(1_u16 << DetectorId::COUNT))
-        .map(|mask| report.estimated_token_burn_for_active_detectors(mask, resources))
-        .collect()
+    let mask_count = 1_usize << DetectorId::COUNT;
+    let (finding_detector_mask, clean_detector_mask) = aggregate_detector_masks(report, resources);
+    // Clean detectors have identical fallback behavior, so one bit represents them all.
+    let clean_representative = if clean_detector_mask == 0 {
+        0
+    } else {
+        1_u16 << clean_detector_mask.trailing_zeros()
+    };
+    let mut computed = vec![false; mask_count];
+    let mut values = vec![None; mask_count];
+
+    for mask in 0..mask_count {
+        let mask = mask as u16;
+        let relevant_mask = (mask & finding_detector_mask
+            | if mask & clean_detector_mask != 0 {
+                clean_representative
+            } else {
+                0
+            }) as usize;
+        if !computed[relevant_mask] {
+            values[relevant_mask] =
+                report.estimated_token_burn_for_active_detectors(relevant_mask as u16, resources);
+            computed[relevant_mask] = true;
+        }
+        values[mask as usize] = values[relevant_mask];
+    }
+
+    values
+}
+
+fn aggregate_detector_masks(
+    report: &EfficiencyReport,
+    resources: &[antiburn_local::insights::ResourceTokenBurnAssessment<'_>],
+) -> (u16, u16) {
+    DetectorId::ALL
+        .into_iter()
+        .fold((0, 0), |(finding_mask, clean_mask), detector| {
+            let (finding, clean) = resources
+                .iter()
+                .find(|assessment| assessment.detector == detector)
+                .map_or_else(
+                    || match &report.detector_statuses[detector.index()] {
+                        DetectorStatus::Findings(findings) => {
+                            (findings.finding_sessions > 0, false)
+                        }
+                        DetectorStatus::Clean => (false, true),
+                        DetectorStatus::NotAssessed(_) => (false, false),
+                    },
+                    |assessment| (assessment.finding_count > 0, assessment.clean),
+                );
+            if finding {
+                (finding_mask | (1 << detector.index()), clean_mask)
+            } else if clean {
+                (finding_mask, clean_mask | (1 << detector.index()))
+            } else {
+                (finding_mask, clean_mask)
+            }
+        })
 }
 
 /// Where the app came from and what it is running against.

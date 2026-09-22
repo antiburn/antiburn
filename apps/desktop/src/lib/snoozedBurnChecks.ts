@@ -196,6 +196,7 @@ export function activeChecksReport(
 ): ChecksReportPayload {
   if (snoozed.size === 0) return report
   const categories = visibleCheckCategories(report.categories, snoozed)
+  if (categories.length === report.categories.length) return report
   const activeDetectorIds = new Set(categories.map((category) => category.id))
   const mask = detectorIds.reduce(
     (value, detector, index) => value | (activeDetectorIds.has(detector) ? 1 << index : 0),

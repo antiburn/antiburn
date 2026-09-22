@@ -1378,6 +1378,12 @@ fn set_embedded_fork_observation(content: &mut String, observation: &ForkObserva
     let Ok(mut metadata) = serde_json::from_str::<Value>(first) else {
         return;
     };
+    if metadata
+        .get(FORK_OBSERVATION_KEY)
+        .is_some_and(|value| !value.is_null())
+    {
+        return;
+    }
     metadata[FORK_OBSERVATION_KEY] = serde_json::to_value(observation).unwrap_or(Value::Null);
     *content = format!("{metadata}\n{rest}");
 }
@@ -3358,6 +3364,29 @@ mod tests {
             embedded_fork_observation(content_by_id[unrelated_id]).is_none(),
             "a fork title without an exact copied prefix must fail closed"
         );
+    }
+
+    #[test]
+    fn title_fork_annotation_preserves_an_existing_observation() {
+        let existing = ForkObservation {
+            parent_agent: "cursor".to_owned(),
+            parent_agent_session_id: "declared-parent".to_owned(),
+            fork_kind: "subagent".to_owned(),
+            provider_fork_point_id: None,
+            detection_source: "store_db_subagent_info".to_owned(),
+            confidence: 100,
+            inherited_item_count: None,
+            extractor_version: "cursor-store-db-v1".to_owned(),
+        };
+        let replacement = ForkObservation {
+            parent_agent_session_id: "title-parent".to_owned(),
+            ..existing.clone()
+        };
+        let mut content = format!("{}\n{{}}", json!({FORK_OBSERVATION_KEY: existing}));
+
+        set_embedded_fork_observation(&mut content, &replacement);
+
+        assert_eq!(embedded_fork_observation(&content), Some(existing));
     }
 
     #[tokio::test]

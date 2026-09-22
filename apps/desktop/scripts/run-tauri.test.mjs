@@ -72,7 +72,7 @@ wait
 )
 
 test(
-  "an unexpected Tauri exit stops tracked descendants",
+  "an unexpected Tauri exit stops its process group",
   { skip: process.platform === "win32" },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "antiburn-tauri-runner-"))
@@ -83,8 +83,8 @@ test(
       `#!/bin/sh
 sh -c 'trap "" TERM; sleep 300' &
 grandchild=$!
-printf '%s %s' "$$" "$grandchild" > "$PID_FILE"
 trap 'exit 0' TERM
+printf '%s %s' "$$" "$grandchild" > "$PID_FILE"
 wait "$grandchild"
 `,
     )
@@ -104,11 +104,11 @@ wait "$grandchild"
         () => readFile(pidFile, "utf8"),
         (value) => value.trim().split(" ").length === 2,
       ).then((value) => value.trim().split(" ").map(Number))
-      await new Promise((resolve) => setTimeout(resolve, 150))
       process.kill(childPid, "SIGTERM")
       await waitFor(
         () => Promise.resolve([processExists(wrapper.pid), processExists(grandchildPid)]),
         (alive) => alive.every((value) => !value),
+        10_000,
       )
     } finally {
       if (wrapper.exitCode == null && wrapper.signalCode == null) wrapper.kill("SIGKILL")
