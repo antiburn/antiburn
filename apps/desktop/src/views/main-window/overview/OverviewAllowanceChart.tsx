@@ -12,8 +12,9 @@ import { AXIS_TICK } from "../../../components/session/analysis/chartLabels"
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
-import { Skeleton } from "../../../components/ui/Skeleton"
+import { cn } from "../../../lib/cn"
 import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
+import { useEntranceProps } from "./overviewEntrance"
 
 import "./overview.css"
 
@@ -28,6 +29,12 @@ const AXIS_LABEL_STEP = 7
 const AXIS_LABEL_CLEARANCE = 3
 
 const GUIDE_PERCENTS = [100, 75, 50, 25]
+
+const LEGEND_ITEMS = [
+  { key: "short", label: "5-hour window", swatch: "bg-context-stroke/20" },
+  { key: "weekly", label: "Week", swatch: "bg-context-stroke/60" },
+  { key: "rolling", label: "Average usage", swatch: "bg-gray-500", shape: "line" },
+] as const
 
 export function OverviewAllowanceChart({
   account,
@@ -46,7 +53,14 @@ export function OverviewAllowanceChart({
     return (
       <section className="overview-chart" aria-label="Allowance chart" aria-busy={loading}>
         {loading ? (
-          <Skeleton className="block min-h-(--overview-chart-height) w-full flex-1" />
+          <>
+            {/* The legend the plot draws above itself, held open so the rest of
+                the page does not shift down when the plot replaces this. */}
+            <div aria-hidden="true" className="overview-chart-legend invisible mb-(--space-sm)">
+              <ChartLegend ariaLabel="Layers" items={LEGEND_ITEMS} />
+            </div>
+            <div aria-hidden="true" className="overview-chart-placeholder" />
+          </>
         ) : (
           <p className="type-body text-label-secondary">No allowance history to chart yet.</p>
         )}
@@ -77,6 +91,7 @@ function AllowancePlot({
   controls?: ReactNode
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const entranceProps = useEntranceProps("allowance-chart", "overview-chart-in", true)
   const width = useElementWidth(containerRef)
   const height = useElementHeight(containerRef)
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
@@ -129,17 +144,14 @@ function AllowancePlot({
         `${Math.round(lastRolling)} percent.`
 
   return (
-    <section className="overview-chart" aria-label="Allowance chart">
+    <section
+      {...entranceProps}
+      className={cn("overview-chart", entranceProps.className)}
+      aria-label="Allowance chart"
+    >
       <p className="sr-only">{summary}</p>
-      <div className="mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
-        <ChartLegend
-          ariaLabel="Layers"
-          items={[
-            { key: "short", label: "5-hour window", swatch: "bg-context-stroke/20" },
-            { key: "weekly", label: "Week", swatch: "bg-context-stroke/60" },
-            { key: "rolling", label: "Average usage", swatch: "bg-gray-500", shape: "line" },
-          ]}
-        />
+      <div className="overview-chart-legend mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
+        <ChartLegend ariaLabel="Layers" items={LEGEND_ITEMS} />
         {controls}
       </div>
       <div ref={containerRef} className="relative min-h-(--overview-chart-height) flex-1">

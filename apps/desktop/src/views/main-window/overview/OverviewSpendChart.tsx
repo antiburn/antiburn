@@ -4,6 +4,7 @@ import type {
   ProviderUsageDayPayload,
   ProviderUsageWindowPayload,
 } from "../../../lib/providerUsageIpc"
+import { cn } from "../../../lib/cn"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { axisDayLabel, dayLabel } from "../../../lib/presentation/chartDates"
 import {
@@ -15,7 +16,7 @@ import {
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
-import { Skeleton } from "../../../components/ui/Skeleton"
+import { useEntranceProps } from "./overviewEntrance"
 
 import "./overview.css"
 
@@ -143,14 +144,39 @@ export function OverviewSpendChart({
       ?.focus()
   }
 
+  const placeholder = loading || days.length === 0
+  const entranceProps = useEntranceProps("spend-chart", "overview-chart-in", !placeholder)
+
   return (
     <section
-      className="overview-chart"
+      {...entranceProps}
+      className={cn("overview-chart", entranceProps.className)}
       aria-label="Estimated spend by day"
       aria-busy={loading || undefined}
     >
-      {loading || days.length === 0 ? (
-        <Skeleton className="block min-h-(--overview-chart-height) w-full flex-1" />
+      {placeholder ? (
+        <>
+          {/* The same frame the chart draws in: the agent legend above, the
+              value labels beside and the day labels below, all held open and
+              invisible. The block then sits exactly where the plot will, and
+              nothing on the page moves when the chart replaces it. */}
+          <div aria-hidden="true" className="invisible mb-(--space-sm)">
+            <ChartLegend
+              ariaLabel="Agents"
+              items={[{ key: "placeholder", label: "Agent", swatch: "bg-transparent" }]}
+            />
+          </div>
+          <div
+            aria-hidden="true"
+            className="grid min-h-(--overview-chart-height) flex-auto grid-cols-[minmax(0,1fr)_auto] grid-rows-[minmax(0,1fr)_auto] gap-x-(--space-sm) gap-y-(--space-xs) pt-(--space-sm)"
+          >
+            <div className="overview-chart-placeholder" />
+            <div className="type-metadata invisible">
+              <SegmentFigure>$0.00</SegmentFigure>
+            </div>
+            <div className="type-caption invisible h-[1.4em]" />
+          </div>
+        </>
       ) : (
         <>
           <ChartLegend

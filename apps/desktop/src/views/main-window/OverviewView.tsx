@@ -32,12 +32,30 @@ export function OverviewView({
     const saved = readOverviewViewPrefs().metric
     return saved === "cost" || saved === "allowance" ? saved : null
   })
-  const hasSubscriptionPlan =
-    state.allowance?.accounts.some((account) => account.plan != null) ||
-    state.liveUsage?.providers.some((provider) => provider.plan != null)
-  const metric = selectedMetric ?? (hasSubscriptionPlan ? "allowance" : "cost")
+  // What the last run found out about this reader's plans, so the page can
+  // open on the right unit instead of guessing and correcting itself.
+  const [rememberedPlan] = useState<boolean | undefined>(
+    () => readOverviewViewPrefs().hadSubscriptionPlan,
+  )
+  // A detected plan settles the answer at once. A reader with no plan looks
+  // exactly like one whose allowance and live-usage reads have not both
+  // answered yet, so a negative answer only settles once both have.
+  const observedPlan =
+    (state.allowance?.accounts.some((account) => account.plan != null) ?? false) ||
+    (state.liveUsage?.providers.some((provider) => provider.plan != null) ?? false)
+  const allowanceSettled =
+    !state.allowanceLoading && (state.allowance != null || state.allowanceError)
+  const planSettled = observedPlan || (allowanceSettled && state.liveUsageSettled)
+  const settledPlan = planSettled ? observedPlan : undefined
+  const hasSubscriptionPlan = settledPlan ?? rememberedPlan
+
+  const metric = selectedMetric ?? (hasSubscriptionPlan === false ? "cost" : "allowance")
+  // On a first run there is no choice and nothing remembered, so the unit above
+  // is a guess. Hold the figures back rather than draw them under a tab that is
+  // about to change.
+  const metricSettled = selectedMetric != null || hasSubscriptionPlan != null
   const usage = state.usage
-  const loading = !usage && !state.usageError
+  const loading = (!usage && !state.usageError) || !metricSettled
 
   return (
     <div
@@ -75,7 +93,7 @@ export function OverviewView({
             totals={usage?.totals ?? null}
             days={usage?.days ?? []}
             allowance={state.allowance}
-            allowanceLoading={state.allowanceLoading}
+            allowanceLoading={state.allowanceLoading || !metricSettled}
             allowanceError={state.allowanceError}
             usageError={state.usageError}
             onRetryUsage={session.refresh}

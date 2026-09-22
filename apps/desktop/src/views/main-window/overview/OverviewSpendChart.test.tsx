@@ -1,11 +1,19 @@
 import { fireEvent, render, screen, within } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 
 import type {
   ProviderAgentDayUsagePayload,
   ProviderUsageDayPayload,
 } from "../../../lib/providerUsageIpc"
 import { OverviewSpendChart } from "./OverviewSpendChart"
+import { resetEntrances } from "./overviewEntrance"
+
+function finishAnimation(element: Element) {
+  fireEvent.animationEnd(element)
+  // jsdom lacks style.animation, so React registers its vendor-prefixed
+  // fallback listener in tests. Real browsers use the unprefixed event.
+  fireEvent(element, new Event("webkitAnimationEnd", { bubbles: true }))
+}
 
 function agent(
   agent: string,
@@ -52,6 +60,11 @@ function dayButtons() {
     screen.getByRole("group", { name: "Estimated spend for the past 30 days" }),
   ).getAllByRole("button")
 }
+
+beforeEach(() => {
+  // The entrance plays once a run, so each test starts from a first run.
+  resetEntrances()
+})
 
 describe("OverviewSpendChart", () => {
   it.each([
@@ -156,5 +169,67 @@ describe("OverviewSpendChart", () => {
     )
     rerender(<OverviewSpendChart days={[]} />)
     expect(screen.queryByRole("group")).toBeNull()
+  })
+
+  it("stands a flat block in for the chart, and fades the chart in over it", () => {
+    const { rerender } = render(<OverviewSpendChart days={[]} loading />)
+    const region = screen.getByRole("region", { name: "Estimated spend by day" })
+    const placeholder = region.querySelector(".overview-chart-placeholder")
+    expect(placeholder).not.toBeNull()
+    // A pulse on an empty chart draws the eye to the one thing with nothing
+    // to read on it.
+    expect(placeholder).not.toHaveClass("animate-pulse")
+    expect(region).not.toHaveClass("overview-chart-in")
+
+    rerender(<OverviewSpendChart days={[day("2026-09-20", [agent("claude-code", 1)])]} />)
+    expect(region.querySelector(".overview-chart-placeholder")).toBeNull()
+    expect(region).toHaveClass("overview-chart-in")
+  })
+
+  it("stands the block in the same frame the chart draws in", () => {
+    const { rerender } = render(<OverviewSpendChart days={[]} loading />)
+    const region = screen.getByRole("region", { name: "Estimated spend by day" })
+    const whileLoading = region.children[1]!.className
+
+    rerender(<OverviewSpendChart days={[day("2026-09-20", [agent("claude-code", 1)])]} />)
+    // The chart's plot sits in a grid that also reserves the value labels
+    // beside it and the day labels below. A block without them is taller than
+    // the plot it stands in for, and the page settles as the chart arrives.
+    expect(region.children[1]!.className).toBe(whileLoading)
+  })
+
+  it("draws itself in once a run, not every time the reader comes back", () => {
+    const loaded = [day("2026-09-20", [agent("claude-code", 1)])]
+    const { unmount } = render(<OverviewSpendChart days={loaded} />)
+    const region = screen.getByRole("region", { name: "Estimated spend by day" })
+    expect(region).toHaveClass("overview-chart-in")
+    // The key records on animationend, not on render, so this stands in for
+    // the real animation finishing.
+    finishAnimation(region)
+    unmount()
+
+    // The Overview is a tab the reader returns to. A reveal that replays on
+    // every visit reads as a wait rather than an arrival.
+    render(<OverviewSpendChart days={loaded} />)
+    expect(screen.getByRole("region", { name: "Estimated spend by day" })).not.toHaveClass(
+      "overview-chart-in",
+    )
+  })
+
+  it("does not record the entrance when a child's animation ends", () => {
+    const loaded = [day("2026-09-20", [agent("claude-code", 1)])]
+    const { unmount } = render(<OverviewSpendChart days={loaded} />)
+    const region = screen.getByRole("region", { name: "Estimated spend by day" })
+    const child = region.querySelector("svg")
+    expect(child).not.toBeNull()
+    // A layer inside the chart animating, such as a bar, must not count as
+    // the section's own entrance finishing.
+    finishAnimation(child!)
+    unmount()
+
+    render(<OverviewSpendChart days={loaded} />)
+    expect(screen.getByRole("region", { name: "Estimated spend by day" })).toHaveClass(
+      "overview-chart-in",
+    )
   })
 })
