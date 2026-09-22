@@ -1,15 +1,17 @@
 import { memo, useId, useRef } from "react"
 
-import {
-  AXIS_TICK,
-  labeledIndices,
-  pillGeometry,
-} from "../../../components/session/analysis/chartLabels"
+import { AXIS_TICK } from "../../../components/session/analysis/chartLabels"
 import type { QuotaPeriodPayload } from "../../../lib/providerUsageIpc"
 import { axisDayLabel } from "../../../lib/presentation/overviewChart"
 import { traceEvent } from "../../../lib/perfTrace"
 import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
-import { rowsInWindow, windowSlots, type QuotaWindowSlot } from "./quotaLayout"
+import {
+  rowsInWindow,
+  slotPaceEnd,
+  windowSlots,
+  WINDOW_GAP_PX,
+  type QuotaWindowSlot,
+} from "./quotaLayout"
 import { quotaBandPath, quotaBandSpecs, quotaStackTopPath } from "./quotaPaths"
 import type { QuotaSeries, QuotaSeriesRow } from "./quotaSeries"
 
@@ -26,8 +28,9 @@ const TIME_AXIS_HEIGHT = 16
 // Wider than a plain value axis (44px): the extra room keeps the "100%"
 // tick clear of the plot's left edge.
 const VALUE_AXIS_WIDTH = 56
-/** The least a reader needs between two window-tick labels to read both. */
+/** The least a reader needs between two x-axis tick labels to read both. */
 const WINDOW_TICK_MIN_GAP_PX = 64
+const HOUR_SECS = 60 * 60
 const Y_TICKS = [0, 25, 50, 75, 100]
 /** Horizontal gridlines: every tick but 0%, which the plot's own bottom
  *  edge already marks. */
@@ -36,8 +39,6 @@ const GRID_TICKS = [25, 50, 75, 100]
 /** A layer of the burnup chart: `"meter"`, `"other"`, `"unattributed"`,
  *  `"unexplained"`, or a top session's key. */
 type QuotaChartSeries = string
-
-type QuotaChartAxisMode = "window" | "date"
 
 export interface QuotaBurnupChartProps {
   rangeStartEpoch: number
@@ -48,11 +49,7 @@ export interface QuotaBurnupChartProps {
    *  decides which windows a window-preset range shows) stays the single
    *  source of truth for what is on screen. */
   periods: readonly QuotaPeriodPayload[]
-  /** `"window"` gives each period its own equal-width slot along the plot;
-   *  `"date"` draws one shared wall-clock x axis, today's rendering. */
-  axisMode: QuotaChartAxisMode
-  /** False draws each band once, at full strength, with no pace line and no
-   *  above-pace highlight. */
+  /** False hides the pace lines. */
   showPace: boolean
   /** The chart's rows and top sessions, built once by the caller so the
    *  top-sessions list can share the same top-session ranking. */
@@ -118,26 +115,47 @@ function windowTickLabel(period: QuotaPeriodPayload): string {
   return long ? day : `${day} ${localHourLabel(start)}`
 }
 
-/** A pill-backed label drawn inside the plot, for the "now" line. Plain
- *  SVG, not recharts: this chart never renders a recharts `Text`, the cost
- *  the dev trace found in the entrance animation and stacked-area redraw. */
-function LinePill({ x, y, text }: { x: number; y: number; text: string }) {
-  const rect = pillGeometry(text, x, y, "middle", "start", AXIS_TICK.fontSize)
-  return (
-    <g>
-      <rect
-        x={rect.x}
-        y={rect.y}
-        width={rect.width}
-        height={rect.height}
-        rx={rect.height / 2}
-        fill="var(--color-chart-label-pill)"
-      />
-      <text x={x} y={y} textAnchor="middle" dominantBaseline="hanging" {...AXIS_TICK}>
-        {text}
-      </text>
-    </g>
-  )
+interface WindowAxisTick {
+  x: number
+  label: string
+  anchor: "start" | "middle" | "end"
+}
+
+/** The x-axis labels of one window slot: its start at the left edge, a
+ *  label per local midnight inside a long window or per whole hour inside
+ *  a short one, and "now" at the right edge of the open window. The edge
+ *  labels always draw; an inner label draws only when it clears both the
+ *  label before it and the right edge by `minGapPx`. */
+function windowAxisTicks(slot: QuotaWindowSlot, minGapPx: number): WindowAxisTick[] {
+  const { period, endsAtEpoch } = slot
+  const start = period.startsAtEpoch
+  const open = endsAtEpoch !== period.resetsAtEpoch
+  const long = period.resetsAtEpoch - start > SHORT_WINDOW_MAX_SECS
+  const inner: WindowAxisTick[] = []
+  if (long) {
+    for (const t of xAxisTicks(start, endsAtEpoch)) {
+      if (t > start)
+        inner.push({ x: slot.x(t), label: axisDayLabel(localDateOf(t)), anchor: "middle" })
+    }
+  } else {
+    for (let t = Math.ceil(start / HOUR_SECS) * HOUR_SECS; t <= endsAtEpoch; t += HOUR_SECS) {
+      if (t > start) inner.push({ x: slot.x(t), label: localHourLabel(t), anchor: "middle" })
+    }
+  }
+  const ticks: WindowAxisTick[] = [
+    { x: slot.left, label: windowTickLabel(period), anchor: "start" },
+  ]
+  const rightLimit = open ? slot.right - minGapPx : Number.POSITIVE_INFINITY
+  // The start label is anchored at its left edge, so it reaches half a gap
+  // further right than a centred label would.
+  let last = slot.left + minGapPx / 2
+  for (const tick of inner) {
+    if (tick.x - last < minGapPx || tick.x > rightLimit) continue
+    ticks.push(tick)
+    last = tick.x
+  }
+  if (open) ticks.push({ x: slot.right, label: "now", anchor: "end" })
+  return ticks
 }
 
 /** One band's path across one slot, keyed for React and skipped when the
@@ -153,11 +171,11 @@ interface BandLayerPath {
  * device's stacked estimate, tracing the stack's own sum. Under the
  * shared-meter model this sum equals the provider's own meter at every row
  * with a reading, and the device's estimate elsewhere, so one line carries
- * both. `axisMode="date"` draws one shared wall-clock x
- * axis across every window in `periods`; `axisMode="window"` instead gives
- * each window its own equal-width slot, back to back, so a short five-hour
- * window and a long weekly window compare at the same width instead of the
- * short one shrinking to a sliver. The top-sessions list below names each
+ * both. Each window in `periods` gets its own equal-width slot, back to
+ * back, so a short five-hour window and a long weekly window compare at the
+ * same width instead of the short one shrinking to a sliver. The open
+ * window's slot maps its start to "now" across the full width, so a window
+ * one day in still fills the plot. The top-sessions list below names each
  * layer; hovering a layer here or a row there highlights the same series in
  * both places.
  *
@@ -175,19 +193,14 @@ interface BandLayerPath {
  *
  * With `showPace`, the chart draws one dotted pace line per window, the
  * constant rate that spends the window evenly from 0% at its start to 100%
- * at its reset, and each band draws twice, through two clip paths: once
- * faded, clipped to the whole plot, for the usage that stays under its
- * window's pace line, and once at full strength, clipped to the region
- * above the pace line, for the usage that runs ahead of it. Without
- * `showPace`, each band draws once, at full strength, and no pace line or
- * above-pace highlight appears.
+ * at its reset. In the open window the line stops where "now" falls on
+ * that rate, at the slot's right edge.
  */
 function QuotaBurnupChartImpl({
   rangeStartEpoch,
   rangeEndEpoch,
   nowEpoch,
   periods,
-  axisMode,
   showPace,
   series,
   onHighlight,
@@ -199,7 +212,6 @@ function QuotaBurnupChartImpl({
   const rawId = useId()
   const idBase = rawId.replace(/:/g, "")
   const clipId = `quota-clip-${idBase}`
-  const aboveClipId = `quota-above-${idBase}`
   const hatchId = `quota-hatch-${idBase}`
 
   const plotLeft = VALUE_AXIS_WIDTH
@@ -208,42 +220,31 @@ function QuotaBurnupChartImpl({
   const plotBottom = Math.max(plotTop, height - TIME_AXIS_HEIGHT)
   const plotWidth = plotRight - plotLeft
   const plotHeight = plotBottom - plotTop
-  const span = rangeEndEpoch - rangeStartEpoch || 1
-  const sharedX = (t: number) => plotLeft + ((t - rangeStartEpoch) / span) * plotWidth
   // No clamping here: a `<clipPath>` sized to the plot area clips a band or
   // the meter where it runs over 100%, in place of recharts' `allowDataOverflow`.
   const y = (v: number) => plotTop + (1 - v / 100) * plotHeight
 
-  // One slot per window either way: in date mode every slot shares the same
-  // linear scale, so a period's own start and reset just read off it; in
-  // window mode each slot owns an equal width and its own local scale.
-  const slots: QuotaWindowSlot[] =
-    axisMode === "window"
-      ? windowSlots(periods, plotLeft, plotWidth)
-      : periods.map((period) => ({
-          period,
-          left: sharedX(period.startsAtEpoch),
-          right: sharedX(period.resetsAtEpoch),
-          x: sharedX,
-        }))
+  // One slot per window: each owns an equal width and its own local scale.
+  const slots: QuotaWindowSlot[] = windowSlots(
+    periods,
+    plotLeft,
+    plotWidth,
+    WINDOW_GAP_PX,
+    nowEpoch,
+  )
 
-  // Date mode draws every band once, over the whole unsliced series, on the
-  // shared scale — exactly today's rendering. Window mode draws a band once
-  // per slot, over just that window's own rows, on the slot's own scale.
-  // Each layer carries the same key as its slot, for the stack-top line
-  // below; date mode has exactly one layer, so a fixed key is enough.
+  // A band draws once per slot, over just that window's own rows, on the
+  // slot's own scale. Each layer carries the same key as its slot, for the
+  // stack-top line below.
   const bandLayers: ReadonlyArray<{
     rows: readonly QuotaSeriesRow[]
     x: (t: number) => number
     key: string | number
-  }> =
-    axisMode === "window"
-      ? slots.map((slot) => ({
-          rows: rowsInWindow(rows, slot.period),
-          x: slot.x,
-          key: slot.period.periodId ?? slot.period.startsAtEpoch,
-        }))
-      : [{ rows, x: sharedX, key: "date" }]
+  }> = slots.map((slot) => ({
+    rows: rowsInWindow(rows, slot.period),
+    x: slot.x,
+    key: slot.period.periodId ?? slot.period.startsAtEpoch,
+  }))
 
   const bandSpecs = quotaBandSpecs(topSessions, `url(#${hatchId})`)
   const bandKeys = bandSpecs.map((spec) => spec.key)
@@ -253,11 +254,9 @@ function QuotaBurnupChartImpl({
     const paths: BandLayerPath[] = []
     bandLayers.forEach((layer, layerIndex) => {
       const { d, vertices } = quotaBandPath(layer.rows, bandKeys, index, layer.x, y)
-      // Date mode draws one path per band regardless — exactly today's
-      // rendering. Window mode skips a slot where the band held no usage of
-      // its own, since an empty path there would otherwise still register a
-      // hover group with nothing inside it.
-      if (d === "" && axisMode === "window") return
+      // Skip a slot where the band held no usage of its own: an empty path
+      // there would still register a hover group with nothing inside it.
+      if (d === "") return
       paths.push({ layerKey: `${spec.key}-${layerIndex}`, d, vertices })
       totalBandVertices += vertices
     })
@@ -268,41 +267,20 @@ function QuotaBurnupChartImpl({
     ...quotaStackTopPath(layer.rows, bandKeys, layer.x, y),
   }))
   const lineVertices = stackTopPaths.reduce((total, line) => total + line.vertices, 0)
-  // Every drawn band draws twice with a pace line (faded under it, full
-  // above it); without one it draws once.
   const areas = [...bandLayerPaths.values()].reduce((total, paths) => total + paths.length, 0)
-  const vertices = totalBandVertices * (showPace ? 2 : 1) + lineVertices
+  const vertices = totalBandVertices + lineVertices
 
   traceEvent("quota.chart.render", { rows: rows.length, areas, vertices })
 
-  const windowTickLefts = axisMode === "window" ? slots.map((slot) => slot.left) : []
-  const labeledWindowTicks =
-    axisMode === "window"
-      ? labeledIndices(
-          windowTickLefts,
-          Math.max(1, plotWidth),
-          WINDOW_TICK_MIN_GAP_PX / plotWidth,
-        )
-      : new Set<number>()
-
-  const dateTicks = axisMode === "date" ? xAxisTicks(rangeStartEpoch, rangeEndEpoch) : []
-  const dateTickLabels = new Map(dateTicks.map((t) => [t, axisDayLabel(localDateOf(t))]))
-
-  const showNowLine =
-    axisMode === "date"
-      ? nowEpoch >= rangeStartEpoch && nowEpoch <= rangeEndEpoch
-      : slots.some(
-          (slot) =>
-            nowEpoch >= slot.period.startsAtEpoch && nowEpoch < slot.period.resetsAtEpoch,
-        )
-  const nowSlot =
-    axisMode === "window"
-      ? (slots.find(
-          (slot) =>
-            nowEpoch >= slot.period.startsAtEpoch && nowEpoch < slot.period.resetsAtEpoch,
-        ) ?? null)
-      : null
-  const nowX = nowSlot ? nowSlot.x(nowEpoch) : sharedX(nowEpoch)
+  // Each slot labels itself: its window's start first, then the days or
+  // hours inside it, and "now" at the open window's right edge. The start
+  // always labels, so a slot narrower than the gap still names its window.
+  const windowTicks = slots.flatMap((slot) =>
+    windowAxisTicks(slot, WINDOW_TICK_MIN_GAP_PX).map((tick) => ({
+      ...tick,
+      key: `${slot.period.periodId ?? slot.period.startsAtEpoch}-${tick.x}`,
+    })),
+  )
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -338,49 +316,20 @@ function QuotaBurnupChartImpl({
                   strokeWidth={2}
                 />
               </pattern>
-              {showPace && (
-                // The region on or above each window's pace line, up to the
-                // plot top. Nested inside the plot clip, so it also bounds a
-                // window that starts before the range or resets after it.
-                <clipPath id={aboveClipId} clipPath={`url(#${clipId})`}>
-                  {slots.map((slot) => (
-                    <polygon
-                      key={slot.period.periodId ?? slot.period.startsAtEpoch}
-                      points={`${slot.left},${y(0)} ${slot.right},${y(100)} ${slot.right},${plotTop} ${slot.left},${plotTop}`}
-                    />
-                  ))}
-                </clipPath>
-              )}
             </defs>
 
-            {axisMode === "date"
-              ? dateTicks.map((t) => (
-                  <text
-                    key={t}
-                    x={sharedX(t)}
-                    y={plotBottom + 2}
-                    textAnchor="middle"
-                    dominantBaseline="hanging"
-                    {...AXIS_TICK}
-                  >
-                    {dateTickLabels.get(t) ?? ""}
-                  </text>
-                ))
-              : slots.map(
-                  (slot) =>
-                    labeledWindowTicks.has(slot.left) && (
-                      <text
-                        key={slot.period.periodId ?? slot.period.startsAtEpoch}
-                        x={slot.left}
-                        y={plotBottom + 2}
-                        textAnchor="start"
-                        dominantBaseline="hanging"
-                        {...AXIS_TICK}
-                      >
-                        {windowTickLabel(slot.period)}
-                      </text>
-                    ),
-                )}
+            {windowTicks.map((tick) => (
+              <text
+                key={tick.key}
+                x={tick.x}
+                y={plotBottom + 2}
+                textAnchor={tick.anchor}
+                dominantBaseline="hanging"
+                {...AXIS_TICK}
+              >
+                {tick.label}
+              </text>
+            ))}
 
             {Y_TICKS.map((value) => (
               <text
@@ -414,6 +363,8 @@ function QuotaBurnupChartImpl({
 
             {slots.map((slot) => {
               const t = slot.period.resetsAtEpoch
+              // The open window's slot ends at now, not at its reset.
+              if (slot.endsAtEpoch !== t) return null
               if (t < rangeStartEpoch || t > rangeEndEpoch) return null
               return (
                 <line
@@ -428,25 +379,10 @@ function QuotaBurnupChartImpl({
               )
             })}
 
-            {showNowLine && (
-              <g>
-                <line
-                  data-quota-line="now"
-                  x1={nowX}
-                  x2={nowX}
-                  y1={plotTop}
-                  y2={plotBottom}
-                  stroke="var(--color-label)"
-                />
-                <LinePill x={nowX} y={plotTop} text="now" />
-              </g>
-            )}
-
             {/* One group per band per slot, each with its own hover
-                handlers: a session then carries several groups in window
-                mode, one per window it appears in, but every one names the
-                same series key, so hovering any of them highlights the same
-                row in the list below. */}
+                handlers: a session carries one group per window it appears
+                in, but every one names the same series key, so hovering any
+                of them highlights the same row in the list below. */}
             {bandSpecs.flatMap((spec) =>
               (bandLayerPaths.get(spec.key) ?? []).map(({ layerKey, d }) => (
                 <g
@@ -454,33 +390,12 @@ function QuotaBurnupChartImpl({
                   onMouseEnter={() => onHighlight(spec.key)}
                   onMouseLeave={() => onHighlight(null)}
                 >
-                  {showPace ? (
-                    <>
-                      {/* The whole band, faded: usage that stays under the
-                          window's pace line. */}
-                      <path
-                        className={`${spec.className} quota-area-under-pace`}
-                        d={d}
-                        fill={spec.fill}
-                        clipPath={`url(#${clipId})`}
-                      />
-                      {/* The same band at full strength, clipped to the
-                          region above the pace line. */}
-                      <path
-                        className={spec.className}
-                        d={d}
-                        fill={spec.fill}
-                        clipPath={`url(#${aboveClipId})`}
-                      />
-                    </>
-                  ) : (
-                    <path
-                      className={spec.className}
-                      d={d}
-                      fill={spec.fill}
-                      clipPath={`url(#${clipId})`}
-                    />
-                  )}
+                  <path
+                    className={spec.className}
+                    d={d}
+                    fill={spec.fill}
+                    clipPath={`url(#${clipId})`}
+                  />
                 </g>
               )),
             )}
@@ -504,7 +419,7 @@ function QuotaBurnupChartImpl({
                   x1={slot.left}
                   y1={y(0)}
                   x2={slot.right}
-                  y2={y(100)}
+                  y2={y(slotPaceEnd(slot))}
                   stroke="var(--color-quota-pace)"
                   strokeWidth={1}
                   strokeDasharray="1 3"

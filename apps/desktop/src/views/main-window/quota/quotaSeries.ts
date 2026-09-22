@@ -28,13 +28,12 @@ const MAX_RANGE_DAYS = 70
  */
 export const QUOTA_METER_INTERPOLATION_GAP_SECS = 3 * 60 * 60
 
-/** A preset that shows one or more of a lane's own reset-to-reset windows,
- *  rather than a fixed date span. Module-private: callers only ever see it
- *  folded into `QuotaRangePreset`. */
-type QuotaWindowPreset =
+/** A preset that shows one or more of a lane's own reset-to-reset windows:
+ *  the open one, the one before it, or the latest N. */
+export type QuotaRangePreset =
   "thisWindow" | "lastWindow" | "last3Windows" | "last5Windows" | "last10Windows"
 
-export type QuotaRangePreset = "thisWeek" | "lastWeek" | "last30Days" | QuotaWindowPreset
+type QuotaWindowPreset = QuotaRangePreset
 
 /** How many windows each `lastNWindows` preset names. */
 const WINDOW_PRESET_COUNT: Record<"last3Windows" | "last5Windows" | "last10Windows", number> = {
@@ -71,22 +70,16 @@ const WINDOW_PRESETS: ReadonlySet<QuotaRangePreset> = new Set<QuotaRangePreset>(
   "last10Windows",
 ])
 
-/** True when `range` shows a lane's own windows rather than a fixed date span. */
+/** True when `range` names a lane's own windows rather than a custom span. */
 export function isWindowPreset(range: QuotaRangeSelection): boolean {
-  return !isCustomRange(range) && WINDOW_PRESETS.has(range)
+  return !isCustomRange(range)
 }
 
-const ALL_RANGE_PRESETS: ReadonlySet<QuotaRangePreset> = new Set<QuotaRangePreset>([
-  "thisWeek",
-  "lastWeek",
-  "last30Days",
-  ...WINDOW_PRESETS,
-])
-
-/** True when `value` is one of the fixed `QuotaRangePreset` literals, for a
- *  value read out of untyped storage (persisted view prefs). */
+/** True when `value` is one of the `QuotaRangePreset` literals, for a value
+ *  read out of untyped storage (persisted view prefs). A preset an earlier
+ *  build saved and this one no longer knows fails here and falls back. */
 export function isQuotaRangePreset(value: unknown): value is QuotaRangePreset {
-  return typeof value === "string" && ALL_RANGE_PRESETS.has(value as QuotaRangePreset)
+  return typeof value === "string" && WINDOW_PRESETS.has(value as QuotaRangePreset)
 }
 
 /** True for the weekly lane and every model-scoped weekly lane, such as Claude's "Fable" window. */
@@ -167,14 +160,9 @@ function weeklyLaneWindowRange(
 /**
  * The wall-clock range a preset covers for the selected lane.
  *
- * `thisWeek` and `lastWeek` anchor to the weekly lane's currently open
- * window when one exists: the selected lane's own window when it is weekly,
- * or `weeklyLane`'s window when the selection is the five-hour lane. With no
- * open weekly window, both fall back to a plain trailing week.
- *
- * A window preset (`thisWindow`, `lastWindow`, `lastNWindows`) fetches
- * enough history to contain the windows it names; `selectQuotaPeriods` then
- * picks those windows out of the fetched payload. A weekly lane fetches the
+ * A preset (`thisWindow`, `lastWindow`, `lastNWindows`) fetches enough
+ * history to contain the windows it names; `selectQuotaPeriods` then picks
+ * those windows out of the fetched payload. A weekly lane fetches the
  * windows' own exact span when its current window is known. The five-hour
  * lane's windows are irregular, so it always fetches by calendar days and
  * lets selection pick the windows out of what came back.
@@ -183,35 +171,21 @@ export function rangeForPreset(
   preset: QuotaRangePreset,
   lane: QuotaLanePayload | null,
   now: number,
-  weeklyLane?: QuotaLanePayload | null,
 ): QuotaRange {
-  if (preset === "last30Days") {
-    return capRange({ startEpoch: now - 30 * DAY_SECS, endEpoch: now })
-  }
-  const currentWeekly =
-    (lane && isWeeklyLane(lane.lane) ? lane.currentPeriod : null) ??
-    (weeklyLane ? weeklyLane.currentPeriod : null)
-  if (preset === "thisWeek") {
-    if (currentWeekly) {
-      return capRange({
-        startEpoch: currentWeekly.startsAtEpoch,
-        endEpoch: currentWeekly.resetsAtEpoch,
-      })
-    }
-    return capRange({ startEpoch: now - WEEK_SECS, endEpoch: now })
-  }
-  if (preset === "lastWeek") {
-    // lastWeek: the week before thisWeek's own start.
-    const thisWeek = rangeForPreset("thisWeek", lane, now, weeklyLane)
-    return capRange({
-      startEpoch: thisWeek.startEpoch - WEEK_SECS,
-      endEpoch: thisWeek.startEpoch,
-    })
-  }
   if (lane && isWeeklyLane(lane.lane)) {
     return weeklyLaneWindowRange(preset, lane.currentPeriod, now)
   }
   return irregularLaneWindowRange(preset, lane, now)
+}
+
+/** False when the preset's whole range ends before the lane's first reading. */
+export function presetHasReadings(
+  preset: QuotaRangePreset,
+  lane: QuotaLanePayload | null,
+  now: number,
+): boolean {
+  if (!lane) return true
+  return rangeForPreset(preset, lane, now).endEpoch > lane.firstObservedEpoch
 }
 
 /**
@@ -223,18 +197,17 @@ export function resolveQuotaRange(
   range: QuotaRangeSelection,
   lane: QuotaLanePayload | null,
   now: number,
-  weeklyLane?: QuotaLanePayload | null,
 ): QuotaRange {
   if (isCustomRange(range)) {
     return capRange({ startEpoch: range.startEpoch, endEpoch: range.endEpoch })
   }
-  return rangeForPreset(range, lane, now, weeklyLane)
+  return rangeForPreset(range, lane, now)
 }
 
 /**
  * The windows a selection shows, in start order.
  *
- * A date preset or a custom range keeps every fetched period that overlaps
+ * A custom range keeps every fetched period that overlaps
  * the fetched span. A window preset instead names specific windows out of
  * the fetched payload: `thisWindow` is the latest window at or before `now`
  * (the last one at all, once every window is still in the future);
@@ -272,7 +245,7 @@ export function selectQuotaPeriods(
 
 /**
  * The x range the chart and series cover for a selection: the fetched range
- * for date presets, the selected windows' own span for window presets.
+ * for a custom range, the selected windows' own span for window presets.
  * `periods` here is the selection's own output — `selectQuotaPeriods`'s
  * result, not every fetched period — so a window preset's display range
  * hugs just the windows it shows.
@@ -306,8 +279,8 @@ export interface QuotaTopSession {
   wslDistro: string | null
   title: string | null
   usd: number
-  /** Index into `QUOTA_SESSION_SWATCHES`, assigned by `assignQuotaHues` so
-   *  bands that touch in the stack never share a color. */
+  /** Index into `QUOTA_SESSION_SWATCHES`: the session's dollar rank across
+   *  the range, so the biggest spender takes the darkest step. */
   hue: number
 }
 
@@ -316,12 +289,13 @@ export interface QuotaTopSession {
 export const QUOTA_OWN_SERIES_MIN_PERCENT = 1
 
 /** No more than this many sessions ever carry their own series. Matches the
- *  `quota-area-s0`..`quota-area-s39` highlight rules enumerated in
- *  quota.css; change both together. */
-export const QUOTA_OWN_SERIES_CAP = 40
+ *  `quota-area-s0`..`quota-area-s4` highlight rules in quota.css and the
+ *  five steps of the session ramp; change all three together. */
+export const QUOTA_OWN_SERIES_CAP = 5
 
-/** The eight session hues, indexed by the assignment `assignQuotaHues` picks.
- *  Kept module-private: the burnup chart now draws its own fills from
+/** The five steps of the session ramp, darkest first. A session's `hue` is
+ *  its dollar rank, so the biggest spender takes the darkest step. Kept
+ *  module-private: the burnup chart draws its own fills from
  *  `quotaBandSpecs` in quotaPaths.ts, and `quotaSwatchClasses` below is the
  *  only other caller that needs these Tailwind classes. */
 const QUOTA_SESSION_SWATCHES = [
@@ -330,29 +304,26 @@ const QUOTA_SESSION_SWATCHES = [
   "bg-quota-session-3",
   "bg-quota-session-4",
   "bg-quota-session-5",
-  "bg-quota-session-6",
-  "bg-quota-session-7",
-  "bg-quota-session-8",
 ] as const
 
-/** How many distinct session hues the palette carries. `quotaPaths.ts` uses
- *  this instead of a literal, so the band fill and the swatch list can never
+/** How many steps the session ramp carries. `quotaPaths.ts` uses this
+ *  instead of a literal, so the band fill and the swatch list can never
  *  fall out of step. */
 export const QUOTA_HUE_COUNT = QUOTA_SESSION_SWATCHES.length
 
 /**
  * The swatch class for every layer the burnup chart and the top-sessions
- * list can name: the meter, each top session by its assigned hue, and the
- * two shared grey bands. One source, so the chart and the list always agree
- * on a series' color.
+ * list can name: the meter, each top session by its ramp step, and the two
+ * grouped bands in the resting greys the session-analysis charts use. One
+ * source, so the chart and the list always agree on a series' color.
  */
 export function quotaSwatchClasses(
   topSessions: readonly QuotaTopSession[],
 ): Record<string, string> {
   const classes: Record<string, string> = {
     meter: "bg-quota-meter",
-    other: "bg-quota-other",
-    unattributed: "bg-quota-unattributed",
+    other: "bg-chart-rest-strong",
+    unattributed: "bg-chart-rest-faint",
   }
   topSessions.forEach((session) => {
     classes[session.key] = QUOTA_SESSION_SWATCHES[session.hue % QUOTA_SESSION_SWATCHES.length]!
@@ -456,7 +427,7 @@ function qualifyingSessionsAcross(periods: readonly QuotaPeriodPayload[]): {
  */
 function selectOwnSeriesSessions(periods: readonly QuotaPeriodPayload[]): QualifyingSession[] {
   const { sessions, anyPercent } = qualifyingSessionsAcross(periods)
-  if (!anyPercent) return sessions.slice(0, 5)
+  if (!anyPercent) return sessions.slice(0, QUOTA_OWN_SERIES_CAP)
   return sessions.filter((session) => session.qualifies).slice(0, QUOTA_OWN_SERIES_CAP)
 }
 
@@ -486,85 +457,6 @@ function topSessionsAcross(periods: readonly QuotaPeriodPayload[]): QuotaTopSess
       usd: session.usd,
       hue: 0,
     }))
-}
-
-/**
- * The conflict graph for the chart's hues: two top sessions conflict when a
- * row's active bands (value greater than zero) place them next to each
- * other in the stack, since those are the two colors a reader sees touching.
- * Only stack-adjacent pairs conflict — a session two layers away in the
- * stack never clashes with this one, whatever hue it holds. Each edge is
- * weighted by the number of rows the pair touches, so a forced clash can
- * prefer the neighbor it touches for the fewest rows.
- */
-function stackConflicts(
-  topSessions: readonly QuotaTopSession[],
-  rows: readonly QuotaSeriesRow[],
-): Map<string, Map<string, number>> {
-  const conflicts = new Map<string, Map<string, number>>()
-  const addEdge = (left: string, right: string) => {
-    const leftEdges = conflicts.get(left) ?? new Map<string, number>()
-    leftEdges.set(right, (leftEdges.get(right) ?? 0) + 1)
-    conflicts.set(left, leftEdges)
-    const rightEdges = conflicts.get(right) ?? new Map<string, number>()
-    rightEdges.set(left, (rightEdges.get(left) ?? 0) + 1)
-    conflicts.set(right, rightEdges)
-  }
-  for (const row of rows) {
-    const active = topSessions.filter((session) => (row[session.key] ?? 0) > 0)
-    for (let i = 0; i + 1 < active.length; i++) addEdge(active[i]!.key, active[i + 1]!.key)
-  }
-  return conflicts
-}
-
-/**
- * Greedy graph coloring for the chart's hues, over the conflict graph built
- * from the series rows: two bands that never touch in the stack may share a
- * hue, however long each is visible for on its own.
- *
- * Sessions are visited in stack order (`topSessions`, first appearance at
- * the bottom), so a session's already-colored neighbors are the ones above
- * it in the stack. Each session takes the lowest hue none of those neighbors
- * hold. When every hue is taken, the session touches more distinct
- * neighbors than there are hues and a clash is unavoidable; it then takes
- * the hue whose neighbors' edge weight (rows touched) is smallest, so the
- * visible clash spans the fewest rows, ties going to the lowest hue.
- */
-export function assignQuotaHues(
-  topSessions: readonly QuotaTopSession[],
-  rows: readonly QuotaSeriesRow[],
-  hueCount: number = QUOTA_SESSION_SWATCHES.length,
-): Map<string, number> {
-  const conflicts = stackConflicts(topSessions, rows)
-  const hues = new Map<string, number>()
-  for (const session of topSessions) {
-    const neighborEdges = conflicts.get(session.key) ?? new Map<string, number>()
-    const weightByHue = new Map<number, number>()
-    for (const [neighborKey, weight] of neighborEdges) {
-      const neighborHue = hues.get(neighborKey)
-      if (neighborHue == null) continue // not yet colored: no constraint from it
-      weightByHue.set(neighborHue, (weightByHue.get(neighborHue) ?? 0) + weight)
-    }
-    let chosen = -1
-    for (let hue = 0; hue < hueCount; hue++) {
-      if (!weightByHue.has(hue)) {
-        chosen = hue
-        break
-      }
-    }
-    if (chosen === -1) {
-      let bestWeight = Infinity
-      for (let hue = 0; hue < hueCount; hue++) {
-        const weight = weightByHue.get(hue) ?? 0
-        if (weight < bestWeight) {
-          bestWeight = weight
-          chosen = hue
-        }
-      }
-    }
-    hues.set(session.key, chosen)
-  }
-  return hues
 }
 
 /** One row of the burnup series. Session columns are added by key, dynamically. */
@@ -910,10 +802,12 @@ export function quotaBurnupSeries(
     row.index = index
   })
 
-  // Hue only affects rendering, so it is assigned last, once every row's
-  // stack-adjacency is known.
-  const hues = assignQuotaHues(topSessions, rows)
-  for (const session of topSessions) session.hue = hues.get(session.key) ?? 0
+  // The ramp step is the session's dollar rank: darkest for the biggest
+  // spender, so the chart and the dollar-sorted list read the same way.
+  const byDollars = [...topSessions].sort((left, right) => right.usd - left.usd)
+  byDollars.forEach((session, rank) => {
+    session.hue = rank
+  })
 
   return { rows, topSessions }
 }
@@ -1043,6 +937,21 @@ export function quotaLatestPeriod(
 }
 
 /** The most recent sample's timestamp across every period in range, or null. */
+/** The earliest meter reading across `periods`, or null with no reading.
+ *  Names when this app first saw the lane, for an empty range's caption. */
+export function quotaEarliestSampleEpoch(
+  periods: readonly QuotaPeriodPayload[],
+): number | null {
+  let earliest: number | null = null
+  for (const period of periods) {
+    for (const sample of period.samples) {
+      if (earliest == null || sample.observedAtEpoch < earliest)
+        earliest = sample.observedAtEpoch
+    }
+  }
+  return earliest
+}
+
 export function quotaLatestSampleEpoch(periods: readonly QuotaPeriodPayload[]): number | null {
   let latest: number | null = null
   for (const period of periods) {

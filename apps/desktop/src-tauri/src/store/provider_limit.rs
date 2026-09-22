@@ -183,6 +183,9 @@ pub(crate) struct QuotaAccountLane {
     /// `(starts_at_epoch, resets_at_epoch)` of the lane's open window, when
     /// one exists.
     pub current_period: Option<(i64, i64)>,
+    /// The earliest reading this lane holds. A range that ends before it
+    /// has no data.
+    pub first_observed_epoch: i64,
 }
 
 /// One `(provider, account)` this app has observed at least one quota period
@@ -803,11 +806,17 @@ impl Store {
                 )? != 0;
                 let current_period =
                     current_period_for_lane(&lane_periods, lane_duration_seconds(&lane), now_epoch);
+                let first_observed_epoch = lane_periods
+                    .iter()
+                    .map(|period| period.first_observed_epoch)
+                    .min()
+                    .unwrap_or(now_epoch);
                 lanes.push(QuotaAccountLane {
                     lane,
                     label,
                     has_factor,
                     current_period,
+                    first_observed_epoch,
                 });
             }
             lanes.sort_by(|left, right| lane_sort_key(&left.lane).cmp(&lane_sort_key(&right.lane)));

@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import type { QuotaPeriodPayload, QuotaUsagePayload } from "../../../lib/providerUsageIpc"
 import { QuotaBurnupChart, type QuotaBurnupChartProps, xAxisTicks } from "./QuotaBurnupChart"
+import { rowsInWindow } from "./quotaLayout"
 import { quotaBandSpecs } from "./quotaPaths"
 import { quotaBurnupSeries, type QuotaSeries } from "./quotaSeries"
 
@@ -84,8 +85,8 @@ function seriesFor(u: QuotaUsagePayload, start = 0, end = WEEK, now = WEEK + 1):
 }
 
 /** Full chart props from a fixture usage, with every field a test does not
- *  care about defaulted: `axisMode="date"` and `showPace` on, matching the
- *  screen's own defaults before a reader touches either control. */
+ *  care about defaulted: `showPace` on, matching the screen's own default,
+ *  and `now` just past the fixture window's reset, so the window is closed. */
 function chartProps(
   over: { usage: QuotaUsagePayload } & Partial<QuotaBurnupChartProps>,
 ): QuotaBurnupChartProps {
@@ -97,7 +98,6 @@ function chartProps(
     rangeEndEpoch,
     nowEpoch,
     periods: over.periods ?? over.usage.periods,
-    axisMode: over.axisMode ?? "date",
     showPace: over.showPace ?? true,
     series: over.series ?? seriesFor(over.usage, rangeStartEpoch, rangeEndEpoch, nowEpoch),
     onHighlight: over.onHighlight ?? (() => undefined),
@@ -111,22 +111,22 @@ afterEach(() => {
 })
 
 describe("QuotaBurnupChart", () => {
-  it("draws two paths per top session plus other and unattributed (faded and full), and one stack-top line, with no recharts DOM", () => {
+  it("draws one path per band with usage, at full strength, and one stack-top line, with no recharts DOM", () => {
     const u = usage()
     const { container } = render(<QuotaBurnupChart {...chartProps({ usage: u })} />)
     const session0 = container.querySelector("path.quota-area-s0")
     expect(session0).not.toBeNull()
     expect(session0).toHaveClass("quota-area")
     expect(session0?.getAttribute("fill")).toBe("var(--color-quota-session-1)")
-    expect(container.querySelector("path.quota-area-other")).not.toBeNull()
     expect(container.querySelector("path.quota-area-unattributed")).not.toBeNull()
+    expect(container.querySelector("path.quota-area-unattributed")?.getAttribute("fill")).toBe(
+      "var(--color-chart-rest-faint)",
+    )
     expect(container.querySelector("path.quota-line-top")).not.toBeNull()
-    // Each of the 4 bands (top session, other, unattributed, unexplained)
-    // draws twice. `unexplained` is empty in this fixture, but date mode
-    // draws every band regardless, exactly like `other` or `unattributed`
-    // would with no usage of their own.
-    expect(container.querySelectorAll("path.quota-area")).toHaveLength(8)
-    expect(container.querySelectorAll("path.quota-area-under-pace")).toHaveLength(4)
+    // Only the top session and unattributed hold usage in this fixture:
+    // "other" and "unexplained" are empty, so they draw nothing at all.
+    expect(container.querySelectorAll("path.quota-area")).toHaveLength(2)
+    expect(container.querySelector("path.quota-area-other")).toBeNull()
     expect(container.querySelector(".recharts-wrapper")).toBeNull()
   })
 
@@ -136,7 +136,10 @@ describe("QuotaBurnupChart", () => {
     const { container } = render(<QuotaBurnupChart {...chartProps({ usage: u, series })} />)
 
     const bandKeys = quotaBandSpecs(series.topSessions).map((spec) => spec.key)
-    const lastRow = series.rows[series.rows.length - 1]!
+    // The line draws the window's own rows: the series' last row sits at
+    // the reset itself, outside the window.
+    const windowRows = rowsInWindow(series.rows, u.periods[0]!)
+    const lastRow = windowRows[windowRows.length - 1]!
     const expectedTop = bandKeys.reduce((total, key) => total + (lastRow[key] ?? 0), 0)
     const expectedY = PLOT_TOP + (1 - expectedTop / 100) * (PLOT_BOTTOM - PLOT_TOP)
 
@@ -191,18 +194,39 @@ describe("QuotaBurnupChart", () => {
     expect(reportedLine?.getAttribute("stroke")).toBe("var(--color-quota-reset)")
   })
 
-  it("draws a now line only when now falls inside the range, keeping its 'now' label", () => {
+  it("stretches the open window across the whole plot, ends its pace line where now falls on the rate, labels 'now' at the right edge, and draws no reset line", () => {
     const u = usage()
-    const { container: outside } = render(
-      <QuotaBurnupChart {...chartProps({ usage: u, nowEpoch: -100 })} />,
+    const now = 3 * DAY
+    const { container } = render(
+      <QuotaBurnupChart {...chartProps({ usage: u, nowEpoch: now })} />,
     )
-    expect(outside.querySelector('[data-quota-line="now"]')).toBeNull()
+    expect(container.querySelector('[data-quota-line="reset"]')).toBeNull()
+    const nowLabel = within(container).getByText("now")
+    expect(Number(nowLabel.getAttribute("x"))).toBe(PLOT_RIGHT)
+    expect(nowLabel.getAttribute("text-anchor")).toBe("end")
+    const paceLine = container.querySelector('[data-quota-line="pace"]')!
+    expect(Number(paceLine.getAttribute("x2"))).toBe(PLOT_RIGHT)
+    const expectedY = PLOT_TOP + (1 - 3 / 7) * (PLOT_BOTTOM - PLOT_TOP)
+    expect(Number(paceLine.getAttribute("y2"))).toBeCloseTo(expectedY, 5)
+    // The last row inside the window sits at its right edge, not a fraction
+    // of the way across.
+    const d = container.querySelector("path.quota-line-top")!.getAttribute("d")!
+    const points = [...d.matchAll(/[ML]([\d.-]+) ([\d.-]+)/g)]
+    const [, lastX] = points[points.length - 1]!
+    expect(Number(lastX)).toBeGreaterThan(PLOT_RIGHT - 10)
+  })
 
-    const { container: inside } = render(
-      <QuotaBurnupChart {...chartProps({ usage: u, nowEpoch: BUCKET })} />,
+  it("labels a closed weekly window with its start and the midnights inside it, with no 'now'", () => {
+    const u = usage()
+    const { container } = render(<QuotaBurnupChart {...chartProps({ usage: u })} />)
+    expect(within(container).queryByText("now")).toBeNull()
+    const ticks = [...container.querySelectorAll("text")].filter((el) =>
+      /^\d+ \w+$/.test(el.textContent ?? ""),
     )
-    expect(inside.querySelector('[data-quota-line="now"]')).not.toBeNull()
-    expect(within(inside).getByText("now")).toBeInTheDocument()
+    // A week at 532px wide fits every midnight at the 64px minimum gap.
+    expect(ticks.length).toBeGreaterThanOrEqual(6)
+    expect(ticks[0]!.getAttribute("text-anchor")).toBe("start")
+    expect(ticks[1]!.getAttribute("text-anchor")).toBe("middle")
   })
 
   it("has no rotated axis title, only the percent tick labels", () => {
@@ -234,18 +258,18 @@ describe("QuotaBurnupChart", () => {
     expect(topLine!.getAttribute("d")).not.toBe("")
   })
 
-  it("clips the faded band to the plot area and the full band to the above-pace region", () => {
+  it("clips every band and the top line to the one plot-area clipPath", () => {
     const u = usage()
     const { container } = render(<QuotaBurnupChart {...chartProps({ usage: u })} />)
-    const [faded, full] = container.querySelectorAll("path.quota-area-s0")
-    expect(faded).toHaveClass("quota-area-under-pace")
-    expect(full).not.toHaveClass("quota-area-under-pace")
+    const bands = container.querySelectorAll("path.quota-area-s0")
+    expect(bands).toHaveLength(1)
+    const band = bands[0]!
+    expect(band).not.toHaveClass("quota-area-under-pace")
 
     const topLine = container.querySelector("path.quota-line-top")!
-    const plotClipMatch = faded!.getAttribute("clip-path")!.match(/url\(#(.+)\)/)
+    const plotClipMatch = band.getAttribute("clip-path")!.match(/url\(#(.+)\)/)
     expect(plotClipMatch).not.toBeNull()
-    // The faded band and the top line reference the same plot clipPath.
-    expect(topLine.getAttribute("clip-path")).toBe(faded!.getAttribute("clip-path"))
+    expect(topLine.getAttribute("clip-path")).toBe(band.getAttribute("clip-path"))
     const plotClipPathEl = container.querySelector(`clipPath#${plotClipMatch![1]}`)
     expect(plotClipPathEl).not.toBeNull()
     const rect = plotClipPathEl!.querySelector("rect")!
@@ -253,15 +277,7 @@ describe("QuotaBurnupChart", () => {
     expect(Number(rect.getAttribute("y"))).toBe(PLOT_TOP)
     expect(Number(rect.getAttribute("width"))).toBeGreaterThan(0)
     expect(Number(rect.getAttribute("height"))).toBeGreaterThan(0)
-
-    // The full-strength copy is clipped by a different clipPath, itself
-    // intersected with the plot clip.
-    const aboveClipMatch = full!.getAttribute("clip-path")!.match(/url\(#(.+)\)/)
-    expect(aboveClipMatch).not.toBeNull()
-    expect(aboveClipMatch![1]).not.toBe(plotClipMatch![1])
-    const aboveClipPathEl = container.querySelector(`clipPath#${aboveClipMatch![1]}`)!
-    expect(aboveClipPathEl.getAttribute("clip-path")).toBe(faded!.getAttribute("clip-path"))
-    expect(aboveClipPathEl.querySelectorAll("polygon")).toHaveLength(1)
+    expect(container.querySelectorAll("clipPath")).toHaveLength(1)
   })
 
   it("draws one pace line per period in range, from the window's start at 0% to its reset at 100%", () => {
@@ -280,13 +296,12 @@ describe("QuotaBurnupChart", () => {
     expect(container.querySelector(`clipPath#${clipMatch![1]} rect`)).not.toBeNull()
   })
 
-  it("draws no pace line and no above-pace polygon when no period is in range", () => {
+  it("draws no pace line when no period is in range", () => {
     const u = usage({ periods: [] })
     const { container } = render(
       <QuotaBurnupChart {...chartProps({ usage: u, periods: [] })} />,
     )
     expect(container.querySelectorAll('[data-quota-line="pace"]')).toHaveLength(0)
-    expect(container.querySelectorAll("clipPath polygon")).toHaveLength(0)
   })
 
   it("calls onHighlight once per enter and leave when the pointer enters and leaves a band", () => {
@@ -295,11 +310,11 @@ describe("QuotaBurnupChart", () => {
     const { container } = render(
       <QuotaBurnupChart {...chartProps({ usage: u, onHighlight })} />,
     )
-    const otherArea = container.querySelector("path.quota-area-other")!
-    const otherGroup = otherArea.parentElement!
-    fireEvent.mouseEnter(otherGroup)
-    expect(onHighlight).toHaveBeenCalledWith("other")
-    fireEvent.mouseLeave(otherGroup)
+    const area = container.querySelector("path.quota-area-unattributed")!
+    const group = area.parentElement!
+    fireEvent.mouseEnter(group)
+    expect(onHighlight).toHaveBeenCalledWith("unattributed")
+    fireEvent.mouseLeave(group)
     expect(onHighlight).toHaveBeenCalledWith(null)
     expect(onHighlight).toHaveBeenCalledTimes(2)
   })
@@ -313,24 +328,19 @@ describe("QuotaBurnupChart", () => {
     expect(container.querySelector(".flex.min-h-0.flex-1.flex-col")).not.toBeNull()
   })
 
-  it("draws each band once, at full strength, with no pace line when showPace is off, in both axis modes", () => {
+  it("draws no pace line when showPace is off, and the bands unchanged", () => {
     const u = usage()
-    const { container: dateContainer } = render(
-      <QuotaBurnupChart {...chartProps({ usage: u, axisMode: "date", showPace: false })} />,
+    const { container } = render(
+      <QuotaBurnupChart {...chartProps({ usage: u, showPace: false })} />,
     )
-    expect(dateContainer.querySelectorAll("path.quota-area-s0")).toHaveLength(1)
-    expect(dateContainer.querySelectorAll("path.quota-area-under-pace")).toHaveLength(0)
-    expect(dateContainer.querySelectorAll('[data-quota-line="pace"]')).toHaveLength(0)
-
-    const { container: windowContainer } = render(
-      <QuotaBurnupChart {...chartProps({ usage: u, axisMode: "window", showPace: false })} />,
-    )
-    expect(windowContainer.querySelectorAll("path.quota-area-s0")).toHaveLength(1)
-    expect(windowContainer.querySelectorAll("path.quota-area-under-pace")).toHaveLength(0)
-    expect(windowContainer.querySelectorAll('[data-quota-line="pace"]')).toHaveLength(0)
+    expect(container.querySelectorAll("path.quota-area-s0")).toHaveLength(1)
+    expect(container.querySelectorAll('[data-quota-line="pace"]')).toHaveLength(0)
   })
 
-  describe('axisMode="window"', () => {
+  describe("window slots", () => {
+    /** Just past the second window's reset, so both windows are closed. */
+    const AFTER_BOTH = WEEK + 5 * 60 * 60 + 1
+
     /** Two windows: a full week, then a five-hour window starting right at
      *  its reset, so the two slots sit back to back with distinct spans. */
     function twoWindows(): QuotaUsagePayload {
@@ -375,7 +385,7 @@ describe("QuotaBurnupChart", () => {
             usage: u,
             rangeStartEpoch: 0,
             rangeEndEpoch: WEEK + 5 * 60 * 60,
-            axisMode: "window",
+            nowEpoch: AFTER_BOTH,
           })}
         />,
       )
@@ -395,7 +405,7 @@ describe("QuotaBurnupChart", () => {
             usage: u,
             rangeStartEpoch: 0,
             rangeEndEpoch: WEEK + 5 * 60 * 60,
-            axisMode: "window",
+            nowEpoch: AFTER_BOTH,
           })}
         />,
       )
@@ -425,13 +435,13 @@ describe("QuotaBurnupChart", () => {
             usage: u,
             rangeStartEpoch: 0,
             rangeEndEpoch: WEEK + 5 * 60 * 60,
-            axisMode: "window",
+            nowEpoch: AFTER_BOTH,
           })}
         />,
       )
       const paths = container.querySelectorAll("path.quota-area-s0")
-      // Two slots, each drawing the band faded and full: four paths.
-      expect(paths).toHaveLength(4)
+      // One path per slot.
+      expect(paths).toHaveLength(2)
       const secondSlotPath = [...paths].find((path) => {
         const d = path.getAttribute("d")!
         const [, leadingX] = d.match(/^M([\d.]+) /) ?? []
@@ -456,7 +466,7 @@ describe("QuotaBurnupChart", () => {
             usage: gapped,
             rangeStartEpoch: 0,
             rangeEndEpoch: 6 * BUCKET,
-            axisMode: "window",
+            nowEpoch: 6 * BUCKET + 1,
           })}
         />,
       )
@@ -473,7 +483,7 @@ describe("QuotaBurnupChart", () => {
             usage: u,
             rangeStartEpoch: 0,
             rangeEndEpoch: WEEK + 5 * 60 * 60,
-            axisMode: "window",
+            nowEpoch: AFTER_BOTH,
           })}
         />,
       )

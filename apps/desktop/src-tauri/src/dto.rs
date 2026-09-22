@@ -518,6 +518,9 @@ pub struct QuotaLanePayload {
     /// derives a boundary the provider did not state. `None` when every
     /// known period for the lane has already reset.
     pub current_period: Option<QuotaCurrentPeriodPayload>,
+    /// The earliest reading the lane holds. A range that ends before it has
+    /// no data.
+    pub first_observed_epoch: i64,
 }
 
 /// One `(provider, account)` this app has observed at least one quota period
