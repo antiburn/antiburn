@@ -37,11 +37,11 @@ use crate::dto::{
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
     BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
     ChecksReportPayload, CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome,
-    DeferredPermissionDir, HygieneSummaryPayload, LiveUsageSummary, OrchestrationStatus,
-    PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
-    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
-    SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
-    SessionRelations, SubagentMember,
+    DeferredPermissionDir, HygieneSummaryPayload, InsightsBacklog, LiveUsageSummary,
+    OrchestrationStatus, PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason,
+    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
+    SessionHygieneRequest, SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary,
+    SessionRelation, SessionRelations, SubagentMember,
 };
 pub(crate) mod local_usage;
 pub(crate) mod quota;
@@ -1235,6 +1235,17 @@ pub async fn get_scan_status(app: tauri::AppHandle) -> CommandResult<ScanStatus>
  * Insights
  * ---------------------------------------------------------------------- */
 
+/// Whether the insights worker pool has a backlog to drain right now. The
+/// frontend's initial read for [`INSIGHTS_BACKLOG_CHANGED_EVENT`]'s state.
+#[tauri::command]
+pub fn get_insights_backlog(app: tauri::AppHandle) -> InsightsBacklog {
+    InsightsBacklog {
+        active: app
+            .state::<crate::insights_worker::WorkerHandle>()
+            .backlog_active(),
+    }
+}
+
 /// Days of history the insights report covers.
 const INSIGHTS_WINDOW_DAYS: i64 = 30;
 
@@ -2035,6 +2046,8 @@ pub const SESSION_UPDATED_EVENT: &str = "session:updated";
 /// Only the projection bridge emits membership changes and invalidations on this scope.
 pub const SESSION_INDEX_CHANGED_EVENT: &str = "session:index-changed";
 pub const CHECKS_REPORT_CHANGED_EVENT: &str = "checks:report-changed";
+/// Only the insights worker pool emits this on a pool-wide backlog start/drain.
+pub const INSIGHTS_BACKLOG_CHANGED_EVENT: &str = "insights-backlog-changed";
 pub const BURN_CHECK_SNOOZES_CHANGED_EVENT: &str = "checks:snoozes-changed";
 
 /// Re-derive the repository list from what is on disk right now.

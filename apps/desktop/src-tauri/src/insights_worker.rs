@@ -113,6 +113,12 @@ impl WorkerHandle {
             None
         }
     }
+
+    /// Whether the pool has at least one worker busy on the backlog right
+    /// now. Backs the `get_insights_backlog` command's initial read.
+    pub fn backlog_active(&self) -> bool {
+        self.backlog.lock().expect("backlog lock").active > 0
+    }
 }
 
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
@@ -277,6 +283,13 @@ async fn run_worker(app: tauri::AppHandle) {
     let announce_idle = move || {
         let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
     };
+    let backlog_app = app.clone();
+    let announce_backlog = move |active: bool| {
+        let _ = backlog_app.emit(
+            commands::INSIGHTS_BACKLOG_CHANGED_EVENT,
+            crate::dto::InsightsBacklog { active },
+        );
+    };
     let analytics_app = app.clone();
     let report_ingested = move |agent: AgentKind, ingested: IngestedIncidents| {
         crate::analytics::record_provider_incidents_ingested(&analytics_app, agent, &ingested);
@@ -284,13 +297,17 @@ async fn run_worker(app: tauri::AppHandle) {
     let clock = || unix_now();
     let store = app.state::<Store>();
     let handle = app.state::<WorkerHandle>();
+    let signals = WorkerLoopSignals {
+        idle: &announce_idle,
+        backlog: &announce_backlog,
+    };
     worker_loop(
         &store,
         &handle,
         &clock,
         &run_pass,
         &announce,
-        &announce_idle,
+        &signals,
         &report_ingested,
     )
     .await;
@@ -598,13 +615,22 @@ pub(crate) async fn process_next_work(
     Ok(false)
 }
 
+/// `worker_loop`'s two report-only signals to the app layer: `checks:
+/// report-changed` on every settle, and the pool-wide backlog start/drain.
+/// Bundled into one parameter so adding the backlog signal did not tip the
+/// loop over clippy's argument-count limit.
+pub(crate) struct WorkerLoopSignals<'a> {
+    pub idle: &'a (dyn Fn() + Send + Sync),
+    pub backlog: &'a (dyn Fn(bool) + Send + Sync),
+}
+
 pub(crate) async fn worker_loop(
     store: &Store,
     handle: &WorkerHandle,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
-    announce_idle: &(dyn Fn() + Send + Sync),
+    signals: &WorkerLoopSignals<'_>,
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) {
     let mut processed = false;
@@ -616,11 +642,12 @@ pub(crate) async fn worker_loop(
                     busy = true;
                     if let Some(pending) = handle.note_backlog_busy(store) {
                         ::tracing::info!(event = "insights_backlog_started", pending);
+                        (signals.backlog)(true);
                     }
                 }
                 handle.note_backlog_processed();
                 processed = true;
-                announce_idle();
+                (signals.idle)();
                 continue;
             }
             Ok(false) => {
@@ -632,11 +659,12 @@ pub(crate) async fn worker_loop(
                             processed = drained,
                             elapsed_ms
                         );
+                        (signals.backlog)(false);
                     }
                 }
                 if processed {
                     processed = false;
-                    announce_idle();
+                    (signals.idle)();
                 }
                 tokio::select! {
                     () = handle.wake.notified() => {}
@@ -652,6 +680,7 @@ pub(crate) async fn worker_loop(
                             processed = drained,
                             elapsed_ms
                         );
+                        (signals.backlog)(false);
                     }
                 }
                 ::tracing::error!(event = "insights_worker_failed", error = %error);

@@ -28,6 +28,7 @@
     "allow-existing-main-window-session-targets",
     "allow-get-live-usage",
     "allow-get-provider-usage",
+    "allow-get-insights-backlog",
     "allow-get-quota-accounts",
     "allow-get-quota-usage",
     "allow-get-checks-report",

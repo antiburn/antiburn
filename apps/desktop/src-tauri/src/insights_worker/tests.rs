@@ -945,7 +945,10 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
             &|| 100,
             &runner,
             &|_| {},
-            &|| {},
+            &WorkerLoopSignals {
+                idle: &|| {},
+                backlog: &|_| {},
+            },
             &|_, _| {},
         )
         .await;
@@ -1014,7 +1017,10 @@ async fn a_worker_loop_pass_reports_one_busy_stretch_and_resets() {
             &|| 100,
             &runner,
             &|_| {},
-            &|| {},
+            &WorkerLoopSignals {
+                idle: &|| {},
+                backlog: &|_| {},
+            },
             &|_, _| {},
         )
         .await;
@@ -1053,6 +1059,59 @@ async fn a_worker_loop_pass_reports_one_busy_stretch_and_resets() {
     let backlog = handle.backlog.lock().unwrap();
     assert_eq!(backlog.active, 0);
     assert_eq!(backlog.processed, 0);
+}
+
+/// The `announce_backlog` closure is the frontend's only signal that a
+/// backlog started or drained. It must see `true` exactly once, when the
+/// pool goes from idle to busy, and `false` exactly once, when the loop next
+/// finds no more work — never once per processed session.
+#[tokio::test]
+async fn the_worker_loop_announces_backlog_start_and_drain_once() {
+    let store = Arc::new(store());
+    store
+        .upsert_sessions(
+            &[record("backlog-announce")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let handle = Arc::new(WorkerHandle::default());
+    let announced = Arc::new(Mutex::new(Vec::new()));
+    let task_store = Arc::clone(&store);
+    let task_handle = Arc::clone(&handle);
+    let task_announced = Arc::clone(&announced);
+    let task = tokio::spawn(async move {
+        let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+            let pass = published_pass(record);
+            Box::pin(async move { pass }) as PassFuture
+        };
+        worker_loop(
+            &task_store,
+            &task_handle,
+            &|| 100,
+            &runner,
+            &|_| {},
+            &WorkerLoopSignals {
+                idle: &|| {},
+                backlog: &|active| task_announced.lock().unwrap().push(active),
+            },
+            &|_, _| {},
+        )
+        .await;
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if announced.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the loop announces both the start and the drain");
+
+    task.abort();
+    assert_eq!(*announced.lock().unwrap(), vec![true, false]);
 }
 
 #[tokio::test]

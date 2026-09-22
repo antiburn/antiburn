@@ -256,6 +256,13 @@ pub struct AgentScanState {
     pub sessions_seen: i64,
 }
 
+/// Whether the insights worker pool has a backlog to drain right now.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightsBacklog {
+    pub active: bool,
+}
+
 /// What a scan is doing, or last did.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -35,6 +35,7 @@ macro_rules! with_app_commands {
             commands::local_usage::get_provider_usage => "get_provider_usage",
             commands::quota::get_quota_accounts => "get_quota_accounts",
             commands::quota::get_quota_usage => "get_quota_usage",
+            commands::get_insights_backlog => "get_insights_backlog",
             commands::get_scan_status => "get_scan_status",
             commands::get_session_analysis => "get_session_analysis",
             commands::get_session_hygiene => "get_session_hygiene",
