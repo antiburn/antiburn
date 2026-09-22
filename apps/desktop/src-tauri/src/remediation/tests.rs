@@ -996,6 +996,7 @@ fn session_scope_identity_round_trips_to_the_verifier_hash() {
 fn verification_availability_matches_all_documented_source_cells() {
     let definition = |detector: DetectorId, source_format: SourceFormat| WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: detector.key().into(),
         canonical_identity: "target".into(),
         source_format: source_format.into(),
@@ -1078,6 +1079,7 @@ fn verification_availability_matches_all_documented_source_cells() {
 fn verification_rejects_mismatched_agents_and_named_resources() {
     let mut definition = WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: DetectorId::OldModelUsage.key().into(),
         canonical_identity: "target".into(),
         source_format: SourceFormat::ClaudeJsonl.into(),
@@ -1192,197 +1194,24 @@ fn a_truncated_assessment_cannot_prove_a_fix() {
 }
 
 #[test]
-fn authoritative_lifecycle_rejects_unavailable_and_mixed_target_states() {
-    let awaiting = WatchStatus {
-        watch_id: "watch".into(),
-        origin: RemediationOrigin::Action,
-        lifecycle: RemediationState::Watching,
-        verification: VerificationStatus::Watching {
-            reason: None,
-            method_revision: None,
-            evidence_revision: None,
-        },
-        savings: SavingsStatus::Pending {
-            method_revision: None,
-        },
-    };
-    let unavailable = WatchStatus {
-        verification: VerificationStatus::VerificationUnavailable,
-        ..awaiting.clone()
-    };
-    let recovery = WatchStatus {
-        lifecycle: RemediationState::RecoveryNeeded,
-        ..awaiting.clone()
-    };
-    let passive = WatchStatus {
-        origin: RemediationOrigin::Passive,
-        ..awaiting.clone()
-    };
-    let fixed = WatchStatus {
-        lifecycle: RemediationState::Fixed,
-        verification: VerificationStatus::Fixed {
-            method_revision: 1,
-            evidence_revision: "evidence".into(),
-        },
-        ..awaiting.clone()
-    };
-    let waiting = WatchStatus {
-        lifecycle: RemediationState::WaitingForPromptUse,
-        ..awaiting.clone()
-    };
-
+fn category_lifecycle_awaits_evidence_then_uses_current_findings() {
     assert_eq!(
-        action_attempt_lifecycle(awaiting.lifecycle, &awaiting.verification, Some(100), false),
-        crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification
+        resolve_category_lifecycle(1, 0, true),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
     );
     assert_eq!(
-        action_attempt_lifecycle(
-            unavailable.lifecycle,
-            &unavailable.verification,
-            Some(100),
-            false
-        ),
-        crate::dto::ChecksCategoryLifecyclePayload::Failing
+        resolve_category_lifecycle(0, 1, true),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
     );
     assert_eq!(
-        action_attempt_lifecycle(recovery.lifecycle, &recovery.verification, Some(100), false),
-        crate::dto::ChecksCategoryLifecyclePayload::Failing
-    );
-    assert_eq!(
-        current_target_lifecycle(Some(&passive), None, None),
-        crate::dto::ChecksCategoryLifecyclePayload::Failing
-    );
-    assert_eq!(
-        current_target_lifecycle(Some(&waiting), None, None),
-        crate::dto::ChecksCategoryLifecyclePayload::Failing
-    );
-    let unsupported_prompt = WatchStatus {
-        ..unavailable.clone()
-    };
-    assert_eq!(
-        current_target_lifecycle(
-            Some(&unsupported_prompt),
-            Some(&BurnCheckRemediationAttempt {
-                detector: DetectorId::SessionsOverDepth,
-                finding_id: "finding".into(),
-                watch_id: "watch".into(),
-                remediation_cycle_id: "watch".into(),
-                display: BurnCheckDisplayFacts {
-                    resource_kind: BurnCheckResourceKind::Session,
-                    resource_identity: None,
-                    current_value: None,
-                    replacement_value: None,
-                    scope_kind: BurnCheckScopeKind::Session,
-                    quantity: None,
-                    quantity_unit: None,
-                    observation_count: 1,
-                    first_observed_at_ms: 1,
-                    last_observed_at_ms: 1,
-                    estimate_method: None,
-                    estimated_opportunity: None,
-                    estimated_token_burn_basis_points: None,
-                    verification_limit: BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix,
-                },
-                origin: RemediationOrigin::Action,
-                lifecycle: RemediationState::Watching,
-                outcome: BurnCheckRemediationOutcome::Failed,
-                verification: VerificationStatus::VerificationUnavailable,
-                savings: SavingsStatus::Unavailable,
-                effective_boundary_ms: Some(100),
-                verified_boundary_ms: None,
-                recurred_boundary_ms: None,
-                environment_key: "native".into(),
-                agent: "claude-code".into(),
-                scope_kind: "project".into(),
-                scope_key: "scope".into(),
-                target_key: "target".into(),
-                created_at_epoch: 1,
-                prompt_action: true,
-            }),
-            Some(101),
-        ),
-        crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification
-    );
-    assert_eq!(
-        current_target_lifecycle(Some(&fixed), None, None),
-        crate::dto::ChecksCategoryLifecyclePayload::Failing
-    );
-    assert_eq!(
-        action_attempt_lifecycle(fixed.lifecycle, &fixed.verification, Some(100), false),
-        crate::dto::ChecksCategoryLifecyclePayload::Passing
-    );
-
-    let mut fixed_attempt = BurnCheckRemediationAttempt {
-        detector: DetectorId::SessionsOverDepth,
-        finding_id: "finding".into(),
-        watch_id: "watch".into(),
-        remediation_cycle_id: "watch".into(),
-        display: BurnCheckDisplayFacts {
-            resource_kind: BurnCheckResourceKind::Session,
-            resource_identity: None,
-            current_value: None,
-            replacement_value: None,
-            scope_kind: BurnCheckScopeKind::Session,
-            quantity: None,
-            quantity_unit: None,
-            observation_count: 1,
-            first_observed_at_ms: 100,
-            last_observed_at_ms: 100,
-            estimate_method: None,
-            estimated_opportunity: None,
-            estimated_token_burn_basis_points: None,
-            verification_limit: BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
-        },
-        origin: RemediationOrigin::Action,
-        lifecycle: RemediationState::Fixed,
-        outcome: BurnCheckRemediationOutcome::Passed,
-        verification: fixed.verification.clone(),
-        savings: SavingsStatus::Unavailable,
-        effective_boundary_ms: Some(50),
-        verified_boundary_ms: Some(100),
-        recurred_boundary_ms: None,
-        environment_key: "native".into(),
-        agent: "claude-code".into(),
-        scope_kind: "project".into(),
-        scope_key: "scope".into(),
-        target_key: "target".into(),
-        created_at_epoch: 1,
-        prompt_action: false,
-    };
-    assert_eq!(
-        current_target_lifecycle(Some(&fixed), Some(&fixed_attempt), Some(100)),
-        crate::dto::ChecksCategoryLifecyclePayload::Passing
-    );
-    fixed_attempt.display.last_observed_at_ms = 101;
-    assert_eq!(
-        current_target_lifecycle(
-            Some(&fixed),
-            Some(&fixed_attempt),
-            Some(fixed_attempt.display.last_observed_at_ms),
-        ),
-        crate::dto::ChecksCategoryLifecyclePayload::Failing
-    );
-    assert_eq!(
-        resolve_category_lifecycle(
-            1,
-            0,
-            false,
-            &[
-                crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification,
-                crate::dto::ChecksCategoryLifecyclePayload::Failing,
-            ],
-        ),
+        resolve_category_lifecycle(1, 0, false),
         Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
     );
     assert_eq!(
-        resolve_category_lifecycle(
-            1,
-            0,
-            true,
-            &[crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification],
-        ),
-        Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
+        resolve_category_lifecycle(0, 1, false),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::Passing)
     );
+    assert_eq!(resolve_category_lifecycle(0, 0, false), None);
 }
 
 #[test]
@@ -1656,6 +1485,7 @@ fn display_limits_match_the_available_verification_evidence() {
 fn missing_or_changed_policy_cannot_verify_an_attempt() {
     let target = WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: DetectorId::OldModelUsage.key().into(),
         canonical_identity: "target".into(),
         source_format: SourceFormat::ClaudeJsonl.into(),
@@ -1703,6 +1533,7 @@ fn a_session_spanning_the_boundary_cannot_verify_a_fix() {
 fn only_explicit_same_route_controls_prove_generic_transitions() {
     let definition = WatchDefinition {
         version: 1,
+        prompt_action: false,
         detector: DetectorId::ModelOverthinking.key().into(),
         canonical_identity: "target".into(),
         source_format: SourceFormat::ClaudeJsonl.into(),

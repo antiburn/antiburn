@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "type-check": "tsc --build --force",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/run-tauri.test.mjs",
     "test:watch": "vitest",
     "format": "prettier --check .",
     "format:write": "prettier --write .",

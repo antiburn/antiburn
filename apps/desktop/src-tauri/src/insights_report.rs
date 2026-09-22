@@ -36,7 +36,8 @@ pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedRe
 pub(crate) use findings::reduce_report_blocking_with_home;
 pub(crate) use findings::{
     CurrentDetectorAssessment, RemediationAssessments, ensure_not_cancelled,
-    old_model_remediation_evidence, publication_findings_in, remediation_assessments,
+    has_current_evidence_after, old_model_remediation_evidence, publication_findings_in,
+    remediation_assessments,
 };
 #[allow(unused_imports)]
 pub use findings::{ReportCancelled, is_cancelled, reduce_report, reduce_report_blocking};
@@ -934,6 +935,7 @@ mod tests {
     fn old_model_attribution_keeps_global_and_project_targets_separate() {
         let definition = WatchDefinition {
             version: 1,
+            prompt_action: false,
             detector: "old_model_usage".into(),
             canonical_identity: "target".into(),
             source_format: "ClaudeJsonl".into(),
@@ -982,6 +984,7 @@ mod tests {
     fn routed_model_attribution_normalizes_config_values_and_requires_the_reviewed_route() {
         let definition = WatchDefinition {
             version: 1,
+            prompt_action: false,
             detector: "old_model_usage".into(),
             canonical_identity: "target".into(),
             source_format: "OpenCodeJsonl".into(),
@@ -1570,6 +1573,25 @@ mod tests {
     }
 
     #[test]
+    fn current_evidence_must_start_after_the_action_boundary() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_ready(&store, "before-boundary", 120);
+
+        assert!(
+            !has_current_evidence_after(data_dir.path(), "native", "claude-code", 120_000).unwrap()
+        );
+
+        publish_ready(&store, "after-boundary", 121);
+        assert!(
+            has_current_evidence_after(data_dir.path(), "native", "claude-code", 120_000).unwrap()
+        );
+        assert!(
+            !has_current_evidence_after(data_dir.path(), "native", "opencode", 120_000).unwrap()
+        );
+    }
+
+    #[test]
     fn opencode_cache_findings_for_one_route_return_one_environment_target() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
@@ -1800,6 +1822,7 @@ mod tests {
             );
             let definition = WatchDefinition {
                 version: 1,
+                prompt_action: false,
                 detector: "old_model_usage".into(),
                 canonical_identity: "identity".into(),
                 source_format: source.into(),
@@ -1958,6 +1981,7 @@ mod tests {
             .unwrap();
         let definition = WatchDefinition {
             version: 1,
+            prompt_action: false,
             detector: "old_model_usage".into(),
             canonical_identity: "identity".into(),
             source_format: "ClaudeJsonl".into(),
@@ -2175,6 +2199,7 @@ mod tests {
         );
         let definition = WatchDefinition {
             version: 1,
+            prompt_action: false,
             detector: "old_model_usage".into(),
             canonical_identity: "identity".into(),
             source_format: "ClaudeJsonl".into(),

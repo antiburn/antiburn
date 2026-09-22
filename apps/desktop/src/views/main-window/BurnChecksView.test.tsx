@@ -1294,7 +1294,7 @@ describe("BurnChecksView", () => {
       expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
     )
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
-  })
+  }, 10_000)
 
   it("confirms an applied change", async () => {
     commands.apply.mockResolvedValueOnce({

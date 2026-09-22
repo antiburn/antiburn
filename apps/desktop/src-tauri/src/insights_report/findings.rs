@@ -21,6 +21,45 @@ pub(crate) struct RemediationAssessments {
     pub truncated: bool,
 }
 
+/// Reports whether current accepted evidence exists after an action boundary.
+pub(crate) fn has_current_evidence_after(
+    data_dir: &Path,
+    environment_key: &str,
+    agent: &str,
+    boundary_ms: i64,
+) -> Result<bool> {
+    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let sql = format!(
+        "SELECT EXISTS (
+            SELECT 1
+              FROM session s
+              JOIN session_evidence e
+                ON e.environment_key = s.environment_key
+               AND e.agent = s.agent
+               AND e.session_id = s.session_id
+             WHERE s.environment_key = ?1
+               AND s.agent = ?2
+               AND s.started_at_epoch > ?3
+               AND {CURRENT_EVIDENCE_PREDICATE}
+             LIMIT 1
+        )"
+    );
+    connection
+        .query_row(
+            &sql,
+            params![
+                environment_key,
+                agent,
+                boundary_ms.div_euclid(1_000),
+                PARSER_REVISION,
+                ANALYZER_REVISION,
+                EVIDENCE_SCHEMA_REVISION,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
 /// Reads a bounded set of fresh post-boundary detector assessments.
 pub(crate) fn remediation_assessments(
     data_dir: &Path,

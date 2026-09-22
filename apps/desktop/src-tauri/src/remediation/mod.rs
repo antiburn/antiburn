@@ -208,6 +208,13 @@ struct TargetIdentity {
     physical_target_key: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+struct TargetListOptions<'a> {
+    now: i64,
+    home: Option<&'a Path>,
+    cache_actions: bool,
+}
+
 struct TimedTarget {
     id: String,
     value: CachedTarget,
@@ -301,7 +308,7 @@ impl RemediationController {
                 scope_key: retained.record.scope_key,
                 target_key: retained.record.target_key,
                 created_at_epoch: retained.record.created_at_epoch,
-                prompt_action: stored_bool(&retained.record.definition_json, "promptAction"),
+                prompt_action: definition.prompt_action,
             });
         }
         attempts.sort_by(|left, right| {
@@ -324,9 +331,11 @@ impl RemediationController {
             store,
             detector,
             context,
-            now_epoch(),
-            antiburn_local::paths::home_dir().as_deref(),
-            true,
+            TargetListOptions {
+                now: now_epoch(),
+                home: antiburn_local::paths::home_dir().as_deref(),
+                cache_actions: true,
+            },
         )
     }
 
@@ -335,82 +344,40 @@ impl RemediationController {
         &self,
         store: &Store,
         report: &mut ChecksReportPayload,
-        context: BurnCheckTargetContext,
+        environment_key: &str,
     ) -> Result<(), ControllerError> {
         let progress = self.burn_check_remediation_progress(store)?;
         for category in &mut report.categories {
-            let targets = self.list_burn_check_targets_at(
-                store,
-                category.id.into(),
-                context.clone(),
-                now_epoch(),
-                antiburn_local::paths::home_dir().as_deref(),
-                false,
-            )?;
-            let attempts = progress
-                .attempts
-                .iter()
-                .filter(|attempt| attempt.detector == category.id.into())
-                .collect::<Vec<_>>();
-            let current_ids = targets
-                .targets
-                .iter()
-                .map(|target| target.finding_id.as_str())
-                .collect::<BTreeSet<_>>();
-            let mut states = targets
-                .targets
-                .iter()
-                .map(|target| {
-                    let attempt = target.watch.as_ref().and_then(|watch| {
-                        attempts
-                            .iter()
-                            .find(|attempt| attempt.watch_id == watch.watch_id)
-                    });
-                    current_target_lifecycle(
-                        target.watch.as_ref(),
-                        attempt.copied(),
-                        Some(target.display.last_observed_at_ms),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let mut latest_retained = BTreeMap::new();
-            for attempt in attempts.into_iter().filter(|attempt| {
-                attempt.origin == RemediationOrigin::Action
-                    && attempt.environment_key == context.environment_key
-                    && !current_ids.contains(attempt.finding_id.as_str())
+            let mut action_boundaries = BTreeMap::new();
+            for attempt in progress.attempts.iter().filter(|attempt| {
+                attempt.detector == category.id.into()
+                    && attempt.origin == RemediationOrigin::Action
+                    && attempt.environment_key == environment_key
             }) {
-                let identity = (
-                    attempt.agent.as_str(),
-                    attempt.scope_kind.as_str(),
-                    attempt.scope_key.as_str(),
-                    attempt.target_key.as_str(),
-                );
-                latest_retained
-                    .entry(identity)
-                    .and_modify(|current: &mut &BurnCheckRemediationAttempt| {
-                        if (
-                            attempt.created_at_epoch,
-                            attempt.remediation_cycle_id.as_str(),
-                        ) > (
-                            current.created_at_epoch,
-                            current.remediation_cycle_id.as_str(),
-                        ) {
-                            *current = attempt;
-                        }
-                    })
-                    .or_insert(attempt);
+                let Some(boundary_ms) = attempt.effective_boundary_ms else {
+                    continue;
+                };
+                action_boundaries
+                    .entry(attempt.agent.as_str())
+                    .and_modify(|current: &mut i64| *current = (*current).max(boundary_ms))
+                    .or_insert(boundary_ms);
             }
-            states.extend(
-                latest_retained
-                    .into_values()
-                    .map(retained_attempt_lifecycle),
-            );
-            category.lifecycle = resolve_category_lifecycle(
-                category.finding,
-                category.clean,
-                targets.truncated,
-                &states,
-            );
+            let mut awaiting_evidence = false;
+            for (agent, boundary_ms) in action_boundaries {
+                if !insights_report::has_current_evidence_after(
+                    &self.data_dir,
+                    environment_key,
+                    agent,
+                    boundary_ms,
+                )
+                .map_err(|_| ControllerError::Internal)?
+                {
+                    awaiting_evidence = true;
+                    break;
+                }
+            }
+            category.lifecycle =
+                resolve_category_lifecycle(category.finding, category.clean, awaiting_evidence);
         }
         Ok(())
     }
@@ -420,9 +387,7 @@ impl RemediationController {
         store: &Store,
         detector: DetectorId,
         context: BurnCheckTargetContext,
-        now: i64,
-        home: Option<&Path>,
-        cache_actions: bool,
+        options: TargetListOptions<'_>,
     ) -> Result<BurnCheckTargetList, ControllerError> {
         if matches!(
             detector,
@@ -430,7 +395,7 @@ impl RemediationController {
                 | DetectorId::UnusedBuiltInTools
                 | DetectorId::UnusedSkills
         ) {
-            return self.list_resource_targets(store, detector, context, now, home, cache_actions);
+            return self.list_resource_targets(store, detector, context, options);
         }
         let page = insights_report::list_current_findings(
             &self.data_dir,
@@ -448,7 +413,8 @@ impl RemediationController {
                 .finding
                 .display()
                 .map_err(|_| ControllerError::Internal)?;
-            let (group_key, target) = self.resolve_target(store, finding, display.agent, home)?;
+            let (group_key, target) =
+                self.resolve_target(store, finding, display.agent, options.home)?;
             grouped
                 .entry(group_key)
                 .and_modify(|entry| {
@@ -470,7 +436,7 @@ impl RemediationController {
                 .or_insert(target);
         }
         let truncated = page.truncated || grouped.len() > MAX_TARGETS;
-        let expires = now.saturating_add(ID_TTL.as_secs() as i64);
+        let expires = options.now.saturating_add(ID_TTL.as_secs() as i64);
         let mut targets = Vec::new();
         let mut cached = Vec::new();
         for target in grouped.into_values().take(MAX_TARGETS) {
@@ -501,7 +467,7 @@ impl RemediationController {
                     AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
                 ),
             };
-            let id = if cache_actions {
+            let id = if options.cache_actions {
                 random_id().map_err(|_| ControllerError::Internal)?
             } else {
                 String::new()
@@ -562,15 +528,15 @@ impl RemediationController {
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
-            if cache_actions {
+            if options.cache_actions {
                 cached.push(TimedTarget {
                     id,
                     value: target,
-                    created_at_epoch: now,
+                    created_at_epoch: options.now,
                 });
             }
         }
-        if !cache_actions {
+        if !options.cache_actions {
             return Ok(BurnCheckTargetList {
                 targets,
                 sample_sessions: check_samples,
@@ -578,9 +544,9 @@ impl RemediationController {
             });
         }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
-        state
-            .targets
-            .retain(|entry| now.saturating_sub(entry.created_at_epoch) <= ID_TTL.as_secs() as i64);
+        state.targets.retain(|entry| {
+            options.now.saturating_sub(entry.created_at_epoch) <= ID_TTL.as_secs() as i64
+        });
         for entry in cached {
             while state.targets.len() >= TARGET_CACHE_LIMIT {
                 state.targets.pop_front();
@@ -599,9 +565,7 @@ impl RemediationController {
         store: &Store,
         detector: DetectorId,
         context: BurnCheckTargetContext,
-        now: i64,
-        home: Option<&Path>,
-        cache_actions: bool,
+        options: TargetListOptions<'_>,
     ) -> Result<BurnCheckTargetList, ControllerError> {
         let request = insights_report::ReportRequest {
             environment_key: context.environment_key.clone(),
@@ -609,27 +573,29 @@ impl RemediationController {
             computed_at_epoch: context.window.end_epoch,
         };
         #[cfg(test)]
-        let reduced = match home {
+        let reduced = match options.home {
             Some(home) => {
                 insights_report::reduce_report_blocking_with_home(&self.data_dir, request, home)
             }
             None => insights_report::reduce_report_blocking(&self.data_dir, request),
-        };
+        }
+        .map_err(|_| ControllerError::Internal)?;
         #[cfg(not(test))]
-        let reduced = insights_report::reduce_report_blocking(&self.data_dir, request);
-        let reduced = reduced.map_err(|_| ControllerError::Internal)?;
+        let reduced = insights_report::reduce_report_blocking(&self.data_dir, request)
+            .map_err(|_| ControllerError::Internal)?;
         let assessment = reduced
             .resources
             .detector(detector)
             .ok_or(ControllerError::Internal)?;
         let truncated = assessment.truncated || assessment.targets.len() > MAX_TARGETS;
-        let expires = now.saturating_add(ID_TTL.as_secs() as i64);
+        let expires = options.now.saturating_add(ID_TTL.as_secs() as i64);
         let mut targets = Vec::new();
         let mut cached = Vec::new();
         let mut check_samples = Vec::new();
         let mut seen_samples = BTreeSet::new();
         for resource in assessment.targets.iter().take(MAX_TARGETS) {
-            let target = self.resolve_resource_target(store, resource, context.clone(), home)?;
+            let target =
+                self.resolve_resource_target(store, resource, context.clone(), options.home)?;
             let display = target
                 .finding()
                 .display()
@@ -656,7 +622,7 @@ impl RemediationController {
                     AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
                 ),
             };
-            let id = if cache_actions {
+            let id = if options.cache_actions {
                 random_id().map_err(|_| ControllerError::Internal)?
             } else {
                 String::new()
@@ -703,15 +669,15 @@ impl RemediationController {
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
-            if cache_actions {
+            if options.cache_actions {
                 cached.push(TimedTarget {
                     id,
                     value: target,
-                    created_at_epoch: now,
+                    created_at_epoch: options.now,
                 });
             }
         }
-        if !cache_actions {
+        if !options.cache_actions {
             return Ok(BurnCheckTargetList {
                 targets,
                 sample_sessions: check_samples,
@@ -719,9 +685,9 @@ impl RemediationController {
             });
         }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
-        state
-            .targets
-            .retain(|entry| now.saturating_sub(entry.created_at_epoch) <= ID_TTL.as_secs() as i64);
+        state.targets.retain(|entry| {
+            options.now.saturating_sub(entry.created_at_epoch) <= ID_TTL.as_secs() as i64
+        });
         for entry in cached {
             while state.targets.len() >= TARGET_CACHE_LIMIT {
                 state.targets.pop_front();
@@ -743,7 +709,16 @@ impl RemediationController {
         context: BurnCheckTargetContext,
         home: &Path,
     ) -> Result<BurnCheckTargetList, ControllerError> {
-        self.list_burn_check_targets_at(store, detector, context, now_epoch(), Some(home), true)
+        self.list_burn_check_targets_at(
+            store,
+            detector,
+            context,
+            TargetListOptions {
+                now: now_epoch(),
+                home: Some(home),
+                cache_actions: true,
+            },
+        )
     }
 
     pub fn copy_prompt_fix_burn_check_target(
@@ -2062,104 +2037,19 @@ impl RemediationController {
     }
 }
 
-fn current_target_lifecycle(
-    watch: Option<&WatchStatus>,
-    attempt: Option<&BurnCheckRemediationAttempt>,
-    current_finding_observed_at_ms: Option<i64>,
-) -> ChecksCategoryLifecyclePayload {
-    let Some(watch) = watch else {
-        return attempt
-            .filter(|attempt| attempt.origin == RemediationOrigin::Action)
-            .map_or(ChecksCategoryLifecyclePayload::Failing, |attempt| {
-                action_attempt_lifecycle(
-                    attempt.lifecycle,
-                    &attempt.verification,
-                    attempt.effective_boundary_ms,
-                    attempt.prompt_action,
-                )
-            });
-    };
-    if watch.origin != RemediationOrigin::Action {
-        return ChecksCategoryLifecyclePayload::Failing;
-    }
-    if watch.lifecycle == RemediationState::Fixed
-        && attempt
-            .and_then(|attempt| attempt.verified_boundary_ms)
-            .zip(current_finding_observed_at_ms)
-            .is_some_and(|(verified, observed)| observed > verified)
-    {
-        return ChecksCategoryLifecyclePayload::Failing;
-    }
-    action_attempt_lifecycle(
-        watch.lifecycle,
-        &watch.verification,
-        attempt.and_then(|attempt| attempt.effective_boundary_ms),
-        attempt.is_some_and(|attempt| attempt.prompt_action),
-    )
-}
-
-fn retained_attempt_lifecycle(
-    attempt: &BurnCheckRemediationAttempt,
-) -> ChecksCategoryLifecyclePayload {
-    action_attempt_lifecycle(
-        attempt.lifecycle,
-        &attempt.verification,
-        attempt.effective_boundary_ms,
-        attempt.prompt_action,
-    )
-}
-
-fn action_attempt_lifecycle(
-    lifecycle: RemediationState,
-    verification: &VerificationStatus,
-    effective_boundary_ms: Option<i64>,
-    prompt_action: bool,
-) -> ChecksCategoryLifecyclePayload {
-    match lifecycle {
-        RemediationState::Reserved | RemediationState::Writing => {
-            ChecksCategoryLifecyclePayload::AwaitingVerification
-        }
-        RemediationState::WaitingForPromptUse => ChecksCategoryLifecyclePayload::Failing,
-        RemediationState::Watching
-            if prompt_action || matches!(verification, VerificationStatus::Watching { .. }) =>
-        {
-            ChecksCategoryLifecyclePayload::AwaitingVerification
-        }
-        RemediationState::Fixed
-            if matches!(verification, VerificationStatus::Fixed { .. })
-                && effective_boundary_ms.is_some() =>
-        {
-            ChecksCategoryLifecyclePayload::Passing
-        }
-        _ => ChecksCategoryLifecyclePayload::Failing,
-    }
-}
-
 fn resolve_category_lifecycle(
     finding: u64,
     clean: u64,
-    truncated: bool,
-    states: &[ChecksCategoryLifecyclePayload],
+    awaiting_evidence: bool,
 ) -> Option<ChecksCategoryLifecyclePayload> {
-    if truncated {
-        return Some(ChecksCategoryLifecyclePayload::Failing);
-    }
-    if states.is_empty() {
-        return if finding > 0 {
-            Some(ChecksCategoryLifecyclePayload::Failing)
-        } else if clean > 0 {
-            Some(ChecksCategoryLifecyclePayload::Passing)
-        } else {
-            None
-        };
-    }
-    if states.contains(&ChecksCategoryLifecyclePayload::Failing) {
-        return Some(ChecksCategoryLifecyclePayload::Failing);
-    }
-    if states.contains(&ChecksCategoryLifecyclePayload::AwaitingVerification) {
+    if awaiting_evidence {
         Some(ChecksCategoryLifecyclePayload::AwaitingVerification)
-    } else {
+    } else if finding > 0 {
+        Some(ChecksCategoryLifecyclePayload::Failing)
+    } else if clean > 0 {
         Some(ChecksCategoryLifecyclePayload::Passing)
+    } else {
+        None
     }
 }
 
@@ -2180,13 +2070,6 @@ fn stored_string(value: &str, key: &str) -> Option<String> {
         .get(key)?
         .as_str()
         .map(str::to_owned)
-}
-
-fn stored_bool(value: &str, key: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(value)
-        .ok()
-        .and_then(|value| value.get(key).and_then(serde_json::Value::as_bool))
-        .unwrap_or(false)
 }
 
 const fn remediation_policy_is_current(definition: &WatchDefinition) -> bool {

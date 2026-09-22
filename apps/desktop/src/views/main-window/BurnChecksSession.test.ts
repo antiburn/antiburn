@@ -120,6 +120,34 @@ describe("BurnChecksSession", () => {
     )
   })
 
+  it("publishes the first report while one changed event waits for a follow-up", async () => {
+    const first = deferred<ChecksReportPayload | null>()
+    const second = deferred<ChecksReportPayload | null>()
+    const { adapter, session, changed } = setup(true, {
+      getReport: vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise),
+    })
+    sessions.push(session)
+    await vi.waitFor(() => expect(adapter.getReport).toHaveBeenCalledOnce())
+
+    changed()
+    changed()
+    first.resolve(report(100))
+
+    await vi.waitFor(() =>
+      expect(session.getSnapshot()).toMatchObject({
+        report: { estimatedTokenBurnBasisPoints: 100 },
+        loading: false,
+      }),
+    )
+    await vi.waitFor(() => expect(adapter.getReport).toHaveBeenCalledTimes(2))
+
+    second.resolve(report(200))
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().report?.estimatedTokenBurnBasisPoints).toBe(200),
+    )
+    expect(adapter.getReport).toHaveBeenCalledTimes(2)
+  })
+
   it("retains report and target data after refresh failures", async () => {
     const { adapter, session } = setup()
     sessions.push(session)

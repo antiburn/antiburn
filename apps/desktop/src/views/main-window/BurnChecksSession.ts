@@ -204,7 +204,6 @@ export class BurnChecksSession {
   }
 
   refresh = (): void => {
-    this.refreshVersion += 1
     this.refreshDirty = true
     if (!this.snapshot.active || this.refreshTask) return
     this.refreshTask = this.runRefresh().finally(() => {
@@ -217,7 +216,7 @@ export class BurnChecksSession {
     while (this.refreshDirty && this.snapshot.active) {
       this.refreshDirty = false
       const work = this.workVersion
-      const version = this.refreshVersion
+      const version = ++this.refreshVersion
       const consumerId = this.consumerId
       if (!consumerId) return
       this.update({
@@ -228,7 +227,7 @@ export class BurnChecksSession {
       this.aggregateVersion = 0
       try {
         const report = await this.adapter.getReport(consumerId)
-        if (work !== this.workVersion || version !== this.refreshVersion) continue
+        if (work !== this.workVersion || consumerId !== this.consumerId) continue
         if (!report) throw new Error("Checks are unavailable")
         this.reportVersion = version
         this.update({ report, loading: false, refreshing: false, error: false })
@@ -242,7 +241,7 @@ export class BurnChecksSession {
           this.loadTargets(detector, true)
         }
       } catch {
-        if (work === this.workVersion && version === this.refreshVersion) {
+        if (work === this.workVersion && consumerId === this.consumerId) {
           this.update({ loading: false, refreshing: false, error: true })
           this.exposure.observe("error", this.exposureGeneration ?? undefined)
         }

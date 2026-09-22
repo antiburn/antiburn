@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, ProviderHint, SessionEvidence,
@@ -1161,6 +1161,7 @@ pub async fn get_checks_report(
     window: tauri::WebviewWindow,
     consumer_id: String,
 ) -> CommandResult<ChecksReportPayload> {
+    let started_at = Instant::now();
     if !matches!(window.label(), popover::LABEL | crate::main_window::LABEL) {
         return Err(fail("only Checks surfaces can read the Checks report"));
     }
@@ -1175,6 +1176,7 @@ pub async fn get_checks_report(
         .state::<InsightsController>()
         .checks_report(data_dir, request.clone(), consumer_id)
         .await?;
+    let reduction_ms = started_at.elapsed().as_millis() as u64;
     // The report carries three measurements that no other command reduces:
     // unknown record vocabulary, quota incidents, and provider incidents.
     // Each recorder compares the outcome against the last one it sent, so
@@ -1187,12 +1189,15 @@ pub async fn get_checks_report(
         .apply_category_lifecycles(
             &app.state::<Store>(),
             &mut payload,
-            BurnCheckTargetContext {
-                environment_key: request.environment_key,
-                window: request.window,
-            },
+            &request.environment_key,
         )
         .map_err(fail)?;
+    ::tracing::debug!(
+        event = "checks_report_finished",
+        duration_ms = started_at.elapsed().as_millis() as u64,
+        reduction_ms,
+        lifecycle_ms = started_at.elapsed().as_millis() as u64 - reduction_ms,
+    );
     #[cfg(debug_assertions)]
     let payload = {
         let mut payload = payload;
