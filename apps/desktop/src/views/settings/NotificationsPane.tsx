@@ -238,7 +238,7 @@ export function NotificationsPane({ settings, update }: NotificationsPaneProps) 
         <Card>
           <Row
             label="5-hour milestones"
-            description="Choose which quota percentages notify. Each notification compares quota used with time elapsed in the five-hour window. These fire only while Settings → Usage is set to refresh."
+            description="Choose which limit percentages notify. Each notification compares limit used with time elapsed in the five-hour window. These fire only while Settings → Usage is set to refresh."
             dimmed={!on}
           >
             <MilestoneSelector
@@ -250,7 +250,7 @@ export function NotificationsPane({ settings, update }: NotificationsPaneProps) 
           </Row>
           <Row
             label="Weekly milestones"
-            description="Choose weekly quota percentages separately. Notifications re-arm when the weekly limit resets."
+            description="Choose weekly limit percentages separately. Notifications re-arm when the weekly limit resets."
             dimmed={!on}
           >
             <MilestoneSelector

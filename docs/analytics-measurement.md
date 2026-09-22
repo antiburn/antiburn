@@ -168,7 +168,7 @@ when the wire field count stays unchanged.
 
 | Event/change                                       | Trigger and safe dimensions                                                                                                                                                                                                              | Owner and volume rule                                                                                                                                                                                                                                                          |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `surface_viewed`                                   | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, or `settings`. `detail`: `user` or `automatic`.                                               | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                          |
+| `surface_viewed`                                   | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, `settings`, or `quota`. `detail`: `user` or `automatic`.                                       | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                          |
 | `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the eight existing Settings pane IDs.                                                                                                                                                   | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                              |
 | `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary, plus `insights`; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response. | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`. |
 | `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`.      | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `no_credentials` remains dormant. No account, plan name, balance, quota value, or raw response.                                       |
@@ -286,6 +286,25 @@ The deduplication tuple includes the mapped plan, so a tier change is eligible
 under the existing changed-tuple rule. Background learning keeps its current
 cadence and maximum volume. Historical coarse values cannot be reclassified;
 reports segment the refined mapping at its first app-version boundary.
+
+#### Model-scoped weekly lane detail (implemented 2026-09-16)
+
+The factor learner now tracks a lane for a provider's supplemental weekly
+window scoped to one model, such as Claude's "Fable" limit, alongside the
+existing five-hour and weekly account lanes. The product question is whether
+this app's estimate accuracy for a model-scoped lane differs from the
+account-wide ones, without ever naming the model itself.
+
+`antiburn.limit_factor_observed`'s `detail` property gains one closed value,
+`model`, reported for every `model:<slug>` lane the learning pass touches; the
+model name and its slug never reach the event. The existing `short` and `long`
+values are unchanged. The first-per-pair rule, the 24-hour minimum between
+events for the same pair, and the plan and band mappings all apply to the
+`(provider, "model")` pair itself: every model-scoped lane for one provider
+maps to the single detail value `model`, so all of a provider's model lanes
+share this one dedup slot, and the model name is never part of the key.
+Reports segment `detail=model` from `short` and `long` at this app version's
+boundary; no historical event can be reclassified.
 
 #### Burn Checks integration (implemented 2026-09-10)
 
@@ -465,3 +484,90 @@ views. Native opener acceptance does not prove file-manager visibility. The
 existing consent and build gates apply; offline delivery and opt-out remain
 unobserved. Tests cover clipboard and opener success/failure separately from
 transcript actions and reject unknown analytics values and extra path fields.
+
+### Quota screen — 2026-09-16
+
+Question: do readers open the new Quota screen, and does it present usable
+data? The main window's Quota section adds a `quota` value to the existing
+`surface_viewed` and `surface_state_observed` label vocabularies, following
+the same rules as every other main-window section: one `surface_viewed` per
+deliberate show, and at most one `ready`/`empty`/`error`/`loading_timeout` per
+distinct state per exposure. Selecting an account, lane, or range preset does
+not start a new exposure; it stays the same visit. No provider, account,
+lane, dollar figure, or session identity is collected. The existing consent
+and build gates apply.
+
+### Quota window accuracy — 2026-09-18
+
+Question: for each closed quota window, did the dollars-only estimate land
+close to the provider's own meter, and how much of the meter's rise stayed
+unexplained under the shared-meter model? The metric is the distribution of
+`antiburn.quota_window_closed`'s `estimateBias` and `unexplainedBand` by
+provider, lane, and mapped plan, using reporting installations as the
+denominator. This supports decisions about factor-learning accuracy and the
+shared-meter model without sending dollar amounts, exact percentages, or
+account identifiers.
+
+The existing background factor-learning pass (`usage_alerts.rs`'s scheduled
+pass and `provider_usage/live/mod.rs`'s live pass) owns the trigger, the same
+pass that already reports `antiburn.limit_factor_observed`. It now also names
+every `(provider, account, lane)` pair it touched. For each touched pair, the
+event boundary looks for windows that closed within the last 14 days, carry
+an observed `period_id` (never a cadence-extrapolated or turn-gap-inferred
+one), and have no durable `quota_window_reported` marker yet. This records a
+completed outcome for the window, not a live estimate: the badge and forecast
+a user actually saw during the window are not reconstructed or corrected
+after the fact.
+
+The event carries the same closed `label`/`detail`/`plan`/`usageBand`
+vocabulary as `antiburn.limit_factor_observed`, plus three fields scoped to
+this event alone: `estimateBias` (the dollars-only estimate against the
+window's last reading, signed and banded by powers of five and twenty, or
+`unknown` with no reading or no factor point), `unexplainedBand` (the
+shared-meter model's unexplained rise as a share of the last reading), and
+`readingCoverage` (whether a reading covered the window's own end, within an
+hour). `bucket` reports the window's count of
+meter regressions. No dollar amount, exact percentage, account, model name,
+session, or timestamp reaches the event; the pure `share_period` function
+that derives the shared-vs-estimated split never receives an account key,
+only readings, bucketed dollars, and factor points already scoped to one
+lane.
+
+A window reports at most once, ever: the store marks it reported before the
+event is handed to the tracker, so a crash, a disabled build, or a later pass
+over the same lane cannot report it twice, and a window whose facts could not
+be computed is left unmarked for a later retry rather than reported blind. A
+window that never closes, or closes outside the 14-day lookback, never
+reports. There is no cancellation path — the pass either finds the window
+already marked or does not, and consent is checked once per pass rather than
+per window. Expected volume is bounded by the number of quota windows an
+install closes, at most a handful per lane per week, well under the existing
+factor-observed volume.
+
+This is a new event, not a reused name, so there is no prior semantic to
+preserve. `docs/analytics.md` and `docs/privacy-policy.md` list the event and
+its three new properties; the wire-payload test now pins thirty-one total
+properties and the catalog tests (`the_documented_catalog_matches_the_code`,
+`every_document_that_counts_the_fields_counts_the_same_number`,
+`no_variant_escapes_the_catalog`) enforce that the code and the documented
+catalog agree.
+
+Tests prove: an open window reports nothing
+(`an_open_window_reports_nothing`); a window closed outside the lookback
+reports nothing (`a_window_closed_more_than_the_lookback_ago_reports_nothing`);
+a disabled pass reports nothing and writes no marker
+(`a_disabled_pass_reports_nothing_and_writes_no_marker`); a closed, eligible
+window reports exactly once and leaves a marker row
+(`a_closed_window_reports_once_and_the_marker_row_exists`); and a second pass
+over the same window, with its marker already written, reports nothing
+(`a_second_pass_over_the_same_closed_window_reports_nothing`). The three new
+banding functions (`estimate_bias`, `unexplained_band`, `reading_coverage`)
+are unit tested directly in `event.rs` against their boundary values. The
+marker table itself is proven durable and idempotent
+(`marking_a_quota_window_reported_is_idempotent_and_durable`) and pruned with
+its period, alongside the existing residual and learn-cursor rows
+(`finite_retention_prunes_the_residual_and_learn_cursor_with_their_period`).
+This validates the store-level path the real pass takes; there is no Tauri
+`AppHandle` mock in this codebase, so the consent-gated wrapper itself is
+exercised the same way every other analytics emitter's wrapper is — by
+review, not by an automated test — following existing precedent.

@@ -1,6 +1,6 @@
 # Privacy policy
 
-Effective: 8 September 2026
+Effective: 21 September 2026
 
 This policy explains the analytics sent by the antiburn desktop application.
 Antiburn is operated by **Cadence AI (Vic) Pty Ltd** ("we", "us"). Contact us
@@ -28,7 +28,7 @@ which features are used, and coarse hourly ranges for the application's own
 resource use. This includes application launch and progress through the fixed
 onboarding steps.
 
-The event schema contains twenty-eight fields:
+The event schema contains thirty-one fields:
 
 - the constant product surface `desktop`;
 - random message, installation, and analytics-session identifiers;
@@ -50,6 +50,10 @@ The event schema contains twenty-eight fields:
 - that factor's dollars-per-percent value, reduced to a coarse band;
 - how far the factor's estimate and the provider's own meter disagree,
   reduced to a coarse band;
+- for one finished usage window, whether a dollars-only estimate landed above
+  or below the provider's own meter and by how much, how much of the meter's
+  rise no local session could explain, and whether a reading covered the
+  window's end, each reduced to a coarse band;
 - a nested hourly summary containing fixed bands for antiburn's own shell CPU,
   memory, process read and write I/O, local database size, and database log
   size, plus `none`, `partial`, or `full` coverage for each measurement; and

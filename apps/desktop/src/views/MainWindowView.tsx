@@ -1,4 +1,4 @@
-import { Flame, House, MessagesSquare, Settings } from "lucide-react"
+import { Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
 
 import type { SessionListEntry } from "../components/session/SessionList"
@@ -30,6 +30,12 @@ import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
 import { OverviewView } from "./main-window/OverviewView"
+import { QuotaSession } from "./main-window/quota/QuotaSession"
+import { QuotaView } from "./main-window/quota/QuotaView"
+
+/** A section id `MainWindowNavigationSession` does not know: it carries no
+ *  cross-window target and is tracked locally instead. */
+const LOCAL_ONLY_SECTION_ID = "quota"
 
 export interface MainWindowSection extends SidebarNavItem {
   render: (context: { active: boolean }) => ReactNode
@@ -115,17 +121,34 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const [activitySession] = useState(() => new MainActivitySession())
   const [burnChecksSession] = useState(() => new BurnChecksSession())
   const [navigationSession] = useState(() => new MainWindowNavigationSession())
-  const [overviewSession] = useState(() => new MainOverviewSession())
+  const [overviewSession] = useState(() => new MainOverviewSession(activitySession))
+  const [quotaSession] = useState(() => new QuotaSession())
   const navigation = useSyncExternalStore(
     navigationSession.subscribe,
     navigationSession.getSnapshot,
     navigationSession.getSnapshot,
   )
-  // Read the Sessions list for the sidebar's counts without joining its
-  // active-viewer count, so this alone never starts loading it: the list
-  // still only loads once a viewer visits Sessions.
+  // Quota has no cross-window target, so its selection lives here instead of
+  // in MainWindowNavigationSession. A cross-window request always targets a
+  // real MainWindowSectionId, so a fresh one always means "leave Quota".
+  const [localSelectedId, setLocalSelectedId] = useState<string | null>(null)
+  // Stays true once Quota is first selected, so leaving it for another
+  // section keeps it mounted instead of tearing it down and refetching.
+  const [quotaVisited, setQuotaVisited] = useState(false)
+  // Diffs on `requests`, not `selected`: a cross-window request can retarget
+  // the section already selected (every session-open request targets
+  // Activity), which leaves `selected` unchanged but must still leave Quota.
+  const [previousNavigationRequests, setPreviousNavigationRequests] = useState(
+    navigation.requests,
+  )
+  if (previousNavigationRequests !== navigation.requests) {
+    setPreviousNavigationRequests(navigation.requests)
+    if (localSelectedId) setLocalSelectedId(null)
+  }
+  // Read the shared Sessions list for the sidebar's counts. This list is a
+  // main-window dependency, while detail analysis remains pane-scoped.
   const activity = useSyncExternalStore(
-    sections ? neverSubscribe : activitySession.subscribeInactive,
+    sections ? neverSubscribe : activitySession.subscribeList,
     activitySession.getSnapshot,
     activitySession.getSnapshot,
   )
@@ -156,6 +179,23 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       ),
     },
     {
+      id: "quota",
+      label: "Limits",
+      icon: Gauge,
+      render: ({ active }) => (
+        <QuotaView
+          active={active}
+          session={quotaSession}
+          onSelectSession={(subject) => {
+            // Select first, so Sessions mounts with the subject already set
+            // and loads its analysis on activation.
+            selectSection("activity")
+            activitySession.openRelated(subject)
+          }}
+        />
+      ),
+    },
+    {
       id: "burnChecks",
       label: "Checks",
       icon: Flame,
@@ -175,6 +215,13 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           active={active}
           session={activitySession}
           hygieneBySession={hygieneBySession}
+          onOpenQuota={(target) => {
+            quotaSession.open(
+              { provider: target.provider, accountKey: target.accountKey, lane: target.lane },
+              { startEpoch: target.rangeStart, endEpoch: target.rangeEnd },
+            )
+            selectSection("quota")
+          }}
         />
       ),
     },
@@ -183,8 +230,12 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const [customVisited, setCustomVisited] = useState(
     () => new Set(availableSections.slice(0, 1).map((section) => section.id)),
   )
-  const selectedId = sections ? customSelectedId : navigation.selected
-  const visited: ReadonlySet<string> = sections ? customVisited : new Set(navigation.visited)
+  const selectedId = sections ? customSelectedId : (localSelectedId ?? navigation.selected)
+  const visited: ReadonlySet<string> = sections
+    ? customVisited
+    : new Set(
+        quotaVisited ? [...navigation.visited, LOCAL_ONLY_SECTION_ID] : navigation.visited,
+      )
   function selectSection(id: string): void {
     if (sections) {
       if (!availableSections.some((section) => section.id === id)) return
@@ -192,6 +243,12 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       setCustomVisited((previous) => new Set(previous).add(id))
       return
     }
+    if (id === LOCAL_ONLY_SECTION_ID) {
+      setLocalSelectedId(id)
+      setQuotaVisited(true)
+      return
+    }
+    setLocalSelectedId(null)
     if (id === "overview" || id === "burnChecks") {
       navigationSession.select(id)
       return

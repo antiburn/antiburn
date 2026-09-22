@@ -151,7 +151,7 @@ needs to provide visibility and analysis, including messages, tool activity, fil
 content recorded in a transcript, session identity and locations, counts, durations,
 token totals, activity distributions, cost estimates, skill details, derived session
 evidence — bounded facts about which models, tools, skills, and MCP servers a
-session used, and any quota limits it recorded hitting, never the transcript's
+session used, and any limits it recorded hitting, never the transcript's
 text — session relations, the last successful plan-limit reading, and timestamped
 provider usage readings for an opaque account key. Provider usage readings follow
 the selected session-data retention period, the same as other local data; a
@@ -209,7 +209,7 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
   Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-eight fields and
+  screen explains it, and the switch is in Settings → Privacy. The event schema has thirty-one fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
@@ -224,7 +224,11 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   bucket; whether a next-reset date was present; a learned session-limit
   factor's plan mapped to a fixed list; that factor's dollars-per-percent value
   reduced to a coarse band; how far that factor's estimate and the provider's
-  own meter disagree, also reduced to a coarse band; a nested hourly summary of
+  own meter disagree, also reduced to a coarse band; for one finished usage
+  window, whether a dollars-only estimate landed above or below the meter and
+  by how much, how much of the meter's rise no local session could explain,
+  and whether a reading covered the window's end, each reduced to a coarse
+  band; a nested hourly summary of
   fixed bands and coverage for antiburn's own shell CPU, memory, process I/O,
   database size, and database-log size; up to 16 sanitized unknown transcript
   record type names, each checked against a fixed character set and length,
@@ -276,7 +280,7 @@ first scan failure of a run, free disk space dropping below your threshold, a
 usage milestone, the first-run menu-bar location, and the test button's own
 sample. Milestones need readings that keep moving, so they fire only while
 Settings → Usage is set to refresh; with that off they stay silent. By default,
-they fire at every 10% of a limit and compare quota used with time elapsed in
+they fire at every 10% of a limit and compare limit used with time elapsed in
 that limit's window. Settings → Notifications offers every 5% step, plus
 select-all and clear-all controls. Every successful live reading checks for a
 crossing, and the hidden background monitor checks at most every five minutes.

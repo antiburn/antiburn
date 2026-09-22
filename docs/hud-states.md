@@ -3,7 +3,10 @@
 _Behavior reference for the floating HUD and its platform and resource costs._
 
 The HUD is a small always-on-top window that shows usage bars outside the menu.
-Its native frame follows the visible bar panel and does not change on hover. A
+The panel paints one 70% frame, white in light and black in dark, with a
+vertical gradient stroke, at rest and on hover. Its native frame
+follows the visible bar panel and does not change on hover. The close control
+is commented out for now; the menu bar toggle hides the HUD. A
 hover shows the detail in a second window, like a large tooltip.
 
 ## The states
@@ -12,7 +15,7 @@ hover shows the detail in a second window, like a large tooltip.
 stateDiagram-v2
     [*] --> Hidden
     Hidden --> Collapsed: Settings toggle
-    Collapsed --> Hidden: ✕ on the HUD<br/>or Settings toggle
+    Collapsed --> Hidden: Settings toggle
 
     Collapsed --> DetailShown: pointer rests on it 400ms
     DetailShown --> Collapsed: pointer leaves
@@ -21,18 +24,21 @@ stateDiagram-v2
     DetailShown --> Dragging: mouse down
     Dragging --> Collapsed: mouse up
 
+    Collapsed --> Docked: dropped against a screen edge
+    Docked --> Collapsed: pointer rests on the tab,<br/>wake, or dragged away
+
     note right of Collapsed
-        Bars only. No panel, no
-        background, no chrome. A small
-        ✕ fades in while the pointer
-        rests on the bars.
+        The frame, the bars, and the
+        token map above them while two
+        or more sessions write. No
+        detail panel, no window chrome.
     end note
     note right of DetailShown
         A separate display-only window
-        next to the HUD: wordmark, and
-        for each limit a label, a
-        percentage, a bar and its
-        reset time.
+        next to the HUD: wordmark, the
+        map spelled out, and for each
+        limit a label, a percentage, a
+        bar and its reset time.
     end note
     note right of Dragging
         The detail window hides and the
@@ -43,26 +49,156 @@ stateDiagram-v2
 | State            | What you see                                                | Purpose                              |
 | ---------------- | ----------------------------------------------------------- | ------------------------------------ |
 | **Hidden**       | Nothing                                                     | The HUD is opt-in.                   |
-| **Collapsed**    | Bare LED bars on a transparent background                   | It stays ambient.                    |
+| **Collapsed**    | Bare LED bars, and the token map while a session writes     | It stays ambient.                    |
 | **Detail shown** | The bars, plus a separate window with the spelled-out stats | It shows detail on request.          |
 | **Dragging**     | The collapsed bars only                                     | It does not cover the drop position. |
+
+### The token map
+
+The map is experimental and off by default. The "Show what live sessions are
+doing" switch in Settings turns it on.
+
+A fixed square above the bars answers "what are my agents doing right now". It
+draws one blob per session that wrote tokens in the last 5 minutes. Each full
+dot stands for a fixed number of tokens per minute, coloured by the mode of
+work that paid for it: looking, running, changing, delegating, thinking,
+talking, other. A thin frame in a per-session colour bounds each blob. Smaller
+dots are sub-agents of that session. The newest turn on the map pulses.
+
+| Map state         | What you see                                              |
+| ----------------- | --------------------------------------------------------- |
+| **Idle**          | No square. The bars sit alone, as before.                 |
+| **One session**   | No square. The live LED carries the mode and the rate.    |
+| **Many sessions** | Blobs packed busiest first, left to right, then down.     |
+| **Sub-agents**    | Small dots after the parent's dots inside the same frame. |
+| **Quiet session** | One dim dot, so a session that rounds to zero stays seen. |
+
+The dot value climbs a ladder (250, 500, 1k … 500k tokens/min) until every blob
+fits the square. It steps up at once and steps down only after a full window
+has passed below the coarser value, so a burst does not flicker the scale. The
+detail window states the current dot value.
+
+The map shows at two or more live agents, where a sub-agent that wrote tokens
+in the window counts as one. It hides at once when it drops to one, and a map that just hid waits one poll before it comes back, so a session
+flickering around zero does not flash it. With one session, the usage card in
+the detail window still lists that session.
+
+The detail window follows the pointer. Over the meter it lists each session
+with its rate, its top mode, and its frame colour, followed by a mode legend.
+Over one agent box it shows that session alone: title, agent, rate, the mode
+split as an LED row, each sub-agent on a line, and the dot value. Moving
+between boxes swaps the card at once while it is open. Settings → Usage → "Show what live sessions
+are doing" turns the map off. Reduced motion stops the pulse.
 
 ### Transition details
 
 - The detail window waits for a 400ms hover intent. It hides at once when the
   pointer leaves the HUD frame.
-- The ✕ sits at the HUD's top right. It fades in as soon as the pointer enters
-  the frame and adds no height.
+- The close control is off. The code that puts a ✕ at the HUD's top right stays
+  in place, but it is commented out. The menu bar toggle hides the HUD.
 - DOM mouse edges provide the focused path. The Rust crate polls the global
   cursor every 100ms for the background path and emits `overlay_hover`.
 - A mouse down clears the pending show timer and hides a visible detail window.
   The timer stays suppressed until mouse up. After mouse up, a fresh 400ms count
   starts only when the pointer still rests on the HUD.
-- Dragging starts on the panel except on the ✕. Only mouse release or window
-  blur ends the drag. The drag moves the window manually at most once per
-  animation frame.
+- Dragging starts anywhere on the panel. Mouse release ends the drag. A
+  window blur ends it too, after a 250ms grace: the tear-off reshapes the
+  window, and that can read as a blur, so a move with the button still down
+  inside the grace keeps the drag. The drag moves the window manually at most
+  once per animation frame. The shell marks the drag from the tear-off to the
+  drop. An app activation inside that span belongs to the drag, so it never
+  restores the main window, wherever the cursor reads at that moment.
 - The detail window fades in over 100ms (`--duration-quick`). It hides with no
   transition. Reduced motion disables the fade.
+
+### Docked
+
+Drag the HUD against any edge of its display and it docks there: the window
+slides so that only a 6 logical px tab stays on screen. The renderer, the
+usage poll and the token-map poll all continue, so the return is instant.
+There is no setting and no dock control; the drop is the gesture.
+
+- **Docking.** A drag that ends within 16 logical px of an edge, or past it,
+  docks at that edge. A corner picks the nearer edge. The crate remembers a
+  home position flush inside that edge, so a peek shows the whole HUD even
+  after a drop past the edge. The slide takes 200ms. The detail window hides
+  first.
+- **The tab.** While docked, the crate polls the global cursor every 100ms.
+  The cursor resting on the tab for 150ms peeks the HUD in to its home
+  position. It parks again 3s after the pointer leaves it, or after 3s if the
+  pointer never reaches it.
+- **Tearing off.** A drag on a docked or peeked HUD undocks it. The HUD webview
+  calls `tear_off_overlay` as the drag starts, so the auto-dock timer stops
+  and the drop lands wherever the pointer leaves it. A drop near an edge docks
+  again.
+- **Wake.** The HUD webview asks the shell to wake a docked HUD for two
+  reasons: a transcript write more than an hour after the previous one it saw
+  through events, and a spend rate at the ceiling for two polls in a row. A
+  woken HUD stays at least 2.8s, and longer while hovered. The burn wake re-arms
+  only after the rate drops below the ceiling. Both start cold: a fresh dock
+  never wakes on its first sample. Each wake is logged with its reason.
+- **Displays.** The dock edge is the edge of the display the HUD was dropped
+  on. An edge another display touches is not a dock edge: a drop past it
+  moves the HUD back inside the display instead, so it never sits on a seam. A display change moves the HUD to its remembered placement and docks it
+  again at the same edge of that display. A height change while docked keeps
+  only the tab on screen. Hiding the HUD keeps it docked, so the next open
+  parks it again.
+
+### Island
+
+On a Mac with a notch, the HUD can sit in it. The island is a pure black
+panel the width of the notch plus a 30 logical px wing either side, and it
+belongs to the built-in display. Drag the HUD onto the notch and drop it
+there, or press "Move to Notch" on the Docking row in Settings › Usage. Drag
+it out, or press the same button again, to leave. It is a third placement beside floating and edge docking, and the
+crate stores it with the dock state.
+
+- **Collapsed.** The island is the notch row alone, so the notch covers all
+  of it but the wings. The left wing holds the live mark. The right wing holds
+  the antiburn mark, cut from the island ink and kept faint. The spend-rate
+  figure with `/min` under it is off for now. The live mark is a short
+  bar, not a dot, because a round light beside the lens reads as the camera
+  light. It takes the brand colour; the mode colour is off for now. It pulses
+  between three-quarters and one-third opacity on the spend-rate period, and
+  holds the dim value under reduced motion. The detail window never opens from the collapsed row.
+- **Expanded.** The crate polls the global cursor every 100ms while
+  collapsed. The pointer resting for 150ms in the hotspot, the notch plus
+  10px either side and 5px below, or on a wing, expands the island: the full
+  HUD hangs below the notch row. Each bar carries a label row, its name on
+  the left and its figure on the right, and the time to its reset under it,
+  so the island has no caption to clip. When the token map shows, a legend
+  under it names each session with its rate and its top mode. The content
+  is padded to half the wing, so the bars start under the marks and not
+  nearer the edge than them. It collapses 3s after the pointer leaves the
+  island and the hotspot. A wake expands it the same way, for as long as a
+  docked HUD peeks.
+- **No detail card.** The island opens no detail window: the open island
+  carries what the card would say. A card left over from the floating frame
+  hides when the HUD lands in the notch.
+- **The drag preview.** A drag that carries the HUD over the notch turns the
+  floating frame into the island's shape before the drop, so the release
+  says what it will do. Dragging back out restores the frame. A drop above
+  the notch row, overlapping the notch, sits the HUD in the notch. A drop on a
+  display without a notch docks or floats as before.
+- **Tearing off.** A press on the island is not a tear-off. It opens the
+  island at reduced opacity, a ghost of what a drag would carry away, and
+  the island tears off only once the pointer travels 10 logical px. The HUD
+  then takes the floating width under the pointer and follows it for the
+  rest of the gesture, one drag from the notch to the drop. A release before
+  that leaves the island open, and it collapses on the peek linger.
+- **A display change.** The island belongs to the display with the notch. When
+  that display leaves, the HUD parks at the top edge of the display it lands
+  on and keeps the wish for the notch. The watcher reads the notch again every
+  poll while the wish is unmet, so the island returns as soon as a notch is
+  back, whether the display list changed or the safe area only settled late.
+  Dragging the HUD off the island, or the settings button, clears the wish.
+- **No notch.** A stored island placement on a Mac without a notch, such as
+  an external display alone, falls back to a top dock on the HUD's display.
+  When a notched display returns, the HUD goes back into the notch.
+- **The window.** The island window is the notch, the wings, and a
+  transparent gutter either side where the top corners curve out into the
+  bezel. Its height follows the content as the floating frame's does. The
+  webview draws nothing under the notch itself.
 
 ### When there are no bars
 
@@ -188,6 +324,32 @@ live macOS validation after changes to the native window mechanism.
 ## Data and timing
 
 - Each LED bar has 20 segments.
+- Only the first bar blinks during a live session, and only on the HUD. The
+  detail window does not blink.
+- The blink period follows the spend rate: dollars per minute over the token
+  map's 5 minute window, summed across every session and sub-agent. $0.05/min
+  and below ticks at 3 s; $2.00/min and above strobes at 300 ms; between them
+  the map is geometric, quantised to eight rungs so the animation restarts a
+  few times a session, not every poll. The 300 ms cap keeps a 6 px dot under
+  the flash-safety band. Fast means concerning.
+- The ladder when no dollars are known: a window with no priced model uses
+  the fastest allowance consumption rate in the usage payload (5 to 100
+  percentage points per hour on the same rungs); with neither, the LED ticks
+  at the fixed 3 s. An unpriced window never sits at the slow end on its own,
+  because slow claims the machine is quiet.
+- The blinking segment takes the mode colour of the session with the newest
+  turn on the token map. The static segments keep the bar colour.
+- Under reduced motion the LED does not blink. The detail window states the
+  spend rate in words instead.
+- A transcript write stays live for 90 seconds.
+- The renderer reads liveness once when shown. Session and scan events push
+  later changes, and one timer clears the live state at its expiry.
+- The renderer polls the token map every 5 seconds over a 5 minute window. The
+  shell caches parsed samples per transcript fingerprint and keeps at most one
+  hour of samples per session.
+- The shell memoizes session discovery for 60 seconds.
+- The HUD does not sweep. It shows the blink alone, so the sweep below
+  describes the popover meters and the session rows.
 - Unscoped bars sweep only for positive canonical provider-route counts.
   The harness does not determine the provider: Pi's recorded `openai-codex`
   route becomes OpenAI, while Pi's `anthropic` route activates Claude.
@@ -299,9 +461,14 @@ Usage writes it. The popover session restores the HUD at startup when it reads
 
 Each webview can hold a different localStorage copy. The native window therefore
 broadcasts each visibility change. Settings uses that live state, refreshes it
-when it receives focus, and updates its cached preference. Closing the HUD with
-its ✕ turns the Settings control off. The cached value only restores the HUD at
-startup.
+when it receives focus, and updates its cached preference. The close control,
+when it comes back, turns the Settings control off in the same way. The cached
+value only restores the HUD at startup.
+
+The dock state (`internal:hudDock`: docked, and the edge) lives in the shell
+store. `record_hud_position` writes it after every drag, and `tear_off_overlay`
+clears the docked flag. The shell applies it to the HUD on every open and at
+launch, so a docked HUD comes back docked.
 
 ## Platform boundary
 

@@ -149,10 +149,11 @@
 /* ==========================================================================
    Overview page width.
 
-   The page measures itself as a container. The three spend totals sit in a
-   row and stack below 540px, where three hero figures no longer fit. The
-   stack card and the limits card sit in a row and stack below 700px, where
-   the meter dots of the limits card no longer fit beside the checks.
+   The page measures itself as a container. The three spend totals are a
+   `hero-figures` row (src/components/ui/hero-figures.css) and stack below
+   540px, where three hero figures no longer fit. The stack card and the
+   limits card sit in a row and stack below 700px, where the meter dots of
+   the limits card no longer fit beside the checks.
    ========================================================================== */
 
 .overview-page {
@@ -196,20 +197,6 @@
   pointer-events: none;
 }
 
-.overview-totals {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.overview-totals-cell + .overview-totals-cell {
-  border-left-width: 1px;
-  padding-inline: var(--space-lg);
-}
-
-.overview-totals-cell:first-child {
-  padding-inline-end: var(--space-lg);
-}
-
 /* The sessions card fills the space beside the fixed-width provider limits card. */
 .overview-panels {
   --overview-provider-width: 180px;
@@ -235,23 +222,5 @@
 @container (max-width: 700px) {
   .overview-panels {
     grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@container (max-width: 540px) {
-  .overview-totals {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: var(--space-md);
-  }
-
-  .overview-totals-cell:first-child {
-    padding-inline-end: 0;
-  }
-
-  .overview-totals-cell + .overview-totals-cell {
-    border-left-width: 0;
-    border-top-width: 1px;
-    padding-inline: 0;
-    padding-block-start: var(--space-md);
   }
 }

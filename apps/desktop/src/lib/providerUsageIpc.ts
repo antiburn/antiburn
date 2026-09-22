@@ -1,3 +1,7 @@
+import { invoke, isTauri } from "@tauri-apps/api/core"
+
+import { traceAsync, traceEvent } from "./perfTrace"
+
 /** How well the app can describe one provider's usage. Mirrors Rust `ProviderUsageState`. */
 export type ProviderUsageState = "live" | "estimated" | "observed" | "detected" | "unknown"
 
@@ -89,6 +93,277 @@ export interface SessionLimitAllocationPayload {
 export interface SessionLimitAllocationSummaryPayload {
   allocations: SessionLimitAllocationPayload[]
   generatedAt: string
+}
+
+/** One quota window's derived start or end. `reported` came from the
+ * provider directly, `derived` was computed from the other boundary and the
+ * lane's nominal duration, `cadence` was extrapolated from another observed
+ * weekly reset, `turnGap` was inferred from a gap in local turn activity,
+ * and `truncated` marks a reset moved earlier because the next window began
+ * before the provider's stated reset for this one. Mirrors Rust
+ * `QuotaBoundarySource`. */
+type QuotaBoundarySourcePayload = "reported" | "derived" | "cadence" | "turnGap" | "truncated"
+
+/** A lane's currently open window, when one exists. Mirrors Rust
+ * `QuotaCurrentPeriodPayload`. */
+interface QuotaCurrentPeriodPayload {
+  startsAtEpoch: number
+  resetsAtEpoch: number
+}
+
+/** One lane a quota account carries. Mirrors Rust `QuotaLanePayload`. */
+export interface QuotaLanePayload {
+  /** `weekly`, `fiveHour`, or `model:<slug>`. */
+  lane: string
+  /** `"Weekly"`, `"5-hour"`, or the model-scoped window's own label
+   * (Anthropic's is currently "Fable"). */
+  label: string
+  /** The lane's open window, derived the same way the period resolver
+   * derives a boundary the provider did not state. `null` when every known
+   * period for the lane has already reset. */
+  currentPeriod: QuotaCurrentPeriodPayload | null
+  /** The earliest reading the lane holds. A range that ends before it has
+   * no data. */
+  firstObservedEpoch: number
+}
+
+/** One `(provider, account)` this app has observed at least one quota
+ * period for. Mirrors Rust `QuotaAccountPayload`. */
+export interface QuotaAccountPayload {
+  provider: string
+  displayName: string
+  accountKey: string
+  lanes: QuotaLanePayload[]
+}
+
+/** Response for `get_quota_accounts`. Mirrors Rust `QuotaAccountsPayload`. */
+export interface QuotaAccountsPayload {
+  accounts: QuotaAccountPayload[]
+  generatedAt: string
+}
+
+/** Request for `get_quota_usage`. Mirrors Rust `QuotaUsageRequest`. */
+export interface QuotaUsageRequest {
+  provider: string
+  accountKey: string
+  lane: string
+  rangeStartEpoch: number
+  rangeEndEpoch: number
+}
+
+/** One meter reading inside a quota period. Mirrors Rust
+ * `QuotaSamplePayload`. */
+export interface QuotaSamplePayload {
+  observedAtEpoch: number
+  usedPercent: number | null
+  fresh: boolean
+  authoritative: boolean
+}
+
+/** One session's estimated dollars inside one 15-minute bucket of a quota
+ * period. Mirrors Rust `QuotaContributionPayload`. */
+export interface QuotaContributionPayload {
+  agent: string
+  sessionId: string
+  wslDistro: string | null
+  bucketStartEpoch: number
+  usd: number
+  percent: number | null
+}
+
+/** One session's estimated total inside a quota period. Mirrors Rust
+ * `QuotaSessionTotalPayload`. */
+interface QuotaSessionTotalPayload {
+  agent: string
+  sessionId: string
+  wslDistro: string | null
+  title: string | null
+  usd: number
+  percent: number | null
+}
+
+/** Spend inside a quota period this app could not credit to any session.
+ * Mirrors Rust `QuotaUnattributedPayload`. */
+export interface QuotaUnattributedPayload {
+  usd: number
+  percent: number | null
+  sessionCount: number
+}
+
+/** Unattributed spend inside one 15-minute bucket of a quota period.
+ * Mirrors Rust `QuotaBucketTotalPayload`. */
+interface QuotaBucketTotalPayload {
+  bucketStartEpoch: number
+  usd: number
+  percent: number | null
+}
+
+/** One quota window, its meter readings, and the sessions estimated to have
+ * contributed to it. Mirrors Rust `QuotaPeriodPayload`. */
+export interface QuotaPeriodPayload {
+  /** `null` for a period this app derived rather than observed directly: a
+   * cadence-extrapolated or turn-gap-inferred window. */
+  periodId: number | null
+  startsAtEpoch: number
+  resetsAtEpoch: number
+  startSource: QuotaBoundarySourcePayload
+  resetSource: QuotaBoundarySourcePayload
+  samples: QuotaSamplePayload[]
+  contributions: QuotaContributionPayload[]
+  /** Descending by `usd`. */
+  sessions: QuotaSessionTotalPayload[]
+  unattributed: QuotaUnattributedPayload
+  /** Ascending by bucket. Holds one entry for each bucket with an unbound
+   * row, so a chart can plot unattributed spend over time instead of a
+   * single period total. */
+  unattributedBuckets: QuotaBucketTotalPayload[]
+  /** The sum of every bound session's, unattributed's, and unexplained
+   * percent, so at the period's last reading it equals the meter. A closed
+   * period never exceeds 100: its factor-priced tail scales down to fit
+   * under that cap instead of overshooting a value the meter cannot reach.
+   * An open period can still overshoot, since it may gather more readings
+   * before it closes. */
+  estimatedPercent: number | null
+  /** One entry per meter-rise segment that had no local dollars to share it
+   * across: the whole segment's rise, at its own end (the reading that
+   * closed it), so the chart can ramp up to it. `usd` is always `0`;
+   * `percent` is always non-null. */
+  unexplainedBuckets: QuotaBucketTotalPayload[]
+  /** The sum of every unexplained segment's percent. `null` only when the
+   * period carries no meter reading at all. */
+  unexplainedPercent: number | null
+}
+
+/** Response for `get_quota_usage`. Mirrors Rust `QuotaUsagePayload`. */
+export interface QuotaUsagePayload {
+  provider: string
+  accountKey: string
+  lane: string
+  laneLabel: string
+  rangeStartEpoch: number
+  rangeEndEpoch: number
+  periods: QuotaPeriodPayload[]
+  generatedAt: string
+}
+
+/** Request for `get_session_quota`. Mirrors Rust `SessionQuotaRequest`. */
+interface SessionQuotaRequest {
+  agent: string
+  sessionId: string
+  wslDistro: string | null
+}
+
+/** The quota period one [[SessionQuotaEntryPayload]] falls in. Mirrors Rust
+ * `SessionQuotaPeriodPayload`. */
+interface SessionQuotaPeriodPayload {
+  periodId: number | null
+  startsAtEpoch: number
+  resetsAtEpoch: number
+  startSource: QuotaBoundarySourcePayload
+  resetSource: QuotaBoundarySourcePayload
+}
+
+/** One `(provider, lane, period)` a session's turns fell in. Mirrors Rust
+ * `SessionQuotaEntryPayload`. */
+export interface SessionQuotaEntryPayload {
+  provider: string
+  displayName: string
+  /** `null` when the session has no resolved account for this provider. */
+  accountKey: string | null
+  /** `null` only when `confidence` is `"unbound"`: an entry with no
+   * resolved account has no lane to name either. */
+  lane: string | null
+  /** `null` only when `confidence` is `"unbound"`. */
+  laneLabel: string | null
+  /** `null` only when `confidence` is `"unbound"`. */
+  period: SessionQuotaPeriodPayload | null
+  usd: number
+  percent: number | null
+  /** `"measured"` when every one of the session's buckets fell in a shared
+   * meter segment, `"learned"` or `"seeded"` from the factor otherwise, or
+   * `"unbound"` when the session has no resolved account for the provider
+   * its usage attributes to. Also `"measured"` when the lane has no factor
+   * point yet: `percent` then covers only the buckets inside a shared meter
+   * segment, while `usd` still covers every bucket in the window. */
+  confidence: "measured" | "learned" | "seeded" | "unbound"
+  /** The plan the account's newest observation reported, or `null` before
+   * any reading names one. */
+  plan: LiveUsagePlanPayload | null
+}
+
+/** Response for `get_session_quota`. Mirrors Rust `SessionQuotaPayload`. */
+export interface SessionQuotaPayload {
+  entries: SessionQuotaEntryPayload[]
+  generatedAt: string
+}
+
+/** Every `(provider, account)` this app has observed at least one quota
+ * period for, and each account's lanes. */
+export async function getQuotaAccounts(): Promise<QuotaAccountsPayload> {
+  return traceAsync("ipc.getQuotaAccounts", {}, async () => {
+    if (!isTauri()) return EMPTY_QUOTA_ACCOUNTS
+    return invoke<QuotaAccountsPayload>("get_quota_accounts")
+  })
+}
+
+/** One lane's quota windows over a range, its meter readings, and the
+ * sessions estimated to have contributed to each window. */
+export async function getQuotaUsage(request: QuotaUsageRequest): Promise<QuotaUsagePayload> {
+  const { provider, accountKey, lane, rangeStartEpoch, rangeEndEpoch } = request
+  const usage = await traceAsync(
+    "ipc.getQuotaUsage",
+    {
+      provider,
+      accountKey,
+      lane,
+      rangeStartEpoch,
+      rangeEndEpoch,
+      spanDays: (rangeEndEpoch - rangeStartEpoch) / 86400,
+    },
+    async () => {
+      if (!isTauri()) return EMPTY_QUOTA_USAGE
+      return invoke<QuotaUsagePayload>("get_quota_usage", { request })
+    },
+  )
+  traceEvent("ipc.getQuotaUsage.payload", {
+    periods: usage.periods.length,
+    samples: usage.periods.reduce((total, period) => total + period.samples.length, 0),
+    contributionBuckets: usage.periods.reduce(
+      (total, period) => total + period.contributions.length,
+      0,
+    ),
+    sessions: usage.periods.reduce((total, period) => total + period.sessions.length, 0),
+  })
+  return usage
+}
+
+/** One session's estimated quota contributions, by provider and lane. */
+export async function getSessionQuota(
+  request: SessionQuotaRequest,
+): Promise<SessionQuotaPayload> {
+  if (!isTauri()) return EMPTY_SESSION_QUOTA
+  return invoke<SessionQuotaPayload>("get_session_quota", { request })
+}
+
+const EMPTY_QUOTA_ACCOUNTS: QuotaAccountsPayload = {
+  accounts: [],
+  generatedAt: "",
+}
+
+const EMPTY_QUOTA_USAGE: QuotaUsagePayload = {
+  provider: "",
+  accountKey: "",
+  lane: "",
+  laneLabel: "",
+  rangeStartEpoch: 0,
+  rangeEndEpoch: 0,
+  periods: [],
+  generatedAt: "",
+}
+
+const EMPTY_SESSION_QUOTA: SessionQuotaPayload = {
+  entries: [],
+  generatedAt: "",
 }
 
 /** Marks figures stated directly by a provider. Mirrors Rust `LiveUsageSupport`. */

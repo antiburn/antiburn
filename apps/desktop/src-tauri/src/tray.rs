@@ -100,6 +100,37 @@ const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
 const MENU_RANDOM_USAGE: &str = "random-usage";
 #[cfg(debug_assertions)]
 const MENU_BURN_CHECKS: &str = "burn-checks";
+#[cfg(debug_assertions)]
+const MENU_HUD_DEV: &str = "hud-dev";
+#[cfg(debug_assertions)]
+const MENU_HUD_DOCK_LEFT: &str = "hud-dock-left";
+#[cfg(debug_assertions)]
+const MENU_HUD_DOCK_RIGHT: &str = "hud-dock-right";
+#[cfg(debug_assertions)]
+const MENU_HUD_DOCK_TOP: &str = "hud-dock-top";
+#[cfg(debug_assertions)]
+const MENU_HUD_DOCK_BOTTOM: &str = "hud-dock-bottom";
+#[cfg(debug_assertions)]
+const MENU_HUD_ISLAND: &str = "hud-island";
+#[cfg(debug_assertions)]
+const MENU_HUD_FAKE_NOTCH: &str = "hud-fake-notch";
+#[cfg(debug_assertions)]
+const MENU_HUD_WAKE: &str = "hud-wake";
+#[cfg(debug_assertions)]
+const MENU_HUD_SPEND_OFF: &str = "hud-spend-off";
+#[cfg(debug_assertions)]
+const MENU_HUD_SPEND_LOW: &str = "hud-spend-low";
+#[cfg(debug_assertions)]
+const MENU_HUD_SPEND_MID: &str = "hud-spend-mid";
+#[cfg(debug_assertions)]
+const MENU_HUD_SPEND_HIGH: &str = "hud-spend-high";
+#[cfg(debug_assertions)]
+const MENU_HUD_BLOCK: &str = "hud-block";
+#[cfg(debug_assertions)]
+const MENU_HUD_CELEBRATE: &str = "hud-celebrate";
+/// The event that carries a development override to the HUD webview.
+#[cfg(debug_assertions)]
+const HUD_DEV_EVENT: &str = "hud_dev";
 const MENU_QUIT: &str = "quit";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
@@ -144,6 +175,8 @@ pub struct TrayMenu {
     random_usage: CheckMenuItem<Wry>,
     #[cfg(debug_assertions)]
     burn_checks: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    fake_notch: CheckMenuItem<Wry>,
 }
 
 struct BuiltMenu {
@@ -153,6 +186,8 @@ struct BuiltMenu {
     random_usage: CheckMenuItem<Wry>,
     #[cfg(debug_assertions)]
     burn_checks: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    fake_notch: CheckMenuItem<Wry>,
 }
 
 /// The label the pin item carries for a given state — it names the action, not
@@ -173,6 +208,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         random_usage: menu.random_usage,
         #[cfg(debug_assertions)]
         burn_checks: menu.burn_checks,
+        #[cfg(debug_assertions)]
+        fake_notch: menu.fake_notch,
     });
     #[cfg(debug_assertions)]
     app.manage(DebugBurnChecks::default());
@@ -641,6 +678,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    #[cfg(debug_assertions)]
+    let hud_dev = build_hud_dev_menu(app)?;
+    #[cfg(debug_assertions)]
+    let hud_dev_item = hud_dev.menu;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
@@ -665,6 +706,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &random_usage_item,
         #[cfg(debug_assertions)]
         &burn_checks_item,
+        #[cfg(debug_assertions)]
+        &hud_dev_item,
         &separator,
         &quit_item,
     ];
@@ -676,7 +719,112 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         random_usage: random_usage_item,
         #[cfg(debug_assertions)]
         burn_checks: burn_checks_item,
+        #[cfg(debug_assertions)]
+        fake_notch: hud_dev.fake_notch,
     })
+}
+
+/// The "HUD Dev" submenu and the check item it owns.
+#[cfg(debug_assertions)]
+struct HudDevMenu {
+    menu: tauri::menu::Submenu<Wry>,
+    fake_notch: CheckMenuItem<Wry>,
+}
+
+/// The "HUD Dev" submenu: dock, island, wake, spend, block and celebrate on
+/// demand.
+#[cfg(debug_assertions)]
+fn build_hud_dev_menu(app: &AppHandle) -> tauri::Result<HudDevMenu> {
+    let item = |id: &str, label: &str| MenuItem::with_id(app, id, label, true, None::<&str>);
+    let dock_left = item(MENU_HUD_DOCK_LEFT, "Dock Left")?;
+    let dock_right = item(MENU_HUD_DOCK_RIGHT, "Dock Right")?;
+    let dock_top = item(MENU_HUD_DOCK_TOP, "Dock Top")?;
+    let dock_bottom = item(MENU_HUD_DOCK_BOTTOM, "Dock Bottom")?;
+    let island = item(MENU_HUD_ISLAND, "Island (Sit in the Notch)")?;
+    let fake_notch = CheckMenuItem::with_id(
+        app,
+        MENU_HUD_FAKE_NOTCH,
+        "Pretend This Display Has a Notch",
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let wake = item(MENU_HUD_WAKE, "Wake Docked HUD")?;
+    let spend_off = item(MENU_HUD_SPEND_OFF, "Spend: Real")?;
+    let spend_low = item(MENU_HUD_SPEND_LOW, "Spend: $0.05/min (slow blink)")?;
+    let spend_mid = item(MENU_HUD_SPEND_MID, "Spend: $0.50/min")?;
+    let spend_high = item(
+        MENU_HUD_SPEND_HIGH,
+        "Spend: $2.00/min (fast blink, burn wake)",
+    )?;
+    let block = item(MENU_HUD_BLOCK, "Block Top Limit for 20s")?;
+    let celebrate = item(MENU_HUD_CELEBRATE, "Celebrate Reset Now")?;
+    let first_gap = PredefinedMenuItem::separator(app)?;
+    let second_gap = PredefinedMenuItem::separator(app)?;
+    let items: Vec<&dyn IsMenuItem<Wry>> = vec![
+        &dock_left,
+        &dock_right,
+        &dock_top,
+        &dock_bottom,
+        &island,
+        &fake_notch,
+        &wake,
+        &first_gap,
+        &spend_off,
+        &spend_low,
+        &spend_mid,
+        &spend_high,
+        &second_gap,
+        &block,
+        &celebrate,
+    ];
+    let menu = tauri::menu::Submenu::with_id_and_items(app, MENU_HUD_DEV, "HUD Dev", true, &items)?;
+    Ok(HudDevMenu { menu, fake_notch })
+}
+
+/// Put the HUD in the notch and store that, as a drop on the notch does.
+#[cfg(debug_assertions)]
+fn dev_island(app: &AppHandle) {
+    if !antiburn_hud::island_overlay(app) {
+        ::tracing::warn!(event = "hud_island_unavailable", trigger = "tray");
+        return;
+    }
+    crate::hud::save_dock(
+        &app.state::<crate::store::Store>(),
+        antiburn_hud::dock_settings(),
+    );
+}
+
+/// Toggle the fake notch on the primary display.
+#[cfg(debug_assertions)]
+fn toggle_fake_notch(app: &AppHandle) {
+    let on = app
+        .try_state::<TrayMenu>()
+        .is_some_and(|menu| menu.fake_notch.is_checked().unwrap_or(false));
+    let enabled = antiburn_hud::set_fake_notch(app, on);
+    if let Some(menu) = app.try_state::<TrayMenu>()
+        && let Err(error) = menu.fake_notch.set_checked(enabled)
+    {
+        ::tracing::warn!(event = "tray_fake_notch_relabel_failed", enabled, error = %error);
+    }
+}
+
+/// Dock the HUD at `edge` and store that, as a drag drop does.
+#[cfg(debug_assertions)]
+fn dev_dock(app: &AppHandle, edge: antiburn_hud::DockEdge) {
+    antiburn_hud::dock_overlay(app, edge);
+    crate::hud::save_dock(
+        &app.state::<crate::store::Store>(),
+        antiburn_hud::dock_settings(),
+    );
+}
+
+/// Send one development override to the HUD webview.
+#[cfg(debug_assertions)]
+fn dev_emit(app: &AppHandle, payload: serde_json::Value) {
+    if let Err(error) = app.emit_to(antiburn_hud::OVERLAY_LABEL, HUD_DEV_EVENT, payload) {
+        ::tracing::warn!(event = "hud_dev_emit_failed", error = %error);
+    }
 }
 
 fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
@@ -697,6 +845,7 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         MENU_MAIN => {
+            ::tracing::info!(event = "main_window_open_source", source = "tray_menu");
             if let Err(error) =
                 crate::open_launch_surface(app, crate::main_window::OpenTrigger::Interaction)
             {
@@ -760,6 +909,44 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             }
             let _ = app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
         }
+        #[cfg(debug_assertions)]
+        MENU_HUD_DOCK_LEFT => dev_dock(app, antiburn_hud::DockEdge::Left),
+        #[cfg(debug_assertions)]
+        MENU_HUD_DOCK_RIGHT => dev_dock(app, antiburn_hud::DockEdge::Right),
+        #[cfg(debug_assertions)]
+        MENU_HUD_DOCK_TOP => dev_dock(app, antiburn_hud::DockEdge::Top),
+        #[cfg(debug_assertions)]
+        MENU_HUD_DOCK_BOTTOM => dev_dock(app, antiburn_hud::DockEdge::Bottom),
+        #[cfg(debug_assertions)]
+        MENU_HUD_ISLAND => dev_island(app),
+        #[cfg(debug_assertions)]
+        MENU_HUD_FAKE_NOTCH => toggle_fake_notch(app),
+        #[cfg(debug_assertions)]
+        MENU_HUD_WAKE => antiburn_hud::wake_overlay(app, "dev_menu"),
+        #[cfg(debug_assertions)]
+        MENU_HUD_SPEND_OFF => dev_emit(
+            app,
+            serde_json::json!({ "kind": "spend", "usdPerMinute": null }),
+        ),
+        #[cfg(debug_assertions)]
+        MENU_HUD_SPEND_LOW => dev_emit(
+            app,
+            serde_json::json!({ "kind": "spend", "usdPerMinute": 0.05 }),
+        ),
+        #[cfg(debug_assertions)]
+        MENU_HUD_SPEND_MID => dev_emit(
+            app,
+            serde_json::json!({ "kind": "spend", "usdPerMinute": 0.5 }),
+        ),
+        #[cfg(debug_assertions)]
+        MENU_HUD_SPEND_HIGH => dev_emit(
+            app,
+            serde_json::json!({ "kind": "spend", "usdPerMinute": 2.0 }),
+        ),
+        #[cfg(debug_assertions)]
+        MENU_HUD_BLOCK => dev_emit(app, serde_json::json!({ "kind": "block", "secs": 20 })),
+        #[cfg(debug_assertions)]
+        MENU_HUD_CELEBRATE => dev_emit(app, serde_json::json!({ "kind": "celebrate" })),
         MENU_QUIT => {
             // Exit code 0 distinguishes a deliberate quit from the window
             // closes the shell suppresses (see `on_window_event`).

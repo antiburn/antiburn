@@ -2372,7 +2372,7 @@ fn assert_scheduler_source_contract(source: &str) {
         1
     );
     assert!(!include_str!("scoped.rs").contains("AnonymousCovered"));
-    assert!(!include_str!("../commands.rs").contains("AnonymousCovered"));
+    assert!(!include_str!("../commands/mod.rs").contains("AnonymousCovered"));
 
     // Anonymous touches are issued only from the burst path, before any
     // floor or pass, so a generation issued during a pass is above its

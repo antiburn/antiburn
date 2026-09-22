@@ -15,7 +15,7 @@ use crate::provider_usage::live::model::{
 
 use super::Store;
 
-const RESET_JITTER_SECS: i64 = 5;
+pub(crate) const RESET_JITTER_SECS: i64 = 5;
 
 /// A provider-stated allowance period.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -185,7 +185,7 @@ fn an_unbound_session_with_two_known_accounts_attributes_nothing() {
     observe_account(&store, &account('b'));
 
     let dollars = store
-        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000)
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000, None)
         .expect("query succeeds")
         .expect("stays within the group bound");
     assert!(
@@ -202,7 +202,7 @@ fn an_unbound_session_with_one_known_account_falls_back_to_it() {
     observe_account(&store, &account('a'));
 
     let dollars = store
-        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000)
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000, None)
         .expect("query succeeds")
         .expect("stays within the group bound");
     assert_eq!(dollars.len(), 1);
@@ -213,6 +213,40 @@ fn an_unbound_session_with_one_known_account_falls_back_to_it() {
 }
 
 #[test]
+fn a_session_with_no_analysis_row_still_appears() {
+    let store = memory_store();
+    let key = insert_session(&store, "session");
+    insert_turn(&store, &key, 150_000, 200_000);
+    observe_account(&store, &account('a'));
+
+    // The group-first rewrite joins `session_analysis` in the outer query.
+    // Confirm the fixture carries no such row, so this test actually
+    // exercises the LEFT JOIN rather than an INNER JOIN that happens to
+    // match.
+    let analysis_row_count: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM session_analysis
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+            |row| row.get(0),
+        )
+        .expect("counts analysis rows");
+    assert_eq!(analysis_row_count, 0, "test setup carries no analysis row");
+
+    let dollars = store
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000, None)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    assert_eq!(
+        dollars.len(),
+        1,
+        "a session with turns but no analysis row still appears"
+    );
+    assert_eq!(dollars[0].key, key);
+}
+
+#[test]
 fn attribution_prices_one_hour_cache_writes_at_double_the_input_rate() {
     let store = memory_store();
     let key = insert_session(&store, "session");
@@ -220,7 +254,7 @@ fn attribution_prices_one_hour_cache_writes_at_double_the_input_rate() {
     observe_account(&store, &account('a'));
 
     let dollars = store
-        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000)
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000, None)
         .expect("query succeeds")
         .expect("stays within the group bound");
     assert_eq!(dollars.len(), 1);
@@ -239,7 +273,7 @@ fn a_directly_bound_session_ignores_the_single_account_fallback() {
     observe_account(&store, &account('b'));
 
     let dollars = store
-        .attributed_turn_dollars_between(PROVIDER, &account('b'), 0, 1_000)
+        .attributed_turn_dollars_between(PROVIDER, &account('b'), 0, 1_000, None)
         .expect("query succeeds")
         .expect("stays within the group bound");
     assert!(
@@ -248,7 +282,7 @@ fn a_directly_bound_session_ignores_the_single_account_fallback() {
     );
 
     let dollars = store
-        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000)
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000, None)
         .expect("query succeeds")
         .expect("stays within the group bound");
     assert_eq!(dollars.len(), 1);
@@ -704,6 +738,34 @@ fn forever_retention_keeps_every_provider_usage_row() {
     );
 }
 
+/// A period reports at most once, ever: marking it is idempotent, and the
+/// marker is what a later pass checks before deciding to report it again.
+#[test]
+#[cfg(feature = "analytics")]
+fn marking_a_quota_window_reported_is_idempotent_and_durable() {
+    let store = memory_store();
+    let account_key = account('a');
+    let period_id = insert_period(&store, &account_key, 0, 18_000, 18_000);
+
+    assert!(!store.quota_window_already_reported(period_id).unwrap());
+
+    store.mark_quota_window_reported(period_id, 20_000).unwrap();
+    assert!(store.quota_window_already_reported(period_id).unwrap());
+
+    // A second mark of the same period does not error and does not
+    // duplicate the row.
+    store.mark_quota_window_reported(period_id, 30_000).unwrap();
+    let count: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM quota_window_reported WHERE period_id = ?1",
+            [period_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
 #[test]
 fn finite_retention_prunes_the_residual_and_learn_cursor_with_their_period() {
     let store = memory_store();
@@ -729,6 +791,10 @@ fn finite_retention_prunes_the_residual_and_learn_cursor_with_their_period() {
     store
         .upsert_limit_residual(period_id, old, 5.0, 4.0)
         .expect("stores the residual");
+    #[cfg(feature = "analytics")]
+    store
+        .mark_quota_window_reported(period_id, old)
+        .expect("marks the window reported");
 
     // PRAGMA foreign_keys is on for the store; a residual or cursor row left
     // dangling on a deleted period would raise an error here, not just a
@@ -758,5 +824,661 @@ fn finite_retention_prunes_the_residual_and_learn_cursor_with_their_period() {
         count("provider_limit_learn_cursor"),
         0,
         "the cursor is pruned with its period"
+    );
+    assert_eq!(
+        count("quota_window_reported"),
+        0,
+        "the quota-window-closed marker is pruned with its period"
+    );
+}
+
+/// A synthetic period with only the fields [`lane_for_period`] reads set;
+/// every other field is a harmless placeholder.
+fn period_for_lane(
+    window_role: &str,
+    window_kind: &str,
+    window_id: &str,
+    scope_key: &str,
+    scope_label: &str,
+) -> ProviderUsagePeriod {
+    ProviderUsagePeriod {
+        id: 1,
+        provider: PROVIDER.to_string(),
+        account_key: account('a'),
+        window_id: window_id.to_string(),
+        window_kind: window_kind.to_string(),
+        window_role: window_role.to_string(),
+        scope_key: scope_key.to_string(),
+        scope_label: scope_label.to_string(),
+        duration_seconds: None,
+        starts_at_epoch: None,
+        resets_at_epoch: None,
+        first_observed_epoch: 0,
+        last_observed_epoch: 0,
+    }
+}
+
+#[test]
+fn lane_for_period_maps_the_account_wide_and_model_scoped_branches() {
+    assert_eq!(
+        lane_for_period(&period_for_lane(
+            "primaryShort",
+            "rolling",
+            "five-hour",
+            "account",
+            "account"
+        )),
+        Some(LANE_FIVE_HOUR.to_string())
+    );
+    assert_eq!(
+        lane_for_period(&period_for_lane(
+            "primaryLong",
+            "weekly",
+            "seven-day",
+            "account",
+            "account"
+        )),
+        Some(LANE_WEEKLY.to_string())
+    );
+    // The slug comes from the window id when it has the expected shape.
+    assert_eq!(
+        lane_for_period(&period_for_lane(
+            "supplemental",
+            "weekly",
+            "weekly-fable",
+            "model:Fable",
+            "Fable"
+        )),
+        Some("model:fable".to_string())
+    );
+    // A window id of another shape falls back to slugifying the scope label.
+    assert_eq!(
+        lane_for_period(&period_for_lane(
+            "supplemental",
+            "weekly",
+            "unexpected-shape",
+            "model:Codex Feature",
+            "Codex Feature"
+        )),
+        Some("model:codex-feature".to_string())
+    );
+    // Anything else — a role or kind this app does not attribute a factor
+    // to — carries no lane.
+    assert_eq!(
+        lane_for_period(&period_for_lane(
+            "other:custom",
+            "other:custom",
+            "custom",
+            "account",
+            "account"
+        )),
+        None
+    );
+}
+
+#[test]
+fn candidate_periods_admit_a_model_scoped_weekly_period_and_exclude_an_account_scoped_supplemental()
+{
+    let store = memory_store();
+    let account_key = account('a');
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, 'weekly-fable', 'weekly', 'supplemental',
+                       'model:Fable', 'Fable', 604800, 0, 604800, 100, 100)",
+            params![PROVIDER, account_key],
+        )
+        .expect("inserts a model-scoped candidate period");
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, 'weekly-something', 'weekly', 'supplemental',
+                       'account', 'account', 604800, 0, 604800, 100, 100)",
+            params![PROVIDER, account_key],
+        )
+        .expect("inserts an account-scoped supplemental period");
+    drop(connection);
+
+    let periods = store
+        .provider_limit_candidate_periods(0)
+        .expect("query succeeds");
+    assert_eq!(periods.len(), 1);
+    assert_eq!(periods[0].scope_key, "model:Fable");
+}
+
+#[test]
+fn latest_observation_plan_for_a_model_lane_reads_the_supplemental_windows_own_reading() {
+    let store = memory_store();
+    let account_key = account('a');
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, 'weekly-fable', 'weekly', 'supplemental',
+                       'model:Fable', 'Fable', 604800, 0, 604800, 100, 100)",
+            params![PROVIDER, account_key],
+        )
+        .expect("inserts a model-scoped period");
+    let model_period_id = connection.last_insert_rowid();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, 'seven-day', 'weekly', 'primaryLong',
+                       'account', 'account', 604800, 0, 604800, 100, 100)",
+            params![PROVIDER, account_key],
+        )
+        .expect("inserts an account-wide weekly period");
+    let account_period_id = connection.last_insert_rowid();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_observation (
+                 period_id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                 is_authoritative, confidence, source_id, plan, plan_tier
+             ) SELECT id, provider, account_key, window_id, window_kind, window_role,
+                      scope_key, scope_label, 100, 5.0, 1, 1, 'high', 'test', 'max', 'model_tier'
+                 FROM provider_usage_period WHERE id = ?1",
+            params![model_period_id],
+        )
+        .expect("stores the model window's own reading");
+    connection
+        .execute(
+            "INSERT INTO provider_usage_observation (
+                 period_id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                 is_authoritative, confidence, source_id, plan, plan_tier
+             ) SELECT id, provider, account_key, window_id, window_kind, window_role,
+                      scope_key, scope_label, 100, 5.0, 1, 1, 'high', 'test', 'max', 'account_tier'
+                 FROM provider_usage_period WHERE id = ?1",
+            params![account_period_id],
+        )
+        .expect("stores the account window's own reading");
+    drop(connection);
+
+    let (plan, plan_tier) = store
+        .latest_observation_plan(PROVIDER, &account_key, "model:fable")
+        .expect("query succeeds")
+        .expect("a reading exists");
+    assert_eq!(plan.as_deref(), Some("max"));
+    assert_eq!(
+        plan_tier.as_deref(),
+        Some("model_tier"),
+        "a model lane reads the supplemental window's own observation, not the account window's"
+    );
+}
+
+/// A per-step migration test for v52, kept for review; per repo convention
+/// it may be deleted after merge, since the ladder test in `store::tests` is
+/// the durable coverage.
+#[test]
+fn v52_widens_the_lane_check_and_resets_the_model_lane_cursor() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &crate::store::schema::MIGRATIONS[..49] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 49).unwrap();
+    connection
+        .execute(
+            "INSERT INTO provider_limit_factor_sample (
+                 provider, account_key, lane, kind, from_epoch, to_epoch,
+                 from_percent, to_percent, input_usd, output_usd, cache_read_usd,
+                 cache_write_usd, turn_count, source_id, computed_at_epoch
+             ) VALUES ('anthropic', ?1, 'weekly', 'delta', 0, 100, 0.0, 5.0,
+                       1.0, 0.0, 0.0, 0.0, 1, 'test', 100)",
+            params![account('a')],
+        )
+        .expect("inserts a pre-migration sample row");
+    connection
+        .execute(
+            "INSERT INTO provider_limit_factor_point (
+                 provider, account_key, lane, effective_at_epoch, usd_per_percent,
+                 method, sample_count
+             ) VALUES ('anthropic', ?1, 'weekly', 100, 0.2, 'delta', 1)",
+            params![account('a')],
+        )
+        .expect("inserts a pre-migration point row");
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (1, 'anthropic', ?1, 'weekly-fable', 'weekly', 'supplemental',
+                       'model:fable', 'Fable', 604800, 0, 604800, 0, 100)",
+            params![account('a')],
+        )
+        .expect("inserts a model-scoped period");
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (2, 'anthropic', ?1, 'seven-day', 'weekly', 'primaryLong',
+                       'account', 'account', 604800, 0, 604800, 0, 100)",
+            params![account('a')],
+        )
+        .expect("inserts an account-wide weekly period");
+    connection
+        .execute(
+            "INSERT INTO provider_limit_learn_cursor (period_id, learned_through_epoch)
+             VALUES (1, 100)",
+            [],
+        )
+        .expect("inserts the model-lane period's cursor row");
+    connection
+        .execute(
+            "INSERT INTO provider_limit_learn_cursor (period_id, learned_through_epoch)
+             VALUES (2, 100)",
+            [],
+        )
+        .expect("inserts the weekly period's cursor row");
+
+    let store = Store::from_connection(connection, Path::new("/tmp/antiburn-v52-test").into())
+        .expect("migration reaches the head");
+    assert_eq!(store.schema_version().unwrap(), 55);
+
+    let connection = store.lock();
+    let samples: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM provider_limit_factor_sample",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(samples, 1, "an existing sample row survives the rebuild");
+    let points: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM provider_limit_factor_point",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(points, 1, "an existing point row survives the rebuild");
+
+    connection
+        .execute(
+            "INSERT INTO provider_limit_factor_sample (
+                 provider, account_key, lane, kind, from_epoch, to_epoch,
+                 from_percent, to_percent, input_usd, output_usd, cache_read_usd,
+                 cache_write_usd, turn_count, source_id, computed_at_epoch
+             ) VALUES ('anthropic', ?1, 'model:fable', 'delta', 200, 300, 0.0, 5.0,
+                       1.0, 0.0, 0.0, 0.0, 1, 'test', 300)",
+            params![account('b')],
+        )
+        .expect("a model-scoped lane is now allowed by the widened check");
+
+    let rejected = connection.execute(
+        "INSERT INTO provider_limit_factor_sample (
+             provider, account_key, lane, kind, from_epoch, to_epoch,
+             from_percent, to_percent, input_usd, output_usd, cache_read_usd,
+             cache_write_usd, turn_count, source_id, computed_at_epoch
+         ) VALUES ('anthropic', ?1, 'bogus', 'delta', 400, 500, 0.0, 5.0,
+                   1.0, 0.0, 0.0, 0.0, 1, 'test', 500)",
+        params![account('c')],
+    );
+    assert!(
+        rejected.is_err(),
+        "an unrecognized lane still fails the check"
+    );
+
+    let model_lane_cursor: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM provider_limit_learn_cursor WHERE period_id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        model_lane_cursor, 0,
+        "the model-scoped period's cursor row is gone, so the learner walks it again"
+    );
+    let weekly_cursor: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM provider_limit_learn_cursor WHERE period_id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        weekly_cursor, 1,
+        "the account-wide period's cursor row is untouched"
+    );
+}
+
+/// Publish one turn at `ts_ms` under a chosen model, so a model-scope filter
+/// test can use a model id [`crate::provider_usage::factor::model_matches_scope`]
+/// does or does not match.
+fn insert_turn_with_model(
+    store: &Store,
+    key: &SessionKey,
+    ts_ms: i64,
+    input_tokens: i64,
+    model: &str,
+) {
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO session_evidence (
+                 environment_key, agent, session_id, status, published_fence
+             ) VALUES (?1, ?2, ?3, 'ready', 1)",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .expect("publishes synthetic evidence");
+    connection
+        .execute(
+            "INSERT INTO turn (
+                 environment_key, agent, session_id, claim_fence, source_key,
+                 thread_id, turn_index, scope, role, ts_ms, model, effort, speed,
+                 input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
+                 is_compaction_boundary, message_id, uuid, parent_uuid
+             ) VALUES (?1, ?2, ?3, 1, 'synthetic', 'synthetic', 0, 'main', 'assistant',
+                       ?4, ?5, NULL, NULL, ?6, 0, 0, 0, 0, NULL, NULL, NULL)",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                ts_ms,
+                model,
+                input_tokens
+            ],
+        )
+        .expect("stores synthetic turn");
+}
+
+/// A turn claimed under a fence that never became `published_fence`, so the
+/// bucketed query's `session_evidence` join excludes it.
+fn insert_unpublished_turn(store: &Store, key: &SessionKey, ts_ms: i64, input_tokens: i64) {
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO session_evidence (
+                 environment_key, agent, session_id, status, published_fence
+             ) VALUES (?1, ?2, ?3, 'ready', 1)",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .expect("publishes synthetic evidence");
+    connection
+        .execute(
+            "INSERT INTO turn (
+                 environment_key, agent, session_id, claim_fence, source_key,
+                 thread_id, turn_index, scope, role, ts_ms, model, effort, speed,
+                 input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
+                 is_compaction_boundary, message_id, uuid, parent_uuid
+             ) VALUES (?1, ?2, ?3, 2, 'synthetic', 'synthetic', 0, 'main', 'assistant',
+                       ?4, ?5, NULL, NULL, ?6, 0, 0, 0, 0, NULL, NULL, NULL)",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                ts_ms,
+                MODEL,
+                input_tokens
+            ],
+        )
+        .expect("stores an unpublished synthetic turn");
+}
+
+#[test]
+fn bucketed_query_groups_turns_by_fifteen_minute_bucket() {
+    let store = memory_store();
+    let key = insert_session(&store, "session");
+    observe_account(&store, &account('a'));
+    // Both inside the first bucket (0..900s).
+    insert_turn(&store, &key, 100_000, 100_000);
+    insert_turn(&store, &key, 800_000, 100_000);
+    // The next bucket (900..1800s).
+    insert_turn(&store, &key, 900_000 + 1, 100_000);
+
+    let rows = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), None, 0, 2_000)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    let mut buckets: Vec<i64> = rows.iter().map(|row| row.bucket_start_epoch).collect();
+    buckets.sort_unstable();
+    assert_eq!(buckets, vec![0, 900]);
+    let first_bucket = rows
+        .iter()
+        .find(|row| row.bucket_start_epoch == 0)
+        .expect("first bucket present");
+    // Two turns of 100_000 input tokens each (200_000 total), merged into one
+    // bucket. claude-opus-4-6 test pricing: 5e-6 dollars per input token.
+    assert!((first_bucket.usd - 1.0).abs() < 1e-9);
+    assert_eq!(first_bucket.turn_count, 2);
+}
+
+#[test]
+fn bucketed_query_excludes_a_turn_on_an_unpublished_fence() {
+    let store = memory_store();
+    let key = insert_session(&store, "session");
+    observe_account(&store, &account('a'));
+    insert_unpublished_turn(&store, &key, 100_000, 100_000);
+
+    let rows = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), None, 0, 2_000)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    assert!(
+        rows.is_empty(),
+        "a turn on an unpublished fence never joins session_evidence"
+    );
+}
+
+#[test]
+fn bucketed_query_drops_another_account_and_keeps_unbound_as_unbound() {
+    let store = memory_store();
+    let bound_to_other = insert_session(&store, "bound-to-other");
+    bind_account(&store, &bound_to_other, &account('b'));
+    insert_turn(&store, &bound_to_other, 100_000, 100_000);
+
+    let unbound = insert_session(&store, "unbound");
+    observe_account(&store, &account('a'));
+    observe_account(&store, &account('b'));
+    insert_turn(&store, &unbound, 100_000, 200_000);
+
+    let rows = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), None, 0, 2_000)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    assert_eq!(rows.len(), 1, "only the unbound session's row survives");
+    assert_eq!(rows[0].key, unbound);
+    assert_eq!(rows[0].account, Resolved::Unbound);
+}
+
+#[test]
+fn bucketed_query_model_scope_filter_excludes_a_non_matching_model() {
+    let store = memory_store();
+    let key = insert_session(&store, "session");
+    observe_account(&store, &account('a'));
+    insert_turn_with_model(&store, &key, 100_000, 100_000, "claude-fable-5-1");
+
+    let matching = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), Some("Fable"), 0, 2_000)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    assert_eq!(matching.len(), 1);
+
+    let non_matching = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), Some("Opus"), 0, 2_000)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    assert!(non_matching.is_empty());
+}
+
+#[test]
+fn quota_periods_for_lane_returns_overlapping_periods_plus_the_anchor_before_the_range() {
+    let store = memory_store();
+    let account_key = account('a');
+    // Anchor: resets well before the query range.
+    insert_period(&store, &account_key, 0, 1_000, 1_000);
+    // Overlaps the query range.
+    insert_period(&store, &account_key, 5_000, 6_000, 6_000);
+
+    let periods = store
+        .quota_periods_for_lane(PROVIDER, &account_key, LANE_FIVE_HOUR, 4_000, 7_000)
+        .expect("query succeeds");
+    let mut resets: Vec<i64> = periods
+        .iter()
+        .filter_map(|period| period.resets_at_epoch)
+        .collect();
+    resets.sort_unstable();
+    assert_eq!(
+        resets,
+        vec![1_000, 6_000],
+        "the anchor and the overlapping period both come back"
+    );
+}
+
+#[test]
+fn factor_points_for_lane_orders_by_effective_at_epoch() {
+    let store = memory_store();
+    let lane = LANE_WEEKLY;
+    for effective_at_epoch in [2_000, 1_000, 3_000] {
+        store
+            .upsert_factor_point(&FactorPoint {
+                id: 0,
+                provider: PROVIDER.to_string(),
+                account_key: account('a'),
+                lane: lane.to_string(),
+                effective_at_epoch,
+                usd_per_percent: 0.1,
+                method: "delta".to_string(),
+                sample_count: 1,
+                plan: None,
+                plan_tier: None,
+            })
+            .unwrap();
+    }
+    let points = store
+        .factor_points_for_lane(PROVIDER, &account('a'), lane)
+        .expect("query succeeds");
+    let epochs: Vec<i64> = points
+        .iter()
+        .map(|point| point.effective_at_epoch)
+        .collect();
+    assert_eq!(epochs, vec![1_000, 2_000, 3_000]);
+}
+
+#[test]
+fn attributed_turn_epochs_rounds_to_the_minute_and_respects_the_two_step_rule() {
+    let store = memory_store();
+    let bound = insert_session(&store, "bound");
+    observe_account(&store, &account('a'));
+    insert_turn(&store, &bound, 100_123, 1);
+    insert_turn(&store, &bound, 100_456, 1);
+
+    let other = insert_session(&store, "other");
+    bind_account(&store, &other, &account('b'));
+    insert_turn(&store, &other, 200_000, 1);
+
+    let epochs = store
+        .attributed_turn_epochs(PROVIDER, &account('a'), 0, 1_000)
+        .expect("query succeeds");
+    // Both turns (100_123ms and 100_456ms) round into the same minute
+    // (60..120s) and dedupe to one epoch; the session bound to a different
+    // account contributes nothing.
+    assert_eq!(epochs, vec![60]);
+}
+
+#[test]
+fn quota_accounts_reports_label_has_factor_and_the_current_open_period() {
+    let store = memory_store();
+    let account_key = account('a');
+    // A weekly period still open at `now`.
+    insert_period(&store, &account_key, 0, 10_000, 10_000);
+    store
+        .lock()
+        .execute(
+            "UPDATE provider_usage_period SET window_role = 'primaryLong'
+              WHERE account_key = ?1",
+            params![account_key],
+        )
+        .unwrap();
+    // A five-hour period, inserted after the update above so it keeps its
+    // default primaryShort role, and a model-scoped lane, so the account
+    // carries all three lane kinds for the ordering assertion below.
+    insert_period(&store, &account_key, 0, 18_000, 18_000);
+    store
+        .lock()
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, 'weekly-zeta', 'weekly', 'supplemental',
+                       'model:zeta', 'Zeta', 604800, 0, 604800, 100, 100)",
+            params![PROVIDER, account_key],
+        )
+        .unwrap();
+    store
+        .upsert_factor_point(&FactorPoint {
+            id: 0,
+            provider: PROVIDER.to_string(),
+            account_key: account_key.clone(),
+            lane: LANE_WEEKLY.to_string(),
+            effective_at_epoch: 1,
+            usd_per_percent: 0.2,
+            method: "delta".to_string(),
+            sample_count: 1,
+            plan: None,
+            plan_tier: None,
+        })
+        .unwrap();
+
+    let accounts = store.quota_accounts(5_000).expect("query succeeds");
+    let account = accounts
+        .iter()
+        .find(|account| account.account_key == account_key)
+        .expect("the account is reported");
+    let lane_names: Vec<&str> = account
+        .lanes
+        .iter()
+        .map(|lane| lane.lane.as_str())
+        .collect();
+    assert_eq!(
+        lane_names,
+        vec![LANE_WEEKLY, LANE_FIVE_HOUR, "model:zeta"],
+        "lanes are ordered weekly, then fiveHour, then model lanes alphabetically"
+    );
+    let lane = account
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == LANE_WEEKLY)
+        .expect("the weekly lane is reported");
+    assert_eq!(lane.label, "Weekly");
+    assert!(lane.has_factor);
+    assert_eq!(
+        lane.current_period,
+        Some((0, 10_000)),
+        "the period has not reset yet"
+    );
+    assert_eq!(
+        lane.first_observed_epoch, 10_000,
+        "the lane's first reading is the earliest across its periods"
+    );
+
+    // Once `now` passes the reset, the same period no longer counts as open.
+    let accounts_after_reset = store.quota_accounts(20_000).expect("query succeeds");
+    let lane_after_reset = accounts_after_reset
+        .iter()
+        .find(|account| account.account_key == account_key)
+        .and_then(|account| account.lanes.iter().find(|lane| lane.lane == LANE_WEEKLY))
+        .expect("the weekly lane is still reported");
+    assert_eq!(
+        lane_after_reset.current_period, None,
+        "a period that has already reset is not the current one"
     );
 }

@@ -9,6 +9,22 @@ const OVERLAY_WINDOW_LABEL = "antiburn-overlay"
 const OVERLAY_VISIBILITY_EVENT = "overlay_visibility_changed"
 const OVERLAY_WORK_EVENT = "overlay_work_changed"
 
+/** Free a docked HUD. A drag on it starts here. */
+/** Returns true when the HUD was docked, so the caller can mark the tear. */
+export async function tearOffOverlayWindow(): Promise<boolean> {
+  return (await invoke<boolean>("tear_off_overlay")) === true
+}
+
+/** Tell the shell why a drag ended, for its log. `reason` is the event type. */
+export function reportHudDragEnded(reason: string, originKnown: boolean): Promise<void> {
+  return invoke("hud_drag_ended", { reason, originKnown })
+}
+
+/** Bring a docked HUD in for a while. The shell logs `reason`. */
+export function wakeOverlayWindow(reason: "activity" | "burn" | "reset"): Promise<void> {
+  return invoke("wake_overlay", { reason })
+}
+
 export function openOverlayWindow(origin: SurfaceOrigin): Promise<void> {
   return invoke("open_overlay_window", { origin })
 }
@@ -54,6 +70,30 @@ export function setFloatingHudEnabled(enabled: boolean): void {
   } catch {
     // The HUD still works when preference storage is unavailable.
   }
+}
+
+const TOKEN_MAP_PREF_KEY = "antiburn.showHudTokenMap"
+
+/**
+ * Whether the HUD draws the token map above its bars. Off until switched on:
+ * the map is still experimental, so it stays hidden by default.
+ */
+export function isHudTokenMapEnabled(): boolean {
+  try {
+    return localStorage.getItem(TOKEN_MAP_PREF_KEY) === "1"
+  } catch {
+    return false
+  }
+}
+
+/** Store the preference and return the value that is now in effect. */
+export function setHudTokenMapEnabled(enabled: boolean): boolean {
+  try {
+    localStorage.setItem(TOKEN_MAP_PREF_KEY, enabled ? "1" : "0")
+  } catch {
+    // The map stays off when preference storage is unavailable.
+  }
+  return isHudTokenMapEnabled()
 }
 
 export async function isCurrentWindowVisible(): Promise<boolean> {

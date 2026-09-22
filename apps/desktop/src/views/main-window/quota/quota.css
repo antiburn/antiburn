@@ -1,0 +1,219 @@
+/* ==========================================================================
+   Quota screen sub-palette.
+
+   The burnup chart's own colors: the provider's meter line and a five-step
+   ramp of the same blue for the top sessions. Everything the chart groups
+   together ("other", "unattributed") rests in the session-analysis charts'
+   greys (`chart-rest-strong`, `chart-rest-faint`), so the Limits page reads
+   like the Session Details charts: one lit hue on a grey base. Kept local
+   to the Quota screen, the same way the session-analysis sub-palette stays
+   in its own stylesheet.
+
+   The ramp is lightness only, one hue, so it is safe for every
+   colour-vision deficiency: the biggest spender takes the darkest step and
+   the rank reads by tone, never by hue. The dark theme runs the ramp the
+   other way (lightest first) so the top spender stays the strongest step
+   against a dark surface.
+   ========================================================================== */
+
+@theme {
+  /* The provider's own meter reading. A calm blue, distinct from every
+     session hue, since it is a fact the provider stated, not an estimate. */
+  --color-quota-meter: var(--color-quota-meter-val);
+
+  /* The five ramp steps, strongest first: step 1 is the top spender. */
+  --color-quota-session-1: var(--color-quota-session-1-val);
+  --color-quota-session-2: var(--color-quota-session-2-val);
+  --color-quota-session-3: var(--color-quota-session-3-val);
+  --color-quota-session-4: var(--color-quota-session-4-val);
+  --color-quota-session-5: var(--color-quota-session-5-val);
+
+  /* Spend the provider's meter reports that no local reading, bound or
+     unattributed, explains at all. Drawn as a hatch, not a new hue, since
+     the maintainer has a colour-vision deficiency: this token colors the
+     hatch's stroke, reusing the meter's own blue at low opacity so the
+     band still reads as "the provider's own fact", not a session's use. */
+  --color-quota-unexplained: var(--color-quota-unexplained-val);
+
+  /* The pace line for a window. It marks even spend through the window,
+     from 0% at the start to 100% at the reset. */
+  --color-quota-pace: var(--color-quota-pace-val);
+
+  /* A reset boundary, and the chart's own horizontal gridlines. Lighter than
+     the axis and grid text (`--color-label-tertiary`), so it never competes
+     with the tick labels; achromatic, so it is CVD-safe. */
+  --color-quota-reset: var(--color-quota-reset-val);
+}
+
+/* --- Light (default and explicit) --- */
+:root,
+:root[data-theme="light"] {
+  --color-quota-meter-val: hsl(221.2 83% 53.3%); /* blue, matches the context line */
+  --color-quota-session-1-val: hsl(221 75% 45%);
+  --color-quota-session-2-val: hsl(221 70% 56%);
+  --color-quota-session-3-val: hsl(221 65% 67%);
+  --color-quota-session-4-val: hsl(221 60% 77%);
+  --color-quota-session-5-val: hsl(221 54% 86%);
+  --color-quota-unexplained-val: hsl(221.2 83% 53.3% / 0.5);
+  --color-quota-pace-val: hsl(240 5.5% 25% / 0.7);
+  --color-quota-reset-val: hsl(240 5.5% 25% / 0.15);
+}
+
+/* --- Dark ---
+   `@media` cannot share a selector list with a plain `:root` rule, so the
+   system-preference branch and the explicit [data-theme='dark'] branch are
+   written separately, mirroring session-analysis-colors.css. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-quota-meter-val: hsl(221 89% 59.8%);
+    --color-quota-session-1-val: hsl(221 89% 66%);
+    --color-quota-session-2-val: hsl(221 75% 56%);
+    --color-quota-session-3-val: hsl(221 60% 46%);
+    --color-quota-session-4-val: hsl(221 45% 38%);
+    --color-quota-session-5-val: hsl(221 34% 30%);
+    --color-quota-unexplained-val: hsl(221 89% 59.8% / 0.5);
+    --color-quota-pace-val: hsl(240 33% 94% / 0.7);
+    --color-quota-reset-val: hsl(240 33% 94% / 0.32);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-quota-meter-val: hsl(221 89% 59.8%);
+  --color-quota-session-1-val: hsl(221 89% 66%);
+  --color-quota-session-2-val: hsl(221 75% 56%);
+  --color-quota-session-3-val: hsl(221 60% 46%);
+  --color-quota-session-4-val: hsl(221 45% 38%);
+  --color-quota-session-5-val: hsl(221 34% 30%);
+  --color-quota-unexplained-val: hsl(221 89% 59.8% / 0.5);
+  --color-quota-pace-val: hsl(240 33% 94% / 0.7);
+  --color-quota-reset-val: hsl(240 33% 94% / 0.32);
+}
+
+/* ==========================================================================
+   Burnup chart highlight.
+
+   Hovering a top-sessions row or an area on the chart highlights the same
+   layer in both places. The chart itself never re-renders for this: every
+   stacked `Area` in QuotaBurnupChart.tsx carries a stable class, and the
+   caller (QuotaView) only toggles a `data-quota-highlight` attribute on a
+   wrapper div outside the memoized chart. CSS cannot compare the
+   attribute's value to a class name at runtime, so every top-session index
+   gets its own rule below.
+
+   No governed opacity token exists for a "rested" layer (opacity sits
+   outside the token set entirely), so this reuses 0.25, the plain value
+   overview.css already uses for the same day-highlight pattern.
+   ========================================================================== */
+
+[data-quota-highlight] .quota-area {
+  opacity: 0.25;
+  transition: opacity var(--duration-fast);
+}
+
+[data-quota-highlight="other"] .quota-area-other {
+  opacity: 1;
+}
+
+[data-quota-highlight="unattributed"] .quota-area-unattributed {
+  opacity: 1;
+}
+
+[data-quota-highlight="unexplained"] .quota-area-unexplained {
+  opacity: 1;
+}
+
+/* One rule per top-session index, s0..s4. Matches QUOTA_OWN_SERIES_CAP
+   (5) in quotaSeries.ts; change both together. */
+[data-quota-highlight="s0"] .quota-area-s0 {
+  opacity: 1;
+}
+[data-quota-highlight="s1"] .quota-area-s1 {
+  opacity: 1;
+}
+[data-quota-highlight="s2"] .quota-area-s2 {
+  opacity: 1;
+}
+[data-quota-highlight="s3"] .quota-area-s3 {
+  opacity: 1;
+}
+[data-quota-highlight="s4"] .quota-area-s4 {
+  opacity: 1;
+}
+
+/* The stack-top line states the provider's own reading wherever one
+   exists, not an estimate layer, so it never dims. */
+.quota-line-top {
+  opacity: 1;
+}
+
+/* The Quota session list's swatch for the "Unexplained" row: a diagonal
+   hatch, not a solid fill, so the row reads apart from "Unattributed"
+   without relying on hue (the maintainer has a colour-vision deficiency).
+   Mirrors the chart's own SVG hatch pattern in plain CSS, since the list's
+   dot is too small and too far from the chart to share one SVG pattern id
+   with it. */
+.quota-swatch-hatch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--color-quota-unexplained) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+/* --- Limits page layout --- */
+
+/* The page measures itself as a container, so the hero figures can stack
+   below 540px the same way the Overview's do. */
+.quota-page {
+  container-type: inline-size;
+}
+
+/* The scope picker: a floating pill in the shape of the session detail's
+   section picker, in the solid neutral chip of `.ui-segmented-solid` for
+   its whole length. Each level is a segment; a level with choices is a menu
+   button. A `›` between segments shows the hierarchy. The chevron shows
+   only on hover, focus, and while the menu is open; it keeps its space, so
+   the text never shifts. */
+.quota-jump-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: var(--space-2xl);
+  padding-inline: var(--space-md);
+  border-radius: 9999px;
+  white-space: nowrap;
+  transition: background-color var(--duration-quick) var(--ease-out-quart);
+}
+
+.quota-jump-separator {
+  opacity: 0.5;
+}
+
+.quota-jump-chevron {
+  opacity: 0;
+  transition: opacity var(--duration-fast) ease-out;
+}
+
+.quota-jump-button:hover .quota-jump-chevron,
+.quota-jump-button:focus-visible .quota-jump-chevron,
+.quota-jump-button[data-state="open"] .quota-jump-chevron {
+  opacity: 1;
+}
+
+/* The sessions list sizes to its rows, up to 45% of the column, and the
+   chart takes the rest. `--quota-list-content` is the measured content
+   height (heading, gap, and rows), set by QuotaSessionList, so a change in
+   the rows moves the boundary with a transition. Before the first measure
+   the cap is the 45% alone. */
+.quota-session-list {
+  flex: 0 1 auto;
+  max-block-size: min(45%, var(--quota-list-content, 100%));
+  transition: max-block-size var(--duration-slow) ease-out;
+}
+
+/* The scroll pane's basis is its rows, so the section's auto size includes
+   them; it shrinks, and scrolls, once the section hits its cap. */
+.quota-session-list > .quota-session-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+}

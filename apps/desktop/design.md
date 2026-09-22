@@ -17,8 +17,10 @@ sources:
   - src/styles/session-rows.css
   - src/styles/session-detail.css
   - src/components/ui/text-roll.css
+  - src/components/ui/hero-figures.css
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
+  - src/views/main-window/quota/quota.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -95,13 +97,13 @@ colors:
     dark: "hsl(240 4% 12%)"
   brand: # antiburn orange for text and small glyphs
     light: "hsl(18 92% 39%)"
-    dark: "hsl(17.6 100% 58.6%)"
+    dark: "hsl(17.6 100% 54%)"
   brand-tint: # antiburn orange for large fills
-    light: "hsl(17.6 100% 58.6%)"
-    dark: "hsl(17.6 100% 58.6%)"
+    light: "hsl(17.6 100% 54%)"
+    dark: "hsl(17.6 100% 54%)"
   brand-unlit: # an unlit meter segment: the brand tint, a quarter less saturated
-    light: "hsl(17.7 75% 58.6%)"
-    dark: "hsl(17.7 75% 58.6%)"
+    light: "hsl(17.7 75% 54%)"
+    dark: "hsl(17.7 75% 54%)"
   system-green:
     light: "hsl(135 59% 34%)"
     dark: "hsl(135 70% 52.3%)"
@@ -157,8 +159,8 @@ colors:
     light: "hsl(52 11% 13.3%)"
     dark: "hsl(60 15% 96.2%)"
   burn-check-failure-fill: # failure arcs and terminal marks
-    light: "hsl(17.6 100% 58.6%)"
-    dark: "hsl(17.6 100% 58.6%)"
+    light: "hsl(17.6 100% 54%)"
+    dark: "hsl(17.6 100% 54%)"
   burn-check-failure-text: # failure wording on session and summary surfaces
     light: "hsl(18 100% 36.4%)"
     dark: "hsl(18 100% 68%)"
@@ -209,13 +211,28 @@ colors:
   bg-hud-hover: # the HUD surface on hover; the desktop stays visible through it
     light: "hsl(0 0% 96.4% / 0.9)"
     dark: "hsl(0 0% 12.5% / 0.9)"
+  hud-frame: # the HUD frame at rest and on hover, 70% white in light and 70% black in dark, used as `bg-hud-frame`; reduced-transparency: hsl(0 0% 100%) in light and hsl(0 0% 0%) in dark
+    light: "hsl(0 0% 100% / 0.7)"
+    dark: "hsl(0 0% 0% / 0.7)"
+  hud-stroke-top: # top of the HUD frame's one-pixel gradient stroke; softer on the dark frame
+    light: "hsl(0 0% 100% / 0.9)"
+    dark: "hsl(0 0% 100% / 0.3)"
+  hud-stroke-bottom: # bottom of that stroke
+    light: "hsl(0 0% 0% / 0.22)"
+    dark: "hsl(0 0% 0% / 0.22)"
   hud-control-ink: # the close control's glyph; no alpha, so it stays solid on the hover surface
     light: "hsl(0 0% 32%)"
     dark: "hsl(0 0% 78%)"
   hud-control-edge: # the close control's edge; no alpha, for the same reason
     light: "hsl(0 0% 80%)"
     dark: "hsl(0 0% 32%)"
-  led-off: # unlit LED segment; one mid grey for both themes, because the HUD paints no surface and floats over any background
+  hud-island: # the notch island's panel, used as `bg-hud-island`; pure black in both themes, so it merges with the notch
+    light: "hsl(0 0% 0%)"
+    dark: "hsl(0 0% 0%)"
+  hud-island-ink: # the captions on the island; one light ink, because the island is black in both themes
+    light: "hsl(0 0% 92%)"
+    dark: "hsl(0 0% 92%)"
+  led-off: # unlit LED segment; one mid grey for both themes, because the desktop tints the translucent HUD frame
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
   led-notch: # the dark line of the linear-use notch; one value for both themes, for the same reason as led-off
@@ -224,6 +241,32 @@ colors:
   led-notch-highlight: # the light line beside it; the pair reads on a light document and on a dark one
     light: "hsl(0 0% 100% / 0.85)"
     dark: "hsl(0 0% 100% / 0.85)"
+  # Token-map work modes: one colour per kind of work a turn did. They are
+  # separate tokens so the map can re-tune without moving product chrome.
+  # None of them is orange, coral, black, or white: orange and coral mean
+  # burn, and black and white vanish on the desktop. All seven are bold and
+  # fully opaque so a single dot reads on the glass.
+  mode-looking: # read + search; mirrors system-blue
+    light: "hsl(215 100% 48%)"
+    dark: "hsl(215 100% 60%)"
+  mode-running: # shell + tests; mirrors system-green
+    light: "hsl(140 80% 36%)"
+    dark: "hsl(140 90% 50%)"
+  mode-changing: # edits; the system purple
+    light: "hsl(280 85% 55%)"
+    dark: "hsl(280 100% 70%)"
+  mode-delegating: # sub-agent spawns and sub-agent turns; mirrors system-indigo
+    light: "hsl(245 90% 60%)"
+    dark: "hsl(245 100% 72%)"
+  mode-thinking: # extended thinking with no tool; mirrors system-gold
+    light: "hsl(45 100% 42%)"
+    dark: "hsl(52 100% 55%)"
+  mode-talking: # plain assistant text; a hot pink, well away from burn orange
+    light: "hsl(330 90% 55%)"
+    dark: "hsl(330 100% 68%)"
+  mode-other: # MCP, skills, web; the system teal
+    light: "hsl(192 100% 38%)"
+    dark: "hsl(190 100% 55%)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-stroke: # the context line; a cool blue, lit at rest
     light: "hsl(221.2 83% 53.3%)"
@@ -312,6 +355,38 @@ colors:
   context-critical:
     light: "hsl(0 72% 50.5%)"
     dark: "hsl(0 90% 70.7%)"
+  # Quota sub-palette only (src/views/main-window/quota/quota.css). The five
+  # session steps are one lightness ramp of the meter blue, darkest for the top
+  # spender, so rank reads by tone and is safe for every colour-vision
+  # deficiency. Grouped bands ("other", "unattributed") use chart-rest-strong
+  # and chart-rest-faint, the same resting greys as the session-analysis charts.
+  quota-meter: # the provider's own meter reading; matches the context line's blue
+    light: "hsl(221.2 83% 53.3%)"
+    dark: "hsl(221 89% 59.8%)"
+  quota-session-1: # ramp step 1, the top spender
+    light: "hsl(221 75% 45%)"
+    dark: "hsl(221 89% 66%)"
+  quota-session-2: # ramp step 2
+    light: "hsl(221 70% 56%)"
+    dark: "hsl(221 75% 56%)"
+  quota-session-3: # ramp step 3
+    light: "hsl(221 65% 67%)"
+    dark: "hsl(221 60% 46%)"
+  quota-session-4: # ramp step 4
+    light: "hsl(221 60% 77%)"
+    dark: "hsl(221 45% 38%)"
+  quota-session-5: # ramp step 5, the fifth spender
+    light: "hsl(221 54% 86%)"
+    dark: "hsl(221 34% 30%)"
+  quota-unexplained: # meter spend no local reading explains; hatch stroke, reuses the meter blue at low opacity so it needs no new hue
+    light: "hsl(221.2 83% 53.3% / 0.5)"
+    dark: "hsl(221 89% 59.8% / 0.5)"
+  quota-pace: # even spend through a window: 0% at the start, 100% at the reset
+    light: "hsl(240 5.5% 25% / 0.7)"
+    dark: "hsl(240 33% 94% / 0.7)"
+  quota-reset: # a reset boundary line, lighter than the axis/grid text; also draws the chart's 25/50/75/100% gridlines
+    light: "hsl(240 5.5% 25% / 0.15)"
+    dark: "hsl(240 33% 94% / 0.32)"
 fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`
@@ -385,7 +460,8 @@ motion:
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
-  led-sweep: "4000ms loop in src/styles/hud.css, the session list's shimmer cycle and its phase: installLivePhase in src/lib/livePhase.ts sets the start time of every live animation from the wall clock, on an animation frame, so a title shimmer and a meter sweep hold the same point of the cycle however late either one starts and whatever a render does; it sets the start time again when an animation starts, when the window comes back, and once each cycle, so a window that stopped painting returns in step; the stylesheets declare no animation-delay, because a delay would move the phase; the sweep is held back 0.2s because a stepped segment snaps on where the soft shimmer fades in; a gleam crosses the lit segments of each live meter in about 2s, rows 100ms apart, and runs the ring's lit arc once; each segment takes one of two brightness levels, off or the peak, instead of a smooth ramp, and the band is about three segments wide; it peaks at 0.56 in the popover and 0.245 on the floating HUD; the gleam takes a shade of the segment's own colour, white above a dark segment and dark above a light one; unlit segments do not move; a meter that is scoped to one model sweeps only while a live session runs that model; reduced motion stops the loop and holds the brand tint on the next segment to light"
+  hud-led-blink: "steps(1) loop; --led-period 300ms to 3s on eight geometric rungs, set per segment from the spend rate; 300ms is the flash-safety cap for a 6px dot"
+  led-sweep: "4000ms loop in src/styles/hud.css, the session list's shimmer cycle and its phase: installLivePhase in src/lib/livePhase.ts sets the start time of every live animation from the wall clock, on an animation frame, so a title shimmer and a meter sweep hold the same point of the cycle however late either one starts and whatever a render does; it sets the start time again when an animation starts, when the window comes back, and once each cycle, so a window that stopped painting returns in step; the stylesheets declare no animation-delay, because a delay would move the phase; the sweep is held back 0.2s because a stepped segment snaps on where the soft shimmer fades in; a gleam crosses the lit segments of each live meter in about 2s, rows 100ms apart, and runs the ring's lit arc once; each segment takes one of two brightness levels, off or the peak, instead of a smooth ramp, and the band is about three segments wide; it peaks at 0.56 in the popover; the floating HUD does not sweep, because it shows the spend-rate blink alone; the gleam takes a shade of the segment's own colour, white above a dark segment and dark above a light one; unlit segments do not move; a meter that is scoped to one model sweeps only while a live session runs that model; reduced motion stops the loop and holds the brand tint on the next segment to light"
 components:
   button-secondary:
     className: ui-push-button
@@ -498,6 +574,40 @@ Notes for what isn't expressible as a token:
   Finding rows have no separator lines. “Recent” sits at the left
   of the sessions header, on the same baseline as “All sessions”, with both using
   `type-caption text-label-secondary`. The width stays local to `overview.css`.
+
+- **Hero figures** — the Overview's spend totals and the Limits header share the
+  `hero-figures` grid (`src/components/ui/hero-figures.css`): one cell per figure,
+  each a `type-callout text-label-secondary` label over a `type-hero-figure font-mono`
+  number and a `type-caption text-label-tertiary` caption, with a 1px separator and
+  16px inline padding between cells. The cells stack below 540px of container width.
+
+- **Limits page** — the scope picker is a pill that floats over the bottom centre of
+  the page, in the shape of the session detail's section picker and in its selected
+  chip colours for its whole length: `rounded-full`, `bg-selected-fill`,
+  `text-selected-ink`, `shadow-raised`, 2px track padding, and `type-callout` labels.
+  Account › lane › range are its segments, each a `rounded-full` menu button at least
+  24px tall with 12px inline padding, washed with `selected-ink` at 10% on hover and 15%
+  while its menu is open; a `›` at 50% opacity sits between segments. The chevron shows
+  only on hover, focus, or while the menu is open (`quota-jump-chevron`); a level with
+  one choice is plain text. The range menu lists every preset and greys one that ends
+  before the lane's first reading at 40% opacity, with "· no readings" after its label.
+  The range reads in the lane's own words ("Last 3 weeks" on a weekly lane, "Last 3
+  windows" on a 5-hour lane); the "last reading" note at the top right is
+  `type-footnote text-label-tertiary`. The chart always spans the whole window, start
+  to reset, with the open window's data ending at "now" and the pace line ending at the
+  same point; local midnights (or whole hours on a 5-hour lane) label the axis. The
+  pace-line toggle is a small `type-footnote` push button under the chart's right edge,
+  24px tall on `bg-surface-secondary` in secondary ink with `rounded-control` and 8px
+  inline padding, reading "Show pace" or "Hide pace" for what a press does. A range with nothing to show renders a centred `Gauge`
+  icon in tertiary ink over a `type-body` title and a `type-callout` caption that says
+  when readings began. Session rows follow the session-card recipe (`bg-session-card`,
+  `rounded-control`, 12px by 8px padding, 6px gaps, `hover:bg-surface-secondary/50`)
+  with the agent icon, a regular-weight `type-body` title, and at the right the colour
+  swatch beside the percent, then the dollars in secondary ink. The swatch sits with the
+  figure it explains, not at the row's edge, so the row starts with the agent icon like
+  a session card; the "other", "unattributed" and "unexplained" rows use `surface-card/50` and
+  secondary ink. The list sizes to its rows up to 45% of the column and the chart takes
+  the rest (`quota-session-list` in `quota.css`).
 
 - **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
   a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.
@@ -1076,26 +1186,41 @@ The loading collection header provides the same drag region. The empty error sta
 uses an absolute 40px fallback drag region without reserving layout space.
 Windows and Linux use native title bars without these attributes.
 
-### Floating HUD LED rings
+### Floating HUD frame
 
-The HUD window paints no surface at rest, so its LEDs sit directly on the
-desktop. The desktop can be any colour, and it can match a lit segment and hide
-it. Each lit segment therefore takes a 1px ring at 75% alpha. A ring holds a 6px
-dot better than a blurred shadow, which only softens the edge at that size.
-Unlit segments take no ring, so they stay quiet.
+The HUD paints a 70% frame, white in light and black in dark (`hud-frame`, as `bg-hud-frame`), inside a one-pixel
+vertical gradient stroke (`hud-stroke-top` to `hud-stroke-bottom`, drawn by
+`.hud-frame::before`), the same at rest and under the pointer. The content sits 10px inside the
+stroke on every side, and the window keeps an 8px transparent margin at the
+sides. The frame is white in light and
+black in dark, so it reads as the system's own
+material on either desktop. LEDs and token-map dots
+sit on it without rings or shadows; the frame is what holds them apart from
+the desktop. The token map draws in HUD pixels on the LED grid, so a dot is
+the size of an LED and a sub-agent dot is smaller.
 
-A coloured LED rings in its own colour, darkened to 70% in oklab, so the ring
-reads as the edge of the LED rather than as a second mark. An LED that takes
-`label` has no colour of its own: it is near-black in the light theme and
-near-white in the dark theme, so it rings in the opposite tone, white on light
-and black on dark. `OverlayWindow` chooses between the two with the
-`hud-leds-color` and `hud-leds-label` classes and passes the row's colour in
-`--hud-led-color`.
+The live LED blinks at the spend rate (`hud-led-blink` under `motion`), and
+its lit half takes `mode-<mode>` of the session with the newest turn, so one
+animated dot says both how fast the machine spends and what it is doing.
+Reduced motion stops the loop; the detail window states the rate in words.
 
-Inside the HUD, unlit segments raise `led-off` to full opacity. The token keeps
-its 45% alpha everywhere else, because the popover and the detail card paint
-their own surfaces to hold it. The HUD has none. These ring and opacity values
-are local to `src/styles/hud.css` and are not palette or shadow tokens.
+### Notch island
+
+On a display with a notch, the HUD can sit in it. The island is pure black
+(`hud-island`, as `bg-hud-island`) in both themes, so it merges with the
+notch, and its captions take one light ink (`hud-island-ink`). Collapsed, it
+is the notch row alone: a 30px wing either side of the notch, with its
+bottom corners at a 14px radius and 6px fillets curving out into the bezel
+(`.hud-island`, `.hud-island-fillets`). Expanded, the HUD content hangs
+below the row, the corners open to 24px and the fillets to 19px
+(`.hud-island-open`), over `duration-fast`. The window is the notch plus the
+wings plus a transparent gutter either side for the fillets. The left wing
+holds the live LED, blinking at the spend rate as the floating frame's LED
+does, and the right wing shows the spend rate as a four-character figure
+(`$12`, `$1.2`, `$.05`) in `type-footnote`, or the top bar's LED when the
+rate is below half a cent a minute. The bars do not blink on the island; the
+wing LED is the one animated dot. The token map and bars keep their 20
+columns and spread over the island's width.
 
 ### Project folder actions
 

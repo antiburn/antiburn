@@ -237,7 +237,7 @@ Settings teardown, and the memory rules behind those policies.
   window rather than the platform's notification centre: the `antiburn-nudge`
   crate under `src-tauri/crates/nudge/`, applied at the seam in
   `src-tauri/src/nudges.rs`. Nothing about a notification leaves the machine.
-  Usage milestones default to every 10% and compare quota consumed with the
+  Usage milestones default to every 10% and compare limit consumed with the
   share of the current limit window that has elapsed. Settings offers every 5%
   step when a reader wants different milestones. Every successful live reading
   checks for a crossing, and the hidden background monitor checks at most every
@@ -303,12 +303,15 @@ provide `items` and `renderDetail`; an optional `renderCollection` slot receives
 and Enter-to-detail-region focus. Controlled `selection` and `onSelectionChange` let a feature
 own navigation history. `detailOwnsViewport` embeds a view with an existing scroll container.
 
-Sessions uses `MainActivitySession`, an independent external store. It loads the existing
-session index and cached usage through scoped commands, coalesces shell events, and rejects
-stale responses. It loads analysis only for the selected subject. Native `main:visibility-changed`
-events and the initial `get_main_window_visible` snapshot suspend work on hide or minimize;
-blur does not suspend it. Section inactivity also suspends work. Resume reconciles the list,
-cached usage, and selected analysis. This adds no scanner or provider polling.
+Sessions uses `MainActivitySession`, an independent external store. Its list subscription loads
+the shared session index while the main window is visible, so Overview, the sidebar, and the
+Sessions section consume one bounded list and one refresh lifecycle. It coalesces shell events
+and rejects stale responses. The detail subscription loads cached usage for the visible Sessions
+surface and loads quota and analysis only for the selected subject. Native `main:visibility-changed` events and the initial
+`get_main_window_visible` snapshot suspend list and detail work on hide or minimize; blur does
+not suspend it. Section inactivity suspends detail work while the visible main-window list
+continues to refresh. Resume reconciles the list and any active detail data. This adds no
+scanner or provider polling.
 
 `SessionList` accepts opt-in `selectedKey`, `onSelect`, `onOpenDetail`, and `active` props.
 `SessionPane` accepts `embedded` and `active`; embedded confirmation does not hold the popover.

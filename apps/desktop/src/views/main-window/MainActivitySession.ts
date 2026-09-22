@@ -11,6 +11,7 @@ import {
   listRecentSessions,
   getLiveUsage,
   getSessionLimitAllocations,
+  getSessionQuota,
   getMainWindowVisible,
   acknowledgeMainWindowSessionTarget,
   noteInteraction,
@@ -25,6 +26,7 @@ import {
   type SessionAnalysisPayload,
   type LiveUsageSummaryPayload,
   type SessionLimitAllocationSummaryPayload,
+  type SessionQuotaPayload,
   type MainWindowSessionRequest,
   type SessionUpdatedPayload,
   type SurfaceOrigin,
@@ -56,6 +58,8 @@ export interface MainActivitySnapshot {
   now: number
   liveUsage: LiveUsageSummaryPayload
   allocations: SessionLimitAllocationSummaryPayload
+  /** The open subject's quota contributions, loaded alongside its analysis. */
+  sessionQuota: SessionQuotaPayload | null
   /** The selected Sessions sidebar filter, parsed from `settings.sessionFilter`. */
   filter: SessionFilter
 }
@@ -120,19 +124,23 @@ export class MainActivitySession {
     now: Date.now(),
     liveUsage: EMPTY_LIVE_USAGE,
     allocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
+    sessionQuota: null,
     filter: parseSessionFilterId(DEFAULT_SETTINGS.sessionFilter),
   }
   private listeners = new Set<() => void>()
   private activeListeners = new Set<() => void>()
+  private listListeners = new Set<() => void>()
   private stops: (() => void)[] = []
   private generation = 0
   private workVersion = 0
   private analysisVersion = 0
   private analysisRun = 0
   private listVersion = 0
+  private listWorkVersion = 0
   private settingsVersion = 0
   private visible = false
   private initialized = false
+  private listRunning = false
   private defaultSelectionPending = true
   private timer: ReturnType<typeof setInterval> | null = null
   private listTask: Promise<void> | null = null
@@ -140,6 +148,10 @@ export class MainActivitySession {
   private invalidated = false
   private analysisTask: Promise<void> | null = null
   private analysisDirty = false
+  private sessionQuotaVersion = 0
+  private sessionQuotaRun = 0
+  private sessionQuotaTask: Promise<void> | null = null
+  private sessionQuotaDirty = false
   private usageTask: Promise<void> | null = null
   private usageDirty = false
   private usageRevision = 0
@@ -149,6 +161,8 @@ export class MainActivitySession {
 
   getSnapshot = (): MainActivitySnapshot => this.snapshot
   subscribe = (listener: () => void): (() => void) => this.attach(listener, true)
+  /** Subscribe to the shared session list without starting session detail work. */
+  subscribeList = (listener: () => void): (() => void) => this.attach(listener, false, true)
   subscribeInactive = (listener: () => void): (() => void) => this.attach(listener, false)
 
   private update(patch: Partial<MainActivitySnapshot>): void {
@@ -172,14 +186,16 @@ export class MainActivitySession {
     if (state) this.exposure.observe(state, generation)
   }
 
-  private attach(listener: () => void, active: boolean): () => void {
+  private attach(listener: () => void, active: boolean, list = false): () => void {
     this.listeners.add(listener)
     if (active) this.activeListeners.add(listener)
+    if (list) this.listListeners.add(listener)
     if (this.listeners.size === 1) void this.start()
     this.syncActive()
     return () => {
       this.listeners.delete(listener)
       this.activeListeners.delete(listener)
+      this.listListeners.delete(listener)
       this.syncActive()
       if (this.listeners.size === 0) this.dispose()
     }
@@ -229,9 +245,11 @@ export class MainActivitySession {
           // with it; `loadList` clears the selection when the refetched
           // list no longer holds it.
           if (change.cause !== "scan_pass") this.invalidated = true
-          this.refreshList()
-          this.refreshUsage()
-          if (change.cause !== "scan_pass") this.refreshAnalysis()
+          if (this.listRunning) this.refreshList()
+          if (this.snapshot.active) {
+            this.refreshUsage()
+            if (change.cause !== "scan_pass") this.refreshAnalysis()
+          }
         }),
       ),
       this.listen(
@@ -241,12 +259,13 @@ export class MainActivitySession {
           this.usageRevision += 1
           if (this.snapshot.active) this.update({ liveUsage })
           this.refreshUsage()
+          this.refreshSessionQuota()
         }),
       ),
       this.listen(
         generation,
         onSessionUpdated((update) => {
-          if (generation !== this.generation || !this.snapshot.active) return
+          if (generation !== this.generation || !this.listRunning) return
           this.applySessionUpdate(update)
         }),
       ),
@@ -255,7 +274,7 @@ export class MainActivitySession {
       // The registry, not row data, decides which rows show as active.
       this.stops.push(
         liveSessions.subscribe(() => {
-          if (generation !== this.generation || !this.snapshot.active) return
+          if (generation !== this.generation || !this.listRunning) return
           const entries = this.snapshot.entries
           if (entries) this.update({ entries: this.withRegistryActivity(entries) })
         }),
@@ -313,8 +332,8 @@ export class MainActivitySession {
           : { ...item, cost: { ...item.cost, isHighCost } }
       })
       this.update({ entries: this.withRegistryActivity(classified) })
-      this.selectDefaultEntry()
-    } else this.refreshList()
+      if (this.snapshot.active) this.selectDefaultEntry()
+    } else if (this.listRunning) this.refreshList()
     const subject = this.snapshot.subject
     // The analysis surface reloads only when the change touched what it
     // renders, and only for the session on screen.
@@ -326,9 +345,16 @@ export class MainActivitySession {
         subject.subagent?.parentSessionId ?? subject.sessionId,
         subject.wslDistro,
       ) === key
-    )
+    ) {
+      // Session quota loads alongside analysis: same subject match, same
+      // trigger, per loadSessionQuota's contract.
       this.refreshAnalysis()
-    if (update.facets.usage || update.facets.limits || update.facets.analysis) {
+      this.refreshSessionQuota()
+    }
+    if (
+      this.snapshot.active &&
+      (update.facets.usage || update.facets.limits || update.facets.analysis)
+    ) {
       this.refreshUsage()
     }
   }
@@ -378,37 +404,64 @@ export class MainActivitySession {
   }
 
   private syncActive(): void {
-    const active = this.initialized && this.visible && this.activeListeners.size > 0
-    if (active === this.snapshot.active) return
+    const listActive =
+      this.initialized &&
+      this.visible &&
+      (this.activeListeners.size > 0 || this.listListeners.size > 0)
+    const detailActive = this.initialized && this.visible && this.activeListeners.size > 0
+    const listChanged = listActive !== this.listRunning
+    const detailChanged = detailActive !== this.snapshot.active
+    if (!listChanged && !detailChanged) return
     this.workVersion += 1
-    this.update({ active, now: Date.now(), refreshing: false })
+    if (listChanged) this.listWorkVersion += 1
+    this.listRunning = listActive
+    if (detailChanged) this.update({ active: detailActive, now: Date.now(), refreshing: false })
     if (this.timer) clearInterval(this.timer)
     this.timer = null
-    if (!active) {
+    if (!listActive) {
       liveSessions.clearInterest(this)
+    }
+    if (!detailActive) {
       this.analysisRun += 1
       this.analysisTask = null
-      return
+      this.sessionQuotaRun += 1
+      this.sessionQuotaTask = null
     }
-    const rows = this.snapshot.entries
-    if (rows) {
-      this.update({ entries: this.withRegistryActivity(rows) })
-      liveSessions.setInterest(this, listInterests(rows))
+    if (listActive) {
+      const rows = this.snapshot.entries
+      if (rows) {
+        this.update({ entries: this.withRegistryActivity(rows) })
+        liveSessions.setInterest(this, listInterests(rows))
+      }
+      if (listChanged) this.refreshList()
     }
-    this.timer = setInterval(() => this.update({ now: Date.now() }), 30_000)
-    this.refreshList()
-    this.refreshUsage()
-    this.refreshAnalysis()
+    if (detailActive) {
+      this.timer = setInterval(() => this.update({ now: Date.now() }), 30_000)
+      if (detailChanged) {
+        const hadSubject = this.snapshot.subject !== null
+        if (this.snapshot.entries && !hadSubject) this.selectDefaultEntry()
+        this.refreshUsage()
+        if (hadSubject || this.snapshot.subject === null) {
+          this.refreshAnalysis()
+          this.refreshSessionQuota()
+        }
+      }
+    }
   }
 
   dispose = (): void => {
     this.generation += 1
     this.workVersion += 1
+    this.listWorkVersion += 1
     this.analysisVersion += 1
     this.analysisRun += 1
     this.analysisTask = null
+    this.sessionQuotaVersion += 1
+    this.sessionQuotaRun += 1
+    this.sessionQuotaTask = null
     this.initialized = false
     this.visible = false
+    this.listRunning = false
     for (const stop of this.stops.splice(0)) stop()
     liveSessions.clearInterest(this)
     if (this.timer) clearInterval(this.timer)
@@ -419,31 +472,26 @@ export class MainActivitySession {
   refreshList = (): void => {
     this.listVersion += 1
     this.listDirty = true
-    if (!this.snapshot.active || this.listTask) return
+    if (!this.listRunning || this.listTask) return
     this.listTask = this.loadList().finally(() => {
       this.listTask = null
-      if (this.listDirty && this.snapshot.active) this.refreshList()
+      if (this.listDirty && this.listRunning) this.refreshList()
     })
   }
 
   private async loadList(): Promise<void> {
-    while (this.listDirty && this.snapshot.active) {
+    while (this.listDirty && this.listRunning) {
       this.listDirty = false
-      const version = this.workVersion
+      const version = this.listWorkVersion
       const listVersion = this.listVersion
       const days = this.snapshot.settings.activityWindowDays
-      const settingsVersion = this.settingsVersion
       const invalidated = this.invalidated
       this.invalidated = false
       try {
         const entries = this.withRegistryActivity(
           toActivityEntries(await listRecentSessions(days)),
         )
-        if (
-          version !== this.workVersion ||
-          settingsVersion !== this.settingsVersion ||
-          listVersion !== this.listVersion
-        ) {
+        if (version !== this.listWorkVersion || listVersion !== this.listVersion) {
           this.invalidated ||= invalidated
           continue
         }
@@ -451,7 +499,7 @@ export class MainActivitySession {
         // The listed rows are this surface's interest: the registry names
         // any of them the bounded snapshot omitted.
         liveSessions.setInterest(this, listInterests(entries))
-        this.selectDefaultEntry()
+        if (this.snapshot.active) this.selectDefaultEntry()
         const subject = this.snapshot.subject
         if (
           invalidated &&
@@ -468,7 +516,7 @@ export class MainActivitySession {
         )
           this.clearSelection()
       } catch {
-        if (version === this.workVersion && listVersion === this.listVersion)
+        if (version === this.listWorkVersion && listVersion === this.listVersion)
           this.update({ listError: true })
         this.invalidated ||= invalidated
       }
@@ -513,8 +561,19 @@ export class MainActivitySession {
     this.analysisVersion += 1
     this.analysisRun += 1
     this.analysisTask = null
-    this.update({ subject, history, analysis: null, loading: true, refreshing: false })
+    this.sessionQuotaVersion += 1
+    this.sessionQuotaRun += 1
+    this.sessionQuotaTask = null
+    this.update({
+      subject,
+      history,
+      analysis: null,
+      loading: true,
+      refreshing: false,
+      sessionQuota: null,
+    })
     this.refreshAnalysis()
+    this.refreshSessionQuota()
   }
 
   clearSelection = (): void => {
@@ -522,12 +581,16 @@ export class MainActivitySession {
     this.analysisVersion += 1
     this.analysisRun += 1
     this.analysisTask = null
+    this.sessionQuotaVersion += 1
+    this.sessionQuotaRun += 1
+    this.sessionQuotaTask = null
     this.update({
       subject: null,
       history: [],
       analysis: null,
       loading: false,
       refreshing: false,
+      sessionQuota: null,
     })
   }
 
@@ -579,6 +642,49 @@ export class MainActivitySession {
           loading: false,
           refreshing: false,
         })
+      }
+    }
+  }
+
+  refreshSessionQuota = (): void => {
+    this.sessionQuotaVersion += 1
+    this.sessionQuotaDirty = true
+    if (!this.snapshot.active || !this.snapshot.subject || this.sessionQuotaTask) return
+    const run = ++this.sessionQuotaRun
+    this.sessionQuotaTask = this.loadSessionQuota(run).finally(() => {
+      if (run !== this.sessionQuotaRun) return
+      this.sessionQuotaTask = null
+      if (this.sessionQuotaDirty && this.snapshot.active && this.snapshot.subject)
+        this.refreshSessionQuota()
+    })
+  }
+
+  /**
+   * One subject's quota contributions, loaded alongside its analysis. A
+   * failure keeps the last good value, so it never blanks the rest of the
+   * detail view.
+   */
+  private async loadSessionQuota(run: number): Promise<void> {
+    while (
+      run === this.sessionQuotaRun &&
+      this.sessionQuotaDirty &&
+      this.snapshot.active &&
+      this.snapshot.subject
+    ) {
+      this.sessionQuotaDirty = false
+      const subject = this.snapshot.subject
+      const version = this.sessionQuotaVersion
+      const work = this.workVersion
+      try {
+        const sessionQuota = await getSessionQuota({
+          agent: subject.agent,
+          sessionId: subject.subagent?.parentSessionId ?? subject.sessionId,
+          wslDistro: subject.wslDistro ?? null,
+        })
+        if (version !== this.sessionQuotaVersion || work !== this.workVersion) continue
+        this.update({ sessionQuota })
+      } catch {
+        // Keep the last good payload; a failed load is not shown.
       }
     }
   }
