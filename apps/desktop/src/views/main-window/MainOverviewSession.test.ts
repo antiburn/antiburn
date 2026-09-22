@@ -620,6 +620,25 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
+  it("does not hold for a scan that starts after an idle activation", async () => {
+    const { adapter, session, entryChanged, setScanRunning } = setup(
+      true,
+      {},
+      {
+        scanRunning: false,
+      },
+    )
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
+
+    setScanRunning(true)
+    entryChanged({ analysis: true })
+    await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalledTimes(2))
+    stop()
+  })
+
   it("holds the live-usage push's reads but publishes its figures at once", async () => {
     const { adapter, session, meterChanged, setScanRunning } = setup(
       true,

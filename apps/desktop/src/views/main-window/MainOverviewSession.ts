@@ -82,7 +82,10 @@ export interface MainOverviewSessionOptions {
 }
 
 const productionScanSource: MainOverviewScanSource = {
-  getSnapshot: () => ({ running: scanStatusStore.getSnapshot()?.running ?? false }),
+  // The store snapshot is null until its first load resolves. Treat that gap
+  // as a running scan: the hold cap bounds the cost of a wrong guess, and the
+  // first read of an activation runs regardless.
+  getSnapshot: () => ({ running: scanStatusStore.getSnapshot()?.running ?? true }),
   subscribe: (listener) => scanStatusStore.subscribe(listener),
 }
 
@@ -368,7 +371,9 @@ export class MainOverviewSession {
     if (!active) return
     // The first read of an activation is the one the reader is waiting for.
     // It runs now; only the churn behind it is deferred.
-    this.scanSettled = false
+    // An activation that finds no pass running has nothing to hold for, so a
+    // later pass is a later pass.
+    this.scanSettled = !this.scanSource.getSnapshot().running
     this.refresh()
   }
 
@@ -432,6 +437,12 @@ export class MainOverviewSession {
   }
 
   private flushReads(): void {
+    // A scan can start after the debounce armed but before it fired. Hold
+    // the reads back in that case too, so a read never lands mid-pass.
+    if (this.snapshot.active && this.holdingForScan()) {
+      this.armScanHoldCap()
+      return
+    }
     const kinds = [...this.pendingReads]
     this.pendingReads.clear()
     if (!this.snapshot.active) return
