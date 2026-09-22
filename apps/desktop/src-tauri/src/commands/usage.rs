@@ -67,7 +67,19 @@ pub(super) fn allowance_usage_for_store(
     let range_start = bounds.last_30_days_start;
     let fetch_start = range_start - ROLLING_LOOKBACK_SECS;
     let mut accounts = Vec::new();
-    for account in store.quota_accounts(now).map_err(fail)? {
+    let quota_accounts = store.quota_accounts(now).map_err(fail)?;
+    let mut turn_input = None;
+    for account in quota_accounts {
+        let input = match &mut turn_input {
+            Some(input) => input,
+            empty => empty.insert(
+                store
+                    .quota_turn_input(fetch_start, now.saturating_add(1))
+                    .map_err(fail)?
+                    .ok_or_else(|| "too much turn activity in this range".to_string())?,
+            ),
+        };
+        let dollars = input.for_account(&account.provider, &account.account_key, None);
         let mut weekly_periods: Vec<QuotaPeriodPayload> = Vec::new();
         let mut short_periods: Vec<QuotaPeriodPayload> = Vec::new();
         // Each model-scoped lane keeps its own slug, since a multi-model
@@ -77,7 +89,7 @@ pub(super) fn allowance_usage_for_store(
             let Some(kind) = account_lane(&lane.lane) else {
                 continue;
             };
-            let usage = super::quota::quota_usage_for_store(
+            let usage = super::quota::quota_usage_with_turn_dollars(
                 store,
                 now,
                 QuotaUsageRequest {
@@ -87,6 +99,7 @@ pub(super) fn allowance_usage_for_store(
                     range_start_epoch: fetch_start,
                     range_end_epoch: now.saturating_add(1),
                 },
+                &dollars,
             )?;
             let periods = usage.periods.into_iter().filter(|period| {
                 period.resets_at_epoch > fetch_start && period.starts_at_epoch <= now

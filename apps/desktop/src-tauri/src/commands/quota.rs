@@ -158,6 +158,23 @@ pub(super) fn quota_usage_for_store(
     now: i64,
     request: QuotaUsageRequest,
 ) -> CommandResult<QuotaUsagePayload> {
+    let input = store
+        .quota_turn_input(request.range_start_epoch, request.range_end_epoch)
+        .map_err(fail)?
+        .ok_or_else(|| "too much turn activity in this range".to_string())?;
+    let model_scope = request
+        .lane
+        .strip_prefix(crate::store::provider_limit::MODEL_LANE_PREFIX);
+    let dollars = input.for_account(&request.provider, &request.account_key, model_scope);
+    quota_usage_with_turn_dollars(store, now, request, &dollars)
+}
+
+pub(super) fn quota_usage_with_turn_dollars(
+    store: &Store,
+    now: i64,
+    request: QuotaUsageRequest,
+    dollars: &crate::store::provider_limit::AccountTurnDollars,
+) -> CommandResult<QuotaUsagePayload> {
     let QuotaUsageRequest {
         provider,
         account_key,
@@ -206,16 +223,7 @@ pub(super) fn quota_usage_for_store(
         .factor_points_for_lane(&provider, &account_key, &lane)
         .map_err(fail)?;
 
-    let bucketed = store
-        .attributed_turn_dollars_by_bucket(
-            &provider,
-            &account_key,
-            model_scope,
-            range_start_epoch,
-            range_end_epoch,
-        )
-        .map_err(fail)?
-        .ok_or_else(|| "too much turn activity in this range".to_string())?;
+    let bucketed = dollars.by_bucket(model_scope);
 
     // Assign each bucket to the period whose `[start, reset)` contains its
     // start. A bucket that straddles a reset lands in the period containing
