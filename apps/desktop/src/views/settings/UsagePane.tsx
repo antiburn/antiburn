@@ -1,4 +1,4 @@
-import { SettingsSectionGroup, SettingsToggleRow } from "./SettingsSearchRows"
+import { SettingsRow, SettingsSectionGroup, SettingsToggleRow } from "./SettingsSearchRows"
 import { useState, useSyncExternalStore } from "react"
 
 import { Card } from "../../components/ui/Card"
@@ -198,8 +198,8 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
 
       <SectionGroup title="Your working week">
         <Card>
-          <Row
-            label="Days you work"
+          <SettingsRow
+            searchId="workingWeek"
             description="Spreads your weekly allowance over these days, so a quiet weekend does not read as falling behind. Weeks start Monday. This does not change 5-hour limits."
             trailing={
               <SegmentedControl

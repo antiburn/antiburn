@@ -68,6 +68,11 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "Keep my plan limits current",
     aliases: ["quota", "refresh", "providers"],
   },
+  workingWeek: {
+    pane: "usage",
+    label: "Days you work",
+    aliases: ["working week", "workdays", "pace marker"],
+  },
   floatingHud: {
     pane: "usage",
     label: "Show floating usage HUD",
