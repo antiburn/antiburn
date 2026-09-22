@@ -139,7 +139,7 @@ async fn run_worker_step(
         )
     };
     assert!(
-        process_next(store, &|| now, &runner, &|_| {}, &|_, _| {})
+        process_next(store, &|| now, &runner, &|_| {}, &|_, _| {}, &|| {})
             .await
             .unwrap(),
         "the worker must claim and publish this step"

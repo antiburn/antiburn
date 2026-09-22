@@ -292,9 +292,16 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {}, &|_, _| {})
-            .await
-            .unwrap()
+        crate::insights_worker::process_next(
+            &store,
+            &|| 1_100,
+            &runner,
+            &|_| {},
+            &|_, _| {},
+            &|| {}
+        )
+        .await
+        .unwrap()
     );
     assert_eq!(
         store.evidence(&record.key).unwrap().unwrap().status,
@@ -367,9 +374,16 @@ async fn analysis_from_rows_still_serves_a_published_pass_after_a_requeue() {
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {}, &|_, _| {})
-            .await
-            .unwrap()
+        crate::insights_worker::process_next(
+            &store,
+            &|| 1_100,
+            &runner,
+            &|_| {},
+            &|_, _| {},
+            &|| {}
+        )
+        .await
+        .unwrap()
     );
 
     // The transcript grew: the drilldown's own nudge requeues the session
@@ -506,9 +520,16 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {}, &|_, _| {})
-            .await
-            .unwrap()
+        crate::insights_worker::process_next(
+            &store,
+            &|| 1_100,
+            &runner,
+            &|_| {},
+            &|_, _| {},
+            &|| {}
+        )
+        .await
+        .unwrap()
     );
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
@@ -542,9 +563,16 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
         }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {}, &|_, _| {})
-            .await
-            .unwrap()
+        crate::insights_worker::process_next(
+            &store,
+            &|| 1_100,
+            &runner,
+            &|_| {},
+            &|_, _| {},
+            &|| {}
+        )
+        .await
+        .unwrap()
     );
 
     let failed = store.evidence(&record.key).unwrap().unwrap();

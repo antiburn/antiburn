@@ -95,7 +95,7 @@ async fn a_dirty_watch_has_priority_and_a_restart_loses_no_work() {
         Box::pin(async move { pass }) as PassFuture
     };
     assert!(
-        process_next_work(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
+        process_next_work(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
             .await
             .unwrap()
     );
@@ -116,9 +116,16 @@ async fn a_dirty_watch_has_priority_and_a_restart_loses_no_work() {
         Box::pin(async move { pass }) as PassFuture
     };
     assert!(
-        process_next_work(&restarted, &|| 101, &no_evidence, &|_| {}, &|_, _| {})
-            .await
-            .unwrap()
+        process_next_work(
+            &restarted,
+            &|| 101,
+            &no_evidence,
+            &|_| {},
+            &|_, _| {},
+            &|| {}
+        )
+        .await
+        .unwrap()
     );
     assert_eq!(
         restarted
@@ -147,7 +154,7 @@ async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
         Box::pin(async move { pass }) as PassFuture
     };
     assert!(
-        process_next_work(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
+        process_next_work(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
             .await
             .unwrap()
     );
@@ -162,7 +169,7 @@ async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
             .unwrap();
     }
     assert!(
-        process_next_work(&store, &|| 101, &runner, &|_| {}, &|_, _| {})
+        process_next_work(&store, &|| 101, &runner, &|_| {}, &|_, _| {}, &|| {})
             .await
             .unwrap()
     );
@@ -359,7 +366,7 @@ async fn a_generic_agent_session_completes_terminally_through_process_next() {
         Box::pin(async move { pass }) as PassFuture
     };
 
-    let processed = process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
+    let processed = process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
         .await
         .unwrap();
     assert!(processed);
@@ -658,6 +665,7 @@ async fn progress_renews_the_lease() {
             &runner,
             &|_| {},
             &|_, _| {},
+            &|| {},
         )
         .await
         .unwrap()
@@ -720,6 +728,7 @@ async fn a_stalled_pass_stops_renewing() {
             &runner,
             &|_| {},
             &|_, _| {},
+            &|| {},
         )
         .await
         .unwrap()
@@ -777,6 +786,7 @@ async fn a_lost_renewal_cancels_without_a_post_claim_write() {
             &runner,
             &|_| {},
             &|_, _| {},
+            &|| {},
         )
         .await
         .unwrap()
@@ -828,6 +838,7 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
             &runner,
             &|_| {},
             &|_, _| {},
+            &|| {},
         )
         .await
         .unwrap()
@@ -866,6 +877,7 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
             &runner,
             &|_| {},
             &|_, _| {},
+            &|| {},
         )
         .await
         .unwrap()
@@ -1114,6 +1126,84 @@ async fn the_worker_loop_announces_backlog_start_and_drain_once() {
     assert_eq!(*announced.lock().unwrap(), vec![true, false]);
 }
 
+/// The backlog must go busy as soon as the loop claims a session, not only
+/// after that session's pass finishes: a published pass's `announce` event
+/// reaches the frontend the moment the pass returns, so a signal that waits
+/// for the same return would let the event arrive while `get_insights_
+/// backlog` still read idle. This orders an entry per event — `backlog:
+/// true` from the backlog signal, `pass:<id>` from the pass runner itself —
+/// and asserts the claim's entry precedes the pass's.
+#[tokio::test]
+async fn the_worker_loop_marks_the_backlog_busy_before_the_first_pass_runs() {
+    let store = Arc::new(store());
+    store
+        .upsert_sessions(
+            &[record("backlog-claim-order")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let handle = Arc::new(WorkerHandle::default());
+    let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let task_store = Arc::clone(&store);
+    let task_handle = Arc::clone(&handle);
+    let backlog_log = Arc::clone(&log);
+    let runner_log = Arc::clone(&log);
+    let task = tokio::spawn(async move {
+        let runner = move |record: &SessionRecord, _: PassSignal, _: i64| {
+            runner_log
+                .lock()
+                .unwrap()
+                .push(format!("pass:{}", record.key.session_id));
+            let pass = published_pass(record);
+            Box::pin(async move { pass }) as PassFuture
+        };
+        worker_loop(
+            &task_store,
+            &task_handle,
+            &|| 100,
+            &runner,
+            &|_| {},
+            &WorkerLoopSignals {
+                idle: &|| {},
+                backlog: &|active| {
+                    backlog_log
+                        .lock()
+                        .unwrap()
+                        .push(format!("backlog:{active}"));
+                },
+            },
+            &|_, _| {},
+        )
+        .await;
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if log.lock().unwrap().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the loop logs the claim, the pass, and the drain");
+
+    task.abort();
+    let entries = log.lock().unwrap();
+    let claimed_at = entries
+        .iter()
+        .position(|entry| entry == "backlog:true")
+        .expect("the backlog reports busy");
+    let pass_at = entries
+        .iter()
+        .position(|entry| entry.starts_with("pass:"))
+        .expect("the pass runs");
+    assert!(
+        claimed_at < pass_at,
+        "the backlog must go busy before the claimed pass runs, got {entries:?}"
+    );
+}
+
 #[tokio::test]
 async fn the_store_is_lockable_while_a_pass_runs() {
     let store = store();
@@ -1129,7 +1219,7 @@ async fn the_store_is_lockable_while_a_pass_runs() {
             failed_pass(PassOutcome::SourceMissing)
         }) as PassFuture
     };
-    let future = process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {});
+    let future = process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {});
     tokio::pin!(future);
     assert!(
         tokio::time::timeout(Duration::from_millis(10), &mut future)
@@ -1166,7 +1256,8 @@ async fn a_published_completion_announces_one_session_key() {
             &|key| {
                 announced.lock().unwrap().push(key.clone());
             },
-            &|_, _| {}
+            &|_, _| {},
+            &|| {}
         )
         .await
         .unwrap()
@@ -1200,7 +1291,8 @@ async fn a_backed_off_outcome_announces_nothing() {
             &|key| {
                 announced.lock().unwrap().push(key.clone());
             },
-            &|_, _| {}
+            &|_, _| {},
+            &|| {}
         )
         .await
         .unwrap()
@@ -1221,7 +1313,7 @@ async fn a_changed_source_backs_off_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceChanged) }) as PassFuture
     };
 
-    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
+    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-changed");
@@ -1244,7 +1336,7 @@ async fn an_unsupported_pass_is_terminal_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::Unsupported) }) as PassFuture
     };
 
-    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
+    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-unsupported");
@@ -1266,7 +1358,7 @@ async fn a_missing_source_stops_being_claimed_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
     };
 
-    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
+    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-missing");
@@ -1303,6 +1395,7 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
             &runner,
             &|_| {},
             &|_, _| {},
+            &|| {},
         )
         .await
         .unwrap();
@@ -1374,7 +1467,7 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
     };
 
     assert!(
-        process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
+        process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
             .await
             .unwrap()
     );
@@ -1476,7 +1569,7 @@ async fn a_linked_forks_pass_publishes_turn_rows_only_for_its_own_turns() {
     };
 
     assert!(
-        process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {})
+        process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
             .await
             .unwrap()
     );
@@ -1575,9 +1668,16 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     };
 
     assert!(
-        process_next(&store, &|| 1_767_225_610, &runner, &|_| {}, &|_, _| {})
-            .await
-            .unwrap()
+        process_next(
+            &store,
+            &|| 1_767_225_610,
+            &runner,
+            &|_| {},
+            &|_, _| {},
+            &|| {}
+        )
+        .await
+        .unwrap()
     );
     let stored = store.evidence(&pi.key).unwrap().unwrap();
     assert_eq!(stored.status, EvidenceStatus::Ready);

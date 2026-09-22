@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -527,12 +528,19 @@ pub(crate) async fn process_next(
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
+    on_claimed: &(dyn Fn() + Send + Sync),
 ) -> anyhow::Result<bool> {
     let Some(claim) =
         store.claim_next_evidence(&crate::agents::evidence_cohort(), clock(), LEASE_SECS)?
     else {
         return Ok(false);
     };
+    // Mark the pool busy now, before this claim's pass runs. The pass
+    // itself can take a while, and a published pass's `announce` event
+    // reaches the frontend as soon as the pass returns — waiting for that
+    // return to also flip the backlog signal would let the event arrive
+    // while the backlog still read idle.
+    on_claimed();
     let Some(record) = store.session(&claim.key)? else {
         return Ok(true);
     };
@@ -583,14 +591,17 @@ pub(crate) async fn process_next_work(
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
+    on_claimed: &(dyn Fn() + Send + Sync),
 ) -> anyhow::Result<bool> {
     let now = clock();
     if let Some(recovery) = store.next_remediation_write_recovery(now)? {
+        on_claimed();
         crate::remediation::recover_uncertain_write(store, &recovery, now)?;
         return Ok(true);
     }
     let remediation_first = store.take_remediation_work_turn();
     if remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
+        on_claimed();
         let _ = crate::remediation::evaluate_dirty_remediation(
             store.state_dir(),
             store,
@@ -599,11 +610,20 @@ pub(crate) async fn process_next_work(
         )?;
         return Ok(true);
     }
-    let processed = process_next(store, clock, run_pass, announce, report_ingested).await?;
+    let processed = process_next(
+        store,
+        clock,
+        run_pass,
+        announce,
+        report_ingested,
+        on_claimed,
+    )
+    .await?;
     if processed {
         return Ok(true);
     }
     if !remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
+        on_claimed();
         let _ = crate::remediation::evaluate_dirty_remediation(
             store.state_dir(),
             store,
@@ -634,33 +654,47 @@ pub(crate) async fn worker_loop(
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) {
     let mut processed = false;
-    let mut busy = false;
+    let busy = AtomicBool::new(false);
+    // Fires as soon as `process_next_work` claims a unit of work, before it
+    // runs that work. Guarded so the pool-wide busy count only counts this
+    // worker's idle-to-busy edge once per stretch, the same guard the old
+    // `if !busy` check at the loop level used to apply after the work
+    // finished instead of before it started.
+    let on_claimed = || {
+        if !busy.swap(true, Ordering::SeqCst)
+            && let Some(pending) = handle.note_backlog_busy(store)
+        {
+            ::tracing::info!(event = "insights_backlog_started", pending);
+            (signals.backlog)(true);
+        }
+    };
     loop {
-        match process_next_work(store, clock, run_pass, announce, report_ingested).await {
+        match process_next_work(
+            store,
+            clock,
+            run_pass,
+            announce,
+            report_ingested,
+            &on_claimed,
+        )
+        .await
+        {
             Ok(true) => {
-                if !busy {
-                    busy = true;
-                    if let Some(pending) = handle.note_backlog_busy(store) {
-                        ::tracing::info!(event = "insights_backlog_started", pending);
-                        (signals.backlog)(true);
-                    }
-                }
                 handle.note_backlog_processed();
                 processed = true;
                 (signals.idle)();
                 continue;
             }
             Ok(false) => {
-                if busy {
-                    busy = false;
-                    if let Some((drained, elapsed_ms)) = handle.note_backlog_idle() {
-                        ::tracing::info!(
-                            event = "insights_backlog_drained",
-                            processed = drained,
-                            elapsed_ms
-                        );
-                        (signals.backlog)(false);
-                    }
+                if busy.swap(false, Ordering::SeqCst)
+                    && let Some((drained, elapsed_ms)) = handle.note_backlog_idle()
+                {
+                    ::tracing::info!(
+                        event = "insights_backlog_drained",
+                        processed = drained,
+                        elapsed_ms
+                    );
+                    (signals.backlog)(false);
                 }
                 if processed {
                     processed = false;
@@ -672,16 +706,15 @@ pub(crate) async fn worker_loop(
                 }
             }
             Err(error) => {
-                if busy {
-                    busy = false;
-                    if let Some((drained, elapsed_ms)) = handle.note_backlog_idle() {
-                        ::tracing::info!(
-                            event = "insights_backlog_drained",
-                            processed = drained,
-                            elapsed_ms
-                        );
-                        (signals.backlog)(false);
-                    }
+                if busy.swap(false, Ordering::SeqCst)
+                    && let Some((drained, elapsed_ms)) = handle.note_backlog_idle()
+                {
+                    ::tracing::info!(
+                        event = "insights_backlog_drained",
+                        processed = drained,
+                        elapsed_ms
+                    );
+                    (signals.backlog)(false);
                 }
                 ::tracing::error!(event = "insights_worker_failed", error = %error);
                 tokio::time::sleep(Duration::from_secs(IDLE_POLL_SECS)).await;
