@@ -543,7 +543,7 @@ pub fn island_overlay(_app: &tauri::AppHandle) -> bool {
 /// island in place at once.
 #[cfg(target_os = "macos")]
 pub(crate) fn island_at(app: &AppHandle, window: &WebviewWindow) -> bool {
-    let _guard = super::resize_apply_guard();
+    let _ = super::resize_apply_guard();
     let scale = super::interface_scale();
     let (notch, generation) = {
         let mut dock = state();
