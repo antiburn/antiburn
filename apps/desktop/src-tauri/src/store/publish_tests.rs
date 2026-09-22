@@ -630,6 +630,10 @@ fn a_winning_ready_publication_activates_only_exact_markers_from_new_user_conten
     assert_eq!(exact.state, RemediationState::Watching);
     assert!(exact.effective_boundary_ms.is_some());
     assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&exact.definition_json).unwrap()["promptAction"],
+        true
+    );
+    assert_eq!(
         store.remediation("extended").unwrap().unwrap().state,
         RemediationState::WaitingForPromptUse
     );

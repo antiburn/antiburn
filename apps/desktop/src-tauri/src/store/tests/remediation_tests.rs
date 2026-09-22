@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::{Arc, Barrier};
 
 use rusqlite::{Connection, params};
 
@@ -57,6 +58,20 @@ fn remediation(id: &str, target: &str, state: RemediationState, now: i64) -> Rem
         created_at_epoch: now,
         effective_boundary_ms: (state == RemediationState::Watching).then_some(now * 1_000),
     }
+}
+
+fn prompt_remediation(id: &str, scope: &str, token: &str, prompt: &str) -> Remediation {
+    let mut value = remediation(id, "target", RemediationState::WaitingForPromptUse, 10);
+    value.scope_key = scope.into();
+    value.prompt_group_id = Some(token.into());
+    value.result_json = serde_json::json!({
+        "version": 1,
+        "verification": {"status": "verificationUnavailable"},
+        "savings": {"status": "unavailable"},
+        "promptText": prompt,
+    })
+    .to_string();
+    value
 }
 
 fn mark_fixed(store: &Store, remediation_id: &str) {
@@ -123,7 +138,7 @@ fn v43_adds_remediation_and_model_attribution() {
     connection.pragma_update(None, "user_version", 42).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v43").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 52);
+    assert_eq!(store.schema_version().unwrap(), 53);
     let connection = store.lock();
     let columns: i64 = connection
         .query_row(
@@ -182,7 +197,7 @@ fn v44_adds_nullable_snapshots_and_strict_contributions_without_backfill() {
 
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v44").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 52);
+    assert_eq!(store.schema_version().unwrap(), 53);
     assert!(store.remediation_display_snapshot("old").unwrap().is_none());
     let connection = store.lock();
     let strict: i64 = connection
@@ -204,7 +219,7 @@ fn v46_adds_reasoning_attribution_without_rewriting_model_columns() {
     connection.pragma_update(None, "user_version", 45).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v46").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 52);
+    assert_eq!(store.schema_version().unwrap(), 53);
     let columns: i64 = store
         .lock()
         .query_row(
@@ -344,6 +359,62 @@ fn remediation_snapshot_reads_are_bounded_and_ordered() {
             .remediations_with_display_snapshots(0)
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn remediation_snapshot_bound_prioritizes_active_cycles_over_recurred_history() {
+    let store = store();
+    let connection = store.lock();
+    for index in 0..1_001 {
+        connection
+            .execute(
+                "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms, verified_at_epoch, recurred_at_epoch, origin,
+                    display_snapshot_json, verified_boundary_ms, recurred_boundary_ms)
+                 VALUES (?1, ?1, 'native', 'claude-code', 'project', ?1, 'recurred',
+                    ?2, ?2, 1, ?3, 1000, 1, ?3, 'action', ?4, 1000, ?5)",
+                params![
+                    format!("history-{index:04}"),
+                    JSON_V1,
+                    index as i64 + 2,
+                    r#"{"version":1,"findingId":"history","display":{}}"#,
+                    (index as i64 + 2) * 1_000,
+                ],
+            )
+            .unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                origin, display_snapshot_json)
+             VALUES ('active', 'active-target', 'native', 'claude-code', 'project', 'active-scope',
+                'waitingForPromptUse', ?1, ?1, 1, 1, 'action', ?2)",
+            params![
+                JSON_V1,
+                r#"{"version":1,"findingId":"active","display":{}}"#
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let records = store.remediations_with_display_snapshots(1_000).unwrap();
+    assert_eq!(records.len(), 1_000);
+    assert!(
+        records
+            .iter()
+            .any(|record| record.record.remediation_id == "active")
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.record.state == RemediationState::Recurred)
+            .count(),
+        999
     );
 }
 
@@ -1025,6 +1096,201 @@ fn copied_prompt_does_not_replace_an_active_passive_watch() {
         Some(snapshot)
     );
     assert!(store.remediation("copied").unwrap().is_some());
+}
+
+#[test]
+fn exact_target_cycles_are_independent_across_environment_and_scope() {
+    let store = store();
+    let native_project = prompt_remediation("native-project", "project-a", "one", "prompt one");
+    let mut wsl_project = prompt_remediation("wsl-project", "project-a", "two", "prompt two");
+    wsl_project.environment_key = "wsl:Ubuntu".into();
+    let native_other = prompt_remediation("native-other", "project-b", "three", "prompt three");
+
+    for input in [&native_project, &wsl_project, &native_other] {
+        store
+            .create_or_reuse_remediation(input, &[])
+            .unwrap()
+            .unwrap();
+    }
+
+    assert_eq!(
+        store
+            .latest_action_remediation_for_target(
+                "native",
+                "claude-code",
+                "project",
+                "project-a",
+                "target",
+            )
+            .unwrap()
+            .unwrap()
+            .remediation_id,
+        "native-project"
+    );
+    assert_eq!(
+        store
+            .latest_action_remediation_for_target(
+                "wsl:Ubuntu",
+                "claude-code",
+                "project",
+                "project-a",
+                "target",
+            )
+            .unwrap()
+            .unwrap()
+            .remediation_id,
+        "wsl-project"
+    );
+    assert_eq!(
+        store
+            .latest_action_remediation_for_target(
+                "native",
+                "claude-code",
+                "project",
+                "project-b",
+                "target",
+            )
+            .unwrap()
+            .unwrap()
+            .remediation_id,
+        "native-other"
+    );
+}
+
+#[test]
+fn a_historical_recurred_cycle_does_not_override_a_newer_fixed_cycle() {
+    let store = store();
+    store
+        .lock()
+        .execute_batch(
+            "INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                effective_boundary_ms, verified_at_epoch, recurred_at_epoch, origin)
+             VALUES ('old', 'target', 'native', 'claude-code', 'project', 'scope',
+                'recurred', '{\"version\":1}', '{\"version\":1}', 1, 30, 1000, 2, 30, 'action');
+             INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                effective_boundary_ms, verified_at_epoch, origin)
+             VALUES ('new', 'target', 'native', 'claude-code', 'project', 'scope',
+                'fixed', '{\"version\":1}', '{\"version\":1}', 20, 20, 20000, 20, 'action');",
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .latest_action_remediation_for_target(
+                "native",
+                "claude-code",
+                "project",
+                "scope",
+                "target",
+            )
+            .unwrap()
+            .unwrap()
+            .remediation_id,
+        "new"
+    );
+}
+
+#[test]
+fn an_active_cycle_wins_when_recurrence_and_creation_share_the_same_second() {
+    let store = store();
+    store
+        .lock()
+        .execute_batch(
+            "INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                effective_boundary_ms, verified_at_epoch, origin)
+             VALUES ('active', 'target', 'native', 'claude-code', 'project', 'scope',
+                'fixed', '{\"version\":1}', '{\"version\":1}', 20, 20, 20000, 20, 'action');
+             INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                effective_boundary_ms, verified_at_epoch, recurred_at_epoch, origin)
+             VALUES ('recurred-z', 'target', 'native', 'claude-code', 'project', 'scope',
+                'recurred', '{\"version\":1}', '{\"version\":1}', 20, 20, 20000, 20, 20,
+                'action');",
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .latest_action_remediation_for_target(
+                "native",
+                "claude-code",
+                "project",
+                "scope",
+                "target",
+            )
+            .unwrap()
+            .unwrap()
+            .remediation_id,
+        "active"
+    );
+}
+
+#[test]
+fn concurrent_prompt_creation_returns_the_one_stored_token_and_text() {
+    let store = Arc::new(store());
+    let barrier = Arc::new(Barrier::new(2));
+    let threads = [
+        ("first", "token-one", "prompt one"),
+        ("second", "token-two", "prompt two"),
+    ]
+    .into_iter()
+    .map(|(id, token, prompt)| {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            let input = prompt_remediation(id, "scope", token, prompt);
+            barrier.wait();
+            store
+                .create_or_reuse_remediation(&input, &[])
+                .unwrap()
+                .unwrap()
+        })
+    })
+    .collect::<Vec<_>>();
+    let records = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(records[0].remediation_id, records[1].remediation_id);
+    assert_eq!(records[0].prompt_group_id, records[1].prompt_group_id);
+    assert_eq!(records[0].result_json, records[1].result_json);
+    let result: serde_json::Value = serde_json::from_str(&records[0].result_json).unwrap();
+    let prompt = result["promptText"].as_str().unwrap();
+    match records[0].prompt_group_id.as_deref().unwrap() {
+        "token-one" => assert_eq!(prompt, "prompt one"),
+        "token-two" => assert_eq!(prompt, "prompt two"),
+        token => panic!("unexpected prompt token {token}"),
+    }
+}
+
+#[test]
+fn prompt_retry_rejects_an_active_auto_fix_cycle() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    store
+        .create_or_reuse_remediation(
+            &remediation("auto", "target", RemediationState::Reserved, 10),
+            &[guard],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        store
+            .create_or_reuse_remediation(
+                &prompt_remediation("prompt", "scope", "token", "prompt"),
+                &[],
+            )
+            .is_err()
+    );
 }
 
 #[test]

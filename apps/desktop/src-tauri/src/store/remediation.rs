@@ -114,6 +114,12 @@ pub struct RemediationContribution {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassedRemediationContribution {
+    pub contribution: RemediationContribution,
+    pub verified_boundary_ms: i64,
+}
+
 impl Store {
     /// Stores the bounded presentation facts and exact evidence boundaries for one watch.
     pub fn upsert_remediation_display_snapshot(
@@ -197,6 +203,88 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Reads only exact active cycles with durable fixed verification proof.
+    pub fn passed_remediation_contributions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PassedRemediationContribution>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit =
+            i64::try_from(limit.min(MAX_AGGREGATE_WINS)).expect("the aggregate win limit fits i64");
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "WITH eligible_cycles AS (
+                SELECT DISTINCT r.remediation_id, r.environment_key, r.agent, r.scope_kind,
+                       r.scope_key, r.target_key, r.origin, r.created_at_epoch,
+                       r.updated_at_epoch, r.effective_boundary_ms, r.verified_boundary_ms
+                  FROM remediation r
+                  JOIN remediation_contribution c ON c.remediation_id = r.remediation_id
+                 WHERE r.state = 'fixed'
+                   AND r.origin = c.origin
+                   AND r.verified_boundary_ms IS NOT NULL
+                   AND json_extract(r.result_json, '$.verification.status') = 'fixed'
+                   AND json_extract(r.display_snapshot_json, '$.findingId') =
+                       json_extract(c.display_snapshot_json, '$.findingId')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM remediation current
+                        WHERE current.environment_key = r.environment_key
+                          AND current.agent = r.agent
+                          AND current.scope_kind = r.scope_kind
+                          AND current.scope_key = r.scope_key
+                          AND current.target_key = r.target_key
+                          AND current.origin = r.origin
+                          AND current.state != 'recurred'
+                          AND current.remediation_id != r.remediation_id)
+            ), authoritative_cycles AS (
+                SELECT candidate.remediation_id, candidate.verified_boundary_ms
+                  FROM eligible_cycles candidate
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM eligible_cycles other
+                      WHERE other.environment_key = candidate.environment_key
+                        AND other.agent = candidate.agent
+                        AND other.scope_kind = candidate.scope_kind
+                        AND other.scope_key = candidate.scope_key
+                        AND other.target_key = candidate.target_key
+                        AND other.remediation_id != candidate.remediation_id
+                        AND (
+                            (other.effective_boundary_ms IS candidate.effective_boundary_ms
+                             AND other.verified_boundary_ms IS candidate.verified_boundary_ms
+                             AND other.origin = 'action' AND candidate.origin = 'passive')
+                            OR (
+                                NOT (other.effective_boundary_ms IS candidate.effective_boundary_ms
+                                     AND other.verified_boundary_ms IS candidate.verified_boundary_ms)
+                                AND (other.created_at_epoch, other.updated_at_epoch,
+                                     other.remediation_id) >
+                                    (candidate.created_at_epoch, candidate.updated_at_epoch,
+                                     candidate.remediation_id)
+                            )
+                        ))
+            )
+            SELECT c.owner_key, c.remediation_id, c.detector_id, c.origin,
+                   c.display_snapshot_json, c.facts_json, c.starts_at_ms, c.ends_at_ms,
+                   c.updated_at_ms, authoritative.verified_boundary_ms
+              FROM remediation_contribution c
+              JOIN authoritative_cycles authoritative
+                ON authoritative.remediation_id = c.remediation_id
+              JOIN remediation r ON r.remediation_id = c.remediation_id
+             WHERE r.origin = c.origin
+               AND json_extract(r.display_snapshot_json, '$.findingId') =
+                   json_extract(c.display_snapshot_json, '$.findingId')
+             ORDER BY c.ends_at_ms DESC, c.owner_key DESC
+             LIMIT ?1",
+        )?;
+        Ok(statement
+            .query_map([limit], |row| {
+                Ok(PassedRemediationContribution {
+                    contribution: contribution_from_row(row)?,
+                    verified_boundary_ms: row.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Creates or reuses one exact watch after all source identities pass in one transaction.
     pub fn create_or_reuse_remediation(
         &self,
@@ -247,6 +335,27 @@ impl Store {
             .iter()
             .map(|(remediation, _)| Self::create_or_reuse_remediation_in(&transaction, remediation))
             .collect::<Result<Vec<_>>>()?;
+        if remediations.iter().all(|(remediation, _)| {
+            remediation.state == RemediationState::WaitingForPromptUse
+                && serde_json::from_str::<serde_json::Value>(&remediation.result_json)
+                    .ok()
+                    .and_then(|value| value.get("promptText").cloned())
+                    .is_some_and(|value| value.is_string())
+        }) {
+            let ids_json = serde_json::to_string(&remediation_ids)?;
+            let prompt_count: i64 = transaction.query_row(
+                "SELECT COUNT(DISTINCT json_extract(result_json, '$.promptText'))
+                   FROM remediation
+                  WHERE remediation_id IN (SELECT value FROM json_each(?1))
+                    AND json_type(result_json, '$.promptText') = 'text'",
+                [ids_json],
+                |row| row.get(0),
+            )?;
+            ensure!(
+                prompt_count == 1,
+                "a prompt batch must reuse one stored prompt"
+            );
+        }
         transaction.commit()?;
         drop(connection);
         remediation_ids
@@ -286,16 +395,31 @@ impl Store {
     ) -> Result<String> {
         let existing = transaction.query_row(
             &format!("SELECT {REMEDIATION_COLUMNS} FROM remediation
-                WHERE environment_key = ?1 AND agent = ?2 AND target_key = ?3
-                  AND state != 'recurred'
-                  AND (origin = ?4 OR (origin IS NULL AND (
-                       (?4 = 'action' AND state IN ('reserved', 'writing', 'recoveryNeeded', 'waitingForPromptUse'))
-                    OR (?4 = 'passive' AND state IN ('watching', 'fixed')))))
+                WHERE environment_key = ?1 AND agent = ?2 AND scope_kind = ?3
+                  AND scope_key = ?4 AND target_key = ?5 AND state != 'recurred'
+                  AND (origin = ?6 OR (origin IS NULL AND (
+                       (?6 = 'action' AND state IN ('reserved', 'writing', 'recoveryNeeded', 'waitingForPromptUse'))
+                    OR (?6 = 'passive' AND state IN ('watching', 'fixed')))))
                 ORDER BY updated_at_epoch DESC, remediation_id DESC LIMIT 1"),
-            params![remediation.environment_key, remediation.agent, remediation.target_key, remediation.origin],
+            params![remediation.environment_key, remediation.agent, remediation.scope_kind,
+                remediation.scope_key, remediation.target_key, remediation.origin],
             remediation_from_row,
         ).optional()?;
         if let Some(existing) = existing {
+            if remediation.state == RemediationState::WaitingForPromptUse {
+                ensure!(
+                    existing.state == RemediationState::WaitingForPromptUse,
+                    "only a waiting prompt action can reuse a prompt"
+                );
+                transaction.execute(
+                    "UPDATE remediation
+                        SET result_json = json_set(result_json, '$.promptText',
+                            json_extract(?2, '$.promptText'))
+                      WHERE remediation_id = ?1 AND state = 'waitingForPromptUse'
+                        AND json_type(result_json, '$.promptText') IS NULL",
+                    params![existing.remediation_id, remediation.result_json],
+                )?;
+            }
             return Ok(existing.remediation_id);
         }
         prune_archivable_fixed_in(transaction)?;
@@ -449,35 +573,69 @@ impl Store {
         &self,
         environment: &str,
         agent: &str,
+        scope_kind: &str,
+        scope_key: &str,
         target_key: &str,
     ) -> Result<Option<RemediationRecord>> {
         Ok(self
-            .latest_action_remediation_for_target(environment, agent, target_key)?
-            .or(self.latest_passive_remediation_for_target(environment, agent, target_key)?))
+            .latest_action_remediation_for_target(
+                environment,
+                agent,
+                scope_kind,
+                scope_key,
+                target_key,
+            )?
+            .or(self.latest_passive_remediation_for_target(
+                environment,
+                agent,
+                scope_kind,
+                scope_key,
+                target_key,
+            )?))
     }
 
     pub fn latest_action_remediation_for_target(
         &self,
         environment: &str,
         agent: &str,
+        scope_kind: &str,
+        scope_key: &str,
         target_key: &str,
     ) -> Result<Option<RemediationRecord>> {
-        self.latest_remediation_for_target_origin(environment, agent, target_key, "action")
+        self.latest_remediation_for_target_origin(
+            environment,
+            agent,
+            scope_kind,
+            scope_key,
+            target_key,
+            "action",
+        )
     }
 
     pub fn latest_passive_remediation_for_target(
         &self,
         environment: &str,
         agent: &str,
+        scope_kind: &str,
+        scope_key: &str,
         target_key: &str,
     ) -> Result<Option<RemediationRecord>> {
-        self.latest_remediation_for_target_origin(environment, agent, target_key, "passive")
+        self.latest_remediation_for_target_origin(
+            environment,
+            agent,
+            scope_kind,
+            scope_key,
+            target_key,
+            "passive",
+        )
     }
 
     fn latest_remediation_for_target_origin(
         &self,
         environment: &str,
         agent: &str,
+        scope_kind: &str,
+        scope_key: &str,
         target_key: &str,
         origin: &str,
     ) -> Result<Option<RemediationRecord>> {
@@ -490,12 +648,21 @@ impl Store {
             .query_row(
                 &format!(
                     "SELECT {REMEDIATION_COLUMNS} FROM remediation
-                      WHERE environment_key = ?1 AND agent = ?2 AND target_key = ?3
-                        AND (origin = ?4 OR (origin IS NULL AND state IN ({legacy_states})))
-                      ORDER BY (state != 'recurred') DESC, updated_at_epoch DESC,
+                      WHERE environment_key = ?1 AND agent = ?2 AND scope_kind = ?3
+                        AND scope_key = ?4 AND target_key = ?5
+                        AND (origin = ?6 OR (origin IS NULL AND state IN ({legacy_states})))
+                      ORDER BY (state != 'recurred') DESC, created_at_epoch DESC,
+                               updated_at_epoch DESC,
                                remediation_id DESC LIMIT 1"
                 ),
-                params![environment, agent, target_key, origin],
+                params![
+                    environment,
+                    agent,
+                    scope_kind,
+                    scope_key,
+                    target_key,
+                    origin
+                ],
                 remediation_from_row,
             )
             .optional()
@@ -518,7 +685,7 @@ impl Store {
                     COALESCE(effective_boundary_ms, 0), verified_boundary_ms, recurred_boundary_ms
                FROM remediation
               WHERE origin IS NOT NULL AND display_snapshot_json IS NOT NULL
-              ORDER BY updated_at_epoch DESC, remediation_id DESC
+              ORDER BY (state != 'recurred') DESC, updated_at_epoch DESC, remediation_id DESC
               LIMIT ?1"
         ))?;
         Ok(statement
@@ -775,8 +942,9 @@ fn bound_contributions_in(connection: &rusqlite::Connection) -> Result<()> {
     connection.execute(
         "DELETE FROM remediation_contribution
           WHERE owner_key IN (
-            SELECT owner_key FROM remediation_contribution
-             ORDER BY ends_at_ms DESC, owner_key DESC
+            SELECT c.owner_key FROM remediation_contribution c
+            LEFT JOIN remediation r ON r.remediation_id = c.remediation_id
+             ORDER BY (r.state = 'fixed') DESC, c.ends_at_ms DESC, c.owner_key DESC
              LIMIT -1 OFFSET ?1)",
         [i64::try_from(MAX_DURABLE_CONTRIBUTIONS).expect("the contribution bound fits i64")],
     )?;
@@ -811,10 +979,10 @@ pub(super) fn activate_waiting_prompt_remediations_in(
 ) -> Result<usize> {
     let mut statement = connection.prepare(
         "SELECT remediation_id, prompt_group_id FROM remediation
-          WHERE state = 'waitingForPromptUse'",
+          WHERE state = 'waitingForPromptUse' AND environment_key = ?1 AND agent = ?2",
     )?;
     let waiting = statement
-        .query_map([], |row| {
+        .query_map(params![environment, agent], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -853,6 +1021,7 @@ pub(super) fn activate_waiting_prompt_remediations_in(
     let activated = serde_json::to_string(&activated)?;
     Ok(connection.execute(
         "UPDATE remediation SET state = 'watching', effective_boundary_ms = ?2,
+                definition_json = json_set(definition_json, '$.promptAction', json('true')),
                 dirty_revision = dirty_revision + 1,
                 updated_at_epoch = MAX(updated_at_epoch, ?3)
           WHERE state = 'waitingForPromptUse'
@@ -888,6 +1057,8 @@ pub(super) fn enroll_passive_remediations_in(
                 "targetKey": candidate.target_key,
                 "environmentKey": candidate.environment_key,
                 "agent": candidate.agent,
+                "scopeKind": candidate.scope_kind,
+                "scopeKey": candidate.scope_key,
             })
         })
         .collect::<Vec<_>>();
@@ -900,9 +1071,11 @@ pub(super) fn enroll_passive_remediations_in(
                      WHERE remediation_id = json_extract(candidate.value, '$.remediationId'))
              AND NOT EXISTS (
                      SELECT 1 FROM remediation
-                      WHERE environment_key = json_extract(candidate.value, '$.environmentKey')
-                        AND agent = json_extract(candidate.value, '$.agent')
-                        AND target_key = json_extract(candidate.value, '$.targetKey')
+                       WHERE environment_key = json_extract(candidate.value, '$.environmentKey')
+                         AND agent = json_extract(candidate.value, '$.agent')
+                         AND scope_kind = json_extract(candidate.value, '$.scopeKind')
+                         AND scope_key = json_extract(candidate.value, '$.scopeKey')
+                         AND target_key = json_extract(candidate.value, '$.targetKey')
                         AND state != 'recurred'
                         AND (origin = 'passive' OR (origin IS NULL AND state IN ('watching', 'fixed'))))
           ORDER BY CAST(json_extract(candidate.value, '$.index') AS INTEGER)
@@ -937,7 +1110,8 @@ pub(super) fn enroll_passive_remediations_in(
               WHERE (SELECT COUNT(*) FROM remediation WHERE state != 'recurred') < ?12
                 AND NOT EXISTS (
                 SELECT 1 FROM remediation
-                 WHERE environment_key = ?3 AND agent = ?4 AND target_key = ?2
+                  WHERE environment_key = ?3 AND agent = ?4 AND scope_kind = ?5
+                    AND scope_key = ?6 AND target_key = ?2
                    AND state != 'recurred'
                    AND (origin = 'passive' OR (origin IS NULL AND state IN ('watching', 'fixed'))))
              ON CONFLICT(remediation_id) DO NOTHING",

@@ -105,7 +105,9 @@ export function FailedSessions({
   const [busyHandle, setBusyHandle] = useState<string | null>(null)
   const opening = useRef(false)
   const scrollable = samples.length > 5
-  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
+  const snoozes = useSnoozedBurnChecks()
+  if (snoozes.status !== "ready") return null
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   if (total === 0) return null
   const cards = (
     <div data-failed-session-cards className="flex flex-col gap-2">

@@ -73,15 +73,44 @@ check requirements, or finding and clean-result eligibility change.
 
 Update both documents when a session parsing change affects check coverage.
 
-Keep coverage documents as current baselines, not phase plans. List every
-`SourceFormat` exactly once per inventory or matrix, with exact enum names.
-Record accepted source shapes, finding scope, and clean-result limits. A pinned
-schema, header, or producer commit with synthetic fixtures can define an
-accepted shape when a release range is unavailable. Do not claim all historical
-versions.
+Keep coverage documents as current baselines, not phase plans. Apply these
+rules:
 
-Run `check_coverage_contract` after coverage edits. Its inventory checks do not
-replace characterization and behavior tests or manual review of matrix cells.
+- List every `SourceFormat` exactly once, with its exact enum name, in each
+  source inventory, source matrix, coverage matrix, and source-format
+  remediation matrix.
+- List every first-tier agent/check pair exactly once. Keep `Finding`, `Prompt`,
+  `Auto Fix`, `Verification`, and `Estimate` as separate typed columns.
+- Mark support only for behavior that the product can reach. Prompt support
+  needs both a production recommendation gate and a reachable finding.
+- Derive Auto Fix from production editor policy and exact target binding. Use
+  conditional status when only some reachable findings bind safely, and keep
+  prompt-only behavior separate.
+- Mark verification only when accepted evidence can prove the transition and
+  the desktop can enroll and resolve the watch. An engine verifier alone is not
+  product support.
+- Mark burn-estimate support only when a reachable finding has a typed estimate
+  or bounded fallback path.
+- Put source, version, evidence, and clean-result limits beside the claim they
+  constrain. A pinned schema, header, or producer commit with synthetic
+  fixtures can define an accepted shape when a release range is unavailable.
+  Do not claim all historical versions.
+- Add or update second-tier parser characterization fixtures and behavior tests
+  when a second-tier claim or format changes. Contract-table tests and synthetic
+  capability gates do not establish parser support.
+
+After any coverage edit, run:
+
+```bash
+cargo test --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
+```
+
+When source claims or formats change, also run the relevant characterization
+test and:
+
+```bash
+cargo test --manifest-path crates/antiburn-local/Cargo.toml --test source_contracts
+```
 
 ## Product analytics
 

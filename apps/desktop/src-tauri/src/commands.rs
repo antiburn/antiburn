@@ -1683,9 +1683,9 @@ pub async fn get_checks_report(
 
 fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
     let now_ms = epoch_now() * 1_000;
-    let stored = store.burn_check_snoozes().map_err(fail)?;
-    let snoozes: Vec<BurnCheckSnoozePayload> = serde_json::from_str(&stored).unwrap_or_default();
-    Ok(snoozes
+    Ok(store
+        .burn_check_snoozes()
+        .map_err(fail)?
         .into_iter()
         .filter(|snooze| snooze.until.is_none_or(|until| until > now_ms))
         .collect())
@@ -1858,11 +1858,15 @@ fn apply_prepared_outcome(
     use crate::agent_config::ApplyError;
 
     match result {
-        Ok(result) => Ok(
+        Ok(result) => Ok(if result.verification_available {
             ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification {
                 watch_id: result.watch_id,
-            },
-        ),
+            }
+        } else {
+            ApplyPreparedBurnCheckOperationOutcome::AppliedVerificationUnavailable {
+                watch_id: result.watch_id,
+            }
+        }),
         Err(ControllerError::RecoveryNeeded { watch_id }) => {
             Ok(ApplyPreparedBurnCheckOperationOutcome::RecoveryNeeded { watch_id })
         }
@@ -2021,7 +2025,7 @@ pub async fn copy_prompt_fix_burn_check_target(
     Ok(outcome)
 }
 
-/// Returns a bounded generic prompt when no exact prompt target is available.
+/// Returns one bounded prompt for selectable current targets.
 #[tauri::command]
 pub async fn copy_prompt_fix_burn_check(
     window: tauri::WebviewWindow,
@@ -2900,6 +2904,14 @@ mod tests {
     }
 
     #[test]
+    fn burn_check_snooze_command_rejects_malformed_stored_state() {
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-snooze-command-test")).unwrap();
+        store.save_burn_check_snoozes("not json").unwrap();
+
+        assert!(current_burn_check_snoozes(&store).is_err());
+    }
+
+    #[test]
     fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent() {
         use crate::remediation::{
             AutoFixAvailability, BurnCheckDisplayFacts, BurnCheckResourceKind,
@@ -3128,17 +3140,23 @@ mod tests {
     }
 
     #[test]
-    fn every_auto_fix_success_awaits_verification() {
-        for verification_available in [true, false] {
-            assert!(matches!(
-                apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
-                    watch_id: "watch".into(),
-                    verification_available,
-                }))
-                .unwrap(),
-                ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
-            ));
-        }
+    fn auto_fix_success_reports_verification_availability() {
+        assert!(matches!(
+            apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+                watch_id: "watch".into(),
+                verification_available: true,
+            }))
+            .unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
+        ));
+        assert!(matches!(
+            apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+                watch_id: "watch".into(),
+                verification_available: false,
+            }))
+            .unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::AppliedVerificationUnavailable { .. }
+        ));
     }
 
     #[test]

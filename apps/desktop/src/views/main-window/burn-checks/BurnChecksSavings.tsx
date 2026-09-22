@@ -11,7 +11,7 @@ import { CHECK_LABELS } from "../../../lib/presentation/checks"
 import { DisclosureChevron } from "./BurnCheckTargetPresentation"
 
 const ESTIMATED_SAVINGS_TOOLTIP =
-  "Projected savings based on the check's previous burn and your recent usage. Actual results can vary."
+  "Pre-remediation opportunity estimated from evidence observed before the fix. Actual results can vary."
 const CONFIRMED_SAVINGS_TOOLTIP =
   "Savings observed across sessions that passed after remediation. This is still an estimate and may not match provider billing exactly."
 
@@ -31,7 +31,13 @@ function groupWins(wins: readonly AggregateWinPayload[]): SavingsGroup[] {
 }
 
 function metricCoverage(known: number, total: number): string {
-  return known === total ? "" : ` from ${known} of ${total} passed checks`
+  return known === total ? "" : ` from ${known} of ${total} verified cycles`
+}
+
+function cycleKey(
+  value: Pick<AggregateWinPayload, "detector" | "findingId" | "remediationCycleId">,
+): string {
+  return JSON.stringify([value.detector, value.findingId, value.remediationCycleId])
 }
 
 function costTotal(value: number): string {
@@ -65,7 +71,12 @@ function SavingsLabel({ label, tooltip }: { label: string; tooltip: string }) {
 }
 
 function EstimatedValue({ wins }: { wins: readonly AggregateWinPayload[] }) {
-  const opportunities = wins.flatMap((win) =>
+  const targets = [
+    ...new Map(
+      wins.map((win) => [JSON.stringify([win.detector, win.findingId]), win]),
+    ).values(),
+  ]
+  const opportunities = targets.flatMap((win) =>
     win.display.estimatedOpportunity ? [win.display.estimatedOpportunity] : [],
   )
   if (opportunities.length === 0) {
@@ -123,8 +134,14 @@ export function BurnChecksSavings({
 }) {
   const [open, setOpen] = useState(false)
   const bodyId = useId()
-  const supported = wins.filter((win) => passedDetectors.has(win.detector))
-  if (passedDetectors.size === 0) return null
+  const supported = [
+    ...new Map(
+      wins
+        .filter((win) => passedDetectors.has(win.detector))
+        .map((win) => [cycleKey(win), win]),
+    ).values(),
+  ]
+  if (supported.length === 0) return null
   const groups = groupWins(supported)
   return (
     <section aria-label="Savings" className="mt-4">
@@ -138,8 +155,8 @@ export function BurnChecksSavings({
               Savings
             </h2>
             <p className="type-callout text-label-tertiary">
-              {passedDetectors.size} active passed{" "}
-              {passedDetectors.size === 1 ? "check" : "checks"}
+              {supported.length} verified remediation{" "}
+              {supported.length === 1 ? "cycle" : "cycles"}
             </p>
           </div>
           <button
@@ -156,11 +173,7 @@ export function BurnChecksSavings({
         <div className="grid gap-3 border-t border-separator px-4 py-3 sm:grid-cols-2">
           <div>
             <SavingsLabel label="Estimated savings" tooltip={ESTIMATED_SAVINGS_TOOLTIP} />
-            {supported.length > 0 ? (
-              <EstimatedValue wins={supported} />
-            ) : (
-              <p className="type-callout text-label-tertiary">Unavailable for this check.</p>
-            )}
+            <EstimatedValue wins={supported} />
           </div>
           <div>
             <SavingsLabel label="Confirmed savings" tooltip={CONFIRMED_SAVINGS_TOOLTIP} />

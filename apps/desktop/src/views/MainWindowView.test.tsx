@@ -8,6 +8,7 @@ import type { SessionListEntry } from "../components/session/SessionList"
 import type * as IpcModule from "../lib/ipc"
 import type { MainWindowSectionRequest } from "../lib/ipc"
 import type { SessionFilter } from "../lib/sessionFilters"
+import * as SnoozedBurnChecks from "../lib/snoozedBurnChecks"
 import capability from "../../src-tauri/capabilities/main.json"
 import { openSettingsWindow } from "../lib/ipc"
 import { MainWindowView } from "./MainWindowView"
@@ -326,6 +327,18 @@ describe("MainWindowView", () => {
       fireEvent.click(tab("Failing Sessions"))
       expect(activitySession().setFilter).toHaveBeenCalledWith({ kind: "failing" })
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+    })
+
+    it("omits sidebar filter counts until snoozes are ready", () => {
+      const hook = vi
+        .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+        .mockReturnValue({ status: "loading", records: [] })
+      render(<MainWindowView />)
+      act(() => activitySession().setEntries([sessionEntry()]))
+
+      expect(within(tab("All Sessions")).queryByText("1")).toBeNull()
+      expect(within(tab("Failing Sessions")).queryByText("0")).toBeNull()
+      hook.mockRestore()
     })
 
     it("resets the filter to all when the Sessions row itself is clicked", () => {

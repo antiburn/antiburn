@@ -60,6 +60,7 @@ const report: ChecksReportPayload = {
   evidenceSettled: false,
   pendingEvidence: 0,
   estimatedTokenBurnBasisPoints: 800,
+  estimatedTokenBurnBasisPointsByDetectorMask: Array<number | null>(512).fill(null),
   categories: [
     {
       id: "oldModelUsage",
@@ -181,6 +182,7 @@ const aggregate: AggregateWinsPayload = {
         improvementCount: 2,
         method: "oldModelPriceDifference",
       },
+      verifiedBoundaryMs: 2,
       startsAtMs: 1,
       endsAtMs: 2,
     },
@@ -189,10 +191,12 @@ const aggregate: AggregateWinsPayload = {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((complete) => {
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((complete, fail) => {
     resolve = complete
+    reject = fail
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 function recurredTarget(actionId: string): BurnCheckTargetPayload {
@@ -216,14 +220,14 @@ function setup(
     | null
     | Promise<BurnCheckTargetPayload | BurnCheckTargetPayload[] | null> = target,
   truncated = false,
-  aggregatePayload: AggregateWinsPayload = aggregate,
+  aggregatePayload: AggregateWinsPayload | Promise<AggregateWinsPayload> = aggregate,
   reportPayload: ChecksReportPayload | Promise<ChecksReportPayload> = namedTargetReport,
   checkSamples?: BurnCheckTargetPayload["samples"],
 ) {
   let visible: ((value: boolean) => void) | null = null
   const adapter: BurnChecksAdapter = {
     getReport: vi.fn(() => Promise.resolve(reportPayload)),
-    getAggregateWins: vi.fn().mockResolvedValue(aggregatePayload),
+    getAggregateWins: vi.fn(() => Promise.resolve(aggregatePayload)),
     getTargets: vi.fn(async () => {
       const resolvedTarget = await targetPayload
       return {
@@ -304,6 +308,20 @@ afterEach(() => {
 })
 
 describe("BurnChecksView", () => {
+  it("keeps findings and actions hidden until snoozes are ready", () => {
+    const state = vi
+      .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+      .mockReturnValue({ status: "loading", records: [] })
+    const { view } = setup(target, false, aggregate, report)
+
+    expect(screen.getByRole("region", { name: "Loading Burn checks" })).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Snooze" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Old model usage/ })).not.toBeInTheDocument()
+
+    view.unmount()
+    state.mockRestore()
+  })
+
   it("uses the backend's mixed-agent selection instead of the first target's samples", async () => {
     const first = target.samples[0]!
     const codex = {
@@ -448,6 +466,18 @@ describe("BurnChecksView", () => {
     )
   })
 
+  it("moves focus to the Passed trigger before hiding a focused row", async () => {
+    setup(target, false, aggregate, passedTargetReport)
+    const trigger = await screen.findByRole("button", { name: "Passed checks 2" })
+    const row = screen.getByRole("button", { name: /Old model usage.*Passed/ })
+    row.focus()
+
+    fireEvent.click(trigger)
+
+    await waitFor(() => expect(trigger).toHaveFocus())
+    expect(row).not.toBeVisible()
+  })
+
   it("selects the first assessed check when unavailable evidence becomes assessed", async () => {
     setWindowWidth(1400)
     const { adapter, session } = setup(null, false, aggregate, {
@@ -575,6 +605,7 @@ describe("BurnChecksView", () => {
 
     function mockSnoozes(initial: readonly SnoozedBurnChecks.SnoozedBurnCheck[]) {
       let records = initial
+      let snapshot = { status: "ready" as const, records }
       const listeners = new Set<() => void>()
       const subscribe = (listener: () => void) => {
         listeners.add(listener)
@@ -582,7 +613,7 @@ describe("BurnChecksView", () => {
           listeners.delete(listener)
         }
       }
-      const getSnapshot = () => records
+      const getSnapshot = () => snapshot
       vi.spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks").mockImplementation(
         function useSnoozedChecksSnapshot() {
           return useSyncExternalStore(subscribe, getSnapshot)
@@ -590,6 +621,7 @@ describe("BurnChecksView", () => {
       )
       return (next: readonly SnoozedBurnChecks.SnoozedBurnCheck[]) => {
         records = next
+        snapshot = { status: "ready", records }
         for (const listener of listeners) listener()
       }
     }
@@ -707,6 +739,33 @@ describe("BurnChecksView", () => {
       expect(screen.getByText("No active checks.")).toBeVisible()
     })
 
+    it("moves focus to the Snoozed trigger before hiding a focused row", async () => {
+      mockSnoozes([{ detector: "oldModelUsage", scope: "check", until: null }])
+      setup(target, false, aggregate, report)
+      const trigger = await screen.findByRole("button", { name: "Snoozed 1" })
+      fireEvent.click(trigger)
+      const row = screen.getByRole("button", { name: /Old model usage/ })
+      row.focus()
+
+      fireEvent.click(trigger)
+
+      await waitFor(() => expect(trigger).toHaveFocus())
+      expect(row).not.toBeVisible()
+    })
+
+    it("moves focus to the collapsed Snoozed trigger when a focused row is regrouped", async () => {
+      const setSnoozes = mockSnoozes([])
+      setup(target, false, aggregate, report)
+      const row = await screen.findByRole("button", { name: /Old model usage/ })
+      row.focus()
+
+      act(() => setSnoozes([{ detector: "oldModelUsage", scope: "check", until: null }]))
+
+      const trigger = screen.getByRole("button", { name: "Snoozed 1" })
+      await waitFor(() => expect(trigger).toHaveFocus())
+      expect(row).not.toBeInTheDocument()
+    })
+
     it("keeps ordinary passed checks free of state badges", async () => {
       setup(target, false, aggregate, report)
       fireEvent.click(await screen.findByRole("button", { name: "Passed checks 1" }))
@@ -717,6 +776,34 @@ describe("BurnChecksView", () => {
       expect(within(header).queryByText("Awaiting verification")).not.toBeInTheDocument()
       expect(within(header).queryByText(/Snoozed/)).not.toBeInTheDocument()
     })
+  })
+
+  it("moves focus to the collapsed Passed trigger when a focused row starts passing", async () => {
+    const secondFailure = {
+      id: "modelOverthinking" as const,
+      finding: 2,
+      clean: 1,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 400,
+      lifecycle: "failing" as const,
+    }
+    const twoFailures = { ...report, categories: [report.categories[0]!, secondFailure] }
+    const { adapter, session } = setup(target, false, aggregate, twoFailures)
+    const row = await screen.findByRole("button", { name: /Model overthinking/ })
+    row.focus()
+    vi.mocked(adapter.getReport).mockResolvedValue({
+      ...twoFailures,
+      categories: [
+        report.categories[0]!,
+        { ...secondFailure, finding: 0, clean: 3, lifecycle: "passing" },
+      ],
+    })
+
+    act(() => session.refresh())
+
+    const trigger = await screen.findByRole("button", { name: "Passed checks 1" })
+    await waitFor(() => expect(trigger).toHaveFocus())
+    expect(row).not.toBeInTheDocument()
   })
 
   it("uses only the category agent inventory for neutral vendor watermarks", async () => {
@@ -2163,6 +2250,7 @@ describe("BurnChecksView", () => {
       {
         wins: [
           aggregate.wins[0]!,
+          { ...aggregate.wins[0]!, verifiedBoundaryMs: 3 },
           {
             ...aggregate.wins[0]!,
             findingId: "win-2",
@@ -2184,16 +2272,83 @@ describe("BurnChecksView", () => {
     )
 
     const savings = await screen.findByRole("region", { name: "Savings" })
-    expect(within(savings).getByText("2 active passed checks")).toBeVisible()
+    expect(within(savings).getByText("2 verified remediation cycles")).toBeVisible()
     expect(within(savings).getAllByText("~400 input tokens projected")).toHaveLength(2)
     expect(within(savings).getAllByText("Unavailable for this check.")).toHaveLength(2)
     expect(
-      within(savings).getAllByText("~$1.25 confirmed from 1 of 2 passed checks"),
+      within(savings).getAllByText("~$1.25 confirmed from 1 of 2 verified cycles"),
     ).toHaveLength(2)
     expect(within(savings).getByRole("button", { name: "Details" })).toHaveAttribute(
       "aria-expanded",
       "false",
     )
+  })
+
+  it("uses backend-trusted active wins without remediation progress", async () => {
+    const unrelated = {
+      ...aggregate.wins[0]!,
+      findingId: "unrelated-finding",
+      remediationCycleId: "unrelated-cycle",
+      display: {
+        ...aggregate.wins[0]!.display,
+        estimatedOpportunity: { value: 900, unit: "literalInputTokens" as const },
+      },
+    }
+    setup(target, false, { wins: [aggregate.wins[0]!, unrelated] }, passedTargetReport)
+
+    const savings = await screen.findByRole("region", { name: "Savings" })
+    expect(within(savings).getByText("2 verified remediation cycles")).toBeVisible()
+    expect(within(savings).getAllByText("~900 input tokens projected")).toHaveLength(2)
+  })
+
+  it("hides savings while aggregate wins load and shows them when ready", async () => {
+    const pending = deferred<AggregateWinsPayload>()
+    setup(target, false, pending.promise, passedTargetReport)
+
+    await screen.findByRole("button", { name: /Passed checks/ })
+    expect(screen.queryByRole("region", { name: "Savings" })).not.toBeInTheDocument()
+
+    pending.resolve(aggregate)
+    expect(await screen.findByRole("region", { name: "Savings" })).toBeVisible()
+  })
+
+  it("hides savings when aggregate wins fail to load", async () => {
+    const pending = deferred<AggregateWinsPayload>()
+    setup(target, false, pending.promise, passedTargetReport)
+
+    await screen.findByRole("button", { name: /Passed checks/ })
+    pending.reject(new Error("Unavailable"))
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Savings" })).toBeNull())
+  })
+
+  it("counts one estimated opportunity per exact target", async () => {
+    const opportunity = {
+      ...aggregate.wins[0]!,
+      display: {
+        ...aggregate.wins[0]!.display,
+        estimatedOpportunity: { value: 400, unit: "literalInputTokens" as const },
+      },
+    }
+    setup(
+      target,
+      false,
+      {
+        wins: [opportunity, { ...opportunity, remediationCycleId: "cycle-2" }],
+      },
+      passedTargetReport,
+    )
+
+    const savings = await screen.findByRole("region", { name: "Savings" })
+    expect(within(savings).getAllByText("~400 input tokens projected")).toHaveLength(2)
+    expect(within(savings).queryByText("~800 input tokens projected")).not.toBeInTheDocument()
+  })
+
+  it("uses generic clean copy without unrelated action attribution", async () => {
+    setup(target, false, aggregate, passedTargetReport)
+
+    expect(await screen.findByText("No finding in 2 complete sessions.")).toBeVisible()
+    expect(screen.queryByText("Current verification passed.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Verified after your fix.")).not.toBeInTheDocument()
   })
 
   it("pairs authoritative token and cost totals that cover the same wins", async () => {
@@ -2240,8 +2395,7 @@ describe("BurnChecksView", () => {
     act(() => session.refresh())
 
     await screen.findByRole("heading", { name: "Failed checks 1" })
-    expect(screen.getByRole("region", { name: "Savings" })).toBeVisible()
-    expect(screen.queryByText("~$1.25 confirmed")).not.toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Savings" })).not.toBeInTheDocument()
   })
 
   it("shows pending confirmed savings and the approved tooltip text", async () => {
@@ -2271,5 +2425,18 @@ describe("BurnChecksView", () => {
         "Savings observed across sessions that passed after remediation. This is still an estimate and may not match provider billing exactly.",
       ),
     ).toBeVisible()
+  })
+
+  it("describes estimated savings as a pre-remediation opportunity", async () => {
+    setup(target, false, aggregate, passedTargetReport)
+
+    const savings = await screen.findByRole("region", { name: "Savings" })
+    fireEvent.focus(within(savings).getByRole("button", { name: "About estimated savings" }))
+    expect(
+      await screen.findByText(
+        "Pre-remediation opportunity estimated from evidence observed before the fix. Actual results can vary.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText(/your recent usage/i)).not.toBeInTheDocument()
   })
 })

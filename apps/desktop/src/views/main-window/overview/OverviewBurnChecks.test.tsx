@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type { ChecksCategoryPayload, ChecksReportPayload } from "../../../lib/insightsIpc"
+import * as SnoozedBurnChecks from "../../../lib/snoozedBurnChecks"
 import { OverviewBurnChecks } from "./OverviewBurnChecks"
 
 function category(
@@ -109,5 +110,27 @@ describe("OverviewBurnChecks", () => {
     expect(panel).toHaveAttribute("aria-busy", "true")
     expect(within(panel).queryByText(/finding|passed|Assessing/)).toBeNull()
     expect(within(panel).queryByRole("listitem")).toBeNull()
+  })
+
+  it.each([
+    { status: "loading" as const, message: null },
+    { status: "error" as const, message: "Checks are unavailable." },
+  ])("does not project results while snoozes are $status", ({ status, message }) => {
+    const hook = vi
+      .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+      .mockReturnValue({ status, records: [] })
+    render(
+      <OverviewBurnChecks
+        report={report([category("unusedSkills", 0, 20)])}
+        onOpen={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText("Nothing to review right now.")).toBeNull()
+    expect(screen.queryByText("No active checks.")).toBeNull()
+    if (message) expect(screen.getByText(message)).toBeVisible()
+    else
+      expect(screen.getByRole("region", { name: "Burn checks" })).toHaveAttribute("aria-busy")
+    hook.mockRestore()
   })
 })

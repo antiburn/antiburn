@@ -273,6 +273,13 @@ pub struct BurnCheckRemediationAttempt {
     pub effective_boundary_ms: Option<i64>,
     pub verified_boundary_ms: Option<i64>,
     pub recurred_boundary_ms: Option<i64>,
+    pub(crate) environment_key: String,
+    pub(crate) agent: String,
+    pub(crate) scope_kind: String,
+    pub(crate) scope_key: String,
+    pub(crate) target_key: String,
+    pub(crate) created_at_epoch: i64,
+    pub(crate) prompt_action: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,6 +371,8 @@ pub struct AggregateWin {
     pub origin: String,
     pub display: BurnCheckDisplayFacts,
     pub savings: AggregateSavings,
+    /// The exact evidence boundary that established this cycle's current pass.
+    pub verified_boundary_ms: i64,
     pub starts_at_ms: i64,
     pub ends_at_ms: i64,
 }

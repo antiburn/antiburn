@@ -37,15 +37,17 @@ The flow is check to finding to target to action:
 3. The desktop reads current findings and groups equal canonical targets.
 4. The desktop returns safe display facts for every visible target.
 5. The target reports prompt and Auto Fix availability separately.
-6. A target prompt action starts or joins a durable attempt. Non-named checks can prepare one bounded prompt for their selected current targets. A check-level Copy fallback remains available when no exact prompt target is available.
+6. A target prompt action starts or reuses a durable action attempt. A check-level prompt gives all selected targets one prompt-group ID while each target keeps an independent attempt. A check-level Copy fallback can describe selectable current targets without claiming an exact edit.
 7. An Auto Fix action prepares one edit, waits for confirmation, and then starts or joins an attempt.
 8. Later winning evidence dirties matching attempts.
 9. The evidence worker verifies each dirty attempt and stores one contribution when proof exists.
 
-When exact prompts are unavailable, a separate check-level Copy action re-runs
-the failed-check query and returns a generic inspection prompt while the check
-still has findings. It does not create a target, action ID, Auto Fix operation,
-or verification watch.
+The check-level Copy action re-runs the target query. It returns no prompt when
+the query has no selectable target. When exact target text is unsuitable, it can
+return a generic inspection prompt for the selected current targets. Each
+selected target still gets a durable action attempt, and the returned prompt has
+one opaque attempt reference. The fallback does not create an Auto Fix operation
+or claim an exact edit.
 
 Target listing does not require prompt support. A finding stays visible when no
 safe action exists. The UI explains the unavailable action.
@@ -129,10 +131,13 @@ backfill older publications. A replay reuses an active target and does not move
 its boundary. Session-scoped and other permanently unverifiable findings do not
 enroll and do not consume the active attempt bound.
 
-A later user action can join an active passive attempt. The attempt keeps its
-passive origin and original boundary. The store records the first action join
-time separately. This design measures passive discovery and deliberate use
-without claiming that the action caused the result.
+Passive and action attempts are independent for the same target. A later user
+action does not replace the passive attempt or move its boundary. Each attempt
+keeps its own origin and lifecycle. A check-level prompt groups its action
+attempts only so a retry can return the same stored prompt and reference; the
+targets still verify or remain unavailable independently. This design measures
+passive discovery and deliberate use without claiming that the action caused the
+result.
 
 An action watch with unavailable verification does not block a later Auto Fix.
 The store upgrades that watch through the same crash-safe reservation path. A
@@ -144,10 +149,11 @@ gets a new durable ID and prompt reference.
 ## Prompt Fallback
 
 Prompt support is independent from Auto Fix support. The UI offers `Copy fix
-prompt` when the engine can build a safe exact prompt. When no exact prompt is
-available, the check-level Copy action can return the bounded generic fallback.
-Copy remains available when Auto Fix lacks an attributed setting, supported
-editor, safe platform, or trusted target.
+prompt` when the engine recommendation gate accepts at least one selectable
+current target. The check-level action can use the bounded generic text for
+those targets. It returns no prompt when no target can be selected. Copy remains
+available when Auto Fix lacks an attributed setting, supported editor, safe
+platform, or trusted target.
 
 An exact-target prompt includes the finding, safe facts, source limits,
 requested result, and required evidence. A check-level fallback names the failed
@@ -166,7 +172,7 @@ returned after the explicit copy action. They do not enter target or sample
 payloads, rendered details, analytics, logs, snapshots, finding IDs, action IDs,
 or watches.
 
-Every prompt contains at most 8 KiB. Exact-target facts contain at most eight
+Every prompt contains at most 64 KiB. Exact-target facts contain at most eight
 sanitized identities. Prompts exclude session IDs, transcript content, config
 content, credentials, and unrelated history. A private or truncated essential
 identity makes an exact-target prompt unavailable. The main window writes prompts
@@ -175,8 +181,9 @@ Clipboard success is separate from prompt preparation. A failed native write can
 retry the same prepared text without a second backend operation. The UI reports
 prompt preparation and clipboard write failures separately.
 
-Each exact-target prompt also contains one opaque `Remediation reference:
-ABR-<id>` marker. The durable attempt stays in the Failed checks group until a
+Each returned prompt contains one opaque `Remediation reference: ABR-<id>`
+marker. Every selected target has a durable attempt. The attempt stays in the
+Failed checks group until a
 later captured user message contains that exact marker. The winning publication
 that captures the marker starts verification at its publication time. The
 marker-bearing session cannot verify the change. A copied prompt that never
@@ -246,9 +253,9 @@ agents. Source coverage can still block a finding for one session.
 | Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
-| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No  | Yes |
+| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | No  |
 | Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
-| Cursor, characterized Cursor JSONL and store sources                                                        | No  | No  | No  | No  | No  | No  | Yes | No  | No  |
+| Cursor, characterized Cursor JSONL and store sources                                                      | No  | No  | No  | No  | No  | No  | Yes | No  | No  |
 
 `AntigravityWorkspaceChatJson` is uncharacterized and has no prompt support.
 Other source formats have no remediation prompt support. Cursor prompt support
@@ -268,10 +275,12 @@ Model Auto Fix applies only to a reviewed obsolete model and its reviewed
 replacement. Reasoning Auto Fix applies only to a reviewed above-cap level when
 `medium` is a valid below-cap value. Resource Auto Fix requires indexed
 provenance plus one exact current enabled resource, effective scope, value, and
-physical key. M can disable one such MCP server for Claude Code or Codex. Claude appends only
+physical key. M can disable one such MCP server for Claude Code, Codex, or
+OpenCode when its production policy and exact binding both resolve. Claude appends only
 `mcp__<name>__*` to an existing same-scope deny list. Codex sets only
-`mcp_servers.<name>.enabled = false`. OpenCode has a safe exact `mcp.<name>.enabled`
-editor, but its accepted sources do not yet provide M evidence. Antigravity
+`mcp_servers.<name>.enabled = false`. OpenCode has a safe exact
+`mcp.<name>.enabled` editor, and its current resource assessment can supply M
+findings; inventory-only or unresolved targets remain prompt-only. Antigravity
 remains unavailable until public source and precedence evidence identify one
 winning persisted field. Cursor never edits its private store or invokes its CLI.
 B can disable one exact optional specialized Claude Code built-in tool from a standard
@@ -281,9 +290,9 @@ deny list or create a missing global settings file. It adds the canonical tool
 name only, never a wildcard or a
 general permission rule. Shell, read, write, edit, search, and subagent tools
 remain measured but never receive an Auto Fix or a targeted disable prompt.
-OpenCode has an exact V2 action deny editor and Pi can
-remove one unique `defaultTools` member from the winning settings file, but both
-remain source-gated until their accepted sources prove a complete tool inventory.
+OpenCode and Pi core tools do not have a reachable automatic B edit. OpenCode
+can still produce allowlisted current-inventory B findings and prompts. Pi core
+tools never become B targets.
 Codex B Auto Fix is unavailable because its documented app-tool controls do not
 identify one built-in tool. OpenCode skill targets can receive Auto Fix when
 indexed provenance and one exact standard skill winner resolve to the V2
@@ -326,8 +335,11 @@ the native host config.
 | C     | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable                          | Unavailable | Unavailable |
 
 D is tied to one historical session. S is tied to one call and worker. Later
-work has a different identity. M, B, and K expose only observed subsets, so
-absence does not prove removal. C has no durable session-route control. OpenCode
+work has a different identity. Historical M, B, and K subsets fail closed and
+cannot prove absence. The engine could verify against a complete, bounded later
+current inventory for the exact agent and scope, but the desktop does not supply
+that input to watches, so product verification remains unavailable. C has no
+durable session-route control. OpenCode
 lacks historical reasoning and speed controls. Pi lacks an effective speed
 control. Antigravity has positive-only D and O evidence but no attributed
 physical model target.
@@ -346,22 +358,28 @@ reserved -> writing -> recoveryNeeded -> watching -> fixed -> recurred
 waitingForPromptUse -> watching
 ```
 
-Verifiable prompt actions enter `waitingForPromptUse`. They enter `watching`
-only after their exact marker is captured in user content. An M/B/K prompt with
-no exact verification route returns no watch or remediation reference. Auto Fix
+Every exact prompt action enters `waitingForPromptUse` and stays in the Failing
+group after the copy. It enters `watching` only after its exact marker is
+captured in user content. A supported verifier then appears as Awaiting until it
+passes or recurs. An activated prompt with unsupported verification, including
+M/B/K, also appears as Awaiting, but its typed verification and savings remain
+`verificationUnavailable` and `unavailable`; it cannot become Passed. Auto Fix
 uses the write states first. A successful file readback starts `watching` only
 when positive verification exists. Otherwise the applied result and retained
 write record state that verification is unavailable.
 
 Only sessions that start after the effective boundary can prove a transition.
-The source format and exact scope must match. Truncated pages, partial evidence,
-missing controls, stale projections, and changed policy or catalog revisions do
-not prove a fix.
+The source format and exact scope must match. For T and F, one complete later
+session must contain the exact positive control for the same target. For O, one
+later session must contain actual replacement-model use for the same attributed
+target. Report-level absence and historical counts do not verify a fix.
+Truncated pages, partial evidence, missing controls, stale projections, and
+changed policy or catalog revisions do not prove a fix.
 
-T and F use positive control proof. O uses actual model-use proof. Generic clean
-absence never verifies resource targets. After a fixed transition, the first
-later exact positive finding marks recurrence. Recurrence stops new savings at
-its evidence time. It does not erase the earlier verified contribution.
+Generic clean absence never verifies resource targets. After a fixed transition,
+the first later exact positive finding recurs that target. Recurrence stops new
+savings at its evidence time. It does not erase the earlier verified
+contribution.
 
 Config readback, a copied prompt, an agent completion claim, inactivity, source
 deletion, report age, or leaving the report window never proves a fix.
@@ -375,26 +393,43 @@ report denominator are available. Skill estimates include listing frontmatter,
 not the skill body. MCP estimates require measured indexed definitions. Other
 methods stay unknown when their inputs are absent.
 
-The Passed section separates two estimates. `Estimated savings` projects the
-pre-remediation opportunity from the finding snapshot and recent usage.
-`Confirmed savings` describes eligible sessions observed after the remediation
-passes. Confirmation is pending until such usage exists. Every verified
-transition can store one improvement count. O can also store cumulative
-API-equivalent USD for eligible replacement activity. A rate is not a
-cumulative saving.
+The Passed section separates two estimates. `Estimated savings` is the stored
+pre-remediation opportunity from one target snapshot per active passed cycle. It
+does not use recent or post-remediation usage. `Confirmed savings` describes
+eligible sessions observed after that cycle passes. Savings status is `pending`
+before enough later usage exists, `known` with a revisioned numeric value,
+`unknown` when a required input or calculation failed, or `unavailable` when the
+check has no confirmed-savings method. Every verified transition can store one
+improvement count. O can also store cumulative API-equivalent USD for eligible
+replacement activity. A rate is not a cumulative saving.
 
-The app shows both labels only for active Passed checks. Failing, Awaiting, and
-Snoozed checks do not show savings. A recurrence removes the current check from
-both totals and stops confirmed accumulation at its evidence time.
+The aggregate-savings backend returns only exact current cycles that are still
+fixed, have a fixed verification result and verified evidence boundary, match
+their stored target snapshot, and are not actively snoozed. The renderer keeps
+only cycles whose detector is visibly Passed. It shows both savings labels when
+at least one such cycle remains and hides the entire Savings section otherwise.
+Failing, Awaiting, Snoozed, and recurred cycles do not contribute. Recurrence
+stops confirmed accumulation at its evidence time.
 
 ## Snoozed Checks
 
 A snooze keeps the stored check state but removes that detector from active
-check groups, counts, burn totals, savings, session badges, session filters,
-session detail, and discussion prompts. The main Burn Checks page keeps snoozed
-checks in its collapsed management group, where Unsnooze restores the underlying
-state. When every assessed check is snoozed, active surfaces show `No active
-checks` instead of a passing or unassessed result.
+check groups, counts, savings, session badges, session filters, session detail,
+and discussion prompts. The report supplies one denominator-aware aggregate for
+each of the 512 possible selections of the nine detectors. After snoozing, the
+desktop selects the exact remaining-detector aggregate. Each aggregate is
+recomputed from the selected detector contributions against the report's same
+complete total-token denominator, with overlap and bounded-fallback rules
+applied again; the desktop never subtracts displayed detector percentages.
+
+Snooze state is a required input, not an optional filter. While it loads,
+dependent check and session surfaces withhold derived results and show their
+loading state. If it fails, they show an unavailable or explicit snooze-load
+error instead of presenting unfiltered data; the main Burn Checks error offers
+Retry. The main Burn Checks page keeps loaded snoozed checks in its collapsed
+management group, where Unsnooze restores the underlying state. When every
+assessed check is snoozed, active surfaces show `No active checks` instead of a
+passing or unassessed result.
 
 All nine estimate methods are implemented as typed calculations:
 

@@ -64,7 +64,7 @@ use antiburn_local::analysis::{
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
 
-use crate::dto::DeferredPermissionDir;
+use crate::dto::{BurnCheckSnoozePayload, DeferredPermissionDir};
 
 pub use model::{
     ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
@@ -577,11 +577,20 @@ impl Store {
         );
     }
 
-    /// Read the serialized burn-check snooze ledger.
-    pub fn burn_check_snoozes(&self) -> Result<String> {
-        Ok(self
-            .internal_value(BURN_CHECK_SNOOZES_KEY)
-            .unwrap_or_else(|| "[]".to_owned()))
+    /// Read the burn-check snooze ledger. A missing ledger is empty.
+    pub fn burn_check_snoozes(&self) -> Result<Vec<BurnCheckSnoozePayload>> {
+        let connection = self.lock();
+        let stored = connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = ?1",
+                params![BURN_CHECK_SNOOZES_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        stored
+            .map(|value| serde_json::from_str(&value).context("invalid burn-check snooze ledger"))
+            .transpose()
+            .map(Option::unwrap_or_default)
     }
 
     /// Replace the bounded burn-check snooze ledger.

@@ -701,6 +701,18 @@ fn deferred_permission_dirs_replace_the_previous_pass() {
 }
 
 #[test]
+fn burn_check_snoozes_distinguish_empty_and_malformed_state() {
+    let store = store();
+    assert!(store.burn_check_snoozes().unwrap().is_empty());
+
+    store.save_burn_check_snoozes("[]").unwrap();
+    assert!(store.burn_check_snoozes().unwrap().is_empty());
+
+    store.save_burn_check_snoozes("not json").unwrap();
+    assert!(store.burn_check_snoozes().is_err());
+}
+
+#[test]
 fn migrating_an_already_current_database_is_a_no_op() {
     let store = store();
     // `migrate` runs on open; running it again must neither fail nor re-apply.

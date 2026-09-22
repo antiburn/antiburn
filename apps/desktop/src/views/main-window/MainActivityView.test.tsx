@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as IpcModule from "../../lib/ipc"
 import type * as SubjectModule from "../../lib/sessionSubject"
+import * as SnoozedBurnChecks from "../../lib/snoozedBurnChecks"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { type ActivityEntryPayload, DEFAULT_SETTINGS } from "../../lib/ipc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
@@ -165,5 +166,21 @@ describe("MainActivityView", () => {
     await vi.waitFor(() =>
       expect(screen.getAllByText(/No sessions in the last \d+ days/)).toHaveLength(2),
     )
+  })
+
+  it("does not show an empty filtered result before snoozes are ready", async () => {
+    const hook = vi
+      .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+      .mockReturnValue({ status: "loading", records: [] })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "failing" })
+    mocks.listRecentSessions.mockResolvedValue([entry("stored-failure")])
+    const { session, unmount } = renderActivity()
+    await ready(session)
+
+    expect(screen.getByText("Loading sessions…")).toBeVisible()
+    expect(screen.queryByText("No sessions match this filter.")).toBeNull()
+    expect(screen.queryByText("stored-failure")).toBeNull()
+    unmount()
+    hook.mockRestore()
   })
 })

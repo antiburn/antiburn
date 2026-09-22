@@ -240,7 +240,8 @@ export function SessionPane({
   }
   const hygieneBySession = useSessionHygiene(active ? [hygieneIdentity] : [])
   const hygiene = sessionHygieneFor(hygieneBySession, hygieneIdentity)
-  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   const handleCopyDiscussionPrompt = useCallback(async () => {
     if (!sourcePath) throw new Error("No source path")
     const prompt = sessionDiscussionPrompt({
@@ -354,7 +355,9 @@ export function SessionPane({
         ? {
             onRevealSource: handleReveal,
             onCopySourcePath: handleCopyPath,
-            onCopyDiscussionPrompt: handleCopyDiscussionPrompt,
+            ...(snoozes.status === "ready"
+              ? { onCopyDiscussionPrompt: handleCopyDiscussionPrompt }
+              : {}),
           }
         : {})}
       {...(projectPath

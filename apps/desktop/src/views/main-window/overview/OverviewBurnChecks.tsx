@@ -96,13 +96,16 @@ export function OverviewBurnChecks({
   loading?: boolean
   onOpen: () => void
 }) {
-  const snoozed = snoozedDetectorIds(useSnoozedBurnChecks())
-  const summary = report ? overviewChecksSummary(report, snoozed) : null
+  const snoozes = useSnoozedBurnChecks()
+  const summary =
+    report && snoozes.status === "ready"
+      ? overviewChecksSummary(report, snoozedDetectorIds(snoozes.records))
+      : null
   const FooterIcon = summary?.state === "passed" ? CheckCircle2 : CircleDashed
   return (
     <section
       aria-label="Burn checks"
-      aria-busy={loading || undefined}
+      aria-busy={loading || snoozes.status === "loading" || undefined}
       className="flex min-w-0 flex-col gap-[var(--space-sm)]"
     >
       <div className="flex items-baseline justify-between">
@@ -116,13 +119,18 @@ export function OverviewBurnChecks({
           <ArrowRight size={12} strokeWidth={2} aria-hidden="true" />
         </button>
       </div>
-      {!summary && (
+      {!summary && snoozes.status !== "error" && (
         // The rows keep their height while the report loads, so the panel
         // does not jump when the result arrives.
         <div className="flex flex-col gap-1.5">
           <Skeleton className="h-[34px] w-full rounded-[var(--radius-popover)]" />
           <Skeleton className="h-[34px] w-full rounded-[var(--radius-popover)]" />
         </div>
+      )}
+      {snoozes.status === "error" && (
+        <p role="status" className="type-callout text-label-secondary">
+          Checks are unavailable.
+        </p>
       )}
       {summary && summary.rows.length > 0 && (
         <ul className="flex flex-col gap-1.5">

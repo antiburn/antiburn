@@ -68,6 +68,9 @@ function applyAnalytics(
   if (outcome.outcome === "appliedAwaitingVerification") {
     return "applied_awaiting_verification"
   }
+  if (outcome.outcome === "appliedVerificationUnavailable") {
+    return "applied_verification_unavailable"
+  }
   return outcome.outcome === "recoveryNeeded" ? "recovery_needed" : outcome.outcome
 }
 
@@ -191,20 +194,27 @@ export function BurnCheckTargetActions({
       const outcome = await applyPreparedBurnCheckOperation(operationId)
       const completedWatchId =
         outcome?.outcome === "appliedAwaitingVerification" ||
+        outcome?.outcome === "appliedVerificationUnavailable" ||
         outcome?.outcome === "recoveryNeeded"
           ? outcome.watchId
           : null
       noteInteraction({ kind: "burnCheckAutoFixCompleted", outcome: applyAnalytics(outcome) })
       if (clearStaleApply(startedAttemptKey, completedWatchId)) return
-      if (outcome?.outcome === "appliedAwaitingVerification") {
+      if (
+        outcome?.outcome === "appliedAwaitingVerification" ||
+        outcome?.outcome === "appliedVerificationUnavailable"
+      ) {
         const watchId = outcome.watchId
+        const verificationUnavailable = outcome.outcome === "appliedVerificationUnavailable"
         flushSync(() => {
           setAction((value) => ({
             ...value,
             acceptedWatchId: watchId,
             busy: null,
             review: null,
-            status: null,
+            status: verificationUnavailable
+              ? "Change applied. Verification is unavailable for this check."
+              : null,
           }))
         })
         trigger.current?.focus()

@@ -279,7 +279,7 @@ fn named_resource_assessment(
 }
 
 #[test]
-fn named_mcp_built_in_and_skill_targets_pass_when_absent_from_complete_later_inventory() {
+fn named_mcp_built_in_and_skill_targets_pass_when_absent_from_current_inventory() {
     for (detector, resource) in [
         (DetectorId::UnusedMcpServers, "Server-A"),
         (DetectorId::UnusedBuiltInTools, "Web Search"),
@@ -369,6 +369,12 @@ fn named_target_recurrence_requires_the_exact_target_and_complete_evidence() {
 fn named_target_incomplete_or_mismatched_evidence_stays_awaiting() {
     let target = named_resource_target(DetectorId::UnusedMcpServers, "server-a");
     let evidence = [
+        NamedResourceEvidence::HistoricalObservedSubset {
+            resources: vec![NamedResourceObservation {
+                resource: "server-a".to_owned(),
+                used: false,
+            }],
+        },
         NamedResourceEvidence::Partial,
         NamedResourceEvidence::Capped,
         NamedResourceEvidence::Ambiguous,
@@ -423,6 +429,35 @@ fn named_target_incomplete_or_mismatched_evidence_stays_awaiting() {
 
     let missing = verify_named_resource_watch(&target, VerificationStage::Watching, 100, &[]);
     assert!(matches!(missing.outcome, VerificationOutcome::Unknown(_)));
+}
+
+#[test]
+fn historical_resource_subsets_cannot_verify_absence_or_recurrence() {
+    let target = named_resource_target(DetectorId::UnusedSkills, "review");
+    for (stage, resources) in [
+        (VerificationStage::Watching, Vec::new()),
+        (
+            VerificationStage::Fixed,
+            vec![NamedResourceObservation {
+                resource: "review".to_owned(),
+                used: false,
+            }],
+        ),
+    ] {
+        let result = verify_named_resource_watch(
+            &target,
+            stage,
+            100,
+            &[named_resource_assessment(
+                target.detector,
+                NamedResourceEvidence::HistoricalObservedSubset { resources },
+            )],
+        );
+        assert_eq!(
+            result.outcome,
+            VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+        );
+    }
 }
 
 #[test]

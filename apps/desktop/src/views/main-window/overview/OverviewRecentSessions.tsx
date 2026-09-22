@@ -28,11 +28,12 @@ export function OverviewRecentSessions({
   onOpenAll: () => void
 }) {
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(entries ?? []))
-  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   return (
     <section
       aria-label="Recent sessions"
-      aria-busy={loading || undefined}
+      aria-busy={loading || snoozes.status === "loading" || undefined}
       className="flex flex-col gap-[var(--space-sm)]"
     >
       <div className="flex items-baseline justify-between">
@@ -46,7 +47,11 @@ export function OverviewRecentSessions({
           <ArrowRight size={12} strokeWidth={2} aria-hidden="true" />
         </button>
       </div>
-      {entries ? (
+      {snoozes.status === "error" ? (
+        <p role="status" className="type-callout text-label-secondary">
+          Recent sessions are unavailable.
+        </p>
+      ) : entries && snoozes.status === "ready" ? (
         entries.length > 0 ? (
           <ul className="flex flex-col gap-1.5">
             {entries.map((entry) => (

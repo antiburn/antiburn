@@ -1,7 +1,7 @@
 import "../../../styles/burn-checks-report.css"
 
 import { ChevronRight, Clock, Hourglass } from "lucide-react"
-import { useCallback, useRef, useState, type KeyboardEvent } from "react"
+import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
 import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks"
@@ -84,13 +84,6 @@ function CheckDetailContent({
   state: BurnChecksSnapshot
 }) {
   const targets = state.targets[check.id]
-  const targetIds = new Set(targets?.data?.targets.map((target) => target.findingId))
-  const remediations =
-    state.remediationProgress?.attempts.filter(
-      (attempt) =>
-        attempt.detector === check.id &&
-        (targetIds.size === 0 || targetIds.has(attempt.findingId)),
-    ) ?? []
   if (check.lifecycle === "passing") {
     const PassIcon = BURN_CHECK_MARKS.clean.Icon
     return (
@@ -102,17 +95,8 @@ function CheckDetailContent({
           aria-hidden="true"
         />
         <p className="type-callout text-label-secondary">
-          {check.lifecycle === "passing"
-            ? "Current verification passed."
-            : `No finding in ${check.clean} complete sessions.`}
+          No finding in {check.clean} complete {check.clean === 1 ? "session" : "sessions"}.
         </p>
-        {remediations.some(
-          (attempt) => attempt.outcome === "passed" && attempt.origin === "action",
-        ) && (
-          <p className="mt-1 type-footnote text-burn-check-pass-fill">
-            Verified after your fix.
-          </p>
-        )}
       </div>
     )
   }
@@ -374,6 +358,7 @@ function CheckTrigger({
   check,
   selected,
   bindRef,
+  onFocus,
   onClick,
   onKeyDown,
   state,
@@ -382,6 +367,7 @@ function CheckTrigger({
   check: ChecksCategoryPayload
   selected: boolean
   bindRef: (node: HTMLButtonElement | null) => void
+  onFocus: () => void
   onClick: () => void
   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void
   state: BurnChecksSnapshot
@@ -418,6 +404,7 @@ function CheckTrigger({
             : "failed"
       }
       tabIndex={selected ? 0 : -1}
+      onFocus={onFocus}
       onClick={onClick}
       onKeyDown={onKeyDown}
       className="burn-check-row-trigger overflow-hidden grid w-full grid-cols-[32px_minmax(0,1fr)] items-center gap-x-3 rounded-[var(--radius-popover)] px-3 py-3 text-left active:transform-none active:opacity-100"
@@ -464,7 +451,8 @@ export function BurnChecksReport({
   session: BurnChecksSession
   state: BurnChecksSnapshot
 }) {
-  const snoozed = useSnoozedBurnChecks()
+  const snoozeState = useSnoozedBurnChecks()
+  const snoozed = snoozeState.records
   const snoozedIds = snoozedDetectorIds(snoozed)
   const presentation = checksPresentation(report, false, snoozedIds)
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
@@ -514,6 +502,44 @@ export function BurnChecksReport({
       (snoozedOpen ? snoozedChecks[0]?.id : null) ??
       null)
   const rowRefs = useRef(new Map<ChecksCategoryPayload["id"], HTMLButtonElement>())
+  const focusedRow = useRef<ChecksCategoryPayload["id"] | null>(null)
+  const passedTriggerRef = useRef<HTMLButtonElement>(null)
+  const snoozedTriggerRef = useRef<HTMLButtonElement>(null)
+  if (snoozeState.status !== "ready") return null
+
+  const togglePassed = (event: MouseEvent<HTMLButtonElement>) => {
+    const trigger = event.currentTarget
+    setUi((value) => {
+      const nextPassedOpen = !passedOpen
+      if (!nextPassedOpen) queueMicrotask(() => trigger.focus())
+      return {
+        ...value,
+        passedPreference: nextPassedOpen,
+        selectedId:
+          !nextPassedOpen && activeWins.some((item) => item.id === value.selectedId)
+            ? (activeFailures[0]?.id ?? activeAwaiting[0]?.id ?? null)
+            : value.selectedId,
+      }
+    })
+  }
+
+  const toggleSnoozed = (event: MouseEvent<HTMLButtonElement>) => {
+    const trigger = event.currentTarget
+    const nextSnoozedOpen = !snoozedOpen
+    setSnoozedOpen(nextSnoozedOpen)
+    if (!nextSnoozedOpen) {
+      setUi((value) => ({
+        ...value,
+        selectedId: snoozedChecks.some((item) => item.id === value.selectedId)
+          ? (activeFailures[0]?.id ??
+            activeAwaiting[0]?.id ??
+            (passedOpen ? activeWins[0]?.id : null) ??
+            null)
+          : value.selectedId,
+      }))
+      queueMicrotask(() => trigger.focus())
+    }
+  }
 
   const selectCheck = (id: ChecksCategoryPayload["id"], deliberate = true) => {
     setUi((value) => ({
@@ -555,10 +581,26 @@ export function BurnChecksReport({
         selected={check.id === selectedVisibleId}
         state={state}
         bindRef={(node) => {
-          if (node) rowRefs.current.set(check.id, node)
-          else rowRefs.current.delete(check.id)
+          if (node) {
+            rowRefs.current.set(check.id, node)
+            return
+          }
+          const removed = rowRefs.current.get(check.id)
+          rowRefs.current.delete(check.id)
+          if (removed !== document.activeElement && focusedRow.current !== check.id) return
+          focusedRow.current = null
+          queueMicrotask(() => {
+            const hiddenGroup = rowRefs.current.get(check.id)?.closest<HTMLElement>("[hidden]")
+            if (hiddenGroup?.id === "burn-checks-snoozed-body")
+              snoozedTriggerRef.current?.focus()
+            else if (hiddenGroup?.id === "burn-checks-passed-body")
+              passedTriggerRef.current?.focus()
+          })
         }}
         onClick={() => selectCheck(check.id)}
+        onFocus={() => {
+          focusedRow.current = check.id
+        }}
         onKeyDown={(event) => handleRowKey(event, check)}
         {...(snooze ? { snoozeLabel: formatSnoozeUntil(snooze.until) } : {})}
       />
@@ -606,25 +648,15 @@ export function BurnChecksReport({
                 <section className="burn-checks-group" aria-labelledby="burn-checks-passed">
                   <h2>
                     <button
+                      ref={passedTriggerRef}
                       id="burn-checks-passed"
                       type="button"
                       aria-expanded={passedOpen}
                       aria-controls="burn-checks-passed-body"
-                      onClick={() =>
-                        setUi((value) => {
-                          const nextPassedOpen = !passedOpen
-                          const nextSelected =
-                            !nextPassedOpen &&
-                            activeWins.some((item) => item.id === value.selectedId)
-                              ? (activeFailures[0]?.id ?? null)
-                              : value.selectedId
-                          return {
-                            ...value,
-                            passedPreference: nextPassedOpen,
-                            selectedId: nextSelected,
-                          }
-                        })
-                      }
+                      onClick={togglePassed}
+                      onFocus={() => {
+                        focusedRow.current = null
+                      }}
                       className="burn-checks-passed-trigger flex w-full items-center gap-2 rounded-control px-1 text-left hover:text-label"
                     >
                       <PassIcon
@@ -661,11 +693,15 @@ export function BurnChecksReport({
               <section className="burn-checks-group" aria-labelledby="burn-checks-snoozed">
                 <h2>
                   <button
+                    ref={snoozedTriggerRef}
                     id="burn-checks-snoozed"
                     type="button"
                     aria-expanded={snoozedOpen}
                     aria-controls="burn-checks-snoozed-body"
-                    onClick={() => setSnoozedOpen((open) => !open)}
+                    onClick={toggleSnoozed}
+                    onFocus={() => {
+                      focusedRow.current = null
+                    }}
                     className="burn-checks-passed-trigger flex w-full items-center gap-2 rounded-control px-1 text-left hover:text-label"
                   >
                     <Clock size={14} className="text-label-tertiary" aria-hidden="true" />

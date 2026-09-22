@@ -1,6 +1,8 @@
 //! Exact burn-check targets and direct remediation actions.
 
 mod config;
+#[cfg(test)]
+mod coverage_contract;
 mod display;
 mod models;
 mod recovery;
@@ -293,6 +295,13 @@ impl RemediationController {
                 effective_boundary_ms: retained.record.effective_boundary_ms,
                 verified_boundary_ms: retained.snapshot.verified_boundary_ms,
                 recurred_boundary_ms: retained.snapshot.recurred_boundary_ms,
+                environment_key: retained.record.environment_key,
+                agent: retained.record.agent,
+                scope_kind: retained.record.scope_kind,
+                scope_key: retained.record.scope_key,
+                target_key: retained.record.target_key,
+                created_at_epoch: retained.record.created_at_epoch,
+                prompt_action: stored_bool(&retained.record.definition_json, "promptAction"),
             });
         }
         attempts.sort_by(|left, right| {
@@ -317,6 +326,7 @@ impl RemediationController {
             context,
             now_epoch(),
             antiburn_local::paths::home_dir().as_deref(),
+            true,
         )
     }
 
@@ -335,6 +345,7 @@ impl RemediationController {
                 context.clone(),
                 now_epoch(),
                 antiburn_local::paths::home_dir().as_deref(),
+                false,
             )?;
             let attempts = progress
                 .attempts
@@ -355,16 +366,43 @@ impl RemediationController {
                             .iter()
                             .find(|attempt| attempt.watch_id == watch.watch_id)
                     });
-                    current_target_lifecycle(target.watch.as_ref(), attempt.copied())
+                    current_target_lifecycle(
+                        target.watch.as_ref(),
+                        attempt.copied(),
+                        Some(target.display.last_observed_at_ms),
+                    )
                 })
                 .collect::<Vec<_>>();
-            states.extend(
-                attempts
-                    .into_iter()
-                    .filter(|attempt| {
-                        attempt.origin == RemediationOrigin::Action
-                            && !current_ids.contains(attempt.finding_id.as_str())
+            let mut latest_retained = BTreeMap::new();
+            for attempt in attempts.into_iter().filter(|attempt| {
+                attempt.origin == RemediationOrigin::Action
+                    && attempt.environment_key == context.environment_key
+                    && !current_ids.contains(attempt.finding_id.as_str())
+            }) {
+                let identity = (
+                    attempt.agent.as_str(),
+                    attempt.scope_kind.as_str(),
+                    attempt.scope_key.as_str(),
+                    attempt.target_key.as_str(),
+                );
+                latest_retained
+                    .entry(identity)
+                    .and_modify(|current: &mut &BurnCheckRemediationAttempt| {
+                        if (
+                            attempt.created_at_epoch,
+                            attempt.remediation_cycle_id.as_str(),
+                        ) > (
+                            current.created_at_epoch,
+                            current.remediation_cycle_id.as_str(),
+                        ) {
+                            *current = attempt;
+                        }
                     })
+                    .or_insert(attempt);
+            }
+            states.extend(
+                latest_retained
+                    .into_values()
                     .map(retained_attempt_lifecycle),
             );
             category.lifecycle = resolve_category_lifecycle(
@@ -384,6 +422,7 @@ impl RemediationController {
         context: BurnCheckTargetContext,
         now: i64,
         home: Option<&Path>,
+        cache_actions: bool,
     ) -> Result<BurnCheckTargetList, ControllerError> {
         if matches!(
             detector,
@@ -391,7 +430,7 @@ impl RemediationController {
                 | DetectorId::UnusedBuiltInTools
                 | DetectorId::UnusedSkills
         ) {
-            return self.list_resource_targets(store, detector, context, now, home);
+            return self.list_resource_targets(store, detector, context, now, home, cache_actions);
         }
         let page = insights_report::list_current_findings(
             &self.data_dir,
@@ -444,6 +483,8 @@ impl RemediationController {
                 .latest_remediation_for_target(
                     &target.findings[0].environment_key,
                     target.agent.slug(),
+                    &target.scope_kind,
+                    &target.scope_key,
                     &target.target_key,
                 )
                 .map_err(|_| ControllerError::Internal)?
@@ -460,7 +501,11 @@ impl RemediationController {
                     AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
                 ),
             };
-            let id = random_id().map_err(|_| ControllerError::Internal)?;
+            let id = if cache_actions {
+                random_id().map_err(|_| ControllerError::Internal)?
+            } else {
+                String::new()
+            };
             let target_samples = sample_sessions(&target.findings);
             targets.push(BurnCheckTarget {
                 finding_id: stable_finding_id(&target),
@@ -517,10 +562,19 @@ impl RemediationController {
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
-            cached.push(TimedTarget {
-                id,
-                value: target,
-                created_at_epoch: now,
+            if cache_actions {
+                cached.push(TimedTarget {
+                    id,
+                    value: target,
+                    created_at_epoch: now,
+                });
+            }
+        }
+        if !cache_actions {
+            return Ok(BurnCheckTargetList {
+                targets,
+                sample_sessions: check_samples,
+                truncated,
             });
         }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
@@ -547,6 +601,7 @@ impl RemediationController {
         context: BurnCheckTargetContext,
         now: i64,
         home: Option<&Path>,
+        cache_actions: bool,
     ) -> Result<BurnCheckTargetList, ControllerError> {
         let request = insights_report::ReportRequest {
             environment_key: context.environment_key.clone(),
@@ -583,6 +638,8 @@ impl RemediationController {
                 .latest_remediation_for_target(
                     target.environment_key(),
                     target.agent.slug(),
+                    &target.scope_kind,
+                    &target.scope_key,
                     &target.target_key,
                 )
                 .map_err(|_| ControllerError::Internal)?
@@ -599,7 +656,11 @@ impl RemediationController {
                     AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
                 ),
             };
-            let id = random_id().map_err(|_| ControllerError::Internal)?;
+            let id = if cache_actions {
+                random_id().map_err(|_| ControllerError::Internal)?
+            } else {
+                String::new()
+            };
             let project_name = match &resource.scope {
                 insights_report::ResourceAssessmentScope::Project(root) => project_name(root),
                 insights_report::ResourceAssessmentScope::Global => None,
@@ -642,10 +703,19 @@ impl RemediationController {
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
             });
-            cached.push(TimedTarget {
-                id,
-                value: target,
-                created_at_epoch: now,
+            if cache_actions {
+                cached.push(TimedTarget {
+                    id,
+                    value: target,
+                    created_at_epoch: now,
+                });
+            }
+        }
+        if !cache_actions {
+            return Ok(BurnCheckTargetList {
+                targets,
+                sample_sessions: check_samples,
+                truncated,
             });
         }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
@@ -673,7 +743,7 @@ impl RemediationController {
         context: BurnCheckTargetContext,
         home: &Path,
     ) -> Result<BurnCheckTargetList, ControllerError> {
-        self.list_burn_check_targets_at(store, detector, context, now_epoch(), Some(home))
+        self.list_burn_check_targets_at(store, detector, context, now_epoch(), Some(home), true)
     }
 
     pub fn copy_prompt_fix_burn_check_target(
@@ -701,15 +771,17 @@ impl RemediationController {
             self.prompt_reference_for_targets(store, std::slice::from_ref(&target))?;
         let prompt = prompt_with_evidence_paths(&base_prompt, &paths, Some(&reference))
             .map_err(ControllerError::PromptUnavailable)?;
-        let watch = self.start_watch(
+        let (watches, prompt) = self.persist_prompt_watches(
             store,
-            &target,
-            RemediationState::WaitingForPromptUse,
-            None,
-            now,
+            std::slice::from_ref(&target),
             prompt_group_id.as_deref(),
+            &prompt,
+            now,
         )?;
-        self.persist_display_snapshot(store, &watch, &target, "action", now.saturating_mul(1_000))?;
+        let watch = watches
+            .into_iter()
+            .next()
+            .ok_or(ControllerError::PersistenceFailed)?;
         Ok(PromptFixResult {
             prompt,
             watch: Some(public_watch(store, &watch)?.ok_or(ControllerError::PersistenceFailed)?),
@@ -746,7 +818,13 @@ impl RemediationController {
                 self.prompt_reference_for_targets(store, &selected)?;
             let prompt = prompt_with_evidence_paths(&base, &paths, Some(&reference))
                 .map_err(ControllerError::PromptUnavailable)?;
-            self.persist_prompt_watches(store, &selected, prompt_group_id.as_deref(), now)?;
+            let (_, prompt) = self.persist_prompt_watches(
+                store,
+                &selected,
+                prompt_group_id.as_deref(),
+                &prompt,
+                now,
+            )?;
             return Ok(CheckPromptFixResult { prompt });
         }
         self.copy_prompt_fix_burn_check_targets(
@@ -839,7 +917,13 @@ impl RemediationController {
                 Some(&reference),
             )
             .map_err(ControllerError::PromptUnavailable)?;
-            self.persist_prompt_watches(store, &targets, prompt_group_id.as_deref(), now)?;
+            let (_, prompt) = self.persist_prompt_watches(
+                store,
+                &targets,
+                prompt_group_id.as_deref(),
+                &prompt,
+                now,
+            )?;
             return Ok(CheckPromptFixResult { prompt });
         }
 
@@ -869,7 +953,8 @@ impl RemediationController {
         }
         let prompt = prompt_with_evidence_paths(&sections.join("\n\n"), &[], Some(&reference))
             .map_err(ControllerError::PromptUnavailable)?;
-        self.persist_prompt_watches(store, &targets, prompt_group_id.as_deref(), now)?;
+        let (_, prompt) =
+            self.persist_prompt_watches(store, &targets, prompt_group_id.as_deref(), &prompt, now)?;
         Ok(CheckPromptFixResult { prompt })
     }
 
@@ -893,6 +978,8 @@ impl RemediationController {
             .latest_remediation_for_target(
                 target.environment_key(),
                 target.agent.slug(),
+                &target.scope_kind,
+                &target.scope_key,
                 &target.target_key,
             )
             .map_err(|_| ControllerError::Internal)?
@@ -1158,12 +1245,27 @@ impl RemediationController {
     }
 
     pub fn aggregate_wins(&self, store: &Store) -> Result<AggregateWins, ControllerError> {
+        let now_ms = now_epoch().saturating_mul(1_000);
+        let snoozed = store
+            .burn_check_snoozes()
+            .map_err(|_| ControllerError::PersistenceFailed)?
+            .into_iter()
+            .filter(|snooze| snooze.until.is_none_or(|until| until > now_ms))
+            .map(|snooze| DetectorId::from(snooze.detector))
+            .collect::<BTreeSet<_>>();
         let rows = store
-            .remediation_contributions(1_000)
+            .passed_remediation_contributions(1_000)
             .map_err(|_| ControllerError::PersistenceFailed)?;
         let wins = rows
             .into_iter()
+            .filter(|row| {
+                !snoozed
+                    .iter()
+                    .any(|detector| detector.key() == row.contribution.detector_id)
+            })
             .map(|row| {
+                let verified_boundary_ms = row.verified_boundary_ms;
+                let row = row.contribution;
                 let snapshot: StoredDisplaySnapshot =
                     serde_json::from_str(&row.display_snapshot_json)
                         .map_err(|_| ControllerError::Internal)?;
@@ -1183,6 +1285,7 @@ impl RemediationController {
                     origin: row.origin,
                     display: snapshot.display,
                     savings,
+                    verified_boundary_ms,
                     starts_at_ms: row.starts_at_ms,
                     ends_at_ms: row.ends_at_ms,
                 })
@@ -1802,6 +1905,8 @@ impl RemediationController {
                     .latest_action_remediation_for_target(
                         target.environment_key(),
                         target.agent.slug(),
+                        &target.scope_kind,
+                        &target.scope_key,
                         &target.target_key,
                     )
                     .map_err(|_| ControllerError::Internal)
@@ -1815,6 +1920,12 @@ impl RemediationController {
         if active.is_empty() {
             let group = random_id().map_err(|_| ControllerError::Internal)?;
             return Ok((group.clone(), Some(group)));
+        }
+        if active
+            .iter()
+            .any(|watch| watch.state != RemediationState::WaitingForPromptUse)
+        {
+            return Err(ControllerError::CheckPromptUnavailable);
         }
         let first_group = active[0].prompt_group_id.clone();
         if let Some(group) = first_group.as_ref().filter(|group| {
@@ -1835,23 +1946,29 @@ impl RemediationController {
         store: &Store,
         targets: &[CachedTarget],
         prompt_group_id: Option<&str>,
+        prompt: &str,
         now: i64,
-    ) -> Result<Vec<RemediationRecord>, ControllerError> {
+    ) -> Result<(Vec<RemediationRecord>, String), ControllerError> {
         if targets.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), prompt.to_owned()));
         }
         let watch_inputs = targets
             .iter()
             .map(|target| {
-                self.watch_input(
+                let (mut remediation, guards) = self.watch_input(
                     target,
                     RemediationState::WaitingForPromptUse,
                     None,
                     now,
                     prompt_group_id,
-                )
+                )?;
+                let mut result: serde_json::Value = serde_json::from_str(&remediation.result_json)
+                    .map_err(|_| ControllerError::Internal)?;
+                result["promptText"] = serde_json::Value::String(prompt.to_owned());
+                remediation.result_json = result.to_string();
+                Ok((remediation, guards))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, ControllerError>>()?;
         let watches = store
             .create_or_reuse_remediations(&watch_inputs)
             .map_err(|_| ControllerError::PersistenceFailed)?
@@ -1865,7 +1982,17 @@ impl RemediationController {
                 now.saturating_mul(1_000),
             )?;
         }
-        Ok(watches)
+        let stored_prompt = watches
+            .first()
+            .and_then(|watch| stored_string(&watch.result_json, "promptText"))
+            .ok_or(ControllerError::PersistenceFailed)?;
+        if watches.iter().any(|watch| {
+            stored_string(&watch.result_json, "promptText").as_deref()
+                != Some(stored_prompt.as_str())
+        }) {
+            return Err(ControllerError::PersistenceFailed);
+        }
+        Ok((watches, stored_prompt))
     }
 
     fn start_watch(
@@ -1938,6 +2065,7 @@ impl RemediationController {
 fn current_target_lifecycle(
     watch: Option<&WatchStatus>,
     attempt: Option<&BurnCheckRemediationAttempt>,
+    current_finding_observed_at_ms: Option<i64>,
 ) -> ChecksCategoryLifecyclePayload {
     let Some(watch) = watch else {
         return attempt
@@ -1947,29 +2075,37 @@ fn current_target_lifecycle(
                     attempt.lifecycle,
                     &attempt.verification,
                     attempt.effective_boundary_ms,
+                    attempt.prompt_action,
                 )
             });
     };
     if watch.origin != RemediationOrigin::Action {
         return ChecksCategoryLifecyclePayload::Failing;
     }
+    if watch.lifecycle == RemediationState::Fixed
+        && attempt
+            .and_then(|attempt| attempt.verified_boundary_ms)
+            .zip(current_finding_observed_at_ms)
+            .is_some_and(|(verified, observed)| observed > verified)
+    {
+        return ChecksCategoryLifecyclePayload::Failing;
+    }
     action_attempt_lifecycle(
         watch.lifecycle,
         &watch.verification,
         attempt.and_then(|attempt| attempt.effective_boundary_ms),
+        attempt.is_some_and(|attempt| attempt.prompt_action),
     )
 }
 
 fn retained_attempt_lifecycle(
     attempt: &BurnCheckRemediationAttempt,
 ) -> ChecksCategoryLifecyclePayload {
-    if attempt.origin != RemediationOrigin::Action {
-        return ChecksCategoryLifecyclePayload::Failing;
-    }
     action_attempt_lifecycle(
         attempt.lifecycle,
         &attempt.verification,
         attempt.effective_boundary_ms,
+        attempt.prompt_action,
     )
 }
 
@@ -1977,17 +2113,17 @@ fn action_attempt_lifecycle(
     lifecycle: RemediationState,
     verification: &VerificationStatus,
     effective_boundary_ms: Option<i64>,
+    prompt_action: bool,
 ) -> ChecksCategoryLifecyclePayload {
     match lifecycle {
         RemediationState::Reserved | RemediationState::Writing => {
             ChecksCategoryLifecyclePayload::AwaitingVerification
         }
-        RemediationState::Watching => {
-            if matches!(verification, VerificationStatus::Watching { .. }) {
-                ChecksCategoryLifecyclePayload::AwaitingVerification
-            } else {
-                ChecksCategoryLifecyclePayload::Failing
-            }
+        RemediationState::WaitingForPromptUse => ChecksCategoryLifecyclePayload::Failing,
+        RemediationState::Watching
+            if prompt_action || matches!(verification, VerificationStatus::Watching { .. }) =>
+        {
+            ChecksCategoryLifecyclePayload::AwaitingVerification
         }
         RemediationState::Fixed
             if matches!(verification, VerificationStatus::Fixed { .. })
@@ -2038,6 +2174,21 @@ fn display_config_file(path: &Path, home: &Path) -> String {
         .unwrap_or_else(|_| path.display().to_string())
 }
 
+fn stored_string(value: &str, key: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(value)
+        .ok()?
+        .get(key)?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn stored_bool(value: &str, key: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(value)
+        .ok()
+        .and_then(|value| value.get(key).and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
+}
+
 const fn remediation_policy_is_current(definition: &WatchDefinition) -> bool {
     definition.version == 1
         && matches!(definition.remediation_policy_revision, Some(value) if value == REMEDIATION_POLICY_REVISION)
@@ -2054,6 +2205,7 @@ fn watch_verification_available(
     if !matches!(scope_kind, "global" | "project")
         || definition.detector != detector.key()
         || !verification_source_matches_agent(agent, definition.source_format.value())
+        || !desktop_watch_verification_supported(detector, definition.source_format.value())
     {
         return false;
     }
@@ -2066,35 +2218,23 @@ fn watch_verification_available(
                 && definition.config_setting.as_deref() == Some("model")
         }
         DetectorId::ModelOverthinking | DetectorId::OveruseOfFastMode => {
-            verification_evidence_supported(detector, definition.source_format.value())
-                && definition.resource.is_none()
+            definition.resource.is_none()
                 && definition.target_model.is_some()
                 && definition.target_control.is_some()
         }
         DetectorId::UnusedMcpServers
         | DetectorId::UnusedBuiltInTools
-        | DetectorId::UnusedSkills => {
-            named_resource_verification_supported(detector, definition.source_format.value())
-                && definition.resource.is_some()
-        }
+        | DetectorId::UnusedSkills => false,
         DetectorId::OverpoweredSubagents => false,
         _ => false,
     }
 }
 
-fn named_resource_verification_supported(detector: DetectorId, source: SourceFormat) -> bool {
-    match detector {
-        DetectorId::UnusedMcpServers | DetectorId::UnusedSkills => {
-            matches!(source, SourceFormat::ClaudeJsonl)
-        }
-        DetectorId::UnusedBuiltInTools => {
-            matches!(
-                source,
-                SourceFormat::ClaudeJsonl | SourceFormat::CodexRolloutJsonl
-            )
-        }
-        _ => false,
-    }
+fn desktop_watch_verification_supported(detector: DetectorId, source: SourceFormat) -> bool {
+    !matches!(
+        detector,
+        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools | DetectorId::UnusedSkills
+    ) && verification_evidence_supported(detector, source)
 }
 
 fn verification_source_matches_agent(agent: &str, source_format: SourceFormat) -> bool {

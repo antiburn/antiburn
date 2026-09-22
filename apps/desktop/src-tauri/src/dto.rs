@@ -520,6 +520,8 @@ pub struct ChecksReportPayload {
     pub pending_evidence: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
+    /// Aggregate burn for each detector bit mask in canonical `DetectorId` order.
+    pub estimated_token_burn_basis_points_by_detector_mask: Vec<Option<u16>>,
     pub categories: Vec<ChecksCategoryPayload>,
 }
 
@@ -1072,6 +1074,7 @@ pub enum AutoFixSideEffect {
 )]
 pub enum ApplyPreparedBurnCheckOperationOutcome {
     AppliedAwaitingVerification { watch_id: String },
+    AppliedVerificationUnavailable { watch_id: String },
     RecoveryNeeded { watch_id: String },
     Stale,
     Expired,
@@ -1094,6 +1097,7 @@ pub struct AggregateWinPayload {
     pub origin: AggregateWinOrigin,
     pub display: BurnCheckDisplayFactsPayload,
     pub savings: AggregateSavingsPayload,
+    pub verified_boundary_ms: i64,
     pub starts_at_ms: i64,
     pub ends_at_ms: i64,
 }
@@ -2090,6 +2094,7 @@ impl From<crate::remediation::AggregateWins> for AggregateWinsPayload {
                         improvement_count: win.savings.improvement_count,
                         method: win.savings.method.map(Into::into),
                     },
+                    verified_boundary_ms: win.verified_boundary_ms,
                     starts_at_ms: win.starts_at_ms,
                     ends_at_ms: win.ends_at_ms,
                 })
@@ -2160,16 +2165,34 @@ fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
 
 impl ChecksReportPayload {
     pub(crate) fn from_reduced_report(report: &crate::insights_report::ReducedReport) -> Self {
-        let mut payload = Self::from_report(
-            &report.report,
-            report.evidence_settled,
-            report.pending_evidence,
-        );
-        for detector in [
+        let resource_detectors = [
             DetectorId::UnusedMcpServers,
             DetectorId::UnusedBuiltInTools,
             DetectorId::UnusedSkills,
-        ] {
+        ];
+        let resource_tokens = resource_detectors.map(|detector| {
+            report
+                .resources
+                .measured_finding_tokens_by_session(detector)
+        });
+        let resource_assessments: [antiburn_local::insights::ResourceTokenBurnAssessment<'_>; 3] =
+            core::array::from_fn(|index| {
+                let detector = resource_detectors[index];
+                let assessment = report.resources.detector(detector);
+                antiburn_local::insights::ResourceTokenBurnAssessment {
+                    detector,
+                    finding_count: assessment.map_or(0, |value| value.unused_count),
+                    clean: assessment.is_some_and(|value| value.clean),
+                    tokens_by_session: resource_tokens[index].as_deref(),
+                }
+            });
+        let mut payload = Self::from_report_with_resources(
+            &report.report,
+            report.evidence_settled,
+            report.pending_evidence,
+            &resource_assessments,
+        );
+        for detector in resource_detectors {
             let Some(assessment) = report.resources.detector(detector) else {
                 continue;
             };
@@ -2189,11 +2212,6 @@ impl ChecksReportPayload {
                 .estimated_token_burn_basis_points
                 .or(category.estimated_token_burn_basis_points);
         }
-        let resource_tokens = report.resources.measured_finding_tokens_by_session();
-        payload.estimated_token_burn_basis_points = report
-            .report
-            .estimated_token_burn_with_resource_tokens_by_session(resource_tokens.as_deref())
-            .or(payload.estimated_token_burn_basis_points);
         payload
     }
 
@@ -2201,6 +2219,15 @@ impl ChecksReportPayload {
         report: &EfficiencyReport,
         evidence_settled: bool,
         pending_evidence: u64,
+    ) -> Self {
+        Self::from_report_with_resources(report, evidence_settled, pending_evidence, &[])
+    }
+
+    fn from_report_with_resources(
+        report: &EfficiencyReport,
+        evidence_settled: bool,
+        pending_evidence: u64,
+        resources: &[antiburn_local::insights::ResourceTokenBurnAssessment<'_>],
     ) -> Self {
         let categories = DetectorId::ALL
             .iter()
@@ -2225,13 +2252,29 @@ impl ChecksReportPayload {
                 }
             })
             .collect();
+        let estimated_token_burn_basis_points_by_detector_mask =
+            aggregate_token_burn_table(report, resources);
+        let estimated_token_burn_basis_points = estimated_token_burn_basis_points_by_detector_mask
+            .last()
+            .copied()
+            .flatten();
         Self {
             evidence_settled,
             pending_evidence,
-            estimated_token_burn_basis_points: report.estimated_token_burn_basis_points,
+            estimated_token_burn_basis_points,
+            estimated_token_burn_basis_points_by_detector_mask,
             categories,
         }
     }
+}
+
+fn aggregate_token_burn_table(
+    report: &EfficiencyReport,
+    resources: &[antiburn_local::insights::ResourceTokenBurnAssessment<'_>],
+) -> Vec<Option<u16>> {
+    (0..(1_u16 << DetectorId::COUNT))
+        .map(|mask| report.estimated_token_burn_for_active_detectors(mask, resources))
+        .collect()
 }
 
 /// Where the app came from and what it is running against.
@@ -2614,12 +2657,17 @@ mod tests {
             report.clean_agents[1].insert("opencode".to_owned());
             report.estimated_token_burn_basis_points = Some(1_625);
             report.detector_estimated_token_burn_basis_points[0] = Some(500);
+            report.assessed_sessions = 2;
             report.detector_statuses[0] = DetectorStatus::Findings(DetectorFindings {
-                finding_sessions: 2,
+                finding_sessions: 1,
                 examples: vec![SessionExample {
                     agent: "claude-code".to_owned(),
                     session_id: "session-1".to_owned(),
                 }],
+            });
+            report.detector_statuses[1] = DetectorStatus::Findings(DetectorFindings {
+                finding_sessions: 1,
+                examples: Vec::new(),
             });
             report.detectors[0] = DetectorCounts {
                 eligible: 4,
@@ -2646,7 +2694,15 @@ mod tests {
             assert!(value.get("providerIncidents").is_none());
             assert_eq!(value["evidenceSettled"], true);
             assert_eq!(value["pendingEvidence"], 0);
-            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
+            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_000);
+            let aggregates = value["estimatedTokenBurnBasisPointsByDetectorMask"]
+                .as_array()
+                .unwrap();
+            assert_eq!(aggregates.len(), 512);
+            assert_eq!(aggregates[0], serde_json::Value::Null);
+            assert_eq!(aggregates[1], 500);
+            assert_eq!(aggregates[2], 1_000);
+            assert_eq!(aggregates[3], 1_000);
             assert_eq!(value["categories"][0]["estimatedTokenBurnBasisPoints"], 500);
             assert!(value["categories"][0]["lifecycle"].is_null());
             assert_eq!(
@@ -2665,6 +2721,7 @@ mod tests {
                 [
                     "categories",
                     "estimatedTokenBurnBasisPoints",
+                    "estimatedTokenBurnBasisPointsByDetectorMask",
                     "evidenceSettled",
                     "pendingEvidence"
                 ]
@@ -2695,7 +2752,7 @@ mod tests {
                 serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4)).unwrap();
             assert_eq!(value["evidenceSettled"], false);
             assert_eq!(value["pendingEvidence"], 4);
-            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
+            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_000);
         }
 
         #[test]
@@ -3320,6 +3377,13 @@ mod tests {
                     effective_boundary_ms: None,
                     verified_boundary_ms: None,
                     recurred_boundary_ms: None,
+                    environment_key: "native".into(),
+                    agent: "claude-code".into(),
+                    scope_kind: "project".into(),
+                    scope_key: "scope".into(),
+                    target_key: "target".into(),
+                    created_at_epoch: 1,
+                    prompt_action: false,
                 }],
             },
         );

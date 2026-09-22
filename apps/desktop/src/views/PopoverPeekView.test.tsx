@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PopoverPeekData } from "../lib/popoverPeekIpc"
 import { aggregateBurnCheckPresentation } from "../lib/presentation/burnChecks"
+import * as SnoozedBurnChecks from "../lib/snoozedBurnChecks"
 import { PopoverPeekView } from "./PopoverPeekView"
 
 const harness = vi.hoisted(() => ({
@@ -256,6 +257,26 @@ describe("PopoverPeekView", () => {
     await waitFor(() => expect(popoverPeekPresented).toHaveBeenCalledWith(1, 196))
     expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Back to activity" })).not.toBeInTheDocument()
+  })
+
+  it("withholds a checks preview until snoozes are ready and fails closed", async () => {
+    const hook = vi
+      .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
+      .mockReturnValue({ status: "loading", records: [] })
+    getPopoverPeekState.mockResolvedValue({
+      generation: 1,
+      target: { kind: "checks" },
+      awaitingRetargetCommit: false,
+    })
+    getPopoverPeekData.mockResolvedValue(CHECKS_DATA)
+    const view = render(<PopoverPeekView />)
+
+    expect(await screen.findByTestId("popover-peek-loading")).toBeVisible()
+    expect(screen.queryByText("Excess cache rehydration")).toBeNull()
+    view.unmount()
+    hook.mockReturnValue({ status: "error", records: [] })
+    render(<PopoverPeekView />)
+    expect(await screen.findByText(/preview unavailable/i)).toBeVisible()
   })
 
   it("acknowledges a cold seeded request without showing a loading shell", async () => {

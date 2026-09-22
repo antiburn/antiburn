@@ -1,13 +1,11 @@
 import {
   cancelChecksReport,
   getBurnCheckAggregateWins,
-  getBurnCheckRemediationProgress,
   getChecksReport,
   listBurnCheckTargets,
   onChecksReportChanged,
   type AggregateWinsPayload,
   type BurnCheckDetectorId,
-  type BurnCheckRemediationProgressPayload,
   type BurnCheckTargetListPayload,
   type ChecksReportPayload,
 } from "../../lib/insightsIpc"
@@ -23,7 +21,6 @@ import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 export interface BurnChecksAdapter {
   getReport(consumerId: string): Promise<ChecksReportPayload | null>
   getAggregateWins(): Promise<AggregateWinsPayload | null>
-  getRemediationProgress?(): Promise<BurnCheckRemediationProgressPayload | null>
   getTargets(detector: BurnCheckDetectorId): Promise<BurnCheckTargetListPayload | null>
   cancelReport(consumerId: string): Promise<void>
   getVisible(): Promise<boolean>
@@ -36,7 +33,6 @@ export interface BurnChecksAdapter {
 const productionAdapter: BurnChecksAdapter = {
   getReport: (consumerId) => getChecksReport(consumerId),
   getAggregateWins: () => getBurnCheckAggregateWins(),
-  getRemediationProgress: () => getBurnCheckRemediationProgress(),
   getTargets: (detector) => listBurnCheckTargets(detector),
   cancelReport: (consumerId) => cancelChecksReport(consumerId),
   getVisible: () => getMainWindowVisible(),
@@ -61,7 +57,6 @@ export interface BurnChecksSnapshot {
   active: boolean
   report: ChecksReportPayload | null
   aggregate: AggregateWinsPayload | null
-  remediationProgress: BurnCheckRemediationProgressPayload | null
   loading: boolean
   refreshing: boolean
   error: boolean
@@ -77,7 +72,6 @@ export class BurnChecksSession {
     active: false,
     report: null,
     aggregate: null,
-    remediationProgress: null,
     loading: false,
     refreshing: false,
     error: false,
@@ -90,6 +84,8 @@ export class BurnChecksSession {
   private generation = 0
   private workVersion = 0
   private refreshVersion = 0
+  private reportVersion = 0
+  private aggregateVersion = 0
   private visible = false
   private initialized = false
   private refreshTask: Promise<void> | null = null
@@ -103,6 +99,7 @@ export class BurnChecksSession {
   private readonly observedOutcomes = new Set<string>()
   private snoozedDetectors = new Set<BurnCheckDetectorId>()
   private snoozesLoaded = false
+  private snoozeRevision = 0
 
   constructor(adapter: BurnChecksAdapter = productionAdapter) {
     this.adapter = adapter
@@ -224,20 +221,22 @@ export class BurnChecksSession {
       const consumerId = this.consumerId
       if (!consumerId) return
       this.update({
+        aggregate: null,
         loading: !this.snapshot.report,
         refreshing: !!this.snapshot.report,
       })
-      void this.loadAggregate(work, version)
-      void this.loadRemediationProgress(work, version)
+      this.aggregateVersion = 0
       try {
         const report = await this.adapter.getReport(consumerId)
         if (work !== this.workVersion || version !== this.refreshVersion) continue
         if (!report) throw new Error("Checks are unavailable")
+        this.reportVersion = version
         this.update({ report, loading: false, refreshing: false, error: false })
         this.exposure.observe(
           this.reportState() ?? "empty",
           this.exposureGeneration ?? undefined,
         )
+        void this.loadAggregate(work, version)
         this.observeOutcomes()
         for (const detector of this.visibleTargets) {
           this.loadTargets(detector, true)
@@ -260,27 +259,12 @@ export class BurnChecksSession {
         version === this.refreshVersion &&
         this.snapshot.active
       ) {
+        this.aggregateVersion = version
         this.update({ aggregate })
         this.observeOutcomes()
       }
     } catch {
       // Aggregate savings are optional and must not hide the checks report.
-    }
-  }
-
-  private async loadRemediationProgress(work: number, version: number): Promise<void> {
-    try {
-      const remediationProgress = await this.adapter.getRemediationProgress?.()
-      if (
-        remediationProgress &&
-        work === this.workVersion &&
-        version === this.refreshVersion &&
-        this.snapshot.active
-      ) {
-        this.update({ remediationProgress })
-      }
-    } catch {
-      // Remediation progress is optional and must not hide the checks report.
     }
   }
 
@@ -367,17 +351,26 @@ export class BurnChecksSession {
     }
   }
 
-  private async loadSnoozes(): Promise<void> {
+  private async loadSnoozes(revision: number, work: number): Promise<void> {
     let loaded = false
     try {
       const snoozedDetectors = await this.adapter.getSnoozedDetectors?.()
-      if (!this.snapshot.active) return
+      if (
+        !this.snapshot.active ||
+        revision !== this.snoozeRevision ||
+        work !== this.workVersion
+      )
+        return
       this.snoozedDetectors = new Set(snoozedDetectors ?? [])
       loaded = true
     } catch {
       // Do not report outcomes when the active snooze state is unknown.
     } finally {
-      if (this.snapshot.active) {
+      if (
+        this.snapshot.active &&
+        revision === this.snoozeRevision &&
+        work === this.workVersion
+      ) {
         this.snoozesLoaded = loaded
         if (loaded) this.observeOutcomes()
       }
@@ -385,12 +378,13 @@ export class BurnChecksSession {
   }
 
   private reloadSnoozes(): void {
+    const revision = ++this.snoozeRevision
     if (!this.adapter.getSnoozedDetectors) {
       this.snoozesLoaded = true
       return
     }
     this.snoozesLoaded = false
-    void this.loadSnoozes()
+    void this.loadSnoozes(revision, this.workVersion)
   }
 
   dispose = (): void => {
@@ -405,6 +399,7 @@ export class BurnChecksSession {
     this.observedOutcomes.clear()
     this.snoozedDetectors = new Set()
     this.snoozesLoaded = false
+    this.snoozeRevision += 1
     this.exposure.conceal("burn_checks", this.exposureGeneration ?? undefined)
     this.exposureGeneration = null
     for (const stop of this.stops.splice(0)) stop()
@@ -432,9 +427,15 @@ export class BurnChecksSession {
         )
         .map((category) => category.id),
     )
-    for (const win of this.snapshot.aggregate?.wins ?? []) {
-      if (!passedDetectors.has(win.detector)) continue
-      this.observeOutcome("verified", win.origin)
+    if (this.aggregateVersion === this.reportVersion) {
+      const verifiedCycles = new Set<string>()
+      for (const win of this.snapshot.aggregate?.wins ?? []) {
+        if (!passedDetectors.has(win.detector)) continue
+        const cycle = JSON.stringify([win.detector, win.findingId, win.remediationCycleId])
+        if (verifiedCycles.has(cycle)) continue
+        verifiedCycles.add(cycle)
+        this.observeOutcome("verified", win.origin)
+      }
     }
     for (const detector of this.observedTargets) {
       if (this.snoozedDetectors.has(detector)) continue
@@ -442,7 +443,6 @@ export class BurnChecksSession {
         const watch = target.watch
         if (!watch) continue
         const status = watch.verification.status
-        if (status === "fixed") this.observeOutcome("verified", watch.origin)
         if (status === "recurred") this.observeOutcome("recurred", watch.origin)
       }
     }

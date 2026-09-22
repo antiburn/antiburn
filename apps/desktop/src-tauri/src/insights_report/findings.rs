@@ -193,6 +193,7 @@ fn named_resource_assessments_for_session(
                 }
                 Some(NamedResourceEvidence::Capped) => false,
                 Some(NamedResourceEvidence::Ambiguous) => false,
+                Some(NamedResourceEvidence::HistoricalObservedSubset { .. }) => true,
                 Some(NamedResourceEvidence::Complete { .. }) => true,
             };
             if replace {
@@ -329,7 +330,7 @@ fn named_resource_assessments_from_parts(
                 agent: session.agent.clone(),
                 project_scope,
                 evidence: statuses[index].clone().unwrap_or_else(|| {
-                    NamedResourceEvidence::Complete {
+                    NamedResourceEvidence::HistoricalObservedSubset {
                         resources: resources[index].clone(),
                     }
                 }),
@@ -337,7 +338,10 @@ fn named_resource_assessments_from_parts(
         })
         .filter(|assessment| {
             assessment.source_format != SourceFormat::Uncharacterized
-                || !matches!(assessment.evidence, NamedResourceEvidence::Complete { .. })
+                || !matches!(
+                    assessment.evidence,
+                    NamedResourceEvidence::HistoricalObservedSubset { .. }
+                )
         })
         .collect()
 }
@@ -1262,6 +1266,7 @@ mod tests {
                         reason: antiburn_local::analysis::CoverageReason::AttributionIncomplete,
                     };
                 }
+                NamedResourceEvidence::HistoricalObservedSubset { .. } => {}
                 NamedResourceEvidence::Complete { .. } => {}
             }
         }
@@ -1310,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn named_desktop_evidence_passes_complete_absence_for_m_b_and_k() {
+    fn named_desktop_session_evidence_cannot_prove_current_resource_absence() {
         for detector in [
             DetectorId::UnusedMcpServers,
             DetectorId::UnusedBuiltInTools,
@@ -1324,12 +1329,17 @@ mod tests {
                 100,
                 &assessments,
             );
-            assert_eq!(result.outcome, VerificationOutcome::Fixed);
+            assert_eq!(
+                result.outcome,
+                VerificationOutcome::Unknown(
+                    VerificationUnknownReason::MissingPostBoundaryEvidence
+                )
+            );
         }
     }
 
     #[test]
-    fn named_desktop_evidence_finds_and_recurres_the_exact_name_only() {
+    fn named_desktop_session_evidence_cannot_verify_presence_or_recurrence() {
         for detector in [
             DetectorId::UnusedMcpServers,
             DetectorId::UnusedBuiltInTools,
@@ -1343,21 +1353,21 @@ mod tests {
                 100,
                 &assessments,
             );
-            assert_eq!(watching.outcome, VerificationOutcome::StillUnresolved);
+            assert!(matches!(watching.outcome, VerificationOutcome::Unknown(_)));
             let fixed = verify_named_resource_watch(
                 &target(detector, "target-resource"),
                 VerificationStage::Fixed,
                 100,
                 &assessments,
             );
-            assert_eq!(fixed.outcome, VerificationOutcome::Recurred);
+            assert!(matches!(fixed.outcome, VerificationOutcome::Unknown(_)));
             let different = verify_named_resource_watch(
                 &target(detector, "different-resource"),
                 VerificationStage::Fixed,
                 100,
                 &assessments,
             );
-            assert_eq!(different.outcome, VerificationOutcome::Fixed);
+            assert!(matches!(different.outcome, VerificationOutcome::Unknown(_)));
         }
     }
 

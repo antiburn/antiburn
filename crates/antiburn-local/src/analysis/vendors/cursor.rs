@@ -226,9 +226,14 @@ fn add_cursor_tool_calls(value: &Value, event: &mut crate::analysis::model::Norm
     let Some(Value::Array(blocks)) = cursor_content(value) else {
         return;
     };
+    let mut parsed_names = event
+        .tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<Vec<_>>();
     for block in blocks {
         let kind = block.get("type").and_then(Value::as_str).unwrap_or("");
-        if !matches!(kind, "tool-use" | "tool-call" | "tool_call") {
+        if !is_cursor_tool_call_kind(kind) {
             continue;
         }
         let name = block
@@ -238,6 +243,10 @@ fn add_cursor_tool_calls(value: &Value, event: &mut crate::analysis::model::Norm
             .filter(|name| !name.is_empty());
         let input = block.get("input").or_else(|| block.get("arguments"));
         if let Some(name) = name {
+            if let Some(index) = parsed_names.iter().position(|parsed| parsed == name) {
+                parsed_names.swap_remove(index);
+                continue;
+            }
             event.tools.push(ToolCall::with_command(
                 name,
                 input
@@ -246,6 +255,13 @@ fn add_cursor_tool_calls(value: &Value, event: &mut crate::analysis::model::Norm
             ));
         }
     }
+}
+
+fn is_cursor_tool_call_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "tool_use" | "tool-use" | "toolCall" | "tool-call" | "tool_call"
+    )
 }
 
 fn is_cursor_tool_result_only(value: &Value) -> bool {
@@ -290,7 +306,7 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
                 parts.push(ContentPart::new(ContentKind::Thinking, text));
             }
         }
-        "tool_use" | "tool-use" | "toolCall" | "tool-call" | "tool_call" => {
+        kind if is_cursor_tool_call_kind(kind) => {
             let input = value
                 .get("input")
                 .or_else(|| value.get("arguments"))

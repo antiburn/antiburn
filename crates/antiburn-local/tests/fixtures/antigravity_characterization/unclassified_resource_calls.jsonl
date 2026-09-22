@@ -1,0 +1,1 @@
+{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":1000,"tool_calls":[{"name":"docs_search","args":{}},{"name":"foo_bar_search","args":{}},{"name":"deploy","args":{}},{"name":"review","args":{}},{"name":"unrelated_call","args":{}}]}

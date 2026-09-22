@@ -133,7 +133,8 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   // this request's key. Always live, so the sidebar's counts stay current
   // even while another section is on screen.
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(activity.entries ?? []))
-  const snoozedDetectors = snoozedDetectorIds(useSnoozedBurnChecks())
+  const snoozes = useSnoozedBurnChecks()
+  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   const availableSections: readonly MainWindowSection[] = sections ?? [
     {
       id: "overview",
@@ -164,7 +165,11 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       id: "activity",
       label: "Sessions",
       icon: MessagesSquare,
-      children: sessionFilterChildren(activity.entries, hygieneBySession, snoozedDetectors),
+      children: sessionFilterChildren(
+        snoozes.status === "ready" ? activity.entries : null,
+        hygieneBySession,
+        snoozedDetectors,
+      ),
       render: ({ active }) => (
         <MainActivityView
           active={active}

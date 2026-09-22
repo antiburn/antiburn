@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use antiburn_local::analysis::{
-    ContextSourceEvidence, EvidenceSource, EvidenceValue, SessionEvidenceAccumulator,
-    SourceCapabilities, SourceKind, ToolDefinition, ToolEvidence, ToolUse, TurnFacts,
+    ContextSourceEvidence, EvidenceSource, EvidenceValue, RawSource, SessionEvidenceAccumulator,
+    SessionInput, SourceCapabilities, SourceFormat, SourceKind, ToolDefinition, ToolEvidence,
+    ToolUse, TurnFacts, reader_for,
 };
 use antiburn_local::insights::{SessionTokenBurnEvidence, TokenBurnSourceEvidence};
 
@@ -18,6 +19,8 @@ fn evidence(agent: AgentKind, session_id: &str) -> SessionEvidence {
             AgentKind::Codex => SourceCapabilities::codex(),
             AgentKind::OpenCode => SourceCapabilities::opencode(),
             AgentKind::Pi => SourceCapabilities::pi(),
+            AgentKind::Cursor => SourceCapabilities::cursor(),
+            AgentKind::Antigravity => SourceCapabilities::antigravity(),
             _ => unreachable!(),
         },
     })
@@ -123,6 +126,43 @@ fn set_complete_empty_sources(evidence: &mut SessionEvidence) {
     evidence.tools = EvidenceValue::Complete(ToolEvidence {
         by_name: BTreeMap::new(),
     });
+}
+
+fn production_resource_evidence(agent: AgentKind) -> SessionEvidence {
+    let (agent_name, source_format, source) = match agent {
+        AgentKind::Cursor => (
+            "cursor",
+            SourceFormat::CursorCliAgentJsonl,
+            include_str!(
+                "../../../../../../crates/antiburn-local/tests/fixtures/cursor_characterization/unclassified_resource_calls.jsonl"
+            ),
+        ),
+        AgentKind::Antigravity => (
+            "antigravity",
+            SourceFormat::AntigravityBrainJsonl,
+            include_str!(
+                "../../../../../../crates/antiburn-local/tests/fixtures/antigravity_characterization/unclassified_resource_calls.jsonl"
+            ),
+        ),
+        _ => unreachable!(),
+    };
+    let input = SessionInput {
+        agent: agent_name.into(),
+        session_id: "resource-calls".into(),
+        source: RawSource::Jsonl(source.to_owned()),
+        fork_parent_session_id: None,
+        source_format,
+    };
+    let reader = reader_for(agent_name);
+    let mut accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: agent_name.into(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::Jsonl,
+        capabilities: reader.capabilities(&input),
+    });
+    let outcome = reader.visit(&input, &mut accumulator).unwrap();
+    accumulator.observe_source_outcome(outcome);
+    accumulator.evidence(&TurnFacts::default())
 }
 
 fn observe_complete_session(
@@ -470,7 +510,7 @@ fn skill_target_and_category_use_the_same_replicated_listing_tokens() {
     assert_eq!(detector.replicated_tokens, Some(50));
     assert_eq!(detector.estimated_token_burn_basis_points, Some(500));
     assert_eq!(
-        assessment.measured_finding_tokens_by_session(),
+        assessment.measured_finding_tokens_by_session(DetectorId::UnusedSkills),
         Some(vec![(0, 25), (1, 25)])
     );
 }
@@ -666,7 +706,7 @@ fn pi_core_built_in_tools_never_create_targets() {
 }
 
 #[test]
-fn ambiguous_skill_suffix_suppresses_no_candidate() {
+fn ambiguous_skill_suffix_suppresses_candidates() {
     let mut builder = ResourceAssessmentBuilder::default();
     builder.observe_inventory(
         inventory(
@@ -709,8 +749,118 @@ fn ambiguous_skill_suffix_suppresses_no_candidate() {
     let assessment = builder.finish(&report());
     let detector = assessment.detector(DetectorId::UnusedSkills).unwrap();
     assert_eq!(detector.used_count, 0);
-    assert_eq!(detector.unused_count, 2);
-    assert_eq!(detector.targets.len(), 2);
+    assert_eq!(detector.unused_count, 0);
+    assert!(detector.targets.is_empty());
+    assert!(detector.unavailable);
+}
+
+#[test]
+fn cursor_and_antigravity_unclassified_calls_match_possible_resources() {
+    let temporary = tempfile::tempdir().unwrap();
+    let project = temporary.path().join("project");
+
+    for agent in [AgentKind::Cursor, AgentKind::Antigravity] {
+        let mut builder = ResourceAssessmentBuilder::default();
+        builder.observe_inventory(
+            inventory(
+                agent,
+                vec![
+                    candidate(
+                        agent,
+                        ResourceKind::McpServer,
+                        "docs",
+                        ResourceScope::Global,
+                    ),
+                    candidate(
+                        agent,
+                        ResourceKind::McpServer,
+                        "docs",
+                        ResourceScope::Project,
+                    ),
+                    candidate(agent, ResourceKind::McpServer, "foo", ResourceScope::Global),
+                    candidate(
+                        agent,
+                        ResourceKind::McpServer,
+                        "foo_bar",
+                        ResourceScope::Global,
+                    ),
+                    candidate(
+                        agent,
+                        ResourceKind::McpServer,
+                        "unused-mcp",
+                        ResourceScope::Global,
+                    ),
+                    candidate(agent, ResourceKind::Skill, "deploy", ResourceScope::Global),
+                    candidate(agent, ResourceKind::Skill, "deploy", ResourceScope::Project),
+                    candidate(
+                        agent,
+                        ResourceKind::Skill,
+                        "first:review",
+                        ResourceScope::Global,
+                    ),
+                    candidate(
+                        agent,
+                        ResourceKind::Skill,
+                        "second:review",
+                        ResourceScope::Global,
+                    ),
+                    candidate(
+                        agent,
+                        ResourceKind::Skill,
+                        "unused-skill",
+                        ResourceScope::Global,
+                    ),
+                ],
+            ),
+            Some(&project),
+        );
+        let evidence = production_resource_evidence(agent);
+        let tools = match &evidence.tools {
+            EvidenceValue::Complete(tools)
+            | EvidenceValue::Partial {
+                observed: tools, ..
+            } => tools,
+            EvidenceValue::Unsupported => panic!("production tool evidence must be available"),
+        };
+        assert!(
+            tools
+                .by_name
+                .values()
+                .all(|tool| tool.class == ToolClass::Unclassified),
+            "{agent:?}"
+        );
+        builder.observe_session(
+            "native",
+            agent,
+            "resource-calls",
+            Some(&project),
+            &evidence,
+            None,
+        );
+
+        let assessment = builder.finish(&report());
+        for (detector, scoped_name, unrelated_name) in [
+            (DetectorId::UnusedMcpServers, "docs", "unused-mcp"),
+            (DetectorId::UnusedSkills, "deploy", "unused-skill"),
+        ] {
+            let result = assessment.detector(detector).unwrap();
+            assert_eq!(result.candidate_count, 5, "{agent:?} {detector:?}");
+            assert_eq!(result.used_count, 1, "{agent:?} {detector:?}");
+            assert_eq!(result.unused_count, 2, "{agent:?} {detector:?}");
+            assert_eq!(
+                result
+                    .targets
+                    .iter()
+                    .map(|target| (target.canonical_name.as_str(), target.scope.clone()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (scoped_name, ResourceAssessmentScope::Global),
+                    (unrelated_name, ResourceAssessmentScope::Global),
+                ],
+                "{agent:?} {detector:?}"
+            );
+        }
+    }
 }
 
 #[test]

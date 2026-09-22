@@ -254,15 +254,56 @@ fn token_burn_estimates_use_measured_avoidable_tokens() {
         Some(750)
     );
     assert_eq!(
-        report.estimated_token_burn_with_resource_tokens_by_session(Some(&[(0, 300)])),
+        report.estimated_token_burn_for_active_detectors(
+            (1 << DetectorId::SessionsOverDepth.index()) | (1 << DetectorId::UnusedSkills.index()),
+            &[ResourceTokenBurnAssessment {
+                detector: DetectorId::UnusedSkills,
+                finding_count: 1,
+                clean: false,
+                tokens_by_session: Some(&[(0, 300)]),
+            }],
+        ),
         Some(1_500)
     );
     assert_eq!(
-        report.estimated_token_burn_with_resource_tokens_by_session(Some(&[(1, 300)])),
+        report.estimated_token_burn_for_active_detectors(
+            (1 << DetectorId::SessionsOverDepth.index()) | (1 << DetectorId::UnusedSkills.index()),
+            &[ResourceTokenBurnAssessment {
+                detector: DetectorId::UnusedSkills,
+                finding_count: 1,
+                clean: false,
+                tokens_by_session: Some(&[(1, 300)]),
+            }],
+        ),
         Some(2_250)
     );
     assert_eq!(
-        report.estimated_token_burn_with_resource_tokens_by_session(None),
+        report.estimated_token_burn_for_active_detectors(
+            (1 << DetectorId::SessionsOverDepth.index())
+                | (1 << DetectorId::UnusedMcpServers.index())
+                | (1 << DetectorId::UnusedSkills.index()),
+            &[
+                ResourceTokenBurnAssessment {
+                    detector: DetectorId::UnusedMcpServers,
+                    finding_count: 1,
+                    clean: false,
+                    tokens_by_session: Some(&[(0, 200)]),
+                },
+                ResourceTokenBurnAssessment {
+                    detector: DetectorId::UnusedSkills,
+                    finding_count: 1,
+                    clean: false,
+                    tokens_by_session: Some(&[(0, 200)]),
+                },
+            ],
+        ),
+        Some(2_000)
+    );
+    assert_eq!(
+        report.estimated_token_burn_for_active_detectors(
+            1 << DetectorId::SessionsOverDepth.index(),
+            &[],
+        ),
         Some(750)
     );
     assert_eq!(
@@ -482,6 +523,13 @@ fn findings_without_a_denominator_use_a_bounded_fallback() {
         Some(500)
     );
     assert_eq!(report.estimated_token_burn_basis_points, Some(500));
+    assert_eq!(
+        report.estimated_token_burn_for_active_detectors(
+            1 << DetectorId::SessionsOverDepth.index(),
+            &[],
+        ),
+        Some(500)
+    );
     assert_eq!(report.estimated_token_burn_for_attributed_tokens(1), None);
 }
 
@@ -569,6 +617,108 @@ fn combined_token_burn_uses_the_largest_overlapping_contribution() {
         Some(8_000)
     );
     assert_eq!(per_detector[DetectorId::CacheChurn.index()], Some(7_000));
+}
+
+#[test]
+fn active_detector_mask_removes_one_overlapping_contribution() {
+    let mut evidence = evidence_with_work("overlap");
+    evidence.context = EvidenceValue::Complete(ContextEvidence {
+        max_request_context_tokens: 400_001,
+        top_depth_examples: Vec::new(),
+    });
+    let EvidenceValue::Complete(models) = &mut evidence.models else {
+        unreachable!()
+    };
+    models.effort_tiers.insert(
+        "max".to_owned(),
+        TurnCounts {
+            main_loop: 1,
+            delegated: 0,
+        },
+    );
+    let mut accumulator = EfficiencyReportAccumulator::new();
+    accumulator.observe_session_with_token_burn(
+        evidence,
+        SessionTokenBurnEvidence {
+            total_tokens: Some(1_000),
+            overdepth_avoidable_tokens: Some(800),
+            model_overthinking: Some(700),
+            ..SessionTokenBurnEvidence::default()
+        },
+    );
+    let mut report = accumulator.finish(context(CoverageCounts::default()));
+    report.detector_statuses[DetectorId::ModelOverthinking.index()] =
+        DetectorStatus::Findings(detectors::DetectorFindings {
+            finding_sessions: 1,
+            examples: Vec::new(),
+        });
+    report.token_burn_by_detector_by_session[DetectorId::ModelOverthinking.index()] =
+        Some(vec![700]);
+
+    assert_eq!(
+        report.estimated_token_burn_for_active_detectors(
+            (1 << DetectorId::SessionsOverDepth.index())
+                | (1 << DetectorId::ModelOverthinking.index()),
+            &[],
+        ),
+        Some(8_000)
+    );
+    assert_eq!(
+        report.estimated_token_burn_for_active_detectors(
+            1 << DetectorId::ModelOverthinking.index(),
+            &[],
+        ),
+        Some(7_000)
+    );
+}
+
+#[test]
+fn active_detector_aggregate_preserves_fallback_zero_and_null_semantics() {
+    let mut finding = evidence_with_work("finding");
+    finding.context = EvidenceValue::Complete(ContextEvidence {
+        max_request_context_tokens: 400_001,
+        top_depth_examples: Vec::new(),
+    });
+    let mut accumulator = EfficiencyReportAccumulator::new();
+    accumulator.observe_session_with_token_burn(
+        finding,
+        SessionTokenBurnEvidence {
+            total_tokens: Some(1_000),
+            overdepth_avoidable_tokens: None,
+            ..SessionTokenBurnEvidence::default()
+        },
+    );
+    let report = accumulator.finish(context(CoverageCounts::default()));
+
+    assert_eq!(
+        report.estimated_token_burn_for_active_detectors(
+            1 << DetectorId::SessionsOverDepth.index(),
+            &[],
+        ),
+        Some(1_000)
+    );
+    assert_eq!(
+        report.estimated_token_burn_for_active_detectors(
+            1 << DetectorId::UnusedMcpServers.index(),
+            &[],
+        ),
+        None
+    );
+    assert_eq!(
+        report.estimated_token_burn_for_active_detectors(0, &[]),
+        None
+    );
+
+    let mut clean_accumulator = EfficiencyReportAccumulator::new();
+    clean_accumulator.observe_session(evidence_with_work("clean"));
+    let clean_report = clean_accumulator.finish(context(CoverageCounts::default()));
+    assert_eq!(
+        clean_report.estimated_token_burn_for_active_detectors(
+            1 << DetectorId::SessionsOverDepth.index(),
+            &[],
+        ),
+        Some(0)
+    );
 }
 
 #[test]

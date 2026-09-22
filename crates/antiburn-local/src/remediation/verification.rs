@@ -156,7 +156,12 @@ pub struct NamedResourceObservation {
 /// Completeness of a later named-resource inventory and its use evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NamedResourceEvidence {
+    /// A complete, bounded current inventory with use evidence from the same scope.
     Complete {
+        resources: Vec<NamedResourceObservation>,
+    },
+    /// Resources observed in historical sessions, not a current inventory.
+    HistoricalObservedSubset {
         resources: Vec<NamedResourceObservation>,
     },
     Partial,
@@ -174,7 +179,7 @@ pub struct NamedResourceAssessment {
     pub evidence: NamedResourceEvidence,
 }
 
-/// Verifies an M/B/K target against complete, later named-resource evidence.
+/// Verifies an M/B/K target against a complete, bounded current inventory.
 ///
 /// Presence of the exact normalized target remains unresolved. Absence from a
 /// complete inventory proves the target fixed. The `used` flag is retained in

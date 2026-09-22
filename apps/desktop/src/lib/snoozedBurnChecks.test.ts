@@ -1,16 +1,18 @@
 import { act, renderHook } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+const invoke = vi.hoisted(() => vi.fn())
+const listen = vi.hoisted(() => vi.fn().mockResolvedValue(() => undefined))
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
-  invoke: vi.fn(async (command: string, args?: { snooze?: unknown }) =>
-    command === "set_burn_check_snooze" ? [args?.snooze] : [],
-  ),
+  invoke,
 }))
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => undefined) }))
+vi.mock("@tauri-apps/api/event", () => ({ listen }))
 
 import {
   activeChecksReport,
+  refreshSnoozedBurnChecks,
   snoozeUntil,
   snoozeBurnCheck,
   useSnoozedBurnChecks,
@@ -37,15 +39,83 @@ const payload = {
   ],
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 describe("snoozed burn checks", () => {
+  beforeEach(() => {
+    invoke.mockReset()
+    invoke.mockImplementation(async (command: string, args?: { snooze?: unknown }) =>
+      command === "set_burn_check_snooze" ? [args?.snooze] : [],
+    )
+    listen.mockClear()
+  })
+
+  it("does not expose an empty ready state while the initial read is pending", async () => {
+    let resolve!: (records: unknown[]) => void
+    invoke.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    const { result } = renderHook(() => useSnoozedBurnChecks())
+
+    expect(result.current).toEqual({ status: "loading", records: [] })
+    await act(async () => resolve([{ detector: "oldModelUsage", scope: "check", until: null }]))
+    expect(result.current).toMatchObject({
+      status: "ready",
+      records: [{ detector: "oldModelUsage" }],
+    })
+  })
+
+  it("handles rejected reads and retains the last known records", async () => {
+    const { result } = renderHook(() => useSnoozedBurnChecks())
+    await act(async () => undefined)
+    await act(async () => snoozeBurnCheck("cacheChurn", "forever"))
+    invoke.mockRejectedValueOnce(new Error("Unavailable"))
+
+    await act(refreshSnoozedBurnChecks)
+
+    expect(result.current.status).toBe("error")
+    expect(result.current.records.map((record) => record.detector)).toContain("cacheChurn")
+  })
+
+  it("ignores an older read that resolves after a newer read", async () => {
+    const older = deferred<unknown[]>()
+    const newerRead = deferred<unknown[]>()
+    invoke.mockReturnValueOnce(older.promise).mockReturnValueOnce(newerRead.promise)
+    const { result } = renderHook(() => useSnoozedBurnChecks())
+    const newer = refreshSnoozedBurnChecks()
+    newerRead.resolve([{ detector: "unusedSkills", scope: "check", until: null }])
+    await act(async () => newer)
+    older.resolve([{ detector: "oldModelUsage", scope: "check", until: null }])
+    await act(async () => older.promise)
+
+    expect(result.current.records.map((record) => record.detector)).toEqual(["unusedSkills"])
+  })
+
+  it("uses one event listener for concurrent subscribers", async () => {
+    const first = renderHook(() => useSnoozedBurnChecks())
+    const second = renderHook(() => useSnoozedBurnChecks())
+    await act(async () => undefined)
+    expect(listen).toHaveBeenCalledOnce()
+    first.unmount()
+    second.unmount()
+  })
+
   it("expires stored snoozes at the scheduled time", async () => {
     vi.useFakeTimers()
     try {
       const { result } = renderHook(() => useSnoozedBurnChecks())
       await act(async () => snoozeBurnCheck("cacheChurn", "week"))
-      expect(result.current).toHaveLength(1)
+      expect(result.current.records).toHaveLength(1)
       await act(async () => vi.advanceTimersByTime(7 * 24 * 60 * 60 * 1_000))
-      expect(result.current).toEqual([])
+      expect(result.current).toEqual({ status: "ready", records: [] })
     } finally {
       vi.useRealTimers()
     }
@@ -108,6 +178,9 @@ describe("snoozed burn checks", () => {
           evidenceSettled: true,
           pendingEvidence: 0,
           estimatedTokenBurnBasisPoints: 900,
+          estimatedTokenBurnBasisPointsByDetectorMask: Array.from({ length: 512 }, (_, mask) =>
+            mask === 1 << 8 ? 300 : null,
+          ),
           categories,
         },
         snoozed,
@@ -115,12 +188,15 @@ describe("snoozed burn checks", () => {
     ).toBe(300)
   })
 
-  it("adds active category estimates instead of selecting the largest one", () => {
+  it("selects the exact overlapping aggregate after filtering", () => {
     const report = activeChecksReport(
       {
         evidenceSettled: true,
         pendingEvidence: 0,
         estimatedTokenBurnBasisPoints: 900,
+        estimatedTokenBurnBasisPointsByDetectorMask: Array.from({ length: 512 }, (_, mask) =>
+          mask === ((1 << 6) | (1 << 8)) ? 850 : null,
+        ),
         categories: [
           {
             id: "cacheChurn",
@@ -147,6 +223,6 @@ describe("snoozed burn checks", () => {
       },
       new Set(["sessionsOverDepth"]),
     )
-    expect(report.estimatedTokenBurnBasisPoints).toBe(1_100)
+    expect(report.estimatedTokenBurnBasisPoints).toBe(850)
   })
 })

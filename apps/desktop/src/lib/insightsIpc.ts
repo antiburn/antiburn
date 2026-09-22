@@ -46,6 +46,8 @@ export interface ChecksReportPayload {
   pendingEvidence: number
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
+  /** Aggregate burn indexed by the active detector bit mask in canonical detector order. */
+  estimatedTokenBurnBasisPointsByDetectorMask?: Array<number | null>
   categories: ChecksCategoryPayload[]
 }
 
@@ -342,6 +344,7 @@ export type PrepareAutoFixBurnCheckTargetOutcome =
 
 export type ApplyPreparedBurnCheckOperationOutcome =
   | { outcome: "appliedAwaitingVerification"; watchId: string }
+  | { outcome: "appliedVerificationUnavailable"; watchId: string }
   | { outcome: "recoveryNeeded"; watchId: string }
   | { outcome: "stale" }
   | { outcome: "expired" }
@@ -379,6 +382,7 @@ export interface AggregateWinPayload {
     improvementCount: number | null
     method: BurnCheckEstimateMethod | null
   }
+  verifiedBoundaryMs: number
   startsAtMs: number
   endsAtMs: number
 }
