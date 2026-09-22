@@ -30,6 +30,18 @@
   background-color: var(--overview-placeholder-fill, transparent);
 }
 
+/*
+ * The row above the plot. It carries the legend, and on the allowance chart
+ * the provider tabs sit in it too. Those tabs are the taller of the two, so
+ * the row is held at their height whether or not they are there. Without it
+ * the row is one height while the chart loads and another once it arrives,
+ * and the plot below changes height to match.
+ */
+
+.overview-chart-legend {
+  min-block-size: 1.5rem;
+}
+
 /* The shared `Skeleton` carries a Tailwind fill and a pulse of its own. Inside
    the usage section both give way to the wash above. Two classes deep, so the
    utility loses on specificity and needs no `!important`. */

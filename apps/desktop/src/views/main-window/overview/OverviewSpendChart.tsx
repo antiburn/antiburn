@@ -153,15 +153,26 @@ export function OverviewSpendChart({
     >
       {placeholder ? (
         <>
-          {/* The agent legend, held open so the rest of the page does not shift
-              down when the chart replaces this. */}
+          {/* The same frame the chart draws in: the agent legend above, the
+              value labels beside and the day labels below, all held open and
+              invisible. The block then sits exactly where the plot will, and
+              nothing on the page moves when the chart replaces it. */}
           <div aria-hidden="true" className="invisible mb-(--space-sm)">
             <ChartLegend
               ariaLabel="Agents"
               items={[{ key: "placeholder", label: "Agent", swatch: "bg-transparent" }]}
             />
           </div>
-          <div aria-hidden="true" className="overview-chart-placeholder" />
+          <div
+            aria-hidden="true"
+            className="grid min-h-(--overview-chart-height) flex-auto grid-cols-[minmax(0,1fr)_auto] grid-rows-[minmax(0,1fr)_auto] gap-x-(--space-sm) gap-y-(--space-xs) pt-(--space-sm)"
+          >
+            <div className="overview-chart-placeholder" />
+            <div className="type-metadata invisible">
+              <SegmentFigure>$0.00</SegmentFigure>
+            </div>
+            <div className="type-caption invisible h-[1.4em]" />
+          </div>
         </>
       ) : (
         <>

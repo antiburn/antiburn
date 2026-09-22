@@ -132,7 +132,7 @@ describe("OverviewUsage", () => {
   })
 
   it("holds the chart's legend row open while the chart is still loading", () => {
-    render(
+    const { rerender } = render(
       <OverviewUsage
         metric="allowance"
         onMetricChange={vi.fn()}
@@ -147,6 +147,28 @@ describe("OverviewUsage", () => {
     // Reserved rather than drawn: without it the rest of the page sits a row
     // too high until the plot arrives.
     expect(chart.querySelector(".invisible")).not.toBeNull()
+    expect(chart.querySelector(".overview-chart-legend")).not.toBeNull()
+
+    rerender(
+      <OverviewUsage
+        metric="allowance"
+        onMetricChange={vi.fn()}
+        totals={null}
+        days={[]}
+        allowance={summary([
+          account(),
+          account({ provider: "openai", accountKey: "second", displayName: "Codex" }),
+        ])}
+      />,
+    )
+    // The drawn chart puts the provider tabs in that row, which are taller
+    // than the legend alone. Both rows take their height from the same rule,
+    // so the plot starts where the block did.
+    expect(
+      screen
+        .getByRole("region", { name: "Allowance chart" })
+        .querySelector(".overview-chart-legend"),
+    ).not.toBeNull()
   })
 
   it("hands the page the unit the reader picked", () => {

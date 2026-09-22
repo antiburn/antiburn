@@ -54,7 +54,7 @@ export function OverviewAllowanceChart({
           <>
             {/* The legend the plot draws above itself, held open so the rest of
                 the page does not shift down when the plot replaces this. */}
-            <div aria-hidden="true" className="invisible mb-(--space-sm)">
+            <div aria-hidden="true" className="overview-chart-legend invisible mb-(--space-sm)">
               <ChartLegend ariaLabel="Layers" items={LEGEND_ITEMS} />
             </div>
             <div aria-hidden="true" className="overview-chart-placeholder" />
@@ -143,7 +143,7 @@ function AllowancePlot({
   return (
     <section className="overview-chart overview-chart-in" aria-label="Allowance chart">
       <p className="sr-only">{summary}</p>
-      <div className="mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
+      <div className="overview-chart-legend mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
         <ChartLegend ariaLabel="Layers" items={LEGEND_ITEMS} />
         {controls}
       </div>

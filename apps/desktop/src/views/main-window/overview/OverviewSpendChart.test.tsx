@@ -172,4 +172,16 @@ describe("OverviewSpendChart", () => {
     expect(region.querySelector(".overview-chart-placeholder")).toBeNull()
     expect(region).toHaveClass("overview-chart-in")
   })
+
+  it("stands the block in the same frame the chart draws in", () => {
+    const { rerender } = render(<OverviewSpendChart days={[]} loading />)
+    const region = screen.getByRole("region", { name: "Estimated spend by day" })
+    const whileLoading = region.children[1]!.className
+
+    rerender(<OverviewSpendChart days={[day("2026-09-20", [agent("claude-code", 1)])]} />)
+    // The chart's plot sits in a grid that also reserves the value labels
+    // beside it and the day labels below. A block without them is taller than
+    // the plot it stands in for, and the page settles as the chart arrives.
+    expect(region.children[1]!.className).toBe(whileLoading)
+  })
 })
