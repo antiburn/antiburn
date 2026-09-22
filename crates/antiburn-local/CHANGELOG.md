@@ -17,6 +17,73 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-22
+
+### Added
+
+- `QuotaIncident` carries an optional `reset_clock` (new `QuotaResetClock`
+  type): the wall-clock reset time and IANA zone that a Claude limit-error
+  message states in free text. The engine does not resolve it to an instant.
+  Advance the evidence schema revision to 21 so existing stored analyses
+  reparse to populate the field.
+- Add the public named-resource verification API for unused MCP servers,
+  built-in tools, and skills: `NamedResourceVerificationTarget`,
+  `NamedResourceObservation`, `NamedResourceEvidence`,
+  `NamedResourceAssessment`, and `verify_named_resource_watch`. A watch is
+  verified against a complete, bounded later inventory from the same agent,
+  source, and project scope.
+- Add the public `ResourceTokenBurnAssessment` and
+  `fallback_token_burn_basis_points` so a detector with findings but no
+  attributable token evidence reports a conservative, bounded burn estimate
+  instead of none.
+- Remediation prompts now reach Cursor, Copilot, Cline, Kiro, Amp, and
+  Windsurf sources. Before this, those agents never matched a recommendation
+  or a source in the remediation path.
+- Pi sessions with header version 1 or 2 are accepted in addition to
+  version 3, applying Pi's documented read-time migrations. The reader also
+  recognizes `usage`, `branch_summary`, and `label` records and the `system`,
+  `custom`, `branchSummary`, and `compactionSummary` message roles.
+- Cursor agent-transcript sessions now extract tool calls and full turn
+  content, not only metrics events. Cursor subagent forks are linked at full
+  confidence from the `agent-transcripts/<parent>/subagents/<child>.jsonl`
+  path convention and from `subagentInfo.parentAgentId` in `store.db`.
+- OpenCode SQLite sources are accepted when the `session`, `message`, or
+  `part` tables omit `time_created` or `time_updated`; ordering falls back
+  to the other timestamp column or row identity.
+- Codex sessions that revert a fork at the top level resolve ownership from
+  the copied parent metadata and the first later envelope timestamp. The
+  reader treats `inter_agent_communication`, `web_search_begin`, and
+  `web_search_end` as proven records and reads the context-window size from
+  `/payload/model_context_window` as well as `/payload/info/model_context_window`.
+- Claude `fork-context-ref` records and `system` records with subtype
+  `away_summary`, `stop_hook_summary`, or `turn_duration` are recognized
+  instead of being treated as inert.
+- Antigravity reads model changes from CLI `USER_INPUT`
+  `<USER_SETTINGS_CHANGE>` metadata and flags records with a non-empty
+  `truncated_fields` list as partial.
+
+### Changed
+
+- **Breaking:** `EfficiencyReport::estimated_token_burn_with_resource_tokens_by_session`
+  is removed. Use
+  `EfficiencyReport::estimated_token_burn_for_active_detectors(active_detector_mask, resource_assessments)`,
+  which recomputes aggregate and per-detector burn for a selected set of
+  detectors from `ResourceTokenBurnAssessment` values without exposing
+  session-level token data.
+- `CopilotCliJsonl` no longer claims a clean result for unused MCP servers,
+  built-in tools, or skills, and no longer produces `SessionsOverDepth`
+  findings. The accepted Copilot CLI bundle carries no resource-inventory or
+  request-depth evidence to support them.
+
+### Fixed
+
+- Amp thread parsing double-counted cache-creation tokens inside
+  `inputTokens`. Amp now reports `input_tokens` net of `cacheCreationTokens`,
+  reconciles against `totalInputTokens` with the shared context-token
+  accounting, and claims `SourceCapabilities::request_context_tokens`.
+- Cursor discovery no longer overwrites an embedded fork observation with the
+  weaker title-based heuristic.
+
 ## [0.10.0] - 2026-09-21
 
 ### Added
