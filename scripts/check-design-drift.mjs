@@ -170,12 +170,14 @@ export function checkDesignDrift(io = fileSystemIo()) {
   // Type roles inherit the shared line height so mixed roles keep one rhythm.
   for (const selector of ["html", "body"]) {
     const rules = topLevelRuleBodies(css, selector);
-    if (!rules.some((rule) => /line-height:\s*[\d.]+\s*;/.test(rule))) {
+    if (
+      !rules.some((rule) => /(?:^|;)\s*line-height:\s*[\d.]+\s*;/.test(rule))
+    ) {
       failures.push(`${selector} has no shared unitless line-height`);
     }
   }
   for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    if (!/line-height\s*:/.test(match[2])) continue;
+    if (!/(?:^|;)\s*line-height\s*:/.test(match[2])) continue;
     for (const role of new Set(
       [...match[1].matchAll(/\.type-([\w-]+)/g)].map((m) => m[1]),
     )) {

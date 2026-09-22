@@ -237,3 +237,13 @@ for (const selector of [
     );
   });
 }
+
+test("custom properties do not count as line-height declarations", () => {
+  const css = CSS + ".type-body { --line-height: 1.2; }";
+  assert.deepEqual(checkDesignDrift(fixture({ css })), []);
+  const failures = checkDesignDrift(
+    fixture({ css: CSS.replace("line-height: 1.4;", "--line-height: 1.4;") }),
+  );
+  assertFails(failures, "html has no shared unitless line-height");
+  assertFails(failures, "body has no shared unitless line-height");
+});
