@@ -89,21 +89,7 @@
   --color-quota-reset-val: hsl(240 33% 94% / 0.32);
 }
 
-/* ==========================================================================
-   Burnup chart highlight.
-
-   Hovering a top-sessions row or an area on the chart highlights the same
-   layer in both places. The chart itself never re-renders for this: every
-   stacked `Area` in QuotaBurnupChart.tsx carries a stable class, and the
-   caller (QuotaView) only toggles a `data-quota-highlight` attribute on a
-   wrapper div outside the memoized chart. CSS cannot compare the
-   attribute's value to a class name at runtime, so every top-session index
-   gets its own rule below.
-
-   No governed opacity token exists for a "rested" layer (opacity sits
-   outside the token set entirely), so this reuses 0.25, the plain value
-   overview.css already uses for the same day-highlight pattern.
-   ========================================================================== */
+/* The parent supplies the selected session rule without rendering the chart again. */
 
 [data-quota-highlight] .quota-area {
   opacity: 0.25;
@@ -119,24 +105,6 @@
 }
 
 [data-quota-highlight="unexplained"] .quota-area-unexplained {
-  opacity: 1;
-}
-
-/* One rule per top-session index, s0..s4. Matches QUOTA_OWN_SERIES_CAP
-   (5) in quotaSeries.ts; change both together. */
-[data-quota-highlight="s0"] .quota-area-s0 {
-  opacity: 1;
-}
-[data-quota-highlight="s1"] .quota-area-s1 {
-  opacity: 1;
-}
-[data-quota-highlight="s2"] .quota-area-s2 {
-  opacity: 1;
-}
-[data-quota-highlight="s3"] .quota-area-s3 {
-  opacity: 1;
-}
-[data-quota-highlight="s4"] .quota-area-s4 {
   opacity: 1;
 }
 

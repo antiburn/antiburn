@@ -14,11 +14,12 @@ import {
   quotaLatestPeriod,
   quotaLatestSampleEpoch,
   QUOTA_METER_INTERPOLATION_GAP_SECS,
-  QUOTA_OWN_SERIES_CAP,
+  QUOTA_UNKNOWN_PERCENT_CAP,
   QUOTA_OWN_SERIES_MIN_PERCENT,
   quotaSessionKey,
   quotaSwatchClasses,
   quotaTopSessionRows,
+  quotaOtherSessionsTotal,
   quotaUnattributedTotal,
   presetHasReadings,
   rangeForPreset,
@@ -438,10 +439,10 @@ describe("quotaBurnupSeries", () => {
     expect(series.topSessions.map((s) => s.sessionId)).toEqual(["s1"])
   })
 
-  it("caps own-series sessions at QUOTA_OWN_SERIES_CAP, ranked by dollars", () => {
+  it("keeps all qualifying sessions beyond the former cap", () => {
     const start = 0
     const reset = WEEK
-    const count = QUOTA_OWN_SERIES_CAP + 1
+    const count = 60
     const sessions = Array.from({ length: count }, (_, i) => ({
       agent: "claude",
       sessionId: `s${i}`,
@@ -452,10 +453,8 @@ describe("quotaBurnupSeries", () => {
     }))
     const p = period({ startsAtEpoch: start, resetsAtEpoch: reset, sessions })
     const series = quotaBurnupSeries(usage([p]), start, reset, FAR_FUTURE)
-    expect(series.topSessions).toHaveLength(QUOTA_OWN_SERIES_CAP)
-    // The lowest-dollar qualifying session (s[count - 1], the smallest usd)
-    // falls outside the cap and folds into "other".
-    expect(series.topSessions.some((s) => s.sessionId === `s${count - 1}`)).toBe(false)
+    expect(series.topSessions).toHaveLength(count)
+    expect(quotaOtherSessionsTotal([p]).count).toBe(0)
   })
 
   it("gives each own-series session the ramp step of its dollar rank, darkest for the top spender", () => {
@@ -478,20 +477,22 @@ describe("quotaBurnupSeries", () => {
     expect(classes.unattributed).toBe("bg-chart-rest-faint")
   })
 
-  it("falls back to the top five sessions by dollars when sessions carry no percent", () => {
+  it("limits the dollar fallback when sessions carry no percent", () => {
     const start = 0
     const reset = WEEK
-    const sessions = Array.from({ length: 7 }, (_, i) => ({
+    const sessions = Array.from({ length: QUOTA_UNKNOWN_PERCENT_CAP + 1 }, (_, i) => ({
       agent: "claude",
       sessionId: `s${i}`,
       wslDistro: null,
       title: null,
-      usd: 7 - i,
+      usd: QUOTA_UNKNOWN_PERCENT_CAP + 1 - i,
       percent: null,
     }))
     const p = period({ startsAtEpoch: start, resetsAtEpoch: reset, sessions })
     const series = quotaBurnupSeries(usage([p]), start, reset, FAR_FUTURE)
-    expect(series.topSessions.map((s) => s.sessionId)).toEqual(["s0", "s1", "s2", "s3", "s4"])
+    expect(series.topSessions.map((s) => s.sessionId)).toEqual(
+      sessions.slice(0, QUOTA_UNKNOWN_PERCENT_CAP).map((session) => session.sessionId),
+    )
   })
 
   it("stacks own-series sessions by first appearance, bottom to top, not by dollars", () => {
@@ -841,8 +842,8 @@ describe("quotaTopSessionRows", () => {
     expect(rows[0]!.periodCount).toBe(2)
   })
 
-  it("returns every own-series session, sorted by dollars, capped like the chart's own bands", () => {
-    const sessions = Array.from({ length: 12 }, (_, i) => ({
+  it("returns all qualifying sessions sorted by dollars", () => {
+    const sessions = Array.from({ length: 60 }, (_, i) => ({
       agent: "claude",
       sessionId: `s${i}`,
       wslDistro: null,
@@ -851,13 +852,10 @@ describe("quotaTopSessionRows", () => {
       percent: i + 2,
     }))
     const rows = quotaTopSessionRows([period({ sessions })])
-    expect(rows).toHaveLength(QUOTA_OWN_SERIES_CAP)
-    expect(rows[0]!.sessionId).toBe("s11")
+    expect(rows).toHaveLength(sessions.length)
+    expect(rows[0]!.sessionId).toBe("s59")
     expect(rows.map((r) => r.sessionId)).toEqual(
-      [...sessions]
-        .sort((a, b) => b.usd - a.usd)
-        .slice(0, QUOTA_OWN_SERIES_CAP)
-        .map((s) => s.sessionId),
+      [...sessions].sort((a, b) => b.usd - a.usd).map((s) => s.sessionId),
     )
   })
 

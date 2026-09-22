@@ -220,7 +220,10 @@ Settings teardown, and the memory rules behind those policies.
   `user_version` pragma.
 - **Scanning.** A single background task refreshes what the app knows: once at
   launch (after onboarding), shortly after a watched transcript changes, every
-  five minutes as a reconciliation fallback, and on demand. Watcher refreshes
+  five minutes as a reconciliation fallback, and on demand. A metadata poll
+  checks active native file sessions every five seconds and waits fifteen
+  seconds when none are active. It detects writes that produce no watcher event.
+  Watcher and metadata-poll refreshes
   target the affected sessions or agents. A full pass over unchanged sources
   costs stat calls, not transcript reads. Passes never overlap and are bounded.
   CPU, memory, and disk I/O are product constraints: background work must be no

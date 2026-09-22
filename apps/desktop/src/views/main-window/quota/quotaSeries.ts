@@ -288,10 +288,8 @@ export interface QuotaTopSession {
  *  share of the limit: the smallest band a reader can see. */
 export const QUOTA_OWN_SERIES_MIN_PERCENT = 1
 
-/** No more than this many sessions ever carry their own series. Matches the
- *  `quota-area-s0`..`quota-area-s4` highlight rules in quota.css and the
- *  five steps of the session ramp; change all three together. */
-export const QUOTA_OWN_SERIES_CAP = 5
+// Without percentages, the threshold cannot select sessions.
+export const QUOTA_UNKNOWN_PERCENT_CAP = 40
 
 /** The five steps of the session ramp, darkest first. A session's `hue` is
  *  its dollar rank, so the biggest spender takes the darkest step. Kept
@@ -418,17 +416,10 @@ function qualifyingSessionsAcross(periods: readonly QuotaPeriodPayload[]): {
   }
 }
 
-/**
- * The sessions that earn their own series: any session whose percent
- * exceeded `QUOTA_OWN_SERIES_MIN_PERCENT` in some period, ranked by dollars
- * across the range and capped at `QUOTA_OWN_SERIES_CAP`. Falls back to the
- * top five sessions by dollars when the lane carries no percent data at
- * all, so the chart is not left without a single named band.
- */
 function selectOwnSeriesSessions(periods: readonly QuotaPeriodPayload[]): QualifyingSession[] {
   const { sessions, anyPercent } = qualifyingSessionsAcross(periods)
-  if (!anyPercent) return sessions.slice(0, QUOTA_OWN_SERIES_CAP)
-  return sessions.filter((session) => session.qualifies).slice(0, QUOTA_OWN_SERIES_CAP)
+  if (!anyPercent) return sessions.slice(0, QUOTA_UNKNOWN_PERCENT_CAP)
+  return sessions.filter((session) => session.qualifies)
 }
 
 /**

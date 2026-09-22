@@ -142,7 +142,7 @@ describe("OverviewProviderLimits", () => {
     expect(card.querySelectorAll(".bg-system-red-tint").length).toBeGreaterThan(0)
   })
 
-  it("seats a failed provider with its action and marks stale readings", () => {
+  it("shows the sign-in action for a failed provider", () => {
     render(
       <OverviewProviderLimits
         live={liveSummary({
@@ -154,7 +154,6 @@ describe("OverviewProviderLimits", () => {
     expect(screen.getByRole("group", { name: "Codex" })).toHaveTextContent(
       "Codex sign-in expired. Sign in again, then retry.",
     )
-    expect(screen.getByText("Stale")).toHaveClass("text-system-orange")
   })
 
   it("shows one quiet line when no provider reports anything", () => {

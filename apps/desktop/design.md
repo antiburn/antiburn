@@ -356,7 +356,7 @@ colors:
     dark: "hsl(0 90% 70.7%)"
   # Quota sub-palette only (src/views/main-window/quota/quota.css). The five
   # session steps are one lightness ramp of the meter blue, darkest for the top
-  # spender, so rank reads by tone and is safe for every colour-vision
+  # spender. The ramp repeats for additional sessions and is safe for every colour-vision
   # deficiency. Grouped bands ("other", "unattributed") use chart-rest-strong
   # and chart-rest-faint, the same resting greys as the session-analysis charts.
   quota-meter: # the provider's own meter reading; matches the context line's blue
@@ -625,7 +625,9 @@ Notes for what isn't expressible as a token:
   figure it explains, not at the row's edge, so the row starts with the agent icon like
   a session card; the "other", "unattributed" and "unexplained" rows use `surface-card/50` and
   secondary ink. The list sizes to its rows up to 45% of the column and the chart takes
-  the rest (`quota-session-list` in `quota.css`).
+  the rest (`quota-session-list` in `quota.css`). Sessions above the percentage
+  threshold remain individually visible without a count limit. Hover identifies each
+  session across the chart and list, including sessions that reuse a shade.
 
 - **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
   a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.

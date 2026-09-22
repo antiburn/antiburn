@@ -1,6 +1,5 @@
 import { Fragment, useRef } from "react"
 
-import { cn } from "../../../lib/cn"
 import type {
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
@@ -8,7 +7,6 @@ import type {
 import {
   liveDisplayableProviders,
   liveErrorNote,
-  liveFreshnessToneClass,
   liveGraceNote,
   livePlanAccountLabel,
   liveProviderStatus,
@@ -89,7 +87,6 @@ export function OverviewProviderLimits({
     limited.map(({ key, reading }) => ({ key, provider: reading.provider })),
   )
   const at = live ? Date.parse(live.generatedAt) || 0 : 0
-  const stale = limited.some(({ reading }) => reading.freshness === "stale")
   const nothing = !live || (limited.length === 0 && unavailable.length === 0)
 
   return (
@@ -98,14 +95,6 @@ export function OverviewProviderLimits({
       aria-busy={loading || undefined}
       className="relative px-(--space-lg) py-(--space-lg)"
     >
-      {limited.length > 0 && stale && (
-        <p
-          className={cn("absolute top-0 right-2 type-caption", liveFreshnessToneClass("stale"))}
-        >
-          Stale
-        </p>
-      )}
-
       {nothing && !loading ? (
         <p className="type-callout text-label-secondary">No providers set up for limits yet.</p>
       ) : (

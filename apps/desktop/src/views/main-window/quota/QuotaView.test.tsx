@@ -599,6 +599,32 @@ describe("QuotaView", () => {
     })
   })
 
+  it("highlights a session beyond the former cap without rendering the chart again", async () => {
+    const payload = manySessionsUsage()
+    payload.periods[0]!.sessions = Array.from({ length: 60 }, (_, index) => ({
+      agent: "claude",
+      sessionId: `uncapped-${index}`,
+      wslDistro: null,
+      title: `Uncapped session ${index}`,
+      usd: 60 - index,
+      percent: 2,
+    }))
+    const { session } = setup({ getUsage: vi.fn().mockResolvedValue(payload) })
+    sessions.push(session)
+    const row = await screen.findByRole("button", { name: /Uncapped session 59/ })
+    const renders = chartRenders.count
+    fireEvent.mouseEnter(row)
+    expect(wrapperHighlight()).toBe("s59")
+    const rule = [...document.querySelectorAll("style")].find((style) =>
+      style.textContent?.includes(".quota-area-s59 { opacity: 1; }"),
+    )
+    expect(rule).toBeDefined()
+    expect(chartRenders.count).toBe(renders)
+    fireEvent.mouseLeave(row)
+    expect(wrapperHighlight()).toBeNull()
+    expect(rule).not.toBeInTheDocument()
+  })
+
   it("hovering a top-five row sets its chart-index token on the chart's wrapper", async () => {
     const { session } = setup({ getUsage: vi.fn().mockResolvedValue(manySessionsUsage()) })
     sessions.push(session)

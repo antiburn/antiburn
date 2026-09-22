@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from "react"
-import { ArrowRight } from "lucide-react"
+import { ArrowRight, GitFork } from "lucide-react"
 
 import {
-  SessionRowTitle,
+  primaryLine,
   sessionLimitAllocationKey,
   sessionLimitBadge,
   sessionRowInteractiveProps,
@@ -98,6 +98,7 @@ function OverviewRecentSessionRow({
     snoozedDetectors,
   )
   const presentation = sessionBurnCheckPresentation(hygieneChecks, hygiene.evidenceState)
+  const title = primaryLine(entry)
   const modelRuns = entry.modelRuns ?? []
   const modelPairs = modelRunShortPairs(modelRuns)
   const modelNames = modelRunNames(modelRuns)
@@ -138,30 +139,49 @@ function OverviewRecentSessionRow({
         )}
       </span>
 
-      <span className="flex min-w-0 items-center justify-start gap-x-2">
-        {/* The models give up their width first, then the title truncates. */}
-        <SessionRowTitle active className="flex-initial!" entry={entry} />
+      {/* One line of inline text with one ellipsis at its end, so the models
+          lose their width first and the title only after they are gone. */}
+      <span className="min-w-0 truncate">
+        {/* An inline-block, so the shimmer overlay (`::before`, `inset: 0`)
+            gets the line box as its containing block and sits on the text. */}
+        <span
+          className={cn(
+            "inline-block type-body font-medium! text-label",
+            entry.isActive && "activity-row-title-shimmer",
+          )}
+          data-text={entry.isActive ? title : undefined}
+          aria-label={entry.isActive ? title : undefined}
+        >
+          {title}
+        </span>
+
+        {entry.hasForkParent && (
+          <Tooltip label="Forked from another session" delayMs={500}>
+            <span
+              className="ms-1 inline-flex align-middle text-label-tertiary"
+              aria-label="Forked from another session"
+            >
+              <GitFork size={12} strokeWidth={2} aria-hidden="true" />
+            </span>
+          </Tooltip>
+        )}
 
         {modelPairs.length > 0 && (
-          <>
-            <span
-              aria-label={contextDescription}
-              className="min-w-0 shrink-[1000] truncate font-mono type-metadata text-label-tertiary"
-            >
-              <span aria-hidden="true" className="text-label">
-                ·{" "}
-              </span>
-              {modelPairs.map((pair, index) => (
-                <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
-                  {index > 0 && <span aria-hidden="true"> · </span>}
-                  <span>{pair.model}</span>
-                  {pair.thinkingMode && (
-                    <span className="opacity-70"> {pair.thinkingMode}</span>
-                  )}
-                </span>
-              ))}
+          <span
+            aria-label={contextDescription}
+            className="ms-2 font-mono type-metadata text-label-tertiary"
+          >
+            <span aria-hidden="true" className="text-label">
+              ·{" "}
             </span>
-          </>
+            {modelPairs.map((pair, index) => (
+              <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
+                {index > 0 && <span aria-hidden="true"> · </span>}
+                <span>{pair.model}</span>
+                {pair.thinkingMode && <span className="opacity-70"> {pair.thinkingMode}</span>}
+              </span>
+            ))}
+          </span>
         )}
       </span>
 

@@ -352,6 +352,7 @@ pub fn run() {
             schedulers.push(session_lifecycle::spawn(app.handle()));
             schedulers.push(session_projection::spawn(app.handle()));
             schedulers.push(scan::spawn_scheduler(app.handle()));
+            schedulers.push(scan::live_poll::spawn_live_poll(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
             schedulers.push(updates::spawn_scheduler(app.handle()));
