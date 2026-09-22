@@ -287,7 +287,10 @@ export class BurnChecksSession {
     if (visible) {
       this.visibleTargets.add(detector)
       if (observeOutcomes) this.observedTargets.add(detector)
-      this.loadTargets(detector)
+      // Always relist a check that comes back into view. Target ids are
+      // short-lived on the Rust side, so ids kept from an earlier visit can
+      // fail the first action.
+      this.loadTargets(detector, true)
       this.observeOutcomes()
     } else {
       this.visibleTargets.delete(detector)
