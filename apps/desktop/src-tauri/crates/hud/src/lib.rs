@@ -27,8 +27,9 @@ pub use island::{
 use std::sync::Mutex;
 #[cfg(any(target_os = "macos", test))]
 use std::sync::MutexGuard;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(target_os = "macos", test))]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(any(target_os = "macos", test))]
 use std::time::Duration;
 
@@ -236,6 +237,7 @@ impl VisibilityIntent {
         self.0.load(Ordering::SeqCst) == request.0
     }
 
+    #[cfg(any(target_os = "macos", test))]
     fn wants_visible(&self) -> bool {
         self.0.load(Ordering::SeqCst) & 1 != 0
     }

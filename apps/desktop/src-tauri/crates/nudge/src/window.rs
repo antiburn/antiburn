@@ -197,19 +197,34 @@ fn place_native_corner(window: &WebviewWindow, content_height: f64, interface_sc
     };
 
     let margin = NUDGE_MARGIN * interface_scale;
-    let w = (NUDGE_WIDTH * interface_scale).min((display.w - 2.0 * margin).max(1.0));
-    let h = (content_height.max(1.0) * interface_scale).min((display.h - 2.0 * margin).max(1.0));
 
-    // macOS / Linux: top-right under the menu bar. Windows: bottom-right above
-    // the taskbar, matching each platform's native notification corner.
-    #[cfg(target_os = "windows")]
-    let (x, y) = geometry::bottom_right_origin(display, w, h, margin);
     #[cfg(target_os = "macos")]
-    let (x, y) = geometry::top_right_origin(display, w, margin, NUDGE_TOP_INSET * interface_scale);
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    let (x, y) = geometry::top_right_origin(display, w, margin, margin);
+    {
+        let frame = geometry::top_right_frame(
+            display,
+            NUDGE_WIDTH * interface_scale,
+            content_height.max(1.0) * interface_scale,
+            margin,
+            NUDGE_TOP_INSET * interface_scale,
+        );
+        set_frame(window, frame.w, frame.h, frame.x, frame.y);
+    }
 
-    set_frame(window, w, h, x, y);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let w = (NUDGE_WIDTH * interface_scale).min((display.w - 2.0 * margin).max(1.0));
+        let h =
+            (content_height.max(1.0) * interface_scale).min((display.h - 2.0 * margin).max(1.0));
+
+        // Linux: top-right under the panel. Windows: bottom-right above the
+        // taskbar, matching each platform's native notification corner.
+        #[cfg(target_os = "windows")]
+        let (x, y) = geometry::bottom_right_origin(display, w, h, margin);
+        #[cfg(not(target_os = "windows"))]
+        let (x, y) = geometry::top_right_origin(display, w, margin, margin);
+
+        set_frame(window, w, h, x, y);
+    }
 }
 
 #[cfg(target_os = "macos")]

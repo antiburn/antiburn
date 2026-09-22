@@ -92,6 +92,31 @@ pub(crate) fn top_right_origin(display: Rect, w: f64, margin: f64, top_inset: f6
     (x, display.y + top_inset)
 }
 
+/// A top-right frame that stays inside `display`. The top and bottom insets can
+/// differ, as they do below the macOS menu bar.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn top_right_frame(
+    display: Rect,
+    requested_w: f64,
+    requested_h: f64,
+    margin: f64,
+    top_inset: f64,
+) -> Rect {
+    let w_extent = display.w.max(1.0);
+    let horizontal_inset = margin.max(0.0).min((w_extent - 1.0) / 2.0);
+    let w = requested_w
+        .max(1.0)
+        .min((w_extent - 2.0 * horizontal_inset).max(1.0));
+
+    let h_extent = display.h.max(1.0);
+    let top = top_inset.max(0.0).min(h_extent - 1.0);
+    let bottom = margin.max(0.0).min((h_extent - top - 1.0).max(0.0));
+    let h = requested_h.max(1.0).min((h_extent - top - bottom).max(1.0));
+
+    let (x, y) = top_right_origin(display, w, horizontal_inset, top);
+    Rect { x, y, w, h }
+}
+
 /// Top-left corner of a notification pinned to the bottom-right of `display`,
 /// inset by `margin` from both edges. Clamped to the display's top-left, so a
 /// notification taller or wider than the display stays anchored on-screen and
@@ -360,6 +385,88 @@ mod tests {
             top_right_origin(built_in, WIDTH, MARGIN, TOP_INSET),
             (1156.0, 48.0)
         );
+    }
+
+    #[test]
+    fn top_right_frame_keeps_scaled_notifications_inside_displays() {
+        for scale in [0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0] {
+            for display in [
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1512.0,
+                    h: 982.0,
+                },
+                Rect {
+                    x: -1512.0,
+                    y: -400.0,
+                    w: 1512.0,
+                    h: 600.0,
+                },
+                Rect {
+                    x: 100.0,
+                    y: -50.0,
+                    w: 320.0,
+                    h: 100.0,
+                },
+                Rect {
+                    x: -8.0,
+                    y: -8.0,
+                    w: 8.0,
+                    h: 8.0,
+                },
+            ] {
+                let frame = top_right_frame(
+                    display,
+                    WIDTH * scale,
+                    300.0 * scale,
+                    MARGIN * scale,
+                    TOP_INSET * scale,
+                );
+                assert!(frame.x >= display.x && frame.y >= display.y, "{frame:?}");
+                assert!(
+                    frame.x + frame.w <= display.x + display.w + 1e-9,
+                    "{frame:?}"
+                );
+                assert!(
+                    frame.y + frame.h <= display.y + display.h + 1e-9,
+                    "{frame:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn top_right_frame_preserves_the_ordinary_native_corner_position() {
+        assert_eq!(
+            top_right_frame(displays()[0], WIDTH, 168.0, MARGIN, TOP_INSET,),
+            Rect {
+                x: 1156.0,
+                y: 48.0,
+                w: WIDTH,
+                h: 168.0,
+            }
+        );
+    }
+
+    #[test]
+    fn top_right_frame_reserves_the_actual_macos_top_and_bottom_insets() {
+        let frame = top_right_frame(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1200.0,
+                h: 600.0,
+            },
+            WIDTH * 2.0,
+            300.0 * 2.0,
+            MARGIN * 2.0,
+            TOP_INSET * 2.0,
+        );
+
+        assert_eq!(frame.y, 96.0);
+        assert_eq!(frame.h, 480.0);
+        assert_eq!(frame.y + frame.h, 576.0);
     }
 
     #[test]
