@@ -139,7 +139,7 @@ health-acknowledgement, and visible-content measurements.
 Onboarding completion hides the first-run window, opens Main, and shows the
 menu-bar-location notification. On the next main-loop turn the shell requests
 one hidden popover renderer. It delays onboarding destruction long enough for
-the final settings IPC response to leave that renderer. This prewarm moves
+the final settings IPC response to leave the onboarding renderer. This prewarm moves
 startup cost away from the first tray click; readiness leaves it hidden.
 
 The first click reuses a ready prewarm, or records reveal intent against its

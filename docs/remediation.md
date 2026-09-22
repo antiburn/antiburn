@@ -1,7 +1,8 @@
 # Burn Check Remediation
 
-This guide explains who owns a remediation action, how it moves from a finding
-to a safe edit or prompt, and which evidence can verify its result. Use it when
+Readers should receive a safe edit or prompt and know which evidence can verify
+its result. This guide defines action ownership and the path from a finding to
+that result. Use it when
 changing action flow, file safety, durable attempts, or the user-visible result.
 See
 [`check-coverage.md`](check-coverage.md) for the maintained agent/check support,
