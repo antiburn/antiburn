@@ -54,6 +54,12 @@ export function createExternalStore<T>(config: ExternalStoreConfig<T>): External
   // Bumped every publish, so a load() or refresh() in flight can tell a push
   // already landed a newer value while it waited, and skip overwriting it.
   let revision = 0
+  // Bumped every config.load() call, so an earlier load() or refresh() that
+  // resolves after a later one can tell it is not the latest, and skip
+  // overwriting the later result. Together with `revision`, a load result
+  // publishes only when no push landed and no later load started while it
+  // was in flight.
+  let loadRequest = 0
 
   function publish(value: T): void {
     snapshot = value
@@ -87,12 +93,15 @@ export function createExternalStore<T>(config: ExternalStoreConfig<T>): External
     }
 
     if (config.load) {
+      const thisLoadRequest = ++loadRequest
       const value = await config.load().catch(() => undefined)
       if (thisGeneration !== generation) return
-      // A push already published a newer value while this load was in
-      // flight (or during the subscribe handshake just above) — that value
-      // wins, so this stale load result is dropped instead of overwriting it.
-      if (value !== undefined && revision === thisRevision) publish(value)
+      // Publish only when no push landed (revision unchanged) and no later
+      // load() or refresh() started (loadRequest unchanged) while this one
+      // was in flight — either means a newer value already won.
+      if (value !== undefined && revision === thisRevision && loadRequest === thisLoadRequest) {
+        publish(value)
+      }
     }
   }
 
@@ -119,10 +128,12 @@ export function createExternalStore<T>(config: ExternalStoreConfig<T>): External
     refresh: async () => {
       if (!config.load) return
       const thisRevision = revision
+      const thisLoadRequest = ++loadRequest
       const value = await config.load()
-      // Same guard as `start()`'s load: a push that landed while this
-      // refresh was in flight is newer than its result.
-      if (revision === thisRevision) publish(value)
+      // Same guard as `start()`'s load: a push that landed, or a later
+      // load()/refresh() that started, while this one was in flight is
+      // newer than its result.
+      if (revision === thisRevision && loadRequest === thisLoadRequest) publish(value)
     },
 
     set(value: T) {

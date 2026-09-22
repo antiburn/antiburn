@@ -119,6 +119,70 @@ describe("createExternalStore", () => {
     expect(store.getSnapshot()).toBe("second")
   })
 
+  it("the later of two overlapping refresh() calls wins, even when it resolves first", async () => {
+    const initial = deferred<string>()
+    const first = deferred<string>()
+    const second = deferred<string>()
+    const load = vi
+      .fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const store = createExternalStore({ initial: "initial", load })
+
+    store.subscribe(() => {})
+    await flush()
+    initial.resolve("initial-loaded")
+    await flush()
+
+    const refreshFirst = store.refresh()
+    const refreshSecond = store.refresh()
+
+    // The second refresh's load resolves first, but it started later, so it
+    // is still the newer request; the first refresh must not overwrite it.
+    second.resolve("second")
+    await flush()
+    expect(store.getSnapshot()).toBe("second")
+
+    first.resolve("first")
+    await Promise.all([refreshFirst, refreshSecond])
+    expect(store.getSnapshot()).toBe("second")
+  })
+
+  it("a push that arrives between two overlapping refresh() calls still wins over both", async () => {
+    const initial = deferred<string>()
+    const first = deferred<string>()
+    const second = deferred<string>()
+    const load = vi
+      .fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    let push: ((value: string) => void) | undefined
+    const subscribe = vi.fn(async (set: (value: string) => void) => {
+      push = set
+      return () => {}
+    })
+    const store = createExternalStore({ initial: "initial", load, subscribe })
+
+    store.subscribe(() => {})
+    await flush()
+    initial.resolve("initial-loaded")
+    await flush()
+
+    // Both refreshes start (and capture the current revision) before the
+    // push lands, so the push outranks both of their in-flight results.
+    const refreshFirst = store.refresh()
+    const refreshSecond = store.refresh()
+    push?.("pushed")
+
+    first.resolve("first")
+    second.resolve("second")
+    await Promise.all([refreshFirst, refreshSecond])
+
+    expect(store.getSnapshot()).toBe("pushed")
+  })
+
   it("can restore the initial value after the final listener leaves", async () => {
     const store = createExternalStore({
       initial: "initial",
