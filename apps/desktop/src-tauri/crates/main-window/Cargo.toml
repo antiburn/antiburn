@@ -18,4 +18,12 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 tauri = { version = "2", features = ["macos-private-api"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView"] }
+objc2-foundation = "0.3"

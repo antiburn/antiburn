@@ -43,45 +43,45 @@ Run the following on macOS, Windows, and Linux. On Linux record the desktop
 environment and X11/XWayland/Wayland backend; compositor policy can control
 position and focus. Test an installed build for taskbar icon grouping.
 
-| Scenario                                     | Expected result                                                                                                                      |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Explicit launch after onboarding             | One main window opens with an opaque themed canvas                                                                                   |
-| First launch                                 | Onboarding appears; completing it opens the main window                                                                              |
-| Background/login launch                      | Monitoring and tray start without creating the main webview or taking focus                                                          |
-| Launch again                                 | The existing process opens or restores its main window; no second scan scheduler                                                     |
-| Close then Open antiburn                     | The same renderer reappears; navigation state will remain when views exist                                                           |
-| macOS close, switch away, Command-Tab back   | The retained main window reappears; closing alone never immediately reopens it                                                       |
-| macOS close, then open Settings or popover   | The requested surface appears without reopening the main window                                                                      |
-| Close during initial load                    | Readiness does not unexpectedly reopen the closed window                                                                             |
-| Visible warm open                            | Native focus is immediate and emits no health check                                                                                  |
-| Hidden warm open                             | One generation/request check acknowledges before reveal                                                                              |
-| Close during forced recovery, then reopen    | The watched replacement completes or reaches the terminal dialog                                                                     |
-| Hidden recovery exhausts its budget          | No dialog appears until the next open                                                                                                |
-| Dead or absent main WebContent               | The native terminal dialog remains usable                                                                                            |
-| Terminal Try Again                           | One fresh watched generation starts; no label overlap occurs                                                                         |
-| Terminal Dismiss, then open                  | The terminal dialog returns with a fresh token                                                                                       |
-| Delayed or duplicate destruction             | Terminal state and its failure budget remain intact                                                                                  |
-| Fallback Reload                              | The fallback's generation starts one watched replacement                                                                             |
-| Commit-time descendant failure               | Fallback reports without an earlier healthy status                                                                                   |
-| Targeted open during replacement             | The replacement peeks, applies, and acknowledges the requested session                                                               |
-| Navigate after target, then recover          | Recovery does not replay the retired target                                                                                          |
-| Minimize then open                           | The window restores and becomes usable                                                                                               |
-| macOS minimize, switch away, activate        | The main window restores through native unminimize; minimizing alone stays minimized                                                 |
-| Switch applications                          | Normal Dock/taskbar switching works; the main window does not hide on blur                                                           |
-| Resize, maximize, tile                       | Native controls and OS window management work                                                                                        |
-| Reopen after monitor removal or scale change | Usable bounds are restored with title controls reachable                                                                             |
-| Native Wayland title-bar buttons             | With `ANTIBURN_GDK_BACKEND=wayland`, Minimize minimizes and Close follows the close policy — hide, or quit when the tray icon is off |
-| macOS chrome                                 | Traffic lights work; the empty title strip drags; native title text stays hidden                                                     |
-| macOS title-strip double-click               | First double-click expands the window; the second restores its previous size                                                         |
-| Windows/Linux chrome                         | Native title bar remains; no duplicate webview drag strip                                                                            |
-| Light/dark and accessibility preferences     | No white startup flash; readable opaque surface; no opening animation                                                                |
-| Explicit Quit from each menu                 | Process and monitoring stop, including with no visible windows                                                                       |
-| Existing tray primary/secondary clicks       | Popover toggle and existing menu actions retain their behavior                                                                       |
-| Select a popover session                     | Main window opens or focuses on that exact native or WSL session                                                                     |
-| Select while the main window is loading      | The requested session appears after startup without briefly replacing it                                                             |
-| Select while the popover is pinned           | Main window focuses; the pinned popover remains on its activity list                                                                 |
-| Select while the popover is unpinned         | Main window focuses; normal focus-loss policy dismisses the popover                                                                  |
-| Existing settings, HUD, and notifications    | Each supported surface opens and behaves as before                                                                                   |
+| Scenario                                     | Expected result                                                                                    |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Explicit launch after onboarding             | One main window opens with an opaque themed canvas                                                 |
+| First launch                                 | Onboarding appears; completing it opens the main window                                            |
+| Background/login launch                      | Monitoring and tray start without creating the main webview or taking focus                        |
+| Launch again                                 | The existing process opens or restores its main window; no second scan scheduler                   |
+| Close then Open antiburn                     | The same renderer reappears; navigation state will remain when views exist                         |
+| macOS close, switch away, Command-Tab back   | The retained main window reappears; closing alone never immediately reopens it                     |
+| macOS close, then open Settings or popover   | The requested surface appears without reopening the main window                                    |
+| Close during initial load                    | Readiness does not unexpectedly reopen the closed window                                           |
+| Visible warm open                            | Native focus is immediate and emits no health check                                                |
+| Hidden warm open                             | One generation/request check acknowledges before reveal                                            |
+| Close during forced recovery, then reopen    | The watched replacement completes or reaches the terminal dialog                                   |
+| Hidden recovery exhausts its budget          | No dialog appears until the next open                                                              |
+| Dead or absent main WebContent               | The native terminal dialog remains usable                                                          |
+| Terminal Try Again                           | One fresh watched generation starts; no label overlap occurs                                       |
+| Terminal Dismiss, then open                  | The terminal dialog returns with a fresh token                                                     |
+| Delayed or duplicate destruction             | Terminal state and its failure budget remain intact                                                |
+| Fallback Reload                              | The fallback's generation starts one watched replacement                                           |
+| Commit-time descendant failure               | Fallback reports without an earlier healthy status                                                 |
+| Targeted open during replacement             | The replacement peeks, applies, and acknowledges the requested session                             |
+| Navigate after target, then recover          | Recovery does not replay the retired target                                                        |
+| Minimize then open                           | The window restores and becomes usable                                                             |
+| macOS minimize, switch away, activate        | The main window restores through native unminimize; minimizing alone stays minimized               |
+| Switch applications                          | Normal Dock/taskbar switching works; the main window does not hide on blur                         |
+| Resize, maximize, tile                       | Native controls and OS window management work                                                      |
+| Reopen after monitor removal or scale change | Usable bounds are restored with title controls reachable                                           |
+| macOS chrome                                 | Traffic lights work; the empty title strip drags; native title text stays hidden                   |
+| macOS title-strip double-click               | First double-click expands the window; the second restores its previous size                       |
+| Native Wayland toolbar buttons               | With `ANTIBURN_GDK_BACKEND=wayland`, integrated Minimize and Close follow the window close policy. |
+| Windows/Linux chrome                         | Integrated toolbar replaces native title bar; window controls work                                 |
+| Light/dark and accessibility preferences     | No white startup flash; readable opaque surface; no opening animation                              |
+| Explicit Quit from each menu                 | Process and monitoring stop, including with no visible windows                                     |
+| Existing tray primary/secondary clicks       | Popover toggle and existing menu actions retain their behavior                                     |
+| Select a popover session                     | Main window opens or focuses on that exact native or WSL session                                   |
+| Select while the main window is loading      | The requested session appears after startup without briefly replacing it                           |
+| Select while the popover is pinned           | Main window focuses; the pinned popover remains on its activity list                               |
+| Select while the popover is unpinned         | Main window focuses; normal focus-loss policy dismisses the popover                                |
+| Existing settings, HUD, and notifications    | Each supported surface opens and behaves as before                                                 |
 
 Windows/Linux login registration now adds `--background`. Existing registrations
 are rewritten when the updated app reconciles the enabled preference. An old
@@ -95,14 +95,18 @@ quiet login on an upgraded installation. macOS uses the native login event.
 
 Check the 1100×600 default and 1000×560 minimum with light and dark themes.
 
-- The sidebar remains visible throughout resizing; no compact navigation mode appears.
-- Sessions is the main section. Settings appears at the bottom; no Quit action appears.
+- The sidebar stays visible and 220px wide throughout resizing on all platforms. Saved collapse preferences are ignored.
+- Overview opens by default. Overview, Limits, Sessions, and Checks share history; Settings appears at the bottom.
 - The Settings sidebar action opens the existing Settings window. Command+, (Control+, on Windows/Linux) opens it from the main window, onboarding, and popover.
 - Check readable 28px rows and independent vertical content scrolling without horizontal overflow.
 - Restore an older saved 560×420 window; it expands to at least 1000×560 when the display allows.
 - Close and reopen the main window; the selected section persists.
-- The first macOS sidebar row starts below the 40px drag strip. Session panes have no top gap. Buttons must not drag the window.
-- The sidebar drag strip, session list header, detail toolbar, and empty-detail top area drag and toggle maximize on double-click on macOS.
+- Back, Forward, and Search stay beside the macOS traffic lights. The sidebar has no Search row or toggle.
+- On macOS, views reach the top edge. In the top 40px, empty space and labels drag and double-click maximize on release, with movement canceling the double-click; buttons, tabs, links, fields, and scrollbars retain their interactions.
+- Command+K (Control+K on Windows/Linux) opens the palette; dismissal restores the visible Search trigger.
+- No view title or bottom divider appears. macOS views reach the top of the window. Windows/Linux reserve caption clearance above the detail pane, Overview, and Limits.
+- Check navigation and search shortcuts, modal ownership, and Search focus after dismissal. Command+B / Control+B do not change the sidebar.
+- Search a feature, Settings control, and check. Verify exact targeting and Back/Forward. Individual session search is not available.
 
 ### Session selection appearance
 
@@ -218,3 +222,15 @@ Include platform smoke results, native timing summaries, observed frame/input
 timings, bundle sizes, and resource samples. Mark an unavailable platform or
 measurement as unverified. Unit tests and a successful bundle build do not
 establish native app-switching behavior or the latency target.
+
+### Integrated toolbar
+
+On macOS, verify native traffic lights align with the shared 40px toolbar. On Windows
+and Linux, verify that only one titlebar appears, with Minimize, Maximize/Restore, and
+Close on the right. Check dragging, double-click maximize, edge resizing, and restored
+placement. Check that the maximize icon follows native window state changes. Close
+must retain the existing hide/quit policy, including quitting when the tray is disabled.
+
+On each platform, confirm that navigation stays visible after resizing, navigating,
+and reopening the window, including with a previously saved collapsed preference.
+Click Search and use the platform search shortcut; dismissal returns focus to Search.

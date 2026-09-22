@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import type { HTMLAttributes, ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 
@@ -19,6 +19,7 @@ export function SectionGroup({
   trailing,
   children,
   className = "",
+  ...rootProps
 }: {
   title?: string
   /** Optional content pinned to the header's right-hand side (e.g. a status
@@ -26,9 +27,9 @@ export function SectionGroup({
   trailing?: ReactNode
   children: ReactNode
   className?: string
-}) {
+} & Omit<HTMLAttributes<HTMLElement>, "title" | "onChange" | "children">) {
   return (
-    <section className={cn("space-y-2", className)}>
+    <section {...rootProps} className={cn("space-y-2", className)}>
       {title && (
         <div className="flex items-center justify-between gap-2 px-1">
           <h2 className="type-title-3 font-normal! text-label">{title}</h2>

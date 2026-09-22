@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-existing-main-window-session-targets"
+description = "Enables the existing_main_window_session_targets command without any pre-configured scope."
+commands.allow = ["existing_main_window_session_targets"]
+
+[[permission]]
+identifier = "deny-existing-main-window-session-targets"
+description = "Denies the existing_main_window_session_targets command without any pre-configured scope."
+commands.deny = ["existing_main_window_session_targets"]

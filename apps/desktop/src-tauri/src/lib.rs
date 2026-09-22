@@ -739,6 +739,7 @@ mod tests {
             "\"allow-set-settings\"",
             "\"allow-reveal-source\"",
             "\"allow-delete-session-data\"",
+            "\"allow-existing-main-window-session-targets\"",
             "\"dialog:allow-confirm\"",
             "\"allow-main-window-ready\"",
             "\"allow-main-window-health-ack\"",
@@ -746,8 +747,8 @@ mod tests {
             "\"allow-report-main-window-render-status\"",
             "\"allow-report-main-window-render-failure\"",
             "\"allow-request-main-window-recovery\"",
-            "\"allow-peek-main-window-session-target\"",
-            "\"allow-acknowledge-main-window-session-target\"",
+            "\"allow-peek-main-window-navigation-target\"",
+            "\"allow-acknowledge-main-window-navigation-target\"",
         ] {
             assert!(capability.contains(expected), "missing {expected}");
         }

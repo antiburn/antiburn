@@ -17,6 +17,7 @@ import * as SnoozedBurnChecks from "../../lib/snoozedBurnChecks"
 import { BurnChecksSession, type BurnChecksAdapter } from "./BurnChecksSession"
 import { BurnChecksView } from "./BurnChecksView"
 import { BurnCheckDetail, CheckPromptAction } from "./burn-checks/BurnCheckDetail"
+import { searchApp } from "../../lib/appSearch"
 
 const commands = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -628,6 +629,62 @@ describe("BurnChecksView", () => {
 
     afterEach(() => vi.restoreAllMocks())
 
+    it.each([false, true])(
+      "search targets an awaiting check once with snoozed=%s",
+      async (snoozed) => {
+        HTMLElement.prototype.scrollIntoView = vi.fn()
+        mockSnoozes(snoozed ? [{ detector: "oldModelUsage", scope: "check", until: null }] : [])
+        const { session, view } = setup(watchingTarget, false, aggregate, awaitingReport)
+        await waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+        view.rerender(
+          <BurnChecksView
+            active
+            session={session}
+            focusedCheck="oldModelUsage"
+            focusRevision={1}
+          />,
+        )
+        const rows = screen.getAllByRole("button", { name: /Old model usage/ })
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toHaveAttribute("aria-pressed", "true")
+        expect(rows[0]).toHaveFocus()
+        expect(
+          screen.queryByText("This check has not been assessed for the available sessions."),
+        ).not.toBeInTheDocument()
+        if (snoozed)
+          expect(screen.getByRole("button", { name: "Snoozed 1" })).toHaveAttribute(
+            "aria-expanded",
+            "true",
+          )
+      },
+    )
+
+    it("keeps a zero-count awaiting search result assessed", async () => {
+      HTMLElement.prototype.scrollIntoView = vi.fn()
+      const { session, view } = setup(watchingTarget, false, aggregate, {
+        ...awaitingReport,
+        categories: awaitingReport.categories.map((check) =>
+          check.id === "oldModelUsage" ? { ...check, finding: 0, clean: 0 } : check,
+        ),
+      })
+      await screen.findByRole("button", { name: /Old model usage/ })
+      view.rerender(
+        <BurnChecksView
+          active
+          session={session}
+          focusedCheck="oldModelUsage"
+          focusRevision={1}
+        />,
+      )
+      const row = screen.getByRole("button", { name: /Old model usage, Awaiting verification/ })
+      expect(row).toHaveAttribute("aria-pressed", "true")
+      expect(row).toHaveFocus()
+      expect(screen.queryByText("Not assessed")).not.toBeInTheDocument()
+      expect(
+        screen.queryByText("This check has not been assessed for the available sessions."),
+      ).not.toBeInTheDocument()
+    })
+
     it("shows awaiting from the report before target details load", async () => {
       const pending = deferred<BurnCheckTargetPayload[]>()
       setup(pending.promise, false, aggregate, awaitingReport)
@@ -1125,21 +1182,176 @@ describe("BurnChecksView", () => {
     expect(screen.getByText("Global configuration")).toBeVisible()
   })
 
-  it("uses the pane headers as macOS deep drag regions while loading and after load", async () => {
+  it("selects and refocuses a searched check without remounting the report", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    const { session, view } = setup()
+    await screen.findByRole("button", { name: /Unused MCP servers/ })
+    view.rerender(
+      <BurnChecksView
+        active
+        session={session}
+        focusedCheck="unusedMcpServers"
+        focusRevision={1}
+      />,
+    )
+    const row = screen.getByRole("button", { name: /Unused MCP servers/ })
+    expect(row).toHaveAttribute("aria-pressed", "true")
+    expect(row).toHaveFocus()
+    fireEvent.click(screen.getByRole("button", { name: "Passed checks 1" }))
+    fireEvent.click(screen.getByRole("button", { name: /Unused skills, / }))
+    expect(row).toHaveAttribute("aria-pressed", "false")
+    view.rerender(
+      <BurnChecksView
+        active={false}
+        session={session}
+        focusedCheck="unusedMcpServers"
+        focusRevision={1}
+      />,
+    )
+    view.rerender(
+      <BurnChecksView
+        active
+        session={session}
+        focusedCheck="unusedMcpServers"
+        focusRevision={1}
+      />,
+    )
+    expect(row).toHaveAttribute("aria-pressed", "false")
+    expect(screen.getByRole("button", { name: /Unused skills, / })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
+    view.rerender(
+      <BurnChecksView
+        active
+        session={session}
+        focusedCheck="unusedMcpServers"
+        focusRevision={2}
+      />,
+    )
+    expect(screen.getByRole("button", { name: /Unused MCP servers/ })).toBe(row)
+    expect(row).toHaveAttribute("aria-pressed", "true")
+    expect(row).toHaveFocus()
+  })
+
+  it.each(searchApp("").filter(({ target }) => target.kind === "check"))(
+    "reaches $label from its search destination",
+    async (result) => {
+      if (result.target.kind !== "check") throw new Error("Unexpected search target")
+      HTMLElement.prototype.scrollIntoView = vi.fn()
+      const other =
+        result.target.check === "oldModelUsage" ? "unusedMcpServers" : "oldModelUsage"
+      const { session, view } = setup(target, false, aggregate, {
+        ...report,
+        categories: [
+          { ...report.categories[0]!, id: other },
+          { ...report.categories[0]!, id: result.target.check },
+        ],
+      })
+      const row = await screen.findByRole("button", { name: new RegExp(result.label) })
+      expect(searchApp(result.label)[0]?.target).toEqual(result.target)
+      view.rerender(
+        <BurnChecksView
+          active
+          session={session}
+          focusedCheck={result.target.check}
+          focusRevision={1}
+        />,
+      )
+      await waitFor(() => expect(row).toHaveFocus())
+      expect(row).toHaveAttribute("aria-pressed", "true")
+    },
+  )
+
+  it("keeps an unassessed search destination reachable without inventing a pass", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    const { session, view } = setup()
+    await screen.findByRole("button", { name: /Unused MCP servers/ })
+    view.rerender(
+      <BurnChecksView active session={session} focusedCheck="cacheChurn" focusRevision={1} />,
+    )
+    expect(
+      screen.getByText("This check has not been assessed for the available sessions."),
+    ).toBeVisible()
+    expect(screen.getByRole("button", { name: /Excess cache rehydration/ })).toHaveFocus()
+    view.rerender(
+      <BurnChecksView
+        active={false}
+        session={session}
+        focusedCheck="cacheChurn"
+        focusRevision={1}
+      />,
+    )
+    view.rerender(
+      <BurnChecksView active session={session} focusedCheck="cacheChurn" focusRevision={1} />,
+    )
+    expect(screen.getByRole("button", { name: /Excess cache rehydration/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
+    expect(
+      screen.getByText("This check has not been assessed for the available sessions."),
+    ).toBeVisible()
+  })
+
+  it("allows ordinary selection after searching for an absent check", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    const missing = {
+      ...report,
+      categories: report.categories.filter((check) => check.id !== "cacheChurn"),
+    }
+    const { session, view } = setup(target, false, aggregate, missing)
+    await screen.findByRole("button", { name: /Old model usage/ })
+    view.rerender(
+      <BurnChecksView active session={session} focusedCheck="cacheChurn" focusRevision={1} />,
+    )
+    expect(
+      screen.getByText("This check has not been assessed for the available sessions."),
+    ).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: /Old model usage/ }))
+    expect(
+      screen.queryByText("This check has not been assessed for the available sessions."),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Old model usage" })).toBeVisible()
+  })
+
+  it("selects a pending search target when a later report supplies it", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    const missing = {
+      ...report,
+      categories: report.categories.filter((check) => check.id !== "cacheChurn"),
+    }
+    const { adapter, session, view } = setup(target, false, aggregate, missing)
+    await screen.findByRole("button", { name: /Old model usage/ })
+    view.rerender(
+      <BurnChecksView active session={session} focusedCheck="cacheChurn" focusRevision={1} />,
+    )
+    vi.mocked(adapter.getReport).mockResolvedValueOnce({
+      ...report,
+      categories: report.categories.map((check) =>
+        check.id === "cacheChurn"
+          ? { ...check, clean: 3, unavailable: 0, lifecycle: "passing" as const }
+          : check,
+      ),
+    })
+    await act(async () => session.refresh())
+    const row = await screen.findByRole("button", { name: /Excess cache rehydration/ })
+    expect(row).toHaveAttribute("aria-pressed", "true")
+    expect(row).toHaveFocus()
+    expect(
+      screen.queryByText("This check has not been assessed for the available sessions."),
+    ).not.toBeInTheDocument()
+  })
+
+  it("leaves shared titlebar ownership to the layout while loading and after load", async () => {
     const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
     try {
       const pending = deferred<ChecksReportPayload>()
       const { view } = setup(target, false, aggregate, pending.promise)
-      const loading = screen.getByRole("region", { name: "Loading Burn checks" })
-      const loadingSummary = loading.querySelector(".burn-checks-collection-header")!
-      expect(loadingSummary).toHaveAttribute("data-tauri-drag-region", "deep")
-      expect(loadingSummary).not.toHaveAttribute("aria-hidden")
+      expect(view.container.querySelector("[data-tauri-drag-region]")).toBeNull()
       await act(async () => pending.resolve(report))
       await screen.findByRole("button", { name: /Old model usage.*8% estimated burn/ })
-      const header = view.container.querySelector(".burn-checks-collection-header")!
-      expect(header).toHaveAttribute("data-tauri-drag-region", "deep")
-      const detailHeader = view.container.querySelector(".burn-check-detail-heading")!
-      expect(detailHeader).toHaveAttribute("data-tauri-drag-region", "deep")
+      expect(view.container.querySelectorAll("[data-tauri-drag-region]")).toHaveLength(0)
     } finally {
       userAgent.mockRestore()
     }
@@ -1155,14 +1367,12 @@ describe("BurnChecksView", () => {
     }
   })
 
-  it("keeps an overlay drag region in the macOS empty error state", async () => {
+  it("leaves the macOS empty error state below the shared titlebar", async () => {
     const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
     try {
       const { view } = setup(target, false, aggregate, Promise.reject(new Error("Unavailable")))
       expect(await screen.findByRole("alert")).toHaveTextContent("Burn checks are unavailable.")
-      const dragRegion = view.container.querySelector("[data-tauri-drag-region]")!
-      expect(dragRegion).toHaveClass("main-window-empty-titlebar")
-      expect(dragRegion).toHaveAttribute("aria-hidden", "true")
+      expect(view.container.querySelector("[data-tauri-drag-region]")).toBeNull()
     } finally {
       userAgent.mockRestore()
     }

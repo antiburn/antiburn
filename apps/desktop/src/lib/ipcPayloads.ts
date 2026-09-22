@@ -5,8 +5,6 @@
  * apart from the command wrappers that send and receive them.
  */
 
-import type { SessionIdentityPayload } from "./sessionIpc"
-
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
  * ---------------------------------------------------------------------- */
@@ -168,20 +166,6 @@ export interface AppInfo {
   analyticsEnvironmentDisabled: boolean
   /** Who receives those events. Null when this build has no endpoint. */
   analyticsOperator: string | null
-}
-
-/** One revisioned request to show a session in the retained main window. */
-export interface MainWindowSessionRequest {
-  revision: number
-  target: SessionIdentityPayload
-}
-
-export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
-
-/** One revisioned request to select a retained main-window section. */
-export interface MainWindowSectionRequest {
-  revision: number
-  section: MainWindowSectionId
 }
 
 /** One repository row. Mirrors Rust `RepositoryItem`. */

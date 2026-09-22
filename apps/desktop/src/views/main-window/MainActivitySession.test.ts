@@ -11,14 +11,14 @@ import {
 import { sessionKey } from "../../lib/sessionSubject"
 import { liveSessions } from "../../lib/sessionLifecycle"
 import { toActivityEntry } from "../../lib/activityEntries"
+import { MainWindowNavigationSession } from "./MainWindowNavigationSession"
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   setSettings: vi.fn(),
   listRecentSessions: vi.fn(),
   getMainWindowVisible: vi.fn(),
-  peekMainWindowSessionTarget: vi.fn(),
-  acknowledgeMainWindowSessionTarget: vi.fn(),
+  existingMainWindowSessionTargets: vi.fn(),
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
   getSessionQuota: vi.fn(),
@@ -39,7 +39,6 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     ...actual,
     ...mocks,
     onMainWindowVisibilityChanged: subscribe("visibility"),
-    onMainWindowSessionTarget: subscribe("session-target"),
     onSettingsChanged: subscribe("settings"),
     onSessionIndexChanged: subscribe("index"),
     onSessionUpdated: subscribe("update"),
@@ -121,12 +120,7 @@ beforeEach(() => {
   mocks.getSettings.mockResolvedValue(DEFAULT_SETTINGS)
   mocks.setSettings.mockImplementation(async (settings) => settings)
   mocks.getMainWindowVisible.mockResolvedValue(true)
-  mocks.peekMainWindowSessionTarget.mockResolvedValue(null)
-  mocks.acknowledgeMainWindowSessionTarget.mockResolvedValue(undefined)
-  Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
-    value: 7,
-    configurable: true,
-  })
+  mocks.existingMainWindowSessionTargets.mockImplementation(async (targets) => targets)
   mocks.listRecentSessions.mockResolvedValue([entry("one"), entry("two")])
   mocks.loadSessionAnalysis.mockResolvedValue(payload("Loaded"))
   mocks.getLiveUsage.mockResolvedValue(null)
@@ -270,13 +264,13 @@ describe("MainActivitySession", () => {
     ).toBe(false)
   })
 
-  it("records a deep-linked session as user exposure only after activation", async () => {
+  it("records a restored external session as user exposure only after activation", async () => {
     const { session } = start(false)
-    await vi.waitFor(() => expect(mocks.events.has("session-target")).toBe(true))
-    mocks.events.get("session-target")!({
-      revision: 1,
-      target: { agent: "codex", sessionId: "linked", wslDistro: null },
-    })
+    session.restoreNavigation(
+      { kind: "all" },
+      { agent: "codex", sessionId: "linked", wslDistro: null },
+      "user",
+    )
     expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
       expect.objectContaining({ surface: "session_detail" }),
     )
@@ -345,77 +339,6 @@ describe("MainActivitySession", () => {
       surface: "session_detail",
       origin: "user",
     })
-  })
-
-  it("peeks and acknowledges a cold-start target after installing its listener", async () => {
-    mocks.peekMainWindowSessionTarget.mockResolvedValue({
-      revision: 1,
-      target: { agent: "codex", sessionId: "cold", wslDistro: "Ubuntu" },
-    })
-    const { session } = start()
-
-    await vi.waitFor(() => expect(session.getSnapshot().subject?.sessionId).toBe("cold"))
-    expect(session.getSnapshot().subject).toEqual({
-      agent: "codex",
-      sessionId: "cold",
-      wslDistro: "Ubuntu",
-    })
-    expect(mocks.events.has("session-target")).toBe(true)
-    expect(mocks.peekMainWindowSessionTarget).toHaveBeenCalledWith(7)
-    expect(mocks.acknowledgeMainWindowSessionTarget).toHaveBeenCalledWith(7, 1)
-    await vi.waitFor(() =>
-      expect(mocks.loadSessionAnalysis).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: "cold", wslDistro: "Ubuntu" }),
-      ),
-    )
-  })
-
-  it("keeps an applied event target when its acknowledgement fails", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
-    mocks.acknowledgeMainWindowSessionTarget.mockRejectedValue(new Error("unavailable"))
-    const { session } = start(false)
-    await vi.waitFor(() => expect(mocks.events.has("session-target")).toBe(true))
-    mocks.events.get("session-target")!({
-      revision: 3,
-      target: { agent: "codex", sessionId: "kept", wslDistro: null },
-    })
-    await vi.waitFor(() => expect(session.getSnapshot().subject?.sessionId).toBe("kept"))
-    expect(mocks.acknowledgeMainWindowSessionTarget).toHaveBeenCalledWith(7, 3)
-    mocks.events.get("session-target")!({
-      revision: 3,
-      target: { agent: "codex", sessionId: "kept", wslDistro: null },
-    })
-    expect(mocks.acknowledgeMainWindowSessionTarget).toHaveBeenCalledTimes(2)
-    await Promise.resolve()
-    consoleError.mockRestore()
-  })
-
-  it("keeps only the latest target across the listener and pending-target race", async () => {
-    const pending = deferred<{
-      revision: number
-      target: { agent: string; sessionId: string; wslDistro: string | null }
-    } | null>()
-    mocks.peekMainWindowSessionTarget.mockReturnValue(pending.promise)
-    const { session } = start(false)
-    await vi.waitFor(() => expect(mocks.events.has("session-target")).toBe(true))
-
-    mocks.events.get("session-target")!({
-      revision: 2,
-      target: { agent: "codex", sessionId: "new", wslDistro: null },
-    })
-    pending.resolve({
-      revision: 1,
-      target: { agent: "claude", sessionId: "old", wslDistro: null },
-    })
-    await vi.waitFor(() => expect(session.getSnapshot().subject?.sessionId).toBe("new"))
-    expect(mocks.loadSessionAnalysis).not.toHaveBeenCalled()
-
-    session.subscribe(() => {})
-    await vi.waitFor(() =>
-      expect(mocks.loadSessionAnalysis).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: "new" }),
-      ),
-    )
   })
 
   it("leaves older sessions unselected", async () => {
@@ -547,6 +470,89 @@ describe("MainActivitySession", () => {
     expect(session.getSnapshot().history).toHaveLength(0)
   })
 
+  it("reports deliberate session and filter navigation to the window history", async () => {
+    const { session } = start()
+    await ready(session)
+    const onNavigation = vi.fn()
+    session.onNavigation = onNavigation
+    session.clearSelection()
+
+    session.selectEntry(session.getSnapshot().entries![0]!)
+    session.openRelated({ agent: "claude", sessionId: "related", wslDistro: null })
+    session.goBack()
+    session.setFilter({ kind: "notable" })
+
+    expect(onNavigation.mock.calls).toEqual([["user"], ["user"], ["user"], ["user"]])
+  })
+
+  it("reports sidebar filter analytics through the navigation restore path", async () => {
+    const { session } = start()
+    await ready(session)
+    const navigation = new MainWindowNavigationSession(session)
+    navigation.navigate({
+      section: "activity",
+      filter: { kind: "all" },
+      subject: session.getSnapshot().subject,
+    })
+    mocks.noteInteraction.mockClear()
+
+    navigation.navigate({
+      section: "activity",
+      filter: { kind: "notable" },
+      subject: session.getSnapshot().subject,
+    })
+
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "sessionFilterSelected",
+      filter: "notable",
+    })
+    mocks.noteInteraction.mockClear()
+
+    navigation.back()
+
+    expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "sessionFilterSelected" }),
+    )
+  })
+
+  it("reports automatic selection for replacement and suppresses restored navigation", async () => {
+    const session = new MainActivitySession()
+    sessions.push(session)
+    const onNavigation = vi.fn()
+    session.onNavigation = onNavigation
+    session.subscribe(() => undefined)
+    await ready(session)
+
+    expect(onNavigation).toHaveBeenCalledExactlyOnceWith("automatic")
+    onNavigation.mockClear()
+    session.restoreNavigation(
+      { kind: "notable" },
+      { agent: "codex", sessionId: "restored", wslDistro: null },
+      "user",
+    )
+
+    expect(onNavigation).not.toHaveBeenCalled()
+    expect(session.getSnapshot()).toEqual(
+      expect.objectContaining({
+        filter: { kind: "notable" },
+        subject: { agent: "codex", sessionId: "restored", wslDistro: null },
+      }),
+    )
+  })
+
+  it("reports a persisted filter as an automatic navigation replacement", async () => {
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "failing" })
+    const session = new MainActivitySession()
+    sessions.push(session)
+    const onNavigation = vi.fn()
+    session.onNavigation = onNavigation
+    session.subscribe(() => undefined)
+    await ready(session)
+
+    expect(onNavigation).toHaveBeenCalledWith("automatic")
+    expect(session.getSnapshot().filter).toEqual({ kind: "failing" })
+  })
+
   it("keeps selection outside a changed range but clears confirmed removal", async () => {
     const { session } = start()
     await ready(session)
@@ -555,8 +561,68 @@ describe("MainActivitySession", () => {
     mocks.events.get("settings")!({ ...DEFAULT_SETTINGS, activityWindowDays: 1 })
     await vi.waitFor(() => expect(session.getSnapshot().entries).toHaveLength(0))
     expect(session.getSnapshot().subject?.sessionId).toBe("one")
+    new MainWindowNavigationSession(session)
+    const onDeleted = vi.fn()
+    session.onDeleted = onDeleted
+    mocks.existingMainWindowSessionTargets.mockResolvedValue([])
     mocks.events.get("index")!({ seq: 4, cause: "removed", removal: "deleted" })
     await vi.waitFor(() => expect(session.getSnapshot().subject).toBeNull())
+    expect(onDeleted).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "one" }))
+  })
+
+  it("prunes all deleted history destinations after a complete invalidation", async () => {
+    const { session } = start()
+    await ready(session)
+    session.clearSelection()
+    const navigation = new MainWindowNavigationSession(session)
+    session.selectEntry(session.getSnapshot().entries![0]!)
+    session.selectEntry(session.getSnapshot().entries![1]!)
+    mocks.existingMainWindowSessionTargets.mockResolvedValue([])
+    mocks.listRecentSessions.mockResolvedValue([])
+
+    mocks.events.get("index")!({ seq: 4, cause: "removed", removal: "deleted" })
+
+    await vi.waitFor(() => expect(session.getSnapshot().subject).toBeNull())
+    expect(navigation.getSnapshot()).toEqual(
+      expect.objectContaining({ selected: "overview", canBack: false, canForward: false }),
+    )
+  })
+
+  it("does not infer deletion from absence in a capped activity response", async () => {
+    const { session } = start()
+    await ready(session)
+    session.selectEntry(session.getSnapshot().entries![0]!)
+    new MainWindowNavigationSession(session)
+    mocks.listRecentSessions.mockResolvedValue(
+      Array.from({ length: 500 }, (_, index) => entry(`capped-${index}`)),
+    )
+
+    mocks.events.get("index")!({ seq: 4, cause: "removed", removal: "deleted" })
+
+    await vi.waitFor(() => expect(session.getSnapshot().entries).toHaveLength(500))
+    expect(session.getSnapshot().subject?.sessionId).toBe("one")
+    expect(mocks.existingMainWindowSessionTargets).toHaveBeenCalledWith([
+      { agent: "claude", sessionId: "one", wslDistro: null },
+    ])
+  })
+
+  it("retains an older history subject when the authoritative index still has it", async () => {
+    const { session } = start()
+    await ready(session)
+    session.selectEntry(session.getSnapshot().entries![0]!)
+    new MainWindowNavigationSession(session)
+    mocks.listRecentSessions.mockResolvedValue([])
+    mocks.events.get("settings")!({ ...DEFAULT_SETTINGS, activityWindowDays: 1 })
+    await vi.waitFor(() => expect(session.getSnapshot().entries).toHaveLength(0))
+
+    mocks.events.get("index")!({ seq: 4, cause: "removed", removal: "deleted" })
+
+    await vi.waitFor(() =>
+      expect(mocks.existingMainWindowSessionTargets).toHaveBeenCalledWith([
+        { agent: "claude", sessionId: "one", wslDistro: null },
+      ]),
+    )
+    expect(session.getSnapshot().subject?.sessionId).toBe("one")
   })
 
   it("coalesces refresh requests and never publishes a hidden response", async () => {
@@ -625,6 +691,58 @@ describe("MainActivitySession", () => {
       kind: "sessionFilterSelected",
       filter: "notable",
     })
+  })
+
+  it.each(["response-first", "event-first"])(
+    "keeps optimistic filter history stable when settings arrive %s",
+    async (order) => {
+      const { session } = start()
+      await ready(session)
+      const navigation = new MainWindowNavigationSession(session)
+      navigation.select("activity")
+      const pending = deferred<typeof DEFAULT_SETTINGS>()
+      mocks.setSettings.mockReturnValueOnce(pending.promise)
+      session.setFilter({ kind: "notable" })
+      const snapshot = navigation.getSnapshot()
+      const saved = { ...session.getSnapshot().settings }
+      expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
+      if (order === "event-first") mocks.events.get("settings")!(saved)
+      pending.resolve(saved)
+      await pending.promise
+      if (order === "response-first") mocks.events.get("settings")!(saved)
+      expect(navigation.getSnapshot()).toBe(snapshot)
+      expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
+      navigation.back()
+      expect(navigation.getSnapshot().destination.filter).toEqual({ kind: "all" })
+      navigation.forward()
+      expect(navigation.getSnapshot().destination.filter).toEqual({ kind: "notable" })
+    },
+  )
+
+  it("ignores a rejected filter write after a newer filter succeeds", async () => {
+    const { session } = start()
+    await ready(session)
+    let reject!: (error: Error) => void
+    const pending = new Promise<typeof DEFAULT_SETTINGS>((_, fail) => {
+      reject = fail
+    })
+    mocks.setSettings.mockReturnValueOnce(pending)
+    session.setFilter({ kind: "notable" })
+    session.setFilter({ kind: "failing" })
+    await Promise.resolve()
+    reject(new Error("stale save failed"))
+    await pending.catch(() => undefined)
+    await Promise.resolve()
+    expect(session.getSnapshot().filter).toEqual({ kind: "failing" })
+    expect(session.getSnapshot().settingsError).toBe(false)
+  })
+
+  it("reports a rejected current filter write", async () => {
+    const { session } = start()
+    await ready(session)
+    mocks.setSettings.mockRejectedValueOnce(new Error("save failed"))
+    session.setFilter({ kind: "notable" })
+    await vi.waitFor(() => expect(session.getSnapshot().settingsError).toBe(true))
   })
 
   it("does nothing when the requested filter already matches", async () => {

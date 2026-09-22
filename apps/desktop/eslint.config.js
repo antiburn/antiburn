@@ -27,6 +27,53 @@ export default tseslint.config(
     },
   },
   {
+    files: [
+      "src/lib/navigation/mainViews.ts",
+      "src/lib/navigation/sessionFilterDefinitions.ts",
+      "src/lib/settingsPanes.ts",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "ImportDeclaration, ImportExpression, TSImportType, ExportNamedDeclaration[source], ExportAllDeclaration, CallExpression[callee.name='require']",
+          message: "Keep navigation definitions independent of other modules.",
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/lib/presentation/checkDefinitions.ts", "src/lib/settingsSearchTargets.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "ImportDeclaration[importKind!='type'][source.value!='./settingsPanes'], ImportDeclaration[importKind='type'][source.value!='../insightsIpc'][source.value!='./platform'], ImportExpression, TSImportType, ExportNamedDeclaration[source], ExportAllDeclaration, CallExpression[callee.name='require']",
+          message:
+            "Descriptors may depend only on pure pane metadata and declared domain types.",
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/components/ui/{Row,ToggleRow,SectionGroup}.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/*settings*", "**/settings/**"],
+              message: "Keep Settings metadata in the Settings adapters.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Config and generator scripts run under Node, not the webview.
     files: ["*.js", "*.ts", "scripts/**/*.mjs"],
     extends: [js.configs.recommended],

@@ -188,8 +188,14 @@ dependencies = [
 name = "antiburn-main-window"
 version = "0.1.0"
 dependencies = [
+ "block2",
+ "dispatch2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "tauri",
+ "tracing",
 ]
 
 [[package]]

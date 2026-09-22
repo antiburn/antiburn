@@ -58,6 +58,12 @@ colors:
   surface-window: # standard decorated window
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
+  surface-overlay: # opaque search dialog and other floating surfaces
+    light: "hsl(0 0% 96.4%)"
+    dark: "hsl(0 0% 12.5%)"
+  command-palette-scrim:
+    light: "hsl(0 0% 0% / 0.04)"
+    dark: "hsl(0 0% 0% / 0.12)"
   surface-sidebar: # source-list / sidebar material
     light: "hsl(0 0% 0% / 0.03)"
     dark: "hsl(0 0% 100% / 0.04)"
@@ -822,12 +828,37 @@ Notes for what isn't expressible as a token:
   minimum of 1000 × 560. The initial outer frame uses at most 85% of each usable display dimension,
   including native chrome. A smaller work area takes precedence over the normal minimum. Saved
   user sizes can exceed the initial cap and remain constrained to the usable work area. It paints the opaque
-  `surface-window` canvas. On macOS its 40px overlay drag region spans only the sidebar and leaves the
-  native traffic lights visible. The collection and detail panes start at the top of the window,
-  without titlebar clearance. On macOS the list header and detail toolbar supply drag regions;
-  their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
-  Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
-  top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
+  `surface-window` canvas. A shared 40px titlebar spans the window. macOS reserves 78px
+  for native traffic lights, matching the 32px center spacing of adjacent toolbar icons. Native button centers target 20 logical pixels below the
+  window top, using AppKit coordinate conversion. Horizontal native positions remain unchanged.
+  Resize, display-scale, focus, and fullscreen-exit notifications align the buttons synchronously
+  on the native main thread. Creation and reveal also align them. Resize correction does not
+  enter the asynchronous dispatch queue. Fullscreen leaves the system-owned controls alone.
+  Window destruction removes the native notification observers.
+  Windows and Linux replace native decorations with this same toolbar and right-aligned
+  Minimize, Maximize/Restore, and Close controls. Caption controls use 44 × 40px targets;
+  Close uses `system-red-text` over `surface-selected` on hover. Maximize state follows
+  native resize events. Linux adds 4px resize edges and 8px corners, hidden when maximized.
+  Windows retains native resize hit testing.
+  Action errors appear below the controls on `surface-overlay`.
+  Back, Forward, and Search use adjacent 32px-wide, 40px-high desktop targets with
+  centered 28px-square hover fills. The toolbar overlays the sidebar's top edge.
+  macOS views reach the top window edge without an empty row.
+  The top 40px of view content also accepts window dragging and double-click maximize
+  on non-interactive content. Buttons, links, inputs, tabs, editable text, scrollbars,
+  charts, and explicit `data-no-window-drag` regions keep their own input behavior.
+  The overlay passes pointer input through to the view; there is no blocking drag sheet.
+  Windows and Linux reserve 40px above the detail pane, Overview, and Limits content for right-side caption controls.
+  The sidebar stays visible at 220px on all platforms. Navigation starts below the toolbar
+  without a brand header or Search row. Search stays after Forward. Command+K / Control+K
+  open the palette. Previously saved collapsed preferences do not change this layout.
+  Search opens an immediate, top-centered
+  command palette on the opaque `surface-overlay` token, with a standalone 40px-square
+  close target, labeled result groups and keyboard focus management.
+  The Features, Settings, and Checks groups omit repeated group names beneath results.
+  Distinct setting paths remain visible.
+  The `command-palette-scrim` gently dims the background with 4% black in light mode
+  and 12% black in dark mode. The palette opens immediately without background blur.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   `main-window.css` sets this density over `SidebarNav`'s own 36px rows, 8px gaps, 16px icons,
   and 12px icon gaps, which Settings keeps. A top-level item can nest child rows one level deep,
@@ -842,20 +873,30 @@ Notes for what isn't expressible as a token:
   card's `+N` model count. A row with a count sets its accessible name to its label alone, so the
   count digits stay out of the announced name.
   These local geometry rules use the spacing tokens in `main-window.css`; other source lists
-  retain their current density. Burn checks and Sessions are the main sidebar sections. Burn checks
-  is the default section, uses the 14px Lucide `Flame` mark, and opens from the checks summary in
-  the menu-bar popover. A
+  retain their current density. Overview is the default section; Sessions and Burn checks are
+  its peers. Burn checks uses the 14px Lucide `Flame` mark and opens from the checks summary
+  in the menu-bar popover. A
   Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows
   and Linux) also opens Settings without changing the selected section.
-  The first sidebar row starts at 48px on macOS, clear of the drag strip. The content region scrolls
-  independently of the title strip. A view switch is immediate: the window does not animate navigation. Use the
+  The sidebar material and divider reach the top window edge behind the toolbar controls.
+  The sidebar navigation starts below the shared titlebar. The content region scrolls
+  independently of the sidebar controls. A view switch is immediate: the window does not animate navigation. Use the
   documented type scale and keyboard-only focus treatment. Hidden or minimized main windows suspend
-  presentation work; blur alone does not suspend it. Native close hides this renderer for reuse.
+  presentation work; blur alone does not suspend it. Native close keeps the existing policy: hide for reuse, or quit on Windows/Linux when the tray icon is disabled.
+
+### Main-window search
+
+The palette opens with Command+K or Control+K, focuses its input, and supports arrows, Enter,
+and Escape. It has no entrance, exit, or result motion. Dismissal restores the visible Search
+trigger. Successful navigation can focus a destination control. Catalog results use Best match,
+Features, Settings, and Checks, limited to five per category. Search is navigation only:
+Settings opens its separate window at a stable control ID, and a check opens its disclosure.
+Neither path executes an action or changes a setting. Queries stay local and are not persisted.
 
 ### Main window collection and detail architecture
 
-The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
-at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+The fixed 220px navigation sidebar, 340px collection pane, and flexible detail pane fill
+the workspace. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
 the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
 the detail retains 440px; at the 1100px default width, it receives 540px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
@@ -897,8 +938,8 @@ not reserve inline space for the vendor mark. Group labels use sentence case. A
 shared `ListDisplayToolbar` places the pinned activity label and the right-aligned `text-tabs` badge metric control on one row with the labels Cost,
 Week %, and 5h %. Its accessible group name replaces redundant visible labels. The selected choice uses accent ink and a
 primary-label hairline underline. The control crossfades only color and underline opacity over `--duration-quick`; it never slides a moving indicator.
-The detail toolbar shows the session title; Back appears
-only for related-session history. Embedded shortcuts stay inside the detail pane. Hidden panes pause
+The detail toolbar shows the session title. Shared Back and Forward own main-window history;
+the popover retains its related-session Back behavior. Embedded adjacent-session shortcuts stay inside the detail pane. Hidden panes pause
 hygiene reads, relative-time clocks, and active-row motion. The menu-bar list shares this card presentation
 while keeping its existing navigation behavior.
 
@@ -1194,11 +1235,9 @@ The menu-bar Burn Checks summary uses `surface-card/50` at rest and
 transition. Its summary button uses a pointer cursor. Hover does not open the
 checks companion; clicking opens Burn Checks in the main window.
 
-On macOS, the collection and detail headers use `data-tauri-drag-region="deep"`.
-Non-interactive header surfaces remain draggable; the info and action buttons remain interactive.
-The loading collection header provides the same drag region. The empty error state
-uses an absolute 40px fallback drag region without reserving layout space.
-Windows and Linux use native title bars without these attributes.
+The shell shares the top 40px with view content beside the fixed sidebar. Non-interactive
+view content accepts dragging there; controls keep their own interactions. Platform caption controls reserve their necessary clearance.
+Their info and action buttons retain their normal interactions.
 
 ### Floating HUD frame
 

@@ -2,6 +2,9 @@
 //!
 //! The desktop shell owns renderer readiness, persistence, and launch policy.
 
+#[cfg(target_os = "macos")]
+mod macos_chrome;
+
 use serde::{Deserialize, Serialize};
 use tauri::webview::PageLoadPayload;
 use tauri::{AppHandle, PhysicalRect, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
@@ -68,7 +71,7 @@ impl From<&PhysicalRect<i32, u32>> for Frame {
     }
 }
 
-/// Build a hidden decorated window and apply a valid saved placement.
+/// Build a hidden window with an integrated toolbar and apply a valid saved placement.
 pub fn build<F>(
     app: &AppHandle,
     initialization_script: String,
@@ -78,29 +81,28 @@ pub fn build<F>(
 where
     F: Fn(WebviewWindow, PageLoadPayload<'_>) + Send + Sync + 'static,
 {
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
+    let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
         .initialization_script(initialization_script)
         .title("antiburn")
         .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
         .resizable(true)
         .maximizable(true)
-        .decorations(true)
+        .decorations(cfg!(target_os = "macos"))
         .skip_taskbar(false)
         .visible(false)
         .on_page_load(on_page_load);
 
     #[cfg(target_os = "macos")]
-    {
-        builder = builder
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true);
-    }
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
 
     let window = builder.build()?;
     // Geometry failure must not leak a hidden label that blocks every retry.
     // Keep the usable default window and let the shell persist its later move.
     let applied = apply_placement(&window, placement).ok();
+    #[cfg(target_os = "macos")]
+    macos_chrome::install(&window);
     Ok(BuiltWindow {
         window,
         placement: applied,
@@ -111,7 +113,10 @@ where
 pub fn reveal(window: &WebviewWindow) -> tauri::Result<()> {
     window.show()?;
     window.unminimize()?;
-    window.set_focus()
+    window.set_focus()?;
+    #[cfg(target_os = "macos")]
+    macos_chrome::align(window);
+    Ok(())
 }
 
 /// Hide the window without destroying its renderer.

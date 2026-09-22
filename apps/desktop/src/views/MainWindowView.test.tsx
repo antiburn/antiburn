@@ -1,17 +1,20 @@
+import { isMacOS } from "../lib/platform"
 import { act, fireEvent, render, screen, within } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { Activity } from "lucide-react"
 import { CollectionDetailPane } from "./main-window/CollectionDetailPane"
 import type * as MainActivitySessionModule from "./main-window/MainActivitySession"
 import type { SessionListEntry } from "../components/session/SessionList"
 import type * as IpcModule from "../lib/ipc"
-import type { MainWindowSectionRequest } from "../lib/ipc"
+import type { MainWindowNavigationRequest } from "../lib/ipc"
+import type { SessionSubject } from "../lib/sessionSubject"
 import type { SessionFilter } from "../lib/sessionFilters"
 import * as SnoozedBurnChecks from "../lib/snoozedBurnChecks"
 import capability from "../../src-tauri/capabilities/main.json"
-import { openSettingsWindow } from "../lib/ipc"
+import { noteInteraction, openSettingsWindow } from "../lib/ipc"
 import { MainWindowView } from "./MainWindowView"
+import { searchApp } from "../lib/appSearch"
 
 vi.mock("./main-window/MainActivityView", () => ({ MainActivityView: () => <p>Sessions</p> }))
 vi.mock("./main-window/BurnChecksView", () => ({
@@ -27,6 +30,21 @@ vi.mock("./main-window/OverviewView", () => ({
       <p>Overview workspace</p>
       <button type="button" onClick={() => onSelectSession(overviewMocks.recentEntry)}>
         Recent session
+      </button>
+    </div>
+  ),
+}))
+
+vi.mock("./main-window/quota/QuotaView", () => ({
+  QuotaView: ({ onSelectSession }: { onSelectSession: (subject: SessionSubject) => void }) => (
+    <div>
+      <h1>Limits</h1>
+      <button
+        onClick={() =>
+          onSelectSession({ agent: "codex", sessionId: "limits-session", wslDistro: null })
+        }
+      >
+        Open Limits session
       </button>
     </div>
   ),
@@ -51,8 +69,13 @@ const overviewMocks = vi.hoisted(() => ({
  */
 const activityMocks = vi.hoisted(() => {
   class FakeMainActivitySession {
-    snapshot: { entries: SessionListEntry[] | null; filter: SessionFilter } = {
+    snapshot: {
+      entries: SessionListEntry[] | null
+      filter: SessionFilter
+      subject: SessionSubject | null
+    } = {
       entries: null,
+      subject: null,
       filter: { kind: "all" },
     }
     private listeners = new Set<() => void>()
@@ -60,7 +83,18 @@ const activityMocks = vi.hoisted(() => {
       this.snapshot = { ...this.snapshot, filter }
       this.notify()
     })
-    selectEntry = vi.fn()
+    onNavigation?: (origin: "user" | "automatic") => void
+    onDeleted?: (subject: SessionSubject) => void
+    restoreNavigation = vi.fn((filter: SessionFilter, subject: SessionSubject | null) => {
+      this.snapshot = { ...this.snapshot, filter, subject }
+      this.notify()
+    })
+    selectEntry = vi.fn((entry: SessionListEntry) => {
+      if (!entry.sessionId) return
+      this.snapshot = { ...this.snapshot, subject: { ...entry, sessionId: entry.sessionId } }
+      this.notify()
+      this.onNavigation?.("user")
+    })
     constructor() {
       activityMocks.instances.push(this)
     }
@@ -95,21 +129,22 @@ vi.mock("./main-window/MainActivitySession", async (importOriginal) => {
 })
 
 const ipcMocks = vi.hoisted(() => ({
-  sectionTarget: null as ((request: MainWindowSectionRequest) => void) | null,
+  sectionTarget: null as ((request: MainWindowNavigationRequest) => void) | null,
 }))
 
 vi.mock("../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof IpcModule>()),
   openSettingsWindow: vi.fn().mockResolvedValue(undefined),
-  onMainWindowSectionTarget: vi.fn(
-    async (handler: (request: MainWindowSectionRequest) => void) => {
+  noteInteraction: vi.fn(),
+  onMainWindowNavigationTarget: vi.fn(
+    async (handler: (request: MainWindowNavigationRequest) => void) => {
       ipcMocks.sectionTarget = handler
       return () => {
         ipcMocks.sectionTarget = null
       }
     },
   ),
-  takeMainWindowSectionTarget: vi.fn().mockResolvedValue(null),
+  peekMainWindowNavigationTarget: vi.fn().mockResolvedValue(null),
 }))
 
 function activitySession() {
@@ -152,6 +187,150 @@ afterEach(() => {
 })
 
 describe("MainWindowView", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+      configurable: true,
+      value: function (this: HTMLDialogElement) {
+        this.open = true
+      },
+    })
+    Object.defineProperty(HTMLDialogElement.prototype, "close", {
+      configurable: true,
+      value: function (this: HTMLDialogElement) {
+        this.open = false
+      },
+    })
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+  })
+  it("records only completed catalog navigation and never query text", async () => {
+    render(<MainWindowView />)
+    fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
+    expect(noteInteraction).toHaveBeenCalledWith({ kind: "appSearchOpened" })
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "sound" } })
+    await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+    expect(openSettingsWindow).toHaveBeenCalledWith("notifications", "sound")
+    expect(noteInteraction).toHaveBeenCalledWith({
+      kind: "appSearchResultOpened",
+      category: "setting",
+    })
+    expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Back" })).toBeDisabled()
+  })
+  it("keeps toolbar search available and restores its focus", () => {
+    setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X)")
+    render(<MainWindowView />)
+    expect(screen.getByRole("button", { name: "Search antiburn" })).toBeVisible()
+    fireEvent.keyDown(document, { key: "k", metaKey: true })
+    expect(screen.getByRole("combobox")).toHaveFocus()
+    fireEvent.click(screen.getByRole("button", { name: "Close search" }))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Search antiburn" })).toHaveFocus()
+  })
+  it("focuses the destination after choosing a view from search", async () => {
+    render(<MainWindowView />)
+    fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "burn checks" } })
+    await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+    expect(screen.getByRole("tabpanel", { name: "Checks" })).toHaveFocus()
+  })
+  it.each([
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Mozilla/5.0 (X11; Linux x86_64)",
+  ])("searches every sidebar view by its visible label on %s", async (platform) => {
+    setUserAgent(platform)
+    render(<MainWindowView />)
+    const views = screen.getAllByRole("tabpanel", { hidden: true }).map((panel) => ({
+      panel,
+      label: panel.getAttribute("aria-label")!,
+    }))
+    for (const { panel, label } of views) {
+      const sidebarTab = tab(label)
+      expect(sidebarTab).toHaveAttribute("aria-controls", panel.id)
+      const matches = searchApp(label).filter((result) => result.label === label)
+      expect(matches).toHaveLength(1)
+      expect(matches[0]?.target).toMatchObject({ kind: "view" })
+      fireEvent.click(sidebarTab)
+      expect(panel).toBeVisible()
+      fireEvent.click(tab(label === "Overview" ? "Checks" : "Overview"))
+      fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: label } })
+      await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+      expect(panel).toBeVisible()
+      expect(panel).toHaveFocus()
+    }
+  })
+  it("does not report a successful result when Settings fails to open", async () => {
+    vi.mocked(openSettingsWindow).mockRejectedValueOnce(new Error("unavailable"))
+    render(<MainWindowView />)
+    fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "sound" } })
+    await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not open")
+    expect(noteInteraction).not.toHaveBeenCalledWith({
+      kind: "appSearchResultOpened",
+      category: "setting",
+    })
+  })
+
+  it("searches agent session filters and reaches the same sidebar selection", async () => {
+    render(<MainWindowView />)
+    act(() =>
+      activitySession().setEntries([
+        sessionEntry({ agent: "claude-code", sessionId: "claude-session" }),
+        sessionEntry({ agent: "codex", sessionId: "codex-session" }),
+      ]),
+    )
+    for (const label of ["Claude Code Sessions", "Codex Sessions"]) {
+      fireEvent.click(tab(label))
+      const selected = activitySession().getSnapshot().filter
+      fireEvent.click(tab("Overview"))
+      fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: label } })
+      await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+      expect(activitySession().getSnapshot().filter, label).toEqual(selected)
+      expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+    }
+  })
+
+  it.each(["sidebar", "search"])(
+    "opens All Sessions with the retained selection through %s",
+    async (source) => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Sessions"))
+      act(() => activitySession().selectEntry(sessionEntry()))
+      const subject = activitySession().getSnapshot().subject
+      fireEvent.click(tab("Failing Sessions"))
+      fireEvent.click(tab("Limits"))
+      if (source === "sidebar") {
+        fireEvent.click(tab("Sessions"))
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
+        fireEvent.change(screen.getByRole("combobox"), { target: { value: "Sessions" } })
+        await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+      }
+      expect(activitySession().getSnapshot()).toMatchObject({
+        filter: { kind: "all" },
+        subject,
+      })
+      expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+      fireEvent.click(screen.getByRole("button", { name: "Back" }))
+      expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
+      fireEvent.click(screen.getByRole("button", { name: "Back" }))
+      expect(activitySession().getSnapshot()).toMatchObject({
+        filter: { kind: "failing" },
+        subject,
+      })
+      fireEvent.click(screen.getByRole("button", { name: "Forward" }))
+      fireEvent.click(screen.getByRole("button", { name: "Forward" }))
+      expect(activitySession().getSnapshot()).toMatchObject({
+        filter: { kind: "all" },
+        subject,
+      })
+    },
+  )
+
   it("keeps the macOS title-bar clearance as the drag region", () => {
     setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X)")
     setWindowWidth(900)
@@ -166,13 +345,14 @@ describe("MainWindowView", () => {
     )
   })
 
-  it("keeps native title bars clear on other platforms", () => {
+  it("integrates window controls and drag space on Windows", () => {
     setUserAgent("Mozilla/5.0 (Windows NT 10.0)")
     setWindowWidth(900)
 
     const { container } = render(<MainWindowView />)
 
-    expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
+    expect(container.querySelector("header[data-tauri-drag-region]")).not.toBeNull()
+    expect(screen.getByRole("button", { name: "Close window" })).toBeVisible()
   })
 
   it("opens Overview by default and keeps Checks and Sessions in the sidebar", () => {
@@ -210,8 +390,11 @@ describe("MainWindowView", () => {
       "true",
     )
     expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
-    expect(activitySession().selectEntry).toHaveBeenCalledWith(overviewMocks.recentEntry)
-    expect(activitySession().setFilter).toHaveBeenCalledWith({ kind: "all" })
+    expect(activitySession().getSnapshot().subject).toMatchObject({
+      agent: "claude",
+      sessionId: "recent-1",
+    })
+    expect(activitySession().getSnapshot().filter).toEqual({ kind: "all" })
   })
 
   it("opens the existing Settings window without changing the selected section", () => {
@@ -325,7 +508,7 @@ describe("MainWindowView", () => {
     it("selects Sessions and applies the filter when a child is clicked", () => {
       render(<MainWindowView />)
       fireEvent.click(tab("Failing Sessions"))
-      expect(activitySession().setFilter).toHaveBeenCalledWith({ kind: "failing" })
+      expect(activitySession().getSnapshot().filter).toEqual({ kind: "failing" })
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
     })
 
@@ -346,7 +529,7 @@ describe("MainWindowView", () => {
       fireEvent.click(tab("Failing Sessions"))
       activitySession().setFilter.mockClear()
       fireEvent.click(tab("Sessions"))
-      expect(activitySession().setFilter).toHaveBeenCalledWith({ kind: "all" })
+      expect(activitySession().getSnapshot().filter).toEqual({ kind: "all" })
     })
 
     it("highlights the active filter's own child row instead of the parent", () => {
@@ -361,7 +544,10 @@ describe("MainWindowView", () => {
       await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
       expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
       act(() => {
-        ipcMocks.sectionTarget!({ revision: 1, section: "burnChecks" })
+        ipcMocks.sectionTarget!({
+          revision: 1,
+          destination: { section: "burnChecks", target: null },
+        })
       })
       expect(screen.getByRole("tab", { name: "Checks" })).toHaveAttribute(
         "aria-selected",
@@ -374,7 +560,10 @@ describe("MainWindowView", () => {
       render(<MainWindowView />)
       await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
       act(() => {
-        ipcMocks.sectionTarget!({ revision: 1, section: "activity" })
+        ipcMocks.sectionTarget!({
+          revision: 1,
+          destination: { section: "activity", target: null },
+        })
       })
       expect(activitySession().setFilter).not.toHaveBeenCalled()
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
@@ -387,7 +576,10 @@ describe("MainWindowView", () => {
       expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
       await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
       act(() => {
-        ipcMocks.sectionTarget!({ revision: 1, section: "burnChecks" })
+        ipcMocks.sectionTarget!({
+          revision: 1,
+          destination: { section: "burnChecks", target: null },
+        })
       })
       expect(screen.getByRole("tab", { name: "Checks" })).toHaveAttribute(
         "aria-selected",
@@ -401,15 +593,38 @@ describe("MainWindowView", () => {
       fireEvent.click(tab("Limits"))
       expect(tab("Limits")).toHaveAttribute("aria-selected", "true")
       await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
-      // Every session-open request targets "activity", the section already
-      // selected underneath Limits: `select()` alone would no-op here, so
-      // this exercises the same-section path the other cross-window test
-      // (which retargets "burnChecks", a value that does change) does not.
       act(() => {
-        ipcMocks.sectionTarget!({ revision: 1, section: "activity" })
+        ipcMocks.sectionTarget!({
+          revision: 1,
+          destination: { section: "activity", target: null },
+        })
       })
       expect(tab("Limits")).toHaveAttribute("aria-selected", "false")
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+    })
+
+    it("includes Limits in history and leaves it when search chooses another feature", () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Limits"))
+      fireEvent.click(screen.getByRole("button", { name: "Back" }))
+      expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
+      fireEvent.click(screen.getByRole("button", { name: "Forward" }))
+      expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
+      fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: "Overview" } })
+      fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" })
+      expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
+    })
+
+    it("returns directly to Limits after opening its session with another session retained", () => {
+      render(<MainWindowView />)
+      fireEvent.click(screen.getByRole("button", { name: "Recent session" }))
+      expect(activitySession().getSnapshot().subject?.sessionId).toBe("recent-1")
+      fireEvent.click(tab("Limits"))
+      fireEvent.click(screen.getByRole("button", { name: "Open Limits session" }))
+      expect(activitySession().getSnapshot().subject?.sessionId).toBe("limits-session")
+      fireEvent.click(screen.getByRole("button", { name: "Back" }))
+      expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
     })
 
     it("keeps Limits mounted after navigating away, instead of unmounting it", () => {

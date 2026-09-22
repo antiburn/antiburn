@@ -54,6 +54,18 @@ When a token or stylesheet changes, update `apps/desktop/design.md` in the same
 change. Add each new stylesheet to its `sources:` list. CI checks this contract
 with `scripts/check-design-drift.mjs`.
 
+## Desktop navigation
+
+Declare main-window views in the shared navigation registry. Keep Settings panes,
+Settings controls, session filters, and checks in their feature-owned metadata.
+Derive sidebar labels and search destinations from these definitions. Exclude
+fixed session filters from search; agent filters remain searchable. Keep
+renderers, counts, and side effects outside metadata, and native routes explicit.
+Use the Settings adapters for searchable controls; generic UI primitives must not
+depend on Settings metadata. Test rendered destinations against search, including
+platform labels, availability, and focus without value changes.
+See [main-window navigation](docs/main-window-navigation.md) for the boundaries.
+
 ## Comments
 
 Write code comments in ASD-STE100 Simplified Technical English. Use active

@@ -1664,17 +1664,14 @@ describe("SessionDetailPresentation — deferred keyboard entry", () => {
 })
 
 describe("SessionDetailPresentation — native drag toolbar", () => {
-  it("only enables the embedded macOS toolbar, leaving controls interactive", () => {
+  it("leaves native dragging to the shared titlebar on every platform", () => {
     const agent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue("Macintosh")
     try {
       const props = presentationProps({})
       const { container, rerender, unmount } = render(<SessionDetailPresentation {...props} />)
       expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
       rerender(<SessionDetailPresentation {...props} embedded />)
-      const toolbar = screen
-        .getByRole("heading", { name: "Fix the flaky test" })
-        .closest("[data-tauri-drag-region]")
-      expect(toolbar).toHaveAttribute("data-tauri-drag-region", "deep")
+      expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
       expect(screen.getByRole("button", { name: "Delete this session" })).not.toHaveAttribute(
         "data-tauri-drag-region",
       )

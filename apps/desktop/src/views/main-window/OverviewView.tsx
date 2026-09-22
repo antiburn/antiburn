@@ -43,16 +43,10 @@ export function OverviewView({
     <div
       className={cn(
         "min-h-0 min-w-0 flex-1 bg-surface-window",
-        "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[auto_minmax(0,1fr)_auto] gap-x-(--space-2xl) mb-(--space-2xl)",
+        "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[minmax(0,1fr)] gap-x-(--space-2xl) mb-(--space-2xl)",
       )}
       data-overview-active={active ? "" : undefined}
     >
-      <div
-        className="col-span-full h-(--main-window-titlebar-height)"
-        data-tauri-drag-region
-        aria-hidden="true"
-      />
-
       <h1 className="sr-only">Overview</h1>
 
       <ScrollPane
