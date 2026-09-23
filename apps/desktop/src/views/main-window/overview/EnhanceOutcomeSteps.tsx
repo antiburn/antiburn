@@ -2,14 +2,17 @@ import { BellOff, CircleCheck, Hourglass, Wrench, type LucideIcon } from "lucide
 import { useCallback } from "react"
 
 import type { BurnCheckTargetPayload, ChecksCategoryPayload } from "../../../lib/insightsIpc"
-import { formatApiEquivalentUsd } from "../../../lib/presentation/checks"
+import {
+  formatApiEquivalentUsd,
+  formatTokenBurnPercent,
+} from "../../../lib/presentation/checks"
 import { formatTokensShort } from "../../../lib/presentation/sessionAnalysis"
 import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
 import { watchStatus } from "../burn-checks/BurnCheckTargetPresentation"
 import { EnhanceCard, useChecks, Waiting } from "./EnhanceSteps"
 import { startSmoke } from "./enhanceSmoke"
-import { isAppliedFix, projectSavings, SAVINGS_MONTHS } from "./enhanceState"
+import { isAppliedFix, predictSavings, projectSavings, SAVINGS_MONTHS } from "./enhanceState"
 
 /** Asks for a check's targets while it is mounted. It shows nothing. */
 function TargetTracker({
@@ -156,6 +159,14 @@ export function DoneStep({
   // With no applied fix, the page shows what the open fixes can save.
   const counted = applied.length > 0 ? "applied" : "open"
   const savings = projectSavings(byCheck.flatMap((row) => row[counted]))
+  // With no reviewed estimate, predict from the burn of the fixed checks.
+  const prediction =
+    savings.estimated === 0 && state.report
+      ? predictSavings(
+          state.report,
+          new Set(byCheck.filter((row) => row[counted].length > 0).map((row) => row.check.id)),
+        )
+      : null
   const breakdown = byCheck
     .map((row) => ({ check: row.check, savings: projectSavings(row[counted]) }))
     .filter((row) => row.savings.estimated > 0)
@@ -172,7 +183,21 @@ export function DoneStep({
           className="enhance-done-hero flex items-center rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl)"
         >
           <canvas ref={mountSmoke} aria-hidden="true" className="enhance-done-smoke" />
-          {savings.estimated === 0 ? (
+          {prediction ? (
+            <div className="flex min-w-0 flex-col gap-(--space-md)">
+              <p className="type-body">
+                {counted === "applied"
+                  ? "Your fixes could save up to"
+                  : "Apply the open fixes to save up to"}
+              </p>
+              <Figure value={formatTokensShort(prediction.tokens)} unit="tokens" />
+              <p className="type-callout opacity-80">
+                Over the next {SAVINGS_MONTHS} months, at your last 30 days&apos; pace. These
+                checks burned {formatTokenBurnPercent(prediction.basisPoints)} of your tokens.
+                The real saving depends on how much of each check your fixes cover.
+              </p>
+            </div>
+          ) : savings.estimated === 0 ? (
             <div className="flex min-w-0 flex-col gap-(--space-xs)">
               <span className="type-title-2 font-semibold tabular-nums">
                 {applied.length} {applied.length === 1 ? "fix" : "fixes"} applied

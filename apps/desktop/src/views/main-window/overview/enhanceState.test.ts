@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest"
 
-import type { BurnCheckTargetPayload } from "../../../lib/insightsIpc"
-import { enhanceButtonState, isAppliedFix, projectSavings } from "./enhanceState"
+import type {
+  BurnCheckDetectorId,
+  BurnCheckTargetPayload,
+  ChecksReportPayload,
+} from "../../../lib/insightsIpc"
+import {
+  enhanceButtonState,
+  isAppliedFix,
+  predictSavings,
+  projectSavings,
+} from "./enhanceState"
 
 function target(
   unit: string | null,
@@ -46,6 +55,36 @@ describe("projectSavings", () => {
         target(null),
       ]),
     ).toEqual({ tokens: 4500, usd: 6, estimated: 3 })
+  })
+})
+
+describe("predictSavings", () => {
+  // Mask 0b10 is modelOverthinking, 0b11 adds sessionsOverDepth.
+  const byMask: Array<number | null> = Array.from({ length: 512 }, () => null)
+  byMask[0b10] = 250
+  byMask[0b11] = 400
+  function report(tokenBurnDenominator: number | null): ChecksReportPayload {
+    return {
+      tokenBurnDenominator,
+      estimatedTokenBurnBasisPointsByDetectorMask: byMask,
+    } as unknown as ChecksReportPayload
+  }
+  const checks = (...ids: BurnCheckDetectorId[]) => new Set(ids)
+
+  it("projects the combined burn of the fixed checks over three months", () => {
+    expect(predictSavings(report(1_000_000), checks("modelOverthinking"))).toEqual({
+      tokens: 75_000,
+      basisPoints: 250,
+    })
+    expect(
+      predictSavings(report(1_000_000), checks("modelOverthinking", "sessionsOverDepth")),
+    ).toEqual({ tokens: 120_000, basisPoints: 400 })
+  })
+
+  it("predicts nothing without fixes, a denominator, or a measured burn", () => {
+    expect(predictSavings(report(1_000_000), checks())).toBeNull()
+    expect(predictSavings(report(null), checks("modelOverthinking"))).toBeNull()
+    expect(predictSavings(report(1_000_000), checks("cacheChurn"))).toBeNull()
   })
 })
 

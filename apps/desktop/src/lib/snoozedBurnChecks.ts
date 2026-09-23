@@ -47,6 +47,15 @@ const detectorIds: readonly BurnCheckDetectorId[] = [
   "cacheChurn",
 ]
 
+/** The bit mask of `detectors` that indexes
+ *  `estimatedTokenBurnBasisPointsByDetectorMask`. */
+export function detectorMask(detectors: ReadonlySet<BurnCheckDetectorId>): number {
+  return detectorIds.reduce(
+    (value, detector, index) => value | (detectors.has(detector) ? 1 << index : 0),
+    0,
+  )
+}
+
 export function snoozeUntil(duration: SnoozeDuration, from = new Date()): number | null {
   if (duration === "forever") return null
   const until = new Date(from)
@@ -197,11 +206,7 @@ export function activeChecksReport(
   if (snoozed.size === 0) return report
   const categories = visibleCheckCategories(report.categories, snoozed)
   if (categories.length === report.categories.length) return report
-  const activeDetectorIds = new Set(categories.map((category) => category.id))
-  const mask = detectorIds.reduce(
-    (value, detector, index) => value | (activeDetectorIds.has(detector) ? 1 << index : 0),
-    0,
-  )
+  const mask = detectorMask(new Set(categories.map((category) => category.id)))
   return {
     ...report,
     categories,

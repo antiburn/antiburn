@@ -48,6 +48,9 @@ export interface ChecksReportPayload {
   estimatedTokenBurnBasisPoints: number | null
   /** Aggregate burn indexed by the active detector bit mask in canonical detector order. */
   estimatedTokenBurnBasisPointsByDetectorMask?: Array<number | null>
+  /** Total used tokens that the burn basis points divide by. Null when the report cannot
+   *  measure token burn. */
+  tokenBurnDenominator?: number | null
   categories: ChecksCategoryPayload[]
 }
 

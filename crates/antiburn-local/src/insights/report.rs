@@ -503,6 +503,12 @@ pub struct ResourceTokenBurnAssessment<'a> {
 }
 
 impl EfficiencyReport {
+    /// Returns the total used tokens that every burn percentage divides by.
+    /// It is `None` when the report cannot measure token burn.
+    pub fn token_burn_denominator(&self) -> Option<u128> {
+        self.token_burn_denominator
+    }
+
     /// Returns this report's burn percentage for complete attributed tokens.
     pub fn estimated_token_burn_for_attributed_tokens(&self, tokens: u128) -> Option<u16> {
         token_burn_basis_points(tokens, self.token_burn_denominator?)

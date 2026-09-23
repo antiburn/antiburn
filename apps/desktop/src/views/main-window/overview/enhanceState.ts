@@ -1,4 +1,9 @@
-import type { BurnCheckTargetPayload } from "../../../lib/insightsIpc"
+import type {
+  BurnCheckDetectorId,
+  BurnCheckTargetPayload,
+  ChecksReportPayload,
+} from "../../../lib/insightsIpc"
+import { detectorMask } from "../../../lib/snoozedBurnChecks"
 import type { OverviewViewPrefs } from "./overviewViewPrefs"
 
 export type EnhanceButtonState =
@@ -70,6 +75,32 @@ export function projectSavings(targets: readonly BurnCheckTargetPayload[]): Proj
     estimated += 1
   }
   return { tokens: tokens * SAVINGS_MONTHS, usd: usd * SAVINGS_MONTHS, estimated }
+}
+
+export interface PredictedSavings {
+  /** The most tokens the fixes can save over the horizon. */
+  tokens: number
+  /** The checks' combined share of all used tokens, in basis points. */
+  basisPoints: number
+}
+
+/**
+ * Predicts the most that fixes to `detectors` can save over `SAVINGS_MONTHS`.
+ * It uses the combined burn of the checks in the report window, so no token
+ * counts twice. The result is an upper bound, because a fix can remove only
+ * part of the burn of a check. It returns null when the report cannot
+ * measure token burn.
+ */
+export function predictSavings(
+  report: ChecksReportPayload,
+  detectors: ReadonlySet<BurnCheckDetectorId>,
+): PredictedSavings | null {
+  if (detectors.size === 0) return null
+  const total = report.tokenBurnDenominator
+  const basisPoints =
+    report.estimatedTokenBurnBasisPointsByDetectorMask?.[detectorMask(detectors)]
+  if (total == null || basisPoints == null || basisPoints === 0) return null
+  return { tokens: Math.round((total * basisPoints) / 10_000) * SAVINGS_MONTHS, basisPoints }
 }
 
 /** True when the reader applied a fix to this target and it did not return. */

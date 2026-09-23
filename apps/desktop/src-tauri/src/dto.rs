@@ -873,6 +873,8 @@ pub struct ChecksReportPayload {
     pub estimated_token_burn_basis_points: Option<u16>,
     /// Aggregate burn for each detector bit mask in canonical `DetectorId` order.
     pub estimated_token_burn_basis_points_by_detector_mask: Vec<Option<u16>>,
+    /// Total used tokens that the burn basis points divide by.
+    pub token_burn_denominator: Option<u64>,
     pub categories: Vec<ChecksCategoryPayload>,
 }
 
@@ -2614,6 +2616,9 @@ impl ChecksReportPayload {
             pending_evidence,
             estimated_token_burn_basis_points,
             estimated_token_burn_basis_points_by_detector_mask,
+            token_burn_denominator: report
+                .token_burn_denominator()
+                .and_then(|tokens| u64::try_from(tokens).ok()),
             categories,
         }
     }
@@ -3255,6 +3260,7 @@ mod tests {
             assert_eq!(aggregates[1], 500);
             assert_eq!(aggregates[2], 1_000);
             assert_eq!(aggregates[3], 1_000);
+            assert_eq!(value["tokenBurnDenominator"], serde_json::Value::Null);
             assert_eq!(value["categories"][0]["estimatedTokenBurnBasisPoints"], 500);
             assert!(value["categories"][0]["lifecycle"].is_null());
             assert_eq!(
@@ -3275,7 +3281,8 @@ mod tests {
                     "estimatedTokenBurnBasisPoints",
                     "estimatedTokenBurnBasisPointsByDetectorMask",
                     "evidenceSettled",
-                    "pendingEvidence"
+                    "pendingEvidence",
+                    "tokenBurnDenominator"
                 ]
             );
             let category_keys: Vec<&str> = value["categories"][0]

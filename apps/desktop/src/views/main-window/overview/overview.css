@@ -197,7 +197,7 @@
 /*
  * The Enhance step cards. `data-tone` sets one accent colour. The accent
  * draws a bar on the left edge, a soft wash on the left, the icon, and the
- * metric. On hover the card lifts by one pixel.
+ * metric. The card itself is not clickable, so it has no hover state.
  */
 .enhance-card {
   --enhance-tone: var(--color-separator);
@@ -214,17 +214,6 @@
   box-shadow:
     var(--shadow-stats-card),
     inset 3px 0 0 var(--enhance-tone);
-  transition:
-    transform var(--duration-medium) var(--ease-out-quart),
-    box-shadow var(--duration-medium) var(--ease-out-quart);
-}
-
-.enhance-card:hover {
-  transform: translateY(-1px);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in oklab, var(--enhance-tone) 45%, transparent),
-    inset 3px 0 0 var(--enhance-tone),
-    0 6px 18px -8px color-mix(in oklab, var(--enhance-tone) 55%, transparent);
 }
 
 /* Failing and waiting cards both use the brand orange. The system orange
@@ -247,7 +236,7 @@
 
 /*
  * The fix actions on a Fix card use the Enhance pill shape and height.
- * Snooze is a quiet pill. The fix and prompt actions are filled brand pills.
+ * Snooze is a quiet pill. The fix and prompt actions are stroked brand pills.
  */
 .enhance-card-actions .burn-check-action {
   min-block-size: 44px;
@@ -265,20 +254,23 @@
 }
 
 .enhance-card-actions .burn-check-action:not(.burn-check-reminder) {
-  color: var(--color-shimmer);
+  color: var(--color-brand-tint);
   font-weight: 600;
 }
 
 .enhance-card-actions .burn-check-action:not(.burn-check-reminder)::before {
-  background-color: var(--color-brand-tint);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent),
-    0 6px 16px -8px var(--color-brand-tint);
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--color-brand-tint);
 }
 
 .enhance-card-actions .burn-check-action:not(.burn-check-reminder):enabled:hover::before {
-  background-color: var(--color-brand);
-  box-shadow: 0 8px 20px -8px var(--color-brand-tint);
+  background-color: color-mix(in oklab, var(--color-brand-tint) 10%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--color-brand-tint);
+}
+
+.enhance-card-actions .burn-check-action:not(.burn-check-reminder):enabled:active::before {
+  background-color: color-mix(in oklab, var(--color-brand-tint) 18%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--color-brand-tint);
 }
 
 .enhance-card-actions .burn-check-action:not(.burn-check-reminder)[aria-disabled="true"] {
