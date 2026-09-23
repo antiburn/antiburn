@@ -99,7 +99,7 @@
    like macOS glass. The Optimise card floats on it. */
 .enhance-scrim {
   background-color: color-mix(in oklab, var(--color-surface-window) 60%, transparent);
-  backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(48px) saturate(1.6);
 }
 
 /* The Optimise card. A glass pane: a thin tint, its own blur, a light top
