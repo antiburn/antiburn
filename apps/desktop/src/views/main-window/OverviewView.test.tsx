@@ -1,5 +1,4 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
-import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { BurnChecksSession } from "./BurnChecksSession"
@@ -30,10 +29,7 @@ vi.mock("./overview/OverviewUsage", () => ({
     </div>
   ),
 }))
-// The stub keeps the header action, which is where the wizard opens from.
-vi.mock("./overview/OverviewRecentSessions", () => ({
-  OverviewRecentSessions: ({ action }: { action?: ReactNode }) => action ?? null,
-}))
+vi.mock("./overview/OverviewRecentSessions", () => ({ OverviewRecentSessions: () => null }))
 vi.mock("./overview/OverviewProviderLimits", () => ({ OverviewProviderLimits: () => null }))
 
 const account: AllowanceUsageAccountPayload = {
@@ -263,10 +259,10 @@ describe("OverviewView metric preference", () => {
 })
 
 describe("OverviewView Enhance wizard", () => {
-  it("opens the wizard from the Recent sessions header and saves the step", () => {
+  it("opens the wizard from the Optimise band and saves the step", () => {
     setup()
-    fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
-    expect(screen.getByRole("navigation", { name: "Enhance steps" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Optimise my AI setup" }))
+    expect(screen.getByRole("navigation", { name: "Optimise steps" })).toBeInTheDocument()
     expect(screen.queryByRole("region", { name: "Overview" })).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
@@ -276,11 +272,11 @@ describe("OverviewView Enhance wizard", () => {
 
   it("closes the wizard on any navigation, and reopens on the saved step", () => {
     const view = setup()
-    fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
+    fireEvent.click(screen.getByRole("button", { name: "Optimise my AI setup" }))
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
     view.rerender(<OverviewView {...view.props} navigationRevision={1} />)
-    expect(screen.queryByRole("navigation", { name: "Enhance steps" })).toBeNull()
+    expect(screen.queryByRole("navigation", { name: "Optimise steps" })).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Continue setup · step 2 of 5" }))
     expect(screen.getByRole("button", { name: /Scan/ })).toHaveAttribute("aria-current", "step")

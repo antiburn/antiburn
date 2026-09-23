@@ -8,7 +8,7 @@ import { checksPresentation } from "../../lib/presentation/checks"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import { type BurnChecksSession } from "./BurnChecksSession"
 import { type MainOverviewSession } from "./MainOverviewSession"
-import { EnhanceHeaderAction } from "./overview/EnhanceHeaderAction"
+import { EnhanceBanner } from "./overview/EnhanceBanner"
 import { EnhanceWizard, type EnhanceStep } from "./overview/EnhanceWizard"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
@@ -158,39 +158,42 @@ export function OverviewView({
                 </p>
               )}
 
-              <OverviewUsage
-                metric={metric}
-                onMetricChange={(next) => {
-                  setMetric(next)
-                  writeOverviewViewPrefs({ metric: next })
-                }}
-                totals={usage?.totals ?? null}
-                days={usage?.days ?? []}
-                allowance={state.allowance}
-                allowanceLoading={state.allowanceLoading || !metricSettled}
-                allowanceError={state.allowanceError}
-                usageError={state.usageError}
-                onRetryUsage={session.refresh}
-                loading={loading}
+              <EnhanceBanner
+                failingChecks={failing?.length ?? null}
+                state={buttonState}
+                onOpen={openEnhance}
               />
 
-              <OverviewRecentSessions
-                active={active && state.active}
-                entries={state.recentSessions}
-                loading={loading && !state.recentSessions}
-                onSelect={onSelectSession}
-                onOpenAll={onOpenSessions}
-                metric={metric}
-                liveUsage={state.liveUsage ?? undefined}
-                sessionLimitAllocations={state.sessionLimitAllocations}
-                action={
-                  <EnhanceHeaderAction
-                    failingChecks={failing?.length ?? null}
-                    state={buttonState}
-                    onOpen={openEnhance}
-                  />
-                }
-              />
+              {/* The chart and the recent sessions share one card. */}
+              <div className="flex flex-col gap-(--space-2xl) rounded-(--radius-popover) bg-surface-sidebar p-(--space-lg) shadow-[var(--shadow-stats-card)]">
+                <OverviewUsage
+                  metric={metric}
+                  onMetricChange={(next) => {
+                    setMetric(next)
+                    writeOverviewViewPrefs({ metric: next })
+                  }}
+                  totals={usage?.totals ?? null}
+                  days={usage?.days ?? []}
+                  allowance={state.allowance}
+                  allowanceLoading={state.allowanceLoading || !metricSettled}
+                  allowanceError={state.allowanceError}
+                  usageError={state.usageError}
+                  onRetryUsage={session.refresh}
+                  loading={loading}
+                />
+
+                <OverviewRecentSessions
+                  active={active && state.active}
+                  entries={state.recentSessions}
+                  loading={loading && !state.recentSessions}
+                  onSelect={onSelectSession}
+                  onOpenAll={onOpenSessions}
+                  metric={metric}
+                  liveUsage={state.liveUsage ?? undefined}
+                  sessionLimitAllocations={state.sessionLimitAllocations}
+                  plain
+                />
+              </div>
             </div>
           </ScrollPane>
 

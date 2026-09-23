@@ -64,9 +64,9 @@ export function EnhanceWizard({
     )
   const last = step === ENHANCE_STEPS.length
   return (
-    <section aria-label="Enhance my AI setup" className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <section aria-label="Optimise my AI setup" className="flex min-h-0 min-w-0 flex-1 flex-col">
       <nav
-        aria-label="Enhance steps"
+        aria-label="Optimise steps"
         className="flex items-center gap-(--space-sm) border-b border-separator pb-(--space-lg)"
       >
         {ENHANCE_STEPS.map((item, index) => {

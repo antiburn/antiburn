@@ -96,10 +96,48 @@
 }
 
 /*
- * The Enhance pill button. The wizard footer and the Fix card actions use
- * this shape at one height. A quiet pill is a secondary action. The compact
- * pill in the Recent sessions card header sits at the regular control
- * height.
+ * The Optimise band across the top of the Overview. A solid brand fill with
+ * LED smoke behind it, and a white pill. A calm band drops to a plain card.
+ */
+.enhance-banner {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-block-size: 136px;
+  color: var(--color-shimmer);
+  background-color: var(--color-brand-tint);
+  box-shadow: var(--shadow-stats-card);
+}
+
+.enhance-banner-status {
+  opacity: 0.85;
+}
+
+.enhance-banner[data-calm] {
+  color: var(--color-label);
+  background-color: var(--color-surface-sidebar);
+}
+
+.enhance-banner[data-calm] .enhance-banner-status {
+  color: var(--color-label-secondary);
+  opacity: 1;
+}
+
+/* The smoke is lighter on the left, where the text is. */
+.enhance-banner-smoke {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  inline-size: 100%;
+  block-size: 100%;
+  pointer-events: none;
+  mask: linear-gradient(to right, rgb(0 0 0 / 35%) 30%, #000 80%);
+}
+
+/*
+ * The Enhance pill button. The Optimise band, the wizard footer, and the
+ * Fix card actions use this shape at one height. A quiet pill is a
+ * secondary action. An inverted pill is white on the brand fill.
  */
 .enhance-pill {
   block-size: 44px;
@@ -119,8 +157,10 @@
   background-color: var(--color-brand);
 }
 
-.enhance-pill[data-compact] {
-  block-size: var(--control-height-regular);
+.enhance-pill[data-invert],
+.enhance-pill[data-invert]:hover {
+  color: var(--color-brand);
+  background-color: var(--color-shimmer);
 }
 
 .enhance-pill[data-quiet],
