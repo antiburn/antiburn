@@ -31,6 +31,8 @@ type ActionState = {
   status: string | null
 }
 
+const REPEAT_COPY_FEEDBACK_MS = 120
+
 function attemptKey(target: BurnCheckTargetPayload): string {
   const watch = target.watch
   if (!watch) return `${target.findingId}:unwatched`
@@ -254,9 +256,12 @@ export function BurnCheckTargetActions({
   }
 
   const copy = async () => {
-    if (action.busy || action.copied) return
+    if (action.busy) return
     const startedAttemptKey = action.attemptKey
-    setAction((value) => ({ ...value, busy: "copy", status: null }))
+    const repeatCopy = action.copied
+    flushSync(() =>
+      setAction((value) => ({ ...value, busy: "copy", copied: false, status: null })),
+    )
     let prompt = action.prompt
     let acceptedWatchId = action.acceptedWatchId
     try {
@@ -282,6 +287,11 @@ export function BurnCheckTargetActions({
         acceptedWatchId = outcome.watch?.watchId ?? null
       }
       await writeClipboardText(prompt)
+      if (repeatCopy) {
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, REPEAT_COPY_FEEDBACK_MS),
+        )
+      }
       if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
       noteInteraction({ kind: "burnCheckPromptCopied" })
       setAction((value) => ({
@@ -344,7 +354,7 @@ export function BurnCheckTargetActions({
           {showPromptFix && target.promptFix.status === "available" && (
             <button
               type="button"
-              disabled={action.copied || action.busy !== null}
+              disabled={action.busy !== null}
               onClick={() => void copy()}
               className={`burn-check-action type-callout gap-1 disabled:opacity-100 ${compact ? "" : "mx-auto w-full max-w-sm"}`}
             >
@@ -356,7 +366,7 @@ export function BurnCheckTargetActions({
               {action.copied
                 ? "Copied"
                 : action.busy === "copy"
-                  ? "Preparing…"
+                  ? "Copying…"
                   : "Copy fix prompt"}
             </button>
           )}

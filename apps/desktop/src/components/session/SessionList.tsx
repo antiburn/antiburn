@@ -563,6 +563,7 @@ export function SessionRow({
           checks={hygieneChecks}
           evidenceState={hygiene.evidenceState}
           cost={showCost ? (entry.cost ?? null) : null}
+          isHighCost={entry.cost?.isHighCost === true}
           limitBadge={limitBadge}
         />
       </div>

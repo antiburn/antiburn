@@ -12,6 +12,8 @@ export interface SessionStatusBarProps {
   evidenceState?: SessionHygieneEvidenceState
   /** Display values for the cost figure; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
+  /** Shared cohort cost-outlier state, also used when the cost figure is hidden. */
+  isHighCost?: boolean
   /** The limit-share pill's values. An omitted badge uses the cost instead. */
   limitBadge?: SessionLimitBadgeInfo | undefined
 }
@@ -98,6 +100,7 @@ export function SessionStatusBar({
   checks,
   evidenceState = "ready",
   cost,
+  isHighCost: highCost,
   limitBadge,
 }: SessionStatusBarProps) {
   const presentation = sessionBurnCheckPresentation(checks, evidenceState)
@@ -115,7 +118,10 @@ export function SessionStatusBar({
 
       <div className="ml-auto shrink-0">
         {limitBadge ? (
-          <SessionLimitBadge limitBadge={limitBadge} />
+          <SessionLimitBadge
+            limitBadge={limitBadge}
+            isHighCost={highCost ?? cost?.isHighCost === true}
+          />
         ) : (
           cost && <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />
         )}

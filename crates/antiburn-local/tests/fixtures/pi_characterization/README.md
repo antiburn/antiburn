@@ -21,7 +21,8 @@ facts when those facts are required for evidence.
 
 Pi supports request occupancy, cache writes when the selected API reports
 them, timestamps, tool calls, model identity, token classes, thinking levels,
-compaction boundaries, record identity, and thread identity. It does not claim
+compaction boundaries, record identity, and thread identity. Cache findings
+also require a recovered miss episode on one reviewed route. It does not claim
 tool catalogs, MCP attribution, speed or service tiers, quota events, or a
 harness version. The reviewed example extension can provide finding-only
 subagent evidence. Arbitrary extensions remain fail closed.
@@ -34,4 +35,6 @@ missing or broken chain is the point.
 
 - `session_overdepth_finding.jsonl` reports one turn's input tokens above the Sessions Over Depth cap, giving that badge a finding.
 - `model_overthinking_finding.jsonl` sets `thinkingLevel` to `max`, giving Model Overthinking a finding.
-- `excess_cache_rehydration_finding.jsonl` pairs a model switch with paid cache writes on both turns, giving Excess Context Reprocessing a finding.
+- `excess_cache_rehydration_finding.jsonl` preserves an older model-switch and cache-write shape; it does not establish a current cache-rehydration finding.
+- `cache_continuous_transient_miss.jsonl` records a same-route hit, miss, and recovery during continuous activity; accounting remains visible without a rehydration finding.
+- `overthinking_aborted_zero_usage_content.jsonl` carries content and an above-cap effort setting on an aborted message with zero usage; it must not establish an effort finding.

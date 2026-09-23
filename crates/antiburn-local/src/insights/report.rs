@@ -325,7 +325,8 @@ fn source_supports_finding(detector: DetectorId, format: crate::analysis::Source
             DetectorId::SessionsOverDepth
                 | DetectorId::ModelOverthinking
                 | DetectorId::OverpoweredSubagents
-                | DetectorId::OldModelUsage,
+                | DetectorId::OldModelUsage
+                | DetectorId::CacheChurn,
         ) | (
             SourceFormat::CursorJsonl
                 | SourceFormat::CursorCliAgentJsonl
@@ -1109,6 +1110,7 @@ impl TokenBurnAccumulator {
         token_evidence: SessionTokenBurnEvidence,
         findings: [bool; DetectorId::COUNT],
         source_eligible: [bool; 3],
+        cache_assessed: bool,
     ) {
         if let Some(session_tokens) = token_evidence.total_tokens {
             if let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) {
@@ -1126,8 +1128,10 @@ impl TokenBurnAccumulator {
             },
             repeated_context: if findings[DetectorId::CacheChurn.index()] {
                 token_evidence.repeated_context_avoidable_tokens
-            } else {
+            } else if cache_assessed {
                 Some(0)
+            } else {
+                None
             },
             model_overthinking: if findings[DetectorId::ModelOverthinking.index()] {
                 token_evidence.model_overthinking
@@ -1503,6 +1507,7 @@ impl EfficiencyReportAccumulator {
         // Lazily allocate the identity example only if this session has a detector gap.
         let mut bounded_example: Option<SessionExample> = None;
         let mut findings = [false; DetectorId::COUNT];
+        let mut cache_assessed = false;
 
         for detector in DetectorId::ALL {
             let counts = &mut self.detectors[detector.index()];
@@ -1542,11 +1547,13 @@ impl EfficiencyReportAccumulator {
                     counts.finding += 1;
                     counts.assessed += 1;
                     findings[detector.index()] = true;
+                    cache_assessed |= detector == DetectorId::CacheChurn;
                 }
                 detectors::Observation::NoFinding if clean_facts_complete(detector, &evidence) => {
                     self.clean_agents[detector.index()].insert(evidence.identity.agent.clone());
                     counts.clean += 1;
                     counts.assessed += 1;
+                    cache_assessed |= detector == DetectorId::CacheChurn;
                 }
                 detectors::Observation::NoFinding
                 | detectors::Observation::ContractIncomplete
@@ -1555,7 +1562,7 @@ impl EfficiencyReportAccumulator {
             self.folds[detector.index()].observe(observation, &evidence);
         }
         self.token_burn
-            .observe(token_evidence, findings, source_eligible);
+            .observe(token_evidence, findings, source_eligible, cache_assessed);
     }
 
     fn observe_unrecognized_records(&mut self, evidence: &SessionEvidence) {

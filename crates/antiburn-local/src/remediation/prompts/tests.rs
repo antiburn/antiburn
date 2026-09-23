@@ -221,6 +221,12 @@ fn finding_prompts_have_clear_human_readable_sections() {
                 .as_str()
                 .contains("Show the proposed edit before you apply it.")
         );
+        assert!(!prompt.as_str().contains("&#x20;"));
+        assert!(
+            prompt
+                .as_str()
+                .ends_with("If the evidence cannot verify the change, say why.")
+        );
     }
 }
 

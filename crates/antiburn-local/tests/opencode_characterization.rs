@@ -386,7 +386,10 @@ fn native_repeated_context_reaches_reports_without_capability_overrides() {
                 });
                 let counts = report.detectors[DetectorId::CacheChurn.index()];
                 if matches!(case, "finding" | "tied_time") {
-                    assert_eq!(counts.finding, 1, "{provider}: {case}");
+                    assert_eq!(counts.finding, 0, "{provider}: {case}");
+                    assert_eq!(counts.clean, 0, "{provider}: {case}");
+                    assert_eq!(counts.assessed, 0, "{provider}: {case}");
+                    assert_eq!(counts.unavailable, 1, "{provider}: {case}");
                 } else if incomplete || case == "unknown_route" {
                     assert_eq!(counts.clean, 0, "{provider}: {case}");
                     assert_eq!(counts.assessed, 0, "{provider}: {case}");
@@ -396,6 +399,67 @@ fn native_repeated_context_reaches_reports_without_capability_overrides() {
             }
         }
     }
+}
+
+#[test]
+fn native_anthropic_cache_episode_uses_ordered_message_identity() {
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).expect("database");
+    insert_session(&connection, "cache-session", None, None, 1_000);
+    let messages = [
+        ("u0", 1_000, json!({"role":"user"})),
+        (
+            "a0",
+            1_001,
+            json!({"role":"assistant","modelID":"claude-sonnet-4","providerID":"anthropic",
+                "tokens":{"input":0,"output":10,"cache":{"read":10_000,"write":0}}}),
+        ),
+        ("u1", 302_000, json!({"role":"user"})),
+        (
+            "a1",
+            302_001,
+            json!({"role":"assistant","parentID":"u1","modelID":"claude-sonnet-4","providerID":"anthropic",
+                "tokens":{"input":0,"output":10,"cache":{"read":0,"write":10_000}}}),
+        ),
+        ("u2", 302_002, json!({"role":"user"})),
+        (
+            "a2",
+            302_003,
+            json!({"role":"assistant","parentID":"u2","modelID":"claude-sonnet-4","providerID":"anthropic",
+                "tokens":{"input":0,"output":10,"cache":{"read":10_000,"write":0}}}),
+        ),
+    ];
+    for (id, timestamp, data) in messages {
+        insert_message(
+            &connection,
+            id,
+            "cache-session",
+            timestamp,
+            &data.to_string(),
+        );
+    }
+    drop(connection);
+
+    let (evidence, _) = evidence_and_rows(&sqlite_input(&path, "cache-session"));
+    let cache = observed(&evidence.cache);
+    let repeated = observed(&cache.repeated_context);
+    assert_eq!(repeated.possible_rehydration_episodes, 1);
+
+    let mut report = EfficiencyReportAccumulator::new();
+    report.observe_session(evidence);
+    let report = report.finish(ReportContext {
+        environment_key: "native".to_owned(),
+        window: ReportWindow {
+            start_epoch: 0,
+            end_epoch: 1_000,
+        },
+        computed_at_epoch: 1_000,
+        parser_revision: antiburn_local::analysis::PARSER_REVISION,
+        analyzer_revision: antiburn_local::analysis::ANALYZER_REVISION,
+        evidence_schema_revision: antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+        coverage: CoverageCounts::default(),
+    });
+    assert_eq!(report.detectors[DetectorId::CacheChurn.index()].finding, 1);
 }
 
 #[test]

@@ -201,7 +201,7 @@ describe("SessionList — rows", () => {
     expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
     expect(badge).toHaveAttribute(
       "aria-label",
-      "This session used about 12.3% of your Claude weekly limit, across all models. Estimated. This session uses 5% or more of your limit.",
+      "This session used about 12.3% of your Claude weekly limit, across all models. Estimated.",
     )
   })
 
@@ -230,8 +230,43 @@ describe("SessionList — rows", () => {
     const badge = screen.getByText("102.5%")
     expect(badge).toHaveAttribute(
       "aria-label",
-      "This session used about 102.5% of your Claude weekly limit, across all models. Estimated. This session uses 5% or more of your limit.",
+      "This session used about 102.5% of your Claude weekly limit, across all models. Estimated.",
     )
+  })
+
+  it("keeps the shared high-cost flame while showing a limit percentage", () => {
+    list({
+      entries: [
+        entry({
+          cost: { totalUsd: 24, figureLabel: "Estimated cost", isHighCost: true },
+        }),
+      ],
+      badgeMetric: "weeklyPercent",
+      sessionLimitAllocations: {
+        generatedAt: NOW.toISOString(),
+        allocations: [
+          {
+            agent: "claude-code",
+            sessionId: "session-1",
+            wslDistro: null,
+            provider: "anthropic",
+            displayName: "Claude",
+            accountKey: "work",
+            metric: "weekly",
+            windowId: "weekly",
+            percent: 1,
+            confidence: "learned",
+          },
+        ],
+      },
+    })
+
+    expect(screen.queryByLabelText("Estimated cost $24.00")).toBeNull()
+    const badge = screen.getByLabelText(
+      "This session used about 1% of your Claude weekly limit, across all models. Estimated. Higher than usual cost.",
+    )
+    expect(badge.className).toContain("bg-brand-tint")
+    expect(badge.querySelector(".lucide-flame")).not.toBeNull()
   })
 
   it("shows the weekly limit as unknown when live usage has not loaded", async () => {

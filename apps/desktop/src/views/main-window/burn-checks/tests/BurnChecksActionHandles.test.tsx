@@ -94,7 +94,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     expect(copy).toBeEnabled()
 
     fireEvent.click(copy)
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeDisabled()
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
     expect(commands.copyBatch).toHaveBeenLastCalledWith(["action-new"])
     expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -346,9 +346,23 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     )
     expect(commands.copyFallback).toHaveBeenCalledWith("unusedMcpServers")
     const copied = screen.getByRole("button", { name: "Copied" })
-    expect(copied).toBeDisabled()
+    expect(copied).toBeEnabled()
     expect(copied).not.toHaveClass("text-token-in")
     expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
+  })
+
+  it("repeats a target prompt copy while its success state is visible", async () => {
+    render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
+    const copied = await screen.findByRole("button", { name: "Copied" })
+    expect(copied).toBeEnabled()
+
+    fireEvent.click(copied)
+    expect(await screen.findByRole("button", { name: "Copying…" })).toBeDisabled()
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
+    expect(commands.writeClipboardText).toHaveBeenCalledTimes(2)
+    expect(commands.copy).toHaveBeenCalledOnce()
   })
 
   it("uses a fallback prompt when exact targets are unavailable", async () => {

@@ -355,7 +355,7 @@ describe("SessionStatusBar", () => {
     expect(figureClasses()).toContain("bg-brand-tint")
   })
 
-  it("uses the hot pill for a session that consumes at least five percent", () => {
+  it("keeps a large limit share plain when its cost is not an outlier", () => {
     render(
       <SessionStatusBar
         checks={ALL_PASSED}
@@ -363,33 +363,46 @@ describe("SessionStatusBar", () => {
       />,
     )
 
-    const figure = screen.getByLabelText(
-      "Estimated weekly share This session uses 5% or more of your limit.",
-    )
-    expect(figure.className).toContain("rounded-full")
-    expect(figure.className).toContain("bg-brand-tint")
-    expect(figure.className).toContain("text-white")
-    expect(figure.querySelector("svg")).not.toBeNull()
+    const figure = screen.getByLabelText("Estimated weekly share")
+    expect(figure.className).not.toContain("rounded-full")
+    expect(figure.className).not.toContain("bg-brand-tint")
+    expect(figure.querySelector("svg")).toBeNull()
   })
 
-  it("uses the hot pill when a limit share rounds to five percent", () => {
+  it("uses the shared cost-outlier treatment on a percentage figure", () => {
     render(
       <SessionStatusBar
         checks={ALL_PASSED}
         limitBadge={{ label: "Estimated weekly share", percent: 4.99 }}
+        cost={{ totalUsd: 24, figureLabel: "Estimated cost", isHighCost: true }}
       />,
     )
 
-    const figure = screen.getByLabelText(
-      "Estimated weekly share This session uses 5% or more of your limit.",
-    )
+    const figure = screen.getByLabelText("Estimated weekly share Higher than usual cost.")
     expect(figure).toHaveTextContent("5%")
     expect(figure.className).toContain("rounded-full")
     expect(figure.className).toContain("bg-brand-tint")
     expect(figure.querySelector("svg")).not.toBeNull()
   })
 
-  it("keeps a displayed value below five percent as plain text", () => {
+  it("keeps the cost-outlier flame when the dollar figure is hidden", () => {
+    render(
+      <SessionStatusBar
+        checks={ALL_PASSED}
+        cost={null}
+        isHighCost
+        limitBadge={{ label: "Estimated weekly share", percent: 1 }}
+      />,
+    )
+
+    const figure = screen.getByLabelText("Estimated weekly share Higher than usual cost.")
+    expect(figure).toHaveTextContent("1%")
+    expect(figure.className).toContain("bg-brand-tint")
+    expect(figure.querySelector("svg")).not.toBeNull()
+    expect(screen.queryByLabelText(/Estimated cost/)).toBeNull()
+  })
+
+  it("keeps a displayed value below five percent plain when cost is usual", () => {
     render(
       <SessionStatusBar
         checks={ALL_PASSED}

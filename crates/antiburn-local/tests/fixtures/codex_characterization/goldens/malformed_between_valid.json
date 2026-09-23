@@ -28,7 +28,9 @@
                 "paidTokens": 150,
                 "pairsConsidered": 0,
                 "pairsSkipped": 0,
-                "repeatedTokens": 0
+                "possibleRehydrationEpisodes": 0,
+                "repeatedTokens": 0,
+                "transientMissEpisodes": 0
               },
               "reason": "malformed_record"
             }
@@ -203,8 +205,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 24,
-      "evidenceSchemaRevision": 21,
+      "analyzerRevision": 25,
+      "evidenceSchemaRevision": 22,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -231,7 +233,7 @@
         "reason": "malformed_record"
       }
     },
-    "schemaRevision": 21,
+    "schemaRevision": 22,
     "subagents": {
       "state": "partial",
       "value": {

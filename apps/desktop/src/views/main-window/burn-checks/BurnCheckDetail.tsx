@@ -1,5 +1,6 @@
 import { Check, Clipboard, Wrench } from "lucide-react"
 import { useCallback, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 
 import { cn } from "../../../lib/cn"
 import { noteInteraction } from "../../../lib/ipc"
@@ -37,6 +38,7 @@ function isUnusedResourceDetector(detector: BurnCheckDetectorId) {
 }
 
 const CLICK_AGAIN_STATUS = "The list was refreshed. Click again to copy."
+const REPEAT_COPY_FEEDBACK_MS = 120
 
 export function CheckPromptAction({
   detector,
@@ -89,9 +91,13 @@ export function CheckPromptAction({
     [currentKey],
   )
   const copy = async () => {
-    if (busy || copied) return
+    if (busy) return
     const startedKey = currentKey
-    setBusy(true)
+    const repeatCopy = copied
+    flushSync(() => {
+      setBusy(true)
+      setCopied(false)
+    })
     setStatus(null)
     let nextPrompt = prompt
     try {
@@ -121,6 +127,11 @@ export function CheckPromptAction({
         nextPrompt = outcome.prompt
       }
       await writeClipboardText(nextPrompt)
+      if (repeatCopy) {
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, REPEAT_COPY_FEEDBACK_MS),
+        )
+      }
       if (key.current !== startedKey) return
       noteInteraction({ kind: "burnCheckPromptCopied" })
       setPrompt(nextPrompt)
@@ -145,7 +156,7 @@ export function CheckPromptAction({
     <div ref={bindKey}>
       <button
         type="button"
-        disabled={busy || copied}
+        disabled={busy}
         onClick={() => void copy()}
         className="burn-check-action type-callout gap-1 disabled:opacity-100"
       >

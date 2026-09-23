@@ -248,7 +248,8 @@ pub const PARSER_REVISION: i64 = 39;
 // This batch also reassesses nested resource use and paired subagent models.
 // Reassess sessions with the larger thread identity limit.
 // Compare actual requests and include every eligible payment in cache ratios.
-pub const ANALYZER_REVISION: i64 = 24;
+// +1 for durable cache-miss episode evidence and causal finding gates.
+pub const ANALYZER_REVISION: i64 = 25;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the
@@ -271,6 +272,7 @@ pub const METRICS_SCHEMA_REVISION: i64 = 9;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.
+// +1 for cache-miss episode evidence used to gate causal cache findings.
 // +1 for built-in tool definitions: `ContextSourceEvidence::tool_definitions`
 // carries a named `ToolDefinition` map instead of a bare marker, and
 // `SourceCapabilities::claude().tool_definitions` is now `true`.
@@ -282,10 +284,11 @@ pub const METRICS_SCHEMA_REVISION: i64 = 9;
 // +1 for nested resource evidence and paired parent-call and child-model observations.
 // +1 for the provider_incidents evidence group.
 // +1 for the DevinLocalSqlite source-format wire value in persisted evidence.
+// +1 for bounded cache-miss episode counts in repeated-context evidence.
 // +1 for `QuotaIncident::reset_clock`, the local reset time a Claude limit
 // error states. A stored analysis from revision 20 has no clock, so it must
 // rerun before the overage figures can report a wait.
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 21;
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 22;
 /// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
 /// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
 /// evidence replay, not the published `SessionEvidence` shape itself.
