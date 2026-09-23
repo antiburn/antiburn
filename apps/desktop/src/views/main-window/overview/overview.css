@@ -96,32 +96,17 @@
 }
 
 /*
- * The Enhance card under Recent sessions. The install banner fire burns on a
- * canvas behind the content. A mask keeps it off the text on the left. The
- * fire shows a still frame at rest and moves only on hover or focus.
+ * The Enhance call to action under Recent sessions. It is not a card. The
+ * install banner fire burns on a canvas behind centred text and a pill. A
+ * mask clears the fire from behind the text, fades it at the sides, and
+ * fades it out at the top, so it sits on the page with no edge. The fire
+ * shows a still frame at rest and moves only on hover or focus.
  */
 
 .enhance-fire-card {
   position: relative;
   isolation: isolate;
-  overflow: hidden;
-  min-block-size: 132px;
-  background-color: var(--color-surface-card);
-  box-shadow: var(--shadow-stats-card);
-  transition:
-    transform var(--duration-medium) var(--ease-out-quart),
-    box-shadow var(--duration-medium) var(--ease-out-quart);
-}
-
-.enhance-fire-card:hover {
-  transform: translateY(-1px);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in oklab, var(--color-brand-tint) 45%, transparent),
-    0 10px 28px -12px color-mix(in oklab, var(--color-brand-tint) 60%, transparent);
-}
-
-.enhance-fire-card:active {
-  transform: translateY(1px) scale(0.995);
+  min-block-size: 168px;
 }
 
 .enhance-fire-canvas {
@@ -132,7 +117,11 @@
   block-size: 100%;
   pointer-events: none;
   opacity: 0.55;
-  mask: linear-gradient(to right, transparent 20%, #000 65%);
+  mask:
+    radial-gradient(ellipse 40% 130% at 50% 50%, transparent 50%, #000 90%),
+    linear-gradient(to right, transparent, #000 15%, #000 85%, transparent),
+    linear-gradient(to bottom, transparent, #000 40%);
+  mask-composite: intersect;
   transition: opacity var(--duration-slow) var(--ease-out-quart);
 }
 
@@ -290,16 +279,32 @@
 
 /*
  * The Enhance Done step. The hero is a solid brand fill with LED smoke that
- * rises behind the text. Each stat tile is a solid fill of one accent colour.
+ * rises behind the text and plays with the pointer. Each stat tile is a
+ * solid fill of one accent colour. The step arrives as a reward: the hero
+ * rises in, then each tile follows in turn. The reduced-motion clamp in
+ * motion.css lands both on the finished state.
  */
+@keyframes enhance-reward-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .enhance-done-hero {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  min-block-size: 180px;
+  min-block-size: 200px;
   color: var(--color-shimmer);
   background-color: var(--color-brand-tint);
   box-shadow: var(--shadow-stats-card);
+  animation: enhance-reward-in calc(var(--duration-slow) * 2) var(--ease-out-quart) backwards;
 }
 
 /* The smoke is lighter on the left, where the text is. */
@@ -317,6 +322,17 @@
   color: var(--color-shimmer);
   background-color: var(--color-brand-tint);
   box-shadow: var(--shadow-stats-card);
+  animation: enhance-reward-in calc(var(--duration-slow) * 2) var(--ease-out-quart) backwards;
+  animation-delay: calc(
+    var(--duration-slow) + var(--enhance-stat-index, 0) * var(--duration-quick)
+  );
+}
+
+/* The clamp shortens the animation but not its delay. */
+@media (prefers-reduced-motion: reduce) {
+  .enhance-stat {
+    animation-delay: 0s;
+  }
 }
 
 .enhance-stat[data-tone="pass"] {

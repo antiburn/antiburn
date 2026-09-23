@@ -1,5 +1,5 @@
 import { BellOff, CircleCheck, Hourglass, Wrench, type LucideIcon } from "lucide-react"
-import { useCallback } from "react"
+import { useCallback, type CSSProperties } from "react"
 
 import type { BurnCheckTargetPayload, ChecksCategoryPayload } from "../../../lib/insightsIpc"
 import {
@@ -10,6 +10,7 @@ import { formatTokensShort } from "../../../lib/presentation/sessionAnalysis"
 import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
 import { watchStatus } from "../burn-checks/BurnCheckTargetPresentation"
+import { countUp } from "./countUp"
 import { EnhanceCard, useChecks, Waiting } from "./EnhanceSteps"
 import { startSmoke } from "./enhanceSmoke"
 import { isAppliedFix, predictSavings, projectSavings, SAVINGS_MONTHS } from "./enhanceState"
@@ -101,10 +102,29 @@ function mountSmoke(canvas: HTMLCanvasElement | null) {
   return startSmoke(canvas) ?? undefined
 }
 
-function Figure({ value, unit, note }: { value: string; unit: string; note?: string }) {
+const whole = (value: number) => String(Math.round(value))
+
+/** A figure that counts up from zero when it arrives. */
+function Figure({
+  value,
+  format,
+  unit,
+  note,
+}: {
+  value: number
+  format: (value: number) => string
+  unit: string
+  note?: string
+}) {
+  const count = useCallback(
+    (node: HTMLSpanElement | null) => (node ? countUp(node, value, format) : undefined),
+    [value, format],
+  )
   return (
     <div className="flex flex-col" title={note}>
-      <span className="type-hero-figure font-semibold tabular-nums">{value}</span>
+      <span ref={count} className="type-hero-figure font-semibold tabular-nums">
+        {format(value)}
+      </span>
       <span className="type-caption opacity-80">{unit}</span>
     </div>
   )
@@ -115,19 +135,28 @@ function Tile({
   label,
   tone,
   Icon,
+  index,
 }: {
   value: number
   label: string
   tone: "brand" | "pass" | "snooze"
   Icon: LucideIcon
+  index: number
 }) {
+  const count = useCallback(
+    (node: HTMLSpanElement | null) => (node ? countUp(node, value, whole) : undefined),
+    [value],
+  )
   return (
     <div
       data-tone={tone}
+      style={{ "--enhance-stat-index": index } as CSSProperties}
       className="enhance-stat flex items-start justify-between gap-(--space-md) rounded-(--radius-popover) p-(--space-lg)"
     >
       <div className="flex flex-col">
-        <span className="type-title-2 font-semibold tabular-nums">{value}</span>
+        <span ref={count} className="type-title-2 font-semibold tabular-nums">
+          {value}
+        </span>
         <span className="type-caption opacity-80">{label}</span>
       </div>
       <Icon aria-hidden="true" size={22} strokeWidth={2} className="opacity-80" />
@@ -171,7 +200,7 @@ export function DoneStep({
     .map((row) => ({ check: row.check, savings: projectSavings(row[counted]) }))
     .filter((row) => row.savings.estimated > 0)
   return (
-    <div className="flex flex-col gap-(--space-xl)">
+    <div className="flex flex-1 flex-col gap-(--space-xl)">
       {tracked.map((check) => (
         <TargetTracker key={check.id} detector={check.id} session={session} />
       ))}
@@ -180,7 +209,7 @@ export function DoneStep({
       ) : (
         <section
           aria-label="Projected savings"
-          className="enhance-done-hero flex items-center rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl)"
+          className="enhance-done-hero flex flex-1 items-center rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl)"
         >
           <canvas ref={mountSmoke} aria-hidden="true" className="enhance-done-smoke" />
           {prediction ? (
@@ -190,7 +219,7 @@ export function DoneStep({
                   ? "Your fixes could save up to"
                   : "Apply the open fixes to save up to"}
               </p>
-              <Figure value={formatTokensShort(prediction.tokens)} unit="tokens" />
+              <Figure value={prediction.tokens} format={formatTokensShort} unit="tokens" />
               <p className="type-callout opacity-80">
                 Over the next {SAVINGS_MONTHS} months, at your last 30 days&apos; pace. These
                 checks burned {formatTokenBurnPercent(prediction.basisPoints)} of your tokens.
@@ -216,11 +245,12 @@ export function DoneStep({
               </p>
               <div className="flex flex-wrap items-end gap-(--space-2xl)">
                 {savings.tokens > 0 && (
-                  <Figure value={formatTokensShort(savings.tokens)} unit="tokens" />
+                  <Figure value={savings.tokens} format={formatTokensShort} unit="tokens" />
                 )}
                 {savings.usd > 0 && (
                   <Figure
-                    value={formatApiEquivalentUsd(savings.usd)}
+                    value={savings.usd}
+                    format={formatApiEquivalentUsd}
                     unit="API-equivalent USD"
                     note={USD_NOTE}
                   />
@@ -235,18 +265,26 @@ export function DoneStep({
         </section>
       )}
       <div className="grid grid-cols-3 gap-(--space-md)">
-        <Tile value={applied.length} label="Fixes applied" tone="brand" Icon={Wrench} />
+        <Tile
+          value={applied.length}
+          label="Fixes applied"
+          tone="brand"
+          Icon={Wrench}
+          index={0}
+        />
         <Tile
           value={presentation.awaiting?.length ?? 0}
           label="Being watched"
           tone="pass"
           Icon={Hourglass}
+          index={1}
         />
         <Tile
           value={presentation.snoozed.length}
           label="Snoozed, not counted"
           tone="snooze"
           Icon={BellOff}
+          index={2}
         />
       </div>
       {!loading && breakdown.length > 0 && (

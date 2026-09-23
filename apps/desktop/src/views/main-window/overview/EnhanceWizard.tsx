@@ -113,12 +113,16 @@ export function EnhanceWizard({
         })}
       </nav>
 
-      <div key={step} className="animate-step-in min-h-0 flex-1 overflow-auto py-(--space-2xl)">
+      <div
+        key={step}
+        className="animate-step-in flex min-h-0 flex-1 flex-col overflow-auto py-(--space-2xl)"
+      >
         <h2 className="type-title-2 text-label">{current.heading}</h2>
         <p className="mt-(--space-xs) max-w-[60ch] type-body text-label-secondary">
           {current.lead}
         </p>
-        <div className="mt-(--space-xl)">{body}</div>
+        {/* The body grows, so the Done step can fill the space it is given. */}
+        <div className="mt-(--space-xl) flex flex-1 flex-col">{body}</div>
       </div>
 
       <footer className="flex items-center justify-end gap-(--space-md) border-t border-separator pt-(--space-lg)">

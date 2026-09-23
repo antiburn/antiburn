@@ -41,9 +41,10 @@ function cardFace(state: EnhanceButtonState): {
   }
 }
 
-/** The card under Recent sessions. It gives the reader one clear next step:
- *  open the Enhance wizard. The install banner's fire burns behind it, and
- *  moves only while the pointer is on the card. */
+/** The call to action under Recent sessions. It gives the reader one clear
+ *  next step: open the Enhance wizard. It is not a card: the install banner's
+ *  fire burns behind centred text and a pill, and moves only while the
+ *  pointer is on it. */
 export function EnhanceActionBar({
   failingChecks,
   state,
@@ -78,7 +79,7 @@ export function EnhanceActionBar({
       onFocus={() => fire.current?.play()}
       onBlur={() => fire.current?.pause()}
       data-calm={face.calm ? "" : undefined}
-      className="enhance-fire-card group flex w-full shrink-0 items-center gap-(--space-xl) rounded-(--radius-popover) px-(--space-2xl) py-(--space-xl) text-left"
+      className="enhance-fire-card group flex w-full shrink-0 flex-col items-center gap-(--space-lg) rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl) text-center"
     >
       <canvas
         ref={mountFire}
@@ -86,7 +87,7 @@ export function EnhanceActionBar({
         data-fuel={face.calm ? 0.55 : 1}
         className="enhance-fire-canvas"
       />
-      <span className="flex min-w-0 flex-1 flex-col gap-(--space-xs)">
+      <span className="flex min-w-0 flex-col gap-(--space-xs)">
         <span aria-hidden="true" className="type-title-3 font-semibold text-label">
           Enhance my AI setup
         </span>
@@ -110,7 +111,7 @@ export function EnhanceActionBar({
       </span>
       <span
         data-quiet={face.calm ? "" : undefined}
-        className="enhance-pill flex shrink-0 items-center gap-(--space-sm) px-(--space-xl) type-headline whitespace-nowrap"
+        className="enhance-pill flex shrink-0 items-center gap-(--space-sm) px-(--space-2xl) type-headline whitespace-nowrap"
       >
         {face.action}
         <ArrowRight
