@@ -20,9 +20,9 @@ use crate::analysis::framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
 };
 use crate::analysis::interface::{
-    ContentKind, ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord,
-    ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector, SessionInput,
-    SessionReader, SessionSummary, TurnContent, VisitOutcome, push_provider_hint,
+    ContentAuthority, ContentKind, ContentPart, ContextWindowSource, EvidenceObservation,
+    NormalizedRecord, ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector,
+    SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome, push_provider_hint,
 };
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
@@ -891,7 +891,10 @@ fn apply_part(
                 } else {
                     ContentKind::UserText
                 };
-                pending.content.push(ContentPart::new(kind, text));
+                pending.content.push(
+                    ContentPart::new(kind, text)
+                        .with_authority(content_authority(pending.event.role)),
+                );
             }
         }
         "file" | "snapshot" | "step-start" | "step-finish" | "agent" | "retry" => {}
@@ -902,9 +905,10 @@ fn apply_part(
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
             {
-                pending
-                    .content
-                    .push(ContentPart::new(ContentKind::Thinking, text));
+                pending.content.push(
+                    ContentPart::new(ContentKind::Thinking, text)
+                        .with_authority(ContentAuthority::Assistant),
+                );
             }
         }
         "tool" => apply_tool_part(object, pending, sink),
@@ -928,6 +932,15 @@ fn apply_part(
         }
         discriminator if !discriminator.is_empty() => unrecognized(discriminator, sink),
         _ => unrecognized("<missing_part_type>", sink),
+    }
+}
+
+fn content_authority(role: Role) -> ContentAuthority {
+    match role {
+        Role::User => ContentAuthority::User,
+        Role::Assistant => ContentAuthority::Assistant,
+        Role::System => ContentAuthority::System,
+        Role::Tool => ContentAuthority::Tool,
     }
 }
 
@@ -997,26 +1010,47 @@ fn apply_tool_part(
     let input = state.and_then(|state| state.get("input"));
     pending.event.tools.push(tool_call_from_input(name, input));
     if let Some(text) = input.and_then(compact_json_text) {
-        pending
-            .content
-            .push(ContentPart::new(ContentKind::ToolInput, text));
+        pending.content.push(
+            ContentPart::new(ContentKind::ToolInput, text).with_tool_identity(
+                Some(name.to_owned()),
+                part.get("callID")
+                    .or_else(|| part.get("callId"))
+                    .or_else(|| part.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            ),
+        );
     }
     if let Some(output) = state
         .and_then(|state| state.get("output"))
         .and_then(Value::as_str)
         .filter(|output| !output.is_empty())
     {
-        pending
-            .content
-            .push(ContentPart::new(ContentKind::ToolResult, output));
+        pending.content.push(
+            ContentPart::new(ContentKind::ToolResult, output).with_tool_identity(
+                Some(name.to_owned()),
+                part.get("callID")
+                    .or_else(|| part.get("callId"))
+                    .or_else(|| part.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            ),
+        );
     } else if let Some(error) = state
         .and_then(|state| state.get("error"))
         .and_then(Value::as_str)
         .filter(|error| !error.is_empty())
     {
-        pending
-            .content
-            .push(ContentPart::new(ContentKind::ToolResult, error));
+        pending.content.push(
+            ContentPart::new(ContentKind::ToolResult, error).with_tool_identity(
+                Some(name.to_owned()),
+                part.get("callID")
+                    .or_else(|| part.get("callId"))
+                    .or_else(|| part.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            ),
+        );
     }
 }
 

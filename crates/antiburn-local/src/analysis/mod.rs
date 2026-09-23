@@ -36,6 +36,7 @@ mod evidence_query;
 mod evidence_replay;
 mod evidence_sink;
 mod framing;
+pub mod ignored_instructions;
 mod initial_context;
 mod interface;
 mod merge;
@@ -71,8 +72,10 @@ pub use evidence::{
     TurnCounts,
 };
 pub use evidence_query::{
-    FenceScope, PublishedScope, TurnFacts, query_model_breakdown, query_model_runs,
-    query_pricing_breakdown, query_turn_facts, query_turn_rows,
+    ContentQueryCoverage, FenceScope, MAX_CONTENT_QUERY_BYTES, MAX_CONTENT_QUERY_PARTS,
+    PublishedContent, PublishedContentPart, PublishedScope, TurnFacts, query_model_breakdown,
+    query_model_runs, query_pricing_breakdown, query_turn_content, query_turn_facts,
+    query_turn_rows,
 };
 pub use evidence_replay::evidence_from_facts;
 pub use evidence_sink::{
@@ -86,10 +89,11 @@ pub use initial_context::{
     InitialContextBreakdown, InitialContextSourceCount, SourceOrigin, estimate_proportional_tokens,
 };
 pub use interface::{
-    ContentKind, ContentPart, ContextSourceKind, ContextWindowSource, EvidenceObservation,
-    MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource,
-    RecordCoverage, RecordSink, RelationProvenance, ResumedVisit, SessionCollector, SessionInput,
-    SessionReader, SessionSummary, SourceChangedReason, TurnContent, VisitOutcome,
+    ContentAuthority, ContentKind, ContentPart, ContextSourceKind, ContextWindowSource,
+    EvidenceObservation, MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, NormalizedRecord,
+    ProviderHint, RawSource, RecordCoverage, RecordSink, RelationProvenance, ResumedVisit,
+    SessionCollector, SessionInput, SessionReader, SessionSummary, SourceChangedReason,
+    TurnContent, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
@@ -107,9 +111,9 @@ pub use rows::{
     MemoryTurnRowStore, ResumeRevisions, SESSION_COVERAGE_SCHEMA_SQL, SOURCE_RESUME_SCHEMA_SQL,
     StoredResume, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
     TURN_SCHEMA_V3_SQL, TURN_SCHEMA_V4_SQL, TURN_SCHEMA_V5_SQL, TURN_SCHEMA_V6_SQL,
-    TURN_SCHEMA_V7_SQL, TURN_SCHEMA_V8_SQL, TurnExecution, TurnRow, TurnRowError, TurnRowSink,
-    TurnRowStore, TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows,
-    delete_source_resume, delete_source_rows_at_fence, delete_stale_source_resume,
+    TURN_SCHEMA_V7_SQL, TURN_SCHEMA_V8_SQL, TURN_SCHEMA_V9_SQL, TurnExecution, TurnRow,
+    TurnRowError, TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey, count_turn_content_rows,
+    count_turn_rows, delete_source_resume, delete_source_rows_at_fence, delete_stale_source_resume,
     delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
     insert_coverage_record, insert_source_resume, insert_turn_rows, latest_turn_execution,
     query_coverage_record, query_source_resume, restamp_source_rows, turn_row_from_event,
@@ -203,7 +207,7 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // or Codex session must reparse to collect them.
 // +1 for thread rollback boundaries, Antigravity response identities, and the
 // Devin Local migration-17 reader. Existing sessions must reparse these inputs.
-pub const PARSER_REVISION: i64 = 39;
+pub const PARSER_REVISION: i64 = 40;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to

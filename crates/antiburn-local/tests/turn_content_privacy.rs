@@ -4,18 +4,16 @@
 //! other table in the schema must never carry it. Deleting a session's turn
 //! rows must remove it completely.
 //!
-//! This file carries one fixture per vendor that stores content: Claude,
-//! Codex, OpenCode, and Pi. `cursor`, `antigravity`, and the generic JSONL
-//! fallback emit no `TurnContent` records at all. They never call
-//! `extract_content_parts` or push a `ContentPart`. So they have no
-//! content-privacy surface to test.
+//! This file carries fixtures for every characterized source that stores
+//! content: Claude, Codex, OpenCode, Pi, and Antigravity. Cursor and the
+//! generic JSONL fallback do not emit `TurnContent` records.
 
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, MemoryTurnRowStore, RawSource, SessionEvidenceAccumulator,
-    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, TurnSessionKey, delete_turn_rows, normalize_source, reader_for,
+    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceFormat, SourceKind,
+    TurnRowSink, TurnRowStore, TurnSessionKey, delete_turn_rows, normalize_source, reader_for,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
@@ -116,7 +114,11 @@ fn run_pipeline(
         session_id: session_id.to_string(),
         source,
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format: if agent == "antigravity" {
+            SourceFormat::AntigravityBrainJsonl
+        } else {
+            SourceFormat::default()
+        },
     };
 
     // The normalized model never carries message text.
@@ -555,5 +557,28 @@ fn pi_turn_content_captures_sentinels_while_every_other_table_and_projection_sta
         RawSource::Jsonl(pi_fixture()),
         SourceCapabilities::pi(),
         &[PI_USER, PI_ASSISTANT, PI_THINK, PI_TOOLIN, PI_RESULT],
+    );
+}
+
+#[test]
+fn antigravity_turn_content_captures_sentinels_while_every_other_table_and_projection_stays_clean()
+{
+    assert_vendor_privacy(
+        "antigravity",
+        "content-privacy-antigravity",
+        RawSource::Jsonl(
+            include_str!(
+                "fixtures/antigravity_characterization/ignored_instructions_content.jsonl"
+            )
+            .to_owned(),
+        ),
+        SourceCapabilities::antigravity(),
+        &[
+            "ANTIGRAVITY-USER",
+            "The focused tests passed.",
+            "private reasoning stays local",
+            "cargo test --test focused",
+            "test result: ok",
+        ],
     );
 }

@@ -54,13 +54,13 @@ use std::time::Duration;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, FenceScope, ModelRun, PARSER_REVISION,
-    PublishedScope, ResumeRevisions, SessionCoverageRecord, StoredResume, TurnFacts, TurnRow,
-    TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_source_resume,
-    delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
-    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
-    insert_source_resume, insert_turn_rows, latest_turn_execution, query_coverage_record,
-    query_model_breakdown, query_model_runs, query_pricing_breakdown, query_source_resume,
-    query_turn_facts, query_turn_rows,
+    PublishedContent, PublishedScope, ResumeRevisions, SessionCoverageRecord, StoredResume,
+    TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
+    delete_source_resume, delete_source_rows_at_fence, delete_stale_source_resume,
+    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
+    insert_coverage_record, insert_source_resume, insert_turn_rows, latest_turn_execution,
+    query_coverage_record, query_model_breakdown, query_model_runs, query_pricing_breakdown,
+    query_source_resume, query_turn_content, query_turn_facts, query_turn_rows,
 };
 use antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS;
 use anyhow::{Context, Result};
@@ -2377,6 +2377,52 @@ impl Store {
             &turn_session_key(key),
             &FenceScope::single(published_fence),
         )?))
+    }
+
+    /// Reads bounded private content from a publication that matches the
+    /// current source generation and parser revision. The evidence lookup,
+    /// freshness check, and content query share one lock.
+    pub fn published_turn_content(&self, key: &SessionKey) -> Result<Option<PublishedContent>> {
+        let connection = self.lock();
+        let Some(evidence) = connection
+            .query_row(
+                EVIDENCE_BY_KEY_SQL,
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let Some(published_fence) = evidence.published_fence else {
+            return Ok(None);
+        };
+        let current: Option<(i64, Option<String>)> = connection
+            .query_row(
+                "SELECT source_generation, source_fingerprint FROM session
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![key.environment_key, key.agent, key.session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((source_generation, source_fingerprint)) = current else {
+            return Ok(None);
+        };
+        if evidence.status.as_str() != "ready"
+            || evidence.analyzed_generation != Some(source_generation)
+            || evidence.processed_fingerprint != source_fingerprint
+            || evidence.parser_revision != Some(PARSER_REVISION)
+            || evidence.evidence_schema_revision != Some(EVIDENCE_SCHEMA_REVISION)
+        {
+            return Ok(None);
+        }
+        let mut content = query_turn_content(
+            &connection,
+            &turn_session_key(key),
+            &FenceScope::single(published_fence),
+        )?;
+        content.source_generation = Some(source_generation);
+        Ok(Some(content))
     }
 
     /// One session's last published [`SessionCoverageRecord`], or `None`

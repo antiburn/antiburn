@@ -437,6 +437,59 @@ fn published_turn_rows_serves_the_last_published_fence_while_a_newer_claim_is_in
 }
 
 #[test]
+fn published_turn_content_requires_a_fresh_winning_fence() {
+    let store = store();
+    let (mut record, claim) = claimed_projection(&store, "published-content", 100, 60);
+    record.parser_revision = PARSER_REVISION;
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    let mut published_row = turn_row(0);
+    published_row.content = vec![ContentPart::new(ContentKind::UserText, "published text")];
+    writer.write_turn_rows(&[published_row]).unwrap();
+    let mut completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    completion.evidence_schema_revision = EVIDENCE_SCHEMA_REVISION;
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+
+    let published = store
+        .published_turn_content(&key)
+        .unwrap()
+        .expect("published content");
+    assert_eq!(published.parts.len(), 1);
+    assert_eq!(published.parts[0].part.text, "published text");
+
+    advance_source_generation_past(&store, &key);
+    assert_eq!(
+        store.published_turn_content(&key).unwrap(),
+        None,
+        "a publication from an older source generation is stale"
+    );
+
+    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+    let next_claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("reclaimable");
+    let next_writer = FencedTurnRowStore::new(store.clone(), key.clone(), next_claim.claim_fence);
+    let mut in_flight_row = turn_row(0);
+    in_flight_row.content = vec![ContentPart::new(ContentKind::UserText, "in flight text")];
+    next_writer.write_turn_rows(&[in_flight_row]).unwrap();
+
+    assert_eq!(
+        store.published_turn_content(&key).unwrap(),
+        None,
+        "a previous publication must not be used while a newer claim is in flight"
+    );
+}
+
+#[test]
 fn published_turn_rows_is_none_with_no_evidence_row() {
     let store = store();
     let key = SessionKey::new("native", "claude-code", "never-claimed");

@@ -38,8 +38,8 @@ use serde_json::Value;
 use crate::analysis::SourceChangedReason;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
-    NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionReader,
-    SessionSummary, VisitOutcome,
+    ContentAuthority, ContentKind, ContentPart, NormalizedRecord, RawSource, RecordSink,
+    SessionCollector, SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, Usage};
 use crate::analysis::records::{parse_ts, parse_usage, tool_call_from_input};
@@ -567,7 +567,13 @@ impl AntigravityStreamState {
         if self.started_at_ms.is_none() {
             self.started_at_ms = event.ts_ms;
         }
+        let content = step_content_parts(value, event.role);
         sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        if !content.is_empty() {
+            sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                parts: content,
+            })));
+        }
     }
 
     fn observe_model(&mut self, value: &Value) {
@@ -2545,6 +2551,16 @@ fn step_to_event(step: &Value) -> Option<NormalizedEvent> {
     };
 
     let mut ev = NormalizedEvent::new(role);
+    ev.message_id = obj
+        .get("step_id")
+        .or_else(|| obj.get("stepId"))
+        .or_else(|| obj.get("step_index"))
+        .and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
+        .filter(|identity| !identity.is_empty() && identity.len() <= 256);
     ev.has_thinking = obj
         .get("thinking")
         .and_then(Value::as_str)
@@ -2578,6 +2594,102 @@ fn step_to_event(step: &Value) -> Option<NormalizedEvent> {
     ev.usage = parse_usage(obj.get("usage"));
 
     Some(ev)
+}
+
+fn step_content_parts(step: &Value, role: Role) -> Vec<ContentPart> {
+    let Some(object) = step.as_object() else {
+        return Vec::new();
+    };
+    let authority = match role {
+        Role::User => ContentAuthority::User,
+        Role::Assistant => ContentAuthority::Assistant,
+        Role::System => ContentAuthority::System,
+        Role::Tool => ContentAuthority::Tool,
+    };
+    let mut parts = Vec::new();
+
+    if role == Role::User {
+        let user_input = object.get("userInput");
+        let text = user_input
+            .and_then(|value| value.get("userResponse"))
+            .and_then(Value::as_str)
+            .or_else(|| object.get("content").and_then(Value::as_str));
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            parts.push(ContentPart::new(ContentKind::UserText, text).with_authority(authority));
+        }
+        if let Some(items) = user_input
+            .and_then(|value| value.get("items"))
+            .and_then(Value::as_array)
+        {
+            for item in items {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    parts.push(
+                        ContentPart::new(ContentKind::UserText, text).with_authority(authority),
+                    );
+                }
+            }
+        }
+        return parts;
+    }
+
+    if role == Role::Assistant {
+        if let Some(text) = object
+            .get("content")
+            .or_else(|| object.get("response"))
+            .or_else(|| object.get("text"))
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            parts
+                .push(ContentPart::new(ContentKind::AssistantText, text).with_authority(authority));
+        }
+        if let Some(text) = object.get("thinking").and_then(Value::as_str) {
+            parts.push(ContentPart::new(ContentKind::Thinking, text).with_authority(authority));
+        }
+        if let Some(calls) = object.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                let name = call.get("name").and_then(Value::as_str).map(str::to_owned);
+                let input = call
+                    .get("args")
+                    .or_else(|| call.get("arguments"))
+                    .and_then(crate::analysis::records::compact_json_text);
+                if let Some(input) = input {
+                    parts.push(
+                        ContentPart::new(ContentKind::ToolInput, input)
+                            .with_tool_identity(name, None),
+                    );
+                }
+            }
+        }
+        return parts;
+    }
+
+    let tool_name = tool_name(object).or_else(|| {
+        object
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .and_then(|calls| calls.first())
+            .and_then(|call| call.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let call_id = object
+        .get("tool_call_id")
+        .or_else(|| object.get("toolCallId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(text) = object
+        .get("content")
+        .or_else(|| object.get("output"))
+        .or_else(|| object.get("result"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        parts.push(
+            ContentPart::new(ContentKind::ToolResult, text).with_tool_identity(tool_name, call_id),
+        );
+    }
+    parts
 }
 
 /// Strip a `CORTEX_STEP_TYPE_` prefix and uppercase, so the brain

@@ -141,6 +141,11 @@ verification, a reachable inventory target before it accepts an M/B/K prompt,
 and production editor policy plus a typed target operation before it accepts
 Auto Fix. The limit stays beside the row it qualifies.
 
+Ignored Instructions is not yet an implemented Burn Check and has no support
+cells in this matrix. Phase 2 adds bounded private content preparation and
+current-file instruction snapshots only. Those parser inputs do not establish
+finding, prompt, clean-result, or provider support.
+
 | Agent       | Check | Finding | Prompt | Auto Fix | Verification | Estimate | Reachability limit                                                                                                                           |
 | ----------- | ----- | ------- | ------ | -------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |

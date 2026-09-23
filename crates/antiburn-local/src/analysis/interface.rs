@@ -107,7 +107,13 @@ pub struct TurnContent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentPart {
     pub kind: ContentKind,
+    /// The source role for this part when the adapter can prove it.
+    pub authority: ContentAuthority,
     pub text: String,
+    /// Native tool identity, when the source records it.
+    pub tool_name: Option<String>,
+    /// Native call/result join identity, when the source records it.
+    pub tool_call_id: Option<String>,
     /// True when `text` was cut short at [`MAX_CONTENT_PART_BYTES`].
     pub truncated: bool,
 }
@@ -128,8 +134,73 @@ impl ContentPart {
         }
         Self {
             kind,
+            authority: ContentAuthority::for_kind(kind),
             text,
+            tool_name: None,
+            tool_call_id: None,
             truncated,
+        }
+    }
+
+    pub fn with_authority(mut self, authority: ContentAuthority) -> Self {
+        self.authority = authority;
+        self
+    }
+
+    pub fn with_tool_identity(
+        mut self,
+        tool_name: Option<String>,
+        tool_call_id: Option<String>,
+    ) -> Self {
+        self.tool_name = tool_name;
+        self.tool_call_id = tool_call_id;
+        self
+    }
+}
+
+/// Source authority for one private content part. `Unknown` means the source
+/// did not establish who supplied the text; consumers must not infer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentAuthority {
+    User,
+    Assistant,
+    System,
+    Developer,
+    Tool,
+    Unknown,
+}
+
+impl ContentAuthority {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::System => "system",
+            Self::Developer => "developer",
+            Self::Tool => "tool",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "assistant" => Some(Self::Assistant),
+            "system" => Some(Self::System),
+            "developer" => Some(Self::Developer),
+            "tool" => Some(Self::Tool),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+
+    const fn for_kind(kind: ContentKind) -> Self {
+        match kind {
+            ContentKind::UserText => Self::User,
+            ContentKind::AssistantText | ContentKind::Thinking | ContentKind::ToolInput => {
+                Self::Assistant
+            }
+            ContentKind::ToolResult => Self::Tool,
         }
     }
 }
@@ -152,6 +223,17 @@ impl ContentKind {
             ContentKind::Thinking => "thinking",
             ContentKind::ToolInput => "tool_input",
             ContentKind::ToolResult => "tool_result",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::UserText),
+            "assistant" => Some(Self::AssistantText),
+            "thinking" => Some(Self::Thinking),
+            "tool_input" => Some(Self::ToolInput),
+            "tool_result" => Some(Self::ToolResult),
+            _ => None,
         }
     }
 }

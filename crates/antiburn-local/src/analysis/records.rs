@@ -456,7 +456,24 @@ pub(super) fn extract_content_parts_from_container(
         .and_then(|m| m.get("content"))
         .or_else(|| container.get("content"));
     if role == Role::Tool {
-        return tool_result_parts(content);
+        let metadata = container
+            .get("message")
+            .and_then(Value::as_object)
+            .unwrap_or(container);
+        let tool_name = metadata
+            .get("toolName")
+            .or_else(|| container.get("tool_name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let tool_call_id = metadata
+            .get("toolCallId")
+            .or_else(|| container.get("tool_call_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        return tool_result_parts(content)
+            .into_iter()
+            .map(|part| part.with_tool_identity(tool_name.clone(), tool_call_id.clone()))
+            .collect();
     }
     let mut parts = Vec::new();
     match content {
@@ -479,9 +496,19 @@ fn text_kind(role: Role) -> ContentKind {
     }
 }
 
+fn content_authority(role: Role) -> crate::analysis::interface::ContentAuthority {
+    use crate::analysis::interface::ContentAuthority;
+    match role {
+        Role::User => ContentAuthority::User,
+        Role::Assistant => ContentAuthority::Assistant,
+        Role::System => ContentAuthority::System,
+        Role::Tool => ContentAuthority::Tool,
+    }
+}
+
 fn push_text(text: &str, role: Role, parts: &mut Vec<ContentPart>) {
     if !text.is_empty() {
-        parts.push(ContentPart::new(text_kind(role), text));
+        parts.push(ContentPart::new(text_kind(role), text).with_authority(content_authority(role)));
     }
 }
 
@@ -501,18 +528,43 @@ fn push_content_block(item: &Value, role: Role, parts: &mut Vec<ContentPart>) {
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
             {
-                parts.push(ContentPart::new(ContentKind::Thinking, text));
+                parts.push(
+                    ContentPart::new(ContentKind::Thinking, text)
+                        .with_authority(content_authority(role)),
+                );
             }
         }
         "tool_use" | "toolCall" => {
             let input = item.get("input").or_else(|| item.get("arguments"));
             if let Some(text) = input.and_then(compact_json_text) {
-                parts.push(ContentPart::new(ContentKind::ToolInput, text));
+                let name = item.get("name").and_then(Value::as_str).map(str::to_owned);
+                let id = item
+                    .get("id")
+                    .or_else(|| item.get("tool_use_id"))
+                    .or_else(|| item.get("tool_call_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                parts.push(
+                    ContentPart::new(ContentKind::ToolInput, text).with_tool_identity(name, id),
+                );
             }
         }
         "tool_result" | "toolResult" | "function_call_output" => {
             if let Some(text) = tool_result_text(item) {
-                parts.push(ContentPart::new(ContentKind::ToolResult, text));
+                let name = item
+                    .get("name")
+                    .or_else(|| item.get("tool_name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let id = item
+                    .get("tool_use_id")
+                    .or_else(|| item.get("toolCallId"))
+                    .or_else(|| item.get("call_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                parts.push(
+                    ContentPart::new(ContentKind::ToolResult, text).with_tool_identity(name, id),
+                );
             }
         }
         _ => {}

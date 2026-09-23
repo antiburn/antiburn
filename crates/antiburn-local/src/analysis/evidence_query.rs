@@ -17,9 +17,47 @@ use crate::analysis::evidence::{
     ModelTokens, ModelTransition, ParseDiagnostics, RepeatedContextAccounting, SessionTimeRange,
     SignalCoverage, TurnCounts, cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
 };
+use crate::analysis::interface::{ContentAuthority, ContentKind, ContentPart};
 use crate::analysis::model::{CompactionTrigger, ModelRun};
 use crate::analysis::pricing::strip_window_tag;
 use crate::analysis::rows::{TurnRow, TurnScope, TurnSessionKey, parse_role};
+
+pub const MAX_CONTENT_QUERY_PARTS: usize = 256;
+pub const MAX_CONTENT_QUERY_BYTES: usize = 1024 * 1024;
+
+/// One bounded private content part with its stable source identity fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedContentPart {
+    pub source_key: String,
+    pub thread_id: String,
+    pub turn_index: u64,
+    pub role: &'static str,
+    pub scope: String,
+    pub ts_ms: Option<i64>,
+    pub uuid: Option<String>,
+    pub message_id: Option<String>,
+    pub part_index: u32,
+    pub part: ContentPart,
+    /// False when the source has no record identity beyond its current ordinal.
+    pub stable_event_identity: bool,
+}
+
+/// Explicit limits reached while reading the private content projection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContentQueryCoverage {
+    pub parts_capped: bool,
+    pub bytes_capped: bool,
+    pub oversized_parts: u32,
+    pub stored_truncated_parts: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublishedContent {
+    pub publication_fence: i64,
+    pub source_generation: Option<i64>,
+    pub parts: Vec<PublishedContentPart>,
+    pub coverage: ContentQueryCoverage,
+}
 
 /// The row-derived facts for one session, at one claim fence.
 ///
@@ -447,6 +485,125 @@ pub fn query_turn_rows(
         },
     )?;
     rows.collect()
+}
+
+/// Reads private content only for the supplied fence scope and within fixed
+/// part and byte bounds. Ordinary turn queries never call this function.
+pub fn query_turn_content(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    scope: &FenceScope<'_>,
+) -> rusqlite::Result<PublishedContent> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
+    let sql = "SELECT turn.source_key, turn.thread_id, turn.turn_index, turn.role,
+                      turn.scope, turn.ts_ms, turn.uuid, turn.message_id,
+                      content.part_index, content.kind,
+                      CASE WHEN length(content.content) <= ?8
+                           THEN CAST(content.content AS TEXT) END,
+                      length(content.content),
+                      content.truncated, content.authority, content.tool_name,
+                      content.tool_call_id
+                 FROM turn_content AS content
+                 JOIN turn ON turn.rowid = content.turn_rowid
+                WHERE turn.environment_key = ?1 AND turn.agent = ?2
+                  AND turn.session_id = ?3
+                  AND (turn.claim_fence = ?4 OR
+                       (turn.claim_fence = ?5 AND turn.source_key IN
+                           (SELECT value FROM json_each(?6))))
+                ORDER BY turn.source_key, turn.turn_index, content.part_index
+                LIMIT ?7";
+    let mut statement = conn.prepare(sql)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence,
+        published_fence,
+        source_keys_json,
+        (MAX_CONTENT_QUERY_PARTS + 1) as i64,
+        crate::analysis::interface::MAX_CONTENT_PART_BYTES as i64,
+    ])?;
+    let mut result = PublishedContent {
+        publication_fence: scope.claim_fence,
+        ..PublishedContent::default()
+    };
+    let mut retained_bytes = 0usize;
+    let mut scanned_parts = 0usize;
+
+    while let Some(row) = rows.next()? {
+        if scanned_parts == MAX_CONTENT_QUERY_PARTS {
+            result.coverage.parts_capped = true;
+            break;
+        }
+        scanned_parts += 1;
+
+        let byte_length = as_u64(row.get(11)?) as usize;
+        let already_truncated: i64 = row.get(12)?;
+        if byte_length > crate::analysis::interface::MAX_CONTENT_PART_BYTES {
+            result.coverage.oversized_parts = result.coverage.oversized_parts.saturating_add(1);
+            continue;
+        }
+        if byte_length > MAX_CONTENT_QUERY_BYTES.saturating_sub(retained_bytes) {
+            result.coverage.bytes_capped = true;
+            break;
+        }
+
+        let kind_text: String = row.get(9)?;
+        let kind = ContentKind::parse(&kind_text).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                9,
+                rusqlite::types::Type::Text,
+                format!("unrecognized content kind {kind_text:?}").into(),
+            )
+        })?;
+        let authority_text: String = row.get(13)?;
+        let authority = ContentAuthority::parse(&authority_text).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                13,
+                rusqlite::types::Type::Text,
+                format!("unrecognized content authority {authority_text:?}").into(),
+            )
+        })?;
+        let text: String = row.get(10)?;
+        let part_index = as_u64(row.get(8)?).min(u32::MAX as u64) as u32;
+        let part = ContentPart {
+            kind,
+            authority,
+            text,
+            tool_name: row.get(14)?,
+            tool_call_id: row.get(15)?,
+            truncated: already_truncated != 0,
+        };
+        if part.truncated {
+            result.coverage.stored_truncated_parts =
+                result.coverage.stored_truncated_parts.saturating_add(1);
+        }
+        retained_bytes = retained_bytes.saturating_add(byte_length);
+        let uuid: Option<String> = row.get(6)?;
+        let message_id: Option<String> = row.get(7)?;
+        let role_text: String = row.get(3)?;
+        let role = parse_role(&role_text).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                format!("unrecognized turn role {role_text:?}").into(),
+            )
+        })?;
+        result.parts.push(PublishedContentPart {
+            source_key: row.get(0)?,
+            thread_id: row.get(1)?,
+            turn_index: as_u64(row.get(2)?),
+            role,
+            scope: row.get(4)?,
+            ts_ms: row.get(5)?,
+            stable_event_identity: uuid.is_some() || message_id.is_some(),
+            uuid,
+            message_id,
+            part_index,
+            part,
+        });
+    }
+    Ok(result)
 }
 
 /* --------------------------------------------------------------------
@@ -1762,6 +1919,67 @@ mod tests {
 
     fn insert(conn: &Connection, rows: &[TurnRow]) {
         insert_turn_rows(conn, &KEY, 1, rows).expect("insert rows");
+    }
+
+    #[test]
+    fn content_query_preserves_authority_and_tool_identity_under_fixed_bounds() {
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        row.uuid = Some("native-event".to_owned());
+        row.content = vec![
+            ContentPart::new(ContentKind::ToolInput, "{\"cmd\":\"test\"}")
+                .with_tool_identity(Some("shell".to_owned()), Some("call-7".to_owned())),
+        ];
+        insert(&conn, &[row]);
+
+        let content = query_turn_content(&conn, &KEY, &FenceScope::single(1)).unwrap();
+        assert_eq!(content.parts.len(), 1);
+        assert_eq!(content.parts[0].part.authority, ContentAuthority::Assistant);
+        assert_eq!(content.parts[0].part.tool_name.as_deref(), Some("shell"));
+        assert_eq!(
+            content.parts[0].part.tool_call_id.as_deref(),
+            Some("call-7")
+        );
+        assert_eq!(content.parts[0].uuid.as_deref(), Some("native-event"));
+        assert!(content.parts[0].stable_event_identity);
+        assert!(!content.coverage.parts_capped);
+        assert!(!content.coverage.bytes_capped);
+    }
+
+    #[test]
+    fn content_query_reports_total_byte_limit_without_loading_more_parts() {
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        row.content = (0..17)
+            .map(|_| ContentPart::new(ContentKind::AssistantText, "x".repeat(64 * 1024)))
+            .collect();
+        insert(&conn, &[row]);
+
+        let content = query_turn_content(&conn, &KEY, &FenceScope::single(1)).unwrap();
+        assert_eq!(content.parts.len(), 16);
+        assert_eq!(
+            content
+                .parts
+                .iter()
+                .map(|item| item.part.text.len())
+                .sum::<usize>(),
+            MAX_CONTENT_QUERY_BYTES
+        );
+        assert!(content.coverage.bytes_capped);
+    }
+
+    #[test]
+    fn content_query_reports_part_limit_and_skips_oversized_blobs() {
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        row.content = (0..MAX_CONTENT_QUERY_PARTS + 1)
+            .map(|_| ContentPart::new(ContentKind::UserText, "x"))
+            .collect();
+        insert(&conn, &[row]);
+
+        let content = query_turn_content(&conn, &KEY, &FenceScope::single(1)).unwrap();
+        assert_eq!(content.parts.len(), MAX_CONTENT_QUERY_PARTS);
+        assert!(content.coverage.parts_capped);
     }
 
     fn cache_episode_row(

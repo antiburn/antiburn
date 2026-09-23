@@ -1637,13 +1637,34 @@ fn content_parts_for_record(record: &Value) -> Vec<ContentPart> {
 /// `input_text` / `output_text` blocks), captured through the shared JSONL
 /// content extractor.
 fn message_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
-    let role = match payload.get("role").and_then(Value::as_str) {
+    use crate::analysis::interface::ContentAuthority;
+
+    let raw_role = payload.get("role").and_then(Value::as_str);
+    let role = match raw_role {
         Some("assistant") => Role::Assistant,
-        // `user`, `system`, and `developer` all capture as user-side text —
-        // `ContentKind` has no separate system kind.
+        Some("system") | Some("developer") => Role::System,
         _ => Role::User,
     };
+    let authority = match raw_role {
+        Some("assistant") => ContentAuthority::Assistant,
+        Some("system") => ContentAuthority::System,
+        Some("developer") => ContentAuthority::Developer,
+        Some("user") => ContentAuthority::User,
+        _ => ContentAuthority::Unknown,
+    };
     extract_content_parts_from_container(payload, role)
+        .into_iter()
+        .map(|part| {
+            if matches!(
+                part.kind,
+                ContentKind::UserText | ContentKind::AssistantText
+            ) {
+                part.with_authority(authority)
+            } else {
+                part
+            }
+        })
+        .collect()
 }
 
 /// A `reasoning` response_item's `summary[]` text, concatenated into one
@@ -1674,10 +1695,22 @@ fn reasoning_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
 /// `exec` wrapper input is a JavaScript string, kept as-is).
 fn function_call_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
     let input = payload.get("arguments").or_else(|| payload.get("input"));
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("callId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     input
         .and_then(compact_json_text)
         .into_iter()
-        .map(|text| ContentPart::new(ContentKind::ToolInput, text))
+        .map(|text| {
+            ContentPart::new(ContentKind::ToolInput, text)
+                .with_tool_identity(name.clone(), call_id.clone())
+        })
         .collect()
 }
 
@@ -1691,8 +1724,16 @@ fn tool_output_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
         .filter(|text| !text.is_empty())
         .map(str::to_owned)
         .or_else(|| concatenated_text(payload.get("content")));
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("callId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     text.into_iter()
-        .map(|text| ContentPart::new(ContentKind::ToolResult, text))
+        .map(|text| {
+            ContentPart::new(ContentKind::ToolResult, text)
+                .with_tool_identity(None, call_id.clone())
+        })
         .collect()
 }
 
@@ -2625,8 +2666,10 @@ mod tests {
         // maps `internal_server_error` and the four transport struct
         // variants' `http_status_code` to a `ServerError` or `Connection`
         // provider incident, through the new `transport_incident_kind`
-        // helper; this changed the fingerprinted byte range.
-        const EXPECTED_FINGERPRINT: u64 = 738_113_492_623_469_583;
+        // helper. Content extraction now retains exact system/developer
+        // authority and tool-call IDs, changing this fingerprinted byte range
+        // without changing inertness rules.
+        const EXPECTED_FINGERPRINT: u64 = 15_374_664_792_728_367_590;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();

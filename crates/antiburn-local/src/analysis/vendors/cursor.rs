@@ -8,8 +8,8 @@ use time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
 use crate::analysis::interface::{
-    ContentKind, ContentPart, NormalizedRecord, RawSource, RecordSink, SessionCollector,
-    SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome,
+    ContentAuthority, ContentKind, ContentPart, NormalizedRecord, RawSource, RecordSink,
+    SessionCollector, SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedSession, Role, ToolCall};
 use crate::analysis::records::{RecordShape, parse_record, parse_ts};
@@ -298,12 +298,18 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
             if let Some(text) = value.get("text").and_then(Value::as_str)
                 && let Some(text) = cursor_text(role, text)
             {
-                parts.push(ContentPart::new(cursor_text_kind(role), text));
+                parts.push(
+                    ContentPart::new(cursor_text_kind(role), text)
+                        .with_authority(cursor_authority(role)),
+                );
             }
         }
         "thinking" => {
             if let Some(text) = value.get("thinking").and_then(Value::as_str) {
-                parts.push(ContentPart::new(ContentKind::Thinking, text));
+                parts.push(
+                    ContentPart::new(ContentKind::Thinking, text)
+                        .with_authority(cursor_authority(role)),
+                );
             }
         }
         kind if is_cursor_tool_call_kind(kind) => {
@@ -312,13 +318,38 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
                 .or_else(|| value.get("arguments"))
                 .and_then(compact_json_text);
             if let Some(input) = input {
-                parts.push(ContentPart::new(ContentKind::ToolInput, input));
+                let name = value
+                    .get("name")
+                    .or_else(|| value.get("tool"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let call_id = value
+                    .get("id")
+                    .or_else(|| value.get("call_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                parts.push(
+                    ContentPart::new(ContentKind::ToolInput, input)
+                        .with_tool_identity(name, call_id),
+                );
             }
         }
         "tool_result" | "tool-result" => {
             if let Some(content) = value.get("content") {
                 if let Some(text) = content.as_str() {
-                    parts.push(ContentPart::new(ContentKind::ToolResult, text));
+                    parts.push(
+                        ContentPart::new(ContentKind::ToolResult, text).with_tool_identity(
+                            value
+                                .get("tool_name")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            value
+                                .get("tool_call_id")
+                                .or_else(|| value.get("call_id"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                        ),
+                    );
                 } else if let Some(blocks) = content.as_array() {
                     for block in blocks {
                         collect_cursor_content_part(block, Role::Tool, parts);
@@ -349,7 +380,9 @@ fn cursor_text_part(value: Option<&Value>, role: Role) -> Option<ContentPart> {
     value
         .and_then(Value::as_str)
         .and_then(|text| cursor_text(role, text))
-        .map(|text| ContentPart::new(cursor_text_kind(role), text))
+        .map(|text| {
+            ContentPart::new(cursor_text_kind(role), text).with_authority(cursor_authority(role))
+        })
 }
 
 fn cursor_text_kind(role: Role) -> ContentKind {
@@ -357,6 +390,15 @@ fn cursor_text_kind(role: Role) -> ContentKind {
         Role::User => ContentKind::UserText,
         Role::Tool => ContentKind::ToolResult,
         Role::Assistant | Role::System => ContentKind::AssistantText,
+    }
+}
+
+fn cursor_authority(role: Role) -> ContentAuthority {
+    match role {
+        Role::User => ContentAuthority::User,
+        Role::Assistant => ContentAuthority::Assistant,
+        Role::System => ContentAuthority::System,
+        Role::Tool => ContentAuthority::Tool,
     }
 }
 

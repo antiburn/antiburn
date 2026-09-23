@@ -117,6 +117,18 @@ fn record_aligned_steps(jsonl: &str, num_steps: usize) -> Vec<String> {
         .collect()
 }
 
+type TurnContentRow = (
+    String,
+    u64,
+    i64,
+    String,
+    Vec<u8>,
+    bool,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
 /// Every `turn_content` row for `key` at `claim_fence`, ordered the same way
 /// `query_turn_rows` orders its rows. `query_turn_rows` never joins this
 /// table (its `TurnRow::content` is always empty), so this is the separate
@@ -125,11 +137,12 @@ fn turn_content_rows(
     store: &MemoryTurnRowStore,
     key: &TurnSessionKey<'_>,
     claim_fence: i64,
-) -> Vec<(String, u64, i64, String, Vec<u8>, bool)> {
+) -> Vec<TurnContentRow> {
     store.with_connection(|conn| {
         let mut statement = conn
             .prepare(
-                "SELECT t.source_key, t.turn_index, c.part_index, c.kind, c.content, c.truncated
+                "SELECT t.source_key, t.turn_index, c.part_index, c.kind, c.content, c.truncated,
+                        c.authority, c.tool_name, c.tool_call_id
                    FROM turn t JOIN turn_content c ON c.turn_rowid = t.rowid
                   WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.session_id = ?3
                     AND t.claim_fence = ?4
@@ -148,6 +161,9 @@ fn turn_content_rows(
                         row.get::<_, String>(3)?,
                         row.get::<_, Vec<u8>>(4)?,
                         truncated != 0,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
@@ -181,7 +197,6 @@ fn restored_composite(
 
 /// Runs the full path (one `visit_claimed` pass over `path`'s current
 /// content) and returns everything [`assert_resume_parity`] compares.
-#[allow(clippy::type_complexity)]
 fn run_full_pass(
     agent: &str,
     session_id: &str,
@@ -189,7 +204,7 @@ fn run_full_pass(
     capabilities: SourceCapabilities,
 ) -> (
     Vec<antiburn_local::analysis::TurnRow>,
-    Vec<(String, u64, i64, String, Vec<u8>, bool)>,
+    Vec<TurnContentRow>,
     antiburn_local::analysis::TurnFacts,
     antiburn_local::analysis::SessionMetrics,
     antiburn_local::analysis::SessionSummary,

@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue, MemoryTurnRowStore, RawSource,
-    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceFormat, SourceKind, ToolCategory, ToolClass, TurnRowSink, TurnRowStore, reader_for,
+    CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue, FenceScope, MemoryTurnRowStore,
+    RawSource, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SourceFormat, SourceKind, ToolCategory, ToolClass, TurnRowSink,
+    TurnRowStore, TurnSessionKey, query_turn_content, reader_for,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorCounts, DetectorId, EfficiencyReportAccumulator, ModelRegistry,
@@ -321,5 +322,59 @@ fn resource_tool_calls_remain_unclassified_without_resource_metadata() {
             .by_name
             .values()
             .all(|tool| tool.calls == 1 && tool.class == ToolClass::Unclassified)
+    );
+}
+
+#[test]
+fn antigravity_brain_content_reaches_the_shared_private_turn_content_path() {
+    let input = input(RawSource::Jsonl(
+        include_str!("fixtures/antigravity_characterization/ignored_instructions_content.jsonl")
+            .to_owned(),
+    ));
+    let store = MemoryTurnRowStore::new("antigravity", "synthetic");
+    let mut rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        "synthetic",
+        None,
+    );
+    reader_for("antigravity").visit(&input, &mut rows).unwrap();
+
+    let key = TurnSessionKey {
+        environment_key: "native",
+        agent: "antigravity",
+        session_id: "synthetic",
+    };
+    let content = store.with_connection(|connection| {
+        query_turn_content(connection, &key, &FenceScope::single(1)).unwrap()
+    });
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "ANTIGRAVITY-USER")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text.contains("focused tests passed"))
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.kind.as_str() == "tool_input")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "test result: ok")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.kind.as_str() == "thinking")
     );
 }
