@@ -23,6 +23,10 @@ import {
 
 import "./overview/overview.css"
 
+// The wizard handlers read the clock through this function. The handlers run
+// only on events, not during render.
+const now = () => Date.now()
+
 export function OverviewView({
   active,
   session,
@@ -79,12 +83,12 @@ export function OverviewView({
     // other state starts a new run on the first step.
     const step: EnhanceStep =
       buttonState.kind === "resume" ? enhanceStep : buttonState.kind === "watching" ? 4 : 1
-    saveEnhancePrefs({ enhanceStartedAt: Date.now(), enhanceStep: step })
+    saveEnhancePrefs({ enhanceStartedAt: now(), enhanceStep: step })
     setEnhanceOpen(true)
   }
   function finishEnhance() {
     saveEnhancePrefs({
-      enhanceCompletedAt: Date.now(),
+      enhanceCompletedAt: now(),
       enhanceSeenFailing: failing ?? [],
       enhanceStep: 1,
     })
@@ -159,36 +163,35 @@ export function OverviewView({
                 </p>
               )}
 
-              {/* The usage chart and the config checks sit under a blur scrim.
-                  The Optimise card floats on the scrim. The content under the
-                  scrim is inert, so the Optimise pill is the one action. */}
-              <div className="relative flex grow flex-col">
-                <div inert className="flex flex-col gap-(--space-2xl)">
-                  <div>
-                    <OverviewUsage
-                      metric={metric}
-                      onMetricChange={(next) => {
-                        setMetric(next)
-                        writeOverviewViewPrefs({ metric: next })
-                      }}
-                      totals={usage?.totals ?? null}
-                      days={usage?.days ?? []}
-                      allowance={state.allowance}
-                      allowanceLoading={state.allowanceLoading || !metricSettled}
-                      allowanceError={state.allowanceError}
-                      usageError={state.usageError}
-                      onRetryUsage={session.refresh}
-                      loading={loading}
-                    />
-                  </div>
-                  {checkGroups && (
+              <OverviewUsage
+                metric={metric}
+                onMetricChange={(next) => {
+                  setMetric(next)
+                  writeOverviewViewPrefs({ metric: next })
+                }}
+                totals={usage?.totals ?? null}
+                days={usage?.days ?? []}
+                allowance={state.allowance}
+                allowanceLoading={state.allowanceLoading || !metricSettled}
+                allowanceError={state.allowanceError}
+                usageError={state.usageError}
+                onRetryUsage={session.refresh}
+                loading={loading}
+              />
+
+              {/* The config checks sit under a blur scrim. The Optimise card
+                  floats on the scrim. The checks under the scrim are inert, so
+                  the Optimise pill is the one action there. */}
+              <div className="relative flex min-h-64 flex-col">
+                {checkGroups && (
+                  <div inert>
                     <OverviewConfigChecks
                       failures={checkGroups.failures}
                       passing={checkGroups.wins}
                     />
-                  )}
-                </div>
-                <div className="enhance-scrim absolute inset-0 flex items-center justify-center p-(--space-2xl)">
+                  </div>
+                )}
+                <div className="enhance-scrim absolute inset-0 flex items-center justify-center rounded-(--radius-popover) p-(--space-2xl)">
                   <EnhanceBanner
                     failingLabels={
                       checkGroups?.failures.map((check) => CHECK_LABELS[check.id]) ?? null
