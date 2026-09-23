@@ -79,7 +79,8 @@ export function EnhanceActionBar({
       onFocus={() => fire.current?.play()}
       onBlur={() => fire.current?.pause()}
       data-calm={face.calm ? "" : undefined}
-      className="enhance-fire-card group flex w-full shrink-0 flex-col items-center gap-(--space-lg) rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl) text-center"
+      // Auto margins float it to the middle of the space under Recent sessions.
+      className="enhance-fire-card group my-auto flex w-full shrink-0 flex-col items-center gap-(--space-lg) rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl) text-center"
     >
       <canvas
         ref={mountFire}
