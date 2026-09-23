@@ -754,46 +754,8 @@ impl ClaudeDirectFetch {
         Option<FetchFailure>,
         Vec<ClaudeCredentials>,
     ) {
-        self.read_carriers_with_keychain_refresh(false)
-    }
-
-    fn read_carriers_with_keychain_refresh(
-        &self,
-        refresh_keychain: bool,
-    ) -> (
-        Vec<ClaudeCredentials>,
-        Option<FetchFailure>,
-        Vec<ClaudeCredentials>,
-    ) {
-        #[cfg(not(target_os = "macos"))]
-        let _ = refresh_keychain;
-        let mut carriers = Vec::new();
-        let mut native_carriers = Vec::new();
-        #[cfg(target_os = "macos")]
-        let mut error = None;
-        #[cfg(not(target_os = "macos"))]
-        let error = None;
-        #[cfg(target_os = "macos")]
-        if self.try_keychain {
-            match self.read_keychain_credentials(refresh_keychain, || {
-                macos_keychain::read().credentials()
-            }) {
-                Ok(Some(credentials)) => {
-                    native_carriers.push(credentials.clone());
-                    carriers.push(credentials);
-                }
-                Ok(None) => {}
-                Err(failure) => error = Some(failure),
-            }
-        }
-        if let Some(credentials) = self
-            .credentials_path
-            .as_deref()
-            .and_then(read_credentials_file)
-        {
-            native_carriers.push(credentials.clone());
-            carriers.push(credentials);
-        }
+        let (native_carriers, error) = self.read_native_carriers(false);
+        let mut carriers = native_carriers.clone();
         if let Some(path) = self.pi_auth_path.as_deref()
             && let Some(entry) = pi_auth::read_entry(path, pi_auth::ANTHROPIC_KEY)
                 .filter(|entry| !entry.refresh_token.is_empty())
@@ -825,6 +787,39 @@ impl ClaudeDirectFetch {
             });
         }
         (carriers, error, native_carriers)
+    }
+
+    fn read_native_carriers(
+        &self,
+        refresh_keychain: bool,
+    ) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = refresh_keychain;
+        let mut carriers = Vec::new();
+        #[cfg(target_os = "macos")]
+        let mut error = None;
+        #[cfg(not(target_os = "macos"))]
+        let error = None;
+        #[cfg(target_os = "macos")]
+        if self.try_keychain {
+            match self.read_keychain_credentials(refresh_keychain, || {
+                macos_keychain::read().credentials()
+            }) {
+                Ok(Some(credentials)) => {
+                    carriers.push(credentials);
+                }
+                Ok(None) => {}
+                Err(failure) => error = Some(failure),
+            }
+        }
+        if let Some(credentials) = self
+            .credentials_path
+            .as_deref()
+            .and_then(read_credentials_file)
+        {
+            carriers.push(credentials);
+        }
+        (carriers, error)
     }
 }
 
@@ -890,7 +885,7 @@ impl ClaudeDirectFetch {
         };
         // The change has settled: the one permitted secret read, through the
         // normal carriers. On macOS this also refills the expiry cache.
-        let (_, read_error, native_carriers) = self.read_carriers_with_keychain_refresh(true);
+        let (native_carriers, read_error) = self.read_native_carriers(true);
         let Some(credentials) = native_carriers
             .into_iter()
             .find(|credentials| credentials.is_live(now))
@@ -1012,7 +1007,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 && native_present
                 && user_initiated(max_age)
             {
-                let (_, read_error, current) = self.read_carriers_with_keychain_refresh(true);
+                let (current, read_error) = self.read_native_carriers(true);
                 let changed: Vec<_> = current
                     .into_iter()
                     .filter(|credential| {
@@ -2302,6 +2297,38 @@ mod tests {
         assert_eq!(identity.email.as_deref(), Some("reader@example.test"));
         assert_eq!(identity.plan, None);
         assert_eq!(identity.tier.as_deref(), Some("synthetic-tier"));
+    }
+
+    #[test]
+    fn native_rereads_do_not_recover_an_expired_pi_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(&pi_path, r#"{"anthropic":{"type":"oauth","access":"stale-access","refresh":"pi-refresh","expires":1}}"#).unwrap();
+        struct PanicRunner;
+        impl super::super::pi_refresh::RefreshRunner for PanicRunner {
+            fn run(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                panic!("native recovery must not refresh Pi")
+            }
+            fn check(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                panic!("native recovery must not check Pi")
+            }
+        }
+        let mut source = ClaudeDirectFetch::with_pi(
+            pi_path,
+            Box::new(UnreachableTransport),
+            PiRefresher::with_runner(Box::new(PanicRunner)),
+        );
+        let native_path = dir.path().join(".credentials.json");
+        fs::write(
+            &native_path,
+            credentials_file((real_now_secs() + 3_600) * 1_000, "max"),
+        )
+        .unwrap();
+        source.credentials_path = Some(native_path);
+        let (native, error) = source.read_native_carriers(true);
+        assert!(error.is_none());
+        assert_eq!(native.len(), 1);
+        assert!(native[0].is_live(OffsetDateTime::now_utc()));
     }
 
     #[test]
