@@ -98,6 +98,8 @@ export interface SessionListProps {
   /** Headline for the empty state; defaults to the range-aware wording. */
   emptyTitle?: string
   emptyDescription?: string
+  emptyIcon?: ReactNode
+  emptyActions?: ReactNode
   /** Open a session's analysis. Omitted leaves rows inert. */
   onOpenSession?: (entry: SessionListEntry) => void
   /** Select one session without opening it. This enables arrow-key navigation. */
@@ -111,6 +113,10 @@ export interface SessionListProps {
   active?: boolean
   /** Let a window host use the list header as a native drag region. */
   draggableHeader?: boolean
+  /** Use fixed token spacing when the metric toolbar follows a contextual header. */
+  toolbarTopPadding?: "default" | "space-sm"
+  /** Hide metric controls when the calendar-day window has no visible sessions. */
+  hideEmptyToolbar?: boolean
   /** The scrolling viewport, for a host that needs to observe it. */
   viewportRef?: ViewportRef
   initialScrollOffset?: number | (() => number)
@@ -297,15 +303,51 @@ export function sessionLimitBadge(
   }
 }
 
-function EmptySessionList({ title, description }: { title: string; description: string }) {
+function EmptySessionList({
+  title,
+  description,
+  emptyIcon,
+  emptyActions,
+}: {
+  title: string
+  description: string
+  emptyIcon?: ReactNode
+  emptyActions?: ReactNode
+}) {
+  const hasRecoveryActions = !!emptyActions
   return (
     <div className="flex h-full items-center justify-center px-6 text-center">
       <div className="flex max-w-[230px] flex-col items-center">
-        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-secondary text-label-tertiary">
-          <SquareTerminal size={20} strokeWidth={1.75} aria-hidden="true" />
-        </div>
-        <p className="type-body font-medium! text-label-secondary">{title}</p>
-        <p className="mt-1.5 max-w-[230px] type-callout text-label-tertiary">{description}</p>
+        {emptyIcon !== null && (
+          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-secondary text-label-tertiary">
+            {emptyIcon ?? <SquareTerminal size={20} strokeWidth={1.75} aria-hidden="true" />}
+          </div>
+        )}
+        <p
+          className={cn(
+            "type-body font-medium!",
+            hasRecoveryActions ? "text-balance text-label" : "text-label-secondary",
+          )}
+        >
+          {title}
+        </p>
+        {description && (
+          <p
+            className={cn(
+              "mt-1.5 max-w-[230px] type-callout",
+              hasRecoveryActions ? "text-pretty text-label-secondary" : "text-label-tertiary",
+            )}
+          >
+            {description}
+          </p>
+        )}
+        {hasRecoveryActions && (
+          <div
+            className={cn("flex flex-wrap justify-center gap-2", description ? "mt-4" : "mt-3")}
+          >
+            {emptyActions}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -679,6 +721,8 @@ export function SessionList({
   days,
   emptyTitle,
   emptyDescription = "Coding sessions appear here as they are discovered on this machine.",
+  emptyIcon,
+  emptyActions,
   onOpenSession,
   onSelect,
   onOpenDetail,
@@ -686,6 +730,8 @@ export function SessionList({
   selectedKey,
   active = true,
   draggableHeader = false,
+  toolbarTopPadding = "default",
+  hideEmptyToolbar = false,
   viewportRef,
   initialScrollOffset = 0,
   initialMeasurementsCache,
@@ -919,20 +965,38 @@ export function SessionList({
         {visibleCount === 0 ? resolvedEmptyTitle : ""}
       </span>
 
-      {onBadgeMetricChange && (
+      {onBadgeMetricChange && (!hideEmptyToolbar || visibleCount > 0) && (
         <ListDisplayToolbar
           {...(topLabel ? { label: topLabel } : {})}
           options={[
-            { value: "cost", label: "Cost" },
-            { value: "weeklyPercent", label: "Week %" },
+            {
+              value: "cost",
+              label: "Cost",
+              description: "Estimated session cost.",
+            },
+            {
+              value: "weeklyPercent",
+              label: "Week %",
+              description:
+                "Estimated share of this session's provider's weekly limit, when available.",
+            },
             ...(fiveHourAvailable
-              ? [{ value: "fiveHourPercent" as const, label: "5h %" }]
+              ? [
+                  {
+                    value: "fiveHourPercent" as const,
+                    label: "5h %",
+                    description:
+                      "Estimated share of this session's provider's 5-hour limit, when available.",
+                  },
+                ]
               : []),
           ]}
           value={selectedMetric}
           onChange={onBadgeMetricChange}
           ariaLabel="Session metric"
           dragRegion={draggableHeader}
+          selectedTone="neutral"
+          topPadding={toolbarTopPadding}
         />
       )}
 
@@ -954,7 +1018,12 @@ export function SessionList({
         viewportClassName={cn("px-3", visibleCount === 0 && "[&>div]:h-full")}
       >
         {visibleCount === 0 ? (
-          <EmptySessionList title={resolvedEmptyTitle} description={emptyDescription} />
+          <EmptySessionList
+            title={resolvedEmptyTitle}
+            description={emptyDescription}
+            emptyIcon={emptyIcon}
+            emptyActions={emptyActions}
+          />
         ) : (
           <SessionTooltipOwner>
             <div>

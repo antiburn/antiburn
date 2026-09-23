@@ -13,7 +13,11 @@ describe("static app search", () => {
   it("keeps the top-level Sessions destination searchable", () => {
     expect(searchApp("Sessions")[0]).toMatchObject({
       id: "activity",
-      target: { kind: "view", section: "activity", filter: { kind: "all" } },
+      target: {
+        kind: "view",
+        section: "activity",
+        filters: { agents: [], result: "all", spend: "all" },
+      },
     })
   })
   it.each(["macos", "windows", "linux"] as const)(
@@ -96,7 +100,11 @@ describe("static app search", () => {
     for (const agent of AGENT_SLUGS) {
       expect(searchApp(agent)).toContainEqual(
         expect.objectContaining({
-          target: { kind: "view", section: "activity", filter: { kind: "agent", agent } },
+          target: {
+            kind: "view",
+            section: "activity",
+            filters: { agents: [agent], result: "all", spend: "all" },
+          },
         }),
       )
     }
@@ -110,9 +118,8 @@ describe("static app search", () => {
         searchApp("", platform).filter(
           ({ target }) =>
             target.kind === "view" &&
-            target.filter &&
-            target.filter.kind !== "agent" &&
-            target.filter.kind !== "all",
+            target.filters &&
+            (target.filters.result !== "all" || target.filters.spend !== "all"),
         ),
       ).toEqual([])
     }

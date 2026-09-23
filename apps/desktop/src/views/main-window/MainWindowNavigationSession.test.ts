@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { MainWindowNavigationRequest } from "../../lib/ipc"
-import type { SessionFilter } from "../../lib/sessionFilters"
+import type { SessionFilters } from "../../lib/sessionFilters"
 import type { SessionSubject } from "../../lib/sessionSubject"
 import type { MainActivitySession } from "./MainActivitySession"
 import { MainWindowNavigationSession } from "./MainWindowNavigationSession"
@@ -41,13 +41,17 @@ class FakeActivitySession {
   onNavigation?: (origin: "user" | "automatic") => void
   onDeleted?: (subject: SessionSubject) => void
   onSessionInventoryInvalidated?: () => void
-  private snapshot: { filter: SessionFilter; subject: SessionSubject | null } = {
-    filter: { kind: "all" },
+  private snapshot: { filters: SessionFilters; subject: SessionSubject | null } = {
+    filters: { agents: [], result: "all", spend: "all" },
     subject: null,
   }
   restoreNavigation = vi.fn(
-    (filter: SessionFilter, selected: SessionSubject | null, _origin: "user" | "automatic") => {
-      this.snapshot = { filter, subject: selected }
+    (
+      filters: SessionFilters,
+      selected: SessionSubject | null,
+      _origin: "user" | "automatic",
+    ) => {
+      this.snapshot = { filters, subject: selected }
     },
   )
   getSnapshot = () => this.snapshot
@@ -55,8 +59,8 @@ class FakeActivitySession {
     this.snapshot = { ...this.snapshot, subject: selected }
     this.onNavigation?.(origin)
   }
-  filter(filter: SessionFilter): void {
-    this.snapshot = { ...this.snapshot, filter }
+  filter(filters: SessionFilters): void {
+    this.snapshot = { ...this.snapshot, filters }
     this.onNavigation?.("user")
   }
   delete(selected: SessionSubject): void {
@@ -124,19 +128,19 @@ describe("MainWindowNavigationSession", () => {
     const { activity, session } = setup()
     session.select("activity")
     activity.select(subject("selected"))
-    activity.filter({ kind: "notable" })
+    activity.filter({ agents: [], result: "all", spend: "notable" })
     activity.select(subject("related"))
     activity.select(subject("adjacent"))
 
     expect(session.getSnapshot().destination).toEqual({
       section: "activity",
-      filter: { kind: "notable" },
+      filters: { agents: [], result: "all", spend: "notable" },
       subject: subject("adjacent"),
     })
 
     session.back()
     expect(activity.getSnapshot()).toEqual({
-      filter: { kind: "notable" },
+      filters: { agents: [], result: "all", spend: "notable" },
       subject: subject("related"),
     })
     session.back()
@@ -165,6 +169,74 @@ describe("MainWindowNavigationSession", () => {
     expect(session.getSnapshot().destination.subject).toEqual(subject("automatic"))
   })
 
+  it("restores distinct contextual facets through Back and Forward", () => {
+    const { activity, session } = setup()
+    const multipleAgents: SessionFilters = {
+      agents: ["claude", "codex"],
+      result: "all",
+      spend: "all",
+    }
+    const failing: SessionFilters = { ...multipleAgents, result: "failing" }
+    const highCost: SessionFilters = { ...failing, spend: "notable" }
+    session.select("activity")
+    activity.select(subject("retained"))
+    activity.filter(multipleAgents)
+    activity.filter(failing)
+    activity.filter(highCost)
+
+    session.back()
+    expect(activity.getSnapshot().filters).toEqual(failing)
+    session.back()
+    expect(activity.getSnapshot().filters).toEqual(multipleAgents)
+    session.forward()
+    expect(activity.getSnapshot().filters).toEqual(failing)
+    session.forward()
+    expect(activity.getSnapshot()).toEqual({
+      filters: highCost,
+      subject: subject("retained"),
+    })
+  })
+
+  it("retains contextual facets when returning to Sessions from another section", () => {
+    const { activity, session } = setup()
+    const filters: SessionFilters = {
+      agents: ["claude", "codex"],
+      result: "passing",
+      spend: "material",
+    }
+    activity.filter(filters)
+    activity.select(subject("retained"))
+    session.select("quota")
+    session.select("activity")
+
+    expect(session.getSnapshot().destination).toEqual({
+      section: "activity",
+      filters,
+      subject: subject("retained"),
+    })
+    expect(activity.getSnapshot().filters).toEqual(filters)
+  })
+
+  it("deduplicates equivalent agent sets without retaining mutable input arrays", () => {
+    const { activity, session } = setup()
+    const filters: SessionFilters = {
+      agents: ["codex", "claude", "codex"],
+      result: "failing",
+      spend: "material",
+    }
+    session.navigate({ section: "activity", filters })
+    filters.agents.push("cursor")
+    session.navigate({
+      section: "activity",
+      filters: { agents: ["claude", "codex"], result: "failing", spend: "material" },
+    })
+
+    expect(activity.getSnapshot().filters.agents).toEqual(["claude", "codex"])
+    session.back()
+    expect(session.getSnapshot().selected).toBe("overview")
+    expect(session.getSnapshot().canBack).toBe(false)
+  })
+
   it("deduplicates history, refreshes deliberate destinations, and truncates forward", () => {
     const { session } = setup()
     session.navigate({ section: "burnChecks", check: "modelOverthinking" })
@@ -185,7 +257,7 @@ describe("MainWindowNavigationSession", () => {
     for (let index = 0; index < 110; index += 1) {
       session.navigate({
         section: "activity",
-        filter: { kind: "all" },
+        filters: { agents: [], result: "all", spend: "all" },
         subject: subject(`session-${index}`),
       })
     }
@@ -204,16 +276,20 @@ describe("MainWindowNavigationSession", () => {
 
   it("prunes every deleted destination and restores a consistent current subject", () => {
     const { activity, session } = setup()
-    session.navigate({ section: "activity", filter: { kind: "all" }, subject: subject("kept") })
     session.navigate({
       section: "activity",
-      filter: { kind: "all" },
+      filters: { agents: [], result: "all", spend: "all" },
+      subject: subject("kept"),
+    })
+    session.navigate({
+      section: "activity",
+      filters: { agents: [], result: "all", spend: "all" },
       subject: subject("deleted"),
     })
     session.navigate({ section: "burnChecks" })
     session.navigate({
       section: "activity",
-      filter: { kind: "notable" },
+      filters: { agents: [], result: "all", spend: "notable" },
       subject: subject("deleted"),
     })
 
@@ -296,7 +372,7 @@ describe("MainWindowNavigationSession", () => {
 
     expect(session.getSnapshot().destination).toEqual({
       section: "activity",
-      filter: { kind: "all" },
+      filters: { agents: [], result: "all", spend: "all" },
       subject: subject("external"),
     })
     expect(activity.getSnapshot().subject).toEqual(subject("external"))
@@ -327,6 +403,27 @@ describe("MainWindowNavigationSession", () => {
     )
     expect(mocks.acknowledge).toHaveBeenCalledWith(7, 2)
     expect(mocks.acknowledge).not.toHaveBeenCalledWith(7, 1)
+    stop()
+  })
+
+  it("retains contextual facets when a native request opens another session", async () => {
+    const { activity, session } = setup()
+    const filters: SessionFilters = {
+      agents: ["claude", "codex"],
+      result: "failing",
+      spend: "notable",
+    }
+    activity.filter(filters)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(mocks.handler).not.toBeNull())
+
+    mocks.handler!({
+      revision: 1,
+      destination: { section: "activity", target: subject("external") },
+    })
+
+    expect(activity.getSnapshot()).toEqual({ filters, subject: subject("external") })
+    expect(mocks.acknowledge).toHaveBeenCalledWith(7, 1)
     stop()
   })
 

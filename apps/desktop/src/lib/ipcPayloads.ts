@@ -129,11 +129,7 @@ export interface AppSettings {
   skillsMcpExpanded: boolean
   /** The metric shown in each activity-session badge. */
   sessionBadgeMetric: "cost" | "weeklyPercent" | "fiveHourPercent"
-  /**
-   * The selected Sessions sidebar filter, as its persisted id (see
-   * `sessionFilterId`/`parseSessionFilterId` in `lib/sessionFilters.ts`). An
-   * id this release does not recognize parses back to `all`.
-   */
+  /** The renderer parses and migrates this saved Sessions filter string. */
   sessionFilter: string
   /** Weeks start on Monday. */
   workingWeek: "five" | "six" | "seven"

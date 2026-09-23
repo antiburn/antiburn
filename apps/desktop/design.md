@@ -549,13 +549,14 @@ components:
     separator: "{colors.separator} hairline between two unselected neighbours"
   list-display-toolbar:
     className: "ListDisplayToolbar + SegmentedControl variant=text-tabs"
-    selectedInk: "{colors.accent}"
+    selectedInk: "{colors.accent} by default; {colors.label} for the Sessions metric through selectedTone=neutral"
     indicatorColor: "{colors.label}"
     typography: "{typography.footnote}" # size="regular" (default): 24px row, 12px gap
     height: 32px
     padding: "0 12px"
     motion: "100ms color and underline opacity crossfade; no moving indicator"
     largeSize: 'size="large": {typography.body}, 28px row, 16px gap; used by the Overview usage unit control'
+    descriptions: "Each metric option can attach a Tooltip and aria-describedby text to its actual focusable button"
   scroll:
     className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
@@ -1007,17 +1008,84 @@ dot; the timestamp never wraps. When the repository name exceeds
 not reserve inline space for the vendor mark. Group labels use sentence case. A
 shared `ListDisplayToolbar` places the pinned activity label and the right-aligned `text-tabs` badge metric control on one row with the labels Cost,
 Week %, and 5h %. Its accessible group name replaces redundant visible labels. The selected choice uses accent ink and a
-primary-label hairline underline. The control crossfades only color and underline opacity over `--duration-quick`; it never slides a moving indicator.
+primary-label hairline underline by default. Sessions opts into neutral primary-label ink while retaining the underline. Each option links its
+own shared tooltip description to its focusable radio: Cost explains estimated session cost, while Week % and 5h % explain the estimated share
+of the provider limit for that window when available. The control crossfades only color and underline opacity over `--duration-quick`; it never slides a moving indicator.
+
+The Sessions collection starts with a contextual filter header. Its first row pairs the primary Sessions heading with a round `CountPill` showing the full eligible total
+status with a trailing Filters menu. The trigger keeps its sliders icon and visible Filters label, and uses `surface-tertiary` while the menu is open.
+A compact Today or N days control sits immediately before Filters in the right-aligned action group. The Sessions title and total badge form the left-hand group. The badge keeps an atomic polite accessible label with both total and matching counts. The range uses secondary caption text.
+Both collection totals use the regular `CountPill` size: `type-caption` (11px) with `space-lg` (16px) height and minimum width, matching the check-section count dimensions. Filter and overflow counts retain the compact metadata size.
+The Filters menu closes after the mouse leaves its bounds and the trigger by more than
+`space-sm` (8px), then stays outside for `duration-slow` (300ms). Re-entry cancels the timer.
+Associated tooltip surfaces stay inside this grace area. Keyboard input cancels pointer dismissal
+until the mouse returns to the menu or trigger; touch keeps tap-away dismissal. Closing or unmounting
+removes the timer and pointer listeners. The grace area does not intercept clicks on adjacent controls.
+The range uses a quiet `surface-hover` fill on hover with `px-1` horizontal padding and `rounded-control`.
+It shows only Today or N days, with no arrow suffix, and keeps its full accessible label and keyboard focus treatment.
+It opens Settings → General at the existing activity-range
+control. Its tooltip explains that active sessions are always included. Counts, facet choices, and list empty states share the same eligible
+calendar-day collection, including active sessions and rows without a transcript id. High-cost classification uses this same collection across
+all agents before facets apply. Its automatic threshold is the greater of $2 or three times the median known cost, with at least eight known
+costs required. Known zero costs count; unknown costs do not. High-cost badges, counts, and filtering use the same strict above-threshold comparison.
+Agent checkboxes support multiple selection; result and spend remain single-choice groups. The menu stays
+open across choices. Unselected zero-count options stay visible at 50% opacity but are disabled for pointer and keyboard input. Selected options
+and each All option stay enabled even with zero matches, so users can remove or reset filters. Agent menu rows pair vendor marks with visible names, accessible menu labels, and
+typeahead text. Vendor marks use 14px in both menu rows and active chips, matching the size of the check-result marks. Agent chips show only the mark, count, and remove icon; the whole chip provides its vendor-name tooltip. Failed and Passed menu
+rows and active chips reuse the shared 14px Burn Check marks and colors. Active facet labels use primary `text-label` ink; count badges and remove
+icons retain their secondary hierarchy. Active chips use the quieter `surface-card` fill at rest and `surface-secondary` on hover in both themes.
+Status marks sit 8px from their chip labels; label-to-count and count-to-remove gaps remain 4px.
+The menu selection checkmark remains separate. High cost keeps
+its short label in the menu and chip. The menu shows the current threshold as secondary `Over $N`text. The menu row and chip expose a
+tooltip: “Based on all agents in this time range: 3× the median session cost, with a $2 minimum.” The chip tooltip also includes the current threshold.
+Whole-dollar thresholds omit`.00`; fractional amounts retain cents. Menu hover and keyboard highlight use the sidebar's `surface-selected`fill and primary`label`ink in both themes. The selection checkmark remains the active-filter indicator. Vendor and status colors remain intact;
+helper text stays secondary and count badges retain their neutral`CountPill`treatment. Every option and active chip uses`CountPill`. Active chips wrap across the full header width.
+Clear filters appears in a separated menu footer whenever any facet is active. It closes the menu and returns focus to Filters.
+No separate Clear column reserves space beside the chips. Keyboard chip removal moves focus to the
+next chip, then the previous chip, then Filters. Unknown agent slugs use the registry's generic icon and title-cased fallback name.
+The Sessions menu uses the opaque `surface-overlay` token so its background follows the explicit app appearance along with its labels.
+The shared menu border and shadow provide elevation without using an input-field fill.
+
+The whole visible chip removes its filter. Header targets extend one `--spacing` unit minus 0.5px beyond each edge. The `gap-2` gaps retain
+a 1px gutter so fractional layout rounding does not route edge clicks to a neighbor. Range and Filters extend two spacing units upward into
+the available header padding; their lower extension stays clear of the chip row. Sessions metric targets extend two spacing units minus 1px
+vertically and 1.5 spacing units minus 0.5px horizontally into the toolbar's existing padding and `gap-3` gaps. Keep a gutter before the first card.
+These extensions scale with the actual rem-based layout: at the standard 13px root size, action targets are approximately 29–31px high, facet
+targets 26–27px, and metric targets 30.5px. Header and metric controls retain opacity feedback but do not scale on press, so target edges stay
+under the pointer throughout the click. Preserve text, underline, toolbar, and card geometry. These metric extensions apply
+only inside the main Sessions collection. A decorative 1px separator at 50% token strength follows the header contents with `--space-sm` (8px) above it. The following Sessions
+`CollectionToolbar` uses the same `--space-sm` top padding, giving the separator equal 8px spacing above and below, plus the line itself.
+The separator aligns with the header's `px-3` content inset and card edges. It stays visible with no active chips and follows wrapped chip rows.
+It ignores pointer input and assistive technology.
+Filters apply immediately and add no entrance, height,
+or stagger animation.
+When eligible sessions exist but facets exclude them all, show the primary balanced heading “No matching sessions” and one Clear filters button
+as a compact centered group with `mt-3` between the heading and action. Empty states with descriptions keep `mt-4` before their actions.
+Omit the decorative icon, explanation, and Change filters action; the visible header supplies scope and filter editing.
+Clear filters resets facets and returns focus to Filters while preserving the date range and metric. When the range itself is empty, use a calendar icon, range-aware heading, discovery guidance, and Change time range
+to open the same Settings control. Recovery actions wrap in a centered row. Hide the metric toolbar while no rows are visible and retain its selected metric.
+Selected zero-count facets remain visible and removable. These recovery treatments belong to the main Sessions collection; shared popover defaults stay unchanged.
 The detail toolbar shows the session title. Shared Back and Forward own main-window history;
 the popover retains its related-session Back behavior. Embedded adjacent-session shortcuts stay inside the detail pane. Hidden panes pause
 hygiene reads, relative-time clocks, and active-row motion. The menu-bar list shares this card presentation
 while keeping its existing navigation behavior.
 
-Burn checks keeps a screen-reader-only page heading and a compact collection header.
-Both panes use `CollectionToolbar`: `pt-2`, `h-8`, `mb-1`, and `px-3` share Tailwind’s
-rem-based geometry. At the 13px root these resolve to 6.5px, 26px, 3.25px, and 9.75px.
-Burn checks adds no first-card top inset. Labels use `type-caption`. Passed and Snoozed
-separators use 8px spacing on each side; collapsed headings have no bottom margin.
+Sessions and Checks share `CollectionHeader`: `px-3 pt-3`, a `min-h-8` title row,
+a primary title, a round CountPill total badge and secondary range metadata, and an inset half-opacity
+separator with `space-sm` above it. Sessions facets sit between the title row and separator.
+Checks retains its screen-reader page heading and shows a visible `Checks` collection title.
+Show only the total number in a round `CountPill` beside it, with tabular numerals and an atomic polite
+announcement, matching the Sessions count treatment. Align titles, badges, and controls centrally. Count report categories, including snoozed
+and unassessed checks, rather than individual session results. Hide the count until a report exists.
+Its right-aligned `30 days` is a fixed analysis period, not a range selector. A plain,
+keyboard-focusable label explains on hover and focus: “Checks use the last 30 days of sessions.”
+Sessions keeps its independent editable activity range. Do not add a Filters action to Checks.
+Below the separator, both panes use `CollectionToolbar` with `space-sm` top padding,
+`h-8`, `mb-1`, and `px-3`. At the 13px root the latter three resolve to 26px, 3.25px,
+and 9.75px. Checks places its failure icon, `Failed checks` label, and category count on
+this second row, aligned with Sessions' date/metric row. Burn checks adds no first-card top
+inset. Labels use `type-caption`. Passed and Snoozed separators use 8px spacing on each side;
+collapsed headings have no bottom margin.
 Their disclosure controls retain a 40px minimum hit area.
 Resource cards use `session-card` fill, `rounded-control`, 16px padding, and 16px separation.
 Project context appears once below the title and actions, using the full text-column width.

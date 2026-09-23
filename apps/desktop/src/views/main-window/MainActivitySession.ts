@@ -26,22 +26,26 @@ import {
   type SessionQuotaPayload,
   type SessionUpdatedPayload,
   type SurfaceOrigin,
+  type SessionFilterAction,
 } from "../../lib/ipc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { listInterests, liveSessions, withRegistryActivity } from "../../lib/sessionLifecycle"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import { AGENT_SLUGS } from "../../lib/presentation/agents"
 import {
-  parseSessionFilterId,
-  sessionFilterId,
-  type SessionFilter,
+  normalizeSessionFilters,
+  parseSessionFilters,
+  serializeSessionFilters,
+  type SessionFilters,
+  type SessionResultFilter,
+  type SessionSpendFilter,
 } from "../../lib/sessionFilters"
 import { sessionKey, loadSessionAnalysis, type SessionSubject } from "../../lib/sessionSubject"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 
 export interface MainActivitySnapshot {
   active: boolean
-  /** The full, unfiltered list. The sidebar's selected filter applies at render time. */
+  /** The collection applies filters to this full list at render time. */
   entries: SessionListEntry[] | null
   listError: boolean
   settings: AppSettings
@@ -56,8 +60,7 @@ export interface MainActivitySnapshot {
   allocations: SessionLimitAllocationSummaryPayload
   /** The open subject's quota contributions, loaded alongside its analysis. */
   sessionQuota: SessionQuotaPayload | null
-  /** The selected Sessions sidebar filter, parsed from `settings.sessionFilter`. */
-  filter: SessionFilter
+  filters: SessionFilters
   /** A newer shell target must reveal the compact detail pane, even for the same session. */
   detailRevealRevision: number
 }
@@ -112,18 +115,29 @@ export class MainActivitySession {
   onDeleted?: (subject: SessionSubject) => void
   onSessionInventoryInvalidated?: () => void
   private restoringNavigation = false
-  private reportRestoredFilterSelection = false
 
   restoreNavigation(
-    filter: SessionFilter,
+    filters: SessionFilters,
     subject: SessionSubject | null,
     origin: SurfaceOrigin = "automatic",
     reportFilterSelection = false,
   ): void {
     this.restoringNavigation = true
-    this.reportRestoredFilterSelection = reportFilterSelection
     try {
-      this.setFilter(filter)
+      const action: SessionFilterAction | undefined = !reportFilterSelection
+        ? undefined
+        : filters.agents.length > 0
+          ? "agent_added"
+          : filters.result !== "all"
+            ? `result_${filters.result}`
+            : filters.spend !== "all"
+              ? `spend_${filters.spend}`
+              : "cleared_all"
+      this.changeFilters(
+        filters,
+        action,
+        filters.agents.length === 1 ? filters.agents[0] : undefined,
+      )
       if (
         subject &&
         (!this.snapshot.subject || sessionKey(subject) !== sessionKey(this.snapshot.subject))
@@ -132,7 +146,6 @@ export class MainActivitySession {
       else if (!subject && this.snapshot.subject) this.clearSelection()
     } finally {
       this.restoringNavigation = false
-      this.reportRestoredFilterSelection = false
     }
   }
 
@@ -151,12 +164,13 @@ export class MainActivitySession {
     liveUsage: EMPTY_LIVE_USAGE,
     allocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     sessionQuota: null,
-    filter: parseSessionFilterId(DEFAULT_SETTINGS.sessionFilter),
+    filters: parseSessionFilters(DEFAULT_SETTINGS.sessionFilter),
     detailRevealRevision: 0,
   }
   private listeners = new Set<() => void>()
   private activeListeners = new Set<() => void>()
   private listListeners = new Set<() => void>()
+  private settingsWrite: Promise<void> | null = null
   private stops: (() => void)[] = []
   private generation = 0
   private workVersion = 0
@@ -372,12 +386,18 @@ export class MainActivitySession {
 
   private applySettings(settings: AppSettings): void {
     const previous = this.snapshot.settings
-    const filter = parseSessionFilterId(settings.sessionFilter)
-    const filterChanged = sessionFilterId(filter) !== sessionFilterId(this.snapshot.filter)
+    const next = this.settingsWrite
+      ? { ...settings, sessionFilter: previous.sessionFilter }
+      : settings
+    const filters = this.settingsWrite
+      ? this.snapshot.filters
+      : parseSessionFilters(next.sessionFilter)
+    const filterChanged =
+      serializeSessionFilters(filters) !== serializeSessionFilters(this.snapshot.filters)
     this.update({
-      settings,
+      settings: next,
       settingsError: false,
-      filter,
+      filters,
     })
     if (filterChanged && !this.restoringNavigation) this.onNavigation?.("automatic")
     if (
@@ -703,50 +723,82 @@ export class MainActivitySession {
     }
   }
 
-  setBadgeMetric = async (metric: AppSettings["sessionBadgeMetric"]): Promise<void> => {
-    try {
-      const latest = await getSettings()
-      await setSettings({ ...latest, sessionBadgeMetric: metric })
-    } catch {
-      this.update({ settingsError: true })
-    }
+  setBadgeMetric = (metric: AppSettings["sessionBadgeMetric"]): Promise<void> => {
+    this.settingsVersion += 1
+    return this.persistSettings({ sessionBadgeMetric: metric })
   }
 
-  /**
-   * Select a Sessions sidebar filter and persist the choice.
-   *
-   * Optimistic, the same way the popover's badge-metric setter writes: the
-   * sidebar selection must not lag behind the click, and the stored answer
-   * replaces this one a moment later. A no-op reselection neither writes nor
-   * reports, so restoring the persisted filter on load — which calls
-   * `applySettings`, not this method — never reports a selection either.
-   */
-  setFilter = (filter: SessionFilter): void => {
-    const current = this.snapshot.settings
-    const id = sessionFilterId(filter)
-    if (current.sessionFilter === id) return
-    const next = { ...current, sessionFilter: id }
-    this.update({ settings: next, filter })
-    if (!this.restoringNavigation) this.onNavigation?.("user")
-    const version = ++this.settingsVersion
-    void setSettings(next)
+  private persistSettings(patch: Partial<AppSettings>): Promise<void> {
+    // Save in gesture order and read current settings before each write.
+    const write: Promise<void> = (this.settingsWrite ?? Promise.resolve())
+      .then(async () => setSettings({ ...(await getSettings()), ...patch }))
       .then((saved) => {
-        if (version === this.settingsVersion) this.update({ settings: saved })
+        if (this.settingsWrite !== write) return
+        this.settingsWrite = null
+        this.applySettings(saved)
       })
       .catch(() => {
-        if (version === this.settingsVersion) this.update({ settingsError: true })
+        if (this.settingsWrite !== write) return
+        this.settingsWrite = null
+        this.update({ settingsError: true })
       })
-    if (this.restoringNavigation && !this.reportRestoredFilterSelection) return
-    noteInteraction(
-      filter.kind === "agent"
-        ? {
-            kind: "sessionFilterSelected",
-            filter: "agent",
-            // Only a slug the shell's closed agent enum recognizes; an
-            // unrecognized harness omits the field rather than send one.
-            ...(AGENT_SLUGS.includes(filter.agent) ? { agent: filter.agent } : {}),
-          }
-        : { kind: "sessionFilterSelected", filter: filter.kind },
+    this.settingsWrite = write
+    return write
+  }
+
+  toggleAgent = (agent: string): void => {
+    if (!agent.trim()) return
+    const filters = this.snapshot.filters
+    const selected = filters.agents.includes(agent)
+    this.changeFilters(
+      {
+        ...filters,
+        agents: selected
+          ? filters.agents.filter((value) => value !== agent)
+          : [...filters.agents, agent],
+      },
+      selected ? "agent_removed" : "agent_added",
+      agent,
     )
+  }
+
+  resetAgents = (): void => {
+    this.changeFilters({ ...this.snapshot.filters, agents: [] }, "agents_all")
+  }
+
+  setResultFilter = (result: SessionResultFilter): void => {
+    this.changeFilters({ ...this.snapshot.filters, result }, `result_${result}`)
+  }
+
+  setSpendFilter = (spend: SessionSpendFilter): void => {
+    this.changeFilters({ ...this.snapshot.filters, spend }, `spend_${spend}`)
+  }
+
+  clearFilters = (): void => {
+    this.changeFilters(parseSessionFilters("all"), "cleared_all")
+  }
+
+  private changeFilters(
+    filters: SessionFilters,
+    action?: SessionFilterAction,
+    agent?: string,
+  ): void {
+    const normalized = normalizeSessionFilters(filters)
+    const id = serializeSessionFilters(normalized)
+    if (serializeSessionFilters(this.snapshot.filters) === id) return
+    this.settingsVersion += 1
+    this.update({
+      settings: { ...this.snapshot.settings, sessionFilter: id },
+      filters: normalized,
+    })
+    void this.persistSettings({ sessionFilter: id })
+    if (!this.restoringNavigation) this.onNavigation?.("user")
+    if (action) {
+      noteInteraction({
+        kind: "sessionFiltersChanged",
+        action,
+        ...(agent && AGENT_SLUGS.includes(agent) ? { agent } : {}),
+      })
+    }
   }
 }

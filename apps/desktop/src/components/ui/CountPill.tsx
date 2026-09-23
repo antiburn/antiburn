@@ -9,18 +9,23 @@ export function CountPill({
   count,
   className = "",
   prefix = "",
+  size = "compact",
   ...rest
 }: {
   count: number
   className?: string
   /** Text before the count, such as "+" for an overflow tally. */
   prefix?: string
+  size?: "compact" | "regular"
 } & Omit<ComponentPropsWithoutRef<"span">, "className" | "children">) {
   return (
     <span
       {...rest}
       className={cn(
-        "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-surface-tertiary/40 px-1 font-mono type-metadata font-medium! tabular-nums text-label-tertiary",
+        "inline-flex shrink-0 items-center justify-center rounded-full bg-surface-tertiary/40 px-1 font-mono font-medium! tabular-nums text-label-tertiary",
+        size === "regular"
+          ? "h-[var(--space-lg)] min-w-[var(--space-lg)] type-caption"
+          : "h-4 min-w-4 type-metadata",
         className,
       )}
     >

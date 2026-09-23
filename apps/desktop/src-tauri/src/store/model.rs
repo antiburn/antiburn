@@ -1038,11 +1038,7 @@ pub struct AppSettings {
     pub skills_mcp_expanded: bool,
     /// The metric shown in each activity-session badge.
     pub session_badge_metric: SessionBadgeMetric,
-    /// The selected Sessions sidebar filter, as its persisted id.
-    ///
-    /// The renderer owns the vocabulary (`lib/sessionFilters.ts`): this side
-    /// stores and returns the id verbatim, and does not validate it. An id
-    /// this release does not recognize is the renderer's to fall back on.
+    /// Store the Sessions filters verbatim. The renderer parses and migrates them.
     #[serde(default = "default_session_filter")]
     pub session_filter: String,
     /// The days the reader works, which is what the elapsed marker, the pace
@@ -1054,7 +1050,7 @@ fn default_interface_scale_percent() -> u16 {
     crate::interface_scale::DEFAULT_PERCENT
 }
 
-/// The persisted id for the unfiltered "All Sessions" view.
+/// Keep the legacy default for an unfiltered collection.
 fn default_session_filter() -> String {
     "all".to_string()
 }

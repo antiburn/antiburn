@@ -2,30 +2,11 @@ import { Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 
-import type { SessionListEntry } from "../components/session/SessionList"
-import {
-  SidebarNav,
-  type SidebarNavChildItem,
-  type SidebarNavItem,
-} from "../components/ui/SidebarNav"
-import type { BurnCheckDetectorId } from "../lib/insightsIpc"
+import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
 import { noteInteraction, openSettingsWindow } from "../lib/ipc"
-import { FIXED_SESSION_FILTERS } from "../lib/navigation/sessionFilterDefinitions"
-import { agentSessionFilterLabel } from "../lib/presentation/agents"
 import { MAIN_VIEWS, isMainViewId, type MainViewId } from "../lib/navigation/mainViews"
-import {
-  parseSessionFilterId,
-  sessionFilterCounts,
-  sessionFilterId,
-  type SessionFilter,
-} from "../lib/sessionFilters"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
-import { snoozedDetectorIds, useSnoozedBurnChecks } from "../lib/snoozedBurnChecks"
-import {
-  sessionHygieneIdentities,
-  useSessionHygiene,
-  type SessionHygieneSnapshot,
-} from "../lib/useSessionHygiene"
+import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
 import { MainActivityView } from "./main-window/MainActivityView"
 import { MainActivitySession, subjectForEntry } from "./main-window/MainActivitySession"
 import { BurnChecksView } from "./main-window/BurnChecksView"
@@ -49,63 +30,6 @@ type ViewBinding = Omit<MainWindowSection, "id" | "label">
  *  current snapshot and must not join the store's active-viewer count. */
 function neverSubscribe(): () => void {
   return () => undefined
-}
-
-/** One child row under "Sessions" for a filter, with its live count. */
-function sessionFilterChild(
-  filter: SessionFilter,
-  label: string,
-  count: number,
-  loaded: boolean,
-  separatorBefore?: boolean,
-): SidebarNavChildItem {
-  return {
-    id: sessionFilterId(filter),
-    label,
-    // Every filter child drives the same "Sessions" panel; only the parent
-    // row owns a real panel id of its own.
-    controls: "activity-panel",
-    ...(loaded ? { count } : {}),
-    ...(separatorBefore ? { separatorBefore: true } : {}),
-  }
-}
-
-/**
- * Every child under "Sessions": Notable and Material, one row per harness
- * present in the loaded list, then Failing, Passing, and All. A count is
- * omitted while `entries` has not loaded yet, instead of showing zero.
- */
-function sessionFilterChildren(
-  entries: SessionListEntry[] | null,
-  hygiene: SessionHygieneSnapshot,
-  snoozed: ReadonlySet<BurnCheckDetectorId>,
-): SidebarNavChildItem[] {
-  const loaded = entries !== null
-  const counts = sessionFilterCounts(entries ?? [], hygiene, snoozed)
-  const fixedGroup = (group: (typeof FIXED_SESSION_FILTERS)[number]["group"]) =>
-    FIXED_SESSION_FILTERS.filter((filter) => filter.group === group).map((filter, index) =>
-      sessionFilterChild(
-        { kind: filter.id },
-        filter.label,
-        counts[filter.id],
-        loaded,
-        group !== "featured" && index === 0,
-      ),
-    )
-  return [
-    ...fixedGroup("featured"),
-    ...counts.agents.map((agent, index) =>
-      sessionFilterChild(
-        { kind: "agent", agent: agent.agent },
-        agentSessionFilterLabel(agent.agent),
-        agent.count,
-        loaded,
-        index === 0,
-      ),
-    ),
-    ...fixedGroup("status"),
-    ...fixedGroup("all"),
-  ]
 }
 
 /** A section supplies its panes without changing the main window's native lifecycle. */
@@ -146,19 +70,15 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     navigationSession.getSnapshot,
     navigationSession.getSnapshot,
   )
-  // Read the shared Sessions list for the sidebar's counts. This list is a
-  // main-window dependency, while detail analysis remains pane-scoped.
+  // Keep the shared Sessions list live for main-window navigation and hygiene.
+  // Detail analysis remains pane-scoped.
   const activity = useSyncExternalStore(
     sections ? neverSubscribe : activitySession.subscribeList,
     activitySession.getSnapshot,
     activitySession.getSnapshot,
   )
-  // Pinned to the full unfiltered list, so the selected filter never changes
-  // this request's key. Always live, so the sidebar's counts stay current
-  // even while another section is on screen.
+  // Use the full list so facet selection does not change the hygiene request key.
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(activity.entries ?? []))
-  const snoozes = useSnoozedBurnChecks()
-  const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   const viewBindings: Record<MainViewId, ViewBinding> = {
     overview: {
       icon: House,
@@ -171,7 +91,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
             if (!entry.sessionId) return
             navigationSession.navigate({
               section: "activity",
-              filter: { kind: "all" },
+              filters: { agents: [], result: "all", spend: "all" },
               subject: subjectForEntry(entry),
             })
           }}
@@ -187,7 +107,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           onSelectSession={(subject) => {
             navigationSession.navigate({
               section: "activity",
-              filter: { kind: "all" },
+              filters: { agents: [], result: "all", spend: "all" },
               subject,
             })
           }}
@@ -207,11 +127,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     },
     activity: {
       icon: MessagesSquare,
-      children: sessionFilterChildren(
-        snoozes.status === "ready" ? activity.entries : null,
-        hygieneBySession,
-        snoozedDetectors,
-      ),
       render: ({ active }) => (
         <MainActivityView
           active={active}
@@ -247,23 +162,9 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       navigationSession.select(id)
       return
     }
-    navigationSession.navigate(
-      {
-        section: "activity",
-        filter: parseSessionFilterId(id),
-        subject: activitySession.getSnapshot().subject,
-      },
-      false,
-    )
   }
   const selected =
     availableSections.find((section) => section.id === selectedId) ?? availableSections[0]
-  // Highlight the active filter's own row while inside Sessions, so the
-  // matching child reads as selected instead of the parent row.
-  const navValue =
-    !sections && selected?.id === "activity"
-      ? sessionFilterId(activity.filter)
-      : (selected?.id ?? "")
   async function chooseSearchResult(result: AppSearchResult): Promise<void> {
     const target = result.target
     if (target.kind === "setting") {
@@ -273,11 +174,11 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       navigationSession.navigate({ section: "burnChecks", check: target.check })
     else {
       flushSync(() => {
-        if (target.filter && target.filter.kind !== "all") {
+        if (target.section === "activity" && target.filters) {
           navigationSession.navigate(
             {
               section: target.section,
-              filter: target.filter,
+              filters: target.filters,
               subject: activitySession.getSnapshot().subject,
             },
             false,
@@ -310,7 +211,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         sidebar={(closeNavigation) => (
           <SidebarNav
             items={availableSections}
-            value={navValue}
+            value={selected?.id ?? ""}
             onChange={selectSection}
             onActivate={closeNavigation}
             ariaLabel="Main sections"

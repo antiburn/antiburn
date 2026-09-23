@@ -5,7 +5,7 @@ it("rejects invalid view and Settings destinations at compile time", () => {
   expectTypeOf<{
     kind: "view"
     section: "quota"
-    filter: { kind: "all" }
+    filters: { agents: []; result: "all"; spend: "all" }
   }>().not.toExtend<AppSearchTarget>()
   expectTypeOf<{
     kind: "setting"
@@ -16,7 +16,7 @@ it("rejects invalid view and Settings destinations at compile time", () => {
   expectTypeOf<{
     kind: "view"
     section: "activity"
-    filter: { kind: "notable" }
+    filters: { agents: ["claude", "codex"]; result: "failing"; spend: "notable" }
   }>().toExtend<AppSearchTarget>()
   expectTypeOf<{ kind: "setting"; control: "sound" }>().toExtend<AppSearchTarget>()
   expectTypeOf<{ kind: "setting"; pane: "notifications" }>().toExtend<AppSearchTarget>()
