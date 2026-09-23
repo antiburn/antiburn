@@ -173,6 +173,33 @@ describe("OverviewAllowanceWeeks", () => {
     expect(container.querySelector("[data-pin-callouts]")).toHaveStyle({ opacity: "0" })
   })
 
+  it("lights a week's annotations from its key entry, in both colour modes", () => {
+    const { container } = renderChart(waste)
+    const callout = () => container.querySelector("[data-pin-callout=cacheChurn]")!
+    const key = (name: string) => screen.getAllByText(name).at(-1)!.closest("[role=listitem]")!
+    fireEvent.pointerEnter(key("Last week"))
+    expect(callout()).toHaveStyle({ opacity: "0.25" })
+    fireEvent.pointerEnter(key("This week"))
+    expect(callout()).toHaveStyle({ opacity: "1" })
+
+    fireEvent.click(screen.getByRole("button", { name: "One colour" }))
+    fireEvent.pointerEnter(key("Past weeks"))
+    expect(callout()).toHaveStyle({ opacity: "0.25" })
+    fireEvent.pointerEnter(key("This week"))
+    expect(callout()).toHaveStyle({ opacity: "1" })
+  })
+
+  it("keeps each week line's width when it takes the focus", () => {
+    const { container } = renderChart()
+    const edge = () =>
+      container
+        .querySelector(`[data-week="${WEEK}"] > path:last-of-type`)!
+        .getAttribute("stroke-width")
+    const before = edge()
+    fireEvent.pointerEnter(container.querySelector(`[data-week-label="${WEEK}"]`)!)
+    expect(edge()).toBe(before)
+  })
+
   it("puts the action under the key", () => {
     renderChart()
     const action = screen.getByRole("button", { name: "Optimise" })

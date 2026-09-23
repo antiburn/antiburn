@@ -61,7 +61,6 @@ const PIN_STEP = 8
 const PIN_HEAD = 3
 const PIN_GAP = 6
 const MAX_PIN_ROWS = 5
-const PAST_PIN_OPACITY = 0.45
 // Callouts name each group of one check's pins, above the pin heads, in up
 // to two rows. Text widths are estimates, so callouts can keep apart.
 const CALLOUT_ROWS = 3
@@ -111,7 +110,7 @@ const LIMIT_LEGEND: ChartLegendItem = {
 const WASTE_LEGEND: ChartLegendItem = {
   key: "waste",
   label: "Failed check",
-  swatch: "bg-brand",
+  swatch: "bg-burn-check-failure-fill",
   shape: "line",
 }
 const WEEK_KEY = "w:"
@@ -546,7 +545,7 @@ export function OverviewAllowanceWeeks({
                                   ? "stroke-(--week)"
                                   : "stroke-(--week)/25"
                             }
-                            strokeWidth={strong ? 1.5 : 1}
+                            strokeWidth={1}
                             strokeLinejoin="round"
                             vectorEffect="non-scaling-stroke"
                           />
@@ -577,7 +576,7 @@ export function OverviewAllowanceWeeks({
                                 ? "stroke-(--week)/80"
                                 : "stroke-(--week)/35"
                           }
-                          strokeWidth={strength === "full" ? 2.5 : bold ? 2 : colours ? 1.5 : 1}
+                          strokeWidth={apart || isCurrent ? 2 : colours ? 1.5 : 1}
                           strokeLinejoin="round"
                           vectorEffect="non-scaling-stroke"
                         />
@@ -612,7 +611,7 @@ export function OverviewAllowanceWeeks({
                     "week-grid",
                     rollingFocused ? "stroke-label" : "stroke-gray-500",
                   )}
-                  strokeWidth={rollingFocused ? 2 : 1}
+                  strokeWidth={1}
                   strokeDasharray="4 3"
                   style={{ opacity: apart ? 0 : rollingLit ? 1 : DIM_SHARE }}
                 />
@@ -671,10 +670,11 @@ export function OverviewAllowanceWeeks({
                 // past the line's last reading has no stem.
                 const stem = level == null ? 0 : Math.max(0, bandY(band, level) - head)
                 const hovered = focus?.kind === "pin" && focus.key === item.key
-                const opacity = opacityOf(
-                  pinEmphasis(item, focus),
-                  item.current ? 1 : PAST_PIN_OPACITY,
-                )
+                const opacity = opacityOf(pinEmphasis(item, focus), 1)
+                // A past session's pin is a ring; this week's is solid.
+                const pinFill = item.current
+                  ? "fill-burn-check-failure-fill stroke-surface"
+                  : "fill-surface stroke-burn-check-failure-fill"
                 return (
                   <g
                     key={item.key}
@@ -685,17 +685,17 @@ export function OverviewAllowanceWeeks({
                     <line
                       y1={0}
                       y2={1}
-                      className="week-stem pointer-events-none stroke-brand"
+                      className="week-stem pointer-events-none stroke-burn-check-failure-fill"
                       style={{ transform: `scaleY(${stem.toFixed(2)})` }}
                       strokeWidth={hovered ? 1.5 : 1}
-                      strokeOpacity={hovered ? 1 : 0.55}
+                      strokeOpacity={hovered ? 1 : 0.5}
                       vectorEffect="non-scaling-stroke"
                     />
                     <circle
                       r={hovered ? 3.5 : 2.5}
-                      className="week-move pointer-events-none fill-brand stroke-surface"
+                      className={cn("week-move pointer-events-none", pinFill)}
                       style={{ transform: `translateY(${stem.toFixed(2)}px)` }}
-                      strokeWidth={1}
+                      strokeWidth={item.current ? 1 : 1.25}
                     />
                     <g
                       className="cursor-pointer"
@@ -705,8 +705,8 @@ export function OverviewAllowanceWeeks({
                       <circle r={PIN_HEAD + 3} className="fill-transparent" />
                       <circle
                         r={hovered ? PIN_HEAD + 1.5 : PIN_HEAD}
-                        className="fill-brand stroke-surface"
-                        strokeWidth={1}
+                        className={pinFill}
+                        strokeWidth={item.current ? 1 : 1.25}
                       />
                     </g>
                   </g>
@@ -761,14 +761,14 @@ export function OverviewAllowanceWeeks({
                                 ` H${(group.to + 3).toFixed(1)} v3`
                               : "")
                           }
-                          className="pointer-events-none fill-none stroke-brand"
+                          className="pointer-events-none fill-none stroke-burn-check-failure-fill"
                           strokeWidth={1}
                         />
                         <circle
                           cx={group.x}
                           cy={top + 3}
                           r={2.5}
-                          className="pointer-events-none fill-brand"
+                          className="pointer-events-none fill-burn-check-failure-fill"
                         />
                         <text
                           x={text}
@@ -781,7 +781,10 @@ export function OverviewAllowanceWeeks({
                         >
                           {group.label}
                           {group.count > 1 && (
-                            <tspan className="fill-brand tabular-nums"> ×{group.count}</tspan>
+                            <tspan className="fill-burn-check-failure-text tabular-nums">
+                              {" "}
+                              ×{group.count}
+                            </tspan>
                           )}
                         </text>
                         <text
@@ -813,16 +816,21 @@ export function OverviewAllowanceWeeks({
                     y1={plot.y1}
                     x2={plot.x0}
                     y2={plot.y0 + FLAG_TOP}
-                    className="stroke-brand"
+                    className="stroke-burn-check-failure-fill"
                     strokeWidth={1.5}
                   />
                   <circle
                     cx={plot.x0}
                     cy={plot.y1}
                     r={3}
-                    className="fill-brand stroke-surface"
+                    className="fill-burn-check-failure-fill stroke-surface"
                   />
-                  <circle cx={plot.x0} cy={plot.y0 + FLAG_TOP} r={3} className="fill-brand" />
+                  <circle
+                    cx={plot.x0}
+                    cy={plot.y0 + FLAG_TOP}
+                    r={3}
+                    className="fill-burn-check-failure-fill"
+                  />
                   <text
                     x={plot.x0 + 10}
                     y={plot.y0 + FLAG_TOP}
@@ -855,7 +863,7 @@ export function OverviewAllowanceWeeks({
                           y={y}
                           textAnchor="end"
                           dominantBaseline="middle"
-                          className="type-callout font-semibold tabular-nums fill-brand stroke-surface"
+                          className="type-callout font-semibold tabular-nums fill-burn-check-failure-text stroke-surface"
                           strokeWidth={3}
                           paintOrder="stroke"
                         >

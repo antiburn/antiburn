@@ -96,6 +96,9 @@ export function pinEmphasis(item: PlacedPin, focus: RadialFocus | null): Emphasi
     case "check":
       return item.pin.detector === focus.detector ? "full" : "dim"
     case "layer":
+      // A week layer lights the pins of its weeks.
+      if (focus.layer === "week") return item.current ? "full" : "dim"
+      if (focus.layer === "past") return item.current ? "dim" : "full"
       return focus.layer === "waste" ? "full" : "dim"
     default:
       return "dim"
