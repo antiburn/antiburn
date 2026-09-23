@@ -95,10 +95,10 @@
   container: overview-viewport / size;
 }
 
-/* The blur scrim over the Overview content. A light wash and a strong blur,
+/* The blur scrim over the Overview content. A 25% white wash and a strong blur,
    like macOS glass. The Optimise card floats on it. */
 .enhance-scrim {
-  background-color: color-mix(in oklab, var(--color-surface-window) 60%, transparent);
+  background-color: color-mix(in oklab, var(--color-shimmer) 25%, transparent);
   backdrop-filter: blur(48px) saturate(1.6);
 }
 

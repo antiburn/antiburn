@@ -30,14 +30,17 @@ export function OverviewConfigChecks({
                 failed && "bg-brand-tint/10",
               )}
             >
-              <span
+              <row.Icon
+                aria-hidden="true"
+                size={15}
                 className={cn(
-                  "flex size-7 shrink-0 items-center justify-center rounded-control",
-                  row.iconTone,
+                  "shrink-0",
+                  row.iconTone
+                    .split(" ")
+                    .filter((token) => token.startsWith("text-"))
+                    .join(" "),
                 )}
-              >
-                <row.Icon aria-hidden="true" size={15} />
-              </span>
+              />
               <span className="type-body font-semibold text-label">{row.label}</span>
               <span className="min-w-0 flex-1 truncate type-body text-label-secondary">
                 {row.summary}
