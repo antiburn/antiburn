@@ -222,3 +222,53 @@
 .enhance-step-link[data-lit] {
   background-image: radial-gradient(circle, var(--color-brand-tint) 1.5px, transparent 1.6px);
 }
+
+/*
+ * The Enhance step cards. `data-tone` sets one accent colour. The accent
+ * draws a bar on the left edge, a soft wash behind the icon, and a halo
+ * around the icon. On hover the card lifts by one pixel.
+ */
+.enhance-card {
+  --enhance-tone: var(--color-separator);
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      60% 160% at 0% 50%,
+      color-mix(in oklab, var(--enhance-tone) 14%, transparent),
+      transparent 70%
+    ),
+    var(--color-surface-card);
+  box-shadow:
+    var(--shadow-stats-card),
+    inset 3px 0 0 var(--enhance-tone);
+  transition:
+    transform var(--duration-medium) var(--ease-out-quart),
+    box-shadow var(--duration-medium) var(--ease-out-quart);
+}
+
+.enhance-card:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--enhance-tone) 45%, transparent),
+    inset 3px 0 0 var(--enhance-tone),
+    0 6px 18px -8px color-mix(in oklab, var(--enhance-tone) 55%, transparent);
+}
+
+.enhance-card[data-tone="fail"] {
+  --enhance-tone: var(--color-brand-tint);
+}
+
+.enhance-card[data-tone="pass"] {
+  --enhance-tone: var(--color-system-green);
+}
+
+.enhance-card[data-tone="wait"] {
+  --enhance-tone: var(--color-system-orange);
+}
+
+.enhance-card-icon {
+  box-shadow:
+    0 0 0 4px color-mix(in oklab, var(--enhance-tone) 10%, transparent),
+    0 0 16px color-mix(in oklab, var(--enhance-tone) 35%, transparent);
+}

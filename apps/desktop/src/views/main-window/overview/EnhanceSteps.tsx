@@ -1,9 +1,10 @@
 import { FolderPlus } from "lucide-react"
-import { useCallback, useState, useSyncExternalStore } from "react"
+import { useCallback, useState, useSyncExternalStore, type ReactNode, type Ref } from "react"
 
 import { cn } from "../../../lib/cn"
 import type { ChecksCategoryPayload } from "../../../lib/insightsIpc"
 import { getScanStatus, openSettingsWindow } from "../../../lib/ipc"
+import { renderAgentIcon } from "../../../lib/agentIcon"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { checksPresentation } from "../../../lib/presentation/checks"
 import { scanStatusStore, withKnownAgents } from "../../../lib/scanStatusStore"
@@ -23,6 +24,63 @@ export function Waiting({ children }: { children: string }) {
     <p role="status" className="type-callout text-label-secondary">
       {children}
     </p>
+  )
+}
+
+export type EnhanceTone = "fail" | "pass" | "wait" | "idle"
+
+/** The one card every Enhance step uses: a big icon, a title, a detail line,
+ *  an optional body, and an optional aside on the right edge. */
+export function EnhanceCard({
+  as: Element = "li",
+  cardRef,
+  label,
+  tone,
+  icon,
+  iconClassName,
+  title,
+  detail,
+  aside,
+  children,
+}: {
+  as?: "li" | "article"
+  cardRef?: Ref<HTMLElement>
+  label?: string
+  tone: EnhanceTone
+  icon: ReactNode
+  iconClassName?: string
+  title: ReactNode
+  detail?: ReactNode
+  aside?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <Element
+      ref={cardRef as Ref<HTMLLIElement & HTMLElement>}
+      aria-label={label}
+      data-tone={tone}
+      className="enhance-card flex items-center gap-(--space-xl) rounded-(--radius-popover) px-(--space-xl) py-(--space-lg)"
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "enhance-card-icon grid size-14 shrink-0 place-items-center rounded-full",
+          iconClassName ?? "bg-surface-sidebar",
+        )}
+      >
+        {icon}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-(--space-xs)">
+        <span className="type-callout font-semibold text-label">{title}</span>
+        {detail && (
+          <span className="flex items-center gap-(--space-md) type-caption text-label-secondary tabular-nums">
+            {detail}
+          </span>
+        )}
+        {children}
+      </div>
+      {aside && <div className="shrink-0">{aside}</div>}
+    </Element>
   )
 }
 
@@ -55,7 +113,7 @@ export function SourcesStep() {
     .filter((agent) => agent.sessionsSeen > 0)
     .sort((left, right) => right.sessionsSeen - left.sessionsSeen)
   return (
-    <div className="flex max-w-xl flex-col gap-(--space-lg)">
+    <div className="flex flex-col gap-(--space-lg)">
       {agents.length === 0 ? (
         <p className="type-body text-label-secondary">
           No agent sessions found yet. Add the folder where your agents keep them.
@@ -63,17 +121,13 @@ export function SourcesStep() {
       ) : (
         <ul aria-label="Agents found" className="flex flex-col gap-(--space-sm)">
           {agents.map((agent) => (
-            <li
+            <EnhanceCard
               key={agent.agent}
-              className="flex items-center justify-between gap-(--space-md) rounded-control bg-surface-card px-(--space-md) py-(--space-sm)"
-            >
-              <span className="type-body font-semibold text-label">
-                {agentDisplayName(agent.agent)}
-              </span>
-              <span className="type-callout tabular-nums text-label-secondary">
-                {agent.sessionsSeen} {agent.sessionsSeen === 1 ? "session" : "sessions"}
-              </span>
-            </li>
+              tone="pass"
+              icon={renderAgentIcon(agent.agent, 28)}
+              title={agentDisplayName(agent.agent)}
+              detail={`${agent.sessionsSeen} ${agent.sessionsSeen === 1 ? "session" : "sessions"}`}
+            />
           ))}
         </ul>
       )}
@@ -116,19 +170,13 @@ function ScanTile({
   // Ten dots, like the HUD meters. A failing check lights at least one.
   const lit = failing && total > 0 ? Math.max(1, Math.round((check.finding / total) * 10)) : 0
   return (
-    <li className="flex items-center gap-(--space-lg) rounded-(--radius-popover) bg-surface-card px-(--space-xl) py-(--space-lg)">
-      <span
-        aria-hidden="true"
-        className={cn(
-          "grid size-11 shrink-0 place-items-center rounded-full",
-          snoozed ? "bg-surface-card text-label-secondary" : row.iconTone,
-        )}
-      >
-        <row.Icon size={21} />
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-(--space-xs)">
-        <span className="type-title-2 font-semibold text-label">{row.label}</span>
-        <span className="flex items-center gap-(--space-md)">
+    <EnhanceCard
+      tone={snoozed || check.lifecycle == null ? "idle" : failing ? "fail" : "pass"}
+      icon={<row.Icon size={28} />}
+      iconClassName={snoozed ? "bg-surface-sidebar text-label-secondary" : row.iconTone}
+      title={row.label}
+      detail={
+        <>
           {failing && (
             <span aria-hidden="true" className="flex gap-[3px]">
               {Array.from({ length: 10 }, (_, index) => (
@@ -142,22 +190,16 @@ function ScanTile({
               ))}
             </span>
           )}
-          <span className="type-title-3 font-normal! text-label-secondary tabular-nums">
-            {summary}
-          </span>
-        </span>
-      </span>
-      {!snoozed && row.metric && (
-        <span
-          className={cn(
-            "shrink-0 font-mono type-title-2 font-semibold tabular-nums",
-            row.metricTone,
-          )}
-        >
-          {row.metric}
-        </span>
-      )}
-    </li>
+          {summary}
+        </>
+      }
+      aside={
+        !snoozed &&
+        row.metric && (
+          <span className={cn("type-caption tabular-nums", row.metricTone)}>{row.metric}</span>
+        )
+      }
+    />
   )
 }
 
@@ -214,33 +256,17 @@ function FixCard({
   const targets = state.targets[check.id]
   const row = checkRowPresentation(check, targets?.data?.targets)
   return (
-    <article
-      ref={trackTargets}
-      aria-label={row.label}
-      className="flex items-center gap-(--space-xl) rounded-(--radius-popover) bg-surface-sidebar p-(--space-lg) shadow-[var(--shadow-stats-card)]"
-    >
-      <div className="flex min-w-0 flex-1 flex-col gap-(--space-sm)">
-        <header className="flex items-start gap-(--space-sm)">
-          <span
-            aria-hidden="true"
-            className={cn("grid size-7 shrink-0 place-items-center rounded-full", row.iconTone)}
-          >
-            <row.Icon size={14} />
-          </span>
-          <div className="flex min-w-0 flex-1 flex-col">
-            <h3 className="type-headline text-label">{row.label}</h3>
-            <p className="type-caption tabular-nums text-label-secondary">
-              {[row.summary, row.metric, row.costLine].filter(Boolean).join(" · ")}
-            </p>
-          </div>
-        </header>
-        <p className="type-body text-pretty text-label">{CHECK_SENTENCES[check.id]}</p>
-        <p className="type-callout text-pretty text-label-secondary">
-          {CHECK_UI[check.id].recommendation}
-        </p>
-      </div>
-      <div className="shrink-0">
-        {targets?.data ? (
+    <EnhanceCard
+      as="article"
+      cardRef={trackTargets}
+      label={row.label}
+      tone="fail"
+      icon={<row.Icon size={28} />}
+      iconClassName={row.iconTone}
+      title={row.label}
+      detail={[row.summary, row.metric, row.costLine].filter(Boolean).join(" · ")}
+      aside={
+        targets?.data ? (
           <CheckDetailActions
             detector={check.id}
             targets={targets.data.targets}
@@ -254,9 +280,16 @@ function FixCard({
               {targets?.error ? "Could not load the fixes." : "Loading the fixes…"}
             </span>
           </div>
-        )}
-      </div>
-    </article>
+        )
+      }
+    >
+      <p className="mt-(--space-xs) type-body text-pretty text-label">
+        {CHECK_SENTENCES[check.id]}
+      </p>
+      <p className="type-callout text-pretty text-label-secondary">
+        {CHECK_UI[check.id].recommendation}
+      </p>
+    </EnhanceCard>
   )
 }
 

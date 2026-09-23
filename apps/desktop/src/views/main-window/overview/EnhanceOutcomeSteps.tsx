@@ -1,14 +1,13 @@
 import { CircleCheck, Hourglass } from "lucide-react"
 import { useCallback } from "react"
 
-import { cn } from "../../../lib/cn"
 import type { BurnCheckTargetPayload, ChecksCategoryPayload } from "../../../lib/insightsIpc"
 import { formatApiEquivalentUsd } from "../../../lib/presentation/checks"
 import { formatTokensShort } from "../../../lib/presentation/sessionAnalysis"
 import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
 import { watchStatus } from "../burn-checks/BurnCheckTargetPresentation"
-import { useChecks, Waiting } from "./EnhanceSteps"
+import { EnhanceCard, useChecks, Waiting } from "./EnhanceSteps"
 import { isAppliedFix, projectSavings, SAVINGS_MONTHS } from "./enhanceState"
 
 /** Asks for a check's targets while it is mounted. It shows nothing. */
@@ -61,7 +60,7 @@ export function WatchStep({
     return line ? [{ check, line }] : []
   })
   return (
-    <div className="flex max-w-3xl flex-col gap-(--space-sm)">
+    <div className="flex flex-col gap-(--space-sm)">
       {candidates.map((check) => (
         <TargetTracker key={check.id} detector={check.id} session={session} />
       ))}
@@ -74,25 +73,18 @@ export function WatchStep({
           {rows.map(({ check, line }) => {
             const Icon = line.done ? CircleCheck : Hourglass
             return (
-              <li
+              <EnhanceCard
                 key={check.id}
-                className="flex items-start gap-(--space-sm) rounded-control bg-surface-card p-(--space-md)"
-              >
-                <Icon
-                  size={16}
-                  aria-hidden="true"
-                  className={cn(
-                    "mt-0.5 shrink-0",
-                    line.done ? "text-system-green" : "text-system-orange",
-                  )}
-                />
-                <span className="flex min-w-0 flex-col">
-                  <span className="type-callout font-semibold text-label">
-                    {checkRowPresentation(check).label}
-                  </span>
-                  <span className="type-caption text-label-secondary">{line.text}</span>
-                </span>
-              </li>
+                tone={line.done ? "pass" : "wait"}
+                icon={<Icon size={28} />}
+                iconClassName={
+                  line.done
+                    ? "bg-system-green/10 text-system-green"
+                    : "bg-system-orange/10 text-system-orange"
+                }
+                title={checkRowPresentation(check).label}
+                detail={line.text}
+              />
             )
           })}
         </ul>
