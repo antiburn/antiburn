@@ -86,7 +86,7 @@ describe("OverviewAllowanceRadial", () => {
     const pins = container.querySelectorAll("[data-waste-pin]")
     expect(pins).toHaveLength(4)
     // This week sits next to the ring at full strength. Past weeks fade.
-    expect([...pins].map((line) => line.getAttribute("opacity"))).toEqual([
+    expect([...pins].map((pin) => (pin as SVGGElement).style.opacity)).toEqual([
       "1",
       "1",
       "1",
@@ -99,5 +99,11 @@ describe("OverviewAllowanceRadial", () => {
       "Config · share of sessions42%Unused MCP servers",
     )
     expect(screen.getByText("Wasteful session")).toBeInTheDocument()
+
+    // A hovered pin names its session and fades the pins of other checks.
+    fireEvent.pointerOver(pins[3]!)
+    expect(screen.getByText("Session d")).toBeInTheDocument()
+    expect(screen.getByText("Click to open the session")).toBeInTheDocument()
+    expect((pins[3] as SVGGElement).style.opacity).toBe("1")
   })
 })

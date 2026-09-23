@@ -324,3 +324,122 @@
 .enhance-stat[data-tone="snooze"] {
   background-color: var(--color-check-overthinking);
 }
+
+/*
+ * The week flower draws itself in. The data layer sweeps clockwise from the
+ * reset, the way the week runs, through a conic mask. The sweep is linear, so
+ * each pin can pop at the moment the sweep passes its time of week (`--at`,
+ * a fraction of the week). A label follows its pins. The config flag's pole
+ * rises first, then its rows. The wrapper animates the sweep angle, so its
+ * `animationend` records the one entrance per run.
+ */
+
+@property --overview-radial-sweep-angle {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 360deg;
+}
+
+.overview-radial {
+  --overview-radial-sweep: 1400ms;
+}
+
+@keyframes overview-radial-sweep {
+  from {
+    --overview-radial-sweep-angle: 0deg;
+  }
+
+  to {
+    --overview-radial-sweep-angle: 360deg;
+  }
+}
+
+.overview-radial-in {
+  animation: overview-radial-sweep var(--overview-radial-sweep) linear backwards;
+}
+
+.overview-radial-in .overview-radial-data {
+  mask-image: conic-gradient(
+    from 0deg at 50% var(--overview-radial-cy),
+    rgb(0 0 0) var(--overview-radial-sweep-angle),
+    transparent 0
+  );
+}
+
+@keyframes overview-waste-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0);
+  }
+
+  60% {
+    opacity: 1;
+    transform: scale(1.4);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes overview-waste-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes overview-waste-pole {
+  from {
+    transform: scaleY(0);
+  }
+
+  to {
+    transform: scaleY(1);
+  }
+}
+
+.overview-radial-in .overview-waste-pin {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: overview-waste-pop var(--duration-slow) var(--ease-out-quart) backwards;
+  animation-delay: calc(
+    var(--overview-radial-sweep) * var(--at, 0) + var(--stack, 0) * var(--duration-quick) / 2
+  );
+}
+
+.overview-radial-in .overview-waste-label {
+  animation: overview-waste-rise var(--duration-slow) var(--ease-out-quart) backwards;
+  animation-delay: calc(var(--overview-radial-sweep) * var(--at, 0) + var(--duration-slow));
+}
+
+.overview-radial-in .overview-waste-pole {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: overview-waste-pole var(--duration-slow) var(--ease-out-quart) backwards;
+}
+
+.overview-radial-in .overview-waste-flag-row {
+  animation: overview-waste-rise var(--duration-slow) var(--ease-out-quart) backwards;
+  animation-delay: calc(var(--duration-slow) + var(--row, 0) * var(--duration-quick));
+}
+
+/* One check in focus fades the others. */
+.overview-waste-focus {
+  transition: opacity var(--duration-fast) var(--ease-out-quart);
+}
+
+/* The clamp shortens the animations but not their delays. */
+@media (prefers-reduced-motion: reduce) {
+  .overview-radial-in .overview-waste-pin,
+  .overview-radial-in .overview-waste-label,
+  .overview-radial-in .overview-waste-flag-row {
+    animation-delay: 0s;
+  }
+}
