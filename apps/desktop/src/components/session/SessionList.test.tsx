@@ -937,7 +937,11 @@ describe("SessionList — grouping", () => {
   })
 
   it("keeps the badge metric control inline with the pinned date label", () => {
-    list({ entries: [entry()], onBadgeMetricChange: vi.fn() })
+    list({
+      entries: [entry()],
+      onBadgeMetricChange: vi.fn(),
+      toolbarTopPadding: "space-sm",
+    })
     const toolbar = document.querySelector<HTMLElement>("[data-list-display-toolbar]")!
     const control = screen.getByRole("radiogroup", { name: "Session metric" })
 
@@ -949,6 +953,10 @@ describe("SessionList — grouping", () => {
     expect(control).toHaveClass("inline-flex")
     expect(control).not.toHaveClass("bg-surface-secondary")
     expect(screen.getByRole("radio", { name: "Week %" })).toBeInTheDocument()
+    expect(screen.getByRole("radio", { name: "Cost" })).toHaveClass("text-label")
+    expect(screen.getByRole("radio", { name: "Cost" })).toHaveAttribute("aria-describedby")
+    expect(screen.getByRole("radio", { name: "Week %" })).toHaveAttribute("aria-describedby")
+    expect(toolbar.parentElement).toHaveClass("pt-[var(--space-sm)]")
     expect(toolbar).not.toHaveTextContent("Show")
   })
 
@@ -1331,6 +1339,88 @@ describe("SessionList — empty state", () => {
     list({ entries: [], emptyTitle: "Nothing here", emptyDescription: "Try a wider range." })
     expect(screen.getAllByText("Nothing here").length).toBe(2)
     expect(screen.getByText("Try a wider range.")).toBeTruthy()
+  })
+
+  it("renders a custom icon and recovery actions with one empty announcement", () => {
+    const clearFilters = vi.fn()
+    const changeFilters = vi.fn()
+    const { container } = list({
+      entries: [],
+      emptyTitle: "No sessions match these filters",
+      emptyDescription: "Try changing or clearing your filters.",
+      emptyIcon: <span data-testid="filter-empty-icon" aria-hidden="true" />,
+      emptyActions: (
+        <>
+          <button onClick={clearFilters}>Clear filters</button>
+          <button onClick={changeFilters}>Change filters</button>
+        </>
+      ),
+    })
+
+    expect(screen.getByTestId("filter-empty-icon")).toBeInTheDocument()
+    expect(container.querySelector(".lucide-square-terminal")).toBeNull()
+    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1)
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(
+      "No sessions match these filters",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }))
+    fireEvent.click(screen.getByRole("button", { name: "Change filters" }))
+    expect(clearFilters).toHaveBeenCalledOnce()
+    expect(changeFilters).toHaveBeenCalledOnce()
+  })
+
+  it("omits the icon circle and description for a compact filtered-empty state", () => {
+    const clearFilters = vi.fn()
+    const { container } = list({
+      entries: [],
+      emptyTitle: "No matching sessions",
+      emptyIcon: null,
+      emptyDescription: "",
+      emptyActions: <button onClick={clearFilters}>Clear filters</button>,
+    })
+
+    const title = screen
+      .getAllByText("No matching sessions")
+      .find((element) => !element.hasAttribute("aria-live"))!
+    expect(title.parentElement?.querySelectorAll("p")).toHaveLength(1)
+    expect(title.parentElement?.querySelector(".rounded-full")).toBeNull()
+    expect(container.querySelector(".lucide-square-terminal")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }))
+    expect(clearFilters).toHaveBeenCalledOnce()
+  })
+
+  it("hides empty metric controls and restores the controlled metric when rows return", () => {
+    const onBadgeMetricChange = vi.fn()
+    const props: SessionListProps = {
+      entries: [entry({ timestamp: at(7) })],
+      days: 7,
+      now: NOW,
+      badgeMetric: "fiveHourPercent",
+      onBadgeMetricChange,
+      hideEmptyToolbar: true,
+    }
+    const { rerender } = render(<SessionList {...props} />)
+
+    expect(screen.queryByRole("radiogroup", { name: "Session metric" })).toBeNull()
+    rerender(<SessionList {...props} entries={[entry()]} />)
+    expect(screen.getByRole("radio", { name: "5h %" })).toHaveAttribute("aria-checked", "true")
+    rerender(<SessionList {...props} entries={[]} />)
+    expect(screen.queryByRole("radiogroup", { name: "Session metric" })).toBeNull()
+    rerender(<SessionList {...props} entries={[entry()]} />)
+    expect(screen.getByRole("radio", { name: "5h %" })).toHaveAttribute("aria-checked", "true")
+    expect(onBadgeMetricChange).not.toHaveBeenCalled()
+  })
+
+  it("keeps the default popover empty presentation and metric controls", () => {
+    const { container } = list({ entries: [], onBadgeMetricChange: vi.fn() })
+
+    expect(container.querySelector(".lucide-square-terminal")).toBeInTheDocument()
+    expect(
+      screen.getByText("Coding sessions appear here as they are discovered on this machine."),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("radiogroup", { name: "Session metric" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Change filters" })).toBeNull()
   })
 
   it("shows no day heading at all when the list is empty", () => {

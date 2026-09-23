@@ -133,6 +133,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;
         }
+        event::Interaction::SessionFiltersChanged { action, agent } => {
+            let _ = (action, agent);
+        }
     }
 }
 

@@ -254,7 +254,58 @@ failure. Do not introduce persistent operation or work identifiers.
 
 ### Targeted diagnostics and measurement quality
 
-#### Session filters (implemented 2026-09-12)
+#### Contextual Sessions filters (implemented 2026-09-22)
+
+The product question is which filter facets reporting installations use and
+remove. Measure distinct reporting installations with each action, divided by
+reporting installations with a user-origin `activity` surface view in the same
+interval and supporting app versions. Use action distributions to improve the
+menu's organization and filter discoverability. This does not measure the
+current saved configuration, the size of a result set, or combinations of
+selected agents.
+
+The activity controller emits `antiburn.session_filters_changed` once when a
+deliberate gesture changes the canonical filter state. This records intent;
+a settings write failure does not turn it into a persistence-success event.
+The closed `label` values are `agent_added`, `agent_removed`, `agents_all`,
+`result_failing`, `result_passing`, `result_all`, `spend_notable`,
+`spend_material`, `spend_all`, and `cleared_all`. Only agent add/remove may carry
+`detail`, using the existing known AgentKind vocabulary. Unknown agent slugs
+remain local and omit `detail`. The Rust boundary rejects unknown actions and
+agent values, drops agent detail for non-agent actions, and rejects extra fields.
+
+Clear all and All agents each emit at most one event for the gesture, regardless
+of chip count. Chip removal uses its facet's reset action or `agent_removed`.
+Explicit search navigation that changes the facets records one filter gesture.
+The action compares the previous and destination facets; an unchanged agent
+selection does not override a changed result or spend action. Multi-facet
+navigation uses clear-all first, then agent changes, result changes, and spend
+changes. Agent detail identifies a single added or removed agent, never an
+unchanged selection.
+No-op reselection, automatic restoration or migration, history navigation, remounts,
+hidden-window updates, settings replies, and refreshes emit nothing. Settings
+writes retain gesture order; queued saves and failures do not emit retries.
+There is no background filter event. Existing consent, environment-disablement,
+endpoint, queue, and retry gates apply. Opted-out, unconfigured, and undelivered
+installations remain unobserved.
+
+Use the first shipping app version of this event as its reporting boundary.
+Keep legacy `antiburn.session_filter_selected` reports separate: they measure
+exclusive sidebar choices and cannot establish multi-agent or combined-facet
+use. No selected-agent arrays, raw serialized filters, session identifiers,
+titles, repository paths, result counts, cost values, or thresholds are sent.
+No new wire properties are added.
+
+Validation covers the real controller mutations, canonical no-ops, legacy and
+versioned restore, agent add/remove and resets, rapid saves, and save failure.
+Rust tests cover every closed action, known/omitted agents, forbidden extra
+fields, unknown values, and allowed event facts. Existing enabled analytics
+tests cover consent and delivery gates.
+
+#### Legacy Sessions sidebar filter (implemented 2026-09-12)
+
+The following contract applies to earlier releases. The contextual controls
+emit only `antiburn.session_filters_changed`.
 
 The product question is which Sessions sidebar filters readers actually use,
 and whether harness filters concentrate on one agent. The metric is the

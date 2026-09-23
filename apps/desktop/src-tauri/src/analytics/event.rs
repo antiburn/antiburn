@@ -99,6 +99,9 @@ pub enum EventName {
     /// The Sessions sidebar filter changed to a different selection.
     #[cfg(feature = "analytics")]
     SessionFilterSelected,
+    /// The contextual Sessions filters changed.
+    #[cfg(feature = "analytics")]
+    SessionFiltersChanged,
     /// An explicit project folder action completed.
     #[cfg(feature = "analytics")]
     ProjectFolderAction,
@@ -160,6 +163,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::BurnCheckPromptCopied,
     EventName::BurnCheckOutcomeObserved,
     EventName::SessionFilterSelected,
+    EventName::SessionFiltersChanged,
     EventName::ProjectFolderAction,
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
@@ -201,6 +205,7 @@ impl EventName {
             EventName::BurnCheckOutcomeObserved => "antiburn.burn_check_outcome_observed",
             EventName::ProjectFolderAction => "antiburn.project_folder_action",
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
+            EventName::SessionFiltersChanged => "antiburn.session_filters_changed",
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
             EventName::ProviderIncidentsIngested => "antiburn.provider_incidents_ingested",
@@ -499,6 +504,11 @@ pub enum Interaction {
     AppSearchResultOpened {
         category: SearchCategory,
     },
+    /// The contextual Sessions filters changed.
+    SessionFiltersChanged {
+        action: SessionFilterAction,
+        agent: Option<AgentKind>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -707,6 +717,21 @@ pub enum SearchCategory {
     Check,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionFilterAction {
+    AgentAdded,
+    AgentRemoved,
+    AgentsAll,
+    ResultFailing,
+    ResultPassing,
+    ResultAll,
+    SpendNotable,
+    SpendMaterial,
+    SpendAll,
+    ClearedAll,
+}
+
 #[cfg(feature = "analytics")]
 impl Interaction {
     /// The event and the facts this interaction becomes.
@@ -837,6 +862,19 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::SessionFiltersChanged { action, agent } => (
+                EventName::SessionFiltersChanged,
+                Facts {
+                    label: Some(action.as_str()),
+                    detail: match action {
+                        SessionFilterAction::AgentAdded | SessionFilterAction::AgentRemoved => {
+                            agent.map(AgentKind::slug)
+                        }
+                        _ => None,
+                    },
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
@@ -893,6 +931,20 @@ wire_values!(SessionFilterKind, {
 wire_values!(HistoryDirection, { HistoryDirection::Back => "back", HistoryDirection::Forward => "forward" });
 #[cfg(feature = "analytics")]
 wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::Check => "check" });
+
+#[cfg(feature = "analytics")]
+wire_values!(SessionFilterAction, {
+    SessionFilterAction::AgentAdded => "agent_added",
+    SessionFilterAction::AgentRemoved => "agent_removed",
+    SessionFilterAction::AgentsAll => "agents_all",
+    SessionFilterAction::ResultFailing => "result_failing",
+    SessionFilterAction::ResultPassing => "result_passing",
+    SessionFilterAction::ResultAll => "result_all",
+    SessionFilterAction::SpendNotable => "spend_notable",
+    SessionFilterAction::SpendMaterial => "spend_material",
+    SessionFilterAction::SpendAll => "spend_all",
+    SessionFilterAction::ClearedAll => "cleared_all",
+});
 
 #[cfg(feature = "analytics")]
 wire_values!(AutoFixReviewOutcome, {
@@ -1696,6 +1748,7 @@ mod tests {
                 | EventName::BurnCheckOutcomeObserved
                 | EventName::ProjectFolderAction
                 | EventName::SessionFilterSelected
+                | EventName::SessionFiltersChanged
                 | EventName::QuotaIncidentsObserved
                 | EventName::ProviderIncidentsObserved
                 | EventName::ProviderIncidentsIngested
@@ -1708,7 +1761,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            34,
+            35,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -1941,6 +1994,41 @@ mod tests {
         assert_eq!(facts.detail, None);
     }
 
+    #[test]
+    fn session_filters_changed_uses_closed_actions_and_scopes_agent_detail() {
+        for action in [
+            SessionFilterAction::AgentAdded,
+            SessionFilterAction::AgentRemoved,
+        ] {
+            let (name, facts) = Interaction::SessionFiltersChanged {
+                action,
+                agent: Some(AgentKind::Codex),
+            }
+            .resolve();
+            assert_eq!(name, EventName::SessionFiltersChanged);
+            assert_eq!(facts.label, Some(action.as_str()));
+            assert_eq!(facts.detail, Some("codex"));
+        }
+        for action in [
+            SessionFilterAction::AgentsAll,
+            SessionFilterAction::ResultFailing,
+            SessionFilterAction::ResultPassing,
+            SessionFilterAction::ResultAll,
+            SessionFilterAction::SpendNotable,
+            SessionFilterAction::SpendMaterial,
+            SessionFilterAction::SpendAll,
+            SessionFilterAction::ClearedAll,
+        ] {
+            let (_, facts) = Interaction::SessionFiltersChanged {
+                action,
+                agent: Some(AgentKind::Codex),
+            }
+            .resolve();
+            assert_eq!(facts.label, Some(action.as_str()));
+            assert_eq!(facts.detail, None);
+        }
+    }
+
     /// `usage_observed` reads the same closed vocabulary
     /// `live_usage_state_observed` does, rather than trusting a new source's
     /// provider id outright. A provider this build does not recognize maps to
@@ -2021,6 +2109,27 @@ mod tests {
             "origin": "action",
         });
         assert!(serde_json::from_value::<Interaction>(unknown_result).is_err());
+
+        let unknown_filter_action = serde_json::json!({
+            "kind": "sessionFiltersChanged",
+            "action": "future_action",
+            "agent": "codex",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_filter_action).is_err());
+
+        let unknown_filter_agent = serde_json::json!({
+            "kind": "sessionFiltersChanged",
+            "action": "agent_added",
+            "agent": "private-harness",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_filter_agent).is_err());
+
+        let extra_filter_property = serde_json::json!({
+            "kind": "sessionFiltersChanged",
+            "action": "result_all",
+            "repository": "private-name",
+        });
+        assert!(serde_json::from_value::<Interaction>(extra_filter_property).is_err());
     }
 
     #[test]

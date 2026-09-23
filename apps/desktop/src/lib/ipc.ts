@@ -348,6 +348,12 @@ export type Interaction =
       origin: "passive" | "action"
     }
   | {
+      kind: "sessionFiltersChanged"
+      action: SessionFilterAction
+      /** Include only a known agent for an agent add or removal. */
+      agent?: string
+    }
+  | {
       kind: "sessionFilterSelected"
       filter: SessionFilterAnalyticsKind
       /**
@@ -391,6 +397,18 @@ export type PromptPreparationAnalyticsOutcome =
 /** The closed vocabulary `sessionFilterSelected` reports its filter as. */
 type SessionFilterAnalyticsKind =
   "notable" | "material" | "agent" | "failing" | "passing" | "all"
+
+export type SessionFilterAction =
+  | "agent_added"
+  | "agent_removed"
+  | "agents_all"
+  | "result_failing"
+  | "result_passing"
+  | "result_all"
+  | "spend_notable"
+  | "spend_material"
+  | "spend_all"
+  | "cleared_all"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {

@@ -5,12 +5,10 @@ import type { SessionHygienePayload } from "./insightsIpc"
 import { localSessionKey } from "./presentation/localIdentity"
 import {
   filterSessionEntries,
-  matchesSessionFilter,
-  parseSessionFilterId,
   sessionFilterCounts,
-  sessionFilterId,
   MATERIAL_COST_FLOOR_USD,
-  type SessionFilter,
+  parseSessionFilters,
+  serializeSessionFilters,
 } from "./sessionFilters"
 import type { SessionHygieneSnapshot } from "./useSessionHygiene"
 
@@ -54,139 +52,47 @@ function hygieneSnapshotFor(
 
 const EMPTY_HYGIENE: SessionHygieneSnapshot = new Map()
 
-describe("sessionFilterId / parseSessionFilterId", () => {
-  it("round-trips every fixed filter through its stable id", () => {
-    const filters: SessionFilter[] = [
-      { kind: "notable" },
-      { kind: "material" },
-      { kind: "failing" },
-      { kind: "passing" },
-      { kind: "all" },
-    ]
-    for (const filter of filters) {
-      expect(parseSessionFilterId(sessionFilterId(filter))).toEqual(filter)
+describe("filter boundaries", () => {
+  it.each([
+    [null, false],
+    [MATERIAL_COST_FLOOR_USD - 0.01, false],
+    [MATERIAL_COST_FLOOR_USD, true],
+  ])("applies the $1 floor to %s (%s)", (totalUsd, included) => {
+    const session = entry({
+      cost: totalUsd === null ? null : { totalUsd, figureLabel: "Estimated cost" },
+    })
+    expect(
+      filterSessionEntries([session], EMPTY_HYGIENE, parseSessionFilters("material")),
+    ).toEqual(included ? [session] : [])
+  })
+
+  it.each([
+    [2, 0, "passing"],
+    [1, 5, "failing"],
+    [1, 0, "passing"],
+    [0, 0, "neither"],
+  ])("classifies %s clean and %s failed checks as %s", (clean, failed, result) => {
+    const session = entry()
+    const snapshot = hygieneSnapshotFor(session, hygienePayload(clean, failed))
+    for (const filter of ["passing", "failing"]) {
+      expect(filterSessionEntries([session], snapshot, parseSessionFilters(filter))).toEqual(
+        filter === result ? [session] : [],
+      )
     }
   })
 
-  it("formats and parses an agent filter", () => {
-    const filter: SessionFilter = { kind: "agent", agent: "claude-code" }
-    expect(sessionFilterId(filter)).toBe("agent:claude-code")
-    expect(parseSessionFilterId("agent:claude-code")).toEqual(filter)
-  })
-
-  it("falls back an unknown id to all", () => {
-    expect(parseSessionFilterId("bogus")).toEqual({ kind: "all" })
-    expect(parseSessionFilterId("")).toEqual({ kind: "all" })
-  })
-
-  it("falls back an agent id with no slug to all", () => {
-    expect(parseSessionFilterId("agent:")).toEqual({ kind: "all" })
-  })
-})
-
-describe("matchesSessionFilter — notable", () => {
-  it("uses the existing high-cost flame flag, not a recomputed threshold", () => {
-    const highCost = entry({
-      cost: { totalUsd: 50, figureLabel: "Estimated cost", isHighCost: true },
-    })
-    const ordinary = entry({
-      sessionId: "session-2",
-      cost: { totalUsd: 50, figureLabel: "Estimated cost", isHighCost: false },
-    })
-    expect(matchesSessionFilter(highCost, EMPTY_HYGIENE, { kind: "notable" })).toBe(true)
-    expect(matchesSessionFilter(ordinary, EMPTY_HYGIENE, { kind: "notable" })).toBe(false)
-  })
-})
-
-describe("matchesSessionFilter — material", () => {
-  it("excludes an unpriced session", () => {
-    const unpriced = entry({ cost: null })
-    expect(matchesSessionFilter(unpriced, EMPTY_HYGIENE, { kind: "material" })).toBe(false)
-  })
-
-  it("includes a session priced exactly at the floor", () => {
-    const atFloor = entry({
-      cost: { totalUsd: MATERIAL_COST_FLOOR_USD, figureLabel: "Estimated cost" },
-    })
-    expect(matchesSessionFilter(atFloor, EMPTY_HYGIENE, { kind: "material" })).toBe(true)
-  })
-
-  it("excludes a session priced just below the floor", () => {
-    const belowFloor = entry({
-      cost: { totalUsd: MATERIAL_COST_FLOOR_USD - 0.01, figureLabel: "Estimated cost" },
-    })
-    expect(matchesSessionFilter(belowFloor, EMPTY_HYGIENE, { kind: "material" })).toBe(false)
-  })
-})
-
-describe("matchesSessionFilter — agent", () => {
-  it("matches only the named agent", () => {
-    const codex = entry({ agent: "codex" })
-    expect(matchesSessionFilter(codex, EMPTY_HYGIENE, { kind: "agent", agent: "codex" })).toBe(
-      true,
-    )
-    expect(
-      matchesSessionFilter(codex, EMPTY_HYGIENE, { kind: "agent", agent: "claude-code" }),
-    ).toBe(false)
-  })
-})
-
-describe("matchesSessionFilter — failing / passing boundary", () => {
-  it("counts 2/2 clean checks as passing, not failing", () => {
-    const session = entry()
-    const snapshot = hygieneSnapshotFor(session, hygienePayload(2, 0))
-    expect(matchesSessionFilter(session, snapshot, { kind: "passing" })).toBe(true)
-    expect(matchesSessionFilter(session, snapshot, { kind: "failing" })).toBe(false)
-  })
-
-  it("counts 5 findings against 1 clean check as failing, not passing", () => {
-    const session = entry()
-    const snapshot = hygieneSnapshotFor(session, hygienePayload(1, 5))
-    expect(matchesSessionFilter(session, snapshot, { kind: "failing" })).toBe(true)
-    expect(matchesSessionFilter(session, snapshot, { kind: "passing" })).toBe(false)
-  })
-
-  it("counts exactly one clean check as passing", () => {
-    const session = entry()
-    const snapshot = hygieneSnapshotFor(session, hygienePayload(1, 0))
-    expect(matchesSessionFilter(session, snapshot, { kind: "passing" })).toBe(true)
-    expect(matchesSessionFilter(session, snapshot, { kind: "failing" })).toBe(false)
-  })
-
-  it("counts a session with nothing assessed as neither", () => {
-    const session = entry()
-    const snapshot = hygieneSnapshotFor(session, hygienePayload(0, 0))
-    expect(matchesSessionFilter(session, snapshot, { kind: "passing" })).toBe(false)
-    expect(matchesSessionFilter(session, snapshot, { kind: "failing" })).toBe(false)
-  })
-
-  it("treats a session with no transcript id as unassessed", () => {
+  it("treats a session without a transcript id as unassessed", () => {
     const session = entry({ sessionId: undefined })
-    expect(matchesSessionFilter(session, EMPTY_HYGIENE, { kind: "passing" })).toBe(false)
-    expect(matchesSessionFilter(session, EMPTY_HYGIENE, { kind: "failing" })).toBe(false)
-  })
-})
-
-describe("matchesSessionFilter — all", () => {
-  it("matches every entry", () => {
-    expect(matchesSessionFilter(entry(), EMPTY_HYGIENE, { kind: "all" })).toBe(true)
-  })
-})
-
-describe("filterSessionEntries", () => {
-  it("keeps only the entries the filter selects, in order", () => {
-    const claude = entry({ sessionId: "a", agent: "claude-code" })
-    const codex = entry({ sessionId: "b", agent: "codex" })
-    const result = filterSessionEntries([claude, codex], EMPTY_HYGIENE, {
-      kind: "agent",
-      agent: "codex",
-    })
-    expect(result).toEqual([codex])
+    for (const filter of ["passing", "failing"]) {
+      expect(
+        filterSessionEntries([session], EMPTY_HYGIENE, parseSessionFilters(filter)),
+      ).toEqual([])
+    }
   })
 })
 
 describe("sessionFilterCounts", () => {
-  it("counts every fixed filter and every present agent, sorted by display name", () => {
+  it("counts each facet and every present agent", () => {
     const notable = entry({
       sessionId: "notable",
       agent: "codex",
@@ -208,51 +114,160 @@ describe("sessionFilterCounts", () => {
       ...hygieneSnapshotFor(passing, hygienePayload(1, 0)),
     ])
 
-    const counts = sessionFilterCounts(entries, hygiene)
-    expect(counts.notable).toBe(1)
-    expect(counts.material).toBe(1)
-    expect(counts.failing).toBe(1)
-    expect(counts.passing).toBe(1)
+    const counts = sessionFilterCounts(entries, hygiene, parseSessionFilters("all"))
+    expect(counts.spend.notable).toBe(1)
+    expect(counts.spend.material).toBe(1)
+    expect(counts.result.failing).toBe(1)
+    expect(counts.result.passing).toBe(1)
     expect(counts.all).toBe(5)
-    // Codex (2 sessions) and Cursor and Claude Code (1 each), by display name:
-    // Claude Code, Codex, Cursor.
-    expect(counts.agents).toEqual([
-      { agent: "claude-code", displayName: "Claude Code", count: 2 },
-      { agent: "codex", displayName: "Codex", count: 2 },
-      { agent: "cursor", displayName: "Cursor", count: 1 },
-    ])
+    expect(counts.agents).toEqual({ "claude-code": 2, codex: 2, cursor: 1 })
   })
 
-  it("removes snoozed findings from both filter rows and sidebar counts", () => {
+  it("removes snoozed findings from both filtered rows and contextual counts", () => {
     const failing = entry({ sessionId: "failing" })
     const hygiene = new Map(hygieneSnapshotFor(failing, hygienePayload(0, 1)))
     const snoozed = new Set(["sessionsOverDepth"] as const)
 
-    expect(matchesSessionFilter(failing, hygiene, { kind: "failing" }, snoozed)).toBe(false)
-    expect(matchesSessionFilter(failing, hygiene, { kind: "passing" }, snoozed)).toBe(false)
-    expect(filterSessionEntries([failing], hygiene, { kind: "failing" }, snoozed)).toEqual([])
-    expect(sessionFilterCounts([failing], hygiene, snoozed)).toMatchObject({
-      failing: 0,
-      passing: 0,
+    expect(
+      filterSessionEntries([failing], hygiene, parseSessionFilters("failing"), snoozed),
+    ).toEqual([])
+    expect(
+      sessionFilterCounts([failing], hygiene, parseSessionFilters("all"), snoozed),
+    ).toMatchObject({
+      result: { failing: 0, passing: 0 },
     })
-  })
-
-  it("gives an unrecognized agent slug a title-cased display name", () => {
-    const counts = sessionFilterCounts([entry({ agent: "future-agent" })], EMPTY_HYGIENE)
-    expect(counts.agents).toEqual([
-      { agent: "future-agent", displayName: "Future Agent", count: 1 },
-    ])
   })
 
   it("counts nothing for an empty list", () => {
-    const counts = sessionFilterCounts([], EMPTY_HYGIENE)
+    const counts = sessionFilterCounts([], EMPTY_HYGIENE, parseSessionFilters("all"))
     expect(counts).toEqual({
-      notable: 0,
-      material: 0,
-      failing: 0,
-      passing: 0,
       all: 0,
-      agents: [],
+      matching: 0,
+      agentsAll: 0,
+      result: { all: 0, failing: 0, passing: 0 },
+      spend: { all: 0, notable: 0, material: 0 },
+      agents: {},
     })
+  })
+})
+
+describe("saved contextual filters", () => {
+  it.each([
+    ["all", { agents: [], result: "all", spend: "all" }],
+    ["notable", { agents: [], result: "all", spend: "notable" }],
+    ["material", { agents: [], result: "all", spend: "material" }],
+    ["failing", { agents: [], result: "failing", spend: "all" }],
+    ["passing", { agents: [], result: "passing", spend: "all" }],
+    ["agent:future-agent", { agents: ["future-agent"], result: "all", spend: "all" }],
+  ])("migrates %s without changing its meaning", (saved, expected) => {
+    expect(parseSessionFilters(saved)).toEqual(expected)
+  })
+
+  it.each([
+    "",
+    "bogus",
+    "agent:",
+    "agent:   ",
+    "v2:{}",
+    "v1:not json",
+    "v1:null",
+    "v1:[]",
+    'v1:{"agents":[],"result":"unknown","spend":"all"}',
+    'v1:{"agents":[],"result":"all","spend":"any"}',
+    'v1:{"agents":[1],"result":"all","spend":"all"}',
+    'v1:{"agents":[""],"result":"all","spend":"all"}',
+    'v1:{"agents":["  "],"result":"all","spend":"all"}',
+    'v1:{"agents":[],"result":"all"}',
+  ])("falls back safely for %s", (saved) => {
+    expect(parseSessionFilters(saved)).toEqual({ agents: [], result: "all", spend: "all" })
+  })
+
+  it("deduplicates and sorts opaque agent slugs for stable round trips", () => {
+    const filters = {
+      agents: ["future-agent", "codex", "codex"],
+      result: "failing" as const,
+      spend: "material" as const,
+    }
+    const saved = serializeSessionFilters(filters)
+    expect(saved).toBe(
+      'v1:{"agents":["codex","future-agent"],"result":"failing","spend":"material"}',
+    )
+    expect(serializeSessionFilters(parseSessionFilters(saved))).toBe(saved)
+    expect(filters.agents).toEqual(["future-agent", "codex", "codex"])
+  })
+})
+
+describe("composable facets and contextual counts", () => {
+  const codex = entry({
+    agent: "codex",
+    sessionId: "a",
+    cost: { totalUsd: 1, figureLabel: "Estimated cost", isHighCost: true },
+  })
+  const claude = entry({
+    agent: "claude-code",
+    sessionId: "b",
+    cost: { totalUsd: 2, figureLabel: "Estimated cost" },
+  })
+  const cursor = entry({ agent: "cursor", sessionId: "c", cost: null })
+  const sessions = [codex, claude, cursor]
+  const hygiene = new Map([
+    ...hygieneSnapshotFor(codex, hygienePayload(1, 1)),
+    ...hygieneSnapshotFor(claude, hygienePayload(2, 0)),
+  ])
+
+  it("combines agents with OR and facets with AND", () => {
+    const filters = {
+      agents: ["codex", "claude-code"],
+      result: "all" as const,
+      spend: "all" as const,
+    }
+    expect(filterSessionEntries(sessions, hygiene, filters)).toEqual([codex, claude])
+    expect(
+      filterSessionEntries(sessions, hygiene, {
+        ...filters,
+        result: "failing",
+        spend: "material",
+      }),
+    ).toEqual([codex])
+    expect(
+      filterSessionEntries(sessions, hygiene, { ...filters, agents: [], result: "all" }),
+    ).toEqual(sessions)
+    expect(
+      filterSessionEntries(sessions, hygiene, {
+        ...filters,
+        agents: ["cursor"],
+        spend: "material",
+      }),
+    ).toEqual([])
+  })
+
+  it("replaces just the option's facet and isolates each agent count", () => {
+    const filters = {
+      agents: ["codex", "future-agent"],
+      result: "failing" as const,
+      spend: "material" as const,
+    }
+    const counts = sessionFilterCounts(sessions, hygiene, filters)
+    expect(counts).toEqual({
+      all: 3,
+      matching: 1,
+      agentsAll: 1,
+      agents: { codex: 1, "claude-code": 0, cursor: 0, "future-agent": 0 },
+      result: { all: 1, failing: 1, passing: 0 },
+      spend: { all: 1, material: 1, notable: 1 },
+    })
+    expect(
+      sessionFilterCounts(sessions, hygiene, { ...filters, result: "all" }).agents,
+    ).toEqual({ codex: 1, "claude-code": 1, cursor: 0, "future-agent": 0 })
+  })
+
+  it("uses the same snoozed checks for rows and counts", () => {
+    const filters = { agents: [], result: "passing" as const, spend: "all" as const }
+    const snoozed = new Set(["sessionsOverDepth"] as const)
+    expect(filterSessionEntries(sessions, hygiene, filters, snoozed)).toEqual([codex, claude])
+    const counts = sessionFilterCounts(sessions, hygiene, filters, snoozed)
+    expect(counts.matching).toBe(2)
+    expect(counts.result).toEqual({ all: 3, failing: 0, passing: 2 })
+    expect(counts.agents).toEqual({ codex: 1, "claude-code": 1, cursor: 0 })
   })
 })

@@ -1,5 +1,5 @@
 import { isMacOS } from "../lib/platform"
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { Activity } from "lucide-react"
@@ -9,8 +9,7 @@ import type { SessionListEntry } from "../components/session/SessionList"
 import type * as IpcModule from "../lib/ipc"
 import type { MainWindowNavigationRequest } from "../lib/ipc"
 import type { SessionSubject } from "../lib/sessionSubject"
-import type { SessionFilter } from "../lib/sessionFilters"
-import * as SnoozedBurnChecks from "../lib/snoozedBurnChecks"
+import type { SessionFilters } from "../lib/sessionFilters"
 import capability from "../../src-tauri/capabilities/main.json"
 import { noteInteraction, openSettingsWindow } from "../lib/ipc"
 import { MainWindowView } from "./MainWindowView"
@@ -61,33 +60,29 @@ const overviewMocks = vi.hoisted(() => ({
   } satisfies SessionListEntry,
 }))
 
-/**
- * A minimal stand-in for `MainActivitySession`. `MainWindowView` only reads
- * `entries` and `filter` off its snapshot and calls `setFilter`, so the fake
- * covers only that surface and lets a test drive the sidebar's counts and
- * selection without the real class's async IPC-backed engine.
- */
+/** Keep the navigation state synchronous so tests can drive view transitions. */
 const activityMocks = vi.hoisted(() => {
   class FakeMainActivitySession {
     revealDetail = vi.fn()
     snapshot: {
       entries: SessionListEntry[] | null
-      filter: SessionFilter
+      filters: SessionFilters
       subject: SessionSubject | null
     } = {
       entries: null,
       subject: null,
-      filter: { kind: "all" },
+      filters: { agents: [], result: "all", spend: "all" },
     }
     private listeners = new Set<() => void>()
-    setFilter = vi.fn((filter: SessionFilter) => {
-      this.snapshot = { ...this.snapshot, filter }
+    setFilters = vi.fn((filters: SessionFilters) => {
+      this.snapshot = { ...this.snapshot, filters }
       this.notify()
+      this.onNavigation?.("user")
     })
     onNavigation?: (origin: "user" | "automatic") => void
     onDeleted?: (subject: SessionSubject) => void
-    restoreNavigation = vi.fn((filter: SessionFilter, subject: SessionSubject | null) => {
-      this.snapshot = { ...this.snapshot, filter, subject }
+    restoreNavigation = vi.fn((filters: SessionFilters, subject: SessionSubject | null) => {
+      this.snapshot = { ...this.snapshot, filters, subject }
       this.notify()
     })
     selectEntry = vi.fn((entry: SessionListEntry) => {
@@ -275,7 +270,7 @@ describe("MainWindowView", () => {
     })
   })
 
-  it("searches agent session filters and reaches the same sidebar selection", async () => {
+  it("searches agent session filters and selects the Sessions parent", async () => {
     render(<MainWindowView />)
     act(() =>
       activitySession().setEntries([
@@ -283,26 +278,46 @@ describe("MainWindowView", () => {
         sessionEntry({ agent: "codex", sessionId: "codex-session" }),
       ]),
     )
-    for (const label of ["Claude Code Sessions", "Codex Sessions"]) {
-      fireEvent.click(tab(label))
-      const selected = activitySession().getSnapshot().filter
+    for (const [label, agent] of [
+      ["Claude Code Sessions", "claude-code"],
+      ["Codex Sessions", "codex"],
+    ] as const) {
+      fireEvent.click(tab("Sessions"))
+      act(() =>
+        activitySession().setFilters({
+          agents: ["claude-code", "codex"],
+          result: "failing",
+          spend: "material",
+        }),
+      )
       fireEvent.click(tab("Overview"))
       fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
       fireEvent.change(screen.getByRole("combobox"), { target: { value: label } })
       await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
-      expect(activitySession().getSnapshot().filter, label).toEqual(selected)
+      expect(activitySession().getSnapshot().filters, label).toEqual({
+        agents: [agent],
+        result: "all",
+        spend: "all",
+      })
+      expect(tab("Sessions")).toHaveAttribute("aria-selected", "true")
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
+      expect(screen.queryByRole("tab", { name: label })).not.toBeInTheDocument()
     }
   })
 
   it.each(["sidebar", "search"])(
-    "opens All Sessions with the retained selection through %s",
+    "restores the selection and the appropriate facets through %s",
     async (source) => {
       render(<MainWindowView />)
       fireEvent.click(tab("Sessions"))
       act(() => activitySession().selectEntry(sessionEntry()))
       const subject = activitySession().getSnapshot().subject
-      fireEvent.click(tab("Failing Sessions"))
+      const selectedFilters: SessionFilters = {
+        agents: ["claude-code", "codex"],
+        result: "failing",
+        spend: "material",
+      }
+      act(() => activitySession().setFilters(selectedFilters))
       fireEvent.click(tab("Limits"))
       if (source === "sidebar") {
         fireEvent.click(tab("Sessions"))
@@ -311,8 +326,10 @@ describe("MainWindowView", () => {
         fireEvent.change(screen.getByRole("combobox"), { target: { value: "Sessions" } })
         await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
       }
+      const expectedFilters =
+        source === "sidebar" ? selectedFilters : { agents: [], result: "all", spend: "all" }
       expect(activitySession().getSnapshot()).toMatchObject({
-        filter: { kind: "all" },
+        filters: expectedFilters,
         subject,
       })
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
@@ -320,13 +337,13 @@ describe("MainWindowView", () => {
       expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
       fireEvent.click(screen.getByRole("button", { name: "Back" }))
       expect(activitySession().getSnapshot()).toMatchObject({
-        filter: { kind: "failing" },
+        filters: selectedFilters,
         subject,
       })
       fireEvent.click(screen.getByRole("button", { name: "Forward" }))
       fireEvent.click(screen.getByRole("button", { name: "Forward" }))
       expect(activitySession().getSnapshot()).toMatchObject({
-        filter: { kind: "all" },
+        filters: expectedFilters,
         subject,
       })
     },
@@ -359,9 +376,7 @@ describe("MainWindowView", () => {
   it("opens Overview by default and keeps Checks and Sessions in the sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
-    // Overview, Limits, Checks, Sessions, and Sessions' five fixed filter
-    // children (no harness rows yet, since no entries have loaded).
-    expect(screen.getAllByRole("tab")).toHaveLength(9)
+    expect(screen.getAllByRole("tab")).toHaveLength(4)
     expect(screen.getByRole("tab", { name: "Limits" })).toBeVisible()
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
       "aria-selected",
@@ -384,9 +399,17 @@ describe("MainWindowView", () => {
   })
   it("lands in Sessions with the clicked recent session selected", () => {
     render(<MainWindowView />)
+    fireEvent.click(tab("Sessions"))
+    act(() =>
+      activitySession().setFilters({
+        agents: ["codex"],
+        result: "failing",
+        spend: "material",
+      }),
+    )
+    fireEvent.click(tab("Overview"))
     fireEvent.click(screen.getByRole("button", { name: "Recent session" }))
-    // The "all" filter's own child row reads as selected inside Sessions.
-    expect(screen.getByRole("tab", { name: "All Sessions" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Sessions" })).toHaveAttribute(
       "aria-selected",
       "true",
     )
@@ -395,7 +418,11 @@ describe("MainWindowView", () => {
       agent: "claude",
       sessionId: "recent-1",
     })
-    expect(activitySession().getSnapshot().filter).toEqual({ kind: "all" })
+    expect(activitySession().getSnapshot().filters).toEqual({
+      agents: [],
+      result: "all",
+      spend: "all",
+    })
   })
 
   it("opens the existing Settings window without changing the selected section", () => {
@@ -466,78 +493,34 @@ describe("MainWindowView", () => {
     expect(screen.getByText("Example detail")).toBeVisible()
   })
 
-  describe("Sessions filter children", () => {
-    it("renders the fixed filter children without counts before entries load", () => {
+  describe("Sessions navigation", () => {
+    it("keeps filters out of the sidebar before and after entries load", () => {
       render(<MainWindowView />)
-      for (const name of [
-        "Notable Sessions",
-        "Material Sessions",
-        "Failing Sessions",
-        "Passing Sessions",
-        "All Sessions",
-      ]) {
-        expect(tab(name)).not.toBeNull()
-      }
-      expect(within(tab("Notable Sessions")).queryByText(/^\d+$/)).toBeNull()
-    })
-
-    it("shows a live count per fixed filter and one row per loaded harness", () => {
-      render(<MainWindowView />)
-      act(() => {
+      const expected = ["Overview", "Limits", "Checks", "Sessions"]
+      expect(screen.getAllByRole("tab").map((item) => item.textContent)).toEqual(expected)
+      act(() =>
         activitySession().setEntries([
-          sessionEntry({
-            agent: "claude-code",
-            sessionId: "s1",
-            cost: { totalUsd: 5, figureLabel: "Estimated cost", isHighCost: true },
-          }),
-          sessionEntry({
-            agent: "codex",
-            sessionId: "s2",
-            cost: { totalUsd: 0.5, figureLabel: "Estimated cost" },
-          }),
-        ])
-      })
-      expect(within(tab("Notable Sessions")).getByText("1")).toBeInTheDocument()
-      expect(within(tab("Material Sessions")).getByText("1")).toBeInTheDocument()
-      expect(within(tab("Claude Code Sessions")).getByText("1")).toBeInTheDocument()
-      expect(within(tab("Codex Sessions")).getByText("1")).toBeInTheDocument()
-      expect(within(tab("Failing Sessions")).getByText("0")).toBeInTheDocument()
-      expect(within(tab("Passing Sessions")).getByText("0")).toBeInTheDocument()
-      expect(within(tab("All Sessions")).getByText("2")).toBeInTheDocument()
+          sessionEntry({ agent: "claude-code", sessionId: "claude-session" }),
+          sessionEntry({ agent: "codex", sessionId: "codex-session" }),
+        ]),
+      )
+      expect(screen.getAllByRole("tab").map((item) => item.textContent)).toEqual(expected)
     })
 
-    it("selects Sessions and applies the filter when a child is clicked", () => {
+    it("preserves facets while navigating to other sections and back", () => {
       render(<MainWindowView />)
-      fireEvent.click(tab("Failing Sessions"))
-      expect(activitySession().getSnapshot().filter).toEqual({ kind: "failing" })
-      expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
-    })
-
-    it("omits sidebar filter counts until snoozes are ready", () => {
-      const hook = vi
-        .spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks")
-        .mockReturnValue({ status: "loading", records: [] })
-      render(<MainWindowView />)
-      act(() => activitySession().setEntries([sessionEntry()]))
-
-      expect(within(tab("All Sessions")).queryByText("1")).toBeNull()
-      expect(within(tab("Failing Sessions")).queryByText("0")).toBeNull()
-      hook.mockRestore()
-    })
-
-    it("resets the filter to all when the Sessions row itself is clicked", () => {
-      render(<MainWindowView />)
-      fireEvent.click(tab("Failing Sessions"))
-      activitySession().setFilter.mockClear()
       fireEvent.click(tab("Sessions"))
-      expect(activitySession().getSnapshot().filter).toEqual({ kind: "all" })
-    })
-
-    it("highlights the active filter's own child row instead of the parent", () => {
-      render(<MainWindowView />)
-      fireEvent.click(tab("Failing Sessions"))
-      expect(tab("Failing Sessions")).toHaveAttribute("aria-selected", "true")
-      expect(tab("Sessions")).toHaveAttribute("aria-selected", "false")
+      const filters: SessionFilters = {
+        agents: ["claude-code", "codex"],
+        result: "failing",
+        spend: "material",
+      }
+      act(() => activitySession().setFilters(filters))
+      for (const name of ["Checks", "Overview", "Limits", "Sessions"]) {
+        fireEvent.click(tab(name))
+      }
+      expect(activitySession().getSnapshot().filters).toEqual(filters)
+      expect(tab("Sessions")).toHaveAttribute("aria-selected", "true")
     })
 
     it("lands on Checks when the popover requests that section", async () => {
@@ -557,8 +540,14 @@ describe("MainWindowView", () => {
       expect(screen.getByRole("tabpanel", { name: "Checks" })).toBeVisible()
     })
 
-    it("keeps the current filter when a cross-window request selects Sessions", async () => {
+    it("keeps the current facets when a cross-window request selects Sessions", async () => {
       render(<MainWindowView />)
+      const filters: SessionFilters = {
+        agents: ["codex"],
+        result: "failing",
+        spend: "material",
+      }
+      act(() => activitySession().setFilters(filters))
       await vi.waitFor(() => expect(ipcMocks.sectionTarget).not.toBeNull())
       act(() => {
         ipcMocks.sectionTarget!({
@@ -566,7 +555,7 @@ describe("MainWindowView", () => {
           destination: { section: "activity", target: null },
         })
       })
-      expect(activitySession().setFilter).not.toHaveBeenCalled()
+      expect(activitySession().getSnapshot().filters).toEqual(filters)
       expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
     })
 
@@ -621,9 +610,21 @@ describe("MainWindowView", () => {
       render(<MainWindowView />)
       fireEvent.click(screen.getByRole("button", { name: "Recent session" }))
       expect(activitySession().getSnapshot().subject?.sessionId).toBe("recent-1")
+      act(() =>
+        activitySession().setFilters({
+          agents: ["claude-code"],
+          result: "failing",
+          spend: "material",
+        }),
+      )
       fireEvent.click(tab("Limits"))
       fireEvent.click(screen.getByRole("button", { name: "Open Limits session" }))
       expect(activitySession().getSnapshot().subject?.sessionId).toBe("limits-session")
+      expect(activitySession().getSnapshot().filters).toEqual({
+        agents: [],
+        result: "all",
+        spend: "all",
+      })
       fireEvent.click(screen.getByRole("button", { name: "Back" }))
       expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
     })

@@ -1,13 +1,17 @@
-import { useRef } from "react"
+import { Fragment, useId, useRef, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
+import { Tooltip } from "../presentation/Tooltip"
 
 export type SegmentedOption<T extends string> = {
   value: T
   label: string
+  /** Explains the value behind this short label on hover, focus, and to assistive technology. */
+  description?: ReactNode
 }
 
 export type SegmentedControlVariant = "segmented" | "text-tabs" | "raised-tabs" | "native-tabs"
+export type SegmentedControlSelectedTone = "accent" | "neutral"
 
 /** A single-select pill group exposed as a radiogroup (or a tablist). Works
  *  for any number of options.
@@ -40,6 +44,7 @@ export function SegmentedControl<T extends string>({
   idPrefix,
   variant = "segmented",
   size = "regular",
+  selectedTone = "accent",
   disabled = false,
 }: {
   options: ReadonlyArray<SegmentedOption<T>>
@@ -54,6 +59,8 @@ export function SegmentedControl<T extends string>({
   variant?: SegmentedControlVariant
   /** Row height and label scale for `variant="text-tabs"` only. */
   size?: "regular" | "large"
+  /** Selected-label ink for text tabs. Other variants keep their established appearance. */
+  selectedTone?: SegmentedControlSelectedTone
   disabled?: boolean
 }) {
   const textTabs = variant === "text-tabs"
@@ -67,6 +74,7 @@ export function SegmentedControl<T extends string>({
     0,
     options.findIndex((option) => option.value === value),
   )
+  const generatedId = useId()
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   function selectIndex(index: number) {
@@ -128,12 +136,14 @@ export function SegmentedControl<T extends string>({
       {options.map((option, index) => {
         const selected = value === option.value
         const optionId = idPrefix ? `${idPrefix}-${option.value}` : undefined
-        return (
+        const descriptionId = option.description
+          ? `${idPrefix ?? `segmented-${generatedId}`}-${option.value}-description`
+          : undefined
+        const button = (
           <button
             ref={(node) => {
               buttonRefs.current[index] = node
             }}
-            key={option.value}
             id={optionId}
             type="button"
             disabled={disabled}
@@ -141,6 +151,7 @@ export function SegmentedControl<T extends string>({
             aria-checked={semantics === "radio" ? selected : undefined}
             aria-selected={semantics === "tabs" ? selected : undefined}
             aria-controls={semantics === "tabs" && idPrefix ? `${idPrefix}-panel` : undefined}
+            aria-describedby={descriptionId}
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange(option.value)}
             onKeyDown={(event) => {
@@ -164,7 +175,10 @@ export function SegmentedControl<T extends string>({
                     textTabsLarge ? "type-body" : "type-footnote",
                     "relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
                     selected
-                      ? "font-medium text-accent"
+                      ? cn(
+                          "font-medium",
+                          selectedTone === "neutral" ? "text-label" : "text-accent",
+                        )
                       : "text-label-tertiary hover:text-label-secondary",
                   )
                 : nativeTabs
@@ -230,6 +244,20 @@ export function SegmentedControl<T extends string>({
               {option.label}
             </span>
           </button>
+        )
+        return (
+          <Fragment key={option.value}>
+            {option.description ? (
+              <Tooltip label={option.description}>{button}</Tooltip>
+            ) : (
+              button
+            )}
+            {option.description ? (
+              <span id={descriptionId} className="sr-only">
+                {option.description}
+              </span>
+            ) : null}
+          </Fragment>
         )
       })}
     </div>

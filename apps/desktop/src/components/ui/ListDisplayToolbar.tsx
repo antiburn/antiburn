@@ -1,5 +1,9 @@
 import { CollectionToolbar } from "./CollectionToolbar"
-import { SegmentedControl, type SegmentedOption } from "./SegmentedControl"
+import {
+  SegmentedControl,
+  type SegmentedControlSelectedTone,
+  type SegmentedOption,
+} from "./SegmentedControl"
 
 export function ListDisplayToolbar<T extends string>({
   label,
@@ -9,6 +13,8 @@ export function ListDisplayToolbar<T extends string>({
   ariaLabel,
   dragRegion = false,
   className,
+  selectedTone = "accent",
+  topPadding = "default",
 }: {
   label?: string
   options: ReadonlyArray<SegmentedOption<T>>
@@ -17,10 +23,13 @@ export function ListDisplayToolbar<T extends string>({
   ariaLabel: string
   dragRegion?: boolean
   className?: string
+  selectedTone?: SegmentedControlSelectedTone
+  topPadding?: "default" | "space-sm"
 }) {
   return (
     <CollectionToolbar
       dragRegion={dragRegion}
+      topPadding={topPadding}
       className={[label ? "justify-between" : "justify-end", className]
         .filter(Boolean)
         .join(" ")}
@@ -33,6 +42,7 @@ export function ListDisplayToolbar<T extends string>({
         ariaLabel={ariaLabel}
         className="normal-case"
         variant="text-tabs"
+        selectedTone={selectedTone}
       />
     </CollectionToolbar>
   )

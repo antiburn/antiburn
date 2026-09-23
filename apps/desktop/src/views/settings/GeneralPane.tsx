@@ -145,9 +145,9 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
         <Card>
           <SettingsRow
             searchId="recentDays"
-            description={`The popover lists sessions from the last ${dayLabel(
+            description={`Sessions and the popover show activity from the last ${dayLabel(
               settings.activityWindowDays,
-            )}. This changes the list, not storage; indexed sessions outside the window remain on this machine.`}
+            )}. Active sessions are always included. This changes the list, not storage; indexed sessions outside the window remain on this machine.`}
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
                 {dayLabel(settings.activityWindowDays)}

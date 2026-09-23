@@ -224,4 +224,33 @@ describe("SegmentedControl", () => {
     expect(selected.className).toContain("font-medium")
     expect(selected.className).toContain("text-accent")
   })
+
+  it("supports a neutral selected text tab and describes each actual button", () => {
+    render(
+      <SegmentedControl
+        options={[
+          { value: "cost", label: "Cost", description: "Estimated session cost." },
+          {
+            value: "week",
+            label: "Week %",
+            description: "Estimated share of the provider weekly limit.",
+          },
+        ]}
+        value="cost"
+        onChange={() => {}}
+        ariaLabel="Session metric"
+        variant="text-tabs"
+        selectedTone="neutral"
+      />,
+    )
+
+    const selected = screen.getByRole("radio", { name: "Cost" })
+    expect(selected).toHaveClass("text-label")
+    expect(selected).not.toHaveClass("text-accent")
+    expect(selected).toHaveAttribute("aria-describedby")
+    expect(
+      document.getElementById(selected.getAttribute("aria-describedby")!),
+    ).toHaveTextContent("Estimated session cost.")
+    expect(screen.getByRole("radio", { name: "Week %" })).toHaveAttribute("aria-describedby")
+  })
 })

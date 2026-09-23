@@ -164,6 +164,15 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Stored and returned verbatim; this side does not validate the id.
     assert_eq!(saved.session_filter, "agent:codex");
     assert_eq!(saved.working_week, WorkingWeek::Five);
+    let versioned =
+        r#"v1:{"agents":["claude-code","codex"],"result":"failing","spend":"material"}"#;
+    store
+        .save_settings(&AppSettings {
+            session_filter: versioned.to_string(),
+            ..saved.clone()
+        })
+        .unwrap();
+    assert_eq!(store.settings().unwrap().session_filter, versioned);
     // The empty milestone subset survives a round trip as "none selected",
     // not as a reset back to the defaults.
     assert!(!saved.milestones_weekly.any());

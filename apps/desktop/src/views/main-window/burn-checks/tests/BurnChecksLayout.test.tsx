@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BurnCheckTargetPayload, ChecksReportPayload } from "../../../../lib/insightsIpc"
@@ -6,6 +6,7 @@ import type * as ClipboardModule from "../../../../lib/clipboard"
 import type * as InsightsIpcModule from "../../../../lib/insightsIpc"
 import type * as IpcModule from "../../../../lib/ipc"
 import * as SnoozedBurnChecks from "../../../../lib/snoozedBurnChecks"
+import { BurnChecksHeader } from "../BurnChecksHeader"
 
 import {
   report,
@@ -163,13 +164,44 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
     expect(first).not.toHaveAttribute("aria-expanded")
   })
 
-  it("keeps group counts and the period without an assessment info control", async () => {
+  it("separates the collection title from group counts and explains the fixed period", async () => {
     setup(target, false, aggregate, report)
     expect(await screen.findByRole("heading", { name: "Failed checks 1" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Passed checks 1" })).toBeVisible()
-    expect(screen.getByText("30 days")).toBeVisible()
+    expect(screen.getByRole("heading", { name: "Checks" })).not.toHaveClass("sr-only")
+    expect(
+      screen.getByLabelText("3 check types in total, including snoozed checks"),
+    ).toHaveAttribute("aria-live", "polite")
+    expect(
+      screen.getByLabelText("3 check types in total, including snoozed checks"),
+    ).toHaveAttribute("aria-atomic", "true")
+    const range = screen.getByLabelText("30 days, fixed analysis period")
+    expect(range).toHaveTextContent("30 days")
+    expect(range.tagName).toBe("SPAN")
+    expect(screen.queryByRole("button", { name: "Filters" })).not.toBeInTheDocument()
+    act(() => range.focus())
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Checks use the last 30 days of sessions.",
+    )
+    expect(range).toHaveAccessibleDescription("Checks use the last 30 days of sessions.")
     expect(screen.queryByRole("button", { name: "Assessment details" })).not.toBeInTheDocument()
     expect(screen.queryByText("Coverage details")).not.toBeInTheDocument()
+  })
+
+  it("counts check types including snoozed and unassessed checks, not session results", () => {
+    const state = vi.spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks").mockReturnValue({
+      status: "ready",
+      records: [{ detector: "oldModelUsage", scope: "check", until: null }],
+    })
+    try {
+      render(<BurnChecksHeader report={report} />)
+      expect(
+        screen.getByLabelText("3 check types in total, including snoozed checks"),
+      ).toHaveTextContent("3")
+      expect(screen.queryByRole("heading", { name: /Failed checks/ })).toBeNull()
+    } finally {
+      state.mockRestore()
+    }
   })
 
   it("leaves shared titlebar ownership to the layout while loading and after load", async () => {
@@ -178,6 +210,9 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
       const pending = deferred<ChecksReportPayload>()
       const { view } = setup(target, false, aggregate, pending.promise)
       expect(view.container.querySelector("[data-tauri-drag-region]")).toBeNull()
+      expect(screen.getByRole("heading", { name: "Checks" })).not.toHaveClass("sr-only")
+      expect(screen.getByLabelText("30 days, fixed analysis period")).toBeVisible()
+      expect(screen.queryByLabelText(/check types? in total/)).not.toBeInTheDocument()
       await act(async () => pending.resolve(report))
       await screen.findByRole("button", { name: /Old model usage.*8% estimated burn/ })
       expect(view.container.querySelectorAll("[data-tauri-drag-region]")).toHaveLength(0)
