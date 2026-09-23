@@ -96,11 +96,12 @@
 }
 
 /*
- * The Enhance button in the bottom action bar. A deep brand ground carries
- * soft blobs of brand, gold, red and indigo on two layers. The layers turn in
- * opposite directions at 29s and 41s, so the pattern does not repeat in any
- * interval that a reader notices. The colors mix from the theme tokens. The
- * reduced-motion clamp in `motion.css` stops the motion.
+ * The Enhance button in the bottom action bar. A brand ground carries soft
+ * blobs of lighter orange, warm yellow and a light highlight on two layers.
+ * All colors stay in one warm family, so the blend never goes muddy. The
+ * layers turn in opposite directions at 29s and 41s, so the pattern does not
+ * repeat in any interval that a reader notices. The reduced-motion clamp in
+ * `motion.css` stops the motion.
  */
 
 .overview-enhance {
@@ -112,10 +113,11 @@
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background-color: color-mix(in oklab, var(--color-brand) 72%, var(--color-system-indigo) 28%);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 22%, transparent),
-    inset 0 0 0 1px color-mix(in oklab, var(--color-shimmer) 8%, transparent);
+  /* WebKit does not clip a transformed child to a rounded overflow box.
+     The clip path crops the turning layers to the corners. */
+  clip-path: inset(0 round var(--radius-popover));
+  background-color: var(--color-brand-tint);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent);
   transition: transform var(--duration-medium) var(--ease-out-quart);
 }
 
@@ -132,17 +134,17 @@
   background:
     radial-gradient(
       circle at 22% 38%,
-      color-mix(in oklab, var(--color-brand-tint) 85%, transparent),
-      transparent 42%
+      color-mix(in oklab, var(--color-system-orange-tint) 80%, transparent),
+      transparent 40%
     ),
     radial-gradient(
       circle at 74% 62%,
-      color-mix(in oklab, var(--color-system-gold) 55%, transparent),
-      transparent 38%
+      color-mix(in oklab, var(--color-system-yellow-tint) 45%, transparent),
+      transparent 36%
     ),
     radial-gradient(
-      circle at 48% 80%,
-      color-mix(in oklab, var(--color-system-red) 50%, transparent),
+      circle at 48% 82%,
+      color-mix(in oklab, var(--color-brand) 55%, transparent),
       transparent 40%
     );
   animation: overview-enhance-turn 29s linear infinite;
@@ -151,16 +153,15 @@
 .overview-enhance-face::after {
   background:
     radial-gradient(
-      circle at 68% 30%,
-      color-mix(in oklab, var(--color-system-indigo) 45%, transparent),
-      transparent 36%
+      circle at 66% 30%,
+      color-mix(in oklab, var(--color-shimmer) 22%, transparent),
+      transparent 30%
     ),
     radial-gradient(
       circle at 30% 70%,
-      color-mix(in oklab, var(--color-brand-tint) 55%, transparent),
+      color-mix(in oklab, var(--color-system-orange-tint) 50%, transparent),
       transparent 34%
     );
-  mix-blend-mode: soft-light;
   animation: overview-enhance-turn 41s linear infinite reverse;
 }
 
@@ -169,9 +170,9 @@
   inset: 10px 8px -6px;
   z-index: -1;
   border-radius: var(--radius-popover);
-  background: color-mix(in oklab, var(--color-brand) 70%, var(--color-system-indigo) 30%);
+  background: var(--color-brand-tint);
   filter: blur(16px);
-  opacity: 0.22;
+  opacity: 0.2;
 }
 
 .overview-enhance:hover .overview-enhance-face {

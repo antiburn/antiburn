@@ -30,7 +30,7 @@ function buttonFace(state: EnhanceButtonState): {
       return { label: "All set · run again", Icon: CircleCheck, calm: true, ring: false }
     case "loading":
     case "fresh":
-      return { label: "Enhance my AI setup", Icon: Sparkles, calm: false, ring: false }
+      return { label: "Enhance", Icon: Sparkles, calm: false, ring: false }
   }
 }
 
