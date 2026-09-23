@@ -80,16 +80,16 @@ export function EnhanceActionBar({
         <span aria-hidden="true" className="overview-enhance-glow" />
         <span
           className={cn(
-            "overview-enhance-face flex items-center gap-(--space-sm) rounded-(--radius-popover) py-(--space-sm) ps-(--space-sm) pe-(--space-lg) type-body font-semibold whitespace-nowrap",
+            "overview-enhance-face flex items-center gap-(--space-sm) rounded-(--radius-popover) px-(--space-lg) py-(--space-sm) type-body font-semibold whitespace-nowrap",
             face.calm ? "text-label" : "text-white",
           )}
         >
-          <span
+          <face.Icon
             aria-hidden="true"
-            className="overview-enhance-icon grid size-6 place-items-center rounded-control"
-          >
-            <face.Icon size={14} strokeWidth={2} />
-          </span>
+            size={15}
+            strokeWidth={2}
+            className="overview-enhance-icon shrink-0"
+          />
           {face.label}
         </span>
       </button>
