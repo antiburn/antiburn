@@ -1,4 +1,11 @@
-import { CircleCheck, Hourglass } from "lucide-react"
+import {
+  BellOff,
+  CircleCheck,
+  Hourglass,
+  PartyPopper,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react"
 import { useCallback } from "react"
 
 import type { BurnCheckTargetPayload, ChecksCategoryPayload } from "../../../lib/insightsIpc"
@@ -7,6 +14,7 @@ import { formatTokensShort } from "../../../lib/presentation/sessionAnalysis"
 import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
 import { watchStatus } from "../burn-checks/BurnCheckTargetPresentation"
+import { burstConfetti } from "./enhanceConfetti"
 import { EnhanceCard, useChecks, Waiting } from "./EnhanceSteps"
 import { isAppliedFix, projectSavings, SAVINGS_MONTHS } from "./enhanceState"
 
@@ -76,12 +84,7 @@ export function WatchStep({
               <EnhanceCard
                 key={check.id}
                 tone={line.done ? "pass" : "wait"}
-                icon={<Icon size={28} />}
-                iconClassName={
-                  line.done
-                    ? "bg-system-green/10 text-system-green"
-                    : "bg-system-orange/10 text-system-orange"
-                }
+                icon={<Icon size={34} strokeWidth={1.75} />}
                 title={checkRowPresentation(check).label}
                 detail={line.text}
               />
@@ -96,20 +99,46 @@ export function WatchStep({
 const USD_NOTE =
   "What these tokens would cost at the provider's public API prices. On a subscription you don't pay this directly, but it frees up your limits."
 
+/** Bursts LED confetti once, when the canvas mounts. */
+function mountConfetti(canvas: HTMLCanvasElement | null) {
+  if (!canvas) return
+  return burstConfetti(canvas) ?? undefined
+}
+
 function Figure({ value, unit, note }: { value: string; unit: string; note?: string }) {
   return (
     <div className="flex flex-col" title={note}>
-      <span className="type-hero-figure tabular-nums text-label">{value}</span>
-      <span className="type-caption text-label-secondary">{unit}</span>
+      <span className="enhance-done-figure type-display font-semibold tabular-nums">
+        {value}
+      </span>
+      <span className="type-callout text-label-secondary">{unit}</span>
     </div>
   )
 }
 
-function Tile({ value, label }: { value: number; label: string }) {
+function Tile({
+  value,
+  label,
+  tone,
+  Icon,
+}: {
+  value: number
+  label: string
+  tone: "brand" | "pass" | "snooze"
+  Icon: LucideIcon
+}) {
   return (
-    <div className="flex flex-col rounded-control bg-surface-card p-(--space-md)">
-      <span className="type-title-2 tabular-nums text-label">{value}</span>
-      <span className="type-caption text-label-secondary">{label}</span>
+    <div
+      data-tone={tone}
+      className="enhance-stat flex items-start justify-between gap-(--space-md) rounded-(--radius-popover) p-(--space-xl)"
+    >
+      <div className="flex flex-col gap-(--space-xs)">
+        <span className="enhance-stat-value type-display font-semibold tabular-nums">
+          {value}
+        </span>
+        <span className="type-callout text-label-secondary">{label}</span>
+      </div>
+      <Icon aria-hidden="true" size={34} strokeWidth={1.75} className="enhance-stat-value" />
     </div>
   )
 }
@@ -142,66 +171,95 @@ export function DoneStep({
     .map((row) => ({ check: row.check, savings: projectSavings(row[counted]) }))
     .filter((row) => row.savings.estimated > 0)
   return (
-    <div className="flex max-w-3xl flex-col gap-(--space-xl)">
+    <div className="flex flex-col gap-(--space-xl)">
       {tracked.map((check) => (
         <TargetTracker key={check.id} detector={check.id} session={session} />
       ))}
       {loading ? (
         <Waiting>Adding up your savings…</Waiting>
-      ) : savings.estimated === 0 ? (
-        <p className="type-body text-label-secondary">
-          No savings estimate yet. Estimates show once a fix has enough sessions behind it.
-        </p>
       ) : (
-        <section aria-label="Projected savings" className="flex flex-col gap-(--space-md)">
-          <p className="type-body text-label">
-            {counted === "applied"
-              ? "Your fixes save about"
-              : "Apply the open fixes to save about"}
-          </p>
-          <div className="flex flex-wrap items-end gap-(--space-2xl)">
-            {savings.tokens > 0 && (
-              <Figure value={formatTokensShort(savings.tokens)} unit="tokens" />
-            )}
-            {savings.usd > 0 && (
-              <Figure
-                value={formatApiEquivalentUsd(savings.usd)}
-                unit="API-equivalent USD"
-                note={USD_NOTE}
-              />
-            )}
-          </div>
-          <p className="type-callout text-label-secondary">
-            Over the next {SAVINGS_MONTHS} months, at your last 30 days&apos; pace.
-            {savings.usd > 0 && ` ${USD_NOTE}`}
-          </p>
+        <section
+          aria-label="Projected savings"
+          className="enhance-done-hero flex items-center gap-(--space-2xl) rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl)"
+        >
+          <canvas ref={mountConfetti} aria-hidden="true" className="enhance-done-confetti" />
+          <span
+            aria-hidden="true"
+            className="enhance-done-badge grid size-20 shrink-0 place-items-center rounded-full"
+          >
+            <PartyPopper size={40} strokeWidth={1.75} />
+          </span>
+          {savings.estimated === 0 ? (
+            <div className="flex min-w-0 flex-col gap-(--space-xs)">
+              <span className="enhance-done-figure type-display font-semibold tabular-nums">
+                {applied.length} {applied.length === 1 ? "fix" : "fixes"} applied
+              </span>
+              <p className="type-callout text-label-secondary">
+                No savings estimate yet. Estimates show once a fix has enough sessions behind
+                it.
+              </p>
+            </div>
+          ) : (
+            <div className="flex min-w-0 flex-col gap-(--space-md)">
+              <p className="type-body text-label">
+                {counted === "applied"
+                  ? "Your fixes save about"
+                  : "Apply the open fixes to save about"}
+              </p>
+              <div className="flex flex-wrap items-end gap-(--space-2xl)">
+                {savings.tokens > 0 && (
+                  <Figure value={formatTokensShort(savings.tokens)} unit="tokens" />
+                )}
+                {savings.usd > 0 && (
+                  <Figure
+                    value={formatApiEquivalentUsd(savings.usd)}
+                    unit="API-equivalent USD"
+                    note={USD_NOTE}
+                  />
+                )}
+              </div>
+              <p className="type-callout text-label-secondary">
+                Over the next {SAVINGS_MONTHS} months, at your last 30 days&apos; pace.
+                {savings.usd > 0 && ` ${USD_NOTE}`}
+              </p>
+            </div>
+          )}
         </section>
       )}
-      <div className="grid grid-cols-3 gap-(--space-sm)">
-        <Tile value={applied.length} label="Fixes applied" />
-        <Tile value={presentation.awaiting?.length ?? 0} label="Being watched" />
-        <Tile value={presentation.snoozed.length} label="Snoozed, not counted" />
+      <div className="grid grid-cols-3 gap-(--space-md)">
+        <Tile value={applied.length} label="Fixes applied" tone="brand" Icon={Wrench} />
+        <Tile
+          value={presentation.awaiting?.length ?? 0}
+          label="Being watched"
+          tone="pass"
+          Icon={Hourglass}
+        />
+        <Tile
+          value={presentation.snoozed.length}
+          label="Snoozed, not counted"
+          tone="snooze"
+          Icon={BellOff}
+        />
       </div>
       {!loading && breakdown.length > 0 && (
-        <ul aria-label="Savings by fix" className="flex flex-col divide-y divide-separator">
-          {breakdown.map(({ check, savings: row }) => (
-            <li
-              key={check.id}
-              className="flex items-center justify-between gap-(--space-md) py-(--space-sm)"
-            >
-              <span className="type-callout text-label">
-                {checkRowPresentation(check).label}
-              </span>
-              <span className="type-callout tabular-nums text-label-secondary">
-                {[
+        <ul aria-label="Savings by fix" className="flex flex-col gap-(--space-sm)">
+          {breakdown.map(({ check, savings: row }) => {
+            const presentation = checkRowPresentation(check)
+            return (
+              <EnhanceCard
+                key={check.id}
+                tone="pass"
+                icon={<presentation.Icon size={34} strokeWidth={1.75} />}
+                title={presentation.label}
+                detail={[
                   row.tokens > 0 && `${formatTokensShort(row.tokens)} tokens`,
                   row.usd > 0 && formatApiEquivalentUsd(row.usd),
                 ]
                   .filter(Boolean)
                   .join(" · ")}
-              </span>
-            </li>
-          ))}
+              />
+            )
+          })}
         </ul>
       )}
     </div>

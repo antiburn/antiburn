@@ -124,10 +124,15 @@ export function EnhanceWizard({
 
       <footer className="flex items-center justify-end gap-(--space-md) border-t border-separator pt-(--space-lg)">
         {step > 1 && (
-          <PushButton onClick={() => onStepChange((step - 1) as EnhanceStep)}>Back</PushButton>
+          <PushButton
+            className="h-11 rounded-(--radius-popover) px-(--space-xl) type-title-3"
+            onClick={() => onStepChange((step - 1) as EnhanceStep)}
+          >
+            Back
+          </PushButton>
         )}
         <PushButton
-          className="border-transparent bg-brand-tint font-semibold text-white hover:bg-brand"
+          className="enhance-continue h-11 rounded-(--radius-popover) border-transparent bg-brand-tint px-(--space-2xl) type-title-3 font-semibold text-white hover:bg-brand"
           onClick={() => (last ? onFinish() : onStepChange((step + 1) as EnhanceStep))}
         >
           {last ? "Back to Overview" : "Continue"}

@@ -66,6 +66,7 @@ export function EnhanceActionBar({
   const mountFire = useCallback((canvas: HTMLCanvasElement | null) => {
     if (!canvas) return
     const handle = startFire(canvas)
+    if (!handle) return
     fire.current = handle
     return () => {
       handle.dispose()

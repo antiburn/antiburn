@@ -46,12 +46,12 @@ export type FireHandle = {
 
 /** Draws the fire into `canvas`. It shows a still frame until `play`. The
  *  canvas's `data-fuel` attribute (0 to 1) sets the flame strength. */
-export function startFire(canvas: HTMLCanvasElement): FireHandle {
-  // With no ResizeObserver or 2D context (for example in tests), the card
-  // shows no fire.
-  if (typeof ResizeObserver === "undefined") return { play() {}, pause() {}, dispose() {} }
+export function startFire(canvas: HTMLCanvasElement): FireHandle | null {
+  // With no ResizeObserver or 2D context (for example in tests), there is
+  // no fire.
+  if (typeof ResizeObserver === "undefined") return null
   const context = canvas.getContext("2d")
-  if (!context) return { play() {}, pause() {}, dispose() {} }
+  if (!context) return null
   let width = 0
   let height = 0
   let heat = new Float32Array(0)

@@ -181,11 +181,12 @@
 
 /*
  * The Enhance step cards. `data-tone` sets one accent colour. The accent
- * draws a bar on the left edge, a soft wash behind the icon, and a halo
- * around the icon. On hover the card lifts by one pixel.
+ * draws a bar on the left edge, a soft wash on the left, the icon, and the
+ * metric. On hover the card lifts by one pixel.
  */
 .enhance-card {
   --enhance-tone: var(--color-separator);
+  --enhance-ink: var(--color-label-tertiary);
   position: relative;
   overflow: hidden;
   background:
@@ -211,20 +212,142 @@
     0 6px 18px -8px color-mix(in oklab, var(--enhance-tone) 55%, transparent);
 }
 
-.enhance-card[data-tone="fail"] {
+/* Failing and waiting cards both use the brand orange. The system orange
+   is too dark in the light theme. */
+.enhance-card:is([data-tone="fail"], [data-tone="wait"]) {
   --enhance-tone: var(--color-brand-tint);
+  --enhance-ink: var(--color-brand-tint);
 }
 
+/* The teal that the Checks view uses for a passing check. */
 .enhance-card[data-tone="pass"] {
-  --enhance-tone: var(--color-system-green);
+  --enhance-tone: var(--color-burn-check-pass-fill);
+  --enhance-ink: var(--color-burn-check-pass-fill);
 }
 
-.enhance-card[data-tone="wait"] {
-  --enhance-tone: var(--color-system-orange);
+.enhance-card-icon,
+.enhance-card-metric {
+  color: var(--enhance-ink);
 }
 
-.enhance-card-icon {
+/*
+ * The fix actions on a Fix card. Snooze stays quiet. The fix and prompt
+ * actions become large filled brand buttons.
+ */
+.enhance-card-actions .burn-check-action {
+  min-block-size: 48px;
+  padding-inline: var(--space-lg);
+}
+
+.enhance-card-actions .burn-check-action::before {
+  inset: 4px 0;
+  border-radius: var(--radius-popover);
+}
+
+.enhance-card-actions .burn-check-action:not(.burn-check-reminder) {
+  color: var(--color-shimmer);
+  font-weight: 600;
+}
+
+.enhance-card-actions .burn-check-action:not(.burn-check-reminder)::before {
+  background-color: var(--color-brand-tint);
   box-shadow:
-    0 0 0 4px color-mix(in oklab, var(--enhance-tone) 10%, transparent),
-    0 0 16px color-mix(in oklab, var(--enhance-tone) 35%, transparent);
+    inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent),
+    0 6px 16px -8px var(--color-brand-tint);
+}
+
+.enhance-card-actions .burn-check-action:not(.burn-check-reminder):enabled:hover::before {
+  background-color: var(--color-brand);
+  box-shadow: 0 8px 20px -8px var(--color-brand-tint);
+}
+
+.enhance-card-actions .burn-check-action:not(.burn-check-reminder)[aria-disabled="true"] {
+  color: var(--color-label-tertiary);
+}
+
+.enhance-card-actions
+  .burn-check-action:not(.burn-check-reminder)[aria-disabled="true"]::before {
+  background-color: var(--color-surface-sidebar);
+  box-shadow: none;
+}
+
+/* The oversized Continue button in the Enhance footer. */
+.enhance-continue {
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent),
+    0 8px 20px -10px var(--color-brand-tint);
+}
+
+/*
+ * The Enhance Done step. The hero carries a brand wash, a glowing badge, and
+ * a canvas that bursts LED confetti once when the step opens. The stat tiles
+ * each take one accent colour for the wash, the number, and the icon.
+ */
+.enhance-done-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-block-size: 180px;
+  background:
+    radial-gradient(
+      70% 140% at 0% 50%,
+      color-mix(in oklab, var(--color-brand-tint) 22%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      60% 120% at 100% 0%,
+      color-mix(in oklab, var(--color-check-overthinking) 16%, transparent),
+      transparent 70%
+    ),
+    var(--color-surface-card);
+  box-shadow:
+    var(--shadow-stats-card),
+    inset 0 0 0 1px color-mix(in oklab, var(--color-brand-tint) 30%, transparent);
+}
+
+.enhance-done-confetti {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  inline-size: 100%;
+  block-size: 100%;
+  pointer-events: none;
+}
+
+.enhance-done-badge {
+  color: var(--color-shimmer);
+  background: linear-gradient(135deg, var(--color-brand-tint), var(--color-check-overthinking));
+  box-shadow: 0 10px 30px -10px var(--color-brand-tint);
+}
+
+.enhance-done-figure {
+  background: linear-gradient(90deg, var(--color-brand-tint), var(--color-check-overthinking));
+  background-clip: text;
+  color: transparent;
+}
+
+.enhance-stat {
+  --enhance-tone: var(--color-brand-tint);
+  background:
+    linear-gradient(
+      160deg,
+      color-mix(in oklab, var(--enhance-tone) 20%, transparent),
+      transparent 75%
+    ),
+    var(--color-surface-card);
+  box-shadow:
+    var(--shadow-stats-card),
+    inset 0 -3px 0 var(--enhance-tone);
+}
+
+.enhance-stat[data-tone="pass"] {
+  --enhance-tone: var(--color-burn-check-pass-fill);
+}
+
+.enhance-stat[data-tone="snooze"] {
+  --enhance-tone: var(--color-check-overthinking);
+}
+
+.enhance-stat-value {
+  color: var(--enhance-tone);
 }

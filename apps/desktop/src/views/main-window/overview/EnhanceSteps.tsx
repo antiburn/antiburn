@@ -37,7 +37,6 @@ export function EnhanceCard({
   label,
   tone,
   icon,
-  iconClassName,
   title,
   detail,
   aside,
@@ -48,7 +47,6 @@ export function EnhanceCard({
   label?: string
   tone: EnhanceTone
   icon: ReactNode
-  iconClassName?: string
   title: ReactNode
   detail?: ReactNode
   aside?: ReactNode
@@ -63,10 +61,7 @@ export function EnhanceCard({
     >
       <span
         aria-hidden="true"
-        className={cn(
-          "enhance-card-icon grid size-14 shrink-0 place-items-center rounded-full",
-          iconClassName ?? "bg-surface-sidebar",
-        )}
+        className="enhance-card-icon grid size-14 shrink-0 place-items-center"
       >
         {icon}
       </span>
@@ -172,8 +167,7 @@ function ScanTile({
   return (
     <EnhanceCard
       tone={snoozed || check.lifecycle == null ? "idle" : failing ? "fail" : "pass"}
-      icon={<row.Icon size={28} />}
-      iconClassName={snoozed ? "bg-surface-sidebar text-label-secondary" : row.iconTone}
+      icon={<row.Icon size={34} strokeWidth={1.75} />}
       title={row.label}
       detail={
         <>
@@ -196,7 +190,9 @@ function ScanTile({
       aside={
         !snoozed &&
         row.metric && (
-          <span className={cn("type-caption tabular-nums", row.metricTone)}>{row.metric}</span>
+          <span className="enhance-card-metric type-caption font-semibold tabular-nums">
+            {row.metric}
+          </span>
         )
       }
     />
@@ -261,18 +257,19 @@ function FixCard({
       cardRef={trackTargets}
       label={row.label}
       tone="fail"
-      icon={<row.Icon size={28} />}
-      iconClassName={row.iconTone}
+      icon={<row.Icon size={34} strokeWidth={1.75} />}
       title={row.label}
       detail={[row.summary, row.metric, row.costLine].filter(Boolean).join(" · ")}
       aside={
         targets?.data ? (
-          <CheckDetailActions
-            detector={check.id}
-            targets={targets.data.targets}
-            refresh={session.refresh}
-            reportRow
-          />
+          <div className="enhance-card-actions">
+            <CheckDetailActions
+              detector={check.id}
+              targets={targets.data.targets}
+              refresh={session.refresh}
+              reportRow
+            />
+          </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
             <RemindLaterAction detector={check.id} />
