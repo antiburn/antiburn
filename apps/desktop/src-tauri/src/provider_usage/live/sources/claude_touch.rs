@@ -137,28 +137,43 @@ pub enum TouchOutcome {
 /// the hard deadline in [`MAX_POLLS`] is the child's lifetime cap.
 pub fn touch(env: &dyn TouchEnvironment, gate: &TouchGate) -> TouchOutcome {
     if !env.binary_present() {
+        log_touch_outcome("cli_missing");
         return TouchOutcome::CliMissing;
     }
     let Some(before) = env.fingerprint() else {
+        log_touch_outcome("metadata_unavailable");
         return TouchOutcome::NotRefreshed;
     };
     if gate.is_terminal(&before) {
+        log_touch_outcome("terminal");
         return TouchOutcome::Terminal;
     }
     if !gate.begin(&before) {
+        log_touch_outcome("cooldown_or_in_flight");
         return TouchOutcome::NotRefreshed;
     }
     let Some(mut child) = env.spawn() else {
         gate.finish();
+        log_touch_outcome("spawn_failed");
         return TouchOutcome::NotRefreshed;
     };
     let settled = verify(env, &before);
     child.kill();
     gate.finish();
     match settled {
-        Some(fingerprint) => TouchOutcome::Settled(fingerprint),
-        None => TouchOutcome::NotRefreshed,
+        Some(fingerprint) => {
+            log_touch_outcome("settled");
+            TouchOutcome::Settled(fingerprint)
+        }
+        None => {
+            log_touch_outcome("verification_timeout");
+            TouchOutcome::NotRefreshed
+        }
     }
+}
+
+fn log_touch_outcome(outcome: &'static str) {
+    ::tracing::debug!(event = "claude_refresh_outcome", outcome);
 }
 
 /// Poll the carrier until it is quiescent: changed from `before` and

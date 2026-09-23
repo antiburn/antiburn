@@ -497,20 +497,6 @@ function formatGraceAge(ageMs: number): string {
   return minutes < 1 ? "under 1 min" : `${minutes} min`
 }
 
-/** The first sentence of a grace note, per failure category. */
-function graceVerb(category: string): string {
-  switch (category) {
-    case "rateLimited":
-      return "rate limited the last check"
-    case "authentication":
-      return "rejected the sign-in on the last check"
-    case "schema":
-      return "sent an unreadable reply"
-    default:
-      return "didn't answer the last check"
-  }
-}
-
 /**
  * The one sentence a grace-period reading needs: still shown, and why.
  *
@@ -524,10 +510,16 @@ export function liveGraceNote(
   detail?: LiveUsageSourceErrorDetail,
 ): string {
   const name = liveProviderDisplayName(provider) ?? "Your provider"
-  if (detail === "refreshPending") {
-    return `${name} login expired; it refreshes on the next check. Reading from ${formatGraceAge(ageMs)} ago.`
+  const updated = `Last updated ${formatGraceAge(ageMs)} ago.`
+  if (category === "rateLimited") {
+    return `${name} is temporarily limiting usage checks. ${updated}`
   }
-  return `${name} ${graceVerb(category)}; reading from ${formatGraceAge(ageMs)} ago.`
+  if (category === "authentication" && detail === "signInRequired") {
+    return `Sign in to ${name} again. ${updated}`
+  }
+  return provider && liveProviderDisplayName(provider)
+    ? `Couldn't update ${name} usage. ${updated}`
+    : `Couldn't update usage. ${updated}`
 }
 
 /**
@@ -584,8 +576,8 @@ export function liveUnavailableReason(
   category: string,
   detail?: LiveUsageSourceErrorDetail,
 ): string {
-  if (detail === "refreshPending") return "refreshing sign-in"
-  if (detail === "cliMissing") return "stale token"
+  if (detail === "refreshPending") return "update pending"
+  if (detail === "cliMissing") return "tool unavailable"
   switch (category) {
     case "authentication":
       return "sign-in needed"
@@ -684,13 +676,13 @@ export function liveErrorNote(
 ): string {
   if (category === "authentication" && provider === ANTHROPIC) {
     if (detail === "cliMissing") {
-      return "Claude Code's login has expired and there's nothing here to refresh it. Sign in inside Claude Code."
+      return "Couldn't update Claude usage. Open Claude Code to check your sign-in."
     }
     if (detail === "signInRequired") {
-      return "Claude Code's login has expired. Sign in inside Claude Code again."
+      return "Sign in inside Claude Code again, then retry."
     }
     if (detail === "refreshPending") {
-      return "Claude Code's login has expired. It refreshes on the next check."
+      return "Couldn't update Claude usage. Try again shortly."
     }
   }
   if (category === "unavailable" && detail === "keychainUnreadable") {
