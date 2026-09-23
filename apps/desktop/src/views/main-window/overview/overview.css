@@ -195,25 +195,17 @@
 }
 
 /*
- * The Enhance step cards. `data-tone` sets one accent colour. The accent
- * draws a bar on the left edge, a soft wash on the left, the icon, and the
- * metric. The card itself is not clickable, so it has no hover state.
+ * The Enhance step cards. A solid card with one bold element: the icon sits
+ * on a solid chip in the card's tone colour, and the metric on the right
+ * takes the same colour. `data-tone` sets that colour. The card itself is
+ * not clickable, so it has no hover state.
  */
 .enhance-card {
-  --enhance-tone: var(--color-separator);
-  --enhance-ink: var(--color-label-tertiary);
-  position: relative;
-  overflow: hidden;
-  background:
-    radial-gradient(
-      60% 160% at 0% 50%,
-      color-mix(in oklab, var(--enhance-tone) 14%, transparent),
-      transparent 70%
-    ),
-    var(--color-surface-card);
-  box-shadow:
-    var(--shadow-stats-card),
-    inset 3px 0 0 var(--enhance-tone);
+  --enhance-tone: var(--color-surface-sidebar);
+  --enhance-ink: var(--color-label-secondary);
+  --enhance-chip-ink: var(--color-label-secondary);
+  background-color: var(--color-surface-card);
+  box-shadow: var(--shadow-stats-card);
 }
 
 /* Failing and waiting cards both use the brand orange. The system orange
@@ -221,15 +213,28 @@
 .enhance-card:is([data-tone="fail"], [data-tone="wait"]) {
   --enhance-tone: var(--color-brand-tint);
   --enhance-ink: var(--color-brand-tint);
+  --enhance-chip-ink: var(--color-shimmer);
 }
 
 /* The teal that the Checks view uses for a passing check. */
 .enhance-card[data-tone="pass"] {
   --enhance-tone: var(--color-burn-check-pass-fill);
   --enhance-ink: var(--color-burn-check-pass-fill);
+  --enhance-chip-ink: var(--color-shimmer);
 }
 
-.enhance-card-icon,
+/* The chip carries the same top highlight as the Enhance pill. An idle chip
+   is a plain surface with a ring, so an agent mark keeps its own colour. */
+.enhance-card-icon {
+  color: var(--enhance-chip-ink);
+  background-color: var(--enhance-tone);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent);
+}
+
+.enhance-card[data-tone="idle"] .enhance-card-icon {
+  box-shadow: inset 0 0 0 1px var(--color-separator);
+}
+
 .enhance-card-metric {
   color: var(--enhance-ink);
 }

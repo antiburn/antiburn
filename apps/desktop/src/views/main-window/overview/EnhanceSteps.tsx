@@ -6,7 +6,7 @@ import type { ChecksCategoryPayload } from "../../../lib/insightsIpc"
 import { getScanStatus, openSettingsWindow } from "../../../lib/ipc"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { agentDisplayName } from "../../../lib/presentation/agents"
-import { checksPresentation } from "../../../lib/presentation/checks"
+import { checksPresentation, formatTokenBurnPercent } from "../../../lib/presentation/checks"
 import { scanStatusStore, withKnownAgents } from "../../../lib/scanStatusStore"
 import {
   formatSnoozeUntil,
@@ -29,8 +29,8 @@ export function Waiting({ children }: { children: string }) {
 
 export type EnhanceTone = "fail" | "pass" | "wait" | "idle"
 
-/** The one card every Enhance step uses: a big icon, a title, a detail line,
- *  an optional body, and an optional aside on the right edge. */
+/** The one card every Enhance step uses: an icon on a solid chip, a title,
+ *  a detail line, an optional body, and an optional aside on the right edge. */
 export function EnhanceCard({
   as: Element = "li",
   cardRef,
@@ -61,7 +61,7 @@ export function EnhanceCard({
     >
       <span
         aria-hidden="true"
-        className="enhance-card-icon grid size-14 shrink-0 place-items-center"
+        className="enhance-card-icon grid size-11 shrink-0 place-items-center rounded-(--radius-popover)"
       >
         {icon}
       </span>
@@ -118,8 +118,8 @@ export function SourcesStep() {
           {agents.map((agent) => (
             <EnhanceCard
               key={agent.agent}
-              tone="pass"
-              icon={renderAgentIcon(agent.agent, 28)}
+              tone="idle"
+              icon={renderAgentIcon(agent.agent, 24)}
               title={agentDisplayName(agent.agent)}
               detail={`${agent.sessionsSeen} ${agent.sessionsSeen === 1 ? "session" : "sessions"}`}
             />
@@ -167,7 +167,7 @@ function ScanTile({
   return (
     <EnhanceCard
       tone={snoozed || check.lifecycle == null ? "idle" : failing ? "fail" : "pass"}
-      icon={<row.Icon size={34} strokeWidth={1.75} />}
+      icon={<row.Icon size={22} strokeWidth={2} />}
       title={row.label}
       detail={
         <>
@@ -189,9 +189,13 @@ function ScanTile({
       }
       aside={
         !snoozed &&
+        check.estimatedTokenBurnBasisPoints != null &&
         row.metric && (
-          <span className="enhance-card-metric type-caption font-semibold tabular-nums">
-            {row.metric}
+          <span className="enhance-card-metric flex flex-col items-end text-end">
+            <span className="type-title-1 font-semibold tabular-nums">
+              {formatTokenBurnPercent(check.estimatedTokenBurnBasisPoints)}
+            </span>
+            <span className="type-caption text-label-secondary">estimated burn</span>
           </span>
         )
       }
@@ -257,7 +261,7 @@ function FixCard({
       cardRef={trackTargets}
       label={row.label}
       tone="fail"
-      icon={<row.Icon size={34} strokeWidth={1.75} />}
+      icon={<row.Icon size={22} strokeWidth={2} />}
       title={row.label}
       detail={[row.summary, row.metric, row.costLine].filter(Boolean).join(" · ")}
       aside={

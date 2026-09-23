@@ -80,7 +80,7 @@ export function WatchStep({
               <EnhanceCard
                 key={check.id}
                 tone={line.done ? "pass" : "wait"}
-                icon={<Icon size={34} strokeWidth={1.75} />}
+                icon={<Icon size={22} strokeWidth={2} />}
                 title={checkRowPresentation(check).label}
                 detail={line.text}
               />
@@ -257,7 +257,7 @@ export function DoneStep({
               <EnhanceCard
                 key={check.id}
                 tone="pass"
-                icon={<presentation.Icon size={34} strokeWidth={1.75} />}
+                icon={<presentation.Icon size={22} strokeWidth={2} />}
                 title={presentation.label}
                 detail={[
                   row.tokens > 0 && `${formatTokensShort(row.tokens)} tokens`,
