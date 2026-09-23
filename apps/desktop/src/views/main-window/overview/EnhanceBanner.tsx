@@ -1,7 +1,6 @@
 import { ArrowRight } from "lucide-react"
-import { useId } from "react"
+import { useId, type ReactNode } from "react"
 
-import { startSmoke } from "./enhanceSmoke"
 import type { EnhanceButtonState } from "./enhanceState"
 
 function pillFace(state: EnhanceButtonState): {
@@ -33,71 +32,66 @@ function pillFace(state: EnhanceButtonState): {
   }
 }
 
-/** Draws LED smoke on the canvas while it is mounted. */
-function mountSmoke(canvas: HTMLCanvasElement | null) {
-  if (!canvas) return
-  return startSmoke(canvas) ?? undefined
-}
-
-/** The Optimise band across the top of the Overview. It gives the reader one
- *  clear next step: open the Optimise wizard. A calm state drops the brand
- *  fill, so the band steps back once the work is done. */
+/** The Optimise card on the Overview. A plain card with the call to action
+ *  on top and the usage chart under it. The pill opens the Optimise wizard. */
 export function EnhanceBanner({
   failingChecks,
   state,
   onOpen,
+  children,
 }: {
   /** Failing checks that are not snoozed, or null while the report loads. */
   failingChecks: number | null
   state: EnhanceButtonState
   onOpen: () => void
+  /** The content under the call to action. */
+  children?: ReactNode
 }) {
   const face = pillFace(state)
   const statusId = useId()
   return (
     <section
       aria-label="Optimise"
-      data-calm={face.calm ? "" : undefined}
-      className="enhance-banner flex shrink-0 items-center justify-between gap-(--space-2xl) rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl)"
+      className="enhance-banner my-auto flex shrink-0 flex-col gap-(--space-2xl) rounded-(--radius-popover) p-(--space-2xl)"
     >
-      {!face.calm && (
-        <canvas ref={mountSmoke} aria-hidden="true" className="enhance-banner-smoke" />
-      )}
-      <div className="flex min-w-0 flex-col gap-(--space-xs)">
-        <h2 className="type-title-2 font-semibold">Optimise my AI setup</h2>
-        <p id={statusId} className="enhance-banner-status type-body">
-          {failingChecks == null ? (
-            "Checking your setup…"
-          ) : failingChecks === 0 ? (
-            <>
-              <span className="font-semibold">No fixes needed</span> in your last 30 days.
-            </>
-          ) : (
-            <>
-              <span className="font-semibold">
-                {failingChecks} {failingChecks === 1 ? "fix" : "fixes"} found
-              </span>{" "}
-              in your last 30 days.
-            </>
-          )}
-        </p>
+      <div className="flex items-center justify-between gap-(--space-2xl)">
+        <div className="flex min-w-0 flex-col gap-(--space-xs)">
+          <h2 className="type-title-2 font-semibold text-label">Optimise my AI setup</h2>
+          <p id={statusId} className="type-body text-label-secondary">
+            {failingChecks == null ? (
+              "Checking your setup…"
+            ) : failingChecks === 0 ? (
+              <>
+                <span className="font-semibold text-label">No fixes needed</span> in your last
+                30 days.
+              </>
+            ) : (
+              <>
+                <span className="font-semibold text-label">
+                  {failingChecks} {failingChecks === 1 ? "fix" : "fixes"} found
+                </span>{" "}
+                in your last 30 days.
+              </>
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          aria-label={face.label}
+          aria-describedby={statusId}
+          onClick={onOpen}
+          data-quiet={face.calm ? "" : undefined}
+          className="enhance-pill group flex shrink-0 items-center gap-(--space-sm) px-(--space-2xl) type-title-3 font-semibold whitespace-nowrap"
+        >
+          {face.action}
+          <ArrowRight
+            aria-hidden="true"
+            size={17}
+            className="transition-transform duration-(--duration-medium) group-hover:translate-x-0.5"
+          />
+        </button>
       </div>
-      <button
-        type="button"
-        aria-label={face.label}
-        aria-describedby={statusId}
-        onClick={onOpen}
-        data-quiet={face.calm ? "" : undefined}
-        data-invert={face.calm ? undefined : ""}
-        className="enhance-pill group flex shrink-0 items-center gap-(--space-sm) px-(--space-2xl) type-title-3 font-semibold whitespace-nowrap"
-      >
-        {face.action}
-        <ArrowRight
-          aria-hidden="true"
-          size={17}
-          className="transition-transform duration-(--duration-medium) group-hover:translate-x-0.5"
-        />
-      </button>
+      {children}
     </section>
   )
 }

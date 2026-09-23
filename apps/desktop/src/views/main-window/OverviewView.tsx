@@ -11,7 +11,7 @@ import { type MainOverviewSession } from "./MainOverviewSession"
 import { EnhanceBanner } from "./overview/EnhanceBanner"
 import { EnhanceWizard, type EnhanceStep } from "./overview/EnhanceWizard"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
-import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
+// import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
 import { enhanceButtonState } from "./overview/enhanceState"
 import {
@@ -27,8 +27,8 @@ export function OverviewView({
   session,
   checks,
   navigationRevision,
-  onOpenSessions,
-  onSelectSession,
+  onOpenSessions: _onOpenSessions,
+  onSelectSession: _onSelectSession,
 }: {
   active: boolean
   session: MainOverviewSession
@@ -158,14 +158,13 @@ export function OverviewView({
                 </p>
               )}
 
+              {/* The Optimise card holds the usage chart. Auto margins float it
+                  to the vertical middle of the column. */}
               <EnhanceBanner
                 failingChecks={failing?.length ?? null}
                 state={buttonState}
                 onOpen={openEnhance}
-              />
-
-              {/* The chart and the recent sessions share one card. */}
-              <div className="flex flex-col gap-(--space-2xl) rounded-(--radius-popover) bg-surface-sidebar p-(--space-lg) shadow-[var(--shadow-stats-card)]">
+              >
                 <OverviewUsage
                   metric={metric}
                   onMetricChange={(next) => {
@@ -181,19 +180,20 @@ export function OverviewView({
                   onRetryUsage={session.refresh}
                   loading={loading}
                 />
+              </EnhanceBanner>
 
-                <OverviewRecentSessions
-                  active={active && state.active}
-                  entries={state.recentSessions}
-                  loading={loading && !state.recentSessions}
-                  onSelect={onSelectSession}
-                  onOpenAll={onOpenSessions}
-                  metric={metric}
-                  liveUsage={state.liveUsage ?? undefined}
-                  sessionLimitAllocations={state.sessionLimitAllocations}
-                  plain
-                />
-              </div>
+              {/* Recent sessions is off for now, while the Optimise card is tried alone.
+              <OverviewRecentSessions
+                active={active && state.active}
+                entries={state.recentSessions}
+                loading={loading && !state.recentSessions}
+                onSelect={_onSelectSession}
+                onOpenAll={_onOpenSessions}
+                metric={metric}
+                liveUsage={state.liveUsage ?? undefined}
+                sessionLimitAllocations={state.sessionLimitAllocations}
+              />
+              */}
             </div>
           </ScrollPane>
 
