@@ -735,7 +735,11 @@ export class MainActivitySession {
       .then((saved) => {
         if (this.settingsWrite !== write) return
         this.settingsWrite = null
-        this.applySettings(saved)
+        try {
+          this.applySettings(saved)
+        } catch {
+          if (this.settingsWrite === null) this.update({ settingsError: true })
+        }
       })
       .catch(() => {
         if (this.settingsWrite !== write) return

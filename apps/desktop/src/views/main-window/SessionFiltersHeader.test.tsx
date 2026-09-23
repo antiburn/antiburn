@@ -92,6 +92,19 @@ describe("SessionFiltersHeader", () => {
     expect(container.querySelector("[data-active-session-filters]")).toBeNull()
   })
 
+  it("describes the icon trigger on focus and opens the menu from the keyboard", async () => {
+    render(<SessionFiltersHeader {...props()} />)
+    const trigger = screen.getByRole("button", { name: "Filters" })
+    act(() => trigger.focus())
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Filter sessions")
+    fireEvent.keyDown(trigger, { key: "Enter" })
+    expect(await screen.findByRole("menu")).toBeInTheDocument()
+    expect(trigger).toHaveAttribute("aria-expanded", "true")
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
   it("renders agent, result, and spend chips with contextual counts", () => {
     render(
       <SessionFiltersHeader

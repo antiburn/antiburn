@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
-import { Check, SlidersHorizontal, X } from "lucide-react"
+import { Check, ListFilter, X } from "lucide-react"
 import { useCallback, useRef, useState, type MouseEvent, type RefObject } from "react"
 
 import { renderAgentIcon } from "../../lib/agentIcon"
@@ -321,22 +321,24 @@ export function SessionFiltersHeader({
             </button>
           </Tooltip>
           <DropdownMenu.Root modal={false} open={menuOpen} onOpenChange={setMenuOpen}>
-            <DropdownMenu.Trigger asChild>
-              <button
-                ref={filterButtonRef}
-                type="button"
-                onPointerDown={(event) => {
-                  pointerOpened.current = event.pointerType === "mouse"
-                }}
-                onKeyDown={() => {
-                  pointerOpened.current = false
-                }}
-                className="ui-push-button session-filter-target relative shrink-0 gap-1 whitespace-nowrap data-[state=open]:bg-surface-tertiary"
-              >
-                <SlidersHorizontal size={12} aria-hidden="true" />
-                Filters
-              </button>
-            </DropdownMenu.Trigger>
+            <Tooltip label="Filter sessions" side="bottom">
+              <DropdownMenu.Trigger asChild>
+                <button
+                  ref={filterButtonRef}
+                  type="button"
+                  onPointerDown={(event) => {
+                    pointerOpened.current = event.pointerType === "mouse"
+                  }}
+                  onKeyDown={() => {
+                    pointerOpened.current = false
+                  }}
+                  aria-label="Filters"
+                  className="session-filter-target relative inline-flex h-[var(--control-height-regular)] w-[var(--control-height-regular)] shrink-0 items-center justify-center rounded-full text-label-secondary hover:bg-surface-hover hover:text-label data-[state=open]:bg-surface-selected data-[state=open]:text-label"
+                >
+                  <ListFilter size={14} aria-hidden="true" />
+                </button>
+              </DropdownMenu.Trigger>
+            </Tooltip>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
                 ref={observeMenu}

@@ -961,6 +961,23 @@ describe("MainActivitySession", () => {
     await vi.waitFor(() => expect(mocks.setSettings).toHaveBeenCalledTimes(7))
   })
 
+  it("reports a saved-settings notification failure and recovers on the next save", async () => {
+    const { session } = start()
+    await ready(session)
+    let failOnce = true
+    const unsubscribe = session.subscribeInactive(() => {
+      if (session.getSnapshot().settings.sessionBadgeMetric === "weeklyPercent" && failOnce) {
+        failOnce = false
+        throw new Error("Listener failed")
+      }
+    })
+    await session.setBadgeMetric("weeklyPercent")
+    expect(session.getSnapshot().settingsError).toBe(true)
+    await session.setBadgeMetric("cost")
+    expect(session.getSnapshot().settingsError).toBe(false)
+    unsubscribe()
+  })
+
   it("retains an optimistic filter on save failure and recovers on the next change", async () => {
     const { session } = start()
     await ready(session)
