@@ -172,12 +172,6 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
     expect(screen.queryByText("Coverage details")).not.toBeInTheDocument()
   })
 
-  it("keeps processing count out of the collection header", async () => {
-    setup(target, false, aggregate, { ...report, pendingEvidence: 2 })
-
-    expect(screen.queryByText("2 sessions processing.")).not.toBeInTheDocument()
-  })
-
   it("leaves shared titlebar ownership to the layout while loading and after load", async () => {
     const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
     try {

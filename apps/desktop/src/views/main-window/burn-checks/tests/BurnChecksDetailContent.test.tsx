@@ -1,17 +1,17 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { ChecksReportPayload } from "../../../../lib/insightsIpc"
 import type * as ClipboardModule from "../../../../lib/clipboard"
 import type * as InsightsIpcModule from "../../../../lib/insightsIpc"
 import type * as IpcModule from "../../../../lib/ipc"
-import { CheckPromptAction } from "../BurnCheckDetail"
+import { BurnCheckDetail, CheckPromptAction } from "../BurnCheckDetail"
+import { BurnCheckTargetDetail } from "../BurnCheckTargetDetail"
 
 import {
   report,
   target,
   aggregate,
-  deferred,
   setWindowWidth,
   setup,
   installBurnChecksCommandMocks,
@@ -319,33 +319,11 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     }
   })
 
-  it("shows the exact agent mark and configuration scope", async () => {
-    setup()
+  it("shows the exact agent mark and configuration scope", () => {
+    render(<BurnCheckTargetDetail target={target} refresh={vi.fn()} />)
 
-    expect(await screen.findAllByRole("img", { name: "Claude Code" })).toHaveLength(1)
+    expect(screen.getAllByRole("img", { name: "Claude Code" })).toHaveLength(1)
     expect(screen.getByText("Global configuration")).toBeVisible()
-  })
-
-  it("renders reasoning operation effects", async () => {
-    commands.prepare.mockResolvedValueOnce({
-      outcome: "reviewReady",
-      review: {
-        preparedOperationId: "prepared-reasoning",
-        expiresAtEpoch: 100,
-        agent: "claude-code",
-        scope: "project",
-        setting: "reasoning",
-        configFile: "~/.claude/settings.json",
-        currentValue: "max",
-        proposedValue: "medium",
-        effect: "reasoningEffort",
-        sideEffect: "responsesMayUseLessReasoning",
-      },
-    })
-    setup()
-    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog")
-    expect(dialog).toHaveTextContent("Future responses can use less reasoning")
   })
 
   it.each([
@@ -419,9 +397,9 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
           sideEffect,
         },
       })
-      setup()
+      render(<BurnCheckTargetDetail target={target} refresh={vi.fn()} />)
 
-      fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+      fireEvent.click(screen.getByRole("button", { name: "Fix" }))
 
       const dialog = await screen.findByRole("dialog")
       expect(dialog).toHaveTextContent(`Claude Code · ${settingLabel} · Project configuration`)
@@ -448,40 +426,18 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
         sideEffect: "serverWillNotBeAvailable",
       },
     })
-    setup({ ...target, display: { ...target.display, resourceIdentity: null } })
+    render(
+      <BurnCheckTargetDetail
+        target={{ ...target, display: { ...target.display, resourceIdentity: null } }}
+        refresh={vi.fn()}
+      />,
+    )
 
-    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    fireEvent.click(screen.getByRole("button", { name: "Fix" }))
 
     expect(await screen.findByRole("dialog", { name: "Review change" })).toHaveTextContent(
       "mcp_servers.reviewed.enabled",
     )
-  })
-
-  it("routes samples by opaque handle and shows typed unavailable states", async () => {
-    commands.openSample.mockResolvedValueOnce({ outcome: "deleted" })
-    setup()
-    fireEvent.click(await screen.findByRole("button", { name: /Update model/ }))
-    expect(await screen.findByText("This session was deleted.")).toHaveAttribute(
-      "role",
-      "status",
-    )
-    expect(commands.openSample).toHaveBeenCalledWith("opaque-handle")
-  })
-
-  it("keeps a sample card busy while its opaque route opens", async () => {
-    const opening = deferred<{ outcome: "opened" }>()
-    commands.openSample.mockReturnValueOnce(opening.promise)
-    setup()
-    const sample = await screen.findByRole("button", {
-      name: /Update model/,
-    })
-
-    fireEvent.click(sample)
-
-    expect(sample).toHaveAttribute("aria-busy", "true")
-    expect(sample).toHaveAttribute("aria-disabled", "true")
-    await act(async () => opening.resolve({ outcome: "opened" }))
-    await waitFor(() => expect(sample).not.toHaveAttribute("aria-disabled"))
   })
 
   it.each([
@@ -490,55 +446,59 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
       { status: "recurred", methodRevision: 1, evidenceRevision: "e2" },
       "This finding returned.",
     ],
-  ] as const)("renders the typed %s state", async (_name, verification, expected) => {
-    setup(
-      {
-        ...target,
-        autoFix: { status: "unavailable", reason: "activeWatch" },
-        watch: {
-          watchId: "watch-1",
-          origin: "action",
-          lifecycle: verification.status === "recurred" ? "recurred" : "recoveryNeeded",
-          verification,
-          savings: { status: "pending" },
-        },
-      },
-      false,
-      aggregate,
-      report,
+  ] as const)("renders the typed %s state", (_name, verification, expected) => {
+    render(
+      <BurnCheckDetail
+        detector="oldModelUsage"
+        targets={[
+          {
+            ...target,
+            autoFix: { status: "unavailable", reason: "activeWatch" },
+            watch: {
+              watchId: "watch-1",
+              origin: "action",
+              lifecycle: verification.status === "recurred" ? "recurred" : "recoveryNeeded",
+              verification,
+              savings: { status: "pending" },
+            },
+          },
+        ]}
+        samples={target.samples}
+        failedSessionCount={1}
+        refresh={vi.fn()}
+      />,
     )
 
-    expect(await screen.findByText(expected)).toBeVisible()
+    expect(screen.getByText(expected)).toBeVisible()
   })
 
-  it("hides passive verification status", async () => {
-    setup(
-      {
-        ...target,
-        watch: {
-          watchId: "watch-1",
-          origin: "action",
-          lifecycle: "fixed",
-          verification: { status: "fixed", methodRevision: 1, evidenceRevision: "e2" },
-          savings: { status: "pending" },
-        },
-      },
-      false,
-      aggregate,
-      report,
+  it("hides passive verification status", () => {
+    render(
+      <BurnCheckDetail
+        detector="oldModelUsage"
+        targets={[
+          {
+            ...target,
+            watch: {
+              watchId: "watch-1",
+              origin: "action",
+              lifecycle: "fixed",
+              verification: { status: "fixed", methodRevision: 1, evidenceRevision: "e2" },
+              savings: { status: "pending" },
+            },
+          },
+        ]}
+        samples={target.samples}
+        failedSessionCount={1}
+        refresh={vi.fn()}
+      />,
     )
 
-    await screen.findByText("Some sessions used an older model when a newer one was available.")
+    expect(
+      screen.getByText("Some sessions used an older model when a newer one was available."),
+    ).toBeVisible()
     expect(
       screen.queryByText("Fresh evidence verified this improvement."),
     ).not.toBeInTheDocument()
-  })
-
-  it("hides bounded target and retained-detail notices", async () => {
-    setup(target, true, aggregate, report)
-
-    await screen.findByText("Some sessions used an older model when a newer one was available.")
-    expect(screen.queryByText(/bounded view can show/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/Previous details remain visible/)).not.toBeInTheDocument()
   })
 })

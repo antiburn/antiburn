@@ -2,12 +2,15 @@ import { fireEvent, render, type RenderResult } from "@testing-library/react"
 import { vi } from "vitest"
 
 import type {
+  AggregateWinPayload,
   AggregateWinsPayload,
+  BurnCheckDetectorId,
   BurnCheckTargetPayload,
   ChecksReportPayload,
 } from "../../../../lib/insightsIpc"
 import { BurnChecksSession, type BurnChecksAdapter } from "../../BurnChecksSession"
 import { BurnChecksView } from "../../BurnChecksView"
+import { BurnChecksSavings } from "../BurnChecksSavings"
 
 // Shared fixtures and helpers for the Burn Checks view test suite. The suite
 // is split across files in this folder by theme; each file imports what it
@@ -237,6 +240,15 @@ export function setup(
   const session = new BurnChecksSession(adapter)
   const view = render(<BurnChecksView active session={session} />)
   return { adapter, session, view, hide: () => visible?.(false) }
+}
+
+// Renders the Savings section on its own, with the fixture target's check as
+// the sole passed detector unless a test needs a different set.
+export function renderSavings(
+  wins: readonly AggregateWinPayload[],
+  passedDetectors: ReadonlySet<BurnCheckDetectorId> = new Set(["oldModelUsage"]),
+): RenderResult {
+  return render(<BurnChecksSavings wins={wins} passedDetectors={passedDetectors} />)
 }
 
 // Call from each test file's own beforeEach, passing that file's own

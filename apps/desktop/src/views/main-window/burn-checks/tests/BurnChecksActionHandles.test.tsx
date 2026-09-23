@@ -9,16 +9,13 @@ import type {
 import type * as ClipboardModule from "../../../../lib/clipboard"
 import type * as InsightsIpcModule from "../../../../lib/insightsIpc"
 import type * as IpcModule from "../../../../lib/ipc"
-import { BurnCheckDetail, CheckPromptAction } from "../BurnCheckDetail"
+import { BurnCheckDetail, CheckDetailActions, CheckPromptAction } from "../BurnCheckDetail"
+import { BurnCheckTargetActions } from "../BurnCheckTargetActions"
 
 import {
-  report,
-  namedTargetReport,
   target,
-  aggregate,
   deferred,
   recurredTarget,
-  setup,
   installBurnChecksCommandMocks,
   restoreBurnChecksTestWindow,
 } from "./burnChecksTestSupport"
@@ -127,18 +124,19 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   })
 
   it("keeps an open review when the expiring action handle rotates", async () => {
-    const { adapter, session } = setup()
-    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    const { rerender } = render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
+    fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     const dialog = await screen.findByRole("dialog", { name: "Review change" })
-    vi.mocked(adapter.getTargets).mockResolvedValueOnce({
-      targets: [{ ...target, actionId: "action-rotated" }],
-      samples: [],
-      truncated: false,
-    })
 
-    session.loadTargets("unusedMcpServers", true)
+    // The finding is unchanged (same findingId, no watch), so the action
+    // handle rotation carries the open review forward.
+    rerender(
+      <BurnCheckTargetActions
+        target={{ ...target, actionId: "action-rotated" }}
+        refresh={vi.fn()}
+      />,
+    )
 
-    await waitFor(() => expect(adapter.getTargets).toHaveBeenCalledTimes(2))
     expect(dialog).toBeVisible()
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     expect(commands.apply).toHaveBeenCalledWith("prepared-1")
@@ -147,16 +145,15 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   it("accepts a deferred prepare after the action handle rotates for the same attempt", async () => {
     const pending = deferred<PrepareAutoFixBurnCheckTargetOutcome | null>()
     commands.prepare.mockReturnValueOnce(pending.promise)
-    const { adapter, session } = setup()
-    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
-    vi.mocked(adapter.getTargets).mockResolvedValueOnce({
-      targets: [{ ...target, actionId: "action-rotated" }],
-      samples: [],
-      truncated: false,
-    })
+    const { rerender } = render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
+    fireEvent.click(screen.getByRole("button", { name: "Fix" }))
 
-    session.loadTargets("unusedMcpServers", true)
-    await waitFor(() => expect(adapter.getTargets).toHaveBeenCalledTimes(2))
+    rerender(
+      <BurnCheckTargetActions
+        target={{ ...target, actionId: "action-rotated" }}
+        refresh={vi.fn()}
+      />,
+    )
     await act(async () => {
       pending.resolve({
         outcome: "reviewReady",
@@ -183,16 +180,16 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   it("ignores a deferred prepare from an attempt that recurred", async () => {
     const pending = deferred<PrepareAutoFixBurnCheckTargetOutcome | null>()
     commands.prepare.mockReturnValueOnce(pending.promise)
-    const { adapter, session } = setup()
-    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
-    vi.mocked(adapter.getTargets).mockResolvedValueOnce({
-      targets: [recurredTarget("action-after-recurrence")],
-      samples: [],
-      truncated: false,
-    })
+    const { rerender } = render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
+    fireEvent.click(screen.getByRole("button", { name: "Fix" }))
 
-    session.loadTargets("unusedMcpServers", true)
-    await waitFor(() => expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled())
+    rerender(
+      <BurnCheckTargetActions
+        target={recurredTarget("action-after-recurrence")}
+        refresh={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
     await act(async () => {
       pending.resolve({
         outcome: "reviewReady",
@@ -228,18 +225,19 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   it("ignores a deferred prompt from an attempt that recurred", async () => {
     const pending = deferred<CopyPromptFixBurnCheckOutcome | null>()
     commands.copyBatch.mockReturnValueOnce(pending.promise)
-    const { adapter, session } = setup()
-    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
-    vi.mocked(adapter.getTargets).mockResolvedValueOnce({
-      targets: [recurredTarget("action-after-recurrence")],
-      samples: [],
-      truncated: false,
-    })
-
-    session.loadTargets("unusedMcpServers", true)
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
+    const { rerender } = render(
+      <CheckPromptAction detector="unusedMcpServers" targets={[target]} refresh={vi.fn()} />,
     )
+    fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
+
+    rerender(
+      <CheckPromptAction
+        detector="unusedMcpServers"
+        targets={[recurredTarget("action-after-recurrence")]}
+        refresh={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
     await act(async () => {
       pending.resolve({
         outcome: "promptReady",
@@ -263,18 +261,18 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   it("keeps a stale apply pending, then ignores its completion after recurrence", async () => {
     const pending = deferred<ApplyPreparedBurnCheckOperationOutcome | null>()
     commands.apply.mockReturnValueOnce(pending.promise)
-    const { adapter, session } = setup()
-    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    const { rerender } = render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
+    fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     const dialog = await screen.findByRole("dialog", { name: "Review change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
-    vi.mocked(adapter.getTargets).mockResolvedValueOnce({
-      targets: [recurredTarget("action-after-recurrence")],
-      samples: [],
-      truncated: false,
-    })
 
-    session.loadTargets("unusedMcpServers", true)
-    await waitFor(() => expect(within(dialog).getByText("Applying…")).toBeVisible())
+    rerender(
+      <BurnCheckTargetActions
+        target={recurredTarget("action-after-recurrence")}
+        refresh={vi.fn()}
+      />,
+    )
+    expect(within(dialog).getByText("Applying…")).toBeVisible()
     expect(dialog).toHaveAttribute("aria-busy", "true")
     await act(async () => {
       pending.resolve({ outcome: "appliedAwaitingVerification", watchId: "watch-old" })
@@ -297,32 +295,21 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   })
 
   it("resets copied state when the same watch records a recurrence", async () => {
-    const { adapter, session } = setup()
-    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
-    await screen.findByRole("button", { name: "Copied" })
-    vi.mocked(adapter.getTargets).mockResolvedValueOnce({
-      targets: [
-        {
-          ...target,
-          actionId: "action-after-recurrence",
-          watch: {
-            watchId: "watch-1",
-            origin: "action",
-            lifecycle: "recurred",
-            verification: { status: "recurred", methodRevision: 1, evidenceRevision: "e2" },
-            savings: { status: "pending" },
-          },
-        },
-      ],
-      samples: [],
-      truncated: false,
-    })
-
-    session.loadTargets("unusedMcpServers", true)
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
+    const { rerender } = render(
+      <CheckPromptAction detector="unusedMcpServers" targets={[target]} refresh={vi.fn()} />,
     )
+    fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
+    await screen.findByRole("button", { name: "Copied" })
+
+    rerender(
+      <CheckPromptAction
+        detector="unusedMcpServers"
+        targets={[recurredTarget("action-after-recurrence")]}
+        refresh={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
   })
 
   it("copies a fallback prompt for an empty failed check without showing Auto Fix", async () => {
@@ -365,17 +352,19 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   })
 
   it("uses a fallback prompt when exact targets are unavailable", async () => {
-    setup(
-      {
-        ...target,
-        promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
-      },
-      false,
-      aggregate,
-      report,
+    render(
+      <CheckPromptAction
+        detector="oldModelUsage"
+        targets={[
+          {
+            ...target,
+            promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
+          },
+        ]}
+        refresh={vi.fn()}
+      />,
     )
 
-    await screen.findByText("Some sessions used an older model when a newer one was available.")
     fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
 
     await waitFor(() => expect(commands.copyFallback).toHaveBeenCalledWith("oldModelUsage"))
@@ -436,29 +425,39 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     })
   })
 
-  it("hides the implied auto-fix reason when a prompt action is available", async () => {
-    setup({
-      ...target,
-      autoFix: { status: "unavailable", reason: "safetyCheckFailed" },
-    })
+  it("hides the implied auto-fix reason when a prompt action is available", () => {
+    render(
+      <CheckPromptAction
+        detector="unusedMcpServers"
+        targets={[
+          { ...target, autoFix: { status: "unavailable", reason: "safetyCheckFailed" } },
+        ]}
+        refresh={vi.fn()}
+      />,
+    )
 
-    expect(await screen.findByRole("button", { name: "Copy fix prompt" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeVisible()
     expect(screen.queryByText(/write safety check/)).not.toBeInTheDocument()
   })
 
   it("keeps one whole-check prompt when target actions are unavailable", async () => {
-    setup(
-      {
-        ...target,
-        autoFix: { status: "unavailable", reason: "safetyCheckFailed" },
-        promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
-      },
-      false,
-      aggregate,
-      namedTargetReport,
+    render(
+      <CheckDetailActions
+        detector="unusedMcpServers"
+        targets={[
+          {
+            ...target,
+            autoFix: { status: "unavailable", reason: "safetyCheckFailed" },
+            promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
+          },
+        ]}
+        refresh={vi.fn()}
+        reportRow
+      />,
     )
 
     const prompt = await screen.findByRole("button", { name: "Copy fix prompt" })
+    await screen.findByRole("button", { name: "Snooze" })
     expect(prompt).toBeEnabled()
     expect(screen.getAllByRole("button", { name: "Copy fix prompt" })).toHaveLength(1)
     expect(screen.getAllByRole("button", { name: "Snooze" })).toHaveLength(1)
@@ -481,8 +480,8 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     "keeps the %s apply outcome in the review with feedback",
     async (name, outcome) => {
       commands.apply.mockResolvedValueOnce(outcome)
-      setup()
-      fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+      render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
+      fireEvent.click(screen.getByRole("button", { name: "Fix" }))
       const dialog = await screen.findByRole("dialog", { name: "Review change" })
       fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
@@ -498,21 +497,28 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     },
   )
 
-  it("does not repeat target opportunities in a check-level detail", async () => {
-    setup(
-      {
-        ...target,
-        display: {
-          ...target.display,
-          estimatedOpportunity: { value: 12.5, unit: "apiEquivalentUsd" },
-        },
-      },
-      false,
-      aggregate,
-      report,
+  it("does not repeat target opportunities in a check-level detail", () => {
+    render(
+      <BurnCheckDetail
+        detector="oldModelUsage"
+        targets={[
+          {
+            ...target,
+            display: {
+              ...target.display,
+              estimatedOpportunity: { value: 12.5, unit: "apiEquivalentUsd" },
+            },
+          },
+        ]}
+        samples={target.samples}
+        failedSessionCount={1}
+        refresh={vi.fn()}
+      />,
     )
 
-    await screen.findByText("Some sessions used an older model when a newer one was available.")
+    expect(
+      screen.getByText("Some sessions used an older model when a newer one was available."),
+    ).toBeVisible()
     expect(screen.queryByText(/API-equivalent cost opportunity/)).not.toBeInTheDocument()
     expect(screen.queryByText("Estimated opportunity:")).not.toBeInTheDocument()
     expect(screen.queryByText("Estimate method:")).not.toBeInTheDocument()
