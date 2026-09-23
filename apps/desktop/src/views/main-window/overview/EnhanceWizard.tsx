@@ -4,6 +4,7 @@ import { Fragment, type ReactNode } from "react"
 import { PushButton } from "../../../components/ui/PushButton"
 import { cn } from "../../../lib/cn"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
+import { DoneStep, WatchStep } from "./EnhanceOutcomeSteps"
 import { FixStep, ScanStep, SourcesStep } from "./EnhanceSteps"
 
 const ENHANCE_STEPS = [
@@ -30,7 +31,7 @@ const ENHANCE_STEPS = [
   {
     label: "Done",
     heading: "Your AI setup is sorted",
-    lead: "Here's what your fixes save at your last 30 days' pace.",
+    lead: "Here's what your fixes save.",
   },
 ] as const
 
@@ -57,7 +58,11 @@ export function EnhanceWizard({
       <ScanStep state={checksState} />
     ) : step === 3 ? (
       <FixStep session={checks} state={checksState} />
-    ) : null
+    ) : step === 4 ? (
+      <WatchStep session={checks} state={checksState} />
+    ) : (
+      <DoneStep session={checks} state={checksState} />
+    )
   const last = step === ENHANCE_STEPS.length
   return (
     <section aria-label="Enhance my AI setup" className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -118,7 +123,7 @@ export function EnhanceWizard({
         <p className="mt-(--space-xs) max-w-[60ch] type-body text-label-secondary">
           {current.lead}
         </p>
-        {body && <div className="mt-(--space-xl)">{body}</div>}
+        <div className="mt-(--space-xl)">{body}</div>
       </div>
 
       <footer className="flex items-center justify-end gap-(--space-md) border-t border-separator pt-(--space-lg)">

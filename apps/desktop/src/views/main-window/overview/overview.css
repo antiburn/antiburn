@@ -150,6 +150,29 @@
   background-color: color-mix(in oklab, var(--color-shimmer) 18%, transparent);
 }
 
+/* The calm face: after a run, the button reports progress and does not
+   call for attention. Only the fresh and new states keep the sheen. */
+
+.overview-enhance[data-calm] .overview-enhance-glow {
+  display: none;
+}
+
+.overview-enhance[data-calm] .overview-enhance-face {
+  background-image: none;
+  background-color: var(--color-surface-card);
+  animation: none;
+  box-shadow: inset 0 0 0 1px var(--color-separator);
+}
+
+.overview-enhance[data-calm][data-ring] .overview-enhance-face {
+  box-shadow: inset 0 0 0 1.5px var(--color-brand-tint);
+}
+
+.overview-enhance[data-calm] .overview-enhance-icon {
+  background-color: color-mix(in oklab, var(--color-brand-tint) 15%, transparent);
+  color: var(--color-brand-tint);
+}
+
 @keyframes overview-enhance-drift {
   0% {
     background-position: 0% 50%;

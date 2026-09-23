@@ -22,6 +22,12 @@ export interface OverviewViewPrefs {
   hadSubscriptionPlan?: boolean
   /** The Enhance wizard step the reader last saw. */
   enhanceStep?: 1 | 2 | 3 | 4 | 5
+  /** When the reader last opened the Enhance wizard, in epoch milliseconds. */
+  enhanceStartedAt?: number
+  /** When the reader last finished the Enhance wizard, in epoch milliseconds. */
+  enhanceCompletedAt?: number
+  /** The failing checks at the last finish. A new failure wakes the button. */
+  enhanceSeenFailing?: string[]
 }
 
 /** The saved Overview view controls, or an empty object with no saved value,

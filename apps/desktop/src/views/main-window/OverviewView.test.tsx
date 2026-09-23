@@ -278,7 +278,7 @@ describe("OverviewView Enhance wizard", () => {
     view.rerender(<OverviewView {...view.props} navigationRevision={1} />)
     expect(screen.queryByRole("navigation", { name: "Enhance steps" })).toBeNull()
 
-    fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
+    fireEvent.click(screen.getByRole("button", { name: "Continue setup · step 2 of 5" }))
     expect(screen.getByRole("button", { name: /Scan/ })).toHaveAttribute("aria-current", "step")
   })
 })

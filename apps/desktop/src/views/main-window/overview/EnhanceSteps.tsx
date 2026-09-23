@@ -18,7 +18,7 @@ import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession
 import { CheckDetailActions, CHECK_SENTENCES } from "../burn-checks/BurnCheckDetail"
 import { RemindLaterAction } from "../burn-checks/RemindLaterAction"
 
-function Waiting({ children }: { children: string }) {
+export function Waiting({ children }: { children: string }) {
   return (
     <p role="status" className="type-callout text-label-secondary">
       {children}
@@ -69,7 +69,7 @@ export function SourcesStep() {
   )
 }
 
-function useChecks(state: BurnChecksSnapshot) {
+export function useChecks(state: BurnChecksSnapshot) {
   const snoozes = useSnoozedBurnChecks()
   if (!state.report || snoozes.status !== "ready") return null
   return {

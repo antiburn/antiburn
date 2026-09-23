@@ -13,7 +13,12 @@ import { EnhanceWizard, type EnhanceStep } from "./overview/EnhanceWizard"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
-import { readOverviewViewPrefs, writeOverviewViewPrefs } from "./overview/overviewViewPrefs"
+import { enhanceButtonState } from "./overview/enhanceState"
+import {
+  readOverviewViewPrefs,
+  writeOverviewViewPrefs,
+  type OverviewViewPrefs,
+} from "./overview/overviewViewPrefs"
 
 import "./overview/overview.css"
 
@@ -43,16 +48,24 @@ export function OverviewView({
     checks.getSnapshot,
   )
   const snoozes = useSnoozedBurnChecks()
-  const failingChecks =
+  const checkGroups =
     checksState.report && snoozes.status === "ready"
       ? checksPresentation(checksState.report, false, snoozedDetectorIds(snoozes.records))
-          .failures.length
       : null
+  const failing = checkGroups?.failures.map((check) => check.id) ?? null
 
   const [enhanceOpen, setEnhanceOpen] = useState(false)
-  const [enhanceStep, setEnhanceStep] = useState<EnhanceStep>(
-    () => readOverviewViewPrefs().enhanceStep ?? 1,
+  const [enhancePrefs, setEnhancePrefs] = useState(readOverviewViewPrefs)
+  const enhanceStep: EnhanceStep = enhancePrefs.enhanceStep ?? 1
+  const buttonState = enhanceButtonState(
+    failing,
+    checkGroups?.awaiting?.length ?? 0,
+    enhancePrefs,
   )
+  function saveEnhancePrefs(partial: OverviewViewPrefs) {
+    writeOverviewViewPrefs(partial)
+    setEnhancePrefs((prefs) => ({ ...prefs, ...partial }))
+  }
   // Any sidebar or history move, including a click on Overview itself,
   // closes the wizard. The sidebar is the way back.
   const [seenRevision, setSeenRevision] = useState(navigationRevision)
@@ -60,9 +73,21 @@ export function OverviewView({
     setSeenRevision(navigationRevision)
     setEnhanceOpen(false)
   }
-  function changeEnhanceStep(step: EnhanceStep) {
-    setEnhanceStep(step)
-    writeOverviewViewPrefs({ enhanceStep: step })
+  function openEnhance() {
+    // A resume keeps the saved step. Pending fixes open on Watch. Every
+    // other state starts a new run on the first step.
+    const step: EnhanceStep =
+      buttonState.kind === "resume" ? enhanceStep : buttonState.kind === "watching" ? 4 : 1
+    saveEnhancePrefs({ enhanceStartedAt: Date.now(), enhanceStep: step })
+    setEnhanceOpen(true)
+  }
+  function finishEnhance() {
+    saveEnhancePrefs({
+      enhanceCompletedAt: Date.now(),
+      enhanceSeenFailing: failing ?? [],
+      enhanceStep: 1,
+    })
+    setEnhanceOpen(false)
   }
 
   const [selectedMetric, setMetric] = useState<OverviewMetric | null>(() => {
@@ -110,8 +135,8 @@ export function OverviewView({
             step={enhanceStep}
             checks={checks}
             checksState={checksState}
-            onStepChange={changeEnhanceStep}
-            onFinish={() => setEnhanceOpen(false)}
+            onStepChange={(step) => saveEnhancePrefs({ enhanceStep: step })}
+            onFinish={finishEnhance}
           />
         </div>
       ) : (
@@ -177,8 +202,9 @@ export function OverviewView({
 
           <div className="col-[2/4]">
             <EnhanceActionBar
-              failingChecks={failingChecks}
-              onOpen={() => setEnhanceOpen(true)}
+              failingChecks={failing?.length ?? null}
+              state={buttonState}
+              onOpen={openEnhance}
             />
           </div>
         </>
