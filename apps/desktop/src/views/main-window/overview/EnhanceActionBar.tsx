@@ -13,9 +13,9 @@ export function EnhanceActionBar({
   return (
     <footer
       aria-label="Next step"
-      className="flex items-center gap-(--space-md) border-t border-separator pt-(--space-lg)"
+      className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-(--space-md) border-t border-separator pt-(--space-lg)"
     >
-      <p role="status" className="grow type-caption text-label-secondary">
+      <p role="status" className="type-caption text-label-secondary">
         {failingChecks == null ? (
           "Checking your setup…"
         ) : failingChecks === 0 ? (
@@ -33,7 +33,7 @@ export function EnhanceActionBar({
         )}
       </p>
 
-      <button type="button" onClick={onOpen} className="overview-enhance shrink-0">
+      <button type="button" onClick={onOpen} className="overview-enhance">
         <span aria-hidden="true" className="overview-enhance-glow" />
         <span className="overview-enhance-face flex items-center gap-(--space-sm) rounded-(--radius-popover) py-(--space-sm) ps-(--space-sm) pe-(--space-lg) type-body font-semibold whitespace-nowrap text-white">
           <span

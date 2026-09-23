@@ -1,7 +1,7 @@
 .overview-chart {
   --overview-chart-height: 60px;
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   flex-direction: column;
   min-block-size: 0;
 }
