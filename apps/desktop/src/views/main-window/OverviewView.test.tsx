@@ -261,7 +261,7 @@ describe("OverviewView metric preference", () => {
 describe("OverviewView Enhance wizard", () => {
   it("opens the wizard from the action bar and saves the step", () => {
     setup()
-    fireEvent.click(screen.getByRole("button", { name: "Enhance" }))
+    fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
     expect(screen.getByRole("navigation", { name: "Enhance steps" })).toBeInTheDocument()
     expect(screen.queryByRole("region", { name: "Overview" })).toBeNull()
 
@@ -272,7 +272,7 @@ describe("OverviewView Enhance wizard", () => {
 
   it("closes the wizard on any navigation, and reopens on the saved step", () => {
     const view = setup()
-    fireEvent.click(screen.getByRole("button", { name: "Enhance" }))
+    fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
     view.rerender(<OverviewView {...view.props} navigationRevision={1} />)

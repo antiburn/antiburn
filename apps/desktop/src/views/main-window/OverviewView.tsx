@@ -123,14 +123,14 @@ export function OverviewView({
     <div
       className={cn(
         "overview-layout min-h-0 min-w-0 flex-1 bg-surface-window",
-        "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[minmax(0,1fr)_auto] gap-x-(--space-2xl) gap-y-(--space-lg) pt-(--space-2xl) mb-(--space-2xl)",
+        "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[minmax(0,1fr)] gap-x-(--space-2xl) gap-y-(--space-lg) pt-(--space-2xl) mb-(--space-2xl)",
       )}
       data-overview-active={active ? "" : undefined}
     >
       <h1 className="sr-only">Overview</h1>
 
       {enhanceOpen ? (
-        <div className="col-[2/4] row-span-2 flex min-h-0 min-w-0">
+        <div className="col-[2/4] flex min-h-0 min-w-0">
           <EnhanceWizard
             step={enhanceStep}
             checks={checks}
@@ -184,6 +184,12 @@ export function OverviewView({
                 liveUsage={state.liveUsage ?? undefined}
                 sessionLimitAllocations={state.sessionLimitAllocations}
               />
+
+              <EnhanceActionBar
+                failingChecks={failing?.length ?? null}
+                state={buttonState}
+                onOpen={openEnhance}
+              />
             </div>
           </ScrollPane>
 
@@ -199,14 +205,6 @@ export function OverviewView({
           >
             <OverviewProviderLimits live={state.liveUsage} loading={!state.liveUsageSettled} />
           </ScrollPane>
-
-          <div className="col-[2/4]">
-            <EnhanceActionBar
-              failingChecks={failing?.length ?? null}
-              state={buttonState}
-              onOpen={openEnhance}
-            />
-          </div>
         </>
       )}
     </div>

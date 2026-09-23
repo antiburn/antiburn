@@ -96,118 +96,74 @@
 }
 
 /*
- * The Enhance button in the bottom action bar. A flat brand face. When the
- * pointer is on the bar, faint scanlines show on the face and a band of three
- * brighter lines steps down it, like an LED panel. The band moves in whole
- * line steps and then rests, the same two-level rule as the HUD's LED sweep.
- * The reduced-motion clamp in `motion.css` stops the motion.
+ * The Enhance card under Recent sessions. The install banner fire burns on a
+ * canvas behind the content. A mask keeps it off the text on the left. The
+ * fire shows a still frame at rest and moves only on hover or focus.
  */
 
-.overview-enhance {
-  position: relative;
-  isolation: isolate;
-}
-
-.overview-enhance-face {
+.enhance-fire-card {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  clip-path: inset(0 round var(--radius-popover));
-  background-color: var(--color-brand-tint);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent);
-  transition: transform var(--duration-medium) var(--ease-out-quart);
+  min-block-size: 132px;
+  background-color: var(--color-surface-card);
+  box-shadow: var(--shadow-stats-card);
+  transition:
+    transform var(--duration-medium) var(--ease-out-quart),
+    box-shadow var(--duration-medium) var(--ease-out-quart);
 }
 
-.overview-enhance-face::before,
-.overview-enhance-face::after {
-  content: "";
+.enhance-fire-card:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--color-brand-tint) 45%, transparent),
+    0 10px 28px -12px color-mix(in oklab, var(--color-brand-tint) 60%, transparent);
+}
+
+.enhance-fire-card:active {
+  transform: translateY(1px) scale(0.995);
+}
+
+.enhance-fire-canvas {
   position: absolute;
-  z-index: -1;
   inset: 0;
+  z-index: -1;
+  inline-size: 100%;
+  block-size: 100%;
   pointer-events: none;
-  opacity: 0;
+  opacity: 0.55;
+  mask: linear-gradient(to right, transparent 20%, #000 65%);
   transition: opacity var(--duration-slow) var(--ease-out-quart);
 }
 
-.overview-enhance-face::before {
-  background: repeating-linear-gradient(
-    0deg,
-    color-mix(in oklab, var(--color-shimmer) 7%, transparent) 0 1px,
-    transparent 1px 3px
-  );
-}
-
-.overview-enhance-face::after {
-  background: repeating-linear-gradient(
-    0deg,
-    color-mix(in oklab, var(--color-shimmer) 35%, transparent) 0 1px,
-    transparent 1px 3px
-  );
-  mask: linear-gradient(#000 0 0) no-repeat;
-  mask-size: 100% 9px;
-  mask-position: 0 -9px;
-}
-
-.overview-enhance-bar:hover .overview-enhance-face::before,
-.overview-enhance-bar:hover .overview-enhance-face::after {
+.enhance-fire-card:hover .enhance-fire-canvas,
+.enhance-fire-card:focus-visible .enhance-fire-canvas {
   opacity: 1;
 }
 
-.overview-enhance-bar:hover .overview-enhance-face::after {
-  animation: overview-enhance-scan 5s infinite;
+.enhance-fire-card[data-calm] .enhance-fire-canvas {
+  opacity: 0.3;
 }
 
-.overview-enhance-glow {
-  position: absolute;
-  inset: 10px 8px -6px;
-  z-index: -1;
-  border-radius: var(--radius-popover);
-  background: var(--color-brand-tint);
-  filter: blur(16px);
-  opacity: 0.2;
+.enhance-fire-card[data-calm]:hover .enhance-fire-canvas {
+  opacity: 0.7;
 }
 
-.overview-enhance:hover .overview-enhance-face {
-  transform: translateY(-1px);
+.enhance-fire-icon {
+  box-shadow:
+    0 0 0 5px color-mix(in oklab, var(--color-brand-tint) 12%, transparent),
+    0 0 22px color-mix(in oklab, var(--color-brand-tint) 40%, transparent);
 }
 
-.overview-enhance:active .overview-enhance-face {
-  transform: translateY(1px) scale(0.99);
+.enhance-fire-action {
+  background-color: var(--color-brand-tint);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent);
 }
 
-/* The calm face: after a run, the button reports progress and does not
-   call for attention. Only the fresh and new states keep the scanlines. */
-
-.overview-enhance[data-calm] .overview-enhance-glow,
-.overview-enhance[data-calm] .overview-enhance-face::before,
-.overview-enhance[data-calm] .overview-enhance-face::after {
-  display: none;
-}
-
-.overview-enhance[data-calm] .overview-enhance-face {
-  background-color: var(--color-surface-card);
+.enhance-fire-card[data-calm] .enhance-fire-action {
+  color: var(--color-label);
+  background-color: var(--color-surface-sidebar);
   box-shadow: inset 0 0 0 1px var(--color-separator);
-}
-
-.overview-enhance[data-calm][data-ring] .overview-enhance-face {
-  box-shadow: inset 0 0 0 1.5px var(--color-brand-tint);
-}
-
-.overview-enhance[data-calm] .overview-enhance-icon {
-  color: var(--color-brand-tint);
-}
-
-/* 15 steps of 3px take the band from above the face to below it. */
-@keyframes overview-enhance-scan {
-  0% {
-    mask-position: 0 -9px;
-    animation-timing-function: steps(15, end);
-  }
-
-  40%,
-  100% {
-    mask-position: 0 36px;
-  }
 }
 
 /* The dot-meter link between two Enhance steps. Lit links carry the brand
