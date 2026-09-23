@@ -1,6 +1,7 @@
-import { useState, useSyncExternalStore } from "react"
+import { useCallback, useState, useSyncExternalStore } from "react"
 
 import { cn } from "../../lib/cn"
+import { openBurnCheckSample, type BurnCheckDetectorId } from "../../lib/insightsIpc"
 
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
@@ -15,6 +16,7 @@ import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 // import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
 import { enhanceButtonState } from "./overview/enhanceState"
+import { pinnedDetectors, wasteMarks } from "./overview/wasteMarks"
 import {
   readOverviewViewPrefs,
   writeOverviewViewPrefs,
@@ -58,6 +60,14 @@ export function OverviewView({
       ? checksPresentation(checksState.report, false, snoozedDetectorIds(snoozes.records))
       : null
   const failing = checkGroups?.failures.map((check) => check.id) ?? null
+  const waste = checkGroups
+    ? {
+        ...wasteMarks(checkGroups.failures, checksState.targets),
+        onOpen: (pin: { navigationHandle: string }) =>
+          void openBurnCheckSample(pin.navigationHandle),
+      }
+    : undefined
+  const pinned = pinnedDetectors(checkGroups?.failures ?? [])
 
   const [enhanceOpen, setEnhanceOpen] = useState(false)
   const [enhancePrefs, setEnhancePrefs] = useState(readOverviewViewPrefs)
@@ -178,8 +188,12 @@ export function OverviewView({
                 onRetryUsage={session.refresh}
                 showFigures={false}
                 center={<EnhanceOrb state={buttonState} onOpen={openEnhance} />}
+                waste={waste}
                 loading={loading}
               />
+              {pinned.map((detector) => (
+                <PinTargets key={detector} detector={detector} checks={checks} />
+              ))}
 
               {/* The config checks and the Optimise card are off for now, while the
                   round Optimise button in the chart is tried alone.
@@ -233,4 +247,20 @@ export function OverviewView({
       )}
     </div>
   )
+}
+
+/** Loads the sample sessions of one pinned check while the Overview chart
+ *  shows, so its pins can go on the chart. */
+function PinTargets({
+  detector,
+  checks,
+}: {
+  detector: BurnCheckDetectorId
+  checks: BurnChecksSession
+}) {
+  const trackTargets = useCallback(
+    (node: HTMLElement | null) => checks.setTargetsVisible(detector, node !== null, false),
+    [checks, detector],
+  )
+  return <span ref={trackTargets} hidden />
 }

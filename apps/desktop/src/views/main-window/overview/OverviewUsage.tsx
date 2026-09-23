@@ -12,6 +12,7 @@ import { OverviewAllowanceRadial } from "./OverviewAllowanceRadial"
 import { OverviewAllowanceTotals } from "./OverviewAllowanceTotals"
 import { OverviewSpendChart } from "./OverviewSpendChart"
 import { OverviewSpendTotals } from "./OverviewSpendTotals"
+import type { WasteMarks } from "./wasteMarks"
 import {
   readOverviewViewPrefs,
   writeOverviewViewPrefs,
@@ -43,6 +44,7 @@ export function OverviewUsage({
   onRetryUsage,
   showFigures = true,
   center,
+  waste,
   loading = false,
 }: {
   metric: OverviewMetric
@@ -58,6 +60,8 @@ export function OverviewUsage({
   showFigures?: boolean
   /** The content in the middle of the allowance chart. */
   center?: ReactNode
+  /** The wasteful sessions and config checks to mark on the allowance chart. */
+  waste?: WasteMarks
   loading?: boolean
 }) {
   const costFailed = usageError && !totals
@@ -145,6 +149,7 @@ export function OverviewUsage({
                 rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
                 controls={chartControls}
                 center={center}
+                waste={waste}
               />
             ) : (
               <OverviewAllowanceChart
