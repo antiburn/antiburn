@@ -288,7 +288,9 @@ export function BurnCheckTargetActions({
       }
       await writeClipboardText(prompt)
       if (repeatCopy) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, REPEAT_COPY_FEEDBACK_MS))
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, REPEAT_COPY_FEEDBACK_MS),
+        )
       }
       if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
       noteInteraction({ kind: "burnCheckPromptCopied" })

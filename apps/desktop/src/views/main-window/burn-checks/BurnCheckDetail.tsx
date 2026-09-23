@@ -128,7 +128,9 @@ export function CheckPromptAction({
       }
       await writeClipboardText(nextPrompt)
       if (repeatCopy) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, REPEAT_COPY_FEEDBACK_MS))
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, REPEAT_COPY_FEEDBACK_MS),
+        )
       }
       if (key.current !== startedKey) return
       noteInteraction({ kind: "burnCheckPromptCopied" })

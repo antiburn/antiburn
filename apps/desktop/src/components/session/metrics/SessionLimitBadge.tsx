@@ -65,10 +65,7 @@ export function SessionLimitBadge({
   const isHighCostPill = !plain && isHighCost
 
   return limitBadge.percent !== null ? (
-    <Tooltip
-      label={isHighCostPill ? "Higher than usual cost" : limitBadge.label}
-      delayMs={150}
-    >
+    <Tooltip label={isHighCostPill ? "Higher than usual cost" : limitBadge.label} delayMs={150}>
       <span
         className={
           isHighCostPill
@@ -84,9 +81,7 @@ export function SessionLimitBadge({
         data-session-limit-window={limitBadge.windowId}
         data-session-limit-percent={limitBadge.percent.toFixed(4)}
         aria-label={
-          isHighCostPill
-            ? `${limitBadge.label} Higher than usual cost.`
-            : limitBadge.label
+          isHighCostPill ? `${limitBadge.label} Higher than usual cost.` : limitBadge.label
         }
         tabIndex={0}
       >

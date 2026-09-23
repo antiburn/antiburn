@@ -378,9 +378,7 @@ describe("SessionStatusBar", () => {
       />,
     )
 
-    const figure = screen.getByLabelText(
-      "Estimated weekly share Higher than usual cost.",
-    )
+    const figure = screen.getByLabelText("Estimated weekly share Higher than usual cost.")
     expect(figure).toHaveTextContent("5%")
     expect(figure.className).toContain("rounded-full")
     expect(figure.className).toContain("bg-brand-tint")
