@@ -15,6 +15,44 @@ const WINDOW_CORNER_SOURCES = [
     constant: "NUDGE_CORNER_RADIUS",
   },
 ];
+const GENERIC_FONT_FAMILIES = new Set([
+  "ui-monospace",
+  "ui-sans-serif",
+  "ui-serif",
+  "ui-rounded",
+]);
+
+function documentedThemeExceptions(doc, failures) {
+  const exceptions = new Map();
+  const section =
+    doc.split("## System palette exceptions\n")[1]?.split(/\n## /)[0] ?? "";
+  for (const line of section.split("\n")) {
+    if (!line.startsWith("|")) continue;
+    const cells = line
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.trim());
+    if (cells[0] === "Token" || cells.every((cell) => /^[-:]+$/.test(cell)))
+      continue;
+    const [token, theme, value, reason] = cells;
+    if (
+      cells.length !== 4 ||
+      !/^[a-z][\w-]*$/.test(token) ||
+      !["light", "dark"].includes(theme) ||
+      !value ||
+      !reason
+    ) {
+      failures.push(`Invalid System palette exception: ${line}`);
+      continue;
+    }
+    const key = `${token}:${theme}`;
+    if (exceptions.has(key))
+      failures.push(`Duplicate System palette exception: ${key}`);
+    exceptions.set(key, { token, theme, value });
+  }
+  return exceptions;
+}
+
 const norm = (s) => s.replace(/\s+/g, " ").trim();
 const normColor = (s) =>
   norm(s).replace(/\d*\.?\d+/g, (n) => String(parseFloat(n)));
@@ -128,6 +166,8 @@ function matchingBrace(css, open) {
 
 export function checkDesignDrift(io = fileSystemIo()) {
   const failures = [];
+  const doc = io.read("design.md");
+  const exceptions = documentedThemeExceptions(doc, failures);
   const css = stripComments(
     io
       .listStylesheets()
@@ -139,6 +179,10 @@ export function checkDesignDrift(io = fileSystemIo()) {
   if (!Object.keys(map).length)
     failures.push("No semantic color aliases found");
 
+  for (const { token } of exceptions.values()) {
+    if (!map[token])
+      failures.push(`System palette exception names unknown token: ${token}`);
+  }
   for (const theme of ["light", "dark"]) {
     const explicit = themeVars(css, theme);
     const system = systemVars(css, theme);
@@ -155,13 +199,20 @@ export function checkDesignDrift(io = fileSystemIo()) {
           `color \`${name}\`: --color-${ref} is unset in the ${theme} system palette`,
         );
       }
-      if (
-        forced !== undefined &&
-        followed !== undefined &&
-        normColor(forced) !== normColor(followed)
-      ) {
+      const exception = exceptions.get(`${name}:${theme}`);
+      if (forced === undefined || followed === undefined) continue;
+      if (normColor(forced) === normColor(followed)) {
+        if (exception)
+          failures.push(
+            `color \`${name}\` ${theme}: System palette exception repeats the explicit value; remove it`,
+          );
+      } else if (!exception) {
         failures.push(
-          `color \`${name}\` ${theme} = ${forced}, but the system palette sets ${followed}`,
+          `color \`${name}\` ${theme} = ${forced}, but the system palette sets ${followed}; document a System palette exception`,
+        );
+      } else if (normColor(exception.value) !== normColor(followed)) {
+        failures.push(
+          `color \`${name}\` ${theme}: System palette exception = ${exception.value}, expected ${followed}`,
         );
       }
     }
@@ -212,6 +263,15 @@ export function checkDesignDrift(io = fileSystemIo()) {
         `--radius-popover ${radius}px != ${source.constant} ${rust[1]} in ${source.path}`,
       );
     }
+  }
+  for (const match of doc.matchAll(/\bsrc\/[\w./-]+\.(?:ts|tsx|css)\b/g)) {
+    if (!io.exists(match[0]))
+      failures.push(`referenced path does not exist: ${match[0]}`);
+  }
+  for (const match of doc.matchAll(/\b(?:ui|type)-[a-z][\w-]*/g)) {
+    if (GENERIC_FONT_FAMILIES.has(match[0])) continue;
+    if (!css.includes(match[0]))
+      failures.push(`referenced class not found in the CSS: ${match[0]}`);
   }
   return failures;
 }

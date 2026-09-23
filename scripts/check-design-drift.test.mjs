@@ -42,11 +42,13 @@ body {
 
 function fixture({
   css = CSS,
+  doc = "",
   extra = {},
   popover = "const CORNER_RADIUS: f64 = 10.0;",
   nudge = "const NUDGE_CORNER_RADIUS: f64 = 10.0;",
 } = {}) {
   const files = {
+    "design.md": doc,
     "src/styles/tokens.css": css,
     "src-tauri/src/popover.rs": popover,
     "src-tauri/crates/nudge/src/window.rs": nudge,
@@ -71,7 +73,7 @@ function assertFails(failures, fragment) {
   );
 }
 
-test("checks CSS and native code without a document or source manifest", () => {
+test("checks CSS and native code without a YAML catalogue or source manifest", () => {
   assert.deepEqual(checkDesignDrift(fixture()), []);
 });
 
@@ -246,4 +248,67 @@ test("custom properties do not count as line-height declarations", () => {
   );
   assertFails(failures, "html has no shared unitless line-height");
   assertFails(failures, "body has no shared unitless line-height");
+});
+
+function exceptionDoc(rows) {
+  return `## System palette exceptions\n\n| Token | Theme | System value | Rationale |\n| ----- | ----- | ------------ | --------- |\n${rows}\n`;
+}
+const DIFFERENT_SYSTEM = CSS.replace("rgb(255 255 255)", "rgb(240 240 240)");
+
+test("allows a documented System palette difference", () => {
+  const doc = exceptionDoc(
+    "| surface | light | rgb(240 240 240) | Native material needs different ink. |",
+  );
+  assert.deepEqual(
+    checkDesignDrift(fixture({ css: DIFFERENT_SYSTEM, doc })),
+    [],
+  );
+});
+
+test("rejects stale, redundant, and unknown System palette exceptions", () => {
+  const row = "| surface | light | rgb(241 241 241) | Native material. |";
+  assertFails(
+    checkDesignDrift(
+      fixture({ css: DIFFERENT_SYSTEM, doc: exceptionDoc(row) }),
+    ),
+    "expected rgb(240 240 240)",
+  );
+  assertFails(
+    checkDesignDrift(fixture({ doc: exceptionDoc(row) })),
+    "repeats the explicit value",
+  );
+  assertFails(
+    checkDesignDrift(
+      fixture({ doc: exceptionDoc(row.replace("surface", "unknown")) }),
+    ),
+    "unknown token",
+  );
+});
+
+test("rejects duplicate or malformed exception rows", () => {
+  const row = "| surface | light | rgb(240 240 240) | Native material. |";
+  assertFails(
+    checkDesignDrift(
+      fixture({ css: DIFFERENT_SYSTEM, doc: exceptionDoc(`${row}\n${row}`) }),
+    ),
+    "Duplicate System palette exception",
+  );
+  assertFails(
+    checkDesignDrift(
+      fixture({ doc: exceptionDoc(row.replace("light", "dakr")) }),
+    ),
+    "Invalid System palette exception",
+  );
+});
+
+test("checks documented source paths and CSS classes", () => {
+  const doc =
+    "src/styles/tokens.css .type-body ui-monospace ui-sans-serif ui-serif ui-rounded";
+  assert.deepEqual(checkDesignDrift(fixture({ doc })), []);
+  const failures = checkDesignDrift(
+    fixture({ doc: "src/missing.tsx ui-missing type-missing" }),
+  );
+  assertFails(failures, "referenced path does not exist: src/missing.tsx");
+  assertFails(failures, "referenced class not found in the CSS: ui-missing");
+  assertFails(failures, "referenced class not found in the CSS: type-missing");
 });

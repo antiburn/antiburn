@@ -10,7 +10,8 @@ rationale, rather than treating an implementation difference as permission.
 
 Use this guide when adding a surface, changing visual hierarchy, or deciding
 whether a pattern belongs in the shared system. Update it when a design rule
-or its rationale changes. A CSS value change does not need a transcription here.
+or its rationale changes. A CSS value change does not need a transcription here unless it changes a
+documented System palette exception.
 
 ## What the interface should do
 
@@ -73,7 +74,7 @@ utilities such as `bg-surface-window`, `text-label-secondary`, and
 `tokens.css` resolves System, Light, and Dark. Check a
 colour on the surface where it appears, including translucent popovers over
 uncontrolled desktop backgrounds. System must match the corresponding explicit
-Light or Dark palette. Reduced transparency must make window and popover
+Light or Dark palette unless listed under [System palette exceptions](#system-palette-exceptions). Reduced transparency must make window and popover
 surfaces solid and legible in every System, Light, and Dark branch.
 
 Choose a token for its meaning rather than the nearest-looking hue:
@@ -107,6 +108,18 @@ Vendor marks are trademarks rather than Lucide icons. Render them through
 [renderAgentIcon](src/lib/agentIcon.tsx), including its neutral and brand-colour
 treatment. Do not hand-code a vendor hex into a component. Decorative marks
 and watermarks must not replace a visible source name when identity matters.
+
+## System palette exceptions
+
+There are currently no static System/explicit palette differences. Document an
+intentional difference in the table below using the semantic token name, `light`
+or `dark`, the exact System CSS value, and its rationale. The checker validates
+the value and rejects unknown tokens, duplicate entries, and redundant exceptions.
+Live native system colours and reduced-transparency overrides are separate from
+this static palette comparison.
+
+| Token | Theme | System value | Rationale |
+| ----- | ----- | ------------ | --------- |
 
 ## Type, controls, and interaction
 
