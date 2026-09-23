@@ -28,6 +28,10 @@ export interface ConfigShare {
   detector: BurnCheckDetectorId
   label: string
   share: number
+  /** The sessions that fail the check. */
+  finding: number
+  /** The sessions the check could read. */
+  sessions: number
 }
 
 export interface WasteMarks {
@@ -55,6 +59,8 @@ export function wasteMarks(
       detector: check.id,
       label: CHECK_LABELS[check.id],
       share: check.finding / (check.finding + check.clean),
+      finding: check.finding,
+      sessions: check.finding + check.clean,
     }))
     .sort((left, right) => right.share - left.share)
   const pins = pinnedDetectors(failures).flatMap((detector) =>

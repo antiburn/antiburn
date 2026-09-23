@@ -26,7 +26,10 @@ function week(start: number, top: number) {
   }
 }
 
-function account(): AllowanceUsageAccountPayload {
+function account(
+  weeks = [week(0, 80), week(WEEK, 60), week(2 * WEEK, 30)],
+  shortPeak = 40,
+): AllowanceUsageAccountPayload {
   return {
     provider: "claude",
     displayName: "Claude",
@@ -34,8 +37,8 @@ function account(): AllowanceUsageAccountPayload {
     plan: null,
     utilization: null,
     chart: {
-      shortWindows: [{ startsAtEpoch: 3600, resetsAtEpoch: 3600 * 6, peakPercent: 40 }],
-      weeklyWindows: [week(0, 80), week(WEEK, 60), week(2 * WEEK, 30)],
+      shortWindows: [{ startsAtEpoch: 3600, resetsAtEpoch: 3600 * 6, peakPercent: shortPeak }],
+      weeklyWindows: weeks,
       rolling: [{ atEpoch: 0, percent: 25 }],
     },
   } as unknown as AllowanceUsageAccountPayload
@@ -73,7 +76,15 @@ describe("OverviewAllowanceRadial", () => {
         pin(2 * WEEK + 3800, "c"),
         pin(WEEK + 3600, "d"),
       ],
-      config: [{ detector: "unusedMcpServers", label: "Unused MCP servers", share: 0.42 }],
+      config: [
+        {
+          detector: "unusedMcpServers",
+          label: "Unused MCP servers",
+          share: 0.42,
+          finding: 21,
+          sessions: 50,
+        },
+      ],
       onOpen,
     }
     const { container } = render(
@@ -100,10 +111,57 @@ describe("OverviewAllowanceRadial", () => {
     )
     expect(screen.getByText("Wasteful session")).toBeInTheDocument()
 
-    // A hovered pin names its session and fades the pins of other checks.
+    // A hovered pin names its session. The card follows the pointer.
+    fireEvent.pointerMove(pins[3]!.closest("svg")!, { clientX: 40, clientY: 40 })
     fireEvent.pointerOver(pins[3]!)
     expect(screen.getByText("Session d")).toBeInTheDocument()
     expect(screen.getByText("Click to open the session")).toBeInTheDocument()
     expect((pins[3] as SVGGElement).style.opacity).toBe("1")
+    fireEvent.pointerOut(pins[3]!)
+
+    // A config row brings its check forward and fades the pins.
+    const row = container.querySelector("[data-radial-config]")!
+    fireEvent.pointerMove(row.closest("svg")!, { clientX: 200, clientY: 20 })
+    fireEvent.pointerOver(row)
+    expect(screen.getByText("21 of 50 sessions (42%)")).toBeInTheDocument()
+    expect((pins[0] as SVGGElement).style.opacity).toBe("0.25")
+    fireEvent.pointerOut(row)
+
+    // The key entry brings every pin forward, past weeks too.
+    fireEvent.pointerOver(screen.getByText("Wasteful session"))
+    expect([...pins].map((pin) => (pin as SVGGElement).style.opacity)).toEqual([
+      "1",
+      "1",
+      "1",
+      "1",
+    ])
+  })
+
+  it("marks where a week and a 5-hour window hit their limits", () => {
+    const { container } = render(
+      <OverviewAllowanceRadial
+        account={account([week(0, 100), week(WEEK, 60), week(2 * WEEK, 30)], 100)}
+        rangeEndEpoch={2 * WEEK + 3600}
+      />,
+    )
+    expect(
+      screen.getByText(
+        /The weekly limit was hit in 1 of these weeks\. The 5-hour limit was hit in 1 of the 5-hour windows\./,
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText("Limit hit")).toBeInTheDocument()
+    const limit = container.querySelector("[data-radial-limit]")!
+    fireEvent.pointerMove(limit.closest("svg")!, { clientX: 40, clientY: 40 })
+    fireEvent.pointerOver(limit)
+    expect(screen.getByText("Hit the weekly limit")).toBeInTheDocument()
+    expect(screen.getByText("2 weeks ago")).toBeInTheDocument()
+  })
+
+  it("shows no limit marks for weeks under the limit", () => {
+    const { container } = render(
+      <OverviewAllowanceRadial account={account()} rangeEndEpoch={2 * WEEK + 3600} />,
+    )
+    expect(container.querySelector("[data-radial-limit]")).toBeNull()
+    expect(screen.queryByText("Limit hit")).toBeNull()
   })
 })

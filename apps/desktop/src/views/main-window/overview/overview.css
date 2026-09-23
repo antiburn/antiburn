@@ -430,8 +430,8 @@
   animation-delay: calc(var(--duration-slow) + var(--row, 0) * var(--duration-quick));
 }
 
-/* One check in focus fades the others. */
-.overview-waste-focus {
+/* The part in focus fades the rest. */
+.overview-radial-focus {
   transition: opacity var(--duration-fast) var(--ease-out-quart);
 }
 
