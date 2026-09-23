@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChecksCategoryLifecycle, ChecksCategoryPayload } from "../../../lib/insightsIpc"
 import * as SnoozedBurnChecks from "../../../lib/snoozedBurnChecks"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
-import { FixStep, ScanStep } from "./EnhanceSteps"
+import * as Ipc from "../../../lib/ipc"
+import type { ScanStatus } from "../../../lib/ipc"
+import { scanStatusStore } from "../../../lib/scanStatusStore"
+import { FixStep, ScanStep, SourcesStep } from "./EnhanceSteps"
 
 function category(
   id: ChecksCategoryPayload["id"],
@@ -49,6 +52,19 @@ beforeEach(() => {
   })
 })
 afterEach(() => vi.restoreAllMocks())
+
+describe("SourcesStep", () => {
+  it("fetches the agent list when scan events arrived without it", async () => {
+    scanStatusStore.set({ running: true, agents: [] } as unknown as ScanStatus)
+    vi.spyOn(Ipc, "getScanStatus").mockResolvedValue({
+      running: true,
+      agents: [{ agent: "claude-code", lastCompletedAt: null, sessionsSeen: 42 }],
+    } as unknown as ScanStatus)
+    render(<SourcesStep />)
+    expect(screen.getByText("Looking for your agents…")).toBeInTheDocument()
+    expect(await screen.findByText("42 sessions")).toBeInTheDocument()
+  })
+})
 
 describe("ScanStep", () => {
   it("counts only failing checks that are not snoozed, and marks each state", () => {

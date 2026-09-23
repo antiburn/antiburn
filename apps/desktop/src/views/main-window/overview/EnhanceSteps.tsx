@@ -1,12 +1,12 @@
 import { FolderPlus } from "lucide-react"
-import { useCallback, useSyncExternalStore } from "react"
+import { useCallback, useState, useSyncExternalStore } from "react"
 
 import { cn } from "../../../lib/cn"
 import type { ChecksCategoryPayload } from "../../../lib/insightsIpc"
-import { openSettingsWindow } from "../../../lib/ipc"
+import { getScanStatus, openSettingsWindow } from "../../../lib/ipc"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { checksPresentation } from "../../../lib/presentation/checks"
-import { scanStatusStore } from "../../../lib/scanStatusStore"
+import { scanStatusStore, withKnownAgents } from "../../../lib/scanStatusStore"
 import {
   formatSnoozeUntil,
   snoozedDetectorIds,
@@ -32,7 +32,25 @@ export function SourcesStep() {
     scanStatusStore.getSnapshot,
     scanStatusStore.getSnapshot,
   )
-  if (!status) return <Waiting>Looking for your agents…</Waiting>
+  const [fetched, setFetched] = useState(false)
+  // Only `get_scan_status` fills the agent list, and a scan event that lands
+  // during the store's first load discards that load. The step asks for the
+  // status again when it mounts, so the list is never left empty.
+  const fetchAgents = useCallback((node: HTMLElement | null) => {
+    if (!node) return
+    void getScanStatus()
+      .catch(() => null)
+      .then((fresh) => {
+        if (fresh) scanStatusStore.set(withKnownAgents(fresh))
+        setFetched(true)
+      })
+  }, [])
+  if (!status || (!fetched && status.agents.length === 0))
+    return (
+      <div ref={fetchAgents}>
+        <Waiting>Looking for your agents…</Waiting>
+      </div>
+    )
   const agents = status.agents
     .filter((agent) => agent.sessionsSeen > 0)
     .sort((left, right) => right.sessionsSeen - left.sessionsSeen)
