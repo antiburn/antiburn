@@ -454,8 +454,12 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
         evidenceSettled: true,
         pendingEvidence: 0,
         estimatedTokenBurnBasisPoints: 1200,
-        categories: [],
+        categories: new URLSearchParams(window.location.search).has("findings")
+          ? fixtureCheckCategories()
+          : [],
       }
+    case "list_burn_check_targets":
+      return { targets: [], samples: [], truncated: false }
     case "get_latest_session_activity":
       return Math.floor(Date.parse(now) / 1000)
     case "is_overlay_work_active":
@@ -529,4 +533,82 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
     window.__ANTIBURN_VISUAL_HUD_RESIZES__.push(args ?? {})
   }
   return dataFor(command, args) as T
+}
+
+/** Checks in every state, for the Enhance wizard. Add `findings` to the URL. */
+function fixtureCheckCategories() {
+  return [
+    {
+      id: "sessionsOverDepth",
+      lifecycle: "failing",
+      finding: 14,
+      clean: 22,
+      unavailable: 3,
+      estimatedTokenBurnBasisPoints: 640,
+    },
+    {
+      id: "unusedMcpServers",
+      lifecycle: "failing",
+      finding: 31,
+      clean: 9,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 310,
+    },
+    {
+      id: "modelOverthinking",
+      lifecycle: "failing",
+      finding: 6,
+      clean: 40,
+      unavailable: 2,
+      estimatedTokenBurnBasisPoints: 120,
+    },
+    {
+      id: "cacheChurn",
+      lifecycle: "awaitingVerification",
+      finding: 0,
+      clean: 12,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: null,
+    },
+    {
+      id: "oldModelUsage",
+      lifecycle: "passing",
+      finding: 0,
+      clean: 48,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 0,
+    },
+    {
+      id: "overuseOfFastMode",
+      lifecycle: "passing",
+      finding: 0,
+      clean: 48,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 0,
+    },
+    {
+      id: "unusedSkills",
+      lifecycle: "passing",
+      finding: 0,
+      clean: 30,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 0,
+    },
+    {
+      id: "unusedBuiltInTools",
+      lifecycle: null,
+      finding: 0,
+      clean: 0,
+      unavailable: 48,
+      estimatedTokenBurnBasisPoints: null,
+    },
+    {
+      id: "overpoweredSubagents",
+      lifecycle: null,
+      finding: 0,
+      clean: 0,
+      unavailable: 48,
+      estimatedTokenBurnBasisPoints: null,
+    },
+  ]
 }

@@ -1,8 +1,10 @@
 import { Check } from "lucide-react"
-import { Fragment } from "react"
+import { Fragment, type ReactNode } from "react"
 
 import { PushButton } from "../../../components/ui/PushButton"
 import { cn } from "../../../lib/cn"
+import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
+import { FixStep, ScanStep, SourcesStep } from "./EnhanceSteps"
 
 const ENHANCE_STEPS = [
   {
@@ -18,7 +20,7 @@ const ENHANCE_STEPS = [
   {
     label: "Fix",
     heading: "Fix the biggest burn first",
-    lead: "Each fix shows exactly what changes, and you can undo any of them.",
+    lead: "Apply a fix, copy a prompt for your agent, or snooze it for later.",
   },
   {
     label: "Watch",
@@ -36,14 +38,26 @@ export type EnhanceStep = 1 | 2 | 3 | 4 | 5
 
 export function EnhanceWizard({
   step,
+  checks,
+  checksState,
   onStepChange,
   onFinish,
 }: {
   step: EnhanceStep
+  checks: BurnChecksSession
+  checksState: BurnChecksSnapshot
   onStepChange: (step: EnhanceStep) => void
   onFinish: () => void
 }) {
   const current = ENHANCE_STEPS[step - 1] ?? ENHANCE_STEPS[0]
+  const body: ReactNode =
+    step === 1 ? (
+      <SourcesStep />
+    ) : step === 2 ? (
+      <ScanStep state={checksState} />
+    ) : step === 3 ? (
+      <FixStep session={checks} state={checksState} />
+    ) : null
   const last = step === ENHANCE_STEPS.length
   return (
     <section aria-label="Enhance my AI setup" className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -104,6 +118,7 @@ export function EnhanceWizard({
         <p className="mt-(--space-xs) max-w-[60ch] type-body text-label-secondary">
           {current.lead}
         </p>
+        {body && <div className="mt-(--space-xl)">{body}</div>}
       </div>
 
       <footer className="flex items-center justify-end gap-(--space-md) border-t border-separator pt-(--space-lg)">

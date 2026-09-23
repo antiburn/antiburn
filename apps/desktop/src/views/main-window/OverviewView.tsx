@@ -108,6 +108,8 @@ export function OverviewView({
         <div className="col-[2/4] row-span-2 flex min-h-0 min-w-0">
           <EnhanceWizard
             step={enhanceStep}
+            checks={checks}
+            checksState={checksState}
             onStepChange={changeEnhanceStep}
             onFinish={() => setEnhanceOpen(false)}
           />
