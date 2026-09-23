@@ -53,11 +53,19 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         .paid_tokens
         .saturating_sub(repeated_context.repeated_tokens);
     if unique_paid_tokens == 0 {
-        return Observation::Finding;
+        return if repeated_context.possible_rehydration_episodes > 0 {
+            Observation::Finding
+        } else {
+            Observation::SignalMissing
+        };
     }
     let multiple = repeated_context.paid_tokens as f64 / unique_paid_tokens as f64;
     if multiple >= policy.cache_overpay_multiple_threshold {
-        Observation::Finding
+        if repeated_context.possible_rehydration_episodes > 0 {
+            Observation::Finding
+        } else {
+            Observation::SignalMissing
+        }
     } else {
         Observation::NoFinding
     }
@@ -144,6 +152,8 @@ mod tests {
             paid_tokens,
             pairs_considered: 1,
             pairs_skipped: 0,
+            transient_miss_episodes: 0,
+            possible_rehydration_episodes: 1,
         }
     }
 
@@ -281,6 +291,27 @@ mod tests {
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
             Observation::Finding
+        );
+    }
+
+    #[test]
+    fn repeated_input_ratio_without_a_rehydration_episode_is_not_assessed() {
+        let mut evidence = claude_evidence("ratio-without-episode");
+        edit_cache(&mut evidence, false, |cache| {
+            let EvidenceValue::Complete(mut repeated) = cache.repeated_context.clone() else {
+                unreachable!()
+            };
+            repeated.repeated_tokens = 300;
+            repeated.paid_tokens = 400;
+            repeated.transient_miss_episodes = 1;
+            repeated.possible_rehydration_episodes = 0;
+            cache.repeated_context = EvidenceValue::Complete(repeated);
+        });
+        set_dominant_main_model(&mut evidence, "claude-sonnet-4-6");
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::SignalMissing
         );
     }
 

@@ -599,6 +599,7 @@ fn combined_token_burn_uses_the_largest_overlapping_contribution() {
         },
         findings,
         [false; 3],
+        true,
     );
     let mut statuses = core::array::from_fn(|_| {
         DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
@@ -734,6 +735,7 @@ fn token_burn_percentage_caps_before_the_wire_type_conversion() {
         },
         findings,
         [false; 3],
+        true,
     );
     let statuses = finding_statuses(&[DetectorId::SessionsOverDepth]);
 
@@ -857,7 +859,7 @@ fn findings_without_supported_prices_use_fallbacks() {
         invoked: false,
         replicated_cost_usd: None,
     }]);
-    token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3]);
+    token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3], true);
     let (combined, estimates, _) = token_burn.finish(&finding_statuses(&all_findings));
 
     assert_eq!(combined, Some(800));
@@ -916,7 +918,7 @@ fn supported_evidence_estimates_each_check_independently() {
         invoked: false,
         replicated_cost_usd: None,
     }]);
-    token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3]);
+    token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3], true);
 
     let (combined, estimates, _) = token_burn.finish(&finding_statuses(&all_findings));
 
@@ -967,6 +969,7 @@ fn source_estimate_overflow_does_not_hide_other_known_estimates() {
         },
         findings,
         [false, true, false],
+        true,
     );
 
     let (_, estimates, _) = token_burn.finish(&finding_statuses(&[
@@ -1090,7 +1093,7 @@ fn effort_comparison_retention_is_bounded_and_uses_assumptions_after_the_bound()
     let mut findings = [false; DetectorId::COUNT];
     findings[DetectorId::ModelOverthinking.index()] = true;
     let mut token_burn = TokenBurnAccumulator::new();
-    token_burn.observe(evidence, findings, [false; 3]);
+    token_burn.observe(evidence, findings, [false; 3], true);
     let (_, estimates, _) = token_burn.finish(&finding_statuses(&[DetectorId::ModelOverthinking]));
     assert_eq!(
         estimates[DetectorId::ModelOverthinking.index()],
@@ -1260,6 +1263,8 @@ fn partial_cache_evidence_keeps_observed_repeated_tokens() {
             paid_tokens: 200,
             pairs_considered: 1,
             pairs_skipped: 0,
+            transient_miss_episodes: 0,
+            possible_rehydration_episodes: 0,
         },
         reason: CoverageReason::IncompleteTail,
     };
@@ -1281,6 +1286,23 @@ fn partial_cache_evidence_keeps_observed_repeated_tokens() {
         SessionTokenBurnEvidence::from_session(&evidence).repeated_context_avoidable_tokens,
         None
     );
+}
+
+#[test]
+fn an_unassessed_cache_ratio_does_not_become_zero_burn() {
+    let mut token_burn = TokenBurnAccumulator::new();
+    token_burn.observe(
+        SessionTokenBurnEvidence {
+            total_tokens: Some(34_678),
+            repeated_context_avoidable_tokens: Some(19_992),
+            ..SessionTokenBurnEvidence::default()
+        },
+        [false; DetectorId::COUNT],
+        [false; 3],
+        false,
+    );
+
+    assert_eq!(token_burn.sessions[0].repeated_context, None);
 }
 
 #[test]
@@ -1381,6 +1403,7 @@ fn any_window_invocation_suppresses_the_exact_source_estimate() {
             },
             findings,
             [true, false, false],
+            true,
         );
     }
     let mut statuses = core::array::from_fn(|_| {
@@ -1418,6 +1441,7 @@ fn cohort_token_burn_state_keeps_one_session_entry_and_one_entry_per_source_pair
             },
             findings,
             [true, false, false],
+            true,
         );
     }
 
@@ -1451,6 +1475,7 @@ fn missing_source_projection_keeps_available_measured_tokens() {
         },
         finding,
         [true, false, false],
+        true,
     );
     token_burn.observe(
         SessionTokenBurnEvidence {
@@ -1459,6 +1484,7 @@ fn missing_source_projection_keeps_available_measured_tokens() {
         },
         [false; DetectorId::COUNT],
         [true, false, false],
+        true,
     );
     let statuses = finding_statuses(&[DetectorId::UnusedMcpServers]);
 
@@ -1627,6 +1653,7 @@ fn combined_token_burn_adds_disjoint_unused_source_types() {
             },
             findings,
             [true, false, true],
+            true,
         );
     }
     let mut statuses = core::array::from_fn(|_| {
@@ -2513,6 +2540,8 @@ fn trigger_finding(detector: DetectorId, catalogs: &ReportCatalogs) -> SessionEv
                 paid_tokens: 5_000,
                 pairs_considered: 1,
                 pairs_skipped: 0,
+                transient_miss_episodes: 0,
+                possible_rehydration_episodes: 1,
             });
         }
         DetectorId::UnusedBuiltInTools => {

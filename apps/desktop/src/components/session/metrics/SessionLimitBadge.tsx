@@ -19,6 +19,8 @@ export interface SessionLimitBadgeInfo {
 
 export interface SessionLimitBadgeProps {
   limitBadge: SessionLimitBadgeInfo
+  /** Uses the shared cohort cost-outlier rule for the flame treatment. */
+  isHighCost?: boolean
   /** Trailing words after the percent sign, e.g. "of week". Only the
    *  percent states take it; the missing-limit states never do. */
   suffix?: string
@@ -56,16 +58,20 @@ export function roundedLimitPercent(percent: number): number {
  */
 export function SessionLimitBadge({
   limitBadge,
+  isHighCost = false,
   suffix,
   plain = false,
 }: SessionLimitBadgeProps) {
-  const isHighLimitShare = !plain && roundedLimitPercent(limitBadge.percent ?? 0) >= 5
+  const isHighCostPill = !plain && isHighCost
 
   return limitBadge.percent !== null ? (
-    <Tooltip label={limitBadge.label} delayMs={150}>
+    <Tooltip
+      label={isHighCostPill ? "Higher than usual cost" : limitBadge.label}
+      delayMs={150}
+    >
       <span
         className={
-          isHighLimitShare
+          isHighCostPill
             ? // The pill keeps the tracking of type-footnote. Tighter
               // tracking moves the wide percent sign into the last digit,
               // because the monospace cell is already full.
@@ -78,13 +84,13 @@ export function SessionLimitBadge({
         data-session-limit-window={limitBadge.windowId}
         data-session-limit-percent={limitBadge.percent.toFixed(4)}
         aria-label={
-          isHighLimitShare
-            ? `${limitBadge.label} This session uses 5% or more of your limit.`
+          isHighCostPill
+            ? `${limitBadge.label} Higher than usual cost.`
             : limitBadge.label
         }
         tabIndex={0}
       >
-        {isHighLimitShare && <Flame size={11} className="shrink-0" aria-hidden="true" />}
+        {isHighCostPill && <Flame size={11} className="shrink-0" aria-hidden="true" />}
         <LimitPercent percent={limitBadge.percent} />
         {suffix && ` ${suffix}`}
       </span>

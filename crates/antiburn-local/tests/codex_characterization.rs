@@ -1399,7 +1399,7 @@ fn collab_agent_records_are_allowlisted_and_add_no_signal() {
 }
 
 #[test]
-fn context_reread_reads_complete_uncached_input_repeated_context_and_a_finding_badge() {
+fn context_reread_keeps_overhead_without_a_recovered_rehydration_episode() {
     let (evidence, _) = composite(&input("context_reread"));
     let EvidenceValue::Complete(cache) = &evidence.cache else {
         panic!("Codex cache evidence must be complete for this fixture");
@@ -1423,7 +1423,10 @@ fn context_reread_reads_complete_uncached_input_repeated_context_and_a_finding_b
         .iter()
         .find(|badge| badge.id == BadgeId::ExcessCacheRehydration)
         .expect("BadgeId::ALL covers ExcessCacheRehydration");
-    assert_eq!(cache_churn_badge.status, BadgeStatus::Finding);
+    assert_eq!(
+        cache_churn_badge.status,
+        BadgeStatus::NotAssessed(antiburn_local::insights::NotAssessedReason::SignalMissing)
+    );
 }
 
 /// `cache_write_tokens` extends `context_reread`'s shape with a

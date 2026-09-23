@@ -23,7 +23,9 @@
             "paidTokens": 860,
             "pairsConsidered": 1,
             "pairsSkipped": 0,
-            "repeatedTokens": 400
+            "possibleRehydrationEpisodes": 0,
+            "repeatedTokens": 400,
+            "transientMissEpisodes": 0
           }
         },
         "userControlledChurn": {
@@ -183,8 +185,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 24,
-      "evidenceSchemaRevision": 21,
+      "analyzerRevision": 25,
+      "evidenceSchemaRevision": 22,
       "harnessVersion": {
         "state": "complete",
         "value": null
@@ -206,7 +208,7 @@
         "incidents": []
       }
     },
-    "schemaRevision": 21,
+    "schemaRevision": 22,
     "subagents": {
       "state": "complete",
       "value": {

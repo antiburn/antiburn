@@ -118,6 +118,23 @@ fn fixture(name: &str) -> &'static str {
         "excess_cache_rehydration_finding" => {
             include_str!("fixtures/pi_characterization/excess_cache_rehydration_finding.jsonl")
         }
+        "cache_continuous_transient_miss" => {
+            include_str!("fixtures/pi_characterization/cache_continuous_transient_miss.jsonl")
+        }
+        "overthinking_aborted_zero_usage" => {
+            include_str!("fixtures/pi_characterization/overthinking_aborted_zero_usage.jsonl")
+        }
+        "overthinking_aborted_zero_usage_content" => {
+            include_str!(
+                "fixtures/pi_characterization/overthinking_aborted_zero_usage_content.jsonl"
+            )
+        }
+        "overthinking_missing_usage" => {
+            include_str!("fixtures/pi_characterization/overthinking_missing_usage.jsonl")
+        }
+        "overthinking_aborted_with_usage" => {
+            include_str!("fixtures/pi_characterization/overthinking_aborted_with_usage.jsonl")
+        }
         "v1_migrated" => include_str!("fixtures/pi_characterization/v1_migrated.jsonl"),
         "v2_migrated" => include_str!("fixtures/pi_characterization/v2_migrated.jsonl"),
         "official_entry_families" => {
@@ -127,7 +144,7 @@ fn fixture(name: &str) -> &'static str {
     }
 }
 
-fn fixture_names() -> [&'static str; 39] {
+fn fixture_names() -> [&'static str; 44] {
     [
         "minimal_session",
         "role_ordering",
@@ -165,6 +182,11 @@ fn fixture_names() -> [&'static str; 39] {
         "session_overdepth_finding",
         "model_overthinking_finding",
         "excess_cache_rehydration_finding",
+        "cache_continuous_transient_miss",
+        "overthinking_aborted_zero_usage",
+        "overthinking_aborted_zero_usage_content",
+        "overthinking_missing_usage",
+        "overthinking_aborted_with_usage",
         "v1_migrated",
         "v2_migrated",
         "official_entry_families",
@@ -1334,6 +1356,59 @@ fn pi_detector_eligibility_is_frozen() {
             DetectorId::ModelOverthinking,
             DetectorId::OldModelUsage,
         ]
+    );
+}
+
+#[test]
+fn continuous_cache_miss_recovery_keeps_overhead_without_a_rehydration_finding() {
+    let (evidence, _) = composite(&input("cache_continuous_transient_miss"));
+    let antiburn_local::analysis::EvidenceValue::Complete(cache) = &evidence.cache else {
+        panic!("cache evidence must be complete");
+    };
+    let EvidenceValue::Complete(repeated) = &cache.repeated_context else {
+        panic!("repeated-input accounting must be complete");
+    };
+    assert_eq!(repeated.paid_tokens, 34_678);
+    assert_eq!(repeated.repeated_tokens, 19_992);
+    assert_eq!(repeated.transient_miss_episodes, 1);
+    assert_eq!(repeated.possible_rehydration_episodes, 0);
+
+    let badge = session_badges(&evidence, &ReportCatalogs::default())
+        .into_iter()
+        .find(|badge| badge.id == BadgeId::ExcessCacheRehydration)
+        .expect("cache check badge");
+    assert_eq!(
+        badge.status,
+        BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing)
+    );
+}
+
+#[test]
+fn model_overthinking_requires_reported_usage_for_the_observed_effort() {
+    let badge_status = |name| {
+        let (evidence, _) = composite(&input(name));
+        session_badges(&evidence, &ReportCatalogs::default())
+            .into_iter()
+            .find(|badge| badge.id == BadgeId::ModelOverthinking)
+            .expect("model-overthinking badge")
+            .status
+    };
+
+    assert_eq!(
+        badge_status("overthinking_aborted_zero_usage"),
+        BadgeStatus::Clean
+    );
+    assert_eq!(
+        badge_status("overthinking_aborted_zero_usage_content"),
+        BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing)
+    );
+    assert_eq!(
+        badge_status("overthinking_missing_usage"),
+        BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing)
+    );
+    assert_eq!(
+        badge_status("overthinking_aborted_with_usage"),
+        BadgeStatus::Finding
     );
 }
 

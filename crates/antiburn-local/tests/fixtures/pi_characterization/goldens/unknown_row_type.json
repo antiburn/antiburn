@@ -141,8 +141,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 24,
-      "evidenceSchemaRevision": 21,
+      "analyzerRevision": 25,
+      "evidenceSchemaRevision": 22,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -157,7 +157,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 21,
+    "schemaRevision": 22,
     "subagents": {
       "state": "unsupported"
     },

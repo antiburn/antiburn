@@ -3655,6 +3655,8 @@ mod tests {
                 paid_tokens: 235,
                 pairs_considered: 1,
                 pairs_skipped: 0,
+                transient_miss_episodes: 0,
+                possible_rehydration_episodes: 1,
             });
 
             let payload = SessionHygienePayload::for_evidence(

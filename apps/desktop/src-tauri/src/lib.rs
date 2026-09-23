@@ -875,20 +875,24 @@ mod tests {
         let (release, blocked) = mpsc::channel();
         let blocked = Arc::new(Mutex::new(blocked));
         let (entered, pass_entered) = mpsc::channel();
-        let (completed, pass_completed) = mpsc::channel();
         let pass_blocked = Arc::clone(&blocked);
+        let (completed, pass_completed) = mpsc::channel();
         let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
             let blocked = Arc::clone(&pass_blocked);
             let entered = entered.clone();
             let completed = completed.clone();
             Box::pin(async move {
-                tauri::async_runtime::spawn_blocking(move || {
+                let job = tauri::async_runtime::spawn_blocking(move || {
                     entered.send(()).unwrap();
                     blocked.lock().unwrap().recv().unwrap();
+                });
+                let (settled, wait_for_settle) = tokio::sync::oneshot::channel();
+                tauri::async_runtime::spawn(async move {
+                    job.await.unwrap();
+                    let _ = settled.send(());
                     completed.send(()).unwrap();
-                })
-                .await
-                .unwrap();
+                });
+                let _ = wait_for_settle.await;
                 EvidencePass {
                     analysis: SessionAnalysis::unavailable(),
                     evidence: None,
@@ -944,7 +948,7 @@ mod tests {
         release.send(()).unwrap();
         pass_completed
             .recv_timeout(Duration::from_secs(1))
-            .expect("the blocking job survives the worker abort");
+            .expect("the blocking job fully settles after worker abort");
         assert_eq!(store.analysis(&key).unwrap(), analysis_before);
         assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
         assert!(announced.lock().unwrap().is_empty());

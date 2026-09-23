@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-09-16.
+Audit date: 2026-09-23.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -95,7 +95,7 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `CodexRolloutJsonl`            | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  |
 | `OpenCodeJsonl`                | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  |
 | `OpenCodeSqliteV2`             | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  |
-| `PiV3Jsonl`                    | Assessable  | Assessable  | Partial     | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Unsupported |
+| `PiV3Jsonl`                    | Assessable  | Assessable  | Partial     | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Assessable  |
 | `CursorJsonl`                  | Unsupported | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Partial     | Unknown     | Unknown     |
 | `CursorCliAgentJsonl`          | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
 | `CursorCliStoreDb`             | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
@@ -169,16 +169,16 @@ Auto Fix. The limit stays beside the row it qualifies.
 | OpenCode    | K     | Y       | Y      | C        | N            | Y        | Auto Fix needs indexed provenance and one exact standard skill winner. Historical subsets cannot verify absence.                             |
 | OpenCode    | O     | Y       | Y      | Y        | Y            | Y        | Auto Fix and verification need publication-time physical attribution.                                                                        |
 | OpenCode    | F     | N       | N      | N        | N            | N        | Accepted sources do not retain an effective speed tier.                                                                                      |
-| OpenCode    | C     | Y       | Y      | N        | N            | Y        | Compatible ordered request evidence has no durable cache-policy target.                                                                      |
+| OpenCode    | C     | Y       | Y      | N        | N            | Y        | Cache episodes require consecutive validated order and distinct message IDs; Anthropic routes use the five-minute default unless the preceding cache write records one-hour TTL evidence.                  |
 | Pi          | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
-| Pi          | T     | Y       | Y      | Y        | Y            | Y        | Verification covers the saved agent-selected policy, not provider-translated effort.                                                         |
+| Pi          | T     | Y       | Y      | Y        | Y            | Y        | Effort evidence requires positive usage on that record; verification covers the saved agent-selected policy, not provider-translated effort.  |
 | Pi          | S     | FO      | Y      | N        | N            | Y        | Only reviewed example-extension output can produce the finding.                                                                              |
 | Pi          | M     | Y       | Y      | P        | N            | Y        | Current inventory reaches the finding and prompt, but no exact production editor binding is supported.                                       |
 | Pi          | B     | N       | N      | N        | N            | N        | Pi's built-ins are core tools and never become eligible B targets.                                                                           |
 | Pi          | K     | Y       | Y      | P        | N            | Y        | Current inventory reaches the finding and prompt, but no exact production editor binding is supported.                                       |
 | Pi          | O     | Y       | Y      | Y        | Y            | Y        | Auto Fix and verification need publication-time physical attribution.                                                                        |
 | Pi          | F     | N       | N      | N        | N            | N        | Accepted sources do not retain an effective speed tier.                                                                                      |
-| Pi          | C     | N       | N      | N        | N            | N        | The reviewed source contract does not support cache-churn findings.                                                                          |
+| Pi          | C     | Y       | Y      | N        | N            | Y        | Reviewed native API routes support repeated-input accounting and recovered miss episodes; unsupported route or episode evidence cannot produce a clean or actionable result. |
 | Cursor      | D     | N       | N      | N        | N            | N        | Characterized Cursor surfaces do not emit request-depth evidence.                                                                            |
 | Cursor      | T     | N       | N      | N        | N            | N        | No complete effective effort contract exists.                                                                                                |
 | Cursor      | S     | N       | N      | N        | N            | N        | Current relation hints do not establish a detector-grade worker finding.                                                                     |
@@ -392,7 +392,7 @@ identity is retained without copying private document bodies into evidence.
 | OpenCode                                                                  | S          | Native `task` metadata identifies the child session and model; ancestry and the child's assistant model must agree. The parent model comes from the task request. A bare `subtask`, fork, or `parent_id` relation is insufficient.                                                                     |
 | OpenCode                                                                  | K          | Complete native selected-skill results preserve full identity as injected and invoked. Truncated, compacted, empty, or invalid result wrappers do not prove full injection. This is observed selected-skill support, not an unused-listing finding or complete inventory.                              |
 | OpenCode                                                                  | T, M, B, F | Confirmed unsupported for the reviewed sources: no historical effort map, model-facing resource inventories, or effective speed tier. The reader does not retain a variant as effort. Variant labels, current configuration, and tool registries cannot substitute.                                    |
-| Pi                                                                        | T          | `EffortSemantics::AgentSelectedPolicy` evaluates the saved agent-selected thinking level, not translated provider effort. Reviewed native routes and branch/fork policy state are retained. Missing levels/routes and unknown models fail closed; provider overrides are not guessed.                  |
+| Pi                                                                        | T          | `EffortSemantics::AgentSelectedPolicy` evaluates the saved agent-selected thinking level, not translated provider effort. Above-cap findings require positive usage on the same model/effort observation. Missing usage, levels/routes, and unknown models fail closed; provider overrides are not guessed. |
 | Pi                                                                        | S          | Existing output from the official subagent example extension supplies nested `toolResult` messages, exact native call/worker identity, and actual models. This is finding-only. Arbitrary extensions, fork ancestry, requested aliases, and a nonpremium observed worker cannot establish clean.       |
 | Pi                                                                        | M, B, K, F | Confirmed unsupported for the reviewed sources. Tool calls and bounded skill invocation identity do not establish historical resource exposure or speed. No alternative local proof was identified.                                                                                                    |
 | Quota pressure and provider incidents sit outside the nine-code check     |
@@ -474,7 +474,7 @@ new quota/provider incident source. Reviewed passive alternatives:
   `quotaLimits` — deferred: no synthetic fixture has been characterised for
   that field yet.
 
-| Claude, Codex, OpenCode, Pi | C | Durable request provider/API fields and the compatible-request query select reviewed cache-write or uncached-input accounting. Main-thread identity, order, token classes, model, route, and compaction boundaries constrain pairs. Codex pairs `token_usage_record` with equivalent `token_count` usage by per-response fields; matching cumulative fields permit delayed exact copies. Unknown or incompatible segments prevent both ratio findings and clean results. Google cache policy remains unreviewed. |
+| Claude, Codex, OpenCode, Pi | C | Durable request provider/API fields and the compatible-request query select reviewed cache-write or uncached-input accounting. A finding additionally needs a same-route hit/miss/recovery episode after the route's reviewed cache lifetime: Claude Code uses its configured one-hour default; Pi and OpenCode Anthropic routes use five minutes unless an earlier write records one-hour TTL evidence, which carries across hits and refreshes at hit request start; reviewed OpenAI routes use 30 minutes. OpenCode continuity uses validated consecutive order and distinct message IDs because `parentID` identifies the answered user, not the predecessor. Main-thread identity, order, token classes, model, route, and compaction boundaries constrain pairs. Codex pairs `token_usage_record` with equivalent `token_count` usage by per-response fields; matching cumulative fields permit delayed exact copies. Unknown or incompatible segments prevent findings and clean results. Google cache policy remains unreviewed. |
 | OpenCode | C | Both accepted export and SQLite shapes use validated ordered history. `parentID` identifies the user being answered, not the predecessor. Missing wrappers/timestamps, duplicate or out-of-order messages, and unresolved forks prevent complete history. CoreV2 `session_message` is not the existing SQLite table contract. |
 | Cursor | D, O | O retains direct timed-model findings; the source gate denies clean on every surface. D remains unavailable because the current reader does not emit request-usage evidence. Synthetic source-gate tests do not establish native parsing support. |
 | Cursor | T, S, M, B, K, F, C | Broader surface characterization is deferred. Current settings, relations, inventories, and cache evidence remain partial, unknown, or unsupported as listed; no new parity claim is made. |
@@ -496,7 +496,13 @@ Cache churn selects its policy from `RepeatedContextAccounting`, not from the
 agent or the session's dominant model. `CacheWrite` uses the reviewed Claude
 family policy. `UncachedInput` uses the reviewed OpenAI family policy. This rule
 also applies to mixed-family sessions. A cache-churn cause names a model from the
-same accounting family; it does not use an unrelated dominant model.
+same accounting family; it does not use an unrelated dominant model. Repeated
+input totals remain available even when there is no actionable episode. A
+continuous-activity hit/miss/recovery episode is informational and leaves a
+high-ratio result not assessed. A finding requires recovered cache use after a
+supported route-specific user inactivity interval. Unknown routes, missing
+timestamps, broken identity, compaction, model changes, and unrecovered misses
+cannot establish that finding or a clean result.
 
 Old-model causes remain separate by provider, API, observed model, and reviewed
 replacement. Token-burn percentages are unknown when a required price or the
@@ -619,7 +625,7 @@ has a durable action attempt.
 | Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
-| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | No  |
+| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | Yes |
 | Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
 
 ### Source-Format Remediation Matrix
@@ -636,7 +642,7 @@ each operation still needs an exact target binding at runtime.
 | `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/K/F             | T/O/F               |
 | `OpenCodeJsonl`                | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
 | `OpenCodeSqliteV2`             | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `PiV3Jsonl`                    | D/T/S/M/K/O       | O              | T                  | D                     | T/O                 |
+| `PiV3Jsonl`                    | D/T/S/M/K/O/C     | O              | T                  | D                     | T/O                 |
 | `CursorJsonl`                  | O                 | None           | None               | None                  | None                |
 | `CursorCliAgentJsonl`          | O                 | None           | None               | None                  | None                |
 | `CursorCliStoreDb`             | O                 | None           | None               | None                  | None                |

@@ -17,6 +17,7 @@ import * as SnoozedBurnChecks from "../../lib/snoozedBurnChecks"
 import { BurnChecksSession, type BurnChecksAdapter } from "./BurnChecksSession"
 import { BurnChecksView } from "./BurnChecksView"
 import { BurnCheckDetail, CheckPromptAction } from "./burn-checks/BurnCheckDetail"
+import { BurnCheckTargetActions } from "./burn-checks/BurnCheckTargetActions"
 import { searchApp } from "../../lib/appSearch"
 
 const commands = vi.hoisted(() => ({
@@ -1450,11 +1451,16 @@ describe("BurnChecksView", { timeout: 15_000 }, () => {
     expect(commands.copy).not.toHaveBeenCalled()
     const copied = screen.getByRole("button", { name: "Copied" })
     const applied = screen.getByRole("button", { name: "Change applied" })
-    expect(copied).toBeDisabled()
+    expect(copied).toBeEnabled()
     expect(copied).not.toHaveClass("text-token-in")
     expect(applied).not.toHaveClass("text-token-in")
     expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
     expect(applied.querySelector(".lucide-check")).toHaveClass("text-token-in")
+    fireEvent.click(copied)
+    expect(screen.getByRole("button", { name: "Preparing…" })).toBeDisabled()
+    await act(async () => vi.advanceTimersByTimeAsync(120))
+    expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled()
+    expect(commands.writeClipboardText).toHaveBeenCalledTimes(2)
     expect(commands.noteInteraction.mock.calls).toEqual(
       expect.arrayContaining([
         [{ kind: "burnCheckAutoFixReviewed", outcome: "ready" }],
@@ -1668,7 +1674,7 @@ describe("BurnChecksView", { timeout: 15_000 }, () => {
     vi.useFakeTimers()
     fireEvent.click(copy)
     await act(async () => undefined)
-    expect(screen.getByRole("button", { name: "Copied" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled()
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     await act(async () => undefined)
     const dialog = screen.getByRole("dialog", { name: "Review change" })
@@ -1696,6 +1702,58 @@ describe("BurnChecksView", { timeout: 15_000 }, () => {
     expect(commands.copyBatch).toHaveBeenCalledOnce()
   })
 
+  it("copies again and restarts visible feedback while Copied is shown", async () => {
+    render(<CheckPromptAction detector="oldModelUsage" targets={[target]} refresh={vi.fn()} />)
+
+    const copy = await screen.findByRole("button", { name: "Copy fix prompt" })
+    fireEvent.click(copy)
+    const copied = await screen.findByRole("button", { name: "Copied" })
+    expect(copied).toBeEnabled()
+
+    fireEvent.click(copied)
+    expect(await screen.findByRole("button", { name: "Preparing…" })).toBeDisabled()
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
+    expect(commands.writeClipboardText).toHaveBeenCalledTimes(2)
+    expect(commands.copyBatch).toHaveBeenCalledOnce()
+  })
+
+  it("copies the complete plain-text finding prompt without changing its structure", async () => {
+    const prompt = [
+      "Help fix this antiburn finding.",
+      "",
+      "Finding",
+      "Excess cache rehydration.",
+      "",
+      "Evidence",
+      "Agent: \"pi\"",
+      "",
+      "Representative session evidence (inspect only; not configuration edit targets):",
+      "- \"/sessions/example.jsonl\"",
+    ].join("\n")
+    commands.copyBatch.mockResolvedValueOnce({ outcome: "promptReady", prompt })
+    render(<CheckPromptAction detector="cacheChurn" targets={[target]} refresh={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
+    await waitFor(() => expect(commands.writeClipboardText).toHaveBeenCalledWith(prompt))
+    expect(prompt).not.toContain("&#x20;")
+    expect(prompt).toContain("\n\nEvidence\n")
+    expect(prompt.endsWith("- \"/sessions/example.jsonl\"")).toBe(true)
+  })
+
+  it("repeats a target prompt copy while its success state is visible", async () => {
+    render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
+    const copied = await screen.findByRole("button", { name: "Copied" })
+    expect(copied).toBeEnabled()
+
+    fireEvent.click(copied)
+    expect(await screen.findByRole("button", { name: "Copying…" })).toBeDisabled()
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
+    expect(commands.writeClipboardText).toHaveBeenCalledTimes(2)
+    expect(commands.copy).toHaveBeenCalledOnce()
+  })
+
   it("shows a busy label while the check prompt is prepared", async () => {
     const pending = deferred<Awaited<ReturnType<typeof commands.copyBatch>>>()
     commands.copyBatch.mockReturnValueOnce(pending.promise)
@@ -1705,7 +1763,7 @@ describe("BurnChecksView", { timeout: 15_000 }, () => {
     expect(await screen.findByRole("button", { name: "Preparing…" })).toBeDisabled()
 
     pending.resolve({ outcome: "promptReady", prompt: "Batch backend prompt" })
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeDisabled()
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
     expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
   })
 
@@ -1738,7 +1796,7 @@ describe("BurnChecksView", { timeout: 15_000 }, () => {
     expect(copy).toBeEnabled()
 
     fireEvent.click(copy)
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeDisabled()
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
     expect(commands.copyBatch).toHaveBeenLastCalledWith(["action-new"])
     expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -2277,7 +2335,7 @@ describe("BurnChecksView", { timeout: 15_000 }, () => {
     )
     expect(commands.copyFallback).toHaveBeenCalledWith("unusedMcpServers")
     const copied = screen.getByRole("button", { name: "Copied" })
-    expect(copied).toBeDisabled()
+    expect(copied).toBeEnabled()
     expect(copied).not.toHaveClass("text-token-in")
     expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
   })

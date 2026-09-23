@@ -1212,6 +1212,8 @@ impl SessionEvidenceAccumulator {
                     paid_tokens,
                     pairs_considered: facts.repeated_context_pairs_considered,
                     pairs_skipped: facts.repeated_context_pairs_skipped,
+                    transient_miss_episodes: facts.transient_miss_episodes,
+                    possible_rehydration_episodes: facts.possible_rehydration_episodes,
                 };
                 if let Some(reason) = cache_partial_reason {
                     EvidenceValue::Partial { observed, reason }
