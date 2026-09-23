@@ -1,7 +1,6 @@
-import { Check } from "lucide-react"
+import { ArrowRight, Check } from "lucide-react"
 import { Fragment, type ReactNode } from "react"
 
-import { PushButton } from "../../../components/ui/PushButton"
 import { cn } from "../../../lib/cn"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
 import { DoneStep, WatchStep } from "./EnhanceOutcomeSteps"
@@ -124,19 +123,27 @@ export function EnhanceWizard({
 
       <footer className="flex items-center justify-end gap-(--space-md) border-t border-separator pt-(--space-lg)">
         {step > 1 && (
-          <PushButton
-            className="h-11 rounded-(--radius-popover) px-(--space-xl) type-title-3"
+          <button
+            type="button"
+            data-quiet=""
+            className="enhance-pill flex items-center px-(--space-xl) type-title-3"
             onClick={() => onStepChange((step - 1) as EnhanceStep)}
           >
             Back
-          </PushButton>
+          </button>
         )}
-        <PushButton
-          className="enhance-continue h-11 rounded-(--radius-popover) border-transparent bg-brand-tint px-(--space-2xl) type-title-3 font-semibold text-white hover:bg-brand"
+        <button
+          type="button"
+          className="enhance-pill group flex items-center gap-(--space-sm) px-(--space-2xl) type-title-3 font-semibold"
           onClick={() => (last ? onFinish() : onStepChange((step + 1) as EnhanceStep))}
         >
           {last ? "Back to Overview" : "Continue"}
-        </PushButton>
+          <ArrowRight
+            aria-hidden="true"
+            size={17}
+            className="transition-transform duration-(--duration-medium) group-hover:translate-x-0.5"
+          />
+        </button>
       </footer>
     </section>
   )

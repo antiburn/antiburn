@@ -1,11 +1,4 @@
-import {
-  BellOff,
-  CircleCheck,
-  Hourglass,
-  PartyPopper,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react"
+import { BellOff, CircleCheck, Hourglass, Wrench, type LucideIcon } from "lucide-react"
 import { useCallback } from "react"
 
 import type { BurnCheckTargetPayload, ChecksCategoryPayload } from "../../../lib/insightsIpc"
@@ -14,8 +7,8 @@ import { formatTokensShort } from "../../../lib/presentation/sessionAnalysis"
 import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
 import { watchStatus } from "../burn-checks/BurnCheckTargetPresentation"
-import { burstConfetti } from "./enhanceConfetti"
 import { EnhanceCard, useChecks, Waiting } from "./EnhanceSteps"
+import { startSmoke } from "./enhanceSmoke"
 import { isAppliedFix, projectSavings, SAVINGS_MONTHS } from "./enhanceState"
 
 /** Asks for a check's targets while it is mounted. It shows nothing. */
@@ -99,19 +92,17 @@ export function WatchStep({
 const USD_NOTE =
   "What these tokens would cost at the provider's public API prices. On a subscription you don't pay this directly, but it frees up your limits."
 
-/** Bursts LED confetti once, when the canvas mounts. */
-function mountConfetti(canvas: HTMLCanvasElement | null) {
+/** Draws LED smoke on the canvas while it is mounted. */
+function mountSmoke(canvas: HTMLCanvasElement | null) {
   if (!canvas) return
-  return burstConfetti(canvas) ?? undefined
+  return startSmoke(canvas) ?? undefined
 }
 
 function Figure({ value, unit, note }: { value: string; unit: string; note?: string }) {
   return (
     <div className="flex flex-col" title={note}>
-      <span className="enhance-done-figure type-display font-semibold tabular-nums">
-        {value}
-      </span>
-      <span className="type-callout text-label-secondary">{unit}</span>
+      <span className="type-hero-figure font-semibold tabular-nums">{value}</span>
+      <span className="type-caption opacity-80">{unit}</span>
     </div>
   )
 }
@@ -130,15 +121,13 @@ function Tile({
   return (
     <div
       data-tone={tone}
-      className="enhance-stat flex items-start justify-between gap-(--space-md) rounded-(--radius-popover) p-(--space-xl)"
+      className="enhance-stat flex items-start justify-between gap-(--space-md) rounded-(--radius-popover) p-(--space-lg)"
     >
-      <div className="flex flex-col gap-(--space-xs)">
-        <span className="enhance-stat-value type-display font-semibold tabular-nums">
-          {value}
-        </span>
-        <span className="type-callout text-label-secondary">{label}</span>
+      <div className="flex flex-col">
+        <span className="type-title-2 font-semibold tabular-nums">{value}</span>
+        <span className="type-caption opacity-80">{label}</span>
       </div>
-      <Icon aria-hidden="true" size={34} strokeWidth={1.75} className="enhance-stat-value" />
+      <Icon aria-hidden="true" size={22} strokeWidth={2} className="opacity-80" />
     </div>
   )
 }
@@ -180,28 +169,22 @@ export function DoneStep({
       ) : (
         <section
           aria-label="Projected savings"
-          className="enhance-done-hero flex items-center gap-(--space-2xl) rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl)"
+          className="enhance-done-hero flex items-center rounded-(--radius-popover) px-(--space-2xl) py-(--space-2xl)"
         >
-          <canvas ref={mountConfetti} aria-hidden="true" className="enhance-done-confetti" />
-          <span
-            aria-hidden="true"
-            className="enhance-done-badge grid size-20 shrink-0 place-items-center rounded-full"
-          >
-            <PartyPopper size={40} strokeWidth={1.75} />
-          </span>
+          <canvas ref={mountSmoke} aria-hidden="true" className="enhance-done-smoke" />
           {savings.estimated === 0 ? (
             <div className="flex min-w-0 flex-col gap-(--space-xs)">
-              <span className="enhance-done-figure type-display font-semibold tabular-nums">
+              <span className="type-title-2 font-semibold tabular-nums">
                 {applied.length} {applied.length === 1 ? "fix" : "fixes"} applied
               </span>
-              <p className="type-callout text-label-secondary">
+              <p className="type-body opacity-80">
                 No savings estimate yet. Estimates show once a fix has enough sessions behind
                 it.
               </p>
             </div>
           ) : (
             <div className="flex min-w-0 flex-col gap-(--space-md)">
-              <p className="type-body text-label">
+              <p className="type-body">
                 {counted === "applied"
                   ? "Your fixes save about"
                   : "Apply the open fixes to save about"}
@@ -218,7 +201,7 @@ export function DoneStep({
                   />
                 )}
               </div>
-              <p className="type-callout text-label-secondary">
+              <p className="type-callout opacity-80">
                 Over the next {SAVINGS_MONTHS} months, at your last 30 days&apos; pace.
                 {savings.usd > 0 && ` ${USD_NOTE}`}
               </p>

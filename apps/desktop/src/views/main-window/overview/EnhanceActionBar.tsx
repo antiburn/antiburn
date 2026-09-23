@@ -1,7 +1,6 @@
-import { ArrowRight, CircleCheck, Crosshair, Hourglass, type LucideIcon } from "lucide-react"
+import { ArrowRight } from "lucide-react"
 import { useCallback, useId, useRef } from "react"
 
-import { cn } from "../../../lib/cn"
 import { startFire, type FireHandle } from "./enhanceFire"
 import type { EnhanceButtonState } from "./enhanceState"
 
@@ -9,7 +8,6 @@ function cardFace(state: EnhanceButtonState): {
   /** The accessible name of the card. */
   label: string
   action: string
-  Icon: LucideIcon
   calm: boolean
 } {
   switch (state.kind) {
@@ -17,33 +15,29 @@ function cardFace(state: EnhanceButtonState): {
       return {
         label: `Enhance again · ${state.count} new`,
         action: `Enhance again · ${state.count} new`,
-        Icon: Crosshair,
         calm: false,
       }
     case "resume":
       return {
         label: `Continue setup · step ${state.step} of 5`,
         action: `Continue · step ${state.step} of 5`,
-        Icon: Crosshair,
         calm: true,
       }
     case "watching":
       return {
         label: "Check your fixes",
         action: "Check your fixes",
-        Icon: Hourglass,
         calm: true,
       }
     case "clear":
       return {
         label: "All set · run again",
         action: "Run again",
-        Icon: CircleCheck,
         calm: true,
       }
     case "loading":
     case "fresh":
-      return { label: "Enhance my AI setup", action: "Enhance", Icon: Crosshair, calm: false }
+      return { label: "Enhance my AI setup", action: "Enhance", calm: false }
   }
 }
 
@@ -92,15 +86,6 @@ export function EnhanceActionBar({
         data-fuel={face.calm ? 0.55 : 1}
         className="enhance-fire-canvas"
       />
-      <span
-        aria-hidden="true"
-        className={cn(
-          "enhance-fire-icon grid size-14 shrink-0 place-items-center rounded-full",
-          face.calm ? "bg-surface-sidebar text-brand-tint" : "bg-brand-tint text-white",
-        )}
-      >
-        <face.Icon size={28} strokeWidth={2} />
-      </span>
       <span className="flex min-w-0 flex-1 flex-col gap-(--space-xs)">
         <span aria-hidden="true" className="type-title-3 font-semibold text-label">
           Enhance my AI setup
@@ -124,10 +109,8 @@ export function EnhanceActionBar({
         </span>
       </span>
       <span
-        className={cn(
-          "enhance-fire-action flex shrink-0 items-center gap-(--space-sm) rounded-full px-(--space-lg) py-(--space-sm) type-headline whitespace-nowrap",
-          !face.calm && "text-white",
-        )}
+        data-quiet={face.calm ? "" : undefined}
+        className="enhance-pill flex shrink-0 items-center gap-(--space-sm) px-(--space-xl) type-headline whitespace-nowrap"
       >
         {face.action}
         <ArrowRight

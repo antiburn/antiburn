@@ -149,18 +149,33 @@
   opacity: 0.7;
 }
 
-.enhance-fire-icon {
-  box-shadow:
-    0 0 0 5px color-mix(in oklab, var(--color-brand-tint) 12%, transparent),
-    0 0 22px color-mix(in oklab, var(--color-brand-tint) 40%, transparent);
-}
-
-.enhance-fire-action {
+/*
+ * The Enhance pill button. The Enhance card action, the wizard footer, and
+ * the Fix card actions all use this shape at one height. A quiet pill is a
+ * secondary action.
+ */
+.enhance-pill {
+  block-size: 44px;
+  border: 0;
+  border-radius: calc(infinity * 1px);
+  color: var(--color-shimmer);
   background-color: var(--color-brand-tint);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent),
+    0 8px 20px -10px var(--color-brand-tint);
+  transition:
+    background-color var(--duration-fast) var(--ease-out-quart),
+    box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
-.enhance-fire-card[data-calm] .enhance-fire-action {
+.enhance-pill:hover,
+.enhance-fire-card:hover .enhance-pill {
+  background-color: var(--color-brand);
+}
+
+.enhance-pill[data-quiet],
+.enhance-pill[data-quiet]:hover,
+.enhance-fire-card:hover .enhance-pill[data-quiet] {
   color: var(--color-label);
   background-color: var(--color-surface-sidebar);
   box-shadow: inset 0 0 0 1px var(--color-separator);
@@ -231,17 +246,22 @@
 }
 
 /*
- * The fix actions on a Fix card. Snooze stays quiet. The fix and prompt
- * actions become large filled brand buttons.
+ * The fix actions on a Fix card use the Enhance pill shape and height.
+ * Snooze is a quiet pill. The fix and prompt actions are filled brand pills.
  */
 .enhance-card-actions .burn-check-action {
-  min-block-size: 48px;
-  padding-inline: var(--space-lg);
+  min-block-size: 44px;
+  padding-inline: var(--space-xl);
 }
 
 .enhance-card-actions .burn-check-action::before {
-  inset: 4px 0;
-  border-radius: var(--radius-popover);
+  inset: 0;
+  border-radius: calc(infinity * 1px);
+}
+
+.enhance-card-actions .burn-check-reminder::before {
+  background-color: var(--color-surface-sidebar);
+  box-shadow: inset 0 0 0 1px var(--color-separator);
 }
 
 .enhance-card-actions .burn-check-action:not(.burn-check-reminder) {
@@ -271,83 +291,41 @@
   box-shadow: none;
 }
 
-/* The oversized Continue button in the Enhance footer. */
-.enhance-continue {
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent),
-    0 8px 20px -10px var(--color-brand-tint);
-}
-
 /*
- * The Enhance Done step. The hero carries a brand wash, a glowing badge, and
- * a canvas that bursts LED confetti once when the step opens. The stat tiles
- * each take one accent colour for the wash, the number, and the icon.
+ * The Enhance Done step. The hero is a solid brand fill with LED smoke that
+ * rises behind the text. Each stat tile is a solid fill of one accent colour.
  */
 .enhance-done-hero {
   position: relative;
   isolation: isolate;
   overflow: hidden;
   min-block-size: 180px;
-  background:
-    radial-gradient(
-      70% 140% at 0% 50%,
-      color-mix(in oklab, var(--color-brand-tint) 22%, transparent),
-      transparent 70%
-    ),
-    radial-gradient(
-      60% 120% at 100% 0%,
-      color-mix(in oklab, var(--color-check-overthinking) 16%, transparent),
-      transparent 70%
-    ),
-    var(--color-surface-card);
-  box-shadow:
-    var(--shadow-stats-card),
-    inset 0 0 0 1px color-mix(in oklab, var(--color-brand-tint) 30%, transparent);
+  color: var(--color-shimmer);
+  background-color: var(--color-brand-tint);
+  box-shadow: var(--shadow-stats-card);
 }
 
-.enhance-done-confetti {
+/* The smoke is lighter on the left, where the text is. */
+.enhance-done-smoke {
   position: absolute;
   inset: 0;
   z-index: -1;
   inline-size: 100%;
   block-size: 100%;
   pointer-events: none;
-}
-
-.enhance-done-badge {
-  color: var(--color-shimmer);
-  background: linear-gradient(135deg, var(--color-brand-tint), var(--color-check-overthinking));
-  box-shadow: 0 10px 30px -10px var(--color-brand-tint);
-}
-
-.enhance-done-figure {
-  background: linear-gradient(90deg, var(--color-brand-tint), var(--color-check-overthinking));
-  background-clip: text;
-  color: transparent;
+  mask: linear-gradient(to right, rgb(0 0 0 / 45%) 25%, #000 75%);
 }
 
 .enhance-stat {
-  --enhance-tone: var(--color-brand-tint);
-  background:
-    linear-gradient(
-      160deg,
-      color-mix(in oklab, var(--enhance-tone) 20%, transparent),
-      transparent 75%
-    ),
-    var(--color-surface-card);
-  box-shadow:
-    var(--shadow-stats-card),
-    inset 0 -3px 0 var(--enhance-tone);
+  color: var(--color-shimmer);
+  background-color: var(--color-brand-tint);
+  box-shadow: var(--shadow-stats-card);
 }
 
 .enhance-stat[data-tone="pass"] {
-  --enhance-tone: var(--color-burn-check-pass-fill);
+  background-color: var(--color-burn-check-pass-fill);
 }
 
 .enhance-stat[data-tone="snooze"] {
-  --enhance-tone: var(--color-check-overthinking);
-}
-
-.enhance-stat-value {
-  color: var(--enhance-tone);
+  background-color: var(--color-check-overthinking);
 }
