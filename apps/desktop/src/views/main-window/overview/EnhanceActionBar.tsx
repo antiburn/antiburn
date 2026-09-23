@@ -1,4 +1,4 @@
-import { CircleCheck, Hourglass, Sparkles, type LucideIcon } from "lucide-react"
+import { CircleCheck, Hourglass, Crosshair, type LucideIcon } from "lucide-react"
 
 import { cn } from "../../../lib/cn"
 import type { EnhanceButtonState } from "./enhanceState"
@@ -13,14 +13,14 @@ function buttonFace(state: EnhanceButtonState): {
     case "new":
       return {
         label: `Enhance again · ${state.count} new`,
-        Icon: Sparkles,
+        Icon: Crosshair,
         calm: false,
         ring: false,
       }
     case "resume":
       return {
         label: `Continue setup · step ${state.step} of 5`,
-        Icon: Sparkles,
+        Icon: Crosshair,
         calm: true,
         ring: true,
       }
@@ -30,7 +30,7 @@ function buttonFace(state: EnhanceButtonState): {
       return { label: "All set · run again", Icon: CircleCheck, calm: true, ring: false }
     case "loading":
     case "fresh":
-      return { label: "Enhance", Icon: Sparkles, calm: false, ring: false }
+      return { label: "Enhance", Icon: Crosshair, calm: false, ring: false }
   }
 }
 
