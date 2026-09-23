@@ -164,7 +164,7 @@ export function OverviewView({
                   scrim is inert, so the Optimise pill is the one action. */}
               <div className="relative flex grow flex-col">
                 <div inert className="flex flex-col gap-(--space-2xl)">
-                  <div className="rounded-(--radius-popover) bg-surface-sidebar p-(--space-2xl)">
+                  <div>
                     <OverviewUsage
                       metric={metric}
                       onMetricChange={(next) => {
