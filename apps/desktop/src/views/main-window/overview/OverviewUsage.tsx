@@ -40,6 +40,7 @@ export function OverviewUsage({
   allowanceError = false,
   usageError = false,
   onRetryUsage,
+  showFigures = true,
   loading = false,
 }: {
   metric: OverviewMetric
@@ -51,6 +52,8 @@ export function OverviewUsage({
   allowanceError?: boolean
   usageError?: boolean
   onRetryUsage?: () => void
+  /** False hides the hero figures above the chart. */
+  showFigures?: boolean
   loading?: boolean
 }) {
   const costFailed = usageError && !totals
@@ -102,18 +105,20 @@ export function OverviewUsage({
           </div>
         ) : (
           <>
-            <OverviewSpendTotals totals={totals} loading={loading} />
+            {showFigures && <OverviewSpendTotals totals={totals} loading={loading} />}
             <OverviewSpendChart days={days} loading={loading} />
           </>
         )
       ) : (
         <>
-          <OverviewAllowanceTotals
-            accounts={chartAccounts}
-            utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
-            loading={allowanceLoading}
-            error={allowanceError}
-          />
+          {showFigures && (
+            <OverviewAllowanceTotals
+              accounts={chartAccounts}
+              utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
+              loading={allowanceLoading}
+              error={allowanceError}
+            />
+          )}
 
           {!allowanceFailed && (
             <OverviewAllowanceChart

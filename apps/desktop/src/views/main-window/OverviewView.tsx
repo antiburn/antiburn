@@ -176,6 +176,7 @@ export function OverviewView({
                 allowanceError={state.allowanceError}
                 usageError={state.usageError}
                 onRetryUsage={session.refresh}
+                showFigures={false}
                 loading={loading}
               />
 
