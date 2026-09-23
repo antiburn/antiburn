@@ -106,16 +106,20 @@ export function petalPath(
   return { area, edge }
 }
 
-/** The band of one day, from the inner ring to the outer ring. */
-export function dayPath(g: Geometry, day: number): string {
-  const from = day / DAYS_PER_WEEK
-  const to = (day + 1) / DAYS_PER_WEEK
+/** A pie segment from the inner ring out to `r`, clockwise from one fraction
+ *  of the week to another. */
+export function wedgePath(g: Geometry, from: number, to: number, r: number): string {
   return (
-    `M${fmt(polar(g, from, g.inner))} L${fmt(polar(g, from, g.outer))} ` +
-    `A${g.outer},${g.outer} 0 0 1 ${fmt(polar(g, to, g.outer))} ` +
+    `M${fmt(polar(g, from, g.inner))} L${fmt(polar(g, from, r))} ` +
+    `A${r},${r} 0 0 1 ${fmt(polar(g, to, r))} ` +
     `L${fmt(polar(g, to, g.inner))} ` +
     `A${g.inner},${g.inner} 0 0 0 ${fmt(polar(g, from, g.inner))} Z`
   )
+}
+
+/** The band of one day, from the inner ring to the outer ring. */
+export function dayPath(g: Geometry, day: number): string {
+  return wedgePath(g, day / DAYS_PER_WEEK, (day + 1) / DAYS_PER_WEEK, g.outer)
 }
 
 /** An arc along a ring, clockwise from one fraction of the week to another. */

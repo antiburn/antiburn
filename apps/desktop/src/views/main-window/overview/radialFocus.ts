@@ -5,7 +5,6 @@ import {
   fractionAt,
   levelAt,
   radius,
-  turnDistance,
   type Geometry,
   type LimitStretch,
   type PlacedPin,
@@ -30,10 +29,12 @@ export type RadialFocus =
   | { kind: "config"; detector: BurnCheckDetectorId }
   | { kind: "layer"; layer: RadialLayer }
 
-/** One 5-hour window as a spoke on the flower. */
+/** One 5-hour window as a pie segment on the flower: from its start to its
+ *  reset, out to its peak. */
 export type Spoke = {
   key: string
-  fraction: number
+  from: number
+  to: number
   startsAtEpoch: number
   resetsAtEpoch: number
   peakPercent: number
@@ -44,7 +45,8 @@ const SNAP = 8
 
 /** The focus under the pointer, and the time of week it reads. Null outside
  *  the ring and the pins. The nearest line wins: a limit hit, a week's edge,
- *  the average ring, or a 5-hour spoke. With no line near, the pointer reads the time. */
+ *  the average ring, or the top of a 5-hour segment. Inside a segment with no
+ *  line near, the pointer takes the segment. Otherwise it reads the time. */
 export function pointerFocus(
   g: Geometry,
   pointer: Point,
@@ -77,12 +79,11 @@ export function pointerFocus(
   }
   // Prefer a week's edge where it runs on the average ring.
   if (rolling != null) offer({ kind: "rolling" }, Math.abs(r - radius(g, rolling)) + 2)
+  // Where segments of past weeks overlap, the one whose top is nearest wins.
   for (const spoke of spokes) {
-    if (r > radius(g, spoke.peakPercent) + 4) continue
-    offer(
-      { kind: "short", key: spoke.key },
-      turnDistance(spoke.fraction, fraction) * 2 * Math.PI * r + 1,
-    )
+    const top = radius(g, spoke.peakPercent)
+    if (fraction < spoke.from || fraction > spoke.to || r > top + 4) continue
+    offer({ kind: "short", key: spoke.key }, Math.min(SNAP, Math.abs(r - top)) + 1)
   }
   return { focus: best?.focus ?? { kind: "time" }, fraction }
 }

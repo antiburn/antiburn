@@ -34,6 +34,7 @@ import {
   petalPath,
   polar,
   radius,
+  wedgePath,
   weekFraction,
   type PlacedPin,
   type Point,
@@ -59,7 +60,7 @@ const CHAR_WIDTH = 6.2
 const LEGEND_ITEMS: readonly ChartLegendItem[] = [
   { key: "week", label: "This week", swatch: "bg-context-stroke" },
   { key: "past", label: "Past weeks", swatch: "bg-context-stroke/30" },
-  { key: "short", label: "5-hour window", swatch: "bg-context-stroke/20", shape: "line" },
+  { key: "short", label: "5-hour window", swatch: "bg-context-stroke/20" },
   { key: "rolling", label: "Average usage", swatch: "bg-gray-500", shape: "line" },
 ]
 const LIMIT_LEGEND: ChartLegendItem = {
@@ -93,7 +94,7 @@ function emphasisOpacity(emphasis: "full" | "normal" | "dim", base: number): num
  *  week or a 5-hour window reached its limit.
  *
  *  Every part reacts to the pointer. The pointer snaps to a limit hit, a
- *  week's edge, a 5-hour spoke or the average ring, and otherwise reads the
+ *  week's edge, a 5-hour segment or the average ring, and otherwise reads the
  *  time. A pin, a
  *  label, a day, a config row, a key entry or the Optimise button brings its
  *  part forward. The rest fades, and a card tells the numbers. */
@@ -145,16 +146,17 @@ export function OverviewAllowanceRadial({
       (window) => window.startsAtEpoch <= mid && mid < window.resetsAtEpoch,
     )
     if (!week) return []
-    const fraction = weekFraction(week, mid)
+    const from = weekFraction(week, short.startsAtEpoch)
+    const to = weekFraction(week, short.resetsAtEpoch)
     return [
       {
         key: `${short.startsAtEpoch}-${short.resetsAtEpoch}`,
-        fraction,
+        from,
+        to,
         startsAtEpoch: short.startsAtEpoch,
         resetsAtEpoch: short.resetsAtEpoch,
         peakPercent: short.peakPercent,
-        from: polar(g, fraction, g.inner),
-        to: polar(g, fraction, radius(g, short.peakPercent)),
+        path: wedgePath(g, from, to, radius(g, short.peakPercent)),
       },
     ]
   })

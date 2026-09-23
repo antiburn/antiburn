@@ -49,8 +49,9 @@ describe("OverviewAllowanceRadial", () => {
     const { container } = render(
       <OverviewAllowanceRadial account={account()} rangeEndEpoch={2 * WEEK + 3600} />,
     )
-    // Two past petals and one current petal. Each petal has an area and an edge.
-    expect(container.querySelectorAll("path")).toHaveLength(6)
+    // Two past petals and one current petal, each an area and an edge, and one
+    // 5-hour segment.
+    expect(container.querySelectorAll("path")).toHaveLength(7)
     expect(container.querySelectorAll("path.fill-context-stroke\\/25")).toHaveLength(1)
     expect(
       screen.getByText(

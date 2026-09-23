@@ -1,3 +1,4 @@
+import { cn } from "../../../lib/cn"
 import { AXIS_TICK } from "../../../components/session/analysis/chartLabels"
 import type { RadialFocus, Spoke } from "./radialFocus"
 import {
@@ -22,7 +23,7 @@ export type Petal = {
   current: boolean
   path: { area: string; edge: string }
 }
-export type SpokeLine = Spoke & { from: Point; to: Point }
+export type SpokeLine = Spoke & { path: string }
 
 function hitsLimit(spoke: Spoke): boolean {
   return spoke.peakPercent >= LIMIT_PERCENT
@@ -96,7 +97,7 @@ function LimitArc({
   )
 }
 
-/** The usage data: 5-hour spokes, past petals, the average ring, this week
+/** The usage data: 5-hour segments, past petals, the average ring, this week
  *  and the limit hits. It fades while the focus is on another part. */
 export function DataLayer({
   g,
@@ -129,15 +130,10 @@ export function DataLayer({
       aria-hidden="true"
     >
       {spokes.map((spoke) => (
-        <line
+        <path
           key={spoke.key}
-          x1={spoke.from.x}
-          y1={spoke.from.y}
-          x2={spoke.to.x}
-          y2={spoke.to.y}
-          className={hitsLimit(spoke) ? "stroke-system-red/60" : "stroke-context-stroke/20"}
-          strokeWidth={2.5}
-          strokeLinecap="round"
+          d={spoke.path}
+          className={hitsLimit(spoke) ? "fill-system-red/30" : "fill-context-stroke/10"}
         />
       ))}
       {petals
@@ -204,20 +200,14 @@ function PetalMark({ petal, strong }: { petal: Petal; strong: boolean }) {
 function SpokeMark({ spoke, strong }: { spoke: SpokeLine; strong: boolean }) {
   const limit = hitsLimit(spoke)
   return (
-    <line
-      x1={spoke.from.x}
-      y1={spoke.from.y}
-      x2={spoke.to.x}
-      y2={spoke.to.y}
-      className={
-        limit
-          ? "stroke-system-red"
-          : strong
-            ? "stroke-context-stroke"
-            : "stroke-context-stroke/60"
-      }
-      strokeWidth={strong ? 4 : 3}
-      strokeLinecap="round"
+    <path
+      d={spoke.path}
+      className={cn(
+        limit ? "fill-system-red/40 stroke-system-red" : "fill-context-stroke/25",
+        !limit && (strong ? "stroke-context-stroke" : "stroke-context-stroke/60"),
+      )}
+      strokeWidth={strong ? 1.5 : 1}
+      strokeLinejoin="round"
     />
   )
 }
