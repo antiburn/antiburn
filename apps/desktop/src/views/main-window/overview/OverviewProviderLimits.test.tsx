@@ -142,6 +142,26 @@ describe("OverviewProviderLimits", () => {
     expect(card.querySelectorAll(".bg-system-red-tint").length).toBeGreaterThan(0)
   })
 
+  it.each([
+    ["refreshPending", "Couldn't update Claude usage. Last updated 3 min ago."],
+    ["signInRequired", "Sign in to Claude again. Last updated 3 min ago."],
+  ] as const)("preserves the %s detail in the visible reading", (detail, note) => {
+    render(
+      <OverviewProviderLimits
+        live={liveSummary({
+          errors: [
+            sourceError({
+              provider: "anthropic",
+              displayName: "Claude",
+              detail,
+            }),
+          ],
+        })}
+      />,
+    )
+    expect(screen.getByText(note)).toBeInTheDocument()
+  })
+
   it("shows the sign-in action for a failed provider", () => {
     render(
       <OverviewProviderLimits

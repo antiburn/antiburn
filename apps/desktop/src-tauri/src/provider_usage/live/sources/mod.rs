@@ -118,7 +118,8 @@ pub fn collect(
                 event = "live_source_failed",
                 source = source.id(),
                 provider = source.provider(),
-                category = error.category()
+                category = error.category(),
+                detail = ?outcome.detail
             );
             collected.errors.push(SourceFailure {
                 source: source.id(),

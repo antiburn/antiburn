@@ -1137,7 +1137,9 @@ describe("UsageView — the grace period", () => {
       within(card).getByRole("region", { name: "Anthropic plan limits" }),
     ).toBeInTheDocument()
     expect(
-      within(card).getByText("Claude rate limited the last check; reading from 4 min ago."),
+      within(card).getByText(
+        "Claude is temporarily limiting usage checks. Last updated 4 min ago.",
+      ),
     ).toBeInTheDocument()
     expect(within(card).queryByRole("status")).not.toBeInTheDocument()
   })

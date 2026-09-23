@@ -119,7 +119,12 @@ export function OverviewProviderLimits({
                     const status = liveProviderStatus(live, reading)
                     const graceNote =
                       status.kind === "grace"
-                        ? liveGraceNote(status.category, reading.provider, status.ageMs)
+                        ? liveGraceNote(
+                            status.category,
+                            reading.provider,
+                            status.ageMs,
+                            status.detail,
+                          )
                         : null
 
                     return (

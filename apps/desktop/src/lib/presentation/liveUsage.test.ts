@@ -688,8 +688,8 @@ describe("the failure surface", () => {
   it("phrases each failure category in a couple of words", () => {
     expect(liveUnavailableReason("rateLimited")).toBe("rate limited")
     expect(liveUnavailableReason("authentication")).toBe("sign-in needed")
-    expect(liveUnavailableReason("authentication", "refreshPending")).toBe("refreshing sign-in")
-    expect(liveUnavailableReason("authentication", "cliMissing")).toBe("stale token")
+    expect(liveUnavailableReason("authentication", "refreshPending")).toBe("update pending")
+    expect(liveUnavailableReason("authentication", "cliMissing")).toBe("tool unavailable")
     expect(liveUnavailableReason("authentication", "signInRequired")).toBe("sign-in needed")
     expect(liveUnavailableReason("schema")).toBe("unreadable reply")
     expect(liveUnavailableReason("somethingNew")).toBe("unreachable")
@@ -714,15 +714,15 @@ describe("the failure surface", () => {
     },
     {
       error: sourceError({ category: "authentication", detail: "cliMissing" }),
-      note: "Claude Code's login has expired and there's nothing here to refresh it. Sign in inside Claude Code.",
+      note: "Couldn't update Claude usage. Open Claude Code to check your sign-in.",
     },
     {
       error: sourceError({ category: "authentication", detail: "signInRequired" }),
-      note: "Claude Code's login has expired. Sign in inside Claude Code again.",
+      note: "Sign in inside Claude Code again, then retry.",
     },
     {
       error: sourceError({ category: "authentication", detail: "refreshPending" }),
-      note: "Claude Code's login has expired. It refreshes on the next check.",
+      note: "Couldn't update Claude usage. Try again shortly.",
     },
   ])("qualifies $error.detail and preserves it for the HUD", ({ error, note }) => {
     expect(liveErrorNote(error.category, error.provider, error.detail)).toBe(note)
@@ -860,7 +860,7 @@ describe("the grace period", () => {
       detail: "refreshPending",
     })
     expect(liveGraceNote("authentication", "anthropic", 11 * 60_000, "refreshPending")).toBe(
-      "Claude login expired; it refreshes on the next check. Reading from 11 min ago.",
+      "Couldn't update Claude usage. Last updated 11 min ago.",
     )
   })
 
@@ -920,16 +920,16 @@ describe("the grace period", () => {
 
   it("phrases the grace note per category, and the age in words", () => {
     expect(liveGraceNote("rateLimited", "anthropic", 4 * 60_000)).toBe(
-      "Claude rate limited the last check; reading from 4 min ago.",
+      "Claude is temporarily limiting usage checks. Last updated 4 min ago.",
     )
     expect(liveGraceNote("authentication", "google", 30_000)).toBe(
-      "Google rejected the sign-in on the last check; reading from under 1 min ago.",
+      "Couldn't update Google usage. Last updated under 1 min ago.",
     )
     expect(liveGraceNote("schema", "openai", 9 * 60_000)).toBe(
-      "Codex sent an unreadable reply; reading from 9 min ago.",
+      "Couldn't update Codex usage. Last updated 9 min ago.",
     )
     expect(liveGraceNote("unavailable", undefined, 60_000)).toBe(
-      "Your provider didn't answer the last check; reading from 1 min ago.",
+      "Couldn't update usage. Last updated 1 min ago.",
     )
   })
 })
