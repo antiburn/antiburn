@@ -29,6 +29,8 @@ const AXIS_LABEL_STEP = 7
 const AXIS_LABEL_CLEARANCE = 3
 
 const GUIDE_PERCENTS = [100, 75, 50, 25]
+// The chart is short, so only these guides carry a label.
+const LABEL_PERCENTS = [100, 50]
 
 const LEGEND_ITEMS = [
   { key: "short", label: "5-hour window", swatch: "bg-context-stroke/20" },
@@ -182,7 +184,7 @@ function AllowancePlot({
                   strokeOpacity={0.6}
                 />
               ))}
-              {GUIDE_PERCENTS.map((percent) => (
+              {LABEL_PERCENTS.map((percent) => (
                 <text
                   key={`label-${percent}`}
                   x={plotRight + 6}
