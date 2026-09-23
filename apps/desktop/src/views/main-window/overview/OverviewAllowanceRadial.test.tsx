@@ -37,7 +37,17 @@ function account(
     plan: null,
     utilization: null,
     chart: {
-      shortWindows: [{ startsAtEpoch: 3600, resetsAtEpoch: 3600 * 6, peakPercent: shortPeak }],
+      shortWindows: [
+        {
+          startsAtEpoch: 3600,
+          resetsAtEpoch: 3600 * 6,
+          peakPercent: shortPeak,
+          points: [
+            { atEpoch: 3600, percent: 0 },
+            { atEpoch: 3600 * 6, percent: shortPeak },
+          ],
+        },
+      ],
       weeklyWindows: weeks,
       rolling: [{ atEpoch: 0, percent: 25 }],
     },

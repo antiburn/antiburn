@@ -511,14 +511,18 @@ pub struct AllowanceChart {
     pub rolling: Vec<AllowanceRollingPoint>,
 }
 
-/// One 5-hour window's column: its span, and the highest level it reached.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+/// One 5-hour window: its span, the highest level it reached, and its
+/// rising level.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AllowanceWindowPeak {
     pub starts_at_epoch: i64,
     pub resets_at_epoch: i64,
     /// The window's own `estimated_percent`, capped at 100.
     pub peak_percent: f64,
+    /// Every 15 minutes, cumulative, capped at 100. The first point is always
+    /// zero at `starts_at_epoch`. An open window stops at now.
+    pub points: Vec<AllowanceLevelPoint>,
 }
 
 /// One weekly (or model-scoped weekly) window's rising area.

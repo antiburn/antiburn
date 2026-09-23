@@ -27,6 +27,7 @@ import {
   LIMIT_PERCENT,
   PIN_STEP,
   arcPath,
+  buildSpokes,
   geometry,
   layoutPins,
   levelAt,
@@ -140,26 +141,12 @@ export function OverviewAllowanceRadial({
       .reverse()
       .find((point) => point.atEpoch <= rangeEndEpoch && point.percent != null)?.percent ?? null
 
-  const spokes: SpokeLine[] = account.chart.shortWindows.flatMap((short) => {
-    const mid = (short.startsAtEpoch + short.resetsAtEpoch) / 2
-    const week = weeks.find(
-      (window) => window.startsAtEpoch <= mid && mid < window.resetsAtEpoch,
-    )
-    if (!week) return []
-    const from = weekFraction(week, short.startsAtEpoch)
-    const to = weekFraction(week, short.resetsAtEpoch)
-    return [
-      {
-        key: `${short.startsAtEpoch}-${short.resetsAtEpoch}`,
-        from,
-        to,
-        startsAtEpoch: short.startsAtEpoch,
-        resetsAtEpoch: short.resetsAtEpoch,
-        peakPercent: short.peakPercent,
-        path: wedgePath(g, from, to, radius(g, short.peakPercent)),
-      },
-    ]
-  })
+  const spokes: SpokeLine[] = buildSpokes(account.chart.shortWindows, weeks, current).map(
+    (spoke) => ({
+      ...spoke,
+      path: wedgePath(g, spoke.from, spoke.to, radius(g, spoke.peakPercent)),
+    }),
+  )
   const petals: Petal[] = weeks.flatMap((window: AllowanceWindowLevelsPayload) => {
     const path = petalPath(g, window)
     return path ? [{ start: window.startsAtEpoch, current: window === current, path }] : []

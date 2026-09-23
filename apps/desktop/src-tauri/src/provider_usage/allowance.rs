@@ -33,20 +33,24 @@ pub const SHORT_POOL_WEIGHT: usize = 1;
 const LINE_START_LEAD_SECS: i64 = 7 * 24 * 60 * 60;
 
 /// The weekly area's sample step.
-const LEVEL_STEP_SECS: i64 = 60 * 60;
+pub const WEEKLY_LEVEL_STEP_SECS: i64 = 60 * 60;
 
-/// One point of a weekly-style window's cumulative level.
+/// The 5-hour area's sample step: one contribution bucket.
+pub const SHORT_LEVEL_STEP_SECS: i64 = crate::store::provider_limit::CONTRIBUTION_BUCKET_SECS;
+
+/// One point of a window's cumulative level.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LevelPoint {
     pub at_epoch: i64,
     pub percent: f64,
 }
 
-/// A weekly (or model-scoped weekly) window's cumulative level, sampled
-/// hourly from zero at its start to its own estimate.
+/// A window's cumulative level, sampled every `step_secs` from zero at its
+/// start to its own estimate. Weekly windows use [`WEEKLY_LEVEL_STEP_SECS`];
+/// 5-hour windows use [`SHORT_LEVEL_STEP_SECS`].
 ///
-/// The level at each hour is the running sum of every contribution,
-/// unattributed, and unexplained bucket percent up to that hour — the same
+/// The level at each step is the running sum of every contribution,
+/// unattributed, and unexplained bucket percent up to that step — the same
 /// three sources [`crate::commands::quota::quota_usage_for_store`] sums into
 /// `estimated_percent`, so a closed window's last point equals
 /// `estimated_percent.min(100)` exactly: both figures sum the same buckets,
@@ -56,9 +60,12 @@ pub struct LevelPoint {
 /// still run past 100 before it closes.
 ///
 /// `None` when the period has no estimate at all. The single point at the
-/// window's own start when it has not yet run a full hour, or has not yet
-/// started relative to `now`.
-pub fn weekly_levels(period: &QuotaPeriodPayload, now: i64) -> Option<Vec<LevelPoint>> {
+/// window's own start when it has not yet started relative to `now`.
+pub fn window_levels(
+    period: &QuotaPeriodPayload,
+    now: i64,
+    step_secs: i64,
+) -> Option<Vec<LevelPoint>> {
     period.estimated_percent?;
     let start = period.starts_at_epoch;
     let end = period.resets_at_epoch.min(now);
@@ -86,11 +93,11 @@ pub fn weekly_levels(period: &QuotaPeriodPayload, now: i64) -> Option<Vec<LevelP
         }
     }
 
-    let steps = ((end - start) as f64 / LEVEL_STEP_SECS as f64).ceil() as i64;
+    let steps = ((end - start) as f64 / step_secs as f64).ceil() as i64;
     let mut cumulative = 0.0;
     for step in 1..=steps {
-        let step_start = start + (step - 1) * LEVEL_STEP_SECS;
-        let step_end = (start + step * LEVEL_STEP_SECS).min(end);
+        let step_start = start + (step - 1) * step_secs;
+        let step_end = (start + step * step_secs).min(end);
         let rise: f64 = by_bucket
             .range(step_start..step_end)
             .map(|(_, percent)| *percent)

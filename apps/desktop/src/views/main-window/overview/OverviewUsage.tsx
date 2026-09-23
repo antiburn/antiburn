@@ -9,6 +9,7 @@ import type {
 import { SegmentedControl } from "../../../components/ui/SegmentedControl"
 import { OverviewAllowanceChart } from "./OverviewAllowanceChart"
 import { OverviewAllowanceRadial } from "./OverviewAllowanceRadial"
+import { OverviewAllowanceWeeks } from "./OverviewAllowanceWeeks"
 import { OverviewAllowanceTotals } from "./OverviewAllowanceTotals"
 import { OverviewSpendChart } from "./OverviewSpendChart"
 import { OverviewSpendTotals } from "./OverviewSpendTotals"
@@ -22,6 +23,10 @@ import {
 import "./overview.css"
 
 export type { OverviewMetric }
+
+// The week flower is off for now while the week lines are tried. Set this to
+// true to draw the flower again.
+const SHOW_WEEK_FLOWER = false
 
 const METRICS: ReadonlyArray<{ value: OverviewMetric; label: string }> = [
   { value: "cost", label: "Cost" },
@@ -143,8 +148,16 @@ export function OverviewUsage({
           )}
 
           {!allowanceFailed &&
-            (selectedAccount ? (
+            (selectedAccount && SHOW_WEEK_FLOWER ? (
               <OverviewAllowanceRadial
+                account={selectedAccount}
+                rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
+                controls={chartControls}
+                center={center}
+                waste={waste}
+              />
+            ) : selectedAccount ? (
+              <OverviewAllowanceWeeks
                 account={selectedAccount}
                 rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
                 controls={chartControls}

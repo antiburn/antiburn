@@ -9,6 +9,7 @@ import {
   type LimitStretch,
   type PlacedPin,
   type Point,
+  type Spoke,
 } from "./radialGeometry"
 
 /** The layers the key names. */
@@ -29,17 +30,6 @@ export type RadialFocus =
   | { kind: "config"; detector: BurnCheckDetectorId }
   | { kind: "layer"; layer: RadialLayer }
 
-/** One 5-hour window as a pie segment on the flower: from its start to its
- *  reset, out to its peak. */
-export type Spoke = {
-  key: string
-  from: number
-  to: number
-  startsAtEpoch: number
-  resetsAtEpoch: number
-  peakPercent: number
-}
-
 // The pointer snaps to a line this close, in pixels.
 const SNAP = 8
 
@@ -59,7 +49,7 @@ export function pointerFocus(
   const r = Math.hypot(pointer.x - g.cx, pointer.y - g.cy)
   if (r < g.inner || r > reach) return null
   const fraction = fractionAt(g, pointer)
-  let best: { focus: RadialFocus; distance: number } | null = null
+  let best = null as { focus: RadialFocus; distance: number } | null
   const offer = (focus: RadialFocus, distance: number) => {
     if (distance <= SNAP && (!best || distance < best.distance)) best = { focus, distance }
   }

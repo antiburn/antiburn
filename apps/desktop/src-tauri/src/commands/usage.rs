@@ -166,12 +166,17 @@ pub(super) fn allowance_usage_for_store(
             .iter()
             .filter(|period| overlaps_visible_range(period, range_start, now))
             .filter_map(|period| {
-                provider_usage::allowance::window_peak(period).map(|peak_percent| {
-                    AllowanceWindowPeak {
-                        starts_at_epoch: period.starts_at_epoch,
-                        resets_at_epoch: period.resets_at_epoch,
-                        peak_percent,
-                    }
+                let peak_percent = provider_usage::allowance::window_peak(period)?;
+                let points = provider_usage::allowance::window_levels(
+                    period,
+                    now,
+                    provider_usage::allowance::SHORT_LEVEL_STEP_SECS,
+                )?;
+                Some(AllowanceWindowPeak {
+                    starts_at_epoch: period.starts_at_epoch,
+                    resets_at_epoch: period.resets_at_epoch,
+                    peak_percent,
+                    points: level_points(points),
                 })
             })
             .collect();
@@ -186,19 +191,16 @@ pub(super) fn allowance_usage_for_store(
             )
             .filter(|(_, period)| overlaps_visible_range(period, range_start, now))
             .filter_map(|(lane, period)| {
-                provider_usage::allowance::weekly_levels(period, now).map(|points| {
-                    AllowanceWindowLevels {
-                        lane,
-                        starts_at_epoch: period.starts_at_epoch,
-                        resets_at_epoch: period.resets_at_epoch,
-                        points: points
-                            .into_iter()
-                            .map(|point| AllowanceLevelPoint {
-                                at_epoch: point.at_epoch,
-                                percent: point.percent,
-                            })
-                            .collect(),
-                    }
+                provider_usage::allowance::window_levels(
+                    period,
+                    now,
+                    provider_usage::allowance::WEEKLY_LEVEL_STEP_SECS,
+                )
+                .map(|points| AllowanceWindowLevels {
+                    lane,
+                    starts_at_epoch: period.starts_at_epoch,
+                    resets_at_epoch: period.resets_at_epoch,
+                    points: level_points(points),
                 })
             })
             .collect();
@@ -273,6 +275,16 @@ fn pooled_window_count<'a>(periods: impl Iterator<Item = &'a QuotaPeriodPayload>
 /// `[range_start, now]`, the same rule the old day series used.
 fn overlaps_visible_range(period: &QuotaPeriodPayload, range_start: i64, now: i64) -> bool {
     period.resets_at_epoch > range_start && period.starts_at_epoch <= now
+}
+
+fn level_points(points: Vec<provider_usage::allowance::LevelPoint>) -> Vec<AllowanceLevelPoint> {
+    points
+        .into_iter()
+        .map(|point| AllowanceLevelPoint {
+            at_epoch: point.at_epoch,
+            percent: point.percent,
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -14,7 +14,17 @@ const account: AllowanceUsageAccountPayload = {
   plan: null,
   utilization: null,
   chart: {
-    shortWindows: [{ startsAtEpoch: start, resetsAtEpoch: start + 18000, peakPercent: 30 }],
+    shortWindows: [
+      {
+        startsAtEpoch: start,
+        resetsAtEpoch: start + 18000,
+        peakPercent: 30,
+        points: [
+          { atEpoch: start, percent: 0 },
+          { atEpoch: start + 18000, percent: 30 },
+        ],
+      },
+    ],
     weeklyWindows: [
       {
         lane: "weekly",

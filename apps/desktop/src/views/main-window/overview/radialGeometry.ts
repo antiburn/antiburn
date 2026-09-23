@@ -1,4 +1,7 @@
-import type { AllowanceWindowLevelsPayload } from "../../../lib/providerUsageIpc"
+import type {
+  AllowanceWindowLevelsPayload,
+  AllowanceWindowPeakPayload,
+} from "../../../lib/providerUsageIpc"
 import type { WastePin } from "./wasteMarks"
 
 export const DAYS_PER_WEEK = 7
@@ -15,6 +18,69 @@ export const PIN_STEP = 7
 export const PIN_GAP = 6
 
 export type Point = { x: number; y: number }
+
+/** One point of a 5-hour window's level, at a fraction of its week. */
+export type SpokePoint = { fraction: number; percent: number }
+
+/** One 5-hour window on its week: from its start to its reset, with its
+ *  rising level and its peak. */
+export type Spoke = {
+  key: string
+  weekStart: number
+  current: boolean
+  from: number
+  to: number
+  startsAtEpoch: number
+  resetsAtEpoch: number
+  peakPercent: number
+  points: SpokePoint[]
+}
+
+/** Put each 5-hour window on the week that holds its middle. */
+export function buildSpokes(
+  shorts: readonly AllowanceWindowPeakPayload[],
+  weeks: readonly AllowanceWindowLevelsPayload[],
+  current: AllowanceWindowLevelsPayload | undefined,
+): Spoke[] {
+  return shorts.flatMap((short) => {
+    const mid = (short.startsAtEpoch + short.resetsAtEpoch) / 2
+    const week = weeks.find(
+      (window) => window.startsAtEpoch <= mid && mid < window.resetsAtEpoch,
+    )
+    if (!week) return []
+    return [
+      {
+        key: `${short.startsAtEpoch}-${short.resetsAtEpoch}`,
+        weekStart: week.startsAtEpoch,
+        current: week === current,
+        from: weekFraction(week, short.startsAtEpoch),
+        to: weekFraction(week, short.resetsAtEpoch),
+        startsAtEpoch: short.startsAtEpoch,
+        resetsAtEpoch: short.resetsAtEpoch,
+        peakPercent: short.peakPercent,
+        points: short.points.map((point) => ({
+          fraction: weekFraction(week, point.atEpoch),
+          percent: point.percent,
+        })),
+      },
+    ]
+  })
+}
+
+/** The level of a 5-hour window at a fraction of its week, or null outside
+ *  its points. */
+export function spokeLevelAt(spoke: Spoke, fraction: number): number | null {
+  const points = spoke.points
+  for (let index = 1; index < points.length; index++) {
+    const left = points[index - 1]!
+    const right = points[index]!
+    if (fraction < left.fraction || fraction > right.fraction) continue
+    const span = right.fraction - left.fraction
+    const share = span > 0 ? (fraction - left.fraction) / span : 1
+    return left.percent + share * (right.percent - left.percent)
+  }
+  return null
+}
 
 /** The chart geometry in pixels. The ring is a square of `side`, `top`
  *  pixels down, so the flag at the reset has room above it. */

@@ -557,6 +557,9 @@ export interface AllowanceWindowPeakPayload {
   resetsAtEpoch: number
   /** The window's own `estimatedPercent`, capped at 100. */
   peakPercent: number
+  /** Every 15 minutes, cumulative, capped at 100. The first point is always
+   * zero at `startsAtEpoch`. An open window stops at now. */
+  points: AllowanceLevelPointPayload[]
 }
 
 /** One weekly (or model-scoped weekly) window's rising area. Mirrors Rust
@@ -572,9 +575,9 @@ export interface AllowanceWindowLevelsPayload {
   points: AllowanceLevelPointPayload[]
 }
 
-/** One point of a weekly window's cumulative level. Mirrors Rust
+/** One point of a window's cumulative level. Mirrors Rust
  * `AllowanceLevelPoint`. */
-interface AllowanceLevelPointPayload {
+export interface AllowanceLevelPointPayload {
   atEpoch: number
   percent: number
 }

@@ -2,7 +2,7 @@ import type { CSSProperties, ReactNode } from "react"
 
 import type { AllowanceWindowLevelsPayload } from "../../../lib/providerUsageIpc"
 import type { ConfigShare } from "./wasteMarks"
-import type { RadialFocus, Spoke } from "./radialFocus"
+import type { RadialFocus } from "./radialFocus"
 import {
   DAYS_PER_WEEK,
   LIMIT_PERCENT,
@@ -11,6 +11,7 @@ import {
   turnDistance,
   type LimitStretch,
   type PlacedPin,
+  type Spoke,
 } from "./radialGeometry"
 
 // The hover card lists this many nearby pins or checks.

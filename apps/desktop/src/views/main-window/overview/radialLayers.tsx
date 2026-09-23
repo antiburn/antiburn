@@ -1,6 +1,6 @@
 import { cn } from "../../../lib/cn"
 import { AXIS_TICK } from "../../../components/session/analysis/chartLabels"
-import type { RadialFocus, Spoke } from "./radialFocus"
+import type { RadialFocus } from "./radialFocus"
 import {
   DAYS_PER_WEEK,
   LIMIT_PERCENT,
@@ -11,6 +11,7 @@ import {
   type Geometry,
   type LimitStretch,
   type Point,
+  type Spoke,
 } from "./radialGeometry"
 
 // The usage data fades to this share while another part is in focus.

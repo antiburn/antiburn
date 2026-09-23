@@ -67,16 +67,35 @@ fn weekly(start: i64, resets: i64, percent: f64, open: bool) -> PoolWindow {
 }
 
 #[test]
-fn weekly_levels_returns_none_without_an_estimate() {
-    assert_eq!(weekly_levels(&period(0, 3_600, None), 3_600), None);
+fn window_levels_returns_none_without_an_estimate() {
+    assert_eq!(
+        window_levels(&period(0, 3_600, None), 3_600, WEEKLY_LEVEL_STEP_SECS),
+        None
+    );
 }
 
 #[test]
-fn weekly_levels_groups_into_hourly_steps_from_a_zero_start() {
+fn window_levels_samples_a_five_hour_window_every_bucket() {
+    let mut p = period(0, 5 * 3_600, Some(40.0));
+    p.contributions = vec![contribution(0, 10.0), contribution(3 * 900, 30.0)];
+    let levels = window_levels(&p, 5 * 3_600, SHORT_LEVEL_STEP_SECS).expect("has an estimate");
+    assert_eq!(levels.len(), 21);
+    assert_eq!(levels[1].at_epoch, 900);
+    assert_eq!(levels[1].percent, 10.0);
+    assert_eq!(levels[3].percent, 10.0);
+    assert_eq!(levels[4].percent, 40.0);
+    assert_eq!(
+        levels.last().unwrap().percent,
+        window_peak(&p).expect("has a peak")
+    );
+}
+
+#[test]
+fn window_levels_groups_into_hourly_steps_from_a_zero_start() {
     let mut p = period(0, 2 * 3_600, Some(30.0));
     p.contributions = vec![contribution(0, 20.0), contribution(1_800, 5.0)];
     p.unattributed_buckets = vec![bucket(3_600, 5.0)];
-    let levels = weekly_levels(&p, 2 * 3_600).expect("has an estimate");
+    let levels = window_levels(&p, 2 * 3_600, WEEKLY_LEVEL_STEP_SECS).expect("has an estimate");
     assert_eq!(
         levels,
         vec![
@@ -101,20 +120,20 @@ fn weekly_levels_groups_into_hourly_steps_from_a_zero_start() {
 }
 
 #[test]
-fn weekly_levels_caps_each_point_at_100() {
+fn window_levels_caps_each_point_at_100() {
     let mut p = period(0, 3_600, Some(150.0));
     p.contributions = vec![contribution(0, 150.0)];
-    let levels = weekly_levels(&p, 3_600).expect("has an estimate");
+    let levels = window_levels(&p, 3_600, WEEKLY_LEVEL_STEP_SECS).expect("has an estimate");
     assert_eq!(levels.last().unwrap().percent, 100.0);
 }
 
 #[test]
-fn weekly_levels_clips_an_open_window_at_now() {
+fn window_levels_clips_an_open_window_at_now() {
     let mut p = period(0, 3 * 3_600, Some(70.0));
     p.contributions = vec![contribution(0, 20.0), contribution(2 * 3_600, 50.0)];
     // now falls inside the window, before its reset: the tail bucket past
     // now must not appear.
-    let levels = weekly_levels(&p, 3_600).expect("has an estimate");
+    let levels = window_levels(&p, 3_600, WEEKLY_LEVEL_STEP_SECS).expect("has an estimate");
     assert_eq!(
         levels,
         vec![
