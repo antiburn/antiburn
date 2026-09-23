@@ -111,24 +111,52 @@ function ScanTile({
     : check.lifecycle == null
       ? "Not checked yet"
       : row.summary
+  const failing = !snoozed && check.lifecycle === "failing"
+  const total = check.finding + check.clean
+  // Ten dots, like the HUD meters. A failing check lights at least one.
+  const lit = failing && total > 0 ? Math.max(1, Math.round((check.finding / total) * 10)) : 0
   return (
-    <li className="flex items-start gap-(--space-sm) rounded-control bg-surface-card p-(--space-md)">
+    <li className="flex items-center gap-(--space-lg) rounded-(--radius-popover) bg-surface-card px-(--space-xl) py-(--space-lg)">
       <span
         aria-hidden="true"
         className={cn(
-          "grid size-7 shrink-0 place-items-center rounded-full",
+          "grid size-11 shrink-0 place-items-center rounded-full",
           snoozed ? "bg-surface-card text-label-secondary" : row.iconTone,
         )}
       >
-        <row.Icon size={14} />
+        <row.Icon size={21} />
       </span>
-      <span className="flex min-w-0 flex-col">
-        <span className="type-callout font-semibold text-label">{row.label}</span>
-        <span className="type-caption text-label-secondary">{summary}</span>
-        {!snoozed && row.metric && (
-          <span className={cn("type-caption tabular-nums", row.metricTone)}>{row.metric}</span>
-        )}
+      <span className="flex min-w-0 flex-1 flex-col gap-(--space-xs)">
+        <span className="type-title-2 font-semibold text-label">{row.label}</span>
+        <span className="flex items-center gap-(--space-md)">
+          {failing && (
+            <span aria-hidden="true" className="flex gap-[3px]">
+              {Array.from({ length: 10 }, (_, index) => (
+                <span
+                  key={index}
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    index < lit ? "bg-brand-tint" : "bg-separator",
+                  )}
+                />
+              ))}
+            </span>
+          )}
+          <span className="type-title-3 font-normal! text-label-secondary tabular-nums">
+            {summary}
+          </span>
+        </span>
       </span>
+      {!snoozed && row.metric && (
+        <span
+          className={cn(
+            "shrink-0 font-mono type-title-2 font-semibold tabular-nums",
+            row.metricTone,
+          )}
+        >
+          {row.metric}
+        </span>
+      )}
     </li>
   )
 }
@@ -154,10 +182,7 @@ export function ScanStep({ state }: { state: BurnChecksSnapshot }) {
         </span>
         {found > 0 && ", biggest first on the next step."}
       </p>
-      <ul
-        aria-label="Burn checks"
-        className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-(--space-sm)"
-      >
+      <ul aria-label="Burn checks" className="flex max-w-3xl flex-col gap-(--space-sm)">
         {ordered.map((check) => (
           <ScanTile
             key={check.id}
