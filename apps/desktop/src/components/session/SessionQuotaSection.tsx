@@ -17,7 +17,7 @@ export interface SessionQuotaOpenTarget {
 }
 
 const ROW_CLASS =
-  "group col-span-full grid grid-cols-subgrid items-center gap-3 rounded-control px-1.5 py-1.5 text-left type-callout transition-colors duration-[var(--duration-fast)] ease-out"
+  "group col-span-full grid grid-cols-subgrid items-center gap-3 rounded-control px-1.5 py-1.5 text-left type-callout transition-colors duration-(--duration-fast) ease-out"
 
 /** A muted pill for a row's confidence: the same shape the list uses for a
  *  small count, so a reader recognizes it as metadata rather than a value. */
@@ -295,14 +295,14 @@ export function SessionQuotaSection({
         type="button"
         onClick={toggleLimitsExpanded}
         aria-expanded={expanded}
-        className="flex w-full items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
+        className="flex w-full items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body cursor-pointer! transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
       >
         <span className="flex min-w-0 items-center gap-x-1.5">
           <ChevronRight
             size={14}
             aria-hidden="true"
             className={cn(
-              "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
+              "shrink-0 transition-transform duration-(--duration-fast) ease-out",
               expanded && "rotate-90",
             )}
           />

@@ -70,7 +70,7 @@ export function OverlayWindow() {
               type="button"
               aria-label="Close overlay"
               onClick={() => session.close()}
-              className={`hud-control absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-hud-control-edge p-0.5 text-hud-control-ink hover:text-label transition-opacity duration-[var(--duration-fast)] ease-out ${
+              className={`hud-control absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-hud-control-edge p-0.5 text-hud-control-ink hover:text-label transition-opacity duration-(--duration-fast) ease-out ${
                 showClose ? "opacity-100" : "pointer-events-none opacity-0"
               }`}
               style={{ backgroundColor: "var(--color-bg-hud)" }}
@@ -172,7 +172,7 @@ function IslandPanel({
   const headerScale = island.scale
   const shape = [
     "relative select-none",
-    "transition-opacity duration-[var(--duration-fast)] ease-out",
+    "transition-opacity duration-(--duration-fast) ease-out",
     preview ? "mx-2" : "",
     // A press on the island ghosts it: the drag has not begun, and this is
     // what it would carry away.

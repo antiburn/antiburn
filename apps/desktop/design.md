@@ -183,7 +183,7 @@ Command-W or Control-W closes a decorated window.
 The global reduced-motion rule in `motion.css` stops animation and transition
 by default. Add motion only when it explains a change or gives useful feedback.
 Use the shared duration variables; in Tailwind, write
-`duration-[var(--duration-fast)]`, not a copied millisecond value. Do not use
+`duration-(--duration-fast)`, not a copied millisecond value. Do not use
 literal durations, inline easing curves, or bare transition utilities that
 silently inherit framework timings. Animation-specific timing stays with its
 owning keyframes. Preserve completion callbacks such as `animationend` when

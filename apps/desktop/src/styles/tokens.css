@@ -252,7 +252,7 @@
 
   /* Transition durations. Tailwind has no `--duration-*` theme namespace, so
      these are plain vars and a call site consumes one as
-     duration-[var(--duration-fast)] — the same shape as the geometry vars.
+     duration-(--duration-fast).
      Keeping them here is what stops 120ms from being retyped at each site.
      Animation timings stay with the keyframes that own them in motion.css. */
   --duration-quick: 100ms;

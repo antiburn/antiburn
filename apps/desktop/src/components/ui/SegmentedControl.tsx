@@ -118,7 +118,7 @@ export function SegmentedControl<T extends string>({
       {showAnimatedIndicator ? (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 left-0 rounded-[4px] bg-accent-fill transition-transform duration-[var(--duration-fast)] ease-out motion-reduce:hidden"
+          className="pointer-events-none absolute inset-y-0 left-0 rounded-[4px] bg-accent-fill transition-transform duration-(--duration-fast) ease-out motion-reduce:hidden"
           style={{
             width: `${100 / options.length}%`,
             transform: `translateX(${selectedIndex * 100}%)`,
@@ -162,14 +162,14 @@ export function SegmentedControl<T extends string>({
               textTabs
                 ? cn(
                     textTabsLarge ? "type-body" : "type-footnote",
-                    "relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
+                    "relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-(--duration-quick) ease-out-quart disabled:opacity-50",
                     selected
                       ? "font-medium text-accent"
                       : "text-label-tertiary hover:text-label-secondary",
                   )
                 : nativeTabs
                   ? cn(
-                      "ui-segmented-native-segment relative min-w-0 rounded-control py-0.5 type-caption transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
+                      "ui-segmented-native-segment relative min-w-0 rounded-control py-0.5 type-caption transition-colors duration-(--duration-quick) ease-out-quart disabled:opacity-50",
                       !stretchNativeTabs && "px-4",
                       // One weight for every segment. The track sizes its
                       // columns to their content, so a heavier selected
@@ -183,7 +183,7 @@ export function SegmentedControl<T extends string>({
                     )
                   : raisedTabs
                     ? cn(
-                        "min-w-0 rounded-full py-1 type-callout transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
+                        "min-w-0 rounded-full py-1 type-callout transition-colors duration-(--duration-quick) ease-out-quart disabled:opacity-50",
                         selected
                           ? // The hot brand fill with white ink, in both themes:
                             // the active view carries the mark.
@@ -208,7 +208,7 @@ export function SegmentedControl<T extends string>({
               <span
                 aria-hidden="true"
                 className={cn(
-                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label transition-opacity duration-[var(--duration-quick)] ease-out-quart",
+                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label transition-opacity duration-(--duration-quick) ease-out-quart",
                   selected ? "opacity-100" : "opacity-0",
                 )}
               />

@@ -98,7 +98,7 @@ function HygieneRow({
           is an invisible layer under the text, and the info button sits
           beside the name the way the cost rows place it. The verdict then
           reaches the same right edge as the cost figures below. */}
-      <div className="group relative -mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content] items-center gap-x-2 rounded-control px-1 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+      <div className="group relative -mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content] items-center gap-x-2 rounded-control px-1 py-1 type-body transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover">
         <button
           type="button"
           aria-label={`${check.name} details`}
@@ -180,7 +180,7 @@ function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
         role="group"
         aria-label={check.name}
         tabIndex={0}
-        className="session-check-cell flex flex-col rounded-control bg-surface-card/50 px-3 py-2 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+        className="session-check-cell flex flex-col rounded-control bg-surface-card/50 px-3 py-2 type-body transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
       >
         <div className="flex items-baseline justify-between gap-x-3">
           <span className="min-w-0 text-pretty text-label">{check.name}</span>
@@ -259,14 +259,14 @@ export function HygieneBreakdown({
           type="button"
           aria-expanded={rollupOpen}
           onClick={toggleRollup}
-          className="-mx-1 flex items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body text-label-tertiary cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
+          className="-mx-1 flex items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body text-label-tertiary cursor-pointer! transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
         >
           <span>{rollupLabel}</span>
           <ChevronRight
             size={14}
             aria-hidden="true"
             className={cn(
-              "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
+              "shrink-0 transition-transform duration-(--duration-fast) ease-out",
               rollupOpen && "rotate-90",
             )}
           />

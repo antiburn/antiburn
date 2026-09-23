@@ -229,7 +229,7 @@ function SidebarNavRow({
         onActivate?.()
       }}
       className={cn(
-        "type-body flex items-center gap-3 rounded-control transition-colors duration-[var(--duration-fast)] ease-out",
+        "type-body flex items-center gap-3 rounded-control transition-colors duration-(--duration-fast) ease-out",
         heightClass,
         paddingClass,
         selected ? "bg-surface-selected text-label" : "text-label hover:bg-surface-hover",

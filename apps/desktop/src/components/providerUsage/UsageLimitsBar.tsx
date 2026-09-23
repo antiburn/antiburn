@@ -268,7 +268,7 @@ function LimitsDisclosure({
         aria-label={expanded ? "Collapse usage limits" : "Expand usage limits"}
         // The centered hit area measures 40px without changing the visible button.
         className={cn(
-          "relative flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] before:absolute before:top-1/2 before:left-1/2 before:size-[calc(var(--space-xl)*2)] before:-translate-x-1/2 before:-translate-y-1/2 before:content-[''] hover:bg-surface-hover",
+          "relative flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-(--duration-fast) before:absolute before:top-1/2 before:left-1/2 before:size-[calc(var(--space-xl)*2)] before:-translate-x-1/2 before:-translate-y-1/2 before:content-[''] hover:bg-surface-hover",
           compact && "-my-1.5",
         )}
       >
@@ -324,7 +324,7 @@ function ProviderGroup({
       role="group"
       aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
       data-state={activation ?? "idle"}
-      className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
+      className="rounded-md px-2 py-2 transition-colors duration-(--duration-fast) hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
       onMouseEnter={(event) =>
         onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
       }
@@ -431,7 +431,7 @@ function ProviderRadial({
         }
         onMouseLeave={() => onHover?.(null, null)}
         data-state={activation ?? "idle"}
-        className="flex shrink-0 items-center gap-1.5 rounded-full px-[var(--space-xs)] py-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
+        className="flex shrink-0 items-center gap-1.5 rounded-full px-[var(--space-xs)] py-1 transition-[background-color] duration-(--duration-fast) hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
         aria-label={ariaLabel}
       >
         <UsageRing
@@ -576,7 +576,7 @@ export function WindowMeterRow({
           {reset && resetPlacement === "inline" && (
             <span
               className={cn(
-                "type-footnote text-label-tertiary transition-opacity duration-[var(--duration-fast)]",
+                "type-footnote text-label-tertiary transition-opacity duration-(--duration-fast)",
                 resetOnHover && "opacity-0 group-hover/meter:opacity-100",
               )}
             >

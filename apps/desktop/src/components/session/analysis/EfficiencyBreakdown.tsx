@@ -273,7 +273,7 @@ function MetricGuidance({
 }
 
 const ROW_CLASS =
-  "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+  "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
 /** The hero figure opens guidance in a tooltip. The scale shows the bands below it. */
 function CostRowLine({

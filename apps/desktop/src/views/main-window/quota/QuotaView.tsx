@@ -669,7 +669,7 @@ export function QuotaView({
           <div
             aria-busy={refreshing || undefined}
             className={cn(
-              "flex min-h-0 flex-1 flex-col gap-[var(--space-lg)] transition-opacity duration-[var(--duration-medium)]",
+              "flex min-h-0 flex-1 flex-col gap-[var(--space-lg)] transition-opacity duration-(--duration-medium)",
               refreshing && "opacity-60",
             )}
           >

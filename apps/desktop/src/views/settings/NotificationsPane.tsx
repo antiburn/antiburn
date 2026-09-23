@@ -120,14 +120,14 @@ function MilestoneSelector({
               disabled={disabled}
               onClick={() => toggle(threshold)}
               className={cn(
-                "flex items-center gap-1.5 rounded-control px-1 py-1 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover disabled:opacity-50",
+                "flex items-center gap-1.5 rounded-control px-1 py-1 transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover disabled:opacity-50",
                 checked ? "text-label" : "text-label-secondary",
               )}
             >
               <span
                 aria-hidden="true"
                 className={cn(
-                  "flex size-3.5 shrink-0 items-center justify-center rounded-small border transition-colors duration-[var(--duration-fast)]",
+                  "flex size-3.5 shrink-0 items-center justify-center rounded-small border transition-colors duration-(--duration-fast)",
                   checked
                     ? "border-accent-fill bg-accent-fill text-white"
                     : "border-separator bg-input-fill",

@@ -52,7 +52,7 @@ export function Disclosure({
           strokeWidth={2}
           aria-hidden="true"
           className={cn(
-            "shrink-0 text-label-secondary transition-transform duration-[var(--duration-fast)] ease-out",
+            "shrink-0 text-label-secondary transition-transform duration-(--duration-fast) ease-out",
             open && "rotate-180",
           )}
         />

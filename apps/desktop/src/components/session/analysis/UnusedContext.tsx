@@ -48,14 +48,14 @@ export function UnusedContext({ rows, sessionTotalUsd }: UnusedContextProps) {
         type="button"
         onClick={toggleUnusedContextExpanded}
         aria-expanded={expanded}
-        className="flex w-full items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
+        className="flex w-full items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body cursor-pointer! transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
       >
         <span className="flex min-w-0 items-center gap-x-1.5">
           <ChevronRight
             size={14}
             aria-hidden="true"
             className={cn(
-              "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
+              "shrink-0 transition-transform duration-(--duration-fast) ease-out",
               expanded && "rotate-90",
             )}
           />
@@ -92,7 +92,7 @@ export function UnusedContext({ rows, sessionTotalUsd }: UnusedContextProps) {
             row.type === "item" ? (
               <div
                 key={`${row.kind}-${row.name}`}
-                className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
+                className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover type-callout"
               >
                 <span className="flex min-w-0 items-baseline gap-1.5">
                   <span className="truncate text-label">{row.name}</span>
@@ -113,7 +113,7 @@ export function UnusedContext({ rows, sessionTotalUsd }: UnusedContextProps) {
               <Tooltip key={`rollup-${row.kind}`} label={row.names.join(", ")} delayMs={150}>
                 <div
                   tabIndex={0}
-                  className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover type-callout"
+                  className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover focus-visible:bg-surface-hover type-callout"
                 >
                   <span className="flex min-w-0 items-baseline gap-1.5">
                     <span className="truncate text-label">

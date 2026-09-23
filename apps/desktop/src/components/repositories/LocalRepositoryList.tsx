@@ -72,7 +72,7 @@ function RepositoryRow({
   }
 
   return (
-    <div className="flex items-start gap-3 rounded-md py-2 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+    <div className="flex items-start gap-3 rounded-md py-2 transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover">
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate type-callout text-label">{item.fullName}</span>

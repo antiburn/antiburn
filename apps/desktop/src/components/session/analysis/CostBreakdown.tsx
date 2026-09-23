@@ -72,7 +72,7 @@ function CostRowLine({
   const row = (
     <div
       tabIndex={help ? 0 : undefined}
-      className="group col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout focus-visible:bg-surface-hover"
+      className="group col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover type-callout focus-visible:bg-surface-hover"
     >
       <span className="flex min-w-0 items-center gap-1 text-label-tertiary">
         <span className="truncate">{label}</span>
@@ -136,7 +136,7 @@ function SubagentMemberRow({
       type="button"
       aria-label={`Open the analysis for ${member.label}`}
       onClick={() => onOpenSubagent?.(member.subagentId, member.label)}
-      className="group col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary pl-4 mb-2.5 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
+      className="group col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary pl-4 mb-2.5 border-t border-separator transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover type-callout"
     >
       <span className="mt-2.5 col-start-1 col-end-5 flex min-w-0 gap-x-2 items-center text-left">
         <span className="tabular-nums">
@@ -146,7 +146,7 @@ function SubagentMemberRow({
         <ChevronRight
           size={12}
           aria-hidden="true"
-          className="self-center justify-self-end transition-transform duration-[var(--duration-fast)] ease-out group-hover:translate-x-0.5"
+          className="self-center justify-self-end transition-transform duration-(--duration-fast) ease-out group-hover:translate-x-0.5"
         />
       </span>
 
@@ -204,7 +204,7 @@ function SubagentsSplitRow({
         type="button"
         onClick={toggleSubagentsExpanded}
         aria-expanded={expanded}
-        className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 my-1 px-1 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
+        className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 my-1 px-1 transition-colors duration-(--duration-fast) ease-out hover:bg-surface-hover type-callout"
       >
         <span className="min-w-0 flex items-center gap-x-1 text-label-tertiary">
           <Chevron size={12} aria-hidden="true" className="shrink-0" />

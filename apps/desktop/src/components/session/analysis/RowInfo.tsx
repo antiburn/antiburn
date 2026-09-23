@@ -31,7 +31,7 @@ export function RowInfo({ label, body, className }: RowInfoProps) {
         type="button"
         aria-label={`About ${label}`}
         className={cn(
-          "shrink-0 leading-none text-label-tertiary opacity-0 transition-[color,opacity] duration-[var(--duration-fast)] ease-out group-hover:opacity-100 hover:text-label-secondary focus-visible:opacity-100",
+          "shrink-0 leading-none text-label-tertiary opacity-0 transition-[color,opacity] duration-(--duration-fast) ease-out group-hover:opacity-100 hover:text-label-secondary focus-visible:opacity-100",
           className,
         )}
       >

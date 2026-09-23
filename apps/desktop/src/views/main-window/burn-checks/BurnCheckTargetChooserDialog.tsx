@@ -373,14 +373,14 @@ export function BurnCheckTargetChooserDialog({
                           disabled={busy}
                           onClick={() => toggle(target.actionId)}
                           className={cn(
-                            "flex w-full items-center gap-2.5 rounded-control px-3 py-2 text-left transition-colors duration-[var(--duration-fast)] hover:bg-surface-hover disabled:opacity-50",
+                            "flex w-full items-center gap-2.5 rounded-control px-3 py-2 text-left transition-colors duration-(--duration-fast) hover:bg-surface-hover disabled:opacity-50",
                             checked ? "bg-surface-selected" : "bg-surface-secondary",
                           )}
                         >
                           <span
                             aria-hidden="true"
                             className={cn(
-                              "flex size-3.5 shrink-0 items-center justify-center rounded-small border transition-colors duration-[var(--duration-fast)]",
+                              "flex size-3.5 shrink-0 items-center justify-center rounded-small border transition-colors duration-(--duration-fast)",
                               checked
                                 ? "border-accent-fill bg-accent-fill text-white"
                                 : "border-separator bg-input-fill",

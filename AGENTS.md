@@ -47,7 +47,7 @@ design intent and shared rules. CSS owns exact token values; shared components
 own control appearance and behavior.
 
 Use semantic utilities: `bg-/text-/border-<token>`, the `type-*` scale, named
-radii, and `duration-[var(--duration-*)]`. Reuse shared primitives. Keep justified
+radii, and `duration-(--duration-*)`. Reuse shared primitives. Keep justified
 one-off visualization or native geometry values with their owner and explain
 non-obvious constraints there.
 

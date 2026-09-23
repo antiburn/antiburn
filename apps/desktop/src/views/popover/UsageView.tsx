@@ -463,14 +463,14 @@ function ProviderCard({
             aria-expanded={open}
             aria-controls={bodyId}
             onClick={() => setOpen((value) => !value)}
-            className="-mr-1 inline-flex size-6 shrink-0 cursor-pointer! items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] hover:bg-surface-hover hover:text-label"
+            className="-mr-1 inline-flex size-6 shrink-0 cursor-pointer! items-center justify-center rounded-control text-label-secondary transition-colors duration-(--duration-fast) hover:bg-surface-hover hover:text-label"
           >
             <ChevronDown
               size={14}
               strokeWidth={2}
               aria-hidden="true"
               className={cn(
-                "transition-transform duration-[var(--duration-fast)] ease-out-quart",
+                "transition-transform duration-(--duration-fast) ease-out-quart",
                 open && "rotate-180",
               )}
             />

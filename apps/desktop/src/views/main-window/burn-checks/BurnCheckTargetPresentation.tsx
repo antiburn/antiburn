@@ -20,7 +20,7 @@ export function DisclosureChevron({ open }: { open: boolean }) {
       size={14}
       strokeWidth={2}
       className={cn(
-        "text-label-tertiary transition-transform duration-[var(--duration-fast)] ease-out-quart",
+        "text-label-tertiary transition-transform duration-(--duration-fast) ease-out-quart",
         open && "rotate-180",
       )}
       aria-hidden="true"
