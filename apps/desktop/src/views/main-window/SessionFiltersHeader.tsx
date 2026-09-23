@@ -39,7 +39,7 @@ export interface SessionFiltersHeaderProps {
 type ActiveChip = {
   id: string
   label: string
-  count: number
+  accessibleLabel?: string
   agent?: string
   mark?: BurnCheckMark
   tooltip?: string | undefined
@@ -49,6 +49,7 @@ type ActiveChip = {
 type FilterOption<T> = {
   value: T
   label: string
+  accessibleLabel?: string
   description?: string | undefined
   tooltip?: string | undefined
   mark?: BurnCheckMark
@@ -67,10 +68,13 @@ function sessionCountLabel(count: number): string {
   return `${count} matching ${count === 1 ? "session" : "sessions"}`
 }
 
-function VendorIcon({ agent }: { agent: string }) {
+function VendorIcon({ agent, compact = false }: { agent: string; compact?: boolean }) {
   return (
-    <span className="inline-flex shrink-0" data-session-filter-agent={agent}>
-      {renderAgentIcon(agent, 14)}
+    <span
+      className="inline-flex size-3.5 shrink-0 items-center justify-center"
+      data-session-filter-agent={agent}
+    >
+      {renderAgentIcon(agent, compact ? 12 : 14)}
     </span>
   )
 }
@@ -123,8 +127,8 @@ function FilterRadioGroup<T extends SessionResultFilter | SessionSpendFilter>({
               disabled={
                 counts[option.value] === 0 && option.value !== value && option.value !== "all"
               }
-              textValue={option.label}
-              aria-label={`${option.label}${option.description ? `, ${option.description}` : ""}, ${sessionCountLabel(counts[option.value])}`}
+              textValue={option.accessibleLabel ?? option.label}
+              aria-label={`${option.accessibleLabel ?? option.label}${option.description ? `, ${option.description}` : ""}, ${sessionCountLabel(counts[option.value])}`}
               className="ui-menu-item"
               onSelect={(event) => event.preventDefault()}
             >
@@ -176,7 +180,7 @@ function FilterChip({
       ref={assignRef}
       type="button"
       className="session-filter-target relative inline-flex items-center gap-1 whitespace-nowrap rounded-control bg-surface-card px-2 py-1 type-caption text-label-secondary hover:bg-surface-secondary hover:text-label"
-      aria-label={`Remove ${chip.label} filter, ${sessionCountLabel(chip.count)}`}
+      aria-label={`Remove ${chip.accessibleLabel ?? chip.label} filter`}
       onClick={onRemove}
     >
       {Mark ? (
@@ -188,11 +192,10 @@ function FilterChip({
         />
       ) : null}
       {chip.agent ? (
-        <VendorIcon agent={chip.agent} />
+        <VendorIcon agent={chip.agent} compact />
       ) : (
         <span className="text-label">{chip.label}</span>
       )}
-      <CountPill count={chip.count} aria-hidden="true" />
       <X size={10} aria-hidden="true" />
     </button>
   )
@@ -255,7 +258,6 @@ export function SessionFiltersHeader({
       id: `agent:${agent}`,
       label: agentDisplayName(agent),
       tooltip: agentDisplayName(agent),
-      count: counts.agents[agent] ?? 0,
       agent,
       remove: () => onToggleAgent(agent),
     })),
@@ -267,7 +269,6 @@ export function SessionFiltersHeader({
             label: filters.result === "failing" ? "Failed" : "Passed",
             mark:
               filters.result === "failing" ? BURN_CHECK_MARKS.finding : BURN_CHECK_MARKS.clean,
-            count: counts.matching,
             remove: () => onResultChange("all"),
           },
         ]),
@@ -276,12 +277,12 @@ export function SessionFiltersHeader({
       : [
           {
             id: `spend:${filters.spend}`,
-            label: filters.spend === "notable" ? "High cost" : "$1 or more",
+            label: filters.spend === "notable" ? "High cost" : "≥ $1",
+            accessibleLabel: filters.spend === "notable" ? "High cost" : "$1 or more",
             tooltip:
               filters.spend === "notable"
                 ? [highCostDescription, HIGH_COST_EXPLANATION].filter(Boolean).join(". ")
                 : undefined,
-            count: counts.matching,
             remove: () => onSpendChange("all"),
           },
         ]),
@@ -306,13 +307,21 @@ export function SessionFiltersHeader({
       title="Sessions"
       dragRegion={isMacOS()}
       summary={
-        <CountPill
-          count={counts.all}
-          size="regular"
-          aria-live="polite"
-          aria-atomic="true"
-          aria-label={`${counts.all} total sessions, ${counts.matching} matching`}
-        />
+        <>
+          <CountPill count={counts.all} size="regular" aria-hidden="true" />
+          <span className="sr-only" aria-live="polite" aria-atomic="true">
+            {`${counts.all} total sessions, ${counts.matching} matching`}
+          </span>
+          {chips.length > 0 ? (
+            <span
+              className="whitespace-nowrap type-caption text-label-secondary tabular-nums"
+              aria-hidden="true"
+            >
+              <span className="me-2 text-label-tertiary">·</span>
+              Showing {counts.matching}
+            </span>
+          ) : null}
+        </>
       }
       actions={
         <div className="session-filter-actions flex shrink-0 items-center gap-2">

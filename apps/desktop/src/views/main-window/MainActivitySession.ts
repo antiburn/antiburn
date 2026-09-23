@@ -124,20 +124,28 @@ export class MainActivitySession {
   ): void {
     this.restoringNavigation = true
     try {
-      const action: SessionFilterAction | undefined = !reportFilterSelection
-        ? undefined
-        : filters.agents.length > 0
-          ? "agent_added"
-          : filters.result !== "all"
-            ? `result_${filters.result}`
-            : filters.spend !== "all"
-              ? `spend_${filters.spend}`
-              : "cleared_all"
-      this.changeFilters(
-        filters,
-        action,
-        filters.agents.length === 1 ? filters.agents[0] : undefined,
-      )
+      const previous = this.snapshot.filters
+      const next = normalizeSessionFilters(filters)
+      const added = next.agents.filter((agent) => !previous.agents.includes(agent))
+      const removed = previous.agents.filter((agent) => !next.agents.includes(agent))
+      let action: SessionFilterAction | undefined
+      let agent: string | undefined
+      if (reportFilterSelection) {
+        if (next.agents.length === 0 && next.result === "all" && next.spend === "all") {
+          action = "cleared_all"
+        } else if (added.length > 0) {
+          action = "agent_added"
+          agent = added.length === 1 ? added[0] : undefined
+        } else if (removed.length > 0) {
+          action = next.agents.length === 0 ? "agents_all" : "agent_removed"
+          agent = action === "agent_removed" && removed.length === 1 ? removed[0] : undefined
+        } else if (next.result !== previous.result) {
+          action = `result_${next.result}`
+        } else if (next.spend !== previous.spend) {
+          action = `spend_${next.spend}`
+        }
+      }
+      this.changeFilters(next, action, agent)
       if (
         subject &&
         (!this.snapshot.subject || sessionKey(subject) !== sessionKey(this.snapshot.subject))

@@ -277,6 +277,11 @@ agent values, drops agent detail for non-agent actions, and rejects extra fields
 Clear all and All agents each emit at most one event for the gesture, regardless
 of chip count. Chip removal uses its facet's reset action or `agent_removed`.
 Explicit search navigation that changes the facets records one filter gesture.
+The action compares the previous and destination facets; an unchanged agent
+selection does not override a changed result or spend action. Multi-facet
+navigation uses clear-all first, then agent changes, result changes, and spend
+changes. Agent detail identifies a single added or removed agent, never an
+unchanged selection.
 No-op reselection, automatic restoration or migration, history navigation, remounts,
 hidden-window updates, settings replies, and refreshes emit nothing. Settings
 writes retain gesture order; queued saves and failures do not emit retries.

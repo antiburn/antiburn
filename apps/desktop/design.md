@@ -1014,7 +1014,7 @@ of the provider limit for that window when available. The control crossfades onl
 
 The Sessions collection starts with a contextual filter header. Its first row pairs the primary Sessions heading with a round `CountPill` showing the full eligible total
 with a trailing Filters menu. Its unfilled icon-only trigger uses a 14px descending-line filter icon, the regular control-height token for both dimensions, and the existing expanded pointer target. The descending lines identify filtering; a “Filter sessions” tooltip appears on hover and keyboard focus. Opening the menu clears the trigger tooltip and prevents it from reopening until the menu closes. The trigger has no resting fill or border. It uses secondary ink at rest, primary ink with a circular `surface-hover` fill on hover, and primary ink with `surface-selected` while the menu is open. It retains its accessible Filters name, keyboard focus ring and shared pressed-opacity feedback.
-A compact Today or N days control sits immediately before Filters in the right-aligned action group. The Sessions title and total badge form the left-hand group. The badge keeps an atomic polite accessible label with both total and matching counts. The range uses secondary caption text.
+A compact Today or N days control sits immediately before Filters in the right-aligned action group. The Sessions title and total badge form the left-hand group. When any facet is active, a quiet middle dot separates the badge from secondary caption text “Showing X” with tabular numerals, including “Showing 0” for no matches. It disappears when filters clear. A separate atomic polite live region contains both total and matching counts as text, so a matching-count change is announced even when the total stays fixed. The visible badge and summary are hidden from assistive technology to avoid duplicate counts. The range uses secondary caption text.
 Both collection totals use the regular `CountPill` size: `type-caption` (11px) with `space-lg` (16px) height and minimum width, matching the check-section count dimensions. Filter and overflow counts retain the compact metadata size.
 The Filters menu closes after the mouse leaves its bounds and the trigger by more than
 `space-sm` (8px), then stays outside for `duration-slow` (300ms). Re-entry cancels the timer.
@@ -1031,15 +1031,15 @@ costs required. Known zero costs count; unknown costs do not. High-cost badges, 
 Agent checkboxes support multiple selection; result and spend remain single-choice groups. The menu stays
 open across choices. Unselected zero-count options stay visible at 50% opacity but are disabled for pointer and keyboard input. Selected options
 and each All option stay enabled even with zero matches, so users can remove or reset filters. Agent menu rows pair vendor marks with visible names, accessible menu labels, and
-typeahead text. Vendor marks use 14px in both menu rows and active chips, matching the size of the check-result marks. Agent chips show only the mark, count, and remove icon; the whole chip provides its vendor-name tooltip. Failed and Passed menu
-rows and active chips reuse the shared 14px Burn Check marks and colors. Active facet labels use primary `text-label` ink; count badges and remove
-icons retain their secondary hierarchy. Active chips use the quieter `surface-card` fill at rest and `surface-secondary` on hover in both themes.
-Status marks sit 8px from their chip labels; label-to-count and count-to-remove gaps remain 4px.
+typeahead text. Vendor marks use 14px in menu rows. Active chips use 12px vendor marks centered in a 14px box to balance their visual weight against the 14px check-result marks. Agent chips show only the mark and remove icon; the whole chip provides its vendor-name tooltip. Failed and Passed menu
+rows and active chips reuse the shared 14px Burn Check marks and colors. Active facet labels use primary `text-label` ink; remove icons retain their secondary hierarchy. Active pills describe selected constraints and omit counts, including from their accessible removal labels. Contextual match counts remain in the menu; the header badge retains the full time-range total. Active chips use the quieter `surface-card` fill at rest and `surface-secondary` on hover in both themes.
+Status marks sit 8px from their chip labels; the label or vendor mark sits 4px from its remove icon.
+The minimum-spend option reads “$1 or more” in the menu and “≥ $1” in the pill; its accessible name remains “$1 or more”.
 The menu selection checkmark remains separate. High cost keeps
-its short label in the menu and chip. The menu shows the current threshold as secondary `Over $N`text. The menu row and chip expose a
+its short label in the menu and chip. The menu shows the current threshold as secondary `Over $N` text. The menu row and chip expose a
 tooltip: “Based on all agents in this time range: 3× the median session cost, with a $2 minimum.” The chip tooltip also includes the current threshold.
-Whole-dollar thresholds omit`.00`; fractional amounts retain cents. Menu hover and keyboard highlight use the sidebar's `surface-selected`fill and primary`label`ink in both themes. The selection checkmark remains the active-filter indicator. Vendor and status colors remain intact;
-helper text stays secondary and count badges retain their neutral`CountPill`treatment. Every option and active chip uses`CountPill`. Active chips wrap across the full header width.
+Whole-dollar thresholds omit `.00`; fractional amounts retain cents. Menu hover and keyboard highlight use the sidebar's `surface-selected` fill and primary `label` ink in both themes. The selection checkmark remains the active-filter indicator. Vendor and status colors remain intact;
+helper text stays secondary and count badges retain their neutral `CountPill` treatment. Every menu option uses `CountPill`. Active chips wrap across the full header width.
 Clear filters appears in a separated menu footer whenever any facet is active. It closes the menu and returns focus to Filters.
 No separate Clear column reserves space beside the chips. Keyboard chip removal moves focus to the
 next chip, then the previous chip, then Filters. Unknown agent slugs use the registry's generic icon and title-cased fallback name.

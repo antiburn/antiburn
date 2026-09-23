@@ -535,6 +535,33 @@ describe("MainActivitySession", () => {
     )
   })
 
+  it.each([
+    { next: { agents: ["codex"], result: "failing", spend: "all" }, action: "result_failing" },
+    { next: { agents: ["codex"], result: "all", spend: "material" }, action: "spend_material" },
+    {
+      next: { agents: ["codex", "claude-code"], result: "all", spend: "all" },
+      action: "agent_added",
+      agent: "claude-code",
+    },
+    { next: { agents: [], result: "all", spend: "all" }, action: "cleared_all" },
+  ] as const)(
+    "classifies navigation by changed facet: $action",
+    async ({ next, action, ...detail }) => {
+      const { session } = start()
+      await ready(session)
+      session.restoreNavigation({ agents: ["codex"], result: "all", spend: "all" }, null)
+      mocks.noteInteraction.mockClear()
+
+      session.restoreNavigation({ ...next, agents: [...next.agents] }, null, "user", true)
+
+      expect(mocks.noteInteraction).toHaveBeenCalledExactlyOnceWith({
+        kind: "sessionFiltersChanged",
+        action,
+        ...detail,
+      })
+    },
+  )
+
   it("reports automatic selection for replacement and suppresses restored navigation", async () => {
     const session = new MainActivitySession()
     sessions.push(session)

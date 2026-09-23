@@ -166,7 +166,7 @@ describe("MainActivityView", () => {
     expect(screen.queryByRole("button", { name: "Change filters" })).toBeNull()
     expect(screen.queryByText(/Try changing or clearing your filters/)).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }))
-    expect(await screen.findByLabelText("2 total sessions, 2 matching")).toBeVisible()
+    expect(await screen.findByText("2 total sessions, 2 matching")).toBeVisible()
     expect(screen.getByText("one")).toBeVisible()
     expect(screen.getByRole("button", { name: "Filters" })).toHaveFocus()
     expect(session.getSnapshot().settings.activityWindowDays).toBe(7)
@@ -224,7 +224,7 @@ describe("MainActivityView", () => {
       hygieneFor([codex, claude, cursor, free].map((item) => [item, cleanHygiene])),
     )
     await ready(session)
-    expect(await screen.findByLabelText("4 total sessions, 2 matching")).toBeVisible()
+    expect(await screen.findByText("4 total sessions, 2 matching")).toBeVisible()
     expect(screen.getByText("codex-priced")).toBeVisible()
     expect(screen.getByText("claude-priced")).toBeVisible()
     expect(screen.queryByText("cursor-priced")).toBeNull()
@@ -235,7 +235,7 @@ describe("MainActivityView", () => {
       pointerType: "mouse",
     })
     fireEvent.click(await screen.findByRole("menuitem", { name: "Clear filters" }))
-    expect(await screen.findByLabelText("4 total sessions, 4 matching")).toBeVisible()
+    expect(await screen.findByText("4 total sessions, 4 matching")).toBeVisible()
     expect(screen.getByText("cursor-priced")).toBeVisible()
     expect(mocks.noteInteraction).toHaveBeenCalledWith({
       kind: "sessionFiltersChanged",
@@ -250,12 +250,12 @@ describe("MainActivityView", () => {
     act(() => session.selectEntry(session.getSnapshot().entries![0]!))
     expect(await screen.findByText("Detail: open-session")).toBeVisible()
     act(() => session.toggleAgent("claude-code"))
-    expect(await screen.findByLabelText("1 total sessions, 0 matching")).toBeVisible()
+    expect(await screen.findByText("1 total sessions, 0 matching")).toBeVisible()
     expect(screen.getByText("Detail: open-session")).toBeVisible()
     expect(screen.getByText("This item is outside the current list.")).toBeVisible()
     expect(screen.getByRole("button", { name: "Filters" })).toBeVisible()
     act(() => session.clearFilters())
-    expect(await screen.findByLabelText("1 total sessions, 1 matching")).toBeVisible()
+    expect(await screen.findByText("1 total sessions, 1 matching")).toBeVisible()
     expect(screen.queryByText("This item is outside the current list.")).toBeNull()
     expect(screen.getByText("Detail: open-session")).toBeVisible()
   })
@@ -367,7 +367,7 @@ describe("MainActivityView calendar scope", () => {
     ])
     expect(screen.getByLabelText("Estimated cost $4.00, higher than usual")).toBeVisible()
     expect(screen.getByLabelText("Estimated cost $2.00")).toBeVisible()
-    expect(screen.getByLabelText("8 total sessions, 8 matching")).toBeVisible()
+    expect(screen.getByText("8 total sessions, 8 matching")).toBeVisible()
     openFilters()
     expect(
       screen.getByRole("menuitemradio", {
@@ -376,7 +376,7 @@ describe("MainActivityView calendar scope", () => {
     ).toBeEnabled()
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
     view.update({ filters: { agents: ["claude-code"], result: "passing", spend: "notable" } })
-    expect(screen.getByLabelText("8 total sessions, 1 matching")).toBeVisible()
+    expect(screen.getByText("8 total sessions, 1 matching")).toBeVisible()
     expect(screen.getByLabelText("Estimated cost $4.00, higher than usual")).toBeVisible()
     openFilters()
     expect(
@@ -390,7 +390,7 @@ describe("MainActivityView calendar scope", () => {
     const entries = pricedRows([0, 0, 0, 0, 0, 0, 9])
     entries[6]!.cost!.isHighCost = true
     scopedView([...entries, row("unknown", current), ...pricedRows([0], rollingOnly)])
-    expect(screen.getByLabelText("8 total sessions, 8 matching")).toBeVisible()
+    expect(screen.getByText("8 total sessions, 8 matching")).toBeVisible()
     expect(screen.getByLabelText("Estimated cost $9.00")).toBeVisible()
     expect(screen.queryByLabelText(/higher than usual/)).toBeNull()
     openFilters()
@@ -438,7 +438,7 @@ describe("MainActivityView calendar scope", () => {
     const view = scopedView([...entries, active])
     expect(screen.getByLabelText("Estimated cost $9.00, higher than usual")).toBeVisible()
     view.update({ entries: [...entries, { ...active, isActive: false }] })
-    expect(screen.getByLabelText("7 total sessions, 7 matching")).toBeVisible()
+    expect(screen.getByText("7 total sessions, 7 matching")).toBeVisible()
     expect(screen.getByLabelText("Estimated cost $9.00")).toBeVisible()
   })
 
@@ -450,18 +450,16 @@ describe("MainActivityView calendar scope", () => {
       ],
       "claude-code",
     )
-    expect(screen.getByLabelText("1 total sessions, 0 matching")).toBeVisible()
+    expect(screen.getByText("1 total sessions, 0 matching")).toBeVisible()
     expect(screen.getAllByText("No matching sessions")).toHaveLength(2)
-    expect(
-      screen.getByRole("button", { name: "Remove Claude Code filter, 0 matching sessions" }),
-    ).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Remove Claude Code filter" })).toBeEnabled()
     expect(screen.queryByText("rolling-only")).toBeNull()
     expect(screen.queryByRole("radiogroup", { name: "Session metric" })).toBeNull()
   })
 
   it("uses the true range-empty state when only excluded records are loaded", () => {
     scopedView([row("rolling-only", rollingOnly)], "claude-code")
-    expect(screen.getByLabelText("0 total sessions, 0 matching")).toBeVisible()
+    expect(screen.getByText("0 total sessions, 0 matching")).toBeVisible()
     expect(screen.getAllByText("No sessions in the last 7 days")).toHaveLength(2)
     expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull()
     expect(screen.getByRole("button", { name: "Change time range" })).toBeVisible()
@@ -473,7 +471,7 @@ describe("MainActivityView calendar scope", () => {
       row("invalid", "invalid"),
       row("future", new Date(2026, 8, 24, 12).toISOString()),
     ])
-    expect(screen.getByLabelText("1 total sessions, 1 matching")).toBeVisible()
+    expect(screen.getByText("1 total sessions, 1 matching")).toBeVisible()
     expect(screen.getByText("no-id")).toBeVisible()
     expect(screen.queryByText("invalid")).toBeNull()
     expect(screen.queryByText("future")).toBeNull()
@@ -484,10 +482,10 @@ describe("MainActivityView calendar scope", () => {
     (timestamp) => {
       const active = row("active-session", timestamp, { isActive: true })
       const view = scopedView([active])
-      expect(screen.getByLabelText("1 total sessions, 1 matching")).toBeVisible()
+      expect(screen.getByText("1 total sessions, 1 matching")).toBeVisible()
       expect(screen.getByText("active-session")).toBeVisible()
       view.update({ entries: [{ ...active, isActive: false }] })
-      expect(screen.getByLabelText("0 total sessions, 0 matching")).toBeVisible()
+      expect(screen.getByText("0 total sessions, 0 matching")).toBeVisible()
       expect(screen.queryByText("active-session")).toBeNull()
       expect(screen.queryByRole("radiogroup", { name: "Session metric" })).toBeNull()
     },

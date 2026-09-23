@@ -79,20 +79,24 @@ describe("SessionFiltersHeader", () => {
     ).toBe(macOS ? "deep" : null)
   })
 
-  it("shows the full total in a badge with an atomic matching-count label", () => {
-    const { container } = render(<SessionFiltersHeader {...props()} />)
+  it("updates live text when the matching count changes without changing the total", () => {
+    const { container, rerender } = render(<SessionFiltersHeader {...props()} />)
 
     expect(screen.getByRole("heading", { name: "Sessions" })).not.toHaveClass("sr-only")
-    expect(screen.getByLabelText("12 total sessions, 3 matching")).toHaveAttribute(
+    expect(screen.getByText("12 total sessions, 3 matching")).toHaveAttribute(
       "aria-live",
       "polite",
     )
-    expect(screen.getByLabelText("12 total sessions, 3 matching")).toHaveAttribute(
+    expect(screen.getByText("12 total sessions, 3 matching")).toHaveAttribute(
       "aria-atomic",
       "true",
     )
-    expect(screen.getByLabelText("12 total sessions, 3 matching")).toHaveTextContent("12")
+    expect(screen.getByText("12 total sessions, 3 matching")).toHaveTextContent("12")
     expect(container.querySelector("[data-active-session-filters]")).toBeNull()
+    expect(screen.queryByText(/^Showing /)).not.toBeInTheDocument()
+    const announcement = screen.getByText("12 total sessions, 3 matching")
+    rerender(<SessionFiltersHeader {...props({ counts: { ...COUNTS, matching: 0 } })} />)
+    expect(announcement).toHaveTextContent("12 total sessions, 0 matching")
   })
 
   it.each(["keyboard", "mouse"])(
@@ -121,29 +125,31 @@ describe("SessionFiltersHeader", () => {
     },
   )
 
-  it("renders agent, result, and spend chips with contextual counts", () => {
+  it.each([0, 3])("shows %s matches separately from count-free chips", (matching) => {
     render(
       <SessionFiltersHeader
         {...props({
           filters: { agents: ["future-agent"], result: "failing", spend: "notable" },
+          counts: { ...COUNTS, matching },
           highCostThresholdUsd: 7.25,
         })}
       />,
     )
 
+    expect(screen.getByText(`Showing ${matching}`)).toBeVisible()
     expect(
       screen.getByRole("button", {
-        name: "Remove Future Agent filter, 0 matching sessions",
+        name: "Remove Future Agent filter",
       }),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: "Remove Failed filter, 3 matching sessions" }),
-    ).toBeInTheDocument()
+    ).not.toHaveTextContent("0")
+    expect(screen.getByRole("button", { name: "Remove Failed filter" })).toHaveTextContent(
+      /^Failed$/,
+    )
     expect(
       screen.getByRole("button", {
-        name: "Remove High cost filter, 3 matching sessions",
+        name: "Remove High cost filter",
       }),
-    ).toBeInTheDocument()
+    ).toHaveTextContent(/^High cost$/)
   })
 
   it("explains the automatic cost threshold on keyboard focus and preserves menu selection", async () => {
@@ -175,7 +181,7 @@ describe("SessionFiltersHeader", () => {
       />,
     )
     const chip = screen.getByRole("button", {
-      name: "Remove High cost filter, 3 matching sessions",
+      name: "Remove High cost filter",
     })
     expect(chip).toHaveTextContent("High cost")
     expect(chip).not.toHaveTextContent("$28.93")
@@ -189,13 +195,13 @@ describe("SessionFiltersHeader", () => {
     render(<StatefulHeader initial={{ agents: ["codex"], result: "failing", spend: "all" }} />)
 
     const codex = screen.getByRole("button", {
-      name: "Remove Codex filter, 2 matching sessions",
+      name: "Remove Codex filter",
     })
     codex.focus()
     fireEvent.click(codex, { detail: 0 })
     await act(async () => {})
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Remove Failed filter, 3 matching sessions" }),
+      screen.getByRole("button", { name: "Remove Failed filter" }),
     )
 
     fireEvent.click(document.activeElement as HTMLElement, { detail: 0 })
@@ -256,13 +262,13 @@ describe("SessionFiltersHeader", () => {
     )
 
     const codex = screen.getByRole("button", {
-      name: "Remove Codex filter, 2 matching sessions",
+      name: "Remove Codex filter",
     })
     codex.focus()
     fireEvent.click(codex, { detail: 0 })
     await act(async () => {})
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Remove Claude Code filter, 1 matching session" }),
+      screen.getByRole("button", { name: "Remove Claude Code filter" }),
     )
   })
 
