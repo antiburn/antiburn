@@ -144,7 +144,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     )
     expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
-  }, 10_000)
+  })
 
   it("reviews and applies all selected automatic fixes", async () => {
     const targets = Array.from({ length: 3 }, (_, index) => ({
