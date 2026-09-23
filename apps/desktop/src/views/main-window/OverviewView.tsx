@@ -12,7 +12,7 @@ import { EnhanceBanner } from "./overview/EnhanceBanner"
 import { EnhanceWizard, type EnhanceStep } from "./overview/EnhanceWizard"
 import { OverviewConfigChecks } from "./overview/OverviewConfigChecks"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
-import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
+// import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
 import { enhanceButtonState } from "./overview/enhanceState"
 import {
@@ -32,8 +32,8 @@ export function OverviewView({
   session,
   checks,
   navigationRevision,
-  onOpenSessions,
-  onSelectSession,
+  onOpenSessions: _onOpenSessions,
+  onSelectSession: _onSelectSession,
 }: {
   active: boolean
   session: MainOverviewSession
@@ -202,16 +202,18 @@ export function OverviewView({
                 </div>
               </div>
 
+              {/* Recent sessions is off for now, while the Optimise card is tried alone.
               <OverviewRecentSessions
                 active={active && state.active}
                 entries={state.recentSessions}
                 loading={loading && !state.recentSessions}
-                onSelect={onSelectSession}
-                onOpenAll={onOpenSessions}
+                onSelect={_onSelectSession}
+                onOpenAll={_onOpenSessions}
                 metric={metric}
                 liveUsage={state.liveUsage ?? undefined}
                 sessionLimitAllocations={state.sessionLimitAllocations}
               />
+              */}
             </div>
           </ScrollPane>
 
