@@ -1,5 +1,5 @@
 import { ArrowRight } from "lucide-react"
-import { useId, type ReactNode } from "react"
+import { useId } from "react"
 
 import type { EnhanceButtonState } from "./enhanceState"
 
@@ -32,66 +32,54 @@ function pillFace(state: EnhanceButtonState): {
   }
 }
 
-/** The Optimise card on the Overview. A plain card with the call to action
- *  on top and the usage chart under it. The pill opens the Optimise wizard. */
+/** The Optimise card. It floats on the blur scrim over the Overview. It
+ *  names the failing checks. The pill opens the Optimise wizard. */
 export function EnhanceBanner({
-  failingChecks,
+  failingLabels,
   state,
   onOpen,
-  children,
 }: {
-  /** Failing checks that are not snoozed, or null while the report loads. */
-  failingChecks: number | null
+  /** Labels of failing checks that are not snoozed, or null while the report loads. */
+  failingLabels: readonly string[] | null
   state: EnhanceButtonState
   onOpen: () => void
-  /** The content under the call to action. */
-  children?: ReactNode
 }) {
   const face = pillFace(state)
+  const count = failingLabels?.length ?? 0
   const statusId = useId()
   return (
     <section
       aria-label="Optimise"
-      className="enhance-banner my-auto flex shrink-0 flex-col gap-(--space-2xl) rounded-(--radius-popover) p-(--space-2xl)"
+      className="enhance-banner flex w-full max-w-md flex-col items-center gap-(--space-lg) rounded-(--radius-popover) p-(--space-2xl) text-center"
     >
-      <div className="flex items-center justify-between gap-(--space-2xl)">
-        <div className="flex min-w-0 flex-col gap-(--space-xs)">
-          <h2 className="type-title-2 font-semibold text-label">Optimise my AI setup</h2>
-          <p id={statusId} className="type-body text-label-secondary">
-            {failingChecks == null ? (
-              "Checking your setup…"
-            ) : failingChecks === 0 ? (
-              <>
-                <span className="font-semibold text-label">No fixes needed</span> in your last
-                30 days.
-              </>
-            ) : (
-              <>
-                <span className="font-semibold text-label">
-                  {failingChecks} {failingChecks === 1 ? "fix" : "fixes"} found
-                </span>{" "}
-                in your last 30 days.
-              </>
-            )}
-          </p>
-        </div>
-        <button
-          type="button"
-          aria-label={face.label}
-          aria-describedby={statusId}
-          onClick={onOpen}
-          data-quiet={face.calm ? "" : undefined}
-          className="enhance-pill group flex shrink-0 items-center gap-(--space-sm) px-(--space-2xl) type-title-3 font-semibold whitespace-nowrap"
-        >
-          {face.action}
-          <ArrowRight
-            aria-hidden="true"
-            size={17}
-            className="transition-transform duration-(--duration-medium) group-hover:translate-x-0.5"
-          />
-        </button>
-      </div>
-      {children}
+      <h2 className="type-title-2 font-semibold text-label">
+        {failingLabels == null
+          ? "Checking your config…"
+          : count === 0
+            ? "No fixes needed in your config"
+            : `${count} ${count === 1 ? "fix" : "fixes"} found in your config`}
+      </h2>
+      {failingLabels != null && count > 0 && (
+        <p id={statusId} className="type-body text-label-secondary">
+          {failingLabels.slice(0, 3).join(", ")}
+          {count > 3 ? `, +${count - 3} more` : ""}
+        </p>
+      )}
+      <button
+        type="button"
+        aria-label={face.label}
+        aria-describedby={failingLabels != null && count > 0 ? statusId : undefined}
+        onClick={onOpen}
+        data-quiet={face.calm ? "" : undefined}
+        className="enhance-pill group flex shrink-0 items-center gap-(--space-sm) px-(--space-2xl) type-title-3 font-semibold whitespace-nowrap"
+      >
+        {face.action}
+        <ArrowRight
+          aria-hidden="true"
+          size={17}
+          className="transition-transform duration-(--duration-medium) group-hover:translate-x-0.5"
+        />
+      </button>
     </section>
   )
 }

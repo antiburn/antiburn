@@ -95,10 +95,16 @@
   container: overview-viewport / size;
 }
 
-/* The Optimise card. A plain card, like the other cards on the Overview. */
+/* The blur scrim over the Overview content. The Optimise card floats on it. */
+.enhance-scrim {
+  background-color: color-mix(in oklab, var(--color-surface-window) 55%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+/* The Optimise card. A plain card that floats on the scrim. */
 .enhance-banner {
   background-color: var(--color-surface-sidebar);
-  box-shadow: var(--shadow-stats-card);
+  box-shadow: var(--shadow-raised), var(--shadow-stats-card);
 }
 
 /*

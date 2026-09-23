@@ -4,12 +4,13 @@ import { cn } from "../../lib/cn"
 
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
-import { checksPresentation } from "../../lib/presentation/checks"
+import { CHECK_LABELS, checksPresentation } from "../../lib/presentation/checks"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import { type BurnChecksSession } from "./BurnChecksSession"
 import { type MainOverviewSession } from "./MainOverviewSession"
 import { EnhanceBanner } from "./overview/EnhanceBanner"
 import { EnhanceWizard, type EnhanceStep } from "./overview/EnhanceWizard"
+import { OverviewConfigChecks } from "./overview/OverviewConfigChecks"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 // import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
@@ -158,29 +159,45 @@ export function OverviewView({
                 </p>
               )}
 
-              {/* The Optimise card holds the usage chart. Auto margins float it
-                  to the vertical middle of the column. */}
-              <EnhanceBanner
-                failingChecks={failing?.length ?? null}
-                state={buttonState}
-                onOpen={openEnhance}
-              >
-                <OverviewUsage
-                  metric={metric}
-                  onMetricChange={(next) => {
-                    setMetric(next)
-                    writeOverviewViewPrefs({ metric: next })
-                  }}
-                  totals={usage?.totals ?? null}
-                  days={usage?.days ?? []}
-                  allowance={state.allowance}
-                  allowanceLoading={state.allowanceLoading || !metricSettled}
-                  allowanceError={state.allowanceError}
-                  usageError={state.usageError}
-                  onRetryUsage={session.refresh}
-                  loading={loading}
-                />
-              </EnhanceBanner>
+              {/* The usage chart and the config checks sit under a blur scrim.
+                  The Optimise card floats on the scrim. The content under the
+                  scrim is inert, so the Optimise pill is the one action. */}
+              <div className="relative flex grow flex-col">
+                <div inert className="flex flex-col gap-(--space-2xl)">
+                  <div className="rounded-(--radius-popover) bg-surface-sidebar p-(--space-2xl)">
+                    <OverviewUsage
+                      metric={metric}
+                      onMetricChange={(next) => {
+                        setMetric(next)
+                        writeOverviewViewPrefs({ metric: next })
+                      }}
+                      totals={usage?.totals ?? null}
+                      days={usage?.days ?? []}
+                      allowance={state.allowance}
+                      allowanceLoading={state.allowanceLoading || !metricSettled}
+                      allowanceError={state.allowanceError}
+                      usageError={state.usageError}
+                      onRetryUsage={session.refresh}
+                      loading={loading}
+                    />
+                  </div>
+                  {checkGroups && (
+                    <OverviewConfigChecks
+                      failures={checkGroups.failures}
+                      passing={checkGroups.wins}
+                    />
+                  )}
+                </div>
+                <div className="enhance-scrim absolute inset-0 flex items-center justify-center p-(--space-2xl)">
+                  <EnhanceBanner
+                    failingLabels={
+                      checkGroups?.failures.map((check) => CHECK_LABELS[check.id]) ?? null
+                    }
+                    state={buttonState}
+                    onOpen={openEnhance}
+                  />
+                </div>
+              </div>
 
               {/* Recent sessions is off for now, while the Optimise card is tried alone.
               <OverviewRecentSessions
