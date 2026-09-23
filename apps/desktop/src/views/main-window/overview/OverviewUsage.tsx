@@ -8,6 +8,7 @@ import type {
 } from "../../../lib/providerUsageIpc"
 import { SegmentedControl } from "../../../components/ui/SegmentedControl"
 import { OverviewAllowanceChart } from "./OverviewAllowanceChart"
+import { OverviewAllowanceRadial } from "./OverviewAllowanceRadial"
 import { OverviewAllowanceTotals } from "./OverviewAllowanceTotals"
 import { OverviewSpendChart } from "./OverviewSpendChart"
 import { OverviewSpendTotals } from "./OverviewSpendTotals"
@@ -24,6 +25,13 @@ export type { OverviewMetric }
 const METRICS: ReadonlyArray<{ value: OverviewMetric; label: string }> = [
   { value: "cost", label: "Cost" },
   { value: "allowance", label: "Subscription" },
+]
+
+type AllowanceShape = "timeline" | "week"
+
+const SHAPES: ReadonlyArray<{ value: AllowanceShape; label: string }> = [
+  { value: "timeline", label: "Timeline" },
+  { value: "week", label: "By week" },
 ]
 
 function accountTabKey(account: AllowanceUsageAccountPayload): string {
@@ -56,6 +64,7 @@ export function OverviewUsage({
   showFigures?: boolean
   loading?: boolean
 }) {
+  const [shape, setShape] = useState<AllowanceShape>("timeline")
   const costFailed = usageError && !totals
   const allowanceFailed = allowanceError && !allowance
 
@@ -72,6 +81,32 @@ export function OverviewUsage({
     setSelectedTabKey(next)
     writeOverviewViewPrefs({ accountTabKey: next })
   }
+
+  const chartControls = (
+    <div className="flex items-center gap-(--space-xl)">
+      <SegmentedControl
+        options={SHAPES}
+        value={shape}
+        onChange={(next) => setShape(next as AllowanceShape)}
+        ariaLabel="Chart shape"
+        variant="text-tabs"
+        size="regular"
+      />
+      {chartAccounts.length >= 2 && (
+        <SegmentedControl
+          options={chartAccounts.map((account) => ({
+            value: accountTabKey(account),
+            label: account.displayName,
+          }))}
+          value={selectedAccount ? accountTabKey(selectedAccount) : ""}
+          onChange={selectTab}
+          ariaLabel="Provider"
+          variant="text-tabs"
+          size="regular"
+        />
+      )}
+    </div>
+  )
 
   return (
     <section
@@ -120,29 +155,22 @@ export function OverviewUsage({
             />
           )}
 
-          {!allowanceFailed && (
-            <OverviewAllowanceChart
-              account={selectedAccount}
-              rangeStartEpoch={allowance?.rangeStartEpoch ?? 0}
-              rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
-              loading={allowanceLoading}
-              controls={
-                chartAccounts.length >= 2 && (
-                  <SegmentedControl
-                    options={chartAccounts.map((account) => ({
-                      value: accountTabKey(account),
-                      label: account.displayName,
-                    }))}
-                    value={selectedAccount ? accountTabKey(selectedAccount) : ""}
-                    onChange={selectTab}
-                    ariaLabel="Provider"
-                    variant="text-tabs"
-                    size="regular"
-                  />
-                )
-              }
-            />
-          )}
+          {!allowanceFailed &&
+            (shape === "week" && selectedAccount ? (
+              <OverviewAllowanceRadial
+                account={selectedAccount}
+                rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
+                controls={chartControls}
+              />
+            ) : (
+              <OverviewAllowanceChart
+                account={selectedAccount}
+                rangeStartEpoch={allowance?.rangeStartEpoch ?? 0}
+                rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
+                loading={allowanceLoading}
+                controls={chartControls}
+              />
+            ))}
         </>
       )}
     </section>

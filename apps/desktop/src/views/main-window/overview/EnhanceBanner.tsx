@@ -32,7 +32,8 @@ function pillFace(state: EnhanceButtonState): {
   }
 }
 
-/** The Optimise card. It sits at the top of the blur scrim over the config checks. It
+/** The Optimise card. It sits at the top of the blur scrim over the config checks. The pill
+ *  is centred at the bottom. It
  *  names the failing checks. The pill opens the Optimise wizard. */
 export function EnhanceBanner({
   failingLabels,
@@ -50,9 +51,9 @@ export function EnhanceBanner({
   return (
     <section
       aria-label="Optimise"
-      className="enhance-banner flex w-full items-center gap-(--space-xl) rounded-(--radius-popover) py-(--space-md) pr-(--space-md) pl-(--space-xl)"
+      className="enhance-banner flex w-full flex-col items-center gap-(--space-lg) rounded-(--radius-popover) p-(--space-xl) text-center"
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-(--space-xs)">
+      <div className="flex w-full min-w-0 flex-col gap-(--space-xs)">
         <h2 className="type-body font-semibold text-label">
           {failingLabels == null
             ? "Checking your config…"
