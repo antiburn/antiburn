@@ -80,12 +80,12 @@ export function EnhanceOrb({
       aria-label={face.label}
       onClick={onOpen}
       data-quiet={face.calm ? "" : undefined}
-      className="enhance-pill enhance-orb group flex flex-col items-center justify-center gap-(--space-xs) type-body font-semibold"
+      className="enhance-pill enhance-orb group flex flex-col items-center justify-center gap-(--space-xs) type-title-3 font-semibold"
     >
       {face.action}
       <ArrowRight
         aria-hidden="true"
-        size={15}
+        size={17}
         className="transition-transform duration-(--duration-medium) group-hover:translate-x-0.5"
       />
     </button>

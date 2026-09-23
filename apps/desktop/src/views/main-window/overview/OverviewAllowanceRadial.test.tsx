@@ -1,5 +1,11 @@
 import { render, screen } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
+
+// jsdom has no layout, so the chart gets a fixed square.
+vi.mock("../../../lib/useElementWidth", () => ({
+  useElementWidth: () => 320,
+  useElementHeight: () => 320,
+}))
 
 import type { AllowanceUsageAccountPayload } from "../../../lib/providerUsageIpc"
 import { OverviewAllowanceRadial } from "./OverviewAllowanceRadial"

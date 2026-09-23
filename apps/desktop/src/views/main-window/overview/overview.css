@@ -145,10 +145,11 @@
   box-shadow: inset 0 0 0 1px var(--color-separator);
 }
 
-/* The round Optimise button in the middle of the allowance chart. */
+/* The round Optimise button in the middle of the allowance chart. The chart
+   sets the hole size, so the button grows with the chart. */
 .enhance-pill.enhance-orb {
-  block-size: 88px;
-  inline-size: 88px;
+  block-size: var(--overview-hole-size, 88px);
+  inline-size: var(--overview-hole-size, 88px);
 }
 
 /* The dot-meter link between two Enhance steps. Lit links carry the brand
