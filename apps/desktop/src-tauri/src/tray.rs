@@ -690,7 +690,7 @@ fn usage_used_percent(summary: &crate::dto::LiveUsageSummary) -> Option<f64> {
 }
 
 fn columns_for_used_percent(used: f64) -> usize {
-    ((100.0 - used) * COLUMN_COUNT as f64 / 100.0).round() as usize
+    ((100.0 - used) / 20.0).ceil() as usize
 }
 
 fn provider_is_displayable(
@@ -1196,10 +1196,27 @@ mod tests {
     }
 
     #[test]
-    fn remaining_allowance_rounds_to_the_nearest_column() {
-        assert_eq!(columns_for_used_percent(0.0), 5);
-        assert_eq!(columns_for_used_percent(50.0), 3);
-        assert_eq!(columns_for_used_percent(100.0), 0);
+    fn remaining_allowance_keeps_one_column_until_fully_depleted() {
+        for (used, expected_columns) in [
+            (0.0, 5),
+            (19.0, 5),
+            (20.0, 4),
+            (39.0, 4),
+            (40.0, 3),
+            (59.0, 3),
+            (60.0, 2),
+            (79.0, 2),
+            (80.0, 1),
+            (99.0, 1),
+            (99.9, 1),
+            (100.0, 0),
+        ] {
+            assert_eq!(
+                columns_for_used_percent(used),
+                expected_columns,
+                "{used}% used"
+            );
+        }
     }
 
     #[test]
@@ -1267,7 +1284,7 @@ mod tests {
         assert_eq!(random_debug_used_percent(100), 100.0);
         let used = random_debug_used_percent(57);
         assert_eq!(used, 57.0);
-        assert_eq!(columns_for_used_percent(used), 2);
+        assert_eq!(columns_for_used_percent(used), 3);
         assert_eq!(
             usage_tooltip(Some(used), true),
             "antiburn — 43% remaining (simulated)"
