@@ -98,14 +98,14 @@
 /* The blur scrim over the Overview content. A light wash and a strong blur,
    like macOS glass. The Optimise card floats on it. */
 .enhance-scrim {
-  background-color: color-mix(in oklab, var(--color-surface-window) 20%, transparent);
+  background-color: color-mix(in oklab, var(--color-surface-window) 60%, transparent);
   backdrop-filter: blur(24px) saturate(1.6);
 }
 
 /* The Optimise card. A glass pane: a thin tint, its own blur, a light top
    edge, and a soft shadow. */
 .enhance-banner {
-  background-color: color-mix(in oklab, var(--color-surface-sidebar) 35%, transparent);
+  background-color: color-mix(in oklab, var(--color-surface-sidebar) 75%, transparent);
   backdrop-filter: blur(30px) saturate(1.8);
   box-shadow:
     inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 45%, transparent),
