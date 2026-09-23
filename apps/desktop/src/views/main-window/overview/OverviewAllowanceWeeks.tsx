@@ -24,6 +24,7 @@ import {
   spokeLevelAt,
   weekFraction,
   type Geometry,
+  type PlacedPin,
   type Point,
   type Spoke,
 } from "./radialGeometry"
@@ -31,6 +32,8 @@ import {
   bandTransform,
   bandY,
   fullBand,
+  groupPins,
+  placeCallouts,
   plotX,
   spokePath,
   spreadLabels,
@@ -59,6 +62,17 @@ const PIN_HEAD = 3
 const PIN_GAP = 6
 const MAX_PIN_ROWS = 5
 const PAST_PIN_OPACITY = 0.45
+// Callouts name each group of one check's pins, above the pin heads, in up
+// to two rows. Text widths are estimates, so callouts can keep apart.
+const CALLOUT_ROWS = 3
+const CALLOUT_ROW = 32
+const CALLOUT_LEADER = 12
+const CALLOUT_GROUP_GAP = 36
+const CALLOUT_PAD = 12
+const CALLOUT_TEXT_GAP = 6
+const HEADLINE_CHAR = 6.8
+const SUBLINE_CHAR = 6
+const TITLE_CHARS = 26
 // The flag at the reset: a header line, then one row per config check.
 const FLAG_TOP = 10
 const FLAG_HEAD = 18
@@ -103,6 +117,10 @@ const WASTE_LEGEND: ChartLegendItem = {
 const WEEK_KEY = "w:"
 
 type Strength = "full" | "normal" | "dim"
+
+function shorten(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
 
 function opacityOf(strength: Strength, base = 1): number {
   if (strength === "full") return 1
@@ -169,7 +187,8 @@ function spokeStrong(spoke: Spoke, focus: RadialFocus | null): boolean {
  *  the numbers.
  *
  *  Failed checks show on the chart. A pin marks each wasteful session: its
- *  stem runs down to a dot on its week's line at the session's time. The
+ *  stem runs down to a dot on its week's line at the session's time. A
+ *  callout above the plot names each group of one check's pins. The
  *  config checks fail in most sessions, so a flag at the reset shows each
  *  one once, with its share of sessions. */
 export function OverviewAllowanceWeeks({
@@ -216,10 +235,40 @@ export function OverviewAllowanceWeeks({
   const { placed } = layoutPins(NO_RING, weeks, current, pins)
   const pinRows = Math.min(MAX_PIN_ROWS, Math.max(0, ...placed.map((item) => item.stack + 1)))
 
+  // The callouts need only the plot's left and right, so they come first and
+  // set the room above the plot.
+  const x0 = AXIS_LEFT
+  const x1 = Math.max(AXIS_LEFT, width - LABEL_ROOM)
+  const pinX = (item: PlacedPin) => x0 + item.fraction * (x1 - x0)
+  const groups = groupPins(placed, pinX, CALLOUT_GROUP_GAP).map((group) => {
+    const count = group.pins.length
+    const subline =
+      count === 1 ? shorten(group.pins[0]!.pin.title, TITLE_CHARS) : `${count} sessions`
+    const headline = group.label.length + (count > 1 ? 2 + String(count).length : 0)
+    return {
+      ...group,
+      count,
+      subline,
+      width: Math.max(headline * HEADLINE_CHAR, subline.length * SUBLINE_CHAR),
+    }
+  })
+  const spots = placeCallouts(
+    groups,
+    0,
+    Math.max(x0, width - 4),
+    CALLOUT_ROWS,
+    CALLOUT_PAD,
+    CALLOUT_TEXT_GAP,
+  )
+  const calloutRows = Math.max(0, ...spots.map((spot) => (spot ? spot.row + 1 : 0)))
+
   const plot: Plot = {
-    x0: AXIS_LEFT,
-    x1: Math.max(AXIS_LEFT, width - LABEL_ROOM),
-    y0: TOP_GAP + (pinRows ? PIN_GAP + PIN_HEAD + pinRows * PIN_STEP : 0),
+    x0,
+    x1,
+    y0:
+      TOP_GAP +
+      (calloutRows ? calloutRows * CALLOUT_ROW + CALLOUT_LEADER : 0) +
+      (pinRows ? PIN_GAP + PIN_HEAD + pinRows * PIN_STEP : 0),
     y1: Math.max(0, height - AXIS_BOTTOM),
   }
   const ready = clock != null && plot.x1 - plot.x0 > 40 && plot.y1 - plot.y0 > 40
@@ -663,6 +712,94 @@ export function OverviewAllowanceWeeks({
                   </g>
                 )
               })}
+
+              {groups.length > 0 && (
+                <g
+                  data-pin-callouts=""
+                  className="week-grid"
+                  style={{ opacity: apart ? 0 : 1 }}
+                  pointerEvents={apart ? "none" : undefined}
+                >
+                  {groups.map((group, index) => {
+                    const spot = spots[index]
+                    if (!spot) return null
+                    // A flag: a leader from the callout top down to a bracket
+                    // over the group's pins, with the text beside it.
+                    const top = TOP_GAP + (calloutRows - 1 - spot.row) * CALLOUT_ROW
+                    const bracket = plot.y0 - PIN_GAP - (pinRows - 1) * PIN_STEP - PIN_HEAD - 4
+                    const text = spot.flip
+                      ? group.x - CALLOUT_TEXT_GAP
+                      : group.x + CALLOUT_TEXT_GAP
+                    const anchor = spot.flip ? "end" : "start"
+                    const lit = group.pins.some((item) => pinEmphasis(item, focus) !== "dim")
+                    const single = group.count === 1 ? group.pins[0]! : null
+                    return (
+                      <g
+                        key={group.key}
+                        data-pin-callout={group.detector}
+                        className={cn("overview-radial-focus", single && "cursor-pointer")}
+                        style={{ opacity: lit ? 1 : DIM_SHARE }}
+                        {...hold(
+                          single
+                            ? { kind: "pin", key: single.key, detector: group.detector }
+                            : { kind: "check", detector: group.detector },
+                        )}
+                        onClick={single ? () => waste?.onOpen?.(single.pin) : undefined}
+                      >
+                        <rect
+                          x={spot.left - 2}
+                          y={top}
+                          width={spot.right - spot.left + 4}
+                          height={CALLOUT_ROW - 4}
+                          className="fill-transparent"
+                        />
+                        <path
+                          d={
+                            `M${group.x.toFixed(1)},${top + 3} V${bracket}` +
+                            (group.count > 1
+                              ? ` M${(group.from - 3).toFixed(1)},${bracket + 3} v-3` +
+                                ` H${(group.to + 3).toFixed(1)} v3`
+                              : "")
+                          }
+                          className="pointer-events-none fill-none stroke-brand"
+                          strokeWidth={1}
+                        />
+                        <circle
+                          cx={group.x}
+                          cy={top + 3}
+                          r={2.5}
+                          className="pointer-events-none fill-brand"
+                        />
+                        <text
+                          x={text}
+                          y={top + 8}
+                          textAnchor={anchor}
+                          dominantBaseline="middle"
+                          className="type-callout font-semibold fill-label stroke-surface"
+                          strokeWidth={3}
+                          paintOrder="stroke"
+                        >
+                          {group.label}
+                          {group.count > 1 && (
+                            <tspan className="fill-brand tabular-nums"> ×{group.count}</tspan>
+                          )}
+                        </text>
+                        <text
+                          x={text}
+                          y={top + 21}
+                          textAnchor={anchor}
+                          dominantBaseline="middle"
+                          className="type-caption fill-label-secondary stroke-surface"
+                          strokeWidth={3}
+                          paintOrder="stroke"
+                        >
+                          {group.subline}
+                        </text>
+                      </g>
+                    )
+                  })}
+                </g>
+              )}
 
               {config.length > 0 && (
                 <g

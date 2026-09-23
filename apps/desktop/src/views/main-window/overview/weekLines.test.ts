@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest"
 
-import type { Spoke } from "./radialGeometry"
-import { weekBands, weekPointerFocus, spreadLabels, type Plot } from "./weekLines"
+import type { PlacedPin, Spoke } from "./radialGeometry"
+import {
+  groupPins,
+  placeCallouts,
+  weekBands,
+  weekPointerFocus,
+  spreadLabels,
+  type Plot,
+} from "./weekLines"
 
 const PLOT: Plot = { x0: 0, x1: 700, y0: 0, y1: 100 }
 const WEEK = 7 * 86400
@@ -82,5 +89,68 @@ describe("weekLines", () => {
   it("spreads labels apart and keeps them inside the plot", () => {
     expect(spreadLabels([50, 52, 51], 10, 0, 100)).toEqual([50, 70, 60])
     expect(spreadLabels([99, 100], 10, 0, 100)).toEqual([90, 100])
+  })
+
+  it("groups close pins of one check and keeps other checks apart", () => {
+    const pin = (key: string, detector: string, fraction: number) =>
+      ({
+        key,
+        fraction,
+        pin: { detector, label: detector, atEpoch: 0, title: key, navigationHandle: key },
+      }) as unknown as PlacedPin
+    const groups = groupPins(
+      [
+        pin("a", "cacheChurn", 0.1),
+        pin("b", "cacheChurn", 0.12),
+        pin("c", "cacheChurn", 0.5),
+      ].concat(pin("d", "modelOverthinking", 0.11)),
+      (item) => item.fraction * 1000,
+      36,
+    )
+    expect(groups.map((group) => [group.detector, group.pins.length, group.x])).toEqual([
+      ["cacheChurn", 2, 110],
+      ["modelOverthinking", 1, 110],
+      ["cacheChurn", 1, 500],
+    ])
+  })
+
+  it("steps close callouts up to the left and never crosses a leader", () => {
+    const spots = placeCallouts(
+      [
+        { x: 10, width: 80 },
+        { x: 40, width: 80 },
+        { x: 300, width: 80 },
+      ],
+      0,
+      400,
+      2,
+      10,
+      6,
+    )
+    expect(spots).toEqual([
+      { row: 1, flip: false, left: 10, right: 96 },
+      { row: 0, flip: false, left: 40, right: 126 },
+      { row: 0, flip: false, left: 300, right: 386 },
+    ])
+  })
+
+  it("flips a callout at the right edge and drops one that fits nowhere", () => {
+    expect(placeCallouts([{ x: 380, width: 80 }], 0, 400, 2, 10, 6)).toEqual([
+      { row: 0, flip: true, left: 294, right: 380 },
+    ])
+    expect(
+      placeCallouts(
+        [
+          { x: 10, width: 80 },
+          { x: 20, width: 80 },
+          { x: 30, width: 80 },
+        ],
+        0,
+        400,
+        2,
+        10,
+        6,
+      )[0],
+    ).toBeNull()
   })
 })

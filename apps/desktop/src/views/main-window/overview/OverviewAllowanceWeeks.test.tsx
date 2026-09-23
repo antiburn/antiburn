@@ -160,6 +160,19 @@ describe("OverviewAllowanceWeeks", () => {
     expect(screen.getByText("Failed check")).toBeInTheDocument()
   })
 
+  it("names each failed check in a callout, and lights its pins from it", () => {
+    const { container } = renderChart(waste)
+    const callout = container.querySelector("[data-pin-callout=cacheChurn]")!
+    expect(callout).toHaveTextContent("Cache churnFix the parser")
+    fireEvent.pointerEnter(container.querySelector("[data-week-config=unusedMcpServers]")!)
+    expect(callout).toHaveStyle({ opacity: "0.25" })
+    fireEvent.pointerEnter(callout)
+    expect(container.querySelector("[data-waste-pin]")).toHaveStyle({ opacity: "1" })
+    // The callouts hide when the weeks break apart.
+    fireEvent.click(screen.getByRole("button", { name: "Break apart" }))
+    expect(container.querySelector("[data-pin-callouts]")).toHaveStyle({ opacity: "0" })
+  })
+
   it("puts the action under the key", () => {
     renderChart()
     const action = screen.getByRole("button", { name: "Optimise" })

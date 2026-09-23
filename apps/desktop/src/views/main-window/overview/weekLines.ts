@@ -5,6 +5,7 @@ import {
   spokeLevelAt,
   weekFraction,
   type LimitStretch,
+  type PlacedPin,
   type Point,
   type Spoke,
 } from "./radialGeometry"
@@ -204,4 +205,98 @@ export function spreadLabels(
   const out = new Array<number>(wanted.length).fill(0)
   for (const item of order) out[item.index] = item.y
   return out
+}
+
+/** One check's pins that sit close together. The chart names each group
+ *  once, with a callout above the plot. */
+export type PinGroup = {
+  key: string
+  detector: PlacedPin["pin"]["detector"]
+  label: string
+  pins: PlacedPin[]
+  /** The pixel span of the pins, and its middle. */
+  from: number
+  to: number
+  x: number
+}
+
+/** Group the pins of each check that sit less than `gap` pixels apart, in
+ *  order from left to right. */
+export function groupPins(
+  placed: readonly PlacedPin[],
+  xOf: (pin: PlacedPin) => number,
+  gap: number,
+): PinGroup[] {
+  const groups: PinGroup[] = []
+  const open = new Map<string, PinGroup>()
+  for (const item of [...placed].sort((left, right) => xOf(left) - xOf(right))) {
+    const x = xOf(item)
+    const detector = item.pin.detector
+    const last = open.get(detector)
+    if (last && x - last.to < gap) {
+      last.pins.push(item)
+      last.to = x
+      last.x = (last.from + x) / 2
+      continue
+    }
+    const group = {
+      key: `${detector}@${item.key}`,
+      detector,
+      label: item.pin.label,
+      pins: [item],
+      from: x,
+      to: x,
+      x,
+    }
+    groups.push(group)
+    open.set(detector, group)
+  }
+  return groups.sort((left, right) => left.x - right.x)
+}
+
+export type CalloutSpot = { row: number; flip: boolean; left: number; right: number }
+
+/** Place a flag callout for each item. A vertical leader drops from the
+ *  callout to the pins at `x`, and the text starts `gap` to the right of the
+ *  leader, or ends `gap` to its left when the callout flips. A callout goes
+ *  to the lowest row where it fits, and flips only when no row fits: its text does not touch other text in
+ *  that row, its leader does not cross text in a lower row, and its text
+ *  does not cover a leader from a higher row. The right-most callout goes
+ *  first, so a group of close pins steps up to the left. An item that fits
+ *  nowhere gets `null`. Row 0 is nearest the pins. */
+export function placeCallouts(
+  items: readonly { x: number; width: number }[],
+  left: number,
+  right: number,
+  rows: number,
+  pad: number,
+  gap: number,
+): (CalloutSpot | null)[] {
+  const placed: (CalloutSpot & { x: number })[] = []
+  const spots = new Array<CalloutSpot | null>(items.length).fill(null)
+  const order = items.map((_, index) => index).sort((a, b) => items[b]!.x - items[a]!.x)
+  for (const index of order) {
+    const { x, width } = items[index]!
+    const fits = (row: number, from: number, to: number) =>
+      from >= left &&
+      to <= right &&
+      placed.every((other) =>
+        other.row === row
+          ? to + pad <= other.left || from >= other.right + pad
+          : other.row < row
+            ? x + pad / 2 <= other.left || x >= other.right + pad / 2
+            : other.x + pad / 2 <= from || other.x >= to + pad / 2,
+      )
+    search: for (const flip of [false, true]) {
+      for (let row = 0; row < rows; row++) {
+        const from = flip ? x - gap - width : x
+        const to = flip ? x : x + gap + width
+        if (!fits(row, from, to)) continue
+        spots[index] = { row, flip, left: from, right: to }
+        placed.push({ row, flip, left: from, right: to, x })
+        break search
+      }
+    }
+  }
+  return spots
 }
