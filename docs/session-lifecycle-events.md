@@ -196,6 +196,10 @@ _active_ (for lists and pills) while it is in the registry, working or
 quiet. `resumed` is metadata on `Activity`, not a separate state. Recent-idle
 memory affects narration only; it does not authorize admission after deletion.
 Deadline wakes include one second of slack, and delivery can add delay.
+Production expiry uses the same Unix wall clock as activity reports, so system
+sleep does not leave the registry clock behind. Sleep does not trigger a separate
+wake notification: expiry runs when the existing timer or another actor input
+wakes the actor. Timer waits and retry delays still use Tokio's monotonic clock.
 
 Quiet paths still schedule rediscovery without reporting activity. In
 particular, Claude Desktop manifest rewrites do not keep a session working;
