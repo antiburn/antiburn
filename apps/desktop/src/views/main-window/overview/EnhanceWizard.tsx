@@ -68,7 +68,7 @@ export function EnhanceWizard({
     <section aria-label="Enhance my AI setup" className="flex min-h-0 min-w-0 flex-1 flex-col">
       <nav
         aria-label="Enhance steps"
-        className="flex items-center gap-(--space-xs) border-b border-separator pb-(--space-md)"
+        className="flex items-center gap-(--space-sm) border-b border-separator pb-(--space-lg)"
       >
         {ENHANCE_STEPS.map((item, index) => {
           const number = (index + 1) as EnhanceStep
@@ -79,10 +79,8 @@ export function EnhanceWizard({
               {index > 0 && (
                 <span
                   aria-hidden="true"
-                  className={cn(
-                    "h-px w-6 shrink-0",
-                    done || on ? "bg-burn-check-pass-fill" : "bg-separator",
-                  )}
+                  data-lit={done || on ? "" : undefined}
+                  className="enhance-step-link min-w-4 flex-1"
                 />
               )}
               <button
@@ -90,26 +88,24 @@ export function EnhanceWizard({
                 aria-current={on ? "step" : undefined}
                 onClick={() => onStepChange(number)}
                 className={cn(
-                  "flex items-center gap-(--space-sm) rounded-full px-(--space-sm) py-(--space-xs) type-callout whitespace-nowrap",
+                  "flex items-center gap-(--space-sm) rounded-full py-(--space-xs) pr-(--space-md) pl-(--space-xs) type-headline whitespace-nowrap transition-colors duration-(--duration-fast)",
                   on
-                    ? "bg-surface-card font-semibold text-label"
+                    ? "bg-brand-tint/12 text-label"
                     : done
-                      ? "text-label-secondary hover:bg-surface-hover"
-                      : "text-label-tertiary hover:bg-surface-hover",
+                      ? "font-normal! text-label hover:bg-surface-hover"
+                      : "font-normal! text-label-tertiary hover:bg-surface-hover",
                 )}
               >
                 <span
                   aria-hidden="true"
                   className={cn(
-                    "grid size-5 place-items-center rounded-full type-metadata font-semibold",
-                    done
-                      ? "bg-burn-check-pass-fill text-white"
-                      : on
-                        ? "border border-brand-tint text-brand"
-                        : "border border-separator",
+                    "grid size-7 place-items-center rounded-full font-mono type-callout font-semibold tabular-nums",
+                    done || on
+                      ? "bg-brand-tint text-white"
+                      : "border border-separator text-label-tertiary",
                   )}
                 >
-                  {done ? <Check size={11} strokeWidth={3} /> : number}
+                  {done ? <Check size={14} strokeWidth={3} /> : number}
                 </span>
                 {item.label}
               </button>
@@ -131,7 +127,7 @@ export function EnhanceWizard({
           <PushButton onClick={() => onStepChange((step - 1) as EnhanceStep)}>Back</PushButton>
         )}
         <PushButton
-          variant="primary"
+          className="border-transparent bg-brand-tint font-semibold text-white hover:bg-brand"
           onClick={() => (last ? onFinish() : onStepChange((step + 1) as EnhanceStep))}
         >
           {last ? "Back to Overview" : "Continue"}

@@ -50,7 +50,7 @@ export function EnhanceActionBar({
   return (
     <footer
       aria-label="Next step"
-      className="flex items-center gap-(--space-md) border-t border-separator pt-(--space-lg)"
+      className="overview-enhance-bar flex items-center gap-(--space-md) border-t border-separator pt-(--space-lg)"
     >
       <p role="status" className="grow type-caption text-label-secondary">
         {failingChecks == null ? (

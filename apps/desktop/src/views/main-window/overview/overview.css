@@ -96,12 +96,11 @@
 }
 
 /*
- * The Enhance button in the bottom action bar. A brand ground carries soft
- * blobs of lighter orange, warm yellow and a light highlight on two layers.
- * All colors stay in one warm family, so the blend never goes muddy. The
- * layers turn in opposite directions at 29s and 41s, so the pattern does not
- * repeat in any interval that a reader notices. The reduced-motion clamp in
- * `motion.css` stops the motion.
+ * The Enhance button in the bottom action bar. A flat brand face. When the
+ * pointer is on the bar, faint scanlines show on the face and a band of three
+ * brighter lines steps down it, like an LED panel. The band moves in whole
+ * line steps and then rests, the same two-level rule as the HUD's LED sweep.
+ * The reduced-motion clamp in `motion.css` stops the motion.
  */
 
 .overview-enhance {
@@ -113,8 +112,6 @@
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  /* WebKit does not clip a transformed child to a rounded overflow box.
-     The clip path crops the turning layers to the corners. */
   clip-path: inset(0 round var(--radius-popover));
   background-color: var(--color-brand-tint);
   box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 30%, transparent);
@@ -126,43 +123,38 @@
   content: "";
   position: absolute;
   z-index: -1;
-  inset: -120% -30%;
+  inset: 0;
   pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--duration-slow) var(--ease-out-quart);
 }
 
 .overview-enhance-face::before {
-  background:
-    radial-gradient(
-      circle at 22% 38%,
-      color-mix(in oklab, var(--color-system-orange-tint) 80%, transparent),
-      transparent 40%
-    ),
-    radial-gradient(
-      circle at 74% 62%,
-      color-mix(in oklab, var(--color-system-yellow-tint) 45%, transparent),
-      transparent 36%
-    ),
-    radial-gradient(
-      circle at 48% 82%,
-      color-mix(in oklab, var(--color-brand) 55%, transparent),
-      transparent 40%
-    );
-  animation: overview-enhance-turn 29s linear infinite;
+  background: repeating-linear-gradient(
+    0deg,
+    color-mix(in oklab, var(--color-shimmer) 7%, transparent) 0 1px,
+    transparent 1px 3px
+  );
 }
 
 .overview-enhance-face::after {
-  background:
-    radial-gradient(
-      circle at 66% 30%,
-      color-mix(in oklab, var(--color-shimmer) 22%, transparent),
-      transparent 30%
-    ),
-    radial-gradient(
-      circle at 30% 70%,
-      color-mix(in oklab, var(--color-system-orange-tint) 50%, transparent),
-      transparent 34%
-    );
-  animation: overview-enhance-turn 41s linear infinite reverse;
+  background: repeating-linear-gradient(
+    0deg,
+    color-mix(in oklab, var(--color-shimmer) 35%, transparent) 0 1px,
+    transparent 1px 3px
+  );
+  mask: linear-gradient(#000 0 0) no-repeat;
+  mask-size: 100% 9px;
+  mask-position: 0 -9px;
+}
+
+.overview-enhance-bar:hover .overview-enhance-face::before,
+.overview-enhance-bar:hover .overview-enhance-face::after {
+  opacity: 1;
+}
+
+.overview-enhance-bar:hover .overview-enhance-face::after {
+  animation: overview-enhance-scan 5s infinite;
 }
 
 .overview-enhance-glow {
@@ -184,7 +176,7 @@
 }
 
 /* The calm face: after a run, the button reports progress and does not
-   call for attention. Only the fresh and new states keep the gradient. */
+   call for attention. Only the fresh and new states keep the scanlines. */
 
 .overview-enhance[data-calm] .overview-enhance-glow,
 .overview-enhance[data-calm] .overview-enhance-face::before,
@@ -205,8 +197,28 @@
   color: var(--color-brand-tint);
 }
 
-@keyframes overview-enhance-turn {
-  to {
-    transform: rotate(1turn);
+/* 15 steps of 3px take the band from above the face to below it. */
+@keyframes overview-enhance-scan {
+  0% {
+    mask-position: 0 -9px;
+    animation-timing-function: steps(15, end);
   }
+
+  40%,
+  100% {
+    mask-position: 0 36px;
+  }
+}
+
+/* The dot-meter link between two Enhance steps. Lit links carry the brand
+   colour up to the current step. */
+.enhance-step-link {
+  block-size: 3px;
+  background-image: radial-gradient(circle, var(--color-separator) 1.5px, transparent 1.6px);
+  background-size: 6px 3px;
+  background-position: center;
+}
+
+.enhance-step-link[data-lit] {
+  background-image: radial-gradient(circle, var(--color-brand-tint) 1.5px, transparent 1.6px);
 }
