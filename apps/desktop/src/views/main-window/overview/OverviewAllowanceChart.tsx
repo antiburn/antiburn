@@ -252,7 +252,7 @@ function AllowancePlot({
                   <path
                     d={rollingLinePath(account.chart.rolling, x, y, rangeEndEpoch)}
                     fill="none"
-                    className="stroke-gray-500 stroke-[3.5px]"
+                    className="stroke-gray-500 stroke-1"
                     strokeLinejoin="round"
                   />
                 )}
