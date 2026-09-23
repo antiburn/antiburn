@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { BurnChecksSession } from "./BurnChecksSession"
 import { MainOverviewSession, type MainOverviewSnapshot } from "./MainOverviewSession"
 import { OverviewView } from "./OverviewView"
 import type { OverviewMetric } from "./overview/overviewViewPrefs"
@@ -91,7 +92,16 @@ function setup(initial: Partial<MainOverviewSnapshot> = {}) {
       listeners.delete(listener)
     }
   })
-  const props = { active: true, session, onOpenSessions: vi.fn(), onSelectSession: vi.fn() }
+  const checks = new BurnChecksSession()
+  vi.spyOn(checks, "subscribe").mockImplementation(() => () => undefined)
+  const props = {
+    active: true,
+    session,
+    checks,
+    navigationRevision: 0,
+    onOpenSessions: vi.fn(),
+    onSelectSession: vi.fn(),
+  }
   const result = render(<OverviewView {...props} />)
   return {
     ...result,
@@ -245,5 +255,30 @@ describe("OverviewView metric preference", () => {
     expectUsageState("held")
     view.update(allowance([account]))
     expectMetric("allowance")
+  })
+})
+
+describe("OverviewView Enhance wizard", () => {
+  it("opens the wizard from the action bar and saves the step", () => {
+    setup()
+    fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
+    expect(screen.getByRole("navigation", { name: "Enhance steps" })).toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Overview" })).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+    expect(screen.getByRole("button", { name: /Scan/ })).toHaveAttribute("aria-current", "step")
+    expect(readOverviewViewPrefs().enhanceStep).toBe(2)
+  })
+
+  it("closes the wizard on any navigation, and reopens on the saved step", () => {
+    const view = setup()
+    fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+
+    view.rerender(<OverviewView {...view.props} navigationRevision={1} />)
+    expect(screen.queryByRole("navigation", { name: "Enhance steps" })).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
+    expect(screen.getByRole("button", { name: /Scan/ })).toHaveAttribute("aria-current", "step")
   })
 })

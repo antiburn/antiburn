@@ -166,6 +166,8 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         <OverviewView
           active={active}
           session={overviewSession}
+          checks={burnChecksSession}
+          navigationRevision={navigation.destinationRevision}
           onOpenSessions={() => selectSection("activity")}
           onSelectSession={(entry) => {
             if (!entry.sessionId) return

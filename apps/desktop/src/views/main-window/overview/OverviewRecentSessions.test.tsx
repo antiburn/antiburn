@@ -120,7 +120,7 @@ describe("OverviewRecentSessions", () => {
     hook.mockRestore()
   })
 
-  it("gives the list and the loading skeleton the same row class and count, so the height query hides the same rows either way", () => {
+  it("gives the list and the loading skeleton the same row class and count", () => {
     const { container, rerender } = render(
       <OverviewRecentSessions
         metric="cost"
@@ -131,9 +131,9 @@ describe("OverviewRecentSessions", () => {
       />,
     )
     const skeleton = container.querySelector(".overview-recent-rows")
-    expect(skeleton?.children).toHaveLength(6)
+    expect(skeleton?.children).toHaveLength(3)
 
-    const entries = Array.from({ length: 6 }, (_, index) =>
+    const entries = Array.from({ length: 3 }, (_, index) =>
       entry(`s${index}`, `Session ${index}`),
     )
     rerender(
@@ -145,6 +145,6 @@ describe("OverviewRecentSessions", () => {
       />,
     )
     const list = container.querySelector(".overview-recent-rows")
-    expect(list?.children).toHaveLength(6)
+    expect(list?.children).toHaveLength(3)
   })
 })

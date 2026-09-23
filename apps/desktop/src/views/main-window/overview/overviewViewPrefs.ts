@@ -20,6 +20,8 @@ export interface OverviewViewPrefs {
   accountTabKey?: string
   /** Whether the last run found a subscription plan on any account. */
   hadSubscriptionPlan?: boolean
+  /** The Enhance wizard step the reader last saw. */
+  enhanceStep?: 1 | 2 | 3 | 4 | 5
 }
 
 /** The saved Overview view controls, or an empty object with no saved value,

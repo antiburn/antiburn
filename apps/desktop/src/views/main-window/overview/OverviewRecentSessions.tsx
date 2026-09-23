@@ -260,7 +260,10 @@ export function OverviewRecentSessions({
     <section
       aria-label="Recent sessions"
       aria-busy={loading || snoozes.status === "loading" || undefined}
-      className="flex flex-col gap-[var(--space-sm)]"
+      className={cn(
+        "flex flex-col gap-[var(--space-sm)] p-(--space-md)",
+        "rounded-(--radius-popover) bg-surface-sidebar shadow-[var(--shadow-stats-card)]",
+      )}
     >
       <div className="flex items-baseline justify-between">
         <h2 className="type-caption text-label-secondary">Recent sessions</h2>

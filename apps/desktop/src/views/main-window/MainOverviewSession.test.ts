@@ -566,7 +566,7 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
-  it("keeps the six newest sessions and reads updates from the shared source", async () => {
+  it("keeps the three newest sessions and reads updates from the shared source", async () => {
     const { adapter, session, entryChanged, setEntries } = setup()
     sessions.push(session)
     const stop = session.subscribe(() => undefined)
@@ -575,7 +575,6 @@ describe("MainOverviewSession", () => {
       "d",
       "c",
       "b",
-      "a",
     ])
     setEntries([
       entry("g", "2026-09-14T13:00:00Z"),
@@ -592,9 +591,6 @@ describe("MainOverviewSession", () => {
         "g",
         "f",
         "e",
-        "d2",
-        "c2",
-        "b2",
       ]),
     )
     expect(adapter.getUsage).toHaveBeenCalledOnce()

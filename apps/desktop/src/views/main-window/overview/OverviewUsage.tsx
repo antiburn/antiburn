@@ -73,7 +73,7 @@ export function OverviewUsage({
   return (
     <section
       aria-label="Usage"
-      className="overview-usage flex min-h-0 flex-1 flex-col gap-(--space-lg)"
+      className="overview-usage flex min-h-0 flex-none flex-col gap-(--space-lg)"
     >
       <SegmentedControl
         options={METRICS}

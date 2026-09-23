@@ -149,9 +149,8 @@ export function overviewUpdateTouchesTotals(update: SessionUpdatedPayload): bool
   )
 }
 
-/** The most recent sessions the Overview page shows. The stylesheet hides
- *  the rows a short window has no room for, down to a minimum of three. */
-export const OVERVIEW_RECENT_SESSION_COUNT = 6
+/** The most recent sessions the Overview page shows. */
+export const OVERVIEW_RECENT_SESSION_COUNT = 3
 
 export interface MainOverviewSnapshot {
   active: boolean

@@ -1,7 +1,7 @@
 .overview-chart {
-  --overview-chart-height: 90px;
+  --overview-chart-height: 60px;
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   flex-direction: column;
   min-block-size: 0;
 }
@@ -95,22 +95,71 @@
   container: overview-viewport / size;
 }
 
-/* Hide older rows to keep space for the chart. These height limits are estimates. */
+/*
+ * The Enhance button in the bottom action bar. One hue family, a slow sheen
+ * across the face, and a faint glow under it. The colors mix from the brand
+ * and system tints, so the button follows the theme. The drift is 14s, which
+ * is slow enough to read as light, not as motion. The reduced-motion clamp in
+ * `motion.css` stops it.
+ */
 
-@container overview-viewport (max-height: 629.98px) {
-  .overview-recent-rows > :nth-child(n + 6) {
-    display: none;
-  }
+.overview-enhance {
+  --overview-enhance-drift: 14s;
+  --overview-enhance-sheen: linear-gradient(
+    115deg,
+    var(--color-brand-tint),
+    color-mix(in oklab, var(--color-brand-tint) 70%, var(--color-system-orange-tint)) 35%,
+    color-mix(in oklab, var(--color-brand-tint) 85%, var(--color-system-red-tint)) 65%,
+    var(--color-brand-tint)
+  );
+
+  position: relative;
+  isolation: isolate;
 }
 
-@container overview-viewport (max-height: 599.98px) {
-  .overview-recent-rows > :nth-child(n + 5) {
-    display: none;
-  }
+.overview-enhance-glow,
+.overview-enhance-face {
+  background-image: var(--overview-enhance-sheen);
+  background-size: 300% 300%;
+  animation: overview-enhance-drift var(--overview-enhance-drift) ease-in-out infinite alternate;
 }
 
-@container overview-viewport (max-height: 564.98px) {
-  .overview-recent-rows > :nth-child(n + 4) {
-    display: none;
+.overview-enhance-glow {
+  position: absolute;
+  inset: 8px 4px -6px;
+  z-index: -1;
+  border-radius: var(--radius-popover);
+  filter: blur(14px);
+  opacity: 0.3;
+}
+
+.overview-enhance-face {
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-shimmer) 35%, transparent);
+  transition: transform var(--duration-medium) var(--ease-out-quart);
+}
+
+.overview-enhance:hover .overview-enhance-face {
+  transform: translateY(-1px);
+}
+
+.overview-enhance:active .overview-enhance-face {
+  transform: translateY(1px) scale(0.99);
+}
+
+.overview-enhance-icon {
+  background-color: color-mix(in oklab, var(--color-shimmer) 18%, transparent);
+}
+
+@keyframes overview-enhance-drift {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 30%;
+  }
+
+  100% {
+    background-position: 40% 100%;
   }
 }
