@@ -9,6 +9,7 @@ vi.mock("../../../lib/useElementWidth", () => ({
 
 import type { AllowanceUsageAccountPayload } from "../../../lib/providerUsageIpc"
 import { OverviewAllowanceWeeks } from "./OverviewAllowanceWeeks"
+import type { WasteMarks } from "./wasteMarks"
 
 const WEEK = 7 * 86400
 
@@ -51,8 +52,36 @@ function account(): AllowanceUsageAccountPayload {
   } as unknown as AllowanceUsageAccountPayload
 }
 
-function renderChart() {
-  return render(<OverviewAllowanceWeeks account={account()} rangeEndEpoch={2 * WEEK + 3600} />)
+const waste: WasteMarks = {
+  pins: [
+    {
+      detector: "cacheChurn",
+      label: "Cache churn",
+      atEpoch: 2 * WEEK + 1800,
+      title: "Fix the parser",
+      navigationHandle: "h1",
+    },
+  ],
+  config: [
+    {
+      detector: "unusedMcpServers",
+      label: "Unused MCP servers",
+      share: 0.8,
+      finding: 8,
+      sessions: 10,
+    },
+  ],
+}
+
+function renderChart(marks?: WasteMarks) {
+  return render(
+    <OverviewAllowanceWeeks
+      account={account()}
+      rangeEndEpoch={2 * WEEK + 3600}
+      waste={marks}
+      action={<button type="button">Optimise</button>}
+    />,
+  )
 }
 
 describe("OverviewAllowanceWeeks", () => {
@@ -115,5 +144,27 @@ describe("OverviewAllowanceWeeks", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Put together" }))
     expect(band().style.transform).toContain("scaleY(1.0000)")
+  })
+
+  it("runs each pin down to its week's line and flags the config checks", () => {
+    const { container } = renderChart(waste)
+    const stem = container.querySelector<SVGLineElement>("[data-waste-pin] .week-stem")!
+    expect(Number(/scaleY\((.+)\)/.exec(stem.style.transform)?.[1])).toBeGreaterThan(0)
+
+    const row = container.querySelector("[data-week-config=unusedMcpServers]")!
+    expect(row).toHaveTextContent("80%Unused MCP servers")
+    fireEvent.pointerEnter(row)
+    // The config row takes the focus, so the session pin steps back.
+    expect(container.querySelector("[data-waste-pin]")).toHaveStyle({ opacity: "0.25" })
+    // The pin and the flag share one key entry.
+    expect(screen.getByText("Failed check")).toBeInTheDocument()
+  })
+
+  it("puts the action under the key", () => {
+    renderChart()
+    const action = screen.getByRole("button", { name: "Optimise" })
+    expect(screen.getByRole("list", { name: "Layers" }).compareDocumentPosition(action)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
   })
 })

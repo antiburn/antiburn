@@ -14,6 +14,7 @@ import { OverviewAllowanceTotals } from "./OverviewAllowanceTotals"
 import { OverviewSpendChart } from "./OverviewSpendChart"
 import { OverviewSpendTotals } from "./OverviewSpendTotals"
 import type { WasteMarks } from "./wasteMarks"
+import { SHOW_WEEK_FLOWER } from "./weekChart"
 import {
   readOverviewViewPrefs,
   writeOverviewViewPrefs,
@@ -23,10 +24,6 @@ import {
 import "./overview.css"
 
 export type { OverviewMetric }
-
-// The week flower is off for now while the week lines are tried. Set this to
-// true to draw the flower again.
-const SHOW_WEEK_FLOWER = false
 
 const METRICS: ReadonlyArray<{ value: OverviewMetric; label: string }> = [
   { value: "cost", label: "Cost" },
@@ -63,7 +60,7 @@ export function OverviewUsage({
   onRetryUsage?: () => void
   /** False hides the hero figures above the chart. */
   showFigures?: boolean
-  /** The content in the middle of the allowance chart. */
+  /** The Optimise button: in the middle of the week flower, or under the week chart. */
   center?: ReactNode
   /** The wasteful sessions and config checks to mark on the allowance chart. */
   waste?: WasteMarks
@@ -161,7 +158,7 @@ export function OverviewUsage({
                 account={selectedAccount}
                 rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
                 controls={chartControls}
-                center={center}
+                action={center}
                 waste={waste}
               />
             ) : (

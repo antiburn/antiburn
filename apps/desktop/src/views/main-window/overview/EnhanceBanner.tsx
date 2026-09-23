@@ -1,5 +1,6 @@
 import { ArrowRight } from "lucide-react"
 
+import { cn } from "../../../lib/cn"
 import type { EnhanceButtonState } from "./enhanceState"
 
 function pillFace(state: EnhanceButtonState): {
@@ -64,14 +65,17 @@ export function EnhanceBanner({
   )
 }
 
-/** The round Optimise button. It sits in the middle of the allowance chart
- *  and opens the Optimise wizard. */
+/** The Optimise button. It opens the Optimise wizard. The round shape sits
+ *  in the middle of the week flower. The bar shape, a rounded rectangle,
+ *  sits under the week chart. */
 export function EnhanceOrb({
   state,
   onOpen,
+  shape = "round",
 }: {
   state: EnhanceButtonState
   onOpen: () => void
+  shape?: "round" | "bar"
 }) {
   const face = pillFace(state)
   return (
@@ -80,12 +84,17 @@ export function EnhanceOrb({
       aria-label={face.label}
       onClick={onOpen}
       data-quiet={face.calm ? "" : undefined}
-      className="enhance-pill enhance-orb group flex flex-col items-center justify-center gap-(--space-xs) type-title-3 font-semibold"
+      className={cn(
+        "enhance-pill group flex items-center justify-center gap-(--space-xs) font-semibold",
+        shape === "round"
+          ? "enhance-orb flex-col type-title-3"
+          : "enhance-bar px-(--space-xl) type-body",
+      )}
     >
       {face.action}
       <ArrowRight
         aria-hidden="true"
-        size={17}
+        size={shape === "round" ? 17 : 15}
         className="transition-transform duration-(--duration-medium) group-hover:translate-x-0.5"
       />
     </button>

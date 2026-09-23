@@ -7,7 +7,13 @@ import { ChartLegend, type ChartLegendItem } from "../../../components/ui/ChartL
 import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
 import { useEntranceProps } from "./overviewEntrance"
 import { OverviewRadialTooltip } from "./OverviewRadialTooltip"
-import { legendLayer, pinEmphasis, type RadialFocus, type RadialLayer } from "./radialFocus"
+import {
+  legendLayer,
+  pinEmphasis,
+  showsFlag,
+  type RadialFocus,
+  type RadialLayer,
+} from "./radialFocus"
 import {
   DAYS_PER_WEEK,
   LIMIT_PERCENT,
@@ -46,20 +52,23 @@ const AXIS_BOTTOM = 22
 const TOP_GAP = 8
 // Apart, the rows keep this gap.
 const ROW_GAP = 16
-// Pins stack up from the top of the plot, one step per session.
-const PIN_STEP = 6
-const PIN_LENGTH = 4
-const PIN_GAP = 4
+// Pin heads stack up from the top of the plot, one step per session. A stem
+// runs from each head down to its week's line.
+const PIN_STEP = 8
+const PIN_HEAD = 3
+const PIN_GAP = 6
 const MAX_PIN_ROWS = 5
-const PAST_PIN_OPACITY = 0.35
+const PAST_PIN_OPACITY = 0.45
+// The flag at the reset: a header line, then one row per config check.
+const FLAG_TOP = 10
+const FLAG_HEAD = 18
+const FLAG_ROW = 17
+const FLAG_SHARE_WIDTH = 30
+const FLAG_WIDTH = 230
 // Week labels on the right keep this far apart.
 const LABEL_GAP = 15
 // Parts out of focus fade to this share.
 const DIM_SHARE = 0.25
-// The Optimise button's size, as a share of the plot height, and its limits.
-const ORB_SHARE = 0.34
-const ORB_MIN = 64
-const ORB_MAX = 104
 // `layoutPins` places pins on the flower's ring. This chart reads only the
 // stack and the time of week, so the ring has no size.
 const NO_RING: Geometry = { cx: 0, cy: 0, inner: 0, outer: 0, hole: 0 }
@@ -87,7 +96,7 @@ const LIMIT_LEGEND: ChartLegendItem = {
 }
 const WASTE_LEGEND: ChartLegendItem = {
   key: "waste",
-  label: "Wasteful session",
+  label: "Failed check",
   swatch: "bg-brand",
   shape: "line",
 }
@@ -155,20 +164,26 @@ function spokeStrong(spoke: Spoke, focus: RadialFocus | null): boolean {
  *
  *  Every part reacts to the pointer. The pointer snaps to a limit hit, a
  *  week's line, a 5-hour curve or the average line, and otherwise reads the
- *  time. A week label, a key entry, a day, a pin or the Optimise button
- *  brings its part forward. The rest fades, and a card tells the numbers. */
+ *  time. A week label, a key entry, a day, a pin, a config row or the
+ *  Optimise button brings its part forward. The rest fades, and a card tells
+ *  the numbers.
+ *
+ *  Failed checks show on the chart. A pin marks each wasteful session: its
+ *  stem runs down to a dot on its week's line at the session's time. The
+ *  config checks fail in most sessions, so a flag at the reset shows each
+ *  one once, with its share of sessions. */
 export function OverviewAllowanceWeeks({
   account,
   rangeEndEpoch,
   controls,
-  center,
+  action,
   waste,
 }: {
   account: AllowanceUsageAccountPayload
   rangeEndEpoch: number
   controls?: ReactNode
-  /** The content in the empty top left of the plot. */
-  center?: ReactNode
+  /** The action under the key, in the middle. */
+  action?: ReactNode
   waste?: WasteMarks | undefined
 }) {
   const frameRef = useRef<HTMLDivElement | null>(null)
@@ -197,13 +212,14 @@ export function OverviewAllowanceWeeks({
   const limits = limitStretches(weeks, current)
   const shortLimits = spokes.filter((spoke) => spoke.peakPercent >= LIMIT_PERCENT).length
   const pins = waste?.pins ?? []
+  const config = waste?.config ?? []
   const { placed } = layoutPins(NO_RING, weeks, current, pins)
   const pinRows = Math.min(MAX_PIN_ROWS, Math.max(0, ...placed.map((item) => item.stack + 1)))
 
   const plot: Plot = {
     x0: AXIS_LEFT,
     x1: Math.max(AXIS_LEFT, width - LABEL_ROOM),
-    y0: TOP_GAP + (pinRows ? PIN_GAP + pinRows * PIN_STEP : 0),
+    y0: TOP_GAP + (pinRows ? PIN_GAP + PIN_HEAD + pinRows * PIN_STEP : 0),
     y1: Math.max(0, height - AXIS_BOTTOM),
   }
   const ready = clock != null && plot.x1 - plot.x0 > 40 && plot.y1 - plot.y0 > 40
@@ -271,7 +287,8 @@ export function OverviewAllowanceWeeks({
     (rolling != null ? ` Average usage is ${Math.round(rolling)} percent.` : "") +
     (limits.length ? ` The weekly limit was hit in ${limits.length} of these weeks.` : "") +
     (shortLimits ? ` The 5-hour limit was hit in ${shortLimits} of the 5-hour windows.` : "") +
-    (placed.length ? ` ${placed.length} wasteful sessions are pinned by time of week.` : "")
+    (placed.length ? ` ${placed.length} wasteful sessions are pinned by time of week.` : "") +
+    (config.length ? ` ${config.length} config checks fail, flagged at the reset.` : "")
 
   function trackPointer(event: PointerEvent<SVGSVGElement>) {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -295,7 +312,7 @@ export function OverviewAllowanceWeeks({
     ...(spokes.length ? [SHORT_LEGEND] : []),
     ...(rolling != null && !apart ? [ROLLING_LEGEND] : []),
     ...(limits.length || shortLimits ? [LIMIT_LEGEND] : []),
-    ...(placed.length ? [WASTE_LEGEND] : []),
+    ...(placed.length || config.length ? [WASTE_LEGEND] : []),
   ]
   const activeKey =
     colours && focus?.kind === "week"
@@ -309,9 +326,7 @@ export function OverviewAllowanceWeeks({
         translate: `${pointer.x > width / 2 ? "-100%" : "0"} ${pointer.y > height / 2 ? "-100%" : "0"}`,
       }
     : undefined
-  const orbSize = Math.round(
-    Math.min(ORB_MAX, Math.max(ORB_MIN, (plot.y1 - plot.y0) * ORB_SHARE)),
-  )
+  const flagLit = showsFlag(focus)
 
   return (
     <section className="overview-chart overview-weeks" aria-label="Allowance chart">
@@ -598,9 +613,14 @@ export function OverviewAllowanceWeeks({
               {placed.map((item) => {
                 const x = plotX(plot, item.fraction)
                 const band = bandOf(item.weekStart)
-                const y = apart
-                  ? band.top + PIN_LENGTH + 1 + item.stack * PIN_STEP
+                const week = weeks.find((window) => window.startsAtEpoch === item.weekStart)
+                const level = week ? levelAt(week, item.fraction) : null
+                const head = apart
+                  ? band.top + PIN_HEAD + 1 + item.stack * PIN_STEP
                   : plot.y0 - PIN_GAP - item.stack * PIN_STEP
+                // The stem ends on the week's line, at the session's time. A pin
+                // past the line's last reading has no stem.
+                const stem = level == null ? 0 : Math.max(0, bandY(band, level) - head)
                 const hovered = focus?.kind === "pin" && focus.key === item.key
                 const opacity = opacityOf(
                   pinEmphasis(item, focus),
@@ -610,26 +630,115 @@ export function OverviewAllowanceWeeks({
                   <g
                     key={item.key}
                     data-waste-pin={item.pin.detector}
-                    className="week-move cursor-pointer"
-                    style={{ transform: `translate(${x}px, ${y}px)`, opacity }}
-                    {...hold({ kind: "pin", key: item.key, detector: item.pin.detector })}
-                    onClick={() => waste?.onOpen?.(item.pin)}
+                    className="week-move"
+                    style={{ transform: `translate(${x}px, ${head}px)`, opacity }}
                   >
                     <line
                       y1={0}
-                      y2={-PIN_LENGTH}
-                      className="stroke-brand"
-                      strokeWidth={hovered ? 4 : 2.5}
+                      y2={1}
+                      className="week-stem pointer-events-none stroke-brand"
+                      style={{ transform: `scaleY(${stem.toFixed(2)})` }}
+                      strokeWidth={hovered ? 1.5 : 1}
+                      strokeOpacity={hovered ? 1 : 0.55}
+                      vectorEffect="non-scaling-stroke"
                     />
-                    <line
-                      y1={2}
-                      y2={-PIN_LENGTH - 2}
-                      className="stroke-transparent"
-                      strokeWidth={PIN_STEP + 2}
+                    <circle
+                      r={hovered ? 3.5 : 2.5}
+                      className="week-move pointer-events-none fill-brand stroke-surface"
+                      style={{ transform: `translateY(${stem.toFixed(2)}px)` }}
+                      strokeWidth={1}
                     />
+                    <g
+                      className="cursor-pointer"
+                      {...hold({ kind: "pin", key: item.key, detector: item.pin.detector })}
+                      onClick={() => waste?.onOpen?.(item.pin)}
+                    >
+                      <circle r={PIN_HEAD + 3} className="fill-transparent" />
+                      <circle
+                        r={hovered ? PIN_HEAD + 1.5 : PIN_HEAD}
+                        className="fill-brand stroke-surface"
+                        strokeWidth={1}
+                      />
+                    </g>
                   </g>
                 )
               })}
+
+              {config.length > 0 && (
+                <g
+                  data-waste-flag=""
+                  className="week-grid"
+                  style={{ opacity: apart ? 0 : flagLit ? 1 : DIM_SHARE }}
+                  pointerEvents={apart ? "none" : undefined}
+                >
+                  <line
+                    x1={plot.x0}
+                    y1={plot.y1}
+                    x2={plot.x0}
+                    y2={plot.y0 + FLAG_TOP}
+                    className="stroke-brand"
+                    strokeWidth={1.5}
+                  />
+                  <circle
+                    cx={plot.x0}
+                    cy={plot.y1}
+                    r={3}
+                    className="fill-brand stroke-surface"
+                  />
+                  <circle cx={plot.x0} cy={plot.y0 + FLAG_TOP} r={3} className="fill-brand" />
+                  <text
+                    x={plot.x0 + 10}
+                    y={plot.y0 + FLAG_TOP}
+                    dominantBaseline="middle"
+                    className="type-caption fill-label-tertiary stroke-surface"
+                    strokeWidth={3}
+                    paintOrder="stroke"
+                  >
+                    Config checks · share of sessions
+                  </text>
+                  {config.map((item, index) => {
+                    const y = plot.y0 + FLAG_TOP + FLAG_HEAD + index * FLAG_ROW
+                    const lit = focus?.kind !== "config" || focus.detector === item.detector
+                    return (
+                      <g
+                        key={item.detector}
+                        data-week-config={item.detector}
+                        style={{ opacity: lit ? 1 : DIM_SHARE }}
+                        {...hold({ kind: "config", detector: item.detector })}
+                      >
+                        <rect
+                          x={plot.x0 + 6}
+                          y={y - FLAG_ROW / 2}
+                          width={FLAG_WIDTH}
+                          height={FLAG_ROW}
+                          className="fill-transparent"
+                        />
+                        <text
+                          x={plot.x0 + 10 + FLAG_SHARE_WIDTH}
+                          y={y}
+                          textAnchor="end"
+                          dominantBaseline="middle"
+                          className="type-callout font-semibold tabular-nums fill-brand stroke-surface"
+                          strokeWidth={3}
+                          paintOrder="stroke"
+                        >
+                          {Math.round(item.share * 100)}%
+                        </text>
+                        <text
+                          x={plot.x0 + 18 + FLAG_SHARE_WIDTH}
+                          y={y}
+                          dominantBaseline="middle"
+                          className="type-callout fill-label-secondary stroke-surface"
+                          strokeWidth={3}
+                          paintOrder="stroke"
+                        >
+                          {item.label}
+                        </text>
+                      </g>
+                    )
+                  })}
+                </g>
+              )}
 
               {newest.map((week, index) => {
                 const band = bandOf(week.startsAtEpoch)
@@ -714,26 +823,6 @@ export function OverviewAllowanceWeeks({
               })}
             </svg>
 
-            {center && !apart && (
-              // The weeks rise from the bottom left, so the top left stays empty.
-              <div
-                className="absolute"
-                style={
-                  {
-                    left: plot.x0 + 16,
-                    top: plot.y0 + 12,
-                    "--overview-hole-size": `${orbSize}px`,
-                  } as CSSProperties
-                }
-                onPointerEnter={() =>
-                  placed.length > 0 && setExplicit({ kind: "layer", layer: "waste" })
-                }
-                onPointerLeave={() => setExplicit(null)}
-              >
-                {center}
-              </div>
-            )}
-
             {focus && tooltipStyle && (
               <OverviewRadialTooltip
                 focus={focus}
@@ -747,7 +836,7 @@ export function OverviewAllowanceWeeks({
                   rolling,
                   limits,
                   placed,
-                  config: [],
+                  config,
                 }}
                 style={tooltipStyle}
               />
@@ -771,6 +860,18 @@ export function OverviewAllowanceWeeks({
           )
         }
       />
+      {action && (
+        <div
+          className="mt-(--space-md) flex justify-center"
+          onPointerEnter={() =>
+            (placed.length > 0 || config.length > 0) &&
+            setExplicit({ kind: "layer", layer: "waste" })
+          }
+          onPointerLeave={() => setExplicit(null)}
+        >
+          {action}
+        </div>
+      )}
     </section>
   )
 }

@@ -152,6 +152,12 @@
   inline-size: var(--overview-hole-size, 88px);
 }
 
+/* The Optimise button under the week chart: a rounded rectangle with the
+   word and the arrow on one line. */
+.enhance-pill.enhance-bar {
+  border-radius: var(--radius-popover);
+}
+
 /* The dot-meter link between two Enhance steps. Lit links carry the brand
    colour up to the current step. */
 .enhance-step-link {
@@ -471,7 +477,7 @@
 }
 
 .week-tone-4 {
-  --week: var(--color-system-green);
+  --week: var(--color-check-depth);
 }
 
 .week-tone-5 {
@@ -487,13 +493,15 @@
  * transform moves them into the week's row. The rows leave one after the
  * other (`--row`). The labels and pins move the same way, with no scale.
  */
-.week-band {
+.week-band,
+.week-stem {
   transform-box: view-box;
   transform-origin: 0 0;
 }
 
 .week-band,
-.week-move {
+.week-move,
+.week-stem {
   transition:
     transform calc(var(--duration-slow) * 2) var(--ease-out-quart),
     opacity var(--duration-fast) var(--ease-out-quart);
@@ -507,6 +515,7 @@
 @media (prefers-reduced-motion: reduce) {
   .week-band,
   .week-move,
+  .week-stem,
   .week-grid {
     transition: none;
   }

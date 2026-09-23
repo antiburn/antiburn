@@ -15,6 +15,7 @@ import { EnhanceWizard, type EnhanceStep } from "./overview/EnhanceWizard"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 // import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
+import { SHOW_WEEK_FLOWER } from "./overview/weekChart"
 import { enhanceButtonState } from "./overview/enhanceState"
 import { pinnedDetectors, wasteMarks } from "./overview/wasteMarks"
 import {
@@ -187,7 +188,13 @@ export function OverviewView({
                 usageError={state.usageError}
                 onRetryUsage={session.refresh}
                 showFigures={false}
-                center={<EnhanceOrb state={buttonState} onOpen={openEnhance} />}
+                center={
+                  <EnhanceOrb
+                    state={buttonState}
+                    onOpen={openEnhance}
+                    shape={SHOW_WEEK_FLOWER ? "round" : "bar"}
+                  />
+                }
                 waste={waste}
                 loading={loading}
               />
