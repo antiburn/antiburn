@@ -182,7 +182,7 @@ export function ScanStep({ state }: { state: BurnChecksSnapshot }) {
         </span>
         {found > 0 && ", biggest first on the next step."}
       </p>
-      <ul aria-label="Burn checks" className="flex max-w-3xl flex-col gap-(--space-sm)">
+      <ul aria-label="Burn checks" className="flex flex-col gap-(--space-sm)">
         {ordered.map((check) => (
           <ScanTile
             key={check.id}
@@ -217,27 +217,29 @@ function FixCard({
     <article
       ref={trackTargets}
       aria-label={row.label}
-      className="flex flex-col gap-(--space-sm) rounded-(--radius-popover) bg-surface-sidebar p-(--space-lg) shadow-[var(--shadow-stats-card)]"
+      className="flex items-center gap-(--space-xl) rounded-(--radius-popover) bg-surface-sidebar p-(--space-lg) shadow-[var(--shadow-stats-card)]"
     >
-      <header className="flex items-start gap-(--space-sm)">
-        <span
-          aria-hidden="true"
-          className={cn("grid size-7 shrink-0 place-items-center rounded-full", row.iconTone)}
-        >
-          <row.Icon size={14} />
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <h3 className="type-headline text-label">{row.label}</h3>
-          <p className="type-caption tabular-nums text-label-secondary">
-            {[row.summary, row.metric, row.costLine].filter(Boolean).join(" · ")}
-          </p>
-        </div>
-      </header>
-      <p className="type-body text-pretty text-label">{CHECK_SENTENCES[check.id]}</p>
-      <p className="type-callout text-pretty text-label-secondary">
-        {CHECK_UI[check.id].recommendation}
-      </p>
-      <div className="pt-(--space-xs)">
+      <div className="flex min-w-0 flex-1 flex-col gap-(--space-sm)">
+        <header className="flex items-start gap-(--space-sm)">
+          <span
+            aria-hidden="true"
+            className={cn("grid size-7 shrink-0 place-items-center rounded-full", row.iconTone)}
+          >
+            <row.Icon size={14} />
+          </span>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <h3 className="type-headline text-label">{row.label}</h3>
+            <p className="type-caption tabular-nums text-label-secondary">
+              {[row.summary, row.metric, row.costLine].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+        </header>
+        <p className="type-body text-pretty text-label">{CHECK_SENTENCES[check.id]}</p>
+        <p className="type-callout text-pretty text-label-secondary">
+          {CHECK_UI[check.id].recommendation}
+        </p>
+      </div>
+      <div className="shrink-0">
         {targets?.data ? (
           <CheckDetailActions
             detector={check.id}
@@ -269,7 +271,7 @@ export function FixStep({
   if (!checks) return <Waiting>Running burn checks…</Waiting>
   const { presentation, snoozes } = checks
   return (
-    <div className="flex max-w-3xl flex-col gap-(--space-lg)">
+    <div className="flex flex-col gap-(--space-lg)">
       {presentation.failures.length === 0 ? (
         <p className="type-body text-label-secondary">
           Nothing to fix. Every check passed, or you snoozed it.
