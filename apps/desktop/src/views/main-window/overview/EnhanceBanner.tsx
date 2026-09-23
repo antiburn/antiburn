@@ -32,7 +32,7 @@ function pillFace(state: EnhanceButtonState): {
   }
 }
 
-/** The Optimise card. It floats on the blur scrim over the Overview. It
+/** The Optimise card. It sits at the top of the blur scrim over the config checks. It
  *  names the failing checks. The pill opens the Optimise wizard. */
 export function EnhanceBanner({
   failingLabels,
@@ -50,33 +50,35 @@ export function EnhanceBanner({
   return (
     <section
       aria-label="Optimise"
-      className="enhance-banner flex w-full max-w-md flex-col items-center gap-(--space-lg) rounded-(--radius-popover) p-(--space-2xl) text-center"
+      className="enhance-banner flex w-full items-center gap-(--space-xl) rounded-(--radius-popover) py-(--space-md) pr-(--space-md) pl-(--space-xl)"
     >
-      <h2 className="type-title-2 font-semibold text-label">
-        {failingLabels == null
-          ? "Checking your config…"
-          : count === 0
-            ? "No fixes needed in your config"
-            : `${count} ${count === 1 ? "fix" : "fixes"} found in your config`}
-      </h2>
-      {failingLabels != null && count > 0 && (
-        <p id={statusId} className="type-body text-label-secondary">
-          {failingLabels.slice(0, 3).join(", ")}
-          {count > 3 ? `, +${count - 3} more` : ""}
-        </p>
-      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-(--space-xs)">
+        <h2 className="type-body font-semibold text-label">
+          {failingLabels == null
+            ? "Checking your config…"
+            : count === 0
+              ? "No fixes needed in your config"
+              : `${count} ${count === 1 ? "fix" : "fixes"} found in your config`}
+        </h2>
+        {failingLabels != null && count > 0 && (
+          <p id={statusId} className="truncate type-footnote text-label-secondary">
+            {failingLabels.slice(0, 3).join(", ")}
+            {count > 3 ? `, +${count - 3} more` : ""}
+          </p>
+        )}
+      </div>
       <button
         type="button"
         aria-label={face.label}
         aria-describedby={failingLabels != null && count > 0 ? statusId : undefined}
         onClick={onOpen}
         data-quiet={face.calm ? "" : undefined}
-        className="enhance-pill group flex shrink-0 items-center gap-(--space-sm) px-(--space-2xl) type-title-3 font-semibold whitespace-nowrap"
+        className="enhance-pill group flex shrink-0 items-center gap-(--space-sm) px-(--space-xl) type-body font-semibold whitespace-nowrap"
       >
         {face.action}
         <ArrowRight
           aria-hidden="true"
-          size={17}
+          size={15}
           className="transition-transform duration-(--duration-medium) group-hover:translate-x-0.5"
         />
       </button>
