@@ -6,7 +6,7 @@ import { CountPill } from "./CountPill"
 
 /** A nested row under a top-level `SidebarNavItem`, one level deep. A child
  *  needs no icon of its own. */
-export type SidebarNavChildItem = {
+type SidebarNavChildItem = {
   id: string
   label: string
   icon?: LucideIcon

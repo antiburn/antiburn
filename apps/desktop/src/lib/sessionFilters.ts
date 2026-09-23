@@ -9,7 +9,6 @@ import {
   FIXED_SESSION_FILTERS,
   type SessionFilter,
 } from "./navigation/sessionFilterDefinitions"
-export type { SessionFilter } from "./navigation/sessionFilterDefinitions"
 
 /** A priced session counts as Material at or above this cost, in US dollars. */
 export const MATERIAL_COST_FLOOR_USD = 1
@@ -70,7 +69,7 @@ export function parseSessionFilters(saved: string): SessionFilters {
 }
 
 /** Parse a legacy filter. Preserve unknown agents and reset unknown kinds. */
-export function parseSessionFilterId(id: string): SessionFilter {
+function parseSessionFilterId(id: string): SessionFilter {
   const fixed = FIXED_SESSION_FILTERS.find((filter) => filter.id === id)
   if (fixed) return { kind: fixed.id }
   if (id.startsWith("agent:")) {
