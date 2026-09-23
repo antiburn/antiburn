@@ -4,13 +4,13 @@ import { cn } from "../../lib/cn"
 
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
-import { CHECK_LABELS, checksPresentation } from "../../lib/presentation/checks"
+import { checksPresentation } from "../../lib/presentation/checks"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import { type BurnChecksSession } from "./BurnChecksSession"
 import { type MainOverviewSession } from "./MainOverviewSession"
-import { EnhanceBanner } from "./overview/EnhanceBanner"
+import { EnhanceOrb } from "./overview/EnhanceBanner"
 import { EnhanceWizard, type EnhanceStep } from "./overview/EnhanceWizard"
-import { OverviewConfigChecks } from "./overview/OverviewConfigChecks"
+// import { OverviewConfigChecks } from "./overview/OverviewConfigChecks"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 // import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
@@ -177,13 +177,13 @@ export function OverviewView({
                 usageError={state.usageError}
                 onRetryUsage={session.refresh}
                 showFigures={false}
+                center={<EnhanceOrb state={buttonState} onOpen={openEnhance} />}
                 loading={loading}
               />
 
-              {/* The config checks sit under a blur scrim. The Optimise card
-                  floats on the scrim. The checks under the scrim are inert, so
-                  the Optimise pill is the one action there. */}
-              <div className="relative flex min-h-64 flex-col">
+              {/* The config checks and the Optimise card are off for now, while the
+                  round Optimise button in the chart is tried alone.
+                            <div className="relative flex min-h-64 flex-col">
                 {checkGroups && (
                   <div inert>
                     <OverviewConfigChecks
@@ -197,11 +197,10 @@ export function OverviewView({
                     failingLabels={
                       checkGroups?.failures.map((check) => CHECK_LABELS[check.id]) ?? null
                     }
-                    state={buttonState}
-                    onOpen={openEnhance}
                   />
                 </div>
               </div>
+              */}
 
               {/* Recent sessions is off for now, while the Optimise card is tried alone.
               <OverviewRecentSessions

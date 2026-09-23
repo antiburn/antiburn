@@ -10,7 +10,8 @@ import { ChartLegend } from "../../../components/ui/ChartLegend"
 // One unit is one pixel at full size, so the axis labels keep the shared tick size.
 const SIZE = 320
 const CENTER = SIZE / 2
-const INNER_RADIUS = 20
+// The hole holds the round Optimise button.
+const INNER_RADIUS = 52
 const OUTER_RADIUS = 140
 const DAYS_PER_WEEK = 7
 
@@ -76,10 +77,13 @@ export function OverviewAllowanceRadial({
   account,
   rangeEndEpoch,
   controls,
+  center,
 }: {
   account: AllowanceUsageAccountPayload
   rangeEndEpoch: number
   controls?: ReactNode
+  /** The content in the hole of the chart. */
+  center?: ReactNode
 }) {
   const weeks = account.chart.weeklyWindows.filter((window) => window.lane === "weekly")
   const current = weeks.find(
@@ -120,107 +124,113 @@ export function OverviewAllowanceRadial({
     (latestRolling != null ? ` Average usage is ${Math.round(latestRolling)} percent.` : "")
 
   return (
-    <section className="overview-chart" aria-label="Allowance chart by week">
+    <section className="overview-chart" aria-label="Allowance chart">
       <p className="sr-only">{summary}</p>
       <div className="overview-chart-legend mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
         <ChartLegend ariaLabel="Layers" items={LEGEND_ITEMS} />
         {controls}
       </div>
-      <svg
-        viewBox={`0 0 ${SIZE} ${SIZE}`}
-        className="mx-auto block aspect-square w-full max-w-80"
-        aria-hidden="true"
-      >
-        {[50, 100].map((percent) => (
-          <circle
-            key={percent}
-            cx={CENTER}
-            cy={CENTER}
-            r={radius(percent)}
-            fill="none"
-            stroke="var(--color-separator)"
-            strokeWidth={1}
-          />
-        ))}
-        {Array.from({ length: DAYS_PER_WEEK }, (_, day) => {
-          const from = polar(day / DAYS_PER_WEEK, INNER_RADIUS)
-          const to = polar(day / DAYS_PER_WEEK, OUTER_RADIUS)
-          return (
-            <line
-              key={day}
-              x1={from.x}
-              y1={from.y}
-              x2={to.x}
-              y2={to.y}
+      <div className="relative mx-auto aspect-square w-full max-w-80">
+        <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="block size-full" aria-hidden="true">
+          {[50, 100].map((percent) => (
+            <circle
+              key={percent}
+              cx={CENTER}
+              cy={CENTER}
+              r={radius(percent)}
+              fill="none"
               stroke="var(--color-separator)"
               strokeWidth={1}
             />
-          )
-        })}
-
-        {spokes.map((spoke) => (
-          <line
-            key={spoke.key}
-            x1={spoke.from.x}
-            y1={spoke.from.y}
-            x2={spoke.to.x}
-            y2={spoke.to.y}
-            className="stroke-context-stroke/20"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-          />
-        ))}
-
-        {past.map((window) => {
-          const petal = petalPath(window)
-          if (!petal) return null
-          return (
-            <g key={window.startsAtEpoch}>
-              <path d={petal.area} className="fill-context-stroke/[0.07]" />
-              <path
-                d={petal.edge}
-                fill="none"
-                className="stroke-context-stroke/35"
+          ))}
+          {Array.from({ length: DAYS_PER_WEEK }, (_, day) => {
+            const from = polar(day / DAYS_PER_WEEK, INNER_RADIUS)
+            const to = polar(day / DAYS_PER_WEEK, OUTER_RADIUS)
+            return (
+              <line
+                key={day}
+                x1={from.x}
+                y1={from.y}
+                x2={to.x}
+                y2={to.y}
+                stroke="var(--color-separator)"
                 strokeWidth={1}
               />
-            </g>
-          )
-        })}
+            )
+          })}
 
-        {latestRolling != null && (
-          <circle
-            cx={CENTER}
-            cy={CENTER}
-            r={radius(latestRolling)}
-            fill="none"
-            className="stroke-gray-500"
-            strokeWidth={1}
-          />
-        )}
-
-        {currentPetal && (
-          <g>
-            <path d={currentPetal.area} className="fill-context-stroke/25" />
-            <path
-              d={currentPetal.edge}
-              fill="none"
-              className="stroke-context-stroke"
-              strokeWidth={2}
-              strokeLinejoin="round"
+          {spokes.map((spoke) => (
+            <line
+              key={spoke.key}
+              x1={spoke.from.x}
+              y1={spoke.from.y}
+              x2={spoke.to.x}
+              y2={spoke.to.y}
+              className="stroke-context-stroke/20"
+              strokeWidth={2.5}
+              strokeLinecap="round"
             />
-          </g>
-        )}
-        {currentTip && (
-          <circle cx={currentTip.x} cy={currentTip.y} r={3.5} className="fill-context-stroke" />
-        )}
+          ))}
 
-        <text x={CENTER + 5} y={CENTER - radius(100) - 5} textAnchor="start" {...AXIS_TICK}>
-          100% · reset
-        </text>
-        <text x={CENTER + 5} y={CENTER - radius(50) - 4} textAnchor="start" {...AXIS_TICK}>
-          50%
-        </text>
-      </svg>
+          {past.map((window) => {
+            const petal = petalPath(window)
+            if (!petal) return null
+            return (
+              <g key={window.startsAtEpoch}>
+                <path d={petal.area} className="fill-context-stroke/[0.07]" />
+                <path
+                  d={petal.edge}
+                  fill="none"
+                  className="stroke-context-stroke/35"
+                  strokeWidth={1}
+                />
+              </g>
+            )
+          })}
+
+          {latestRolling != null && (
+            <circle
+              cx={CENTER}
+              cy={CENTER}
+              r={radius(latestRolling)}
+              fill="none"
+              className="stroke-gray-500"
+              strokeWidth={1}
+            />
+          )}
+
+          {currentPetal && (
+            <g>
+              <path d={currentPetal.area} className="fill-context-stroke/25" />
+              <path
+                d={currentPetal.edge}
+                fill="none"
+                className="stroke-context-stroke"
+                strokeWidth={2}
+                strokeLinejoin="round"
+              />
+            </g>
+          )}
+          {currentTip && (
+            <circle
+              cx={currentTip.x}
+              cy={currentTip.y}
+              r={3.5}
+              className="fill-context-stroke"
+            />
+          )}
+
+          <text x={CENTER + 5} y={CENTER - radius(100) - 5} textAnchor="start" {...AXIS_TICK}>
+            100% · reset
+          </text>
+          <text x={CENTER + 5} y={CENTER - radius(50) - 4} textAnchor="start" {...AXIS_TICK}>
+            50%
+          </text>
+        </svg>
+        {center && (
+          <div className="absolute inset-0 flex items-center justify-center">{center}</div>
+        )}
+      </div>
     </section>
   )
 }

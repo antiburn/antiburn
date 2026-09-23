@@ -204,7 +204,7 @@ describe("OverviewUsage", () => {
     })
     fireEvent.click(screen.getByRole("radio", { name: "Codex" }))
     expect(screen.getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByText(/Codex: not enough window history/)).toBeInTheDocument()
+    expect(screen.getByText(/Codex: 0 weekly windows/)).toBeInTheDocument()
     expect(onMetricChange).not.toHaveBeenCalled()
     expect(JSON.parse(localStorage.getItem("antiburn.overview.view.v1")!)).toEqual({
       accountTabKey: "openai:second",

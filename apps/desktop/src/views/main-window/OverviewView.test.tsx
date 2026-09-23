@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
+import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { BurnChecksSession } from "./BurnChecksSession"
@@ -16,12 +17,15 @@ vi.mock("./overview/OverviewUsage", () => ({
     metric,
     onMetricChange,
     loading,
+    center,
   }: {
     metric: OverviewMetric
     onMetricChange: (metric: OverviewMetric) => void
     loading?: boolean
+    center?: ReactNode
   }) => (
     <div>
+      {center}
       <output aria-label="Usage metric">{metric}</output>
       <output aria-label="Usage state">{loading ? "held" : "shown"}</output>
       <button onClick={() => onMetricChange("cost")}>Cost</button>

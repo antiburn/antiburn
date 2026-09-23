@@ -145,6 +145,12 @@
   box-shadow: inset 0 0 0 1px var(--color-separator);
 }
 
+/* The round Optimise button in the middle of the allowance chart. */
+.enhance-pill.enhance-orb {
+  block-size: 88px;
+  inline-size: 88px;
+}
+
 /* The dot-meter link between two Enhance steps. Lit links carry the brand
    colour up to the current step. */
 .enhance-step-link {
