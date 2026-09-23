@@ -700,6 +700,10 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
             window_lifecycle::trace_page_load::<PopoverState>(window, payload, LABEL);
         });
 
+    // Give Linux window rules a title that identifies only the popover.
+    #[cfg(target_os = "linux")]
+    let builder = builder.title("antiburn Usage Popover");
+
     // Let the first click both focus the popover and act on the control under
     // the cursor; a menu-bar surface that eats the first click feels broken.
     //
