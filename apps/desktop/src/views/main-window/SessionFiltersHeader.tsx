@@ -1,4 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
+import * as TooltipPrimitive from "@radix-ui/react-tooltip"
 import { Check, ListFilter, X } from "lucide-react"
 import { useCallback, useRef, useState, type MouseEvent, type RefObject } from "react"
 
@@ -217,7 +218,9 @@ export function SessionFiltersHeader({
   const filterButtonRef = triggerRef ?? localTriggerRef
   const chipRefs = useRef(new Map<string, HTMLButtonElement>())
   const [menuOpen, setMenuOpen] = useState(false)
+  const [filterTooltipOpen, setFilterTooltipOpen] = useState(false)
   const pointerOpened = useRef(false)
+  const pointerDismissed = useRef(false)
   const observeMenu = useCallback(
     (content: HTMLDivElement | null) => {
       if (!content) return
@@ -225,7 +228,10 @@ export function SessionFiltersHeader({
         content,
         trigger: () => filterButtonRef.current,
         pointerOpened: pointerOpened.current,
-        onDismiss: () => setMenuOpen(false),
+        onDismiss: () => {
+          pointerDismissed.current = true
+          setMenuOpen(false)
+        },
       })
     },
     [filterButtonRef],
@@ -320,28 +326,59 @@ export function SessionFiltersHeader({
               {days === 1 ? "Today" : `${days} days`}
             </button>
           </Tooltip>
-          <DropdownMenu.Root modal={false} open={menuOpen} onOpenChange={setMenuOpen}>
-            <Tooltip label="Filter sessions" side="bottom">
-              <DropdownMenu.Trigger asChild>
-                <button
-                  ref={filterButtonRef}
-                  type="button"
-                  onPointerDown={(event) => {
-                    pointerOpened.current = event.pointerType === "mouse"
-                  }}
-                  onKeyDown={() => {
-                    pointerOpened.current = false
-                  }}
-                  aria-label="Filters"
-                  className="session-filter-target relative inline-flex h-[var(--control-height-regular)] w-[var(--control-height-regular)] shrink-0 items-center justify-center rounded-full text-label-secondary hover:bg-surface-hover hover:text-label data-[state=open]:bg-surface-selected data-[state=open]:text-label"
-                >
-                  <ListFilter size={14} aria-hidden="true" />
-                </button>
-              </DropdownMenu.Trigger>
-            </Tooltip>
+          <DropdownMenu.Root
+            modal={false}
+            open={menuOpen}
+            onOpenChange={(open) => {
+              pointerDismissed.current = false
+              setFilterTooltipOpen(false)
+              setMenuOpen(open)
+            }}
+          >
+            <TooltipPrimitive.Provider delayDuration={600}>
+              <TooltipPrimitive.Root
+                open={filterTooltipOpen && !menuOpen}
+                onOpenChange={(open) => setFilterTooltipOpen(open && !menuOpen)}
+              >
+                <DropdownMenu.Trigger asChild>
+                  <TooltipPrimitive.Trigger asChild>
+                    <button
+                      ref={filterButtonRef}
+                      type="button"
+                      onPointerDown={(event) => {
+                        pointerOpened.current = event.pointerType === "mouse"
+                      }}
+                      onKeyDown={() => {
+                        pointerOpened.current = false
+                      }}
+                      aria-label="Filters"
+                      className="session-filter-target relative inline-flex h-[var(--control-height-regular)] w-[var(--control-height-regular)] shrink-0 items-center justify-center rounded-full text-label-secondary hover:bg-surface-hover hover:text-label data-[state=open]:bg-surface-selected data-[state=open]:text-label"
+                    >
+                      <ListFilter size={14} aria-hidden="true" />
+                    </button>
+                  </TooltipPrimitive.Trigger>
+                </DropdownMenu.Trigger>
+                {!menuOpen && (
+                  <TooltipPrimitive.Portal>
+                    <TooltipPrimitive.Content
+                      side="bottom"
+                      sideOffset={4}
+                      collisionPadding={8}
+                      className="ui-tooltip max-w-[220px] whitespace-normal"
+                    >
+                      Filter sessions
+                    </TooltipPrimitive.Content>
+                  </TooltipPrimitive.Portal>
+                )}
+              </TooltipPrimitive.Root>
+            </TooltipPrimitive.Provider>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
                 ref={observeMenu}
+                onCloseAutoFocus={(event) => {
+                  if (pointerDismissed.current) event.preventDefault()
+                  pointerDismissed.current = false
+                }}
                 className="ui-menu session-filters-menu min-w-56"
                 side="bottom"
                 align="end"

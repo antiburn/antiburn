@@ -64,7 +64,10 @@ function openFilters() {
 }
 
 describe("SessionFiltersHeader", () => {
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
 
   it.each([true, false])("adds a drag region only on macOS (%s)", (macOS) => {
     vi.spyOn(platform, "isMacOS").mockReturnValue(macOS)
@@ -92,18 +95,31 @@ describe("SessionFiltersHeader", () => {
     expect(container.querySelector("[data-active-session-filters]")).toBeNull()
   })
 
-  it("describes the icon trigger on focus and opens the menu from the keyboard", async () => {
-    render(<SessionFiltersHeader {...props()} />)
-    const trigger = screen.getByRole("button", { name: "Filters" })
-    act(() => trigger.focus())
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Filter sessions")
-    fireEvent.keyDown(trigger, { key: "Enter" })
-    expect(await screen.findByRole("menu")).toBeInTheDocument()
-    expect(trigger).toHaveAttribute("aria-expanded", "true")
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
-    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
-    await waitFor(() => expect(trigger).toHaveFocus())
-  })
+  it.each(["keyboard", "mouse"])(
+    "dismisses the trigger tooltip when opening by %s",
+    async (input) => {
+      render(<SessionFiltersHeader {...props()} />)
+      const trigger = screen.getByRole("button", { name: "Filters" })
+      if (input === "keyboard") act(() => trigger.focus())
+      else fireEvent.pointerMove(trigger, { pointerType: "mouse" })
+      expect(await screen.findByRole("tooltip")).toHaveTextContent("Filter sessions")
+      if (input === "keyboard") fireEvent.keyDown(trigger, { key: "Enter" })
+      else openFilters()
+      expect(await screen.findByRole("menu")).toBeInTheDocument()
+      expect(trigger).toHaveAttribute("aria-expanded", "true")
+      expect(trigger).toHaveAttribute("data-state", "open")
+      expect(document.querySelector(".ui-tooltip")).toBeNull()
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+      vi.useFakeTimers()
+      fireEvent.pointerLeave(trigger, { pointerType: "mouse" })
+      fireEvent.pointerMove(trigger, { pointerType: "mouse" })
+      await act(() => vi.advanceTimersByTimeAsync(700))
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+      vi.useRealTimers()
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
+      await waitFor(() => expect(trigger).toHaveFocus())
+    },
+  )
 
   it("renders agent, result, and spend chips with contextual counts", () => {
     render(
@@ -374,7 +390,7 @@ describe("SessionFiltersHeader", () => {
     expect(screen.getByRole("menu")).toBeInTheDocument()
   })
 
-  it("closes on mouse exit, restores focus, and can reopen", async () => {
+  it("closes on mouse exit without reopening the tooltip, and can reopen", async () => {
     render(<SessionFiltersHeader {...props()} />)
     const trigger = openFilters()
     const menu = screen.getByRole("menu")
@@ -384,7 +400,11 @@ describe("SessionFiltersHeader", () => {
     fireEvent.pointerMove(document.body, { pointerType: "mouse", clientX: 450, clientY: 200 })
     expect(screen.getByRole("menu")).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument())
-    await waitFor(() => expect(trigger).toHaveFocus())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(trigger).not.toHaveFocus()
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
     openFilters()
     expect(screen.getByRole("menu")).toBeInTheDocument()
   })
