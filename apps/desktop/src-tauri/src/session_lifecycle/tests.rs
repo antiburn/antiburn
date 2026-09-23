@@ -1009,6 +1009,89 @@ async fn a_session_goes_idle_at_the_window_and_a_touch_moves_the_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn activity_after_system_sleep_expires_old_sessions_and_keeps_its_normal_window() {
+    let harness = start(BASE, vec![(key("old"), BASE)]);
+    let events = &harness.events;
+    let mut bus = events.subscribe();
+    settle().await;
+
+    // Wall time advances during system sleep while the timer clock stays still.
+    let slept = 12 * 60 * 60;
+    harness.offset.store(slept, Ordering::Relaxed);
+    let resumed_at = BASE + slept;
+    events.report_async(touched("new", 1, resumed_at, 1)).await;
+    wait_until(|| {
+        harness.with_registry(|registry| {
+            !registry.live.contains_key(&key("old")) && registry.live.contains_key(&key("new"))
+        })
+    })
+    .await;
+    assert_eq!(
+        drain(&mut bus),
+        vec![
+            SessionEvent::Idle {
+                session: session_ref("old"),
+                agent: AgentKind::Claude,
+                at: resumed_at,
+            },
+            SessionEvent::Activity {
+                session: Some(session_ref("new")),
+                agent: AgentKind::Claude,
+                at: resumed_at,
+                resumed: false,
+            },
+        ]
+    );
+
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    assert_eq!(
+        next(&mut bus).await,
+        SessionEvent::Quiet {
+            session: session_ref("new"),
+            agent: AgentKind::Claude,
+            at: resumed_at + 31,
+        }
+    );
+    tokio::time::sleep(Duration::from_secs(150)).await;
+    assert_eq!(
+        next(&mut bus).await,
+        SessionEvent::Idle {
+            session: session_ref("new"),
+            agent: AgentKind::Claude,
+            at: resumed_at + 181,
+        }
+    );
+    assert!(live(events).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn system_sleep_expires_a_quiet_session_at_the_existing_timer_wake() {
+    let harness = start(BASE, vec![(key("quiet"), BASE - QUIET_WINDOW_SECS)]);
+    let events = &harness.events;
+    let mut bus = events.subscribe();
+    settle().await;
+
+    let slept = 12 * 60 * 60;
+    harness.offset.store(slept, Ordering::Relaxed);
+    settle().await;
+    assert_eq!(bus.try_recv().unwrap_err(), TryRecvError::Empty);
+    assert_eq!(live(events).len(), 1);
+
+    // The clock change does not wake the actor. Its existing timer still does.
+    let remaining = ACTIVE_SESSION_WINDOW_SECS - QUIET_WINDOW_SECS + EXPIRY_SLACK_SECS;
+    tokio::time::sleep(Duration::from_secs(remaining as u64)).await;
+    assert_eq!(
+        next(&mut bus).await,
+        SessionEvent::Idle {
+            session: session_ref("quiet"),
+            agent: AgentKind::Claude,
+            at: BASE + slept + remaining,
+        }
+    );
+    assert!(live(events).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
 async fn sessions_expire_in_deadline_order() {
     let harness = start(
         BASE,
