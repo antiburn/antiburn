@@ -13,7 +13,9 @@ const DAYS_PER_WEEK = 7
 const EDGE_GAP = 16
 // The hole in the middle holds the round Optimise button. These set its share
 // of the chart and the gap between the button and the inner ring.
-const HOLE_SHARE = 0.3
+const HOLE_SHARE = 0.15
+// The smallest hole that still fits the button label.
+const MIN_HOLE = 88
 const HOLE_GAP = 8
 
 const LEGEND_ITEMS = [
@@ -36,7 +38,7 @@ type Geometry = {
 function geometry(side: number): Geometry {
   const center = side / 2
   const outer = Math.max(0, center - EDGE_GAP)
-  const hole = side * HOLE_SHARE
+  const hole = Math.max(MIN_HOLE, side * HOLE_SHARE)
   return { center, outer, hole, inner: Math.min(outer, hole / 2 + HOLE_GAP) }
 }
 
