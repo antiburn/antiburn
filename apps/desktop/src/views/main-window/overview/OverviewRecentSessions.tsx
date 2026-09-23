@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react"
+import { useSyncExternalStore, type ReactNode } from "react"
 import { ArrowRight, GitFork } from "lucide-react"
 
 import {
@@ -218,6 +218,7 @@ export function OverviewRecentSessions({
   loading = false,
   onSelect,
   onOpenAll,
+  action,
   metric,
   liveUsage,
   sessionLimitAllocations,
@@ -227,6 +228,8 @@ export function OverviewRecentSessions({
   loading?: boolean
   onSelect: (entry: SessionListEntry) => void
   onOpenAll: () => void
+  /** The header action, on the right of the title. */
+  action?: ReactNode
   metric: OverviewMetric
   liveUsage?: LiveUsageSummaryPayload | undefined
   sessionLimitAllocations?: SessionLimitAllocationSummaryPayload | null | undefined
@@ -265,17 +268,11 @@ export function OverviewRecentSessions({
         "rounded-(--radius-popover) bg-surface-sidebar shadow-[var(--shadow-stats-card)]",
       )}
     >
-      <div className="flex items-baseline justify-between">
-        <h2 className="type-caption text-label-secondary">Recent sessions</h2>
-
-        <button
-          type="button"
-          onClick={onOpenAll}
-          className="inline-flex items-center gap-1 type-caption text-label-secondary hover:text-label hover:underline hover:underline-offset-[3px]"
-        >
-          All sessions
-          <ArrowRight size={12} strokeWidth={2} aria-hidden="true" />
-        </button>
+      {/* The header holds the control height with or without an action, so
+          the rows do not move when one arrives. */}
+      <div className="flex min-h-(--control-height-regular) items-center justify-between gap-(--space-md)">
+        <h2 className="shrink-0 type-caption text-label-secondary">Recent sessions</h2>
+        {action}
       </div>
       {snoozes.status === "error" ? (
         <p role="status" className="type-callout text-label-secondary">
@@ -338,6 +335,18 @@ export function OverviewRecentSessions({
               ))}
         </div>
       )}
+      {/* The All sessions link sits at the foot, so the header keeps its
+          action slot. */}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={onOpenAll}
+          className="inline-flex items-center gap-1 type-caption text-label-secondary hover:text-label hover:underline hover:underline-offset-[3px]"
+        >
+          All sessions
+          <ArrowRight size={12} strokeWidth={2} aria-hidden="true" />
+        </button>
+      </div>
     </section>
   )
 }

@@ -8,7 +8,7 @@ import { checksPresentation } from "../../lib/presentation/checks"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import { type BurnChecksSession } from "./BurnChecksSession"
 import { type MainOverviewSession } from "./MainOverviewSession"
-import { EnhanceActionBar } from "./overview/EnhanceActionBar"
+import { EnhanceHeaderAction } from "./overview/EnhanceHeaderAction"
 import { EnhanceWizard, type EnhanceStep } from "./overview/EnhanceWizard"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
@@ -183,12 +183,13 @@ export function OverviewView({
                 metric={metric}
                 liveUsage={state.liveUsage ?? undefined}
                 sessionLimitAllocations={state.sessionLimitAllocations}
-              />
-
-              <EnhanceActionBar
-                failingChecks={failing?.length ?? null}
-                state={buttonState}
-                onOpen={openEnhance}
+                action={
+                  <EnhanceHeaderAction
+                    failingChecks={failing?.length ?? null}
+                    state={buttonState}
+                    onOpen={openEnhance}
+                  />
+                }
               />
             </div>
           </ScrollPane>

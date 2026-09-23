@@ -96,52 +96,10 @@
 }
 
 /*
- * The Enhance call to action under Recent sessions. It is not a card. The
- * install banner fire burns on a canvas behind centred text and a pill. A
- * mask clears the fire from behind the text, fades it at the sides, and
- * fades it out at the top, so it sits on the page with no edge. The fire
- * shows a still frame at rest and moves only on hover or focus.
- */
-
-.enhance-fire-card {
-  position: relative;
-  isolation: isolate;
-  min-block-size: 168px;
-}
-
-.enhance-fire-canvas {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  inline-size: 100%;
-  block-size: 100%;
-  pointer-events: none;
-  opacity: 0.55;
-  mask:
-    radial-gradient(ellipse 40% 130% at 50% 50%, transparent 50%, #000 90%),
-    linear-gradient(to right, transparent, #000 15%, #000 85%, transparent),
-    linear-gradient(to bottom, transparent, #000 40%);
-  mask-composite: intersect;
-  transition: opacity var(--duration-slow) var(--ease-out-quart);
-}
-
-.enhance-fire-card:hover .enhance-fire-canvas,
-.enhance-fire-card:focus-visible .enhance-fire-canvas {
-  opacity: 1;
-}
-
-.enhance-fire-card[data-calm] .enhance-fire-canvas {
-  opacity: 0.3;
-}
-
-.enhance-fire-card[data-calm]:hover .enhance-fire-canvas {
-  opacity: 0.7;
-}
-
-/*
- * The Enhance pill button. The Enhance card action, the wizard footer, and
- * the Fix card actions all use this shape at one height. A quiet pill is a
- * secondary action.
+ * The Enhance pill button. The wizard footer and the Fix card actions use
+ * this shape at one height. A quiet pill is a secondary action. The compact
+ * pill in the Recent sessions card header sits at the regular control
+ * height.
  */
 .enhance-pill {
   block-size: 44px;
@@ -157,14 +115,16 @@
     box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
-.enhance-pill:hover,
-.enhance-fire-card:hover .enhance-pill {
+.enhance-pill:hover {
   background-color: var(--color-brand);
 }
 
+.enhance-pill[data-compact] {
+  block-size: var(--control-height-regular);
+}
+
 .enhance-pill[data-quiet],
-.enhance-pill[data-quiet]:hover,
-.enhance-fire-card:hover .enhance-pill[data-quiet] {
+.enhance-pill[data-quiet]:hover {
   color: var(--color-label);
   background-color: var(--color-surface-sidebar);
   box-shadow: inset 0 0 0 1px var(--color-separator);

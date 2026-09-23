@@ -77,6 +77,25 @@ describe("OverviewRecentSessions", () => {
     expect(onOpenAll).toHaveBeenCalledOnce()
   })
 
+  it("puts the header action beside the title and All sessions at the foot", () => {
+    render(
+      <OverviewRecentSessions
+        metric="cost"
+        entries={[entry("s1", "Refine keyboard navigation")]}
+        onSelect={vi.fn()}
+        onOpenAll={vi.fn()}
+        action={<button type="button">Enhance</button>}
+      />,
+    )
+    const panel = screen.getByRole("region", { name: "Recent sessions" })
+    const heading = within(panel).getByRole("heading", { name: "Recent sessions" })
+    const action = within(panel).getByRole("button", { name: "Enhance" })
+    expect(heading.parentElement).toBe(action.parentElement)
+    const all = within(panel).getByRole("button", { name: "All sessions" })
+    expect(heading.parentElement).not.toBe(all.parentElement)
+    expect(heading.compareDocumentPosition(all) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it("explains an empty list and marks the panel busy while it loads", () => {
     const { rerender } = render(
       <OverviewRecentSessions

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
+import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { BurnChecksSession } from "./BurnChecksSession"
@@ -29,7 +30,10 @@ vi.mock("./overview/OverviewUsage", () => ({
     </div>
   ),
 }))
-vi.mock("./overview/OverviewRecentSessions", () => ({ OverviewRecentSessions: () => null }))
+// The stub keeps the header action, which is where the wizard opens from.
+vi.mock("./overview/OverviewRecentSessions", () => ({
+  OverviewRecentSessions: ({ action }: { action?: ReactNode }) => action ?? null,
+}))
 vi.mock("./overview/OverviewProviderLimits", () => ({ OverviewProviderLimits: () => null }))
 
 const account: AllowanceUsageAccountPayload = {
@@ -259,7 +263,7 @@ describe("OverviewView metric preference", () => {
 })
 
 describe("OverviewView Enhance wizard", () => {
-  it("opens the wizard from the action bar and saves the step", () => {
+  it("opens the wizard from the Recent sessions header and saves the step", () => {
     setup()
     fireEvent.click(screen.getByRole("button", { name: "Enhance my AI setup" }))
     expect(screen.getByRole("navigation", { name: "Enhance steps" })).toBeInTheDocument()
