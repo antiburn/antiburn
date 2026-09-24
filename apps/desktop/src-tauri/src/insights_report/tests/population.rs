@@ -96,14 +96,14 @@ fn denominator_partitions_non_cohort_rows_by_reason() {
     // The cohort session carries no assistant turns, so the
     // zero-work denominator exclusion (CH-011b) keeps it out of
     // all three unused-source denominators:
-    // Six capability-eligible detectors remain.
+    // Six metric checks and one content-check source remain eligible.
     assert_eq!(
         report
             .detectors
             .iter()
             .map(|counts| counts.eligible)
             .sum::<u64>(),
-        6
+        7
     );
     // Missing effort and speed signals are unavailable outcomes,
     // not assessed results.

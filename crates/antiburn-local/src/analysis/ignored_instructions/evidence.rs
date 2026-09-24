@@ -41,6 +41,19 @@ pub struct SessionContentEvidence {
     pub excluded_thinking_parts: u32,
 }
 
+/// Returns whether the source format has enough characterized content for this check.
+pub const fn source_supported(source_format: SourceFormat) -> bool {
+    matches!(
+        source_format,
+        SourceFormat::ClaudeJsonl
+            | SourceFormat::CodexRolloutJsonl
+            | SourceFormat::PiV3Jsonl
+            | SourceFormat::OpenCodeSqliteV2
+            | SourceFormat::CursorCliAgentJsonl
+            | SourceFormat::AntigravityBrainJsonl
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentReferenceResolution<'a> {
     Found(&'a ContentAction),

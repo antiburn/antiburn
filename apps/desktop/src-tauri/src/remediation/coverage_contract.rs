@@ -13,7 +13,11 @@ fn first_tier_matrix_matches_reachable_desktop_capabilities() {
     let agents = [
         ("Claude Code", AgentKind::Claude, SourceFormat::ClaudeJsonl),
         ("Codex", AgentKind::Codex, SourceFormat::CodexRolloutJsonl),
-        ("OpenCode", AgentKind::OpenCode, SourceFormat::OpenCodeJsonl),
+        (
+            "OpenCode",
+            AgentKind::OpenCode,
+            SourceFormat::OpenCodeSqliteV2,
+        ),
         ("Pi", AgentKind::Pi, SourceFormat::PiV3Jsonl),
         ("Cursor", AgentKind::Cursor, SourceFormat::CursorJsonl),
         (
@@ -126,7 +130,7 @@ fn auto_fix_setting(agent: AgentKind, detector: DetectorId) -> Option<ConfigSett
         DetectorId::UnusedSkills => ConfigSetting::Skill,
         DetectorId::OldModelUsage => ConfigSetting::Model,
         DetectorId::OveruseOfFastMode => ConfigSetting::FastMode,
-        DetectorId::CacheChurn => return None,
+        DetectorId::CacheChurn | DetectorId::IgnoredInstructions => return None,
     };
     if detector == DetectorId::UnusedBuiltInTools && optional_tool(agent).is_none() {
         None
@@ -166,6 +170,7 @@ fn detector_from_code(value: &str) -> Option<DetectorId> {
         "O" => Some(DetectorId::OldModelUsage),
         "F" => Some(DetectorId::OveruseOfFastMode),
         "C" => Some(DetectorId::CacheChurn),
+        "I" => Some(DetectorId::IgnoredInstructions),
         _ => None,
     }
 }

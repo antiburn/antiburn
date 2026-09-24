@@ -299,6 +299,7 @@ describe("BurnChecksSession", () => {
             verification: { status: "recurred", methodRevision: 1, evidenceRevision: "e2" },
             savings: { status: "pending" },
           },
+          evidenceAvailable: false,
           coverageLimits: ["currentPublishedEvidenceOnly"],
           samples: [],
           expiresAtEpoch: 100,

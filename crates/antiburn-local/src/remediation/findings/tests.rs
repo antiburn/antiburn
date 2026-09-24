@@ -6,6 +6,58 @@ fn detector_keys_are_stable_and_unique() {
     assert_eq!(keys.len(), DetectorId::ALL.len());
     assert_eq!(DetectorId::SessionsOverDepth.key(), "sessions_over_depth");
     assert_eq!(DetectorId::CacheChurn.key(), "cache_churn");
+    assert_eq!(
+        DetectorId::IgnoredInstructions.key(),
+        "ignored_instructions"
+    );
+}
+
+#[test]
+fn ignored_instruction_findings_require_supported_scoped_citations() {
+    use crate::analysis::ignored_instructions::{
+        AssessmentFinding, FindingCertainty, InstructionProvenance, InstructionScope, RuleActionRef,
+    };
+
+    let mut evidence = crate::insights::detectors::test_support::claude_evidence("session-private");
+    evidence.capabilities.source_format = SourceFormat::ClaudeJsonl;
+    let assessment_finding = AssessmentFinding {
+        id: "finding-id".to_owned(),
+        reference: RuleActionRef {
+            instruction_id: "instruction-id".to_owned(),
+            instruction_digest: "digest".to_owned(),
+            rule_id: "rule-id".to_owned(),
+            rule_heading: "Workflow".to_owned(),
+            start_line: 4,
+            end_line: 6,
+            source: "project:AGENTS.md".to_owned(),
+            provenance: InstructionProvenance::RecordedInjection,
+            scope: InstructionScope::Project,
+            action_id: "action-id".to_owned(),
+            action_timestamp_ms: Some(1000),
+            action_stable: true,
+        },
+        nearby_context_ids: Vec::new(),
+        counterevidence_ids: Vec::new(),
+        certainty: FindingCertainty::Possible,
+        conflict_probability: 0.6,
+        applicability_probability: 0.9,
+        exception_probability: 0.1,
+        limitations: Vec::new(),
+    };
+    let finding = Finding::ignored_instruction(&evidence, "revision", &assessment_finding)
+        .expect("valid supported finding");
+    assert_eq!(finding.detector, DetectorId::IgnoredInstructions);
+    assert_eq!(finding.session_id(), "session-private");
+    assert_eq!(
+        finding.display().unwrap().certainty,
+        Some(FindingCertainty::Possible)
+    );
+
+    let mut invalid = assessment_finding;
+    invalid.reference.action_id.clear();
+    assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_none());
+    evidence.capabilities.source_format = SourceFormat::OpenCodeJsonl;
+    assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_none());
 }
 
 #[test]

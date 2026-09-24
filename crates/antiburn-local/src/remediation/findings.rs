@@ -1,5 +1,8 @@
 use std::collections::BTreeSet;
 
+use crate::analysis::ignored_instructions::{
+    AssessmentFinding, FindingCertainty, InstructionProvenance, InstructionScope,
+};
 use crate::analysis::{SessionEvidence, SourceFormat};
 use crate::insights::{
     DetectorId, ReportCatalogs, SessionTokenBurnEvidence, clean_facts_complete, eligible,
@@ -92,6 +95,25 @@ pub enum FindingCause {
         paid_tokens: u64,
         threshold_basis_points: u32,
     },
+    IgnoredInstructionConflict {
+        assessment_revision: String,
+        assessment_finding_id: String,
+        instruction_id: String,
+        instruction_digest: String,
+        rule_id: String,
+        rule_heading: String,
+        start_line: u32,
+        end_line: u32,
+        source: String,
+        provenance: InstructionProvenance,
+        instruction_scope: InstructionScope,
+        action_id: String,
+        action_timestamp_ms: Option<i64>,
+        nearby_context_ids: Vec<String>,
+        counterevidence_ids: Vec<String>,
+        certainty: FindingCertainty,
+        limitations: Vec<String>,
+    },
 }
 
 impl FindingCause {
@@ -106,6 +128,7 @@ impl FindingCause {
             Self::OldModelUsage { .. } => DetectorId::OldModelUsage,
             Self::OveruseOfFastMode { .. } => DetectorId::OveruseOfFastMode,
             Self::CacheChurn { .. } => DetectorId::CacheChurn,
+            Self::IgnoredInstructionConflict { .. } => DetectorId::IgnoredInstructions,
         }
     }
 
@@ -159,6 +182,13 @@ impl FindingCause {
                 .chain([model.as_str()])
                 .collect(),
             Self::CacheChurn { model, .. } => vec![model],
+            Self::IgnoredInstructionConflict {
+                source,
+                rule_heading,
+                rule_id,
+                action_id,
+                ..
+            } => vec![source, rule_heading, rule_id, action_id],
         }
     }
 }
@@ -298,6 +328,26 @@ impl Finding {
                 "model": model, "thresholdBasisPoints": threshold_basis_points,
             })
             .to_string(),
+            FindingCause::IgnoredInstructionConflict {
+                assessment_revision,
+                assessment_finding_id,
+                instruction_id,
+                instruction_digest,
+                rule_id,
+                action_id,
+                ..
+            } => serde_json::json!({
+                "base": base("instructionAction"),
+                "scope": scope,
+                "session": self.session_id,
+                "assessmentRevision": assessment_revision,
+                "finding": assessment_finding_id,
+                "instruction": instruction_id,
+                "instructionDigest": instruction_digest,
+                "rule": rule_id,
+                "action": action_id,
+            })
+            .to_string(),
         }
     }
 
@@ -311,6 +361,14 @@ impl Finding {
             source_format: self.source_format,
             observation: super::prompts::prompt_parts(&self.cause).0,
             facts: display_facts(&self.cause),
+            certainty: match self.cause {
+                FindingCause::IgnoredInstructionConflict { certainty, .. } => Some(certainty),
+                _ => None,
+            },
+            instruction_provenance: match self.cause {
+                FindingCause::IgnoredInstructionConflict { provenance, .. } => Some(provenance),
+                _ => None,
+            },
         })
     }
 }
@@ -323,6 +381,8 @@ pub struct FindingDisplay {
     pub source_format: SourceFormat,
     pub observation: String,
     pub facts: DisplayFacts,
+    pub certainty: Option<FindingCertainty>,
+    pub instruction_provenance: Option<InstructionProvenance>,
 }
 
 /// Sanitized labels and omission count for display and IPC conversion.
@@ -366,6 +426,9 @@ pub fn assess_detector_with_source_evidence(
     catalogs: &ReportCatalogs,
     source_evidence: Option<&SessionTokenBurnEvidence>,
 ) -> FindingAssessment {
+    if detector == DetectorId::IgnoredInstructions {
+        return FindingAssessment::Unavailable(FindingUnavailableReason::CapabilityMissing);
+    }
     if !crate::insights::detectors::in_denominator(detector, evidence)
         || (detector == DetectorId::UnusedBuiltInTools
             && complete_assistant_turns(evidence) == Some(0))
@@ -475,6 +538,50 @@ fn finding(evidence: &SessionEvidence, cause: FindingCause) -> Finding {
         agent: evidence.identity.agent.clone(),
         session_id: evidence.identity.session_id.clone(),
         cause,
+    }
+}
+
+impl Finding {
+    /// Builds one session-scoped instruction conflict from a validated result.
+    pub fn ignored_instruction(
+        evidence: &SessionEvidence,
+        assessment_revision: &str,
+        assessment_finding: &AssessmentFinding,
+    ) -> Option<Self> {
+        let reference = &assessment_finding.reference;
+        if !crate::analysis::ignored_instructions::source_supported(
+            evidence.capabilities.source_format,
+        ) || assessment_revision.is_empty()
+            || assessment_finding.id.is_empty()
+            || reference.action_id.is_empty()
+            || reference.rule_id.is_empty()
+            || reference.instruction_id.is_empty()
+            || reference.instruction_digest.is_empty()
+            || reference.start_line == 0
+            || reference.end_line < reference.start_line
+        {
+            return None;
+        }
+        let cause = FindingCause::IgnoredInstructionConflict {
+            assessment_revision: assessment_revision.to_owned(),
+            assessment_finding_id: assessment_finding.id.clone(),
+            instruction_id: reference.instruction_id.clone(),
+            instruction_digest: reference.instruction_digest.clone(),
+            rule_id: reference.rule_id.clone(),
+            rule_heading: reference.rule_heading.clone(),
+            start_line: reference.start_line,
+            end_line: reference.end_line,
+            source: reference.source.clone(),
+            provenance: reference.provenance,
+            instruction_scope: reference.scope,
+            action_id: reference.action_id.clone(),
+            action_timestamp_ms: reference.action_timestamp_ms,
+            nearby_context_ids: assessment_finding.nearby_context_ids.clone(),
+            counterevidence_ids: assessment_finding.counterevidence_ids.clone(),
+            certainty: assessment_finding.certainty,
+            limitations: assessment_finding.limitations.clone(),
+        };
+        Some(finding(evidence, cause))
     }
 }
 

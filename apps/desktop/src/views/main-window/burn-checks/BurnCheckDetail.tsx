@@ -27,6 +27,7 @@ export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   oldModelUsage: "Some sessions used an older model when a newer one was available.",
   overuseOfFastMode: "Some work paid for speed it did not need.",
   cacheChurn: "Some sessions kept paying to reload the same context.",
+  ignoredInstructions: "Some actions may not match the instructions given to the agent.",
 }
 
 function isUnusedResourceDetector(detector: BurnCheckDetectorId) {

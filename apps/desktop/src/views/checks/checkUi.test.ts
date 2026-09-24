@@ -44,6 +44,16 @@ describe("check row presentation", () => {
     })
   })
 
+  it("asks users to review possible instruction conflicts without calling them failures", () => {
+    expect(
+      checkRowPresentation(category({ id: "ignoredInstructions", finding: 2, clean: 0 })),
+    ).toMatchObject({
+      label: "Ignored Instructions",
+      summary: "2 sessions need review",
+      metric: null,
+    })
+  })
+
   it("provides the shared passed row content and status colors", () => {
     expect(
       checkRowPresentation(

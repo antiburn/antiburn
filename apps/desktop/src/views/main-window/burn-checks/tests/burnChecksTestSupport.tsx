@@ -117,6 +117,7 @@ export const target: BurnCheckTargetPayload = {
   autoFix: { status: "available" },
   promptFix: { status: "available" },
   watch: null,
+  evidenceAvailable: false,
   coverageLimits: ["currentPublishedEvidenceOnly"],
   samples: [
     {

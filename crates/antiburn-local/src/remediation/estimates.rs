@@ -21,17 +21,18 @@ pub enum SavingsEstimateMethod {
 }
 
 impl SavingsEstimateMethod {
-    pub const fn for_detector(detector: DetectorId) -> Self {
+    pub const fn for_detector(detector: DetectorId) -> Option<Self> {
         match detector {
-            DetectorId::SessionsOverDepth => Self::RepeatedContextAboveDepthCap,
-            DetectorId::ModelOverthinking => Self::AssumedOutputReduction,
-            DetectorId::OverpoweredSubagents => Self::WorkerModelPriceDifference,
-            DetectorId::UnusedMcpServers => Self::McpDefinitionExposure,
-            DetectorId::UnusedBuiltInTools => Self::BuiltInDefinitionReplication,
-            DetectorId::UnusedSkills => Self::InjectedSkillDocument,
-            DetectorId::OldModelUsage => Self::OldModelPriceDifference,
-            DetectorId::OveruseOfFastMode => Self::FastTierPricePremium,
-            DetectorId::CacheChurn => Self::CacheRehydrationPriceDifference,
+            DetectorId::SessionsOverDepth => Some(Self::RepeatedContextAboveDepthCap),
+            DetectorId::ModelOverthinking => Some(Self::AssumedOutputReduction),
+            DetectorId::OverpoweredSubagents => Some(Self::WorkerModelPriceDifference),
+            DetectorId::UnusedMcpServers => Some(Self::McpDefinitionExposure),
+            DetectorId::UnusedBuiltInTools => Some(Self::BuiltInDefinitionReplication),
+            DetectorId::UnusedSkills => Some(Self::InjectedSkillDocument),
+            DetectorId::OldModelUsage => Some(Self::OldModelPriceDifference),
+            DetectorId::OveruseOfFastMode => Some(Self::FastTierPricePremium),
+            DetectorId::CacheChurn => Some(Self::CacheRehydrationPriceDifference),
+            DetectorId::IgnoredInstructions => None,
         }
     }
 }

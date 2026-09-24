@@ -9,9 +9,10 @@ use antiburn_local::analysis::{
     PARSER_REVISION, SessionEvidence, SourceOrigin, lookup_turn_pricing, pricing_generation,
 };
 use antiburn_local::insights::{
-    CoverageBucket, CoverageCounts, DetectorId, EfficiencyReport, EfficiencyReportAccumulator,
-    ReportCatalogs, ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
-    TokenBurnTurnAccumulator, TokenBurnTurnEvidence,
+    CoverageBucket, CoverageCounts, DetectorFindings, DetectorId, DetectorStatus, EfficiencyReport,
+    EfficiencyReportAccumulator, NotAssessedReason, ReportCatalogs, ReportContext, ReportWindow,
+    SessionExample, SessionTokenBurnEvidence, TokenBurnSourceEvidence, TokenBurnTurnAccumulator,
+    TokenBurnTurnEvidence,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::model_catalog::ModelCatalog;
@@ -91,7 +92,8 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
  ORDER BY bucket";
 
 const COHORT_SQL: &str = "
-SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_context_json, s.cwd
+SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_context_json, s.cwd,
+       s.incarnation, s.source_generation, s.source_fingerprint
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -150,12 +152,13 @@ SELECT scope, model, effort, speed, ts_ms, input_tokens, output_tokens,
 
 const CURRENT_FINDINGS_SQL: &str = "
 SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
-       s.source_generation, e.published_fence, s.source_fingerprint,
+        s.source_generation, e.published_fence, s.source_fingerprint,
        e.processed_fingerprint, e.parser_revision, e.analyzer_revision,
        e.evidence_schema_revision, a.metrics_schema_revision,
        s.started_at_epoch, s.cwd, a.initial_context_json,
         e.effective_model_target_hash, e.effective_model_scope, e.effective_model,
-        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning
+        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning,
+        s.incarnation
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -183,7 +186,8 @@ SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
        e.evidence_schema_revision, a.metrics_schema_revision,
        s.started_at_epoch, s.cwd, a.initial_context_json,
         e.effective_model_target_hash, e.effective_model_scope, e.effective_model,
-        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning
+        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning,
+        s.incarnation
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -215,6 +219,15 @@ pub struct ReducedReport {
     pub evidence_settled: bool,
     pub pending_evidence: u64,
     pub(crate) resources: ResourceAssessment,
+    pub ignored_instructions: IgnoredInstructionsSummary,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IgnoredInstructionsSummary {
+    pub likely_findings: u64,
+    pub possible_findings: u64,
+    pub sessions_with_findings: u64,
+    pub scoped_no_issues_sessions: u64,
 }
 
 /// Selects one detector's current findings in a bounded report window.
@@ -233,6 +246,7 @@ pub struct CurrentFinding {
     pub agent: String,
     pub session_id: String,
     pub source_generation: i64,
+    pub incarnation: u64,
     pub published_fence: i64,
     pub source_fingerprint: Option<String>,
     pub processed_fingerprint: Option<String>,
@@ -332,6 +346,12 @@ fn reduce_with_state_on_snapshot(
     }
     let repository_roots = trusted_repository_roots(&transaction, &mut resource_builder)?;
     let mut inventory_contexts = BTreeSet::new();
+    let mut ignored_summary = IgnoredInstructionsSummary::default();
+    let mut ignored_eligible = 0_u64;
+    let mut ignored_assessed = 0_u64;
+    let mut ignored_unavailable = 0_u64;
+    let mut ignored_not_applicable = 0_u64;
+    let mut ignored_examples = Vec::new();
     let depth_cap = u128::from(accumulator.catalogs().depth_cap_tokens);
     let cohort_sql = COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
     {
@@ -356,6 +376,68 @@ fn reduce_with_state_on_snapshot(
             let published_fence: i64 = row.get(3)?;
             let initial_context_json: Option<String> = row.get(4)?;
             let cwd: Option<String> = row.get(5)?;
+            let incarnation: u64 = row.get(6)?;
+            let source_generation: i64 = row.get(7)?;
+            let source_fingerprint: Option<String> = row.get(8)?;
+            if antiburn_local::analysis::ignored_instructions::source_supported(
+                evidence.capabilities.source_format,
+            ) {
+                ignored_eligible += 1;
+                let result = findings::ignored_instruction_result_for(
+                    &transaction,
+                    &evidence,
+                    findings::IgnoredInstructionSessionIdentity {
+                        environment_key: &request.environment_key,
+                        agent: &agent,
+                        session_id: &session_id,
+                        incarnation,
+                        source_generation,
+                        source_fingerprint: source_fingerprint.as_deref(),
+                        published_fence,
+                    },
+                )?;
+                let findings = result.as_ref().and_then(|result| {
+                    findings::ignored_instruction_findings_for_evidence(&evidence, result)
+                        .map(|findings| (result, findings))
+                });
+                match findings {
+                    Some((_, session_findings)) if !session_findings.is_empty() => {
+                        ignored_assessed += 1;
+                        ignored_summary.sessions_with_findings += 1;
+                        for finding in &session_findings {
+                            match finding.cause() {
+                                antiburn_local::remediation::FindingCause::IgnoredInstructionConflict {
+                                    certainty: antiburn_local::analysis::ignored_instructions::FindingCertainty::Likely,
+                                    ..
+                                } => ignored_summary.likely_findings += 1,
+                                antiburn_local::remediation::FindingCause::IgnoredInstructionConflict {
+                                    certainty: antiburn_local::analysis::ignored_instructions::FindingCertainty::Possible,
+                                    ..
+                                } => ignored_summary.possible_findings += 1,
+                                _ => {}
+                            }
+                        }
+                        if ignored_examples.len()
+                            < antiburn_local::insights::MAX_EXAMPLES_PER_DETECTOR
+                        {
+                            ignored_examples.push(SessionExample {
+                                agent: agent.clone(),
+                                session_id: session_id.clone(),
+                            });
+                        }
+                    }
+                    Some((result, session_findings))
+                        if ignored_result_has_scoped_no_issues(result, &session_findings) =>
+                    {
+                        ignored_assessed += 1;
+                        ignored_summary.scoped_no_issues_sessions += 1;
+                        ignored_unavailable += 1;
+                    }
+                    _ => ignored_unavailable += 1,
+                }
+            } else {
+                ignored_not_applicable += 1;
+            }
             let agent_kind = crate::agents::kind_from_slug(&agent);
             let project_root = cwd
                 .as_deref()
@@ -485,7 +567,7 @@ fn reduce_with_state_on_snapshot(
     }
 
     ensure_not_cancelled(cancel)?;
-    let report = accumulator.finish(ReportContext {
+    let mut report = accumulator.finish(ReportContext {
         environment_key: request.environment_key,
         window: request.window,
         computed_at_epoch: request.computed_at_epoch,
@@ -494,6 +576,15 @@ fn reduce_with_state_on_snapshot(
         evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         coverage,
     });
+    apply_ignored_instruction_counts(
+        &mut report,
+        ignored_eligible,
+        ignored_assessed,
+        ignored_unavailable,
+        ignored_not_applicable,
+        &ignored_summary,
+        ignored_examples,
+    );
     turn_probe();
     ensure_not_cancelled(cancel)?;
     ensure!(
@@ -524,7 +615,62 @@ fn reduce_with_state_on_snapshot(
         evidence_settled: pending_evidence == 0,
         pending_evidence,
         resources,
+        ignored_instructions: ignored_summary,
     })
+}
+
+fn ignored_result_has_scoped_no_issues(
+    result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
+    findings: &[Finding],
+) -> bool {
+    findings.is_empty()
+        && result.coverage.eligible_rules > 0
+        && result.coverage.selected_comparisons > 0
+        && result.coverage.unselected_pairs == 0
+        && result.coverage.skipped_rules.is_empty()
+        && result.coverage.skipped_actions.is_empty()
+        && !result.coverage.processing_limit_reached
+        && result.coverage.limitations.is_empty()
+        && result.pending_rules.is_empty()
+        && result.unassessed_comparisons.is_empty()
+}
+
+fn apply_ignored_instruction_counts(
+    report: &mut EfficiencyReport,
+    eligible: u64,
+    assessed: u64,
+    unavailable: u64,
+    not_applicable: u64,
+    summary: &IgnoredInstructionsSummary,
+    examples: Vec<SessionExample>,
+) {
+    let detector = DetectorId::IgnoredInstructions;
+    let index = detector.index();
+    let counts = &mut report.detectors[index];
+    counts.eligible = eligible;
+    counts.assessed = assessed;
+    counts.finding = summary.sessions_with_findings;
+    counts.clean = 0;
+    counts.unavailable = unavailable;
+    counts.not_applicable = not_applicable;
+    report.finding_agents[index] = examples
+        .iter()
+        .map(|example| example.agent.clone())
+        .collect();
+    report.clean_agents[index].clear();
+    report.detector_statuses[index] = if summary.sessions_with_findings > 0 {
+        DetectorStatus::Findings(DetectorFindings {
+            finding_sessions: summary.sessions_with_findings,
+            examples,
+        })
+    } else {
+        DetectorStatus::NotAssessed(if eligible == 0 {
+            NotAssessedReason::CapabilityMissing
+        } else {
+            NotAssessedReason::IncompleteEvidence
+        })
+    };
+    report.detector_estimated_token_burn_basis_points[index] = None;
 }
 
 fn trusted_repository_roots(
@@ -909,7 +1055,7 @@ pub(crate) mod tests {
     };
 
     #[test]
-    fn publication_cap_gives_all_nine_detectors_an_opportunity() {
+    fn publication_cap_gives_all_ten_detectors_an_opportunity() {
         let buckets = DetectorId::ALL
             .into_iter()
             .map(|detector| (0..150).map(move |index| (detector, index)).collect())
@@ -924,7 +1070,7 @@ pub(crate) mod tests {
                     .iter()
                     .filter(|(found, _)| *found == detector)
                     .count(),
-                11 + usize::from(detector.index() < 1),
+                10,
             );
         }
         assert_eq!(selected[0], (DetectorId::SessionsOverDepth, 0));

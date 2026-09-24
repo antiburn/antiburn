@@ -63,11 +63,31 @@ fn causes() -> Vec<FindingCause> {
             paid_tokens: 200,
             threshold_basis_points: 20_000,
         },
+        FindingCause::IgnoredInstructionConflict {
+            assessment_revision: "revision".to_owned(),
+            assessment_finding_id: "finding".to_owned(),
+            instruction_id: "instruction".to_owned(),
+            instruction_digest: "digest".to_owned(),
+            rule_id: "rule".to_owned(),
+            rule_heading: "Workflow".to_owned(),
+            start_line: 12,
+            end_line: 14,
+            source: "project:AGENTS.md".to_owned(),
+            provenance:
+                crate::analysis::ignored_instructions::InstructionProvenance::RecordedInjection,
+            instruction_scope: crate::analysis::ignored_instructions::InstructionScope::Project,
+            action_id: "action".to_owned(),
+            action_timestamp_ms: Some(1),
+            nearby_context_ids: Vec::new(),
+            counterevidence_ids: Vec::new(),
+            certainty: crate::analysis::ignored_instructions::FindingCertainty::Possible,
+            limitations: Vec::new(),
+        },
     ]
 }
 
 #[test]
-fn all_nine_templates_are_bounded_and_deterministic() {
+fn all_ten_templates_are_bounded_and_deterministic() {
     let expected_roles = [
         ["Agent:", "Request model:"].as_slice(),
         [
@@ -92,6 +112,15 @@ fn all_nine_templates_are_bounded_and_deterministic() {
         .as_slice(),
         ["Agent:", "Provider:", "API:", "Worker model:"].as_slice(),
         ["Agent:", "Current model:"].as_slice(),
+        [
+            "Agent:",
+            "Instruction location:",
+            "Rule reference:",
+            "Action reference:",
+            "Assessment:",
+            "Instruction provenance:",
+        ]
+        .as_slice(),
     ];
     for (cause, roles) in causes().into_iter().zip(expected_roles) {
         let first = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
@@ -216,11 +245,13 @@ fn finding_prompts_have_clear_human_readable_sections() {
         ] {
             assert!(prompt.as_str().contains(heading), "missing {heading}");
         }
-        assert!(
-            prompt
-                .as_str()
-                .contains("Show the proposed edit before you apply it.")
-        );
+        if cause.detector() != DetectorId::IgnoredInstructions {
+            assert!(
+                prompt
+                    .as_str()
+                    .contains("Show the proposed edit before you apply it.")
+            );
+        }
         assert!(!prompt.as_str().contains("&#x20;"));
         assert!(
             prompt
@@ -342,6 +373,47 @@ fn prompt_constructor_rejects_size_overflow() {
 }
 
 #[test]
+fn ignored_instruction_prompt_uses_instruction_specific_guidance() {
+    let cause = FindingCause::IgnoredInstructionConflict {
+        assessment_revision: "revision".into(),
+        assessment_finding_id: "finding".into(),
+        instruction_id: "instruction".into(),
+        instruction_digest: "digest".into(),
+        rule_id: "rule".into(),
+        rule_heading: "Workflow".into(),
+        start_line: 12,
+        end_line: 14,
+        source: "project:AGENTS.md".into(),
+        provenance: crate::analysis::ignored_instructions::InstructionProvenance::RecordedInjection,
+        instruction_scope: crate::analysis::ignored_instructions::InstructionScope::Project,
+        action_id: "action".into(),
+        action_timestamp_ms: Some(1000),
+        nearby_context_ids: vec!["approval".into()],
+        counterevidence_ids: Vec::new(),
+        certainty: crate::analysis::ignored_instructions::FindingCertainty::Possible,
+        limitations: Vec::new(),
+    };
+
+    let prompt = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
+    assert!(
+        prompt
+            .as_str()
+            .contains("Possible conflict; this does not prove the agent broke the rule.")
+    );
+    assert!(
+        prompt
+            .as_str()
+            .contains("Compare the cited action with the exact instruction section")
+    );
+    assert!(
+        !prompt
+            .as_str()
+            .contains("Check the effective configuration for the agent")
+    );
+    assert!(!prompt.as_str().contains("weaken required behavior"));
+}
+
+#[test]
 fn prompt_uses_no_more_than_eight_identities() {
     let cause = FindingCause::SessionsOverDepth {
         maximum_tokens: 500_000,
@@ -378,12 +450,14 @@ fn prompt_support_matrix_matches_agent_capabilities() {
         (
             "opencode",
             &[SourceFormat::OpenCodeJsonl, SourceFormat::OpenCodeSqliteV2][..],
-            [true, false, true, true, true, true, true, false, true],
+            [
+                true, false, true, true, true, true, true, false, true, false,
+            ],
         ),
         (
             "pi",
             &[SourceFormat::PiV3Jsonl][..],
-            [true, true, true, true, true, true, true, false, true],
+            [true, true, true, true, true, true, true, false, true, false],
         ),
         (
             "antigravity",
@@ -393,7 +467,9 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                 SourceFormat::AntigravityCascadeJson,
                 SourceFormat::AntigravitySqlite,
             ][..],
-            [true, false, false, false, false, false, true, false, false],
+            [
+                true, false, false, false, false, false, true, false, false, false,
+            ],
         ),
         (
             "cursor",
@@ -404,7 +480,9 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                 SourceFormat::CursorChatStoreDb,
                 SourceFormat::CursorIdeComposer,
             ][..],
-            [false, false, false, false, false, false, true, false, false],
+            [
+                false, false, false, false, false, false, true, false, false, false,
+            ],
         ),
     ];
     let causes = causes();
@@ -412,7 +490,20 @@ fn prompt_support_matrix_matches_agent_capabilities() {
         for source in sources {
             for (index, detector) in DetectorId::ALL.into_iter().enumerate() {
                 let support = recommendation_support(agent, *source, detector);
-                assert_eq!(support.is_ok(), expected[index]);
+                let expected_supported = if detector == DetectorId::IgnoredInstructions {
+                    matches!(
+                        (agent, source),
+                        ("claude", SourceFormat::ClaudeJsonl)
+                            | ("codex", SourceFormat::CodexRolloutJsonl)
+                            | ("opencode", SourceFormat::OpenCodeSqliteV2)
+                            | ("pi", SourceFormat::PiV3Jsonl)
+                            | ("cursor", SourceFormat::CursorCliAgentJsonl)
+                            | ("antigravity", SourceFormat::AntigravityBrainJsonl)
+                    )
+                } else {
+                    expected[index]
+                };
+                assert_eq!(support.is_ok(), expected_supported);
                 if let Ok(agent) = support {
                     let prompt = build_prompt(agent, *source, &causes[index]);
                     if detector == DetectorId::UnusedBuiltInTools

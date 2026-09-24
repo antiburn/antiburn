@@ -874,6 +874,17 @@ pub struct ChecksReportPayload {
     /// Aggregate burn for each detector bit mask in canonical `DetectorId` order.
     pub estimated_token_burn_basis_points_by_detector_mask: Vec<Option<u16>>,
     pub categories: Vec<ChecksCategoryPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignored_instructions: Option<IgnoredInstructionsSummaryPayload>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IgnoredInstructionsSummaryPayload {
+    pub likely_findings: u64,
+    pub possible_findings: u64,
+    pub sessions_with_findings: u64,
+    pub scoped_no_issues_sessions: u64,
 }
 
 /// One accepted detector identifier on the remediation IPC boundary.
@@ -889,6 +900,7 @@ pub enum BurnCheckDetectorId {
     OldModelUsage,
     OveruseOfFastMode,
     CacheChurn,
+    IgnoredInstructions,
 }
 
 /// A reader-owned suppression for one entire burn check.
@@ -920,6 +932,7 @@ impl From<BurnCheckDetectorId> for DetectorId {
             BurnCheckDetectorId::OldModelUsage => Self::OldModelUsage,
             BurnCheckDetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             BurnCheckDetectorId::CacheChurn => Self::CacheChurn,
+            BurnCheckDetectorId::IgnoredInstructions => Self::IgnoredInstructions,
         }
     }
 }
@@ -1009,6 +1022,11 @@ pub struct BurnCheckFindingPayload {
     pub observation: String,
     pub labels: Vec<String>,
     pub omitted: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certainty: Option<antiburn_local::analysis::ignored_instructions::FindingCertainty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_provenance:
+        Option<antiburn_local::analysis::ignored_instructions::InstructionProvenance>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1265,6 +1283,7 @@ pub struct BurnCheckTargetPayload {
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
+    pub evidence_available: bool,
     pub coverage_limits: Vec<BurnCheckCoverageLimit>,
     pub samples: Vec<BurnCheckSamplePayload>,
     pub expires_at_epoch: i64,
@@ -1988,6 +2007,7 @@ impl From<DetectorId> for BurnCheckDetectorId {
             DetectorId::OldModelUsage => Self::OldModelUsage,
             DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             DetectorId::CacheChurn => Self::CacheChurn,
+            DetectorId::IgnoredInstructions => Self::IgnoredInstructions,
         }
     }
 }
@@ -2298,6 +2318,8 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
                 observation: finding.observation,
                 labels: finding.facts.labels,
                 omitted: finding.facts.omitted,
+                certainty: finding.certainty,
+                instruction_provenance: finding.instruction_provenance,
             },
             display: value.display.into(),
             occurrence_count: u64::try_from(value.occurrences).unwrap_or(u64::MAX),
@@ -2329,6 +2351,7 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
                 }
             },
             watch: value.watch.map(Into::into),
+            evidence_available: value.evidence_available,
             coverage_limits: value
                 .coverage_limits
                 .into_iter()
@@ -2543,6 +2566,12 @@ impl ChecksReportPayload {
             report.pending_evidence,
             &resource_assessments,
         );
+        payload.ignored_instructions = Some(IgnoredInstructionsSummaryPayload {
+            likely_findings: report.ignored_instructions.likely_findings,
+            possible_findings: report.ignored_instructions.possible_findings,
+            sessions_with_findings: report.ignored_instructions.sessions_with_findings,
+            scoped_no_issues_sessions: report.ignored_instructions.scoped_no_issues_sessions,
+        });
         for detector in resource_detectors {
             let Some(assessment) = report.resources.detector(detector) else {
                 continue;
@@ -2615,6 +2644,7 @@ impl ChecksReportPayload {
             estimated_token_burn_basis_points,
             estimated_token_burn_basis_points_by_detector_mask,
             categories,
+            ignored_instructions: None,
         }
     }
 }
@@ -3250,7 +3280,7 @@ mod tests {
             let aggregates = value["estimatedTokenBurnBasisPointsByDetectorMask"]
                 .as_array()
                 .unwrap();
-            assert_eq!(aggregates.len(), 512);
+            assert_eq!(aggregates.len(), 1 << DetectorId::COUNT);
             assert_eq!(aggregates[0], serde_json::Value::Null);
             assert_eq!(aggregates[1], 500);
             assert_eq!(aggregates[2], 1_000);

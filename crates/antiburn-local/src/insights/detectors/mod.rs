@@ -1,4 +1,4 @@
-//! Nine detector rule sets over assessed-cohort session evidence.
+//! Detector rule sets over assessed-cohort session evidence.
 //!
 //! Each detector produces exactly one status per report: findings, clean,
 //! or not assessed with a structured reason. Clean requires that every
@@ -401,6 +401,7 @@ pub(crate) fn evaluate(
         DetectorId::OldModelUsage => old_model_usage::evaluate(evidence, catalogs),
         DetectorId::OveruseOfFastMode => overuse_of_fast_mode::evaluate(evidence, catalogs),
         DetectorId::CacheChurn => cache_churn::evaluate(evidence, catalogs),
+        DetectorId::IgnoredInstructions => Observation::NoFinding,
     };
     DetectorEvaluation { observation }
 }
@@ -423,6 +424,7 @@ pub(crate) fn finding_causes(
         DetectorId::OldModelUsage => old_model_usage::finding_causes(evidence, catalogs),
         DetectorId::OveruseOfFastMode => overuse_of_fast_mode::finding_causes(evidence, catalogs),
         DetectorId::CacheChurn => cache_churn::finding_causes(evidence, catalogs),
+        DetectorId::IgnoredInstructions => Vec::new(),
     };
     debug_assert!(causes.iter().all(|cause| cause.detector() == detector));
     causes
@@ -441,7 +443,13 @@ pub(crate) fn source_assessable(
             unused_mcp_servers::source_assessable(evidence, source_evidence)
         }
         DetectorId::UnusedSkills => unused_skills::source_assessable(evidence, source_evidence),
-        _ => false,
+        DetectorId::IgnoredInstructions
+        | DetectorId::SessionsOverDepth
+        | DetectorId::ModelOverthinking
+        | DetectorId::OverpoweredSubagents
+        | DetectorId::OldModelUsage
+        | DetectorId::OveruseOfFastMode
+        | DetectorId::CacheChurn => false,
     }
 }
 
@@ -467,6 +475,9 @@ pub(crate) fn evaluate_with_source_evidence(
         DetectorId::UnusedSkills => DetectorEvaluation {
             observation: unused_skills::evaluate_with_source_evidence(evidence, source_evidence),
         },
+        DetectorId::IgnoredInstructions => DetectorEvaluation {
+            observation: Observation::NoFinding,
+        },
         _ => evaluate(detector, evidence, catalogs),
     }
 }
@@ -487,6 +498,7 @@ pub(crate) fn finding_causes_with_source_evidence(
         DetectorId::UnusedSkills => {
             unused_skills::finding_causes_with_source_evidence(evidence, source_evidence)
         }
+        DetectorId::IgnoredInstructions => Vec::new(),
         _ => finding_causes(detector, evidence, catalogs),
     };
     debug_assert!(causes.iter().all(|cause| cause.detector() == detector));
@@ -504,6 +516,7 @@ pub(crate) fn finding_causes_with_source_evidence(
 /// eligible-but-unassessed, blocking a clean claim.
 pub(crate) fn in_denominator(detector: DetectorId, evidence: &SessionEvidence) -> bool {
     match detector {
+        DetectorId::IgnoredInstructions => false,
         DetectorId::UnusedMcpServers | DetectorId::UnusedSkills => complete(&evidence.eligibility)
             .is_none_or(|eligibility| eligibility.assistant_turns > 0),
         _ => true,

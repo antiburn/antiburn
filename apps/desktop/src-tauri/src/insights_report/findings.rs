@@ -679,6 +679,7 @@ pub(crate) struct CurrentFindingSession {
     agent: String,
     session_id: String,
     source_generation: i64,
+    incarnation: u64,
     published_fence: i64,
     source_fingerprint: Option<String>,
     processed_fingerprint: Option<String>,
@@ -982,6 +983,25 @@ pub(crate) fn assess_current_detector(
     cancel: &AtomicBool,
     turn_probe: &mut dyn FnMut(),
 ) -> Result<FindingAssessment> {
+    if detector == DetectorId::IgnoredInstructions {
+        let Some(result) = current_ignored_instruction_result(connection, session)? else {
+            return Ok(FindingAssessment::Unavailable(
+                antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence,
+            ));
+        };
+        let Some(findings) = ignored_instruction_findings(session, &result) else {
+            return Ok(FindingAssessment::Unavailable(
+                antiburn_local::remediation::FindingUnavailableReason::EvidenceContractIncomplete,
+            ));
+        };
+        return if findings.is_empty() {
+            Ok(FindingAssessment::Unavailable(
+                antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence,
+            ))
+        } else {
+            Ok(FindingAssessment::Findings(findings))
+        };
+    }
     if !matches!(
         detector,
         DetectorId::UnusedBuiltInTools | DetectorId::UnusedMcpServers | DetectorId::UnusedSkills
@@ -1028,6 +1048,112 @@ pub(crate) fn assess_current_detector(
     )
 }
 
+pub(crate) fn current_ignored_instruction_result(
+    connection: &rusqlite::Connection,
+    session: &CurrentFindingSession,
+) -> Result<Option<antiburn_local::analysis::ignored_instructions::AssessmentResult>> {
+    ignored_instruction_result_for(
+        connection,
+        &session.evidence,
+        IgnoredInstructionSessionIdentity {
+            environment_key: &session.environment_key,
+            agent: &session.agent,
+            session_id: &session.session_id,
+            incarnation: session.incarnation,
+            source_generation: session.source_generation,
+            source_fingerprint: session.source_fingerprint.as_deref(),
+            published_fence: session.published_fence,
+        },
+    )
+}
+
+pub(crate) struct IgnoredInstructionSessionIdentity<'a> {
+    pub environment_key: &'a str,
+    pub agent: &'a str,
+    pub session_id: &'a str,
+    pub incarnation: u64,
+    pub source_generation: i64,
+    pub source_fingerprint: Option<&'a str>,
+    pub published_fence: i64,
+}
+
+pub(crate) fn ignored_instruction_result_for(
+    connection: &rusqlite::Connection,
+    evidence: &SessionEvidence,
+    identity: IgnoredInstructionSessionIdentity<'_>,
+) -> Result<Option<antiburn_local::analysis::ignored_instructions::AssessmentResult>> {
+    use antiburn_local::analysis::ignored_instructions::{CHECK_ID, source_supported};
+
+    if !source_supported(evidence.capabilities.source_format) {
+        return Ok(None);
+    }
+    let stored = connection
+        .query_row(
+            "SELECT input_revision, result_json
+               FROM burn_check_assessment
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND check_id = ?4 AND incarnation = ?5 AND source_generation = ?6
+                AND source_fingerprint IS ?7 AND published_fence = ?8
+                AND status = 'completed' AND input_revision IS result_revision",
+            params![
+                identity.environment_key,
+                identity.agent,
+                identity.session_id,
+                CHECK_ID,
+                identity.incarnation,
+                identity.source_generation,
+                identity.source_fingerprint,
+                identity.published_fence,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((Some(revision), Some(result_json))) = stored else {
+        return Ok(None);
+    };
+    let Ok(result) = serde_json::from_str::<
+        antiburn_local::analysis::ignored_instructions::AssessmentResult,
+    >(&result_json) else {
+        return Ok(None);
+    };
+    if result.input_revision != revision
+        || result.model_version != antiburn_local::analysis::ignored_instructions::ASSESSMENT_MODEL
+        || ignored_instruction_findings_for_evidence(evidence, &result).is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(result))
+}
+
+pub(crate) fn ignored_instruction_findings(
+    session: &CurrentFindingSession,
+    result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
+) -> Option<Vec<Finding>> {
+    ignored_instruction_findings_for_evidence(&session.evidence, result)
+}
+
+pub(crate) fn ignored_instruction_findings_for_evidence(
+    evidence: &SessionEvidence,
+    result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
+) -> Option<Vec<Finding>> {
+    let mut seen = BTreeSet::new();
+    result
+        .findings
+        .iter()
+        .map(|finding| {
+            if !seen.insert(finding.id.as_str()) {
+                return None;
+            }
+            Finding::ignored_instruction(evidence, &result.input_revision, finding)
+        })
+        .collect()
+}
+
 pub(crate) fn current_finding_session(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<CurrentFindingSession> {
@@ -1069,6 +1195,7 @@ pub(crate) fn current_finding_session(
         effective_reasoning_target_hash: row.get(18)?,
         effective_reasoning_scope: row.get(19)?,
         effective_reasoning: row.get(20)?,
+        incarnation: row.get(21)?,
     })
 }
 
@@ -1090,6 +1217,7 @@ pub(crate) fn current_finding(
         agent: session.agent.clone(),
         session_id: session.session_id.clone(),
         source_generation: session.source_generation,
+        incarnation: session.incarnation,
         published_fence: session.published_fence,
         source_fingerprint: session.source_fingerprint.clone(),
         processed_fingerprint: session.processed_fingerprint.clone(),
@@ -1146,6 +1274,10 @@ pub(crate) fn finding_observation_ms(evidence: &SessionEvidence, finding: &Findi
         FindingCause::OldModelUsage { model, .. } | FindingCause::CacheChurn { model, .. } => {
             models?.by_model.get(model).map(|tokens| tokens.last_ts_ms)
         }
+        FindingCause::IgnoredInstructionConflict {
+            action_timestamp_ms,
+            ..
+        } => *action_timestamp_ms,
         FindingCause::OveruseOfFastMode {
             provider,
             api,
@@ -1177,6 +1309,7 @@ pub(crate) fn freshness_matches(cached: &CurrentFinding, session: &CurrentFindin
         && cached.agent == session.agent
         && cached.session_id == session.session_id
         && cached.source_generation == session.source_generation
+        && cached.incarnation == session.incarnation
         && cached.published_fence == session.published_fence
         && cached.source_fingerprint == session.source_fingerprint
         && cached.processed_fingerprint == session.processed_fingerprint
@@ -1324,6 +1457,7 @@ mod tests {
             agent: "claude-code".into(),
             session_id: "later".into(),
             source_generation: 1,
+            incarnation: 1,
             published_fence: 1,
             source_fingerprint: None,
             processed_fingerprint: None,

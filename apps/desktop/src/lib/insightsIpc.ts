@@ -49,6 +49,12 @@ export interface ChecksReportPayload {
   /** Aggregate burn indexed by the active detector bit mask in canonical detector order. */
   estimatedTokenBurnBasisPointsByDetectorMask?: Array<number | null>
   categories: ChecksCategoryPayload[]
+  ignoredInstructions?: {
+    likelyFindings: number
+    possibleFindings: number
+    sessionsWithFindings: number
+    scopedNoIssuesSessions: number
+  }
 }
 
 export type BurnCheckDetectorId =
@@ -61,6 +67,7 @@ export type BurnCheckDetectorId =
   | "oldModelUsage"
   | "overuseOfFastMode"
   | "cacheChurn"
+  | "ignoredInstructions"
 
 export type BurnCheckEstimateMethod =
   | "repeatedContextAboveDepthCap"
@@ -125,6 +132,8 @@ export interface BurnCheckFindingPayload {
   observation: string
   labels: string[]
   omitted: number
+  certainty?: "likely" | "possible"
+  instructionProvenance?: "recorded_injection" | "observed_read" | "current_file_comparison"
 }
 
 export interface BurnCheckDisplayFactsPayload {
@@ -243,9 +252,27 @@ export interface BurnCheckTargetPayload {
   autoFix: AutoFixAvailabilityPayload
   promptFix: PromptFixAvailabilityPayload
   watch: BurnCheckWatchPayload | null
+  evidenceAvailable: boolean
   coverageLimits: "currentPublishedEvidenceOnly"[]
   samples: BurnCheckSamplePayload[]
   expiresAtEpoch: number
+}
+
+export interface BurnCheckEvidenceItemPayload {
+  label: "instruction" | "observedAction" | "context"
+  sourceLabel: string
+  reference: string
+  observedAtMs: number | null
+  startLine: number | null
+  endLine: number | null
+  excerpt: string
+  explanation: string
+  limitation: string | null
+}
+
+export interface BurnCheckTargetEvidencePayload {
+  status: "available" | "unavailable"
+  items: BurnCheckEvidenceItemPayload[]
 }
 
 /** Bounded display metadata plus an opaque, expiring route to one local session. */
@@ -501,6 +528,14 @@ export async function listBurnCheckTargets(
   return invoke<BurnCheckTargetListPayload>("list_burn_check_targets", {
     detector,
   })
+}
+
+/** Loads private evidence for one current target after native revalidation. */
+export async function getBurnCheckTargetEvidence(
+  actionId: string,
+): Promise<BurnCheckTargetEvidencePayload | null> {
+  if (!hasShell()) return null
+  return invoke<BurnCheckTargetEvidencePayload>("get_burn_check_target_evidence", { actionId })
 }
 
 /** Reads the bounded remediation progress retained for each detector. */

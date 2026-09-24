@@ -97,9 +97,11 @@ function sizeSessionList(viewport: HTMLDivElement | null) {
 export function FailedSessions({
   samples,
   total,
+  label = "Failed sessions",
 }: {
   samples: BurnCheckSamplePayload[]
   total?: number
+  label?: string
 }) {
   const [status, setStatus] = useState<string | null>(null)
   const [busyHandle, setBusyHandle] = useState<string | null>(null)
@@ -150,7 +152,7 @@ export function FailedSessions({
     <div className="burn-check-samples">
       <div
         role={scrollable ? undefined : "region"}
-        aria-label={scrollable ? undefined : "Failed sessions"}
+        aria-label={scrollable ? undefined : label}
         className="mt-1"
       >
         {scrollable ? (
@@ -160,7 +162,7 @@ export function FailedSessions({
             className="flex-none"
             viewportRef={sizeSessionList}
             viewportTabIndex={0}
-            viewportLabel="Failed sessions"
+            viewportLabel={label}
             viewportClassName="pr-3 overscroll-y-contain"
           >
             {cards}

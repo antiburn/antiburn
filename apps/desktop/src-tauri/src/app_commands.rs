@@ -25,6 +25,7 @@ macro_rules! with_app_commands {
             commands::get_folder_permissions => "get_folder_permissions",
             commands::usage::get_allowance_usage => "get_allowance_usage",
             commands::get_burn_check_aggregate_wins => "get_burn_check_aggregate_wins",
+            commands::get_burn_check_target_evidence => "get_burn_check_target_evidence",
             commands::get_burn_check_remediation_progress => "get_burn_check_remediation_progress",
             hud_commands::get_hud_detail_state => "get_hud_detail_state",
             commands::get_hygiene_summary => "get_hygiene_summary",

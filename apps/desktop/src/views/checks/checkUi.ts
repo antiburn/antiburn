@@ -6,6 +6,7 @@ import {
   Gauge,
   History,
   Layers3,
+  ListChecks,
   Server,
   Wrench,
   type LucideIcon,
@@ -71,6 +72,11 @@ export const CHECK_UI: Record<BurnCheckDetectorId, CheckUiMetadata> = {
     icon: Database,
     recommendation: "Keep stable context reusable to avoid paid cache rehydration.",
   },
+  ignoredInstructions: {
+    icon: ListChecks,
+    recommendation:
+      "Review the instruction and action. Correct the steps or clarify the rule without removing needed safeguards.",
+  },
 }
 
 const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
@@ -83,12 +89,18 @@ const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
   oldModelUsage: CHECK_UI.oldModelUsage.icon,
   overuseOfFastMode: CHECK_UI.overuseOfFastMode.icon,
   cacheChurn: CHECK_UI.cacheChurn.icon,
+  ignoredInstructions: CHECK_UI.ignoredInstructions.icon,
 }
 
 function failedSessionSummary(category: ChecksCategoryPayload): string {
   if (category.lifecycle === "awaitingVerification") return "Awaiting verification"
   if (category.lifecycle === "passing") return "Passed"
   const assessed = category.finding + category.clean
+  if (category.id === "ignoredInstructions") {
+    return assessed > 0
+      ? `${category.finding} session${category.finding === 1 ? " needs" : "s need"} review`
+      : "Review possible instruction issues"
+  }
   return assessed > 0
     ? `${category.finding}/${assessed} session${assessed === 1 ? "" : "s"} failed`
     : "Check failed"
@@ -121,7 +133,8 @@ export function checkRowPresentation(
 ) {
   const failed = category.lifecycle === "failing"
   const metric =
-    failed || (category.lifecycle === "passing" && category.estimatedTokenBurnBasisPoints === 0)
+    category.id !== "ignoredInstructions" &&
+    (failed || (category.lifecycle === "passing" && category.estimatedTokenBurnBasisPoints === 0))
       ? tokenBurnLabel(category)
       : null
   return {

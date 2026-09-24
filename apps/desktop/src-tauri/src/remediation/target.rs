@@ -232,7 +232,7 @@ pub(super) fn finding_scope(
     workspace_key: Option<&str>,
 ) -> (String, String) {
     match cause {
-        FindingCause::CacheChurn { .. } => (
+        FindingCause::CacheChurn { .. } | FindingCause::IgnoredInstructionConflict { .. } => (
             "session".to_owned(),
             session_scope_key(secret, agent, session_id),
         ),

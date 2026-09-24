@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-09-23.
+Audit date: 2026-09-24.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -40,6 +40,7 @@ release. A clean result still needs complete session facts and eligible activity
 | O    | Old model usage       |
 | F    | Fast mode overuse     |
 | C    | Cache churn           |
+| I    | Ignored Instructions  |
 
 ## Source Inventory
 
@@ -89,6 +90,10 @@ This manual matrix records implemented eligibility and audited source limits,
 not just binary capability flags. The inventory test checks keys and cell
 vocabulary; behavior tests separately check finding and clean gates.
 
+Ignored Instructions has separate evidence coverage below. Its input contract
+uses retained session content and instruction snapshots, not the metric gates
+in this matrix.
+
 | `SourceFormat`                 | D           | T           | S           | M           | B           | K           | O           | F           | C           |
 | ------------------------------ | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
 | `ClaudeJsonl`                  | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  |
@@ -124,6 +129,16 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `DevinLocalSqlite`             | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 | `Uncharacterized`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 
+## Ignored Instructions Evidence
+
+The first-tier product matrix is the source of truth for reachable check
+support. Its six supported formats are `ClaudeJsonl`, `CodexRolloutJsonl`,
+`OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, and
+`AntigravityBrainJsonl`. Other formats are unavailable for this check. An
+incomplete assessment cannot produce a clean result. Auto Fix, verification,
+and estimates are unsupported. Current-file comparisons do not prove historical
+instruction availability.
+
 ## First-Tier Product Matrix
 
 Support means reachable product behavior, not a parser flag or an unused engine
@@ -141,13 +156,21 @@ verification, a reachable inventory target before it accepts an M/B/K prompt,
 and production editor policy plus a typed target operation before it accepts
 Auto Fix. The limit stays beside the row it qualifies.
 
-Ignored Instructions is not yet an implemented Burn Check and has no support
-cells in this matrix. Phase 2 adds bounded private content preparation and
-current-file instruction snapshots only. Those parser inputs do not establish
-finding, prompt, clean-result, or provider support.
+Ignored Instructions uses stored Jev assessments and the current published
+content projection. Finding and prompt support is limited to the six exact
+source formats listed below. Missing and partial assessment evidence cannot
+produce clean status. Auto Fix, verification, and estimates are unsupported.
+Instruction evidence may use a current-file comparison; historical availability
+is not established by that provenance.
 
 | Agent       | Check | Finding | Prompt | Auto Fix | Verification | Estimate | Reachability limit                                                                                                                           |
 | ----------- | ----- | ------- | ------ | -------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | I     | FO      | Y      | N        | N            | N        | `ClaudeJsonl` only; likely and possible conflicts use current stored assessments; a clean result is not claimed.                              |
+| Codex       | I     | FO      | Y      | N        | N            | N        | `CodexRolloutJsonl` only; likely and possible conflicts use current stored assessments; a clean result is not claimed.                        |
+| OpenCode    | I     | FO      | Y      | N        | N            | N        | `OpenCodeSqliteV2` only; JSONL export is not enabled for this check.                                                                          |
+| Pi          | I     | FO      | Y      | N        | N            | N        | `PiV3Jsonl` only; likely and possible conflicts use current stored assessments; a clean result is not claimed.                               |
+| Cursor      | I     | FO      | Y      | N        | N            | N        | `CursorCliAgentJsonl` only; other Cursor source formats are not enabled for this check.                                                      |
+| Antigravity | I     | FO      | Y      | N        | N            | N        | `AntigravityBrainJsonl` only; findings are bounded to retained message/action content and current instruction snapshots.                      |
 | Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
 | Claude Code | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model.                                                               |
 | Claude Code | S     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one exact named agent definition.                                                                                             |
@@ -643,19 +666,19 @@ each operation still needs an exact target binding at runtime.
 
 | `SourceFormat`                 | Prompt checks     | Model Auto Fix | Reasoning Auto Fix | Other Auto Fix checks | Verification checks |
 | ------------------------------ | ----------------- | -------------- | ------------------ | --------------------- | ------------------- |
-| `ClaudeJsonl`                  | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/B/K/F           | T/O/F               |
-| `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/K/F             | T/O/F               |
+| `ClaudeJsonl`                  | D/T/S/M/B/K/O/F/C/I | O              | T                  | D/S/M/B/K/F           | T/O/F               |
+| `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C/I | O              | T                  | D/S/M/K/F             | T/O/F               |
 | `OpenCodeJsonl`                | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `PiV3Jsonl`                    | D/T/S/M/K/O/C     | O              | T                  | D                     | T/O                 |
+| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C/I   | O              | None               | D/S/M/K               | O                   |
+| `PiV3Jsonl`                    | D/T/S/M/K/O/C/I   | O              | T                  | D                     | T/O                 |
 | `CursorJsonl`                  | O                 | None           | None               | None                  | None                |
-| `CursorCliAgentJsonl`          | O                 | None           | None               | None                  | None                |
+| `CursorCliAgentJsonl`          | O/I               | None           | None               | None                  | None                |
 | `CursorCliStoreDb`             | O                 | None           | None               | None                  | None                |
 | `CursorChatStoreDb`            | O                 | None           | None               | None                  | None                |
 | `CursorIdeComposer`            | O                 | None           | None               | None                  | None                |
 | `CursorLegacyChatJson`         | None              | None           | None               | None                  | None                |
 | `AntigravityJson`              | D/O               | None           | None               | None                  | None                |
-| `AntigravityBrainJsonl`        | D/O               | None           | None               | None                  | None                |
+| `AntigravityBrainJsonl`        | D/O/I             | None           | None               | None                  | None                |
 | `AntigravityCascadeJson`       | D/O               | None           | None               | None                  | None                |
 | `AntigravityWorkspaceChatJson` | None              | None           | None               | None                  | None                |
 | `AntigravitySqlite`            | D/O               | None           | None               | None                  | None                |

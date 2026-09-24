@@ -28,6 +28,10 @@ export const CHECK_DEFINITIONS = {
     label: "Excess cache rehydration",
     aliases: ["prompt cache", "rehydration", "cache misses"],
   },
+  ignoredInstructions: {
+    label: "Ignored Instructions",
+    aliases: ["instruction conflicts", "missed agent rules", "AGENTS.md", "CLAUDE.md"],
+  },
 } as const satisfies Record<BurnCheckDetectorId, { label: string; aliases: readonly string[] }>
 
 export const CHECK_LABELS = Object.fromEntries(

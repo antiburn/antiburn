@@ -115,6 +115,80 @@ const PREPARED_CACHE_BYTES: usize = 4 * 1024 * 1024;
 const TARGET_DOMAIN: &[u8] = b"antiburn/remediation-target/v2\0";
 const PROMPT_REFERENCE_PREFIX: &str = "Remediation reference: ABR-";
 
+fn unavailable_instruction_evidence() -> BurnCheckTargetEvidence {
+    BurnCheckTargetEvidence {
+        status: BurnCheckEvidenceStatus::Unavailable,
+        items: Vec::new(),
+    }
+}
+
+fn bounded_evidence_excerpt(text: &str) -> String {
+    let end = text
+        .char_indices()
+        .take_while(|(index, character)| *index + character.len_utf8() <= 4096)
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or(0);
+    text[..end].to_owned()
+}
+
+fn prompt_watch_supported(detectors: impl IntoIterator<Item = DetectorId>) -> bool {
+    detectors
+        .into_iter()
+        .any(|detector| detector != DetectorId::IgnoredInstructions)
+}
+
+fn current_instruction_excerpt(
+    finding: &CurrentFinding,
+    source: &str,
+    instruction_id: &str,
+    instruction_digest: &str,
+    rule_id: &str,
+    provenance: antiburn_local::analysis::ignored_instructions::InstructionProvenance,
+    scope: antiburn_local::analysis::ignored_instructions::InstructionScope,
+) -> Option<(String, String)> {
+    use antiburn_local::analysis::ignored_instructions::{
+        MAX_INSTRUCTION_BYTES, sha256_hex, snapshot_from_text,
+    };
+    use std::path::Component;
+
+    let (root, relative) = if let Some(relative) = source.strip_prefix("project:") {
+        (finding.workspace_candidate()?.to_path_buf(), relative)
+    } else {
+        let relative = source.strip_prefix("home:")?;
+        (antiburn_local::paths::home_dir()?, relative)
+    };
+    let relative_path = Path::new(relative);
+    if relative_path.as_os_str().is_empty()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    let root = std::fs::canonicalize(root).ok()?;
+    let path = std::fs::canonicalize(root.join(relative_path)).ok()?;
+    if !path.starts_with(&root)
+        || std::fs::metadata(&path).ok()?.len() > MAX_INSTRUCTION_BYTES as u64
+    {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() > MAX_INSTRUCTION_BYTES || sha256_hex(&bytes) != instruction_digest {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    let snapshot = snapshot_from_text(source, text, provenance, scope).ok()?;
+    if snapshot.id != instruction_id || snapshot.digest != instruction_digest {
+        return None;
+    }
+    let section = snapshot
+        .sections
+        .iter()
+        .find(|section| section.id == rule_id)?;
+    Some((bounded_evidence_excerpt(&section.text), relative.to_owned()))
+}
+
 fn resource_target_matches(
     expected: &insights_report::UnusedResourceTarget,
     current: &insights_report::UnusedResourceTarget,
@@ -197,6 +271,7 @@ impl CachedTarget {
                         agent: session.agent.clone(),
                         session_id: session.session_id.clone(),
                         observed_at_ms: session.observed_at_ms,
+                        incarnation: None,
                     })
                     .collect()
             },
@@ -558,6 +633,10 @@ impl RemediationController {
                     Err(reason) => PromptFixAvailability::Unavailable(reason),
                 },
                 watch,
+                evidence_available: target
+                    .findings
+                    .iter()
+                    .any(|finding| finding.finding.detector == DetectorId::IgnoredInstructions),
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
@@ -691,6 +770,7 @@ impl RemediationController {
                     Err(reason) => PromptFixAvailability::Unavailable(reason),
                 },
                 watch,
+                evidence_available: false,
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
@@ -774,10 +854,197 @@ impl RemediationController {
         let watch = watches
             .into_iter()
             .next()
-            .ok_or(ControllerError::PersistenceFailed)?;
-        Ok(PromptFixResult {
-            prompt,
-            watch: Some(public_watch(store, &watch)?.ok_or(ControllerError::PersistenceFailed)?),
+            .map(|watch| public_watch(store, &watch))
+            .transpose()?
+            .flatten();
+        Ok(PromptFixResult { prompt, watch })
+    }
+
+    pub fn burn_check_target_evidence(
+        &self,
+        store: &Store,
+        action_id: &str,
+    ) -> Result<BurnCheckTargetEvidence, ControllerError> {
+        let target = match self.cached_target(action_id, now_epoch()) {
+            Ok(target) => target,
+            Err(ControllerError::TargetNotFound | ControllerError::TargetExpired) => {
+                return Ok(unavailable_instruction_evidence());
+            }
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = self.revalidate(&target) {
+            return match error {
+                ControllerError::TargetNotFound
+                | ControllerError::TargetExpired
+                | ControllerError::TargetChanged => Ok(unavailable_instruction_evidence()),
+                other => Err(other),
+            };
+        }
+        if target.finding().detector != DetectorId::IgnoredInstructions {
+            return Err(ControllerError::TargetNotFound);
+        }
+        let Some(current) = target.findings.first() else {
+            return Ok(unavailable_instruction_evidence());
+        };
+        let antiburn_local::remediation::FindingCause::IgnoredInstructionConflict {
+            assessment_revision,
+            instruction_id,
+            instruction_digest,
+            rule_id,
+            rule_heading,
+            start_line,
+            end_line,
+            source,
+            provenance,
+            instruction_scope,
+            action_id,
+            action_timestamp_ms: expected_action_timestamp_ms,
+            nearby_context_ids,
+            counterevidence_ids,
+            certainty,
+            limitations,
+            ..
+        } = current.finding.cause()
+        else {
+            return Ok(unavailable_instruction_evidence());
+        };
+
+        let key = SessionKey::new(
+            current.environment_key.as_str(),
+            current.agent.as_str(),
+            current.session_id.as_str(),
+        );
+        let Some(published) = store
+            .published_turn_content(&key)
+            .map_err(|_| ControllerError::Internal)?
+        else {
+            return Ok(unavailable_instruction_evidence());
+        };
+        if published.publication_fence != current.published_fence
+            || published.source_generation != Some(current.source_generation)
+        {
+            return Ok(unavailable_instruction_evidence());
+        }
+        let session_identity = format!(
+            "{}\0{}\0{}",
+            current.environment_key, current.agent, current.session_id
+        );
+        let evidence = antiburn_local::analysis::ignored_instructions::prepare_session_content(
+            &session_identity,
+            current.finding.source_format,
+            published,
+            Vec::new(),
+        );
+        let mut references = BTreeSet::new();
+        references.insert(action_id.as_str());
+        references.extend(nearby_context_ids.iter().map(String::as_str));
+        references.extend(counterevidence_ids.iter().map(String::as_str));
+        let current_instruction = current_instruction_excerpt(
+            current,
+            source,
+            instruction_id,
+            instruction_digest,
+            rule_id,
+            *provenance,
+            *instruction_scope,
+        );
+        let (instruction_excerpt, source_label, instruction_limitation) =
+            current_instruction.map_or_else(
+                || {
+                    (
+                        rule_heading.clone(),
+                        source
+                            .strip_prefix("project:")
+                            .or_else(|| source.strip_prefix("home:"))
+                            .filter(|path| !path.is_empty())
+                            .unwrap_or("Instruction file")
+                            .to_owned(),
+                        Some("The full instruction text is unavailable or has changed since this assessment.".to_owned()),
+                    )
+                },
+                |(excerpt, label)| (excerpt, label, None),
+            );
+        let mut items = vec![BurnCheckEvidenceItem {
+            label: BurnCheckEvidenceLabel::Instruction,
+            source_label,
+            reference: rule_id.clone(),
+            observed_at_ms: None,
+            start_line: Some(*start_line),
+            end_line: Some(*end_line),
+            excerpt: instruction_excerpt,
+            explanation: format!(
+                "{} conflict · {}.",
+                match certainty {
+                    antiburn_local::analysis::ignored_instructions::FindingCertainty::Likely => "Likely",
+                    antiburn_local::analysis::ignored_instructions::FindingCertainty::Possible => "Possible",
+                },
+                match provenance {
+                    antiburn_local::analysis::ignored_instructions::InstructionProvenance::RecordedInjection => "recorded instruction",
+                    antiburn_local::analysis::ignored_instructions::InstructionProvenance::ObservedRead => "instruction seen in the session",
+                    antiburn_local::analysis::ignored_instructions::InstructionProvenance::CurrentFileComparison => "file checked now",
+                },
+            ),
+            limitation: instruction_limitation.or_else(|| match provenance {
+                antiburn_local::analysis::ignored_instructions::InstructionProvenance::CurrentFileComparison => Some("This file was checked now. We do not know if it had the same text when the action happened.".to_owned()),
+                antiburn_local::analysis::ignored_instructions::InstructionProvenance::ObservedRead => Some("We saw the instruction in the session, but cannot tell if it was active before the action.".to_owned()),
+                antiburn_local::analysis::ignored_instructions::InstructionProvenance::RecordedInjection => None,
+            }),
+        }];
+        for reference in references {
+            let Some(action) = evidence
+                .actions
+                .iter()
+                .find(|action| action.reference.id == reference)
+            else {
+                return Ok(unavailable_instruction_evidence());
+            };
+            let is_observed_action = action.reference.id == *action_id;
+            if is_observed_action
+                && expected_action_timestamp_ms.is_some()
+                && action.timestamp_ms != *expected_action_timestamp_ms
+            {
+                return Ok(unavailable_instruction_evidence());
+            }
+            let excerpt = bounded_evidence_excerpt(&action.text);
+            items.push(BurnCheckEvidenceItem {
+                label: if is_observed_action {
+                    BurnCheckEvidenceLabel::ObservedAction
+                } else {
+                    BurnCheckEvidenceLabel::Context
+                },
+                source_label: if is_observed_action {
+                    "Observed session action".to_owned()
+                } else {
+                    "Session context".to_owned()
+                },
+                reference: action.reference.id.clone(),
+                observed_at_ms: action.timestamp_ms,
+                start_line: None,
+                end_line: None,
+                excerpt,
+                explanation: if is_observed_action {
+                    "This is the action cited by the assessment.".to_owned()
+                } else {
+                    "This nearby event provides context for the assessment.".to_owned()
+                },
+                limitation: if action.truncated {
+                    Some("The saved event text is incomplete.".to_owned())
+                } else {
+                    None
+                },
+            });
+        }
+        if !limitations.is_empty() {
+            items[0].limitation = Some(
+                "The assessment records additional evidence limits. Review the action and section before deciding.".to_owned(),
+            );
+        }
+        if assessment_revision.is_empty() {
+            return Ok(unavailable_instruction_evidence());
+        }
+        Ok(BurnCheckTargetEvidence {
+            status: BurnCheckEvidenceStatus::Available,
+            items,
         })
     }
 
@@ -790,6 +1057,13 @@ impl RemediationController {
         let targets = self.list_burn_check_targets(store, detector, context)?;
         let now = now_epoch();
         if targets.targets.is_empty() {
+            if detector == DetectorId::IgnoredInstructions {
+                return Ok(CheckPromptFixResult {
+                    prompt: fallback_remediation_prompt(detector)
+                        .map_err(ControllerError::PromptUnavailable)?
+                        .into_string(),
+                });
+            }
             return Err(ControllerError::CheckPromptUnavailable);
         }
         if targets.truncated {
@@ -1973,7 +2247,7 @@ impl RemediationController {
         prompt: &str,
         now: i64,
     ) -> Result<(Vec<RemediationRecord>, String), ControllerError> {
-        if targets.is_empty() {
+        if !prompt_watch_supported(targets.iter().map(|target| target.finding().detector)) {
             return Ok((Vec::new(), prompt.to_owned()));
         }
         let watch_inputs = targets

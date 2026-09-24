@@ -105,8 +105,8 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     output
 }
 
-/// Split Markdown at heading boundaries while retaining nested list and
-/// exception text with its parent section. Oversized sections stay explicit.
+/// Split Markdown at headings and independent top-level list items. Keep
+/// indented conditions, exceptions, and examples with their parent item.
 pub fn segment_markdown(
     source: &str,
     markdown: &str,
@@ -130,9 +130,6 @@ pub fn segment_markdown(
         if body.trim().is_empty() {
             return Ok(());
         }
-        if sections.len() >= MAX_INSTRUCTION_SECTIONS {
-            return Err(MarkdownLimit::TooManySections);
-        }
         let heading = heading_stack
             .iter()
             .map(|(_, title)| title.as_str())
@@ -147,17 +144,60 @@ pub fn segment_markdown(
         } else {
             InstructionContentClass::RequirementCandidate
         };
-        let digest = sha256_hex(body.as_bytes());
-        let identity = format!("{source}\0{digest}\0{start_line}\0{end_line}\0{heading}");
-        sections.push(InstructionRuleSection {
-            id: sha256_hex(identity.as_bytes()),
-            heading,
-            content_class,
-            text: body.to_owned(),
-            start_line,
-            end_line,
-            evaluable: body.len() <= MAX_RULE_SECTION_BYTES,
-        });
+        let lines: Vec<&str> = body.lines().collect();
+        let mut in_code = false;
+        let mut items = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
+                in_code = !in_code;
+            } else if !in_code && top_level_list_item(line) {
+                items.push(index);
+            }
+        }
+        let ranges: Vec<(usize, usize)> = if items.len() > 1 {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, first)| {
+                    (*first, items.get(index + 1).copied().unwrap_or(lines.len()))
+                })
+                .collect()
+        } else {
+            vec![(0, lines.len())]
+        };
+        for (first, last) in ranges {
+            if sections.len() >= MAX_INSTRUCTION_SECTIONS {
+                return Err(MarkdownLimit::TooManySections);
+            }
+            let prefix = if first > 0 {
+                lines[..items[0]].join("\n")
+            } else {
+                String::new()
+            };
+            let text = if prefix.trim().is_empty() {
+                lines[first..last].join("\n")
+            } else {
+                format!("{prefix}\n{}", lines[first..last].join("\n"))
+            };
+            let item_start = start_line.saturating_add(first as u32);
+            let item_end = if last == lines.len() {
+                end_line
+            } else {
+                start_line.saturating_add(last as u32).saturating_sub(1)
+            };
+            let digest = sha256_hex(text.as_bytes());
+            let identity = format!("{source}\0{digest}\0{item_start}\0{item_end}\0{heading}");
+            let evaluable = text.len() <= MAX_RULE_SECTION_BYTES;
+            sections.push(InstructionRuleSection {
+                id: sha256_hex(identity.as_bytes()),
+                heading: heading.clone(),
+                content_class,
+                text,
+                start_line: item_start,
+                end_line: item_end,
+                evaluable,
+            });
+        }
         Ok(())
     };
 
@@ -213,7 +253,7 @@ pub fn segment_markdown(
                 heading_stack.pop();
             }
             heading_stack.push((level, title.to_owned()));
-            start_line = line_number;
+            start_line = line_number + if setext.is_some() { 2 } else { 1 };
             if setext.is_some() {
                 skip_setext_underline = true;
             }
@@ -232,6 +272,35 @@ pub fn segment_markdown(
         lines.len() as u32,
     )?;
     Ok(sections)
+}
+
+fn top_level_list_item(line: &str) -> bool {
+    let text = if let Some(rest) = line
+        .strip_prefix("- ")
+        .or_else(|| line.strip_prefix("* "))
+        .or_else(|| line.strip_prefix("+ "))
+    {
+        rest
+    } else if let Some((number, rest)) = line.split_once(". ") {
+        if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+        rest
+    } else {
+        return false;
+    };
+    let lower = text.to_ascii_lowercase();
+    !text.is_empty()
+        && ![
+            "exception",
+            "except",
+            "unless",
+            "otherwise",
+            "example",
+            "e.g.",
+        ]
+        .iter()
+        .any(|word| lower.starts_with(word))
 }
 
 fn markdown_heading(line: &str) -> Option<(usize, &str)> {
@@ -262,6 +331,44 @@ mod tests {
                 .contains("Exception: run the snapshot command")
         );
         assert_eq!(sections[1].heading, "Rules / Other");
+    }
+
+    #[test]
+    fn independent_list_rules_have_distinct_ranges_and_keep_shared_context() {
+        let sections = segment_markdown(
+            "AGENTS.md",
+            "# Checks\nApplies to release work.\n\n- Run tests before a commit.\n  - Exception: generated files only.\n- Ask before adding a dependency.\n\n## Next\nFollow the style guide.",
+        )
+        .unwrap();
+        assert_eq!(sections.len(), 3);
+        assert!(sections[0].text.contains("Applies to release work."));
+        assert!(
+            sections[0]
+                .text
+                .contains("Exception: generated files only.")
+        );
+        assert!(!sections[0].text.contains("Ask before adding"));
+        assert!(sections[1].text.contains("Applies to release work."));
+        assert_eq!(sections[0].start_line, 4);
+        assert_eq!(sections[1].start_line, 6);
+        assert_ne!(sections[0].id, sections[1].id);
+    }
+
+    #[test]
+    fn top_level_exceptions_and_code_examples_stay_with_the_rule() {
+        let sections = segment_markdown(
+            "AGENTS.md",
+            "# Rules\n- Do not edit generated files.\n- Exception: refresh snapshots first.\n```md\n- This is only an example.\n```\n- Ask before changing dependencies.",
+        )
+        .unwrap();
+        assert_eq!(sections.len(), 2);
+        assert!(
+            sections[0]
+                .text
+                .contains("Exception: refresh snapshots first")
+        );
+        assert!(sections[0].text.contains("This is only an example"));
+        assert!(!sections[1].text.contains("Exception:"));
     }
 
     #[test]

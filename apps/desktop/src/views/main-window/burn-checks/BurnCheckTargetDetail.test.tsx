@@ -5,6 +5,12 @@ import type { BurnCheckTargetPayload } from "../../../lib/insightsIpc"
 import { BurnCheckTargetDetail, targetCostLine } from "./BurnCheckTargetDetail"
 import { scopeLabel } from "./BurnCheckTargetPresentation"
 import { performProjectFolderAction } from "../../../lib/projectFolder"
+import { getBurnCheckTargetEvidence, openBurnCheckSample } from "../../../lib/insightsIpc"
+
+vi.mock("../../../lib/insightsIpc", () => ({
+  getBurnCheckTargetEvidence: vi.fn(),
+  openBurnCheckSample: vi.fn(),
+}))
 
 vi.mock("../../../lib/projectFolder", () => ({
   performProjectFolderAction: vi.fn().mockResolvedValue(undefined),
@@ -43,6 +49,7 @@ function target(overrides: Partial<BurnCheckTargetPayload> = {}): BurnCheckTarge
     autoFix: { status: "unavailable", reason: "unsupportedOrUnprovenTarget" },
     promptFix: { status: "unavailable", reason: "checkUnsupportedForAgent" },
     watch: null,
+    evidenceAvailable: false,
     coverageLimits: ["currentPublishedEvidenceOnly"],
     samples: [],
     expiresAtEpoch: 100,
@@ -102,6 +109,62 @@ describe("target cost line", () => {
 })
 
 describe("BurnCheckTargetDetail", () => {
+  it("loads validated evidence on demand and opens its session", async () => {
+    vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
+      status: "available",
+      items: [
+        {
+          label: "observedAction",
+          sourceLabel: "Observed session action",
+          reference: "opaque-action",
+          observedAtMs: 1000,
+          startLine: null,
+          endLine: null,
+          excerpt: "git push --force",
+          explanation: "This is the action cited by the assessment.",
+          limitation: null,
+        },
+      ],
+    })
+    const currentTarget = target({
+      finding: {
+        ...target().finding,
+        detector: "ignoredInstructions",
+        certainty: "possible",
+        instructionProvenance: "recorded_injection",
+      },
+      evidenceAvailable: true,
+      samples: [
+        {
+          navigationHandle: "opaque-session",
+          title: "Session",
+          agent: "claude-code",
+          surface: "cli",
+          observedAtMs: 1000,
+          repo: "demo",
+          timestamp: "2026-09-14T12:00:00Z",
+          isActive: false,
+          hasForkParent: false,
+          forkChildCount: 0,
+          cost: null,
+          models: [],
+          modelRuns: [],
+          hygiene: { evidenceState: "pending", unusedResources: null, badges: [] },
+        },
+      ],
+    })
+    render(<BurnCheckTargetDetail target={currentTarget} refresh={() => undefined} />)
+    expect(screen.getByRole("region", { name: "Sessions to review" })).toBeInTheDocument()
+
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "View details" })))
+    expect(await screen.findByText("git push --force")).toBeInTheDocument()
+    expect(getBurnCheckTargetEvidence).toHaveBeenCalledWith("action-fresh")
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Open this session" })),
+    )
+    expect(openBurnCheckSample).toHaveBeenCalledWith("opaque-session")
+  })
+
   it("shows the cost line under the recommendation when priced", () => {
     render(
       <BurnCheckTargetDetail

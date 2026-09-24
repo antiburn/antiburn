@@ -10,10 +10,11 @@ pub enum DetectorId {
     OldModelUsage,
     OveruseOfFastMode,
     CacheChurn,
+    IgnoredInstructions,
 }
 
 impl DetectorId {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 10;
 
     pub const ALL: [Self; Self::COUNT] = [
         Self::SessionsOverDepth,
@@ -25,6 +26,7 @@ impl DetectorId {
         Self::OldModelUsage,
         Self::OveruseOfFastMode,
         Self::CacheChurn,
+        Self::IgnoredInstructions,
     ];
 
     pub const fn index(self) -> usize {
@@ -43,6 +45,7 @@ impl DetectorId {
             Self::OldModelUsage => "old_model_usage",
             Self::OveruseOfFastMode => "overuse_of_fast_mode",
             Self::CacheChurn => "cache_churn",
+            Self::IgnoredInstructions => "ignored_instructions",
         }
     }
 
@@ -58,6 +61,7 @@ impl DetectorId {
             "old_model_usage" => Some(Self::OldModelUsage),
             "overuse_of_fast_mode" => Some(Self::OveruseOfFastMode),
             "cache_churn" => Some(Self::CacheChurn),
+            "ignored_instructions" => Some(Self::IgnoredInstructions),
             _ => None,
         }
     }

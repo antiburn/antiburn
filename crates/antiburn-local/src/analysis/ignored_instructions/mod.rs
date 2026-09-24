@@ -8,9 +8,11 @@ mod evidence;
 mod input;
 mod sources;
 
+pub const CHECK_ID: &str = "ignored_instructions";
+
 pub use evidence::{
     ContentAction, ContentEventReference, ContentReferenceResolution, SessionContentEvidence,
-    prepare_session_content, resolve_content_reference,
+    prepare_session_content, resolve_content_reference, source_supported,
 };
 
 pub use crate::analysis::jev::{

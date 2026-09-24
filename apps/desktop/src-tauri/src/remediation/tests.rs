@@ -1234,6 +1234,26 @@ fn an_observed_resource_subset_cannot_prove_an_absent_target_fixed() {
 }
 
 #[test]
+fn instruction_evidence_excerpts_are_bounded_without_splitting_utf8() {
+    let text = "界".repeat(2_000);
+    let excerpt = bounded_evidence_excerpt(&text);
+    assert!(excerpt.len() <= 4096);
+    assert!(excerpt.is_char_boundary(excerpt.len()));
+    assert_eq!(excerpt, "界".repeat(1365));
+    assert_eq!(
+        unavailable_instruction_evidence().status,
+        BurnCheckEvidenceStatus::Unavailable
+    );
+}
+
+#[test]
+fn only_checks_with_supported_verification_create_prompt_watches() {
+    assert!(!prompt_watch_supported([] as [DetectorId; 0]));
+    assert!(!prompt_watch_supported([DetectorId::IgnoredInstructions]));
+    assert!(prompt_watch_supported([DetectorId::OldModelUsage]));
+}
+
+#[test]
 fn prompt_references_are_bounded_and_stable() {
     let first = prompt_with_evidence_paths("Fix this.", &[], Some("attempt-1")).unwrap();
     let second = prompt_with_evidence_paths("Fix this.", &[], Some("attempt-1")).unwrap();

@@ -14,6 +14,7 @@
     "allow-copy-prompt-fix-burn-check",
     "allow-copy-prompt-fix-burn-check-targets",
     "allow-get-burn-check-aggregate-wins",
+    "allow-get-burn-check-target-evidence",
     "allow-get-burn-check-remediation-progress"
   ]
 }

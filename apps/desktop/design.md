@@ -1024,7 +1024,7 @@ Project context appears once below the title and actions, using the full text-co
 Keep it on one line, truncating overflow while retaining the inline folder control.
 The folder hover panel reveals the full recorded local path and supports open/copy actions
 on pointer hover or keyboard focus.
-Failed sessions use the shared session cards without a separate heading, count badge, or disclosure.
+Related sessions use the shared session cards without a separate count badge or disclosure.
 Show all available cards. Lists longer than five cards scroll within the measured height of the
 first five cards. Counts and dates use tabular numerals.
 The project row keeps a bare 14px folder icon in a 20px target and a `mt-1` count gap.
@@ -1036,6 +1036,10 @@ The actions align with that first line and wrap without negative vertical offset
 Every finding explanation appears below the header metrics.
 All check actions sit at the header’s right edge. Named resource cards contain evidence only.
 Do not repeat explanations or check-level actions in the body.
+Session findings may load bounded evidence on demand. Keep instruction source and line range,
+action, context, certainty, and evidence limits in the detail pane. Show unavailable evidence
+when the source changed; do not replace it with an unrelated current record. Use the existing
+session route when exact event positioning is unavailable.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
 the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
 does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll

@@ -215,6 +215,7 @@ mod tests {
             evidence_settled: true,
             pending_evidence: 0,
             resources: crate::insights_report::ResourceAssessment::default(),
+            ignored_instructions: crate::insights_report::IgnoredInstructionsSummary::default(),
         }
     }
 

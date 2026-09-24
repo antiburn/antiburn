@@ -52,7 +52,9 @@ use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
 use crate::popover;
 use crate::provider_usage;
-use crate::remediation::{BurnCheckTargetContext, ControllerError, RemediationController};
+use crate::remediation::{
+    BurnCheckTargetContext, BurnCheckTargetEvidence, ControllerError, RemediationController,
+};
 use crate::repositories;
 use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
@@ -1432,6 +1434,22 @@ pub async fn list_burn_check_targets(
 }
 
 #[tauri::command]
+pub async fn get_burn_check_target_evidence(
+    window: tauri::WebviewWindow,
+    action_id: String,
+) -> CommandResult<BurnCheckTargetEvidence> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<RemediationController>()
+            .burn_check_target_evidence(&app.state::<Store>(), &action_id)
+            .map_err(|_| "unable to load burn check evidence".to_owned())
+    })
+    .await
+    .map_err(|_| "unable to load burn check evidence".to_owned())?
+}
+
+#[tauri::command]
 pub async fn get_burn_check_remediation_progress(
     window: tauri::WebviewWindow,
 ) -> CommandResult<BurnCheckRemediationProgressPayload> {
@@ -2754,6 +2772,7 @@ mod tests {
                 agent: record.key.agent,
                 session_id: record.key.session_id,
                 observed_at_ms: 990_000 - index as i64,
+                incarnation: None,
             });
         }
         let target = BurnCheckTarget {
@@ -2764,6 +2783,8 @@ mod tests {
                 agent: AgentKind::Claude,
                 source_format: SourceFormat::ClaudeJsonl,
                 observation: "Long session".into(),
+                certainty: None,
+                instruction_provenance: None,
                 facts: DisplayFacts {
                     labels: Vec::new(),
                     omitted: 0,
@@ -2796,6 +2817,7 @@ mod tests {
             ),
             prompt_fix: PromptFixAvailability::Available,
             watch: None,
+            evidence_available: false,
             coverage_limits: Vec::new(),
             sample_sessions: samples[..3].to_vec(),
             expires_at_epoch: 1600,

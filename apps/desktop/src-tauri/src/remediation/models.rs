@@ -28,9 +28,46 @@ pub struct BurnCheckTarget {
     pub auto_fix: AutoFixAvailability,
     pub prompt_fix: PromptFixAvailability,
     pub watch: Option<WatchStatus>,
+    pub evidence_available: bool,
     pub coverage_limits: Vec<CoverageLimit>,
     pub sample_sessions: Vec<BurnCheckSampleSession>,
     pub expires_at_epoch: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckEvidenceStatus {
+    Available,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckEvidenceLabel {
+    Instruction,
+    ObservedAction,
+    Context,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckEvidenceItem {
+    pub label: BurnCheckEvidenceLabel,
+    pub source_label: String,
+    pub reference: String,
+    pub observed_at_ms: Option<i64>,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+    pub excerpt: String,
+    pub explanation: String,
+    pub limitation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckTargetEvidence {
+    pub status: BurnCheckEvidenceStatus,
+    pub items: Vec<BurnCheckEvidenceItem>,
 }
 
 /// Internal session identity used only to mint an opaque renderer handle.
@@ -40,6 +77,7 @@ pub struct BurnCheckSampleSession {
     pub agent: String,
     pub session_id: String,
     pub observed_at_ms: i64,
+    pub incarnation: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
