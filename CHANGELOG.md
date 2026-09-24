@@ -20,6 +20,12 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Fixed
+
+- The Windows install command no longer fails when many installs share one
+  network address. It finds the latest release through the GitHub release page,
+  as the macOS and Linux installer does, instead of the rate-limited GitHub API.
+
 ## [0.7.3] - 2026-09-23
 
 ### Added

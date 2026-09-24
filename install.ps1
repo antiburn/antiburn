@@ -63,14 +63,22 @@ function Get-AntiburnRelease {
         }
     }
 
+    # Follow the web redirect from releases/latest to releases/tag/<tag>, as
+    # install.sh does. The REST API allows 60 unauthenticated requests an hour
+    # per IP address, which a shared NAT or CI runner can exhaust.
     Write-InstallerInfo 'Resolving the latest release'
     $request = @{
-        Uri = "https://api.github.com/repos/$script:Repository/releases/latest"
-        Headers = @{ Accept = 'application/vnd.github+json' }
+        Uri = "$script:GitHubUrl/releases/latest"
+        Method = 'Head'
         UseBasicParsing = $true
     }
-    $release = Invoke-RestMethod @request
-    $tag = [string] $release.tag_name
+    $finalUri = Get-ResponseUri -Response (Invoke-WebRequest @request)
+    $tagPrefix = "/$script:Repository/releases/tag/"
+    if ($finalUri.Scheme -cne 'https' -or $finalUri.Host -cne 'github.com' -or
+        -not $finalUri.AbsolutePath.StartsWith($tagPrefix, [System.StringComparison]::Ordinal)) {
+        throw "GitHub redirected to an unexpected release URL: $finalUri"
+    }
+    $tag = $finalUri.AbsolutePath.Substring($tagPrefix.Length)
     if ($tag -notmatch '^antiburn-v([0-9A-Za-z.-]+)$') {
         throw "GitHub returned an invalid release tag: $tag"
     }
@@ -78,6 +86,17 @@ function Get-AntiburnRelease {
         Version = $Matches[1]
         Tag = $tag
     }
+}
+
+# The URI a response came from after redirects. Windows PowerShell 5.1
+# exposes it as ResponseUri; PowerShell 7 exposes the final request message.
+function Get-ResponseUri {
+    param([Parameter(Mandatory)] $Response)
+
+    if ($Response.BaseResponse.ResponseUri) {
+        return $Response.BaseResponse.ResponseUri
+    }
+    return $Response.BaseResponse.RequestMessage.RequestUri
 }
 
 function Invoke-InstallerDownload {
@@ -94,12 +113,7 @@ function Invoke-InstallerDownload {
         throw "Refusing a non-HTTPS download: $Uri"
     }
     $response = Invoke-WebRequest @request
-    $finalUri = if ($response.BaseResponse.ResponseUri) {
-        $response.BaseResponse.ResponseUri
-    }
-    else {
-        $response.BaseResponse.RequestMessage.RequestUri
-    }
+    $finalUri = Get-ResponseUri -Response $response
     if ($finalUri.Scheme -cne 'https') {
         throw "Refusing a download that redirected to $finalUri"
     }

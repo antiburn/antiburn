@@ -48,6 +48,74 @@ Describe 'install.ps1' {
             Should -Throw '*Checksum verification failed*'
     }
 
+    It 'resolves the latest release from the GitHub web redirect' {
+        Mock Invoke-WebRequest {
+            [PSCustomObject]@{
+                BaseResponse = [PSCustomObject]@{
+                    ResponseUri = [uri] 'https://github.com/antiburn/antiburn/releases/tag/antiburn-v1.2.3'
+                }
+            }
+        }
+
+        $release = Get-AntiburnRelease
+        $release.Version | Should -Be '1.2.3'
+        $release.Tag | Should -Be 'antiburn-v1.2.3'
+        Should -Invoke Invoke-WebRequest -Times 1 -Exactly -ParameterFilter {
+            $Uri -eq 'https://github.com/antiburn/antiburn/releases/latest' -and $Method -eq 'Head'
+        }
+    }
+
+    It 'reads the redirect target from a PowerShell 7 response' {
+        Mock Invoke-WebRequest {
+            [PSCustomObject]@{
+                BaseResponse = [PSCustomObject]@{
+                    RequestMessage = [PSCustomObject]@{
+                        RequestUri = [uri] 'https://github.com/antiburn/antiburn/releases/tag/antiburn-v1.2.3'
+                    }
+                }
+            }
+        }
+
+        (Get-AntiburnRelease).Version | Should -Be '1.2.3'
+    }
+
+    It 'does not call the GitHub REST API' {
+        $source = Get-Content -LiteralPath $script:InstallerPath -Raw
+        $source | Should -Not -Match 'api\.github\.com'
+        $source | Should -Not -Match 'Invoke-RestMethod'
+    }
+
+    It 'rejects a redirect that is not a release tag' {
+        Mock Invoke-WebRequest {
+            [PSCustomObject]@{
+                BaseResponse = [PSCustomObject]@{
+                    ResponseUri = [uri] 'https://github.com/antiburn/antiburn/releases'
+                }
+            }
+        }
+
+        { Get-AntiburnRelease } | Should -Throw '*unexpected release URL*'
+    }
+
+    It 'rejects a release tag from another product' {
+        Mock Invoke-WebRequest {
+            [PSCustomObject]@{
+                BaseResponse = [PSCustomObject]@{
+                    ResponseUri = [uri] 'https://github.com/antiburn/antiburn/releases/tag/antiburn-local-v0.1.6'
+                }
+            }
+        }
+
+        { Get-AntiburnRelease } | Should -Throw '*invalid release tag*'
+    }
+
+    It 'skips the lookup when a version is requested' {
+        Mock Invoke-WebRequest { throw 'The request must not run.' }
+
+        (Get-AntiburnRelease -RequestedVersion '1.2.3').Tag | Should -Be 'antiburn-v1.2.3'
+        Should -Invoke Invoke-WebRequest -Times 0 -Exactly
+    }
+
     It 'rejects a non-HTTPS download before making a request' {
         Mock Invoke-WebRequest { throw 'The request must not run.' }
 
