@@ -38,8 +38,9 @@ use super::{SessionKey, Store};
 /// gives up rather than load an unbounded result.
 const MAX_ATTRIBUTION_GROUPS: usize = 20_000;
 
-/// Maximum timed usage rows retained by one quota query.
-const MAX_QUOTA_TURNS: usize = 250_000;
+/// Allow twice the documented 240,000-turn/30-day workload over 70 days.
+/// Bound the shared scan before allocation, including unrelated accounts.
+const MAX_QUOTA_TURNS: usize = 2 * 70 * (240_000 / 30);
 
 /// Provider periods one candidate scan may return.
 const MAX_CANDIDATE_PERIODS: usize = 64;
@@ -581,7 +582,7 @@ impl Store {
         let connection = self.lock();
         let wait_ms = started.elapsed().as_millis() as u64;
         let read_started = std::time::Instant::now();
-        let input = read_quota_turn_input(&connection, from_epoch, to_epoch)?;
+        let input = read_quota_turn_input(&connection, from_epoch, to_epoch, MAX_QUOTA_TURNS)?;
         drop(connection);
         tracing::debug!(
             wait_ms,
@@ -2111,6 +2112,7 @@ fn read_quota_turn_input(
     connection: &Connection,
     from_epoch: i64,
     to_epoch: i64,
+    max_turns: usize,
 ) -> Result<Option<QuotaTurnInput>> {
     let start_ms = from_epoch.saturating_mul(1_000).saturating_sub(1);
     let end_ms = to_epoch.saturating_mul(1_000).saturating_sub(1);
@@ -2119,13 +2121,13 @@ fn read_quota_turn_input(
         start_ms,
         end_ms,
         (MAX_ATTRIBUTION_GROUPS + 1) as i64,
-        (MAX_QUOTA_TURNS + 1) as i64
+        (max_turns + 1) as i64
     ])?;
     let mut rows = Vec::new();
     let mut turn_count = 0usize;
     while let Some(row) = query.next()? {
         turn_count = turn_count.saturating_add(row.get::<_, usize>(11)?);
-        if rows.len() == MAX_ATTRIBUTION_GROUPS || turn_count > MAX_QUOTA_TURNS {
+        if rows.len() == MAX_ATTRIBUTION_GROUPS || turn_count > max_turns {
             return Ok(None);
         }
         rows.push(BucketTurnRow {

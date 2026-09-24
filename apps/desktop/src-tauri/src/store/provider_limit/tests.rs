@@ -1658,6 +1658,7 @@ fn quota_buckets_keep_exact_usage_times_and_half_open_period_boundaries() {
 
 #[test]
 fn quota_turn_limit_rejects_a_truncated_result_even_inside_one_bucket() {
+    const TEST_TURN_LIMIT: usize = 100;
     let store = memory_store();
     let key = insert_session(&store, "bounded-usage");
     observe_account(&store, &account('a'));
@@ -1671,10 +1672,21 @@ fn quota_turn_limit_rejects_a_truncated_result_even_inside_one_bucket() {
              cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
          SELECT 'native', ?2, ?3, 1, 'synthetic', 'synthetic', n, 'main', 'assistant',
              100000, ?4, 1, 0, 0, 0, 0 FROM turns",
-            params![MAX_QUOTA_TURNS as i64, AGENT, key.session_id, MODEL],
+            params![TEST_TURN_LIMIT as i64, AGENT, key.session_id, MODEL],
         )
         .unwrap();
-    assert!(store.quota_turn_input(0, 900).unwrap().is_none());
+    assert!(
+        read_quota_turn_input(&store.lock(), 0, 900, TEST_TURN_LIMIT)
+            .unwrap()
+            .is_none()
+    );
+    let exact = read_quota_turn_input(&store.lock(), 0, 900, TEST_TURN_LIMIT + 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        exact.rows.iter().map(|row| row.turn_count).sum::<i64>(),
+        101
+    );
 }
 
 #[test]
@@ -1739,4 +1751,141 @@ fn timed_quota_costs_keep_a_known_fast_mode_price() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].usage, vec![(100_000, expected)]);
     assert_eq!(rows[0].usd, expected);
+}
+
+#[test]
+fn quota_turn_input_keeps_a_small_account_beside_a_seventy_day_workload() {
+    let store = memory_store();
+    let small = insert_session(&store, "small-account");
+    let busy = insert_session(&store, "busy-account");
+    bind_account(&store, &small, &account('a'));
+    bind_account(&store, &busy, &account('b'));
+    insert_turn(&store, &small, 100_000, 100_000);
+    insert_turn(&store, &busy, 1, 1);
+    let workload = 70 * (240_000 / 30);
+    let end_epoch = 70 * 86_400;
+    store
+        .lock()
+        .execute(
+            "WITH RECURSIVE turns(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM turns WHERE n < ?1)
+         INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+             thread_id, turn_index, scope, role, ts_ms, model, input_tokens,
+             cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
+         SELECT 'native', ?2, ?3, 1, 'synthetic', 'synthetic', n, 'main', 'assistant',
+             n * 10800, ?4, 1, 0, 0, 0, 0 FROM turns",
+            params![workload - 1, AGENT, busy.session_id, MODEL],
+        )
+        .unwrap();
+    let input = store
+        .quota_turn_input(0, end_epoch)
+        .unwrap()
+        .expect("the full supported workload fits");
+    assert_eq!(
+        input.rows.iter().map(|row| row.turn_count).sum::<i64>(),
+        workload + 1
+    );
+    let rows = input
+        .for_account(PROVIDER, &account('a'), None)
+        .by_bucket(None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, small);
+    assert_eq!(rows[0].usage.len(), 1);
+    assert!(rows[0].usd > 0.0);
+    assert_eq!(
+        input
+            .for_account(PROVIDER, &account('b'), None)
+            .by_bucket(None)
+            .iter()
+            .map(|row| row.turn_count)
+            .sum::<i64>(),
+        workload
+    );
+}
+
+#[test]
+fn timed_pricing_keeps_model_specific_provider_routes_before_period_clipping() {
+    let hints = serde_json::json!([
+        {"model": MODEL, "provider": "openrouter"},
+        {"model": "gpt-6-astra", "provider": "openai"}
+    ])
+    .to_string();
+    let row = |model: &str| BucketTurnRow {
+        key: SessionKey::new("native", "opencode", "mixed-provider"),
+        hints_json: Some(hints.clone()),
+        accounts_json: "[]".into(),
+        model: Some(model.into()),
+        speed: None,
+        input_tokens: 400_000,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        turn_count: 2,
+        cache_write_1h_tokens: 0,
+        bucket_start_epoch: 0,
+        timed_tokens: vec![
+            [100_000, 100_000, 0, 0, 0, 0],
+            [300_000, 300_000, 0, 0, 0, 0],
+        ],
+    };
+    let mut input = QuotaTurnInput {
+        rows: vec![row(MODEL), row("gpt-6-astra")],
+        known_accounts: HashMap::from([
+            (
+                ("openrouter".into(), "opencode".into()),
+                BTreeSet::from([account('a')]),
+            ),
+            (
+                ("openai".into(), "opencode".into()),
+                BTreeSet::from([account('b')]),
+            ),
+        ]),
+    };
+    for (provider, account_key, model) in [
+        ("openrouter", account('a'), MODEL),
+        ("openai", account('b'), "gpt-6-astra"),
+    ] {
+        let rows = input
+            .for_account(provider, &account_key, None)
+            .by_bucket(None);
+        assert_eq!(rows.len(), 1);
+        let expected = lookup_turn_pricing(model, None)
+            .unwrap()
+            .input_cost_per_token
+            * 400_000.0;
+        assert_eq!(rows[0].usd, expected);
+        assert_eq!(rows[0].in_period(0, 900, 900).unwrap().usd, expected);
+        assert_eq!(rows[0].in_period(0, 200, 200).unwrap().usd, expected / 4.0);
+    }
+    assert!(
+        input
+            .for_account("anthropic", &account('a'), None)
+            .by_bucket(None)
+            .is_empty()
+    );
+
+    input.rows[0].hints_json = Some(
+        serde_json::json!([
+            {"model": MODEL, "provider": "openrouter"},
+            {"model": MODEL, "provider": "openai"}
+        ])
+        .to_string(),
+    );
+    assert!(
+        input
+            .for_account("openrouter", &account('a'), None)
+            .by_bucket(None)
+            .is_empty()
+    );
+    let openai = input
+        .for_account("openai", &account('b'), None)
+        .by_bucket(None);
+    assert_eq!(openai.len(), 1);
+    assert_eq!(openai[0].usage.len(), 2);
+    assert_eq!(
+        openai[0].usd,
+        lookup_turn_pricing("gpt-6-astra", None)
+            .unwrap()
+            .input_cost_per_token
+            * 400_000.0
+    );
 }
