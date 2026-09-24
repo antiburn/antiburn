@@ -21,14 +21,6 @@ export type Band = { top: number; height: number }
 // The pointer snaps to a line this close, in pixels.
 const SNAP = 8
 
-// The number of week colours. The tone classes in overview.css match.
-const WEEK_TONES = 7
-
-/** The tone class of a week, from its place in the newest-first order. */
-export function weekTone(index: number): string {
-  return `week-tone-${index % WEEK_TONES}`
-}
-
 /** A short name for a week, relative to the week that is on now. */
 export function weekName(
   week: AllowanceWindowLevelsPayload,
@@ -263,9 +255,11 @@ export type CalloutSpot = { row: number; flip: boolean; left: number; right: num
  *  that row, its leader does not cross text in a lower row, and its text
  *  does not cover a leader from a higher row. The right-most callout goes
  *  first, so a group of close pins steps up to the left. An item that fits
- *  nowhere gets `null`. Row 0 is nearest the pins. */
+ *  nowhere gets `null`. Row 0 is nearest the pins. The text of an item
+ *  also keeps clear of each position in its `avoid` list, for example the
+ *  pins of other items. */
 export function placeCallouts(
-  items: readonly { x: number; width: number }[],
+  items: readonly { x: number; width: number; avoid?: readonly number[] }[],
   left: number,
   right: number,
   rows: number,
@@ -276,10 +270,15 @@ export function placeCallouts(
   const spots = new Array<CalloutSpot | null>(items.length).fill(null)
   const order = items.map((_, index) => index).sort((a, b) => items[b]!.x - items[a]!.x)
   for (const index of order) {
-    const { x, width } = items[index]!
+    const { x, width, avoid = [] } = items[index]!
     const fits = (row: number, from: number, to: number) =>
       from >= left &&
       to <= right &&
+      avoid.every((mark) =>
+        from < x
+          ? mark <= from - pad / 2 || mark >= x - gap / 2
+          : mark <= x + gap / 2 || mark >= to + pad / 2,
+      ) &&
       placed.every((other) =>
         other.row === row
           ? to + pad <= other.left || from >= other.right + pad

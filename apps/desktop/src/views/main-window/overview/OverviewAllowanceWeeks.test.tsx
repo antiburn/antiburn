@@ -85,18 +85,21 @@ function renderChart(marks?: WasteMarks) {
 }
 
 describe("OverviewAllowanceWeeks", () => {
-  it("draws every week on one shared week, each in its own colour, with a label", () => {
+  it("draws every week on one shared week, in one colour, with a label", () => {
     const { container } = renderChart()
     const bands = container.querySelectorAll("[data-week]")
     expect(bands).toHaveLength(3)
     expect([...bands].map((band) => band.getAttribute("class"))).toEqual([
-      "week-band week-tone-2",
-      "week-band week-tone-1",
-      "week-band week-tone-0",
+      "week-band",
+      "week-band",
+      "week-band",
     ])
-    // Each week is named at its line and in the key.
+    // Each week is named at its line and has its own key entry.
     expect(screen.getAllByText("This week")).toHaveLength(2)
     expect(screen.getAllByText("Last week")).toHaveLength(2)
+    expect(screen.getAllByText("2 weeks ago")).toHaveLength(2)
+    expect(screen.queryByText("Past weeks")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "One colour" })).not.toBeInTheDocument()
     // The oldest week reached its limit, so its label says so.
     expect(screen.getByText("· limit")).toBeInTheDocument()
     expect(
@@ -126,20 +129,19 @@ describe("OverviewAllowanceWeeks", () => {
     )
   })
 
-  it("keeps every week on the context colour with one colour", () => {
-    const { container } = renderChart()
-    fireEvent.click(screen.getByRole("button", { name: "One colour" }))
-    expect(container.querySelector("[data-week]")).toHaveAttribute("class", "week-band")
-    expect(screen.getByText("Past weeks")).toBeInTheDocument()
-  })
-
   it("breaks the weeks apart into rows and puts them back together", () => {
     const { container } = renderChart()
     const band = () => container.querySelector<SVGGElement>(`[data-week="0"]`)!
     expect(band().style.transform).toContain("scaleY(1.0000)")
 
-    fireEvent.click(screen.getByRole("button", { name: "Break apart" }))
+    const toggle = screen.getByRole("button", { name: "Break apart" })
+    expect(toggle).toHaveAttribute("aria-pressed", "false")
+    fireEvent.click(toggle)
     expect(band().style.transform).not.toContain("scaleY(1.0000)")
+    expect(screen.getByRole("button", { name: "Put together" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
     expect(screen.queryByText("Average usage")).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Put together" }))
@@ -156,8 +158,29 @@ describe("OverviewAllowanceWeeks", () => {
     fireEvent.pointerEnter(row)
     // The config row takes the focus, so the session pin steps back.
     expect(container.querySelector("[data-waste-pin]")).toHaveStyle({ opacity: "0.25" })
-    // The pin and the flag share one key entry.
+    // The pin and the config list share one key entry.
     expect(screen.getByText("Failed check")).toBeInTheDocument()
+  })
+
+  it("lists the config checks to the left of the plot, which sits in the middle", () => {
+    const { container } = renderChart(waste)
+    const texts = [...container.querySelectorAll("[data-week-config] text")]
+    expect(texts.map((text) => Number(text.getAttribute("x")))).toEqual([0, 0])
+    // The frame is 640 wide. The plot has 152 on each side, so the week
+    // labels start 8 past its right edge.
+    const label = container.querySelector<SVGGElement>(`[data-week-label="0"]`)!
+    expect(label.style.transform).toMatch(/^translate\(496px, /)
+  })
+
+  it("lights the failed checks from the action, not from the row around it", () => {
+    const { container } = renderChart(waste)
+    const callout = () => container.querySelector("[data-pin-callout=cacheChurn]")!
+    fireEvent.pointerEnter(container.querySelector("[data-week-config=unusedMcpServers]")!)
+    expect(callout()).toHaveStyle({ opacity: "0.25" })
+    fireEvent.pointerEnter(container.querySelector("[data-chart-action]")!.parentElement!)
+    expect(callout()).toHaveStyle({ opacity: "0.25" })
+    fireEvent.pointerEnter(container.querySelector("[data-chart-action]")!)
+    expect(callout()).toHaveStyle({ opacity: "1" })
   })
 
   it("names each failed check in a callout, and lights its pins from it", () => {
@@ -168,22 +191,24 @@ describe("OverviewAllowanceWeeks", () => {
     expect(callout).toHaveStyle({ opacity: "0.25" })
     fireEvent.pointerEnter(callout)
     expect(container.querySelector("[data-waste-pin]")).toHaveStyle({ opacity: "1" })
-    // The callouts hide when the weeks break apart.
+    // Apart, the callouts above the plot hide and each row names its pins.
+    const rows = () => container.querySelector("[data-row-callouts]")!
+    expect(rows()).toHaveStyle({ opacity: "0" })
     fireEvent.click(screen.getByRole("button", { name: "Break apart" }))
     expect(container.querySelector("[data-pin-callouts]")).toHaveStyle({ opacity: "0" })
+    expect(rows()).toHaveStyle({ opacity: "1" })
+    expect(container.querySelector("[data-row-callout=cacheChurn]")).toHaveTextContent(
+      "Cache churnFix the parser",
+    )
   })
 
-  it("lights a week's annotations from its key entry, in both colour modes", () => {
+  it("lights a week's annotations from its key entry", () => {
     const { container } = renderChart(waste)
     const callout = () => container.querySelector("[data-pin-callout=cacheChurn]")!
     const key = (name: string) => screen.getAllByText(name).at(-1)!.closest("[role=listitem]")!
     fireEvent.pointerEnter(key("Last week"))
     expect(callout()).toHaveStyle({ opacity: "0.25" })
-    fireEvent.pointerEnter(key("This week"))
-    expect(callout()).toHaveStyle({ opacity: "1" })
-
-    fireEvent.click(screen.getByRole("button", { name: "One colour" }))
-    fireEvent.pointerEnter(key("Past weeks"))
+    fireEvent.pointerEnter(key("2 weeks ago"))
     expect(callout()).toHaveStyle({ opacity: "0.25" })
     fireEvent.pointerEnter(key("This week"))
     expect(callout()).toHaveStyle({ opacity: "1" })

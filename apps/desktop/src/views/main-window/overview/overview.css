@@ -451,41 +451,29 @@
 }
 
 /*
- * The week lines. Each week draws in its own colour through `--week`. With
- * one colour, every week stays on the context blue and the past weeks fade.
- * The tones skip red, which marks a limit hit, and orange, which marks
- * waste. `week-tone-N` follows the newest-first order.
+ * The week lines. Every week draws in the context blue through `--week`,
+ * and the past weeks fade.
  */
 .overview-weeks {
   --week: var(--color-context-stroke);
 }
 
-.week-tone-0 {
-  --week: var(--color-context-stroke);
+/*
+ * Chart text gets a halo in the surface colour where it crosses a line. Dark
+ * mode only: on the light surface the halo shows as a white edge.
+ */
+.week-halo {
+  stroke: none;
 }
 
-.week-tone-1 {
-  --week: var(--color-token-out);
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .week-halo {
+    stroke: var(--color-surface);
+  }
 }
 
-.week-tone-2 {
-  --week: var(--color-mode-other);
-}
-
-.week-tone-3 {
-  --week: var(--color-mode-talking);
-}
-
-.week-tone-4 {
-  --week: var(--color-check-depth);
-}
-
-.week-tone-5 {
-  --week: var(--color-system-gold);
-}
-
-.week-tone-6 {
-  --week: var(--color-system-indigo);
+:root[data-theme="dark"] .week-halo {
+  stroke: var(--color-surface);
 }
 
 /*

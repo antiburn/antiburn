@@ -1,3 +1,4 @@
+import { FoldVertical, UnfoldVertical } from "lucide-react"
 import { useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react"
 
 import type { AllowanceUsageAccountPayload } from "../../../lib/providerUsageIpc"
@@ -41,19 +42,22 @@ import {
   weekName,
   weekPath,
   weekPointerFocus,
-  weekTone,
   type Band,
   type Plot,
 } from "./weekLines"
 import type { WasteMarks } from "./wasteMarks"
 
-// Room around the plot: the level ticks on the left, the week labels on the
-// right, the day names below.
+// Room around the plot. Each side gets the same room, so the plot sits in
+// the middle: the config checks and the level ticks on the left, the week
+// labels on the right. The day names go below.
+const SIDE_ROOM = 152
 const AXIS_LEFT = 34
-const LABEL_ROOM = 152
 const AXIS_BOTTOM = 22
 const TOP_GAP = 8
-// Apart, the rows keep this gap.
+// The Break apart button sits in the top left corner.
+const BUTTON_ROOM = 40
+// Apart, the rows start near the top and keep this gap.
+const ROW_TOP = TOP_GAP + 4
 const ROW_GAP = 16
 // Pin heads stack up from the top of the plot, one step per session. A stem
 // runs from each head down to its week's line.
@@ -72,12 +76,15 @@ const CALLOUT_TEXT_GAP = 6
 const HEADLINE_CHAR = 6.8
 const SUBLINE_CHAR = 6
 const TITLE_CHARS = 26
-// The flag at the reset: a header line, then one row per config check.
-const FLAG_TOP = 10
-const FLAG_HEAD = 18
-const FLAG_ROW = 17
-const FLAG_SHARE_WIDTH = 30
-const FLAG_WIDTH = 230
+const ROW_TITLE_CHARS = 20
+// The second line of a row callout sits this far under the first.
+const ROW_LINE = 13
+// The config checks list on the left: a two-line header, then a share and
+// a label for each check.
+const CONFIG_WIDTH = SIDE_ROOM - AXIS_LEFT - 8
+const CONFIG_HEAD = 38
+const CONFIG_ROW = 44
+const CONFIG_CHARS = Math.floor(CONFIG_WIDTH / SUBLINE_CHAR)
 // Week labels on the right keep this far apart.
 const LABEL_GAP = 15
 // Parts out of focus fade to this share.
@@ -86,10 +93,6 @@ const DIM_SHARE = 0.25
 // stack and the time of week, so the ring has no size.
 const NO_RING: Geometry = { cx: 0, cy: 0, inner: 0, outer: 0, hole: 0 }
 
-const LEGEND_ITEMS: readonly ChartLegendItem[] = [
-  { key: "week", label: "This week", swatch: "bg-context-stroke" },
-  { key: "past", label: "Past weeks", swatch: "bg-context-stroke/30" },
-]
 const SHORT_LEGEND: ChartLegendItem = {
   key: "short",
   label: "5-hour window",
@@ -104,7 +107,7 @@ const ROLLING_LEGEND: ChartLegendItem = {
 const LIMIT_LEGEND: ChartLegendItem = {
   key: "limit",
   label: "Limit hit",
-  swatch: "bg-system-red",
+  swatch: "bg-system-red-tint",
   shape: "line",
 }
 const WASTE_LEGEND: ChartLegendItem = {
@@ -177,7 +180,9 @@ function spokeStrong(spoke: Spoke, focus: RadialFocus | null): boolean {
 /** The allowance chart as week lines. Every weekly window draws from its
  *  reset on one shared week, so the weeks overlap. Each 5-hour window draws
  *  as its own rising curve under its week. Red on the 100% line shows where
- *  a week sat at its limit. "Break apart" moves each week into its own row.
+ *  a week sat at its limit. Every week draws in one colour, and this week
+ *  is the strongest. The button in the top left corner moves each week into
+ *  its own row.
  *
  *  Every part reacts to the pointer. The pointer snaps to a limit hit, a
  *  week's line, a 5-hour curve or the average line, and otherwise reads the
@@ -187,9 +192,10 @@ function spokeStrong(spoke: Spoke, focus: RadialFocus | null): boolean {
  *
  *  Failed checks show on the chart. A pin marks each wasteful session: its
  *  stem runs down to a dot on its week's line at the session's time. A
- *  callout above the plot names each group of one check's pins. The
- *  config checks fail in most sessions, so a flag at the reset shows each
- *  one once, with its share of sessions. */
+ *  callout above the plot names each group of one check's pins. Apart, a
+ *  short callout beside the pins names them in each row. The config checks
+ *  fail in most sessions, so a list on the left shows each one once, with
+ *  its share of sessions. */
 export function OverviewAllowanceWeeks({
   account,
   rangeEndEpoch,
@@ -210,7 +216,6 @@ export function OverviewAllowanceWeeks({
   const [pointer, setPointer] = useState<Point | null>(null)
   const [explicit, setExplicit] = useState<RadialFocus | null>(null)
   const [apart, setApart] = useState(false)
-  const [colours, setColours] = useState(true)
 
   const weeks = account.chart.weeklyWindows.filter((window) => window.lane === "weekly")
   const current = weeks.find(
@@ -220,7 +225,7 @@ export function OverviewAllowanceWeeks({
   const clock = current ?? weeks[weeks.length - 1]
   const clockSpan = clock ? clock.resetsAtEpoch - clock.startsAtEpoch : 0
   const past = weeks.filter((window) => window !== current)
-  // Newest first: the order of the colours, the rows and the key.
+  // Newest first: the order of the rows and the key.
   const newest = [...weeks].reverse()
   const rolling =
     [...account.chart.rolling]
@@ -236,8 +241,8 @@ export function OverviewAllowanceWeeks({
 
   // The callouts need only the plot's left and right, so they come first and
   // set the room above the plot.
-  const x0 = AXIS_LEFT
-  const x1 = Math.max(AXIS_LEFT, width - LABEL_ROOM)
+  const x0 = SIDE_ROOM
+  const x1 = Math.max(x0, width - SIDE_ROOM)
   const pinX = (item: PlacedPin) => x0 + item.fraction * (x1 - x0)
   const groups = groupPins(placed, pinX, CALLOUT_GROUP_GAP).map((group) => {
     const count = group.pins.length
@@ -253,7 +258,7 @@ export function OverviewAllowanceWeeks({
   })
   const spots = placeCallouts(
     groups,
-    0,
+    BUTTON_ROOM,
     Math.max(x0, width - 4),
     CALLOUT_ROWS,
     CALLOUT_PAD,
@@ -273,13 +278,39 @@ export function OverviewAllowanceWeeks({
   const ready = clock != null && plot.x1 - plot.x0 > 40 && plot.y1 - plot.y0 > 40
   const entrance = useEntranceProps("allowance-weeks", "overview-chart-in", ready)
   const full = fullBand(plot)
-  const bands = weekBands(plot, newest.length, apart, ROW_GAP)
+  // Apart, the rows use the room of the callouts above the plot too.
+  const rowPlot: Plot = { ...plot, y0: Math.min(plot.y0, ROW_TOP) }
+  const rowBands = weekBands(rowPlot, newest.length, true, ROW_GAP)
+  const bands = apart ? rowBands : weekBands(plot, newest.length, false, ROW_GAP)
+  const top = apart ? rowPlot.y0 : plot.y0
   const bandByStart = new Map(newest.map((week, index) => [week.startsAtEpoch, bands[index]!]))
   const bandOf = (start: number): Band => bandByStart.get(start) ?? full
-  const toneOf = (start: number): string | undefined => {
-    const index = newest.findIndex((week) => week.startsAtEpoch === start)
-    return colours && index >= 0 ? weekTone(index) : undefined
-  }
+
+  // Apart, each row names its own groups of pins beside the first pin head:
+  // the check on one line, the session or the count under it. A callout
+  // that does not fit is left out.
+  const rowCallouts = newest.flatMap((week, index) => {
+    const rowPins = placed.filter((item) => item.weekStart === week.startsAtEpoch)
+    const own = groupPins(rowPins, pinX, CALLOUT_GROUP_GAP).map((group) => {
+      const count = group.pins.length
+      const note =
+        count === 1 ? shorten(group.pins[0]!.pin.title, ROW_TITLE_CHARS) : `${count} sessions`
+      return {
+        ...group,
+        count,
+        note,
+        width: Math.max(group.label.length * SUBLINE_CHAR, note.length * SUBLINE_CHAR),
+        // The text does not cover the pins of the other groups in the row.
+        avoid: rowPins.filter((item) => !group.pins.includes(item)).map(pinX),
+      }
+    })
+    const places = placeCallouts(own, x0, x1, 1, CALLOUT_PAD, CALLOUT_TEXT_GAP)
+    const y = rowBands[index]!.top + PIN_HEAD + 1
+    return own.flatMap((group, place) => {
+      const spot = places[place]
+      return spot ? [{ ...group, spot, y }] : []
+    })
+  })
 
   const snapped =
     !explicit && pointer && ready
@@ -336,7 +367,7 @@ export function OverviewAllowanceWeeks({
     (limits.length ? ` The weekly limit was hit in ${limits.length} of these weeks.` : "") +
     (shortLimits ? ` The 5-hour limit was hit in ${shortLimits} of the 5-hour windows.` : "") +
     (placed.length ? ` ${placed.length} wasteful sessions are pinned by time of week.` : "") +
-    (config.length ? ` ${config.length} config checks fail, flagged at the reset.` : "")
+    (config.length ? ` ${config.length} config checks fail, listed beside the chart.` : "")
 
   function trackPointer(event: PointerEvent<SVGSVGElement>) {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -350,20 +381,18 @@ export function OverviewAllowanceWeeks({
   }
 
   const legendItems: ChartLegendItem[] = [
-    ...(colours
-      ? newest.map((week, index) => ({
-          key: `${WEEK_KEY}${week.startsAtEpoch}`,
-          label: clock ? weekName(week, clock) : "",
-          swatch: `${weekTone(index)} bg-(--week)`,
-        }))
-      : LEGEND_ITEMS),
+    ...newest.map((week) => ({
+      key: `${WEEK_KEY}${week.startsAtEpoch}`,
+      label: clock ? weekName(week, clock) : "",
+      swatch: week === current ? "bg-context-stroke" : "bg-context-stroke/30",
+    })),
     ...(spokes.length ? [SHORT_LEGEND] : []),
     ...(rolling != null && !apart ? [ROLLING_LEGEND] : []),
     ...(limits.length || shortLimits ? [LIMIT_LEGEND] : []),
     ...(placed.length || config.length ? [WASTE_LEGEND] : []),
   ]
   const activeKey =
-    colours && focus?.kind === "week"
+    focus?.kind === "week"
       ? `${WEEK_KEY}${focus.start}`
       : legendLayer(focus, current?.startsAtEpoch)
 
@@ -375,41 +404,40 @@ export function OverviewAllowanceWeeks({
       }
     : undefined
   const flagLit = showsFlag(focus)
+  const configTop = Math.max(plot.y0, BUTTON_ROOM)
 
   return (
     <section className="overview-chart overview-weeks" aria-label="Allowance chart">
       <p className="sr-only">{summary}</p>
-      <div className="overview-chart-legend mb-(--space-sm) flex items-center justify-between gap-(--space-sm)">
-        <div className="flex items-center gap-(--space-xs)">
-          <button
-            type="button"
-            className="ui-push-button"
-            aria-pressed={colours}
-            onClick={() => setColours(!colours)}
-          >
-            {colours ? "One colour" : "Colour each week"}
-          </button>
-          {weeks.length > 1 && (
-            <button
-              type="button"
-              className="ui-push-button"
-              aria-pressed={apart}
-              onClick={() => {
-                setApart(!apart)
-                setExplicit(null)
-              }}
-            >
-              {apart ? "Put together" : "Break apart"}
-            </button>
-          )}
+      {controls && (
+        <div className="overview-chart-legend mb-(--space-sm) flex items-center justify-end gap-(--space-sm)">
+          {controls}
         </div>
-        {controls}
-      </div>
+      )}
       <div
         ref={frameRef}
         className={cn("relative min-h-0 flex-1", entrance.className)}
         onAnimationEnd={entrance.onAnimationEnd}
       >
+        {weeks.length > 1 && (
+          <button
+            type="button"
+            className="ui-push-button absolute top-0 left-0 z-10 px-(--space-xs)"
+            aria-label={apart ? "Put together" : "Break apart"}
+            title={apart ? "Put together" : "Break apart"}
+            aria-pressed={apart}
+            onClick={() => {
+              setApart(!apart)
+              setExplicit(null)
+            }}
+          >
+            {apart ? (
+              <FoldVertical size={15} aria-hidden="true" />
+            ) : (
+              <UnfoldVertical size={15} aria-hidden="true" />
+            )}
+          </button>
+        )}
         {ready && clock && (
           <>
             <svg
@@ -427,9 +455,9 @@ export function OverviewAllowanceWeeks({
               {focus?.kind === "day" && (
                 <rect
                   x={plotX(plot, focus.day / DAYS_PER_WEEK)}
-                  y={plot.y0}
+                  y={top}
                   width={(plot.x1 - plot.x0) / DAYS_PER_WEEK}
-                  height={plot.y1 - plot.y0}
+                  height={plot.y1 - top}
                   className="fill-context-stroke/[0.06]"
                 />
               )}
@@ -464,7 +492,7 @@ export function OverviewAllowanceWeeks({
                   key={day}
                   x1={plotX(plot, day / DAYS_PER_WEEK)}
                   x2={plotX(plot, day / DAYS_PER_WEEK)}
-                  y1={plot.y0}
+                  y1={top}
                   y2={plot.y1}
                   stroke="var(--color-separator)"
                   strokeWidth={1}
@@ -491,7 +519,7 @@ export function OverviewAllowanceWeeks({
                   <g
                     key={week.startsAtEpoch}
                     data-week={week.startsAtEpoch}
-                    className={cn("week-band", toneOf(week.startsAtEpoch))}
+                    className="week-band"
                     style={
                       {
                         transform: bandTransform(plot, bandOf(week.startsAtEpoch)),
@@ -561,22 +589,14 @@ export function OverviewAllowanceWeeks({
                               ? "fill-(--week)/25"
                               : bold
                                 ? "fill-(--week)/15"
-                                : colours
-                                  ? "fill-(--week)/[0.07]"
-                                  : "fill-(--week)/[0.05]"
+                                : "fill-(--week)/[0.05]"
                           }
                         />
                         <path
                           d={path.edge}
                           fill="none"
-                          className={
-                            bold
-                              ? "stroke-(--week)"
-                              : colours
-                                ? "stroke-(--week)/80"
-                                : "stroke-(--week)/35"
-                          }
-                          strokeWidth={apart || isCurrent ? 2 : colours ? 1.5 : 1}
+                          className={bold ? "stroke-(--week)" : "stroke-(--week)/35"}
+                          strokeWidth={apart || isCurrent ? 2 : 1}
                           strokeLinejoin="round"
                           vectorEffect="non-scaling-stroke"
                         />
@@ -588,9 +608,9 @@ export function OverviewAllowanceWeeks({
                         x2={plotX(plot, Math.max(limit.to, limit.from + 0.004))}
                         y1={bandY(full, 100)}
                         y2={bandY(full, 100)}
-                        className="stroke-system-red"
+                        className="stroke-system-red-tint"
                         strokeWidth={
-                          focus?.kind === "limit" && focusWeek === week.startsAtEpoch ? 6 : 4
+                          focus?.kind === "limit" && focusWeek === week.startsAtEpoch ? 3 : 2
                         }
                         strokeLinecap="round"
                         vectorEffect="non-scaling-stroke"
@@ -619,7 +639,7 @@ export function OverviewAllowanceWeeks({
 
               {current && (
                 <g
-                  className={cn("week-move", toneOf(current.startsAtEpoch))}
+                  className="week-move"
                   style={{
                     transform: `translate(${plotX(
                       plot,
@@ -638,7 +658,7 @@ export function OverviewAllowanceWeeks({
                 <line
                   x1={plotX(plot, guide)}
                   x2={plotX(plot, guide)}
-                  y1={plot.y0}
+                  y1={top}
                   y2={plot.y1}
                   className="pointer-events-none stroke-label-tertiary"
                   strokeWidth={1}
@@ -650,10 +670,7 @@ export function OverviewAllowanceWeeks({
                   cx={plotX(plot, guide)}
                   cy={bandY(bandOf(guideDot.start), guideDot.level)}
                   r={4}
-                  className={cn(
-                    "pointer-events-none fill-(--week) stroke-surface",
-                    toneOf(guideDot.start),
-                  )}
+                  className="pointer-events-none fill-(--week) stroke-surface"
                   strokeWidth={1.5}
                 />
               )}
@@ -712,6 +729,72 @@ export function OverviewAllowanceWeeks({
                   </g>
                 )
               })}
+
+              {rowCallouts.length > 0 && (
+                <g
+                  data-row-callouts=""
+                  className="week-grid"
+                  style={{ opacity: apart ? 1 : 0 }}
+                  pointerEvents={apart ? undefined : "none"}
+                >
+                  {rowCallouts.map((group) => {
+                    const lit = group.pins.some((item) => pinEmphasis(item, focus) !== "dim")
+                    const single = group.count === 1 ? group.pins[0]! : null
+                    return (
+                      <g
+                        key={group.key}
+                        data-row-callout={group.detector}
+                        className={cn("overview-radial-focus", single && "cursor-pointer")}
+                        style={{ opacity: lit ? 1 : DIM_SHARE }}
+                        {...hold(
+                          single
+                            ? { kind: "pin", key: single.key, detector: group.detector }
+                            : { kind: "check", detector: group.detector },
+                        )}
+                        onClick={single ? () => waste?.onOpen?.(single.pin) : undefined}
+                      >
+                        <rect
+                          x={group.spot.left}
+                          y={group.y - 7}
+                          width={group.spot.right - group.spot.left}
+                          height={ROW_LINE + 14}
+                          className="fill-transparent"
+                        />
+                        <text
+                          x={
+                            group.spot.flip
+                              ? group.x - CALLOUT_TEXT_GAP
+                              : group.x + CALLOUT_TEXT_GAP
+                          }
+                          y={group.y}
+                          textAnchor={group.spot.flip ? "end" : "start"}
+                          dominantBaseline="middle"
+                          className="type-caption week-halo"
+                          strokeWidth={3}
+                          paintOrder="stroke"
+                        >
+                          <tspan className="font-semibold fill-label">{group.label}</tspan>
+                          <tspan
+                            x={
+                              group.spot.flip
+                                ? group.x - CALLOUT_TEXT_GAP
+                                : group.x + CALLOUT_TEXT_GAP
+                            }
+                            dy={ROW_LINE}
+                            className={
+                              group.count > 1
+                                ? "fill-burn-check-failure-text"
+                                : "fill-label-secondary"
+                            }
+                          >
+                            {group.note}
+                          </tspan>
+                        </text>
+                      </g>
+                    )
+                  })}
+                </g>
+              )}
 
               {groups.length > 0 && (
                 <g
@@ -775,7 +858,7 @@ export function OverviewAllowanceWeeks({
                           y={top + 8}
                           textAnchor={anchor}
                           dominantBaseline="middle"
-                          className="type-callout font-semibold fill-label stroke-surface"
+                          className="type-callout font-semibold fill-label week-halo"
                           strokeWidth={3}
                           paintOrder="stroke"
                         >
@@ -792,7 +875,7 @@ export function OverviewAllowanceWeeks({
                           y={top + 21}
                           textAnchor={anchor}
                           dominantBaseline="middle"
-                          className="type-caption fill-label-secondary stroke-surface"
+                          className="type-caption fill-label-secondary week-halo"
                           strokeWidth={3}
                           paintOrder="stroke"
                         >
@@ -807,42 +890,27 @@ export function OverviewAllowanceWeeks({
               {config.length > 0 && (
                 <g
                   data-waste-flag=""
-                  className="week-grid"
-                  style={{ opacity: apart ? 0 : flagLit ? 1 : DIM_SHARE }}
-                  pointerEvents={apart ? "none" : undefined}
+                  className="overview-radial-focus"
+                  style={{ opacity: flagLit ? 1 : DIM_SHARE }}
                 >
-                  <line
-                    x1={plot.x0}
-                    y1={plot.y1}
-                    x2={plot.x0}
-                    y2={plot.y0 + FLAG_TOP}
-                    className="stroke-burn-check-failure-fill"
-                    strokeWidth={1.5}
-                  />
-                  <circle
-                    cx={plot.x0}
-                    cy={plot.y1}
-                    r={3}
-                    className="fill-burn-check-failure-fill stroke-surface"
-                  />
-                  <circle
-                    cx={plot.x0}
-                    cy={plot.y0 + FLAG_TOP}
-                    r={3}
-                    className="fill-burn-check-failure-fill"
-                  />
                   <text
-                    x={plot.x0 + 10}
-                    y={plot.y0 + FLAG_TOP}
+                    x={0}
+                    y={configTop + 6}
                     dominantBaseline="middle"
-                    className="type-caption fill-label-tertiary stroke-surface"
-                    strokeWidth={3}
-                    paintOrder="stroke"
+                    className="type-caption font-semibold fill-label-secondary"
                   >
-                    Config checks · share of sessions
+                    Config checks
+                  </text>
+                  <text
+                    x={0}
+                    y={configTop + 20}
+                    dominantBaseline="middle"
+                    className="type-caption fill-label-tertiary"
+                  >
+                    Share of sessions
                   </text>
                   {config.map((item, index) => {
-                    const y = plot.y0 + FLAG_TOP + FLAG_HEAD + index * FLAG_ROW
+                    const row = configTop + CONFIG_HEAD + index * CONFIG_ROW
                     const lit = focus?.kind !== "config" || focus.detector === item.detector
                     return (
                       <g
@@ -852,32 +920,27 @@ export function OverviewAllowanceWeeks({
                         {...hold({ kind: "config", detector: item.detector })}
                       >
                         <rect
-                          x={plot.x0 + 6}
-                          y={y - FLAG_ROW / 2}
-                          width={FLAG_WIDTH}
-                          height={FLAG_ROW}
+                          x={0}
+                          y={row - 2}
+                          width={CONFIG_WIDTH}
+                          height={CONFIG_ROW - 4}
                           className="fill-transparent"
                         />
                         <text
-                          x={plot.x0 + 10 + FLAG_SHARE_WIDTH}
-                          y={y}
-                          textAnchor="end"
+                          x={0}
+                          y={row + 10}
                           dominantBaseline="middle"
-                          className="type-callout font-semibold tabular-nums fill-burn-check-failure-text stroke-surface"
-                          strokeWidth={3}
-                          paintOrder="stroke"
+                          className="type-title-3 font-semibold tabular-nums fill-burn-check-failure-text"
                         >
                           {Math.round(item.share * 100)}%
                         </text>
                         <text
-                          x={plot.x0 + 18 + FLAG_SHARE_WIDTH}
-                          y={y}
+                          x={0}
+                          y={row + 29}
                           dominantBaseline="middle"
-                          className="type-callout fill-label-secondary stroke-surface"
-                          strokeWidth={3}
-                          paintOrder="stroke"
+                          className="type-caption fill-label-secondary"
                         >
-                          {item.label}
+                          {shorten(item.label, CONFIG_CHARS)}
                         </text>
                       </g>
                     )
@@ -887,8 +950,8 @@ export function OverviewAllowanceWeeks({
 
               {newest.map((week, index) => {
                 const band = bandOf(week.startsAtEpoch)
-                const x = apart ? plot.x0 + 6 : plot.x1 + 8
-                const y = apart ? band.top + 10 : spread[index]!
+                const x = plot.x1 + 8
+                const y = apart ? band.top + band.height / 2 : spread[index]!
                 const limit = limits.some((item) => item.weekStart === week.startsAtEpoch)
                 const strength = weekStrength(
                   week.startsAtEpoch,
@@ -901,7 +964,7 @@ export function OverviewAllowanceWeeks({
                   <g
                     key={week.startsAtEpoch}
                     data-week-label={week.startsAtEpoch}
-                    className={cn("week-move", toneOf(week.startsAtEpoch))}
+                    className="week-move"
                     style={
                       {
                         transform: `translate(${x}px, ${y}px)`,
@@ -914,17 +977,12 @@ export function OverviewAllowanceWeeks({
                     <rect
                       x={-4}
                       y={-LABEL_GAP / 2}
-                      width={LABEL_ROOM - 8}
+                      width={SIDE_ROOM - 8}
                       height={LABEL_GAP}
                       className="fill-transparent"
                     />
                     <text dominantBaseline="middle" className="type-caption">
-                      <tspan
-                        className={cn(
-                          "font-semibold",
-                          colours ? "fill-(--week)" : "fill-label-secondary",
-                        )}
-                      >
+                      <tspan className="font-semibold fill-label-secondary">
                         {weekName(week, clock)}
                       </tspan>{" "}
                       <tspan className="fill-label tabular-nums">
@@ -1006,15 +1064,19 @@ export function OverviewAllowanceWeeks({
         }
       />
       {action && (
-        <div
-          className="mt-(--space-md) flex justify-center"
-          onPointerEnter={() =>
-            (placed.length > 0 || config.length > 0) &&
-            setExplicit({ kind: "layer", layer: "waste" })
-          }
-          onPointerLeave={() => setExplicit(null)}
-        >
-          {action}
+        <div className="mt-(--space-md) flex justify-center">
+          {/* Only the action itself lights the failed checks, not its row. */}
+          <div
+            data-chart-action=""
+            className="inline-flex"
+            onPointerEnter={() =>
+              (placed.length > 0 || config.length > 0) &&
+              setExplicit({ kind: "layer", layer: "waste" })
+            }
+            onPointerLeave={() => setExplicit(null)}
+          >
+            {action}
+          </div>
         </div>
       )}
     </section>

@@ -134,6 +134,17 @@ describe("weekLines", () => {
     ])
   })
 
+  it("keeps the text clear of the marks an item avoids", () => {
+    // A mark at 230 blocks the text to the right, so the callout flips.
+    expect(placeCallouts([{ x: 200, width: 60, avoid: [230] }], 0, 400, 1, 10, 6)).toEqual([
+      { row: 0, flip: true, left: 134, right: 200 },
+    ])
+    // Marks on both sides leave no room.
+    expect(placeCallouts([{ x: 200, width: 60, avoid: [150, 230] }], 0, 400, 1, 10, 6)).toEqual(
+      [null],
+    )
+  })
+
   it("flips a callout at the right edge and drops one that fits nowhere", () => {
     expect(placeCallouts([{ x: 380, width: 80 }], 0, 400, 2, 10, 6)).toEqual([
       { row: 0, flip: true, left: 294, right: 380 },
