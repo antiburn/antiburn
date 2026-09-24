@@ -114,18 +114,6 @@ const SHORT_LEGEND: ChartLegendItem = {
   label: "5-hour window",
   swatch: "bg-gray-500/30",
 }
-const ROLLING_LEGEND: ChartLegendItem = {
-  key: "rolling",
-  label: "Average usage",
-  swatch: "bg-gray-500",
-  shape: "line",
-}
-const LIMIT_LEGEND: ChartLegendItem = {
-  key: "limit",
-  label: "Limit hit",
-  swatch: "bg-system-red-tint",
-  shape: "line",
-}
 const WASTE_LEGEND: ChartLegendItem = {
   key: "waste",
   label: "Failed check",
@@ -435,8 +423,6 @@ export function OverviewAllowanceWeeks({
       swatch: week === current ? "bg-context-stroke" : "bg-context-stroke/30",
     })),
     ...(spokes.length ? [SHORT_LEGEND] : []),
-    ...(rolling != null && !apart ? [ROLLING_LEGEND] : []),
-    ...(limits.length || shortLimits ? [LIMIT_LEGEND] : []),
     ...(placed.length || config.length ? [WASTE_LEGEND] : []),
   ]
   const activeKey = legendKeyOf(focus)
