@@ -39,6 +39,7 @@ mod framing;
 pub mod ignored_instructions;
 mod initial_context;
 mod interface;
+pub mod jev;
 mod merge;
 mod metrics_sink;
 mod model;
@@ -94,6 +95,14 @@ pub use interface::{
     ProviderHint, RawSource, RecordCoverage, RecordSink, RelationProvenance, ResumedVisit,
     SessionCollector, SessionInput, SessionReader, SessionSummary, SourceChangedReason,
     TurnContent, VisitOutcome,
+};
+pub use jev::{
+    DEFAULT_CONTEXT_CHUNK_BYTES, JevAnswer, JevCheck, JevCheckPlan, JevContextChunk,
+    JevContextUnit, JevCoverage, JevError, JevQuestion, JevRequest, JevRequestBatch,
+    JevRequestStage, JevResponse, JevSessionContext, JevUsage, JevWorkItem, JevWorkItemResult,
+    MAX_QUESTIONS_PER_REQUEST, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PINNED_MODEL,
+    chunk_context_units, pack_work_items, unpack_jev_response, validate_jev_request,
+    validate_jev_response,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};

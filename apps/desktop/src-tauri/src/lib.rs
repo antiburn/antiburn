@@ -69,6 +69,9 @@ mod insights_ipc;
 mod insights_report;
 mod insights_worker;
 mod interface_scale;
+mod jev_client;
+mod jev_config;
+mod jev_worker;
 mod launch_intent;
 mod main_window;
 #[cfg(feature = "memory-probe")]
@@ -245,6 +248,9 @@ pub fn run() {
         app.manage(main_window_state);
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
+        let jev_worker = jev_worker::WorkerHandle::default();
+        jev_worker.set_api_key(None);
+        app.manage(jev_worker);
         app.manage(insights_ipc::InsightsController::default());
         let evidence_reconcile_started = std::time::Instant::now();
         match app.state::<store::Store>().reconcile_evidence_revisions(
@@ -397,6 +403,7 @@ pub fn run() {
             schedulers.push(scan::live_poll::spawn_live_poll(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
+            schedulers.push(jev_worker::spawn(app.handle()));
             schedulers.push(updates::spawn_scheduler(app.handle()));
             schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
             schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));

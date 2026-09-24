@@ -28,6 +28,7 @@
 //! commit or together with the rows a read returns. An [`Incarnation`] is
 //! the persisted creation identity of one session row.
 
+mod burn_check;
 pub(crate) mod codex_rollout_checkpoint;
 pub mod model;
 pub(crate) mod provider_limit;
@@ -69,6 +70,10 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_ite
 use crate::dto::{BurnCheckSnoozePayload, DeferredPermissionDir};
 use settings::read_settings;
 
+pub use burn_check::{
+    BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckInput,
+    BurnCheckReservation, CachedAssessmentResponse,
+};
 pub use model::{
     ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters, Incarnation,
@@ -1932,6 +1937,10 @@ impl Store {
         tx.execute("DELETE FROM session_relation", [])?;
         tx.execute("DELETE FROM remediation_contribution", [])?;
         tx.execute("DELETE FROM remediation", [])?;
+        burn_check::clear_local_burn_check_state(
+            &tx,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
         tx.execute("DELETE FROM turn_content", [])?;

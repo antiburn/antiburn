@@ -76,7 +76,7 @@ fn jev_evaluates_synthetic_ignored_instruction_cases_without_running_the_app() {
             citation_id,
             json!({
                 "type": "choice",
-                "instructions": format!("For case {id}, select the one event that most directly supports a likely instruction conflict. Select none if the evidence does not support a likely conflict."),
+                "instructions": format!("For case {id}, select the one event that directly supports a likely instruction conflict. Select none when the case is no_issue_in_checked_content or unassessed, or when no event directly supports a likely conflict. An event that only provides context or shows an action is not enough."),
                 "criteria": citation_criteria
             }),
         );

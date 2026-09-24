@@ -11,6 +11,7 @@ use super::model::{
 use super::*;
 
 mod activity_tests;
+mod burn_check_tests;
 mod coverage_tests;
 mod evidence_tests;
 mod reader_tests;

@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57, V58,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57, V58, V59,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1274,3 +1274,42 @@ CREATE UNIQUE INDEX remediation_active_action_target
 
 /// v58 preserves authority and native tool identities for private content parts.
 const V58: &str = antiburn_local::analysis::TURN_SCHEMA_V9_SQL;
+
+/// v59 stores one generic, revision-bound assessment state per session and
+/// Burn Check. It stores derived progress and results, not source content or
+/// provider request bodies. Session deletion removes the row by cascade.
+const V59: &str = r#"
+CREATE TABLE burn_check_assessment (
+    environment_key          TEXT NOT NULL,
+    agent                    TEXT NOT NULL,
+    session_id               TEXT NOT NULL,
+    check_id                 TEXT NOT NULL,
+    incarnation              INTEGER NOT NULL,
+    boundary_generation      INTEGER,
+    boundary_activity_cursor TEXT,
+    boundary_at_epoch        INTEGER,
+    input_revision           TEXT,
+    evaluator_revision       TEXT,
+    source_generation        INTEGER,
+    source_fingerprint       TEXT,
+    published_fence          INTEGER,
+    status                   TEXT NOT NULL DEFAULT 'idle'
+        CHECK (status IN ('idle','queued','running','completed','failed','superseded')),
+    progress_json            TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+    result_json              TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+    result_revision          TEXT,
+    request_count            INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0),
+    created_at_epoch         INTEGER NOT NULL,
+    updated_at_epoch         INTEGER NOT NULL,
+    next_attempt_at_epoch    INTEGER,
+    lease_expires_at_epoch   INTEGER,
+    last_error_category      TEXT,
+    PRIMARY KEY (environment_key, agent, session_id, check_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX burn_check_assessment_queue
+    ON burn_check_assessment (status, next_attempt_at_epoch, lease_expires_at_epoch, updated_at_epoch);
+CREATE INDEX burn_check_assessment_revision
+    ON burn_check_assessment (environment_key, agent, session_id, check_id, input_revision);
+"#;

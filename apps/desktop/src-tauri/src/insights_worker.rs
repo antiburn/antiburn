@@ -268,6 +268,7 @@ async fn run_worker(app: tauri::AppHandle) {
     // The worker reports a typed fact only. The projection worker
     // rebuilds the rich row and emits the frontend events.
     let announce = move |key: &SessionKey| {
+        crate::jev_worker::wake(&announce_app);
         crate::session_lifecycle::report(
             &announce_app,
             crate::session_lifecycle::SyncObservation::RowChanged {

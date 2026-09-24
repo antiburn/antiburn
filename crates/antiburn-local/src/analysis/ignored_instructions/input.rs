@@ -1,12 +1,14 @@
 //! Instruction snapshots and structure-aware Markdown segmentation.
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const MAX_INSTRUCTION_BYTES: usize = 128 * 1024;
 pub const MAX_RULE_SECTION_BYTES: usize = 16 * 1024;
 pub const MAX_INSTRUCTION_SECTIONS: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum InstructionProvenance {
     RecordedInjection,
     ObservedRead,
@@ -23,7 +25,8 @@ impl InstructionProvenance {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum InstructionScope {
     Global,
     Project,
@@ -32,7 +35,7 @@ pub enum InstructionScope {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstructionRuleSection {
     pub id: String,
     pub heading: String,
@@ -43,13 +46,14 @@ pub struct InstructionRuleSection {
     pub evaluable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum InstructionContentClass {
     RequirementCandidate,
     BackgroundOrExample,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstructionSnapshot {
     pub id: String,
     pub digest: String,

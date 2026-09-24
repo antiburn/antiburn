@@ -1,8 +1,9 @@
 use super::input::{InstructionSnapshot, sha256_hex};
 use crate::analysis::SourceFormat;
 use crate::analysis::evidence_query::PublishedContent;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentEventReference {
     pub id: String,
     pub source_key_digest: String,
@@ -13,7 +14,7 @@ pub struct ContentEventReference {
     pub stable: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentAction {
     pub reference: ContentEventReference,
     pub timestamp_ms: Option<i64>,
@@ -27,7 +28,7 @@ pub struct ContentAction {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionContentEvidence {
     pub session_identity_digest: String,
     pub source_format: SourceFormat,
