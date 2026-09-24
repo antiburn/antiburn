@@ -1,7 +1,10 @@
 import type { CSSProperties, ReactNode } from "react"
 
+import { formatCost } from "../../../lib/presentation/sessionAnalysis"
+import { formatTokenBurnPercent } from "../../../lib/presentation/checks"
 import type { AllowanceWindowLevelsPayload } from "../../../lib/providerUsageIpc"
-import type { ConfigShare } from "./wasteMarks"
+import { topSessions, type UsageSession } from "./usageSessions"
+import type { CheckFacts, ConfigShare } from "./wasteMarks"
 import type { RadialFocus } from "./radialFocus"
 import {
   DAYS_PER_WEEK,
@@ -14,8 +17,13 @@ import {
   type Spoke,
 } from "./radialGeometry"
 
-// The hover card lists this many nearby pins or checks.
+// The hover card lists this many nearby pins, checks or sessions.
 const NEARBY_LIMIT = 3
+const HOUR = 3600
+// A limit hit names the sessions last active from this long before it to
+// this long after it.
+const BEFORE_HIT = 5 * HOUR
+const AFTER_HIT = HOUR
 
 /** The chart data that the hover card reads. */
 export type RadialData = {
@@ -28,6 +36,9 @@ export type RadialData = {
   limits: readonly LimitStretch[]
   placed: readonly PlacedPin[]
   config: readonly ConfigShare[]
+  checks?: readonly CheckFacts[]
+  /** The sessions with an estimated limit share, at their last activity. */
+  sessions?: readonly UsageSession[]
 }
 
 function formatWhen(epoch: number): string {
@@ -79,6 +90,55 @@ function average(values: readonly number[]): number | null {
 
 function sessions(count: number): string {
   return `${count} wasteful ${count === 1 ? "session" : "sessions"}`
+}
+
+function share(value: number): string {
+  return value > 0 && value < 1 ? "<1%" : `~${Math.round(value)}%`
+}
+
+/** The sessions with the biggest estimated share of a span. Before the
+ *  oldest known session, it says that there is no detail. */
+function TopSessions({
+  data,
+  from,
+  to,
+  metric = "weekly",
+  heading,
+}: {
+  data: RadialData
+  from: number
+  to: number
+  metric?: "weekly" | "fiveHour"
+  heading?: string
+}) {
+  const known = data.sessions ?? []
+  if (!known.length) return null
+  const list = topSessions(known, from, to, metric)
+  if (!list.length) {
+    const oldest = Math.min(...known.map((session) => session.atEpoch))
+    return to <= oldest ? <Hint>No session detail this far back</Hint> : null
+  }
+  return (
+    <>
+      <p className="mt-(--space-xs) text-label-secondary">
+        {heading ?? "Top sessions"}, est. share of{" "}
+        {metric === "weekly" ? "the week" : "5 hours"}
+      </p>
+      {list.slice(0, NEARBY_LIMIT).map((session) => (
+        <p key={session.key} className="flex justify-between gap-(--space-sm)">
+          <span className="min-w-0 truncate">{session.title}</span>
+          <span className="shrink-0 text-label-secondary tabular-nums">
+            {share(
+              (metric === "weekly" ? session.weeklyPercent : session.fiveHourPercent) ?? 0,
+            )}
+          </span>
+        </p>
+      ))}
+      {list.length > NEARBY_LIMIT && (
+        <p className="text-label-tertiary">{list.length - NEARBY_LIMIT} more</p>
+      )}
+    </>
+  )
 }
 
 function Row({ label, value }: { label: ReactNode; value: ReactNode }) {
@@ -158,6 +218,7 @@ function weekCard(start: number, fraction: number | null, data: RadialData): Rea
       {!isCurrent && last && <Row label="Ended at" value={percent(last.percent)} />}
       {!isCurrent && Number.isFinite(peak) && <Row label="Peak" value={percent(peak)} />}
       {waste.length > 0 && <p className="text-brand">{sessions(waste.length)}</p>}
+      <TopSessions data={data} from={week.startsAtEpoch} to={week.resetsAtEpoch} />
     </>
   )
 }
@@ -198,6 +259,11 @@ function dayCard(day: number, data: RadialData): ReactNode {
           {line}
         </p>
       ))}
+      <TopSessions
+        data={data}
+        from={data.clock.startsAtEpoch + from * clockSpan}
+        to={data.clock.startsAtEpoch + to * clockSpan}
+      />
     </>
   )
 }
@@ -209,13 +275,27 @@ function Hint({ children }: { children: ReactNode }) {
 function pinCard(key: string, data: RadialData): ReactNode {
   const item = data.placed.find((placed) => placed.key === key)
   if (!item) return null
+  const { pin } = item
+  const facts = [
+    pin.repo,
+    pin.agent,
+    pin.models.join(", "),
+    pin.costUsd != null ? formatCost(pin.costUsd) : "",
+  ].filter(Boolean)
   return (
     <>
-      <p className="font-semibold">{item.pin.label}</p>
-      <p>{item.pin.title}</p>
+      <p className="font-semibold">{pin.label}</p>
+      <p>{pin.title}</p>
       <p className="text-label-secondary">
-        {formatWhen(item.pin.atEpoch)} · {weeksAgo(data, item.weekStart)}
+        {formatWhen(pin.atEpoch)} · {weeksAgo(data, item.weekStart)}
       </p>
+      {facts.length > 0 && <p className="text-label-secondary">{facts.join(" · ")}</p>}
+      {pin.alsoFailed.length > 0 && (
+        <p>
+          <span className="text-label-secondary">Also failed </span>
+          <span className="text-burn-check-failure-text">{pin.alsoFailed.join(", ")}</span>
+        </p>
+      )}
       <Hint>Click to open the session</Hint>
     </>
   )
@@ -224,11 +304,21 @@ function pinCard(key: string, data: RadialData): ReactNode {
 function checkCard(detector: string, data: RadialData): ReactNode {
   const items = data.placed.filter((item) => item.pin.detector === detector)
   if (!items.length) return null
+  const facts = data.checks?.find((check) => check.detector === detector)
   return (
     <>
       <p className="font-semibold">{items[0]!.pin.label}</p>
       <Row label="Sessions pinned" value={items.length} />
       <Row label="This week" value={items.filter((item) => item.current).length} />
+      {facts?.burnBasisPoints != null && (
+        <Row
+          label="Avoidable, est."
+          value={`${formatTokenBurnPercent(facts.burnBasisPoints)} of tokens`}
+        />
+      )}
+      {facts?.change && (
+        <Row label="Try" value={<span className="whitespace-nowrap">{facts.change}</span>} />
+      )}
       <Hint>Point at a pin to see its session</Hint>
     </>
   )
@@ -262,6 +352,12 @@ function shortCard(key: string, data: RadialData): ReactNode {
       {spoke.peakPercent >= LIMIT_PERCENT && (
         <p className="text-system-red-text">Hit the 5-hour limit</p>
       )}
+      <TopSessions
+        data={data}
+        from={spoke.startsAtEpoch}
+        to={spoke.resetsAtEpoch}
+        metric="fiveHour"
+      />
     </>
   )
 }
@@ -283,6 +379,12 @@ function limitCard(weekStart: number, data: RadialData): ReactNode {
       />
       {limit.current && week && <Row label="Resets" value={formatDate(week.resetsAtEpoch)} />}
       {!limit.current && <Hint>{weeksAgo(data, weekStart)}</Hint>}
+      <TopSessions
+        data={data}
+        from={limit.hitAtEpoch - BEFORE_HIT}
+        to={limit.hitAtEpoch + AFTER_HIT}
+        heading="Active around the hit"
+      />
     </>
   )
 }
@@ -339,7 +441,7 @@ export function OverviewRadialTooltip({
   const content = body(focus, fraction, data)
   if (!content) return null
   return (
-    <div className="ui-tooltip pointer-events-none absolute w-max" style={style}>
+    <div className="ui-tooltip pointer-events-none absolute w-max max-w-80" style={style}>
       {content}
     </div>
   )

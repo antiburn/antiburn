@@ -196,6 +196,10 @@ export function OverviewView({
                   />
                 }
                 waste={waste}
+                usage={{
+                  entries: state.windowSessions ?? [],
+                  allocations: state.sessionLimitAllocations?.allocations ?? [],
+                }}
                 loading={loading}
               />
               {pinned.map((detector) => (

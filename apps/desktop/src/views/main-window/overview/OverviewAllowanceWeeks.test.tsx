@@ -7,9 +7,14 @@ vi.mock("../../../lib/useElementWidth", () => ({
   useElementHeight: () => 320,
 }))
 
-import type { AllowanceUsageAccountPayload } from "../../../lib/providerUsageIpc"
+import type { SessionListEntry } from "../../../components/session/SessionList"
+import type {
+  AllowanceUsageAccountPayload,
+  SessionLimitAllocationPayload,
+} from "../../../lib/providerUsageIpc"
 import { OverviewAllowanceWeeks } from "./OverviewAllowanceWeeks"
-import type { WasteMarks } from "./wasteMarks"
+import type { UsageInput } from "./usageSessions"
+import type { WastePin, WasteMarks } from "./wasteMarks"
 
 const WEEK = 7 * 86400
 
@@ -52,16 +57,23 @@ function account(): AllowanceUsageAccountPayload {
   } as unknown as AllowanceUsageAccountPayload
 }
 
+function pin(atEpoch: number, title: string, handle: string): WastePin {
+  return {
+    detector: "cacheChurn",
+    label: "Cache churn",
+    atEpoch,
+    title,
+    navigationHandle: handle,
+    repo: "web",
+    agent: "Claude",
+    models: ["opus-4-5"],
+    costUsd: 2.5,
+    alsoFailed: ["Session overdepth"],
+  }
+}
+
 const waste: WasteMarks = {
-  pins: [
-    {
-      detector: "cacheChurn",
-      label: "Cache churn",
-      atEpoch: 2 * WEEK + 1800,
-      title: "Fix the parser",
-      navigationHandle: "h1",
-    },
-  ],
+  pins: [pin(2 * WEEK + 1800, "Fix the parser", "h1")],
   config: [
     {
       detector: "unusedMcpServers",
@@ -73,18 +85,99 @@ const waste: WasteMarks = {
   ],
 }
 
-function renderChart(marks?: WasteMarks) {
+function session(sessionId: string, atEpoch: number, title: string) {
+  return {
+    agent: "claude",
+    sessionId,
+    repo: "web",
+    timestamp: new Date(atEpoch * 1000).toISOString(),
+    title,
+  } as SessionListEntry
+}
+
+function share(
+  sessionId: string,
+  metric: SessionLimitAllocationPayload["metric"],
+  percent: number,
+) {
+  return {
+    agent: "claude",
+    sessionId,
+    wslDistro: null,
+    metric,
+    provider: "claude",
+    accountKey: "a",
+    percent,
+  } as SessionLimitAllocationPayload
+}
+
+// Two sessions on the first day of this week, well after the oldest week.
+const usage: UsageInput = {
+  entries: [
+    session("s1", 2 * WEEK + 3000, "Write the release notes"),
+    session("s2", 2 * WEEK + 6000, "Refactor the parser"),
+  ],
+  allocations: [share("s1", "weekly", 3), share("s2", "weekly", 0.4)],
+}
+
+function renderChart(marks?: WasteMarks, sessions?: UsageInput) {
   return render(
     <OverviewAllowanceWeeks
       account={account()}
       rangeEndEpoch={2 * WEEK + 3600}
       waste={marks}
+      usage={sessions}
       action={<button type="button">Optimise</button>}
     />,
   )
 }
 
 describe("OverviewAllowanceWeeks", () => {
+  it("shows the session facts and its other failed checks on a pin", () => {
+    const { container } = renderChart(waste)
+    const head = container.querySelector("[data-waste-pin] .cursor-pointer")!
+    fireEvent.pointerMove(head.closest("svg")!, { clientX: 40, clientY: 40 })
+    fireEvent.pointerEnter(head)
+    expect(screen.getByText("web · Claude · opus-4-5 · $2.50")).toBeInTheDocument()
+    expect(screen.getByText("Session overdepth")).toBeInTheDocument()
+  })
+
+  it("shows the avoidable share and the suggested change on a check", () => {
+    const marks: WasteMarks = {
+      ...waste,
+      pins: [pin(2 * WEEK + 1800, "Fix the parser", "h1"), pin(2 * WEEK + 2400, "Tidy", "h2")],
+      checks: [
+        { detector: "cacheChurn", burnBasisPoints: 1_250, change: "opus-4-5 → sonnet-4-5" },
+      ],
+    }
+    const { container } = renderChart(marks)
+    const callout = container.querySelector("[data-pin-callout=cacheChurn]")!
+    fireEvent.pointerMove(callout.closest("svg")!, { clientX: 40, clientY: 40 })
+    fireEvent.pointerEnter(callout)
+    expect(screen.getByText("12% of tokens")).toBeInTheDocument()
+    expect(screen.getByText("opus-4-5 → sonnet-4-5")).toBeInTheDocument()
+  })
+
+  it("lists the top sessions of a day by their share of the week", () => {
+    const { container } = renderChart(undefined, usage)
+    const day = container.querySelector("[data-week-day='0']")!
+    fireEvent.pointerMove(day.closest("svg")!, { clientX: 40, clientY: 40 })
+    fireEvent.pointerEnter(day)
+    expect(screen.getByText("Top sessions, est. share of the week")).toBeInTheDocument()
+    const rows = screen
+      .getAllByText(/^(~\d+%|<1%)$/)
+      .map((node) => node.parentElement!.textContent)
+    expect(rows).toEqual(["Write the release notes~3%", "Refactor the parser<1%"])
+  })
+
+  it("says when a week is older than the session detail", () => {
+    const { container } = renderChart(undefined, usage)
+    const label = container.querySelector(`[data-week-label="0"]`)!
+    fireEvent.pointerMove(label.closest("svg")!, { clientX: 40, clientY: 40 })
+    fireEvent.pointerEnter(label)
+    expect(screen.getByText("No session detail this far back")).toBeInTheDocument()
+  })
+
   it("draws every week on one shared week, in one colour, with a label", () => {
     const { container } = renderChart()
     const bands = container.querySelectorAll("[data-week]")

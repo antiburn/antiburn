@@ -1,9 +1,23 @@
 import type {
   BurnCheckDetectorId,
   BurnCheckTargetListPayload,
+  BurnCheckTargetPayload,
   ChecksCategoryPayload,
+  SessionHygieneBadgeId,
 } from "../../../lib/insightsIpc"
+import { agentDisplayName } from "../../../lib/presentation/agents"
 import { CHECK_LABELS } from "../../../lib/presentation/checkDefinitions"
+import { modelShortName } from "../../../lib/presentation/models"
+
+// The check behind each session hygiene badge.
+const BADGE_CHECKS: Record<SessionHygieneBadgeId, BurnCheckDetectorId> = {
+  sessionOverdepth: "sessionsOverDepth",
+  modelOverthinking: "modelOverthinking",
+  overpoweredSubagents: "overpoweredSubagents",
+  obsoleteModel: "oldModelUsage",
+  fastModeOveruse: "overuseOfFastMode",
+  excessCacheRehydration: "cacheChurn",
+}
 
 /** Checks about the agent setup. They fail in most sessions, so the chart
  *  shows each one once at the weekly reset, not as a pin per session. */
@@ -21,6 +35,22 @@ export interface WastePin {
   atEpoch: number
   title: string
   navigationHandle: string
+  repo: string
+  agent: string
+  /** Short model names, in the order the session used them. */
+  models: string[]
+  costUsd: number | null
+  /** The other failed checks of the same session. */
+  alsoFailed: string[]
+}
+
+/** What the chart can say about one failing check. */
+export interface CheckFacts {
+  detector: BurnCheckDetectorId
+  /** Estimated avoidable tokens over used tokens, in basis points. */
+  burnBasisPoints: number | null
+  /** The most common suggested change, for example "Opus → Sonnet". */
+  change: string | null
 }
 
 /** A config check and the share of checked sessions that fail it. */
@@ -37,6 +67,7 @@ export interface ConfigShare {
 export interface WasteMarks {
   pins: WastePin[]
   config: ConfigShare[]
+  checks?: CheckFacts[]
   onOpen?: (pin: WastePin) => void
 }
 
@@ -45,6 +76,21 @@ export function pinnedDetectors(
   failures: readonly ChecksCategoryPayload[],
 ): BurnCheckDetectorId[] {
   return failures.map((check) => check.id).filter((id) => !CONFIG_CHECKS.has(id))
+}
+
+/** The most common change that the targets suggest, or null. */
+function commonChange(targets: readonly BurnCheckTargetPayload[]): string | null {
+  const counts = new Map<string, number>()
+  for (const { display } of targets) {
+    if (!display.currentValue || !display.replacementValue) continue
+    const name = (value: string) =>
+      display.resourceKind === "model" || display.resourceKind === "worker"
+        ? modelShortName(value)
+        : value
+    const change = `${name(display.currentValue)} → ${name(display.replacementValue)}`
+    counts.set(change, (counts.get(change) ?? 0) + 1)
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null
 }
 
 /** The pins and config shares for the failing checks. A pin needs the check's
@@ -70,7 +116,19 @@ export function wasteMarks(
       atEpoch: sample.observedAtMs / 1000,
       title: sample.title,
       navigationHandle: sample.navigationHandle,
+      repo: sample.repo,
+      agent: agentDisplayName(sample.agent),
+      models: [...new Set(sample.models.map(modelShortName))],
+      costUsd: sample.cost?.totalUsd ?? null,
+      alsoFailed: sample.hygiene.badges
+        .filter((badge) => badge.status === "finding" && BADGE_CHECKS[badge.id] !== detector)
+        .map((badge) => CHECK_LABELS[BADGE_CHECKS[badge.id]]),
     })),
   )
-  return { pins, config }
+  const checks = failures.map((check) => ({
+    detector: check.id,
+    burnBasisPoints: check.estimatedTokenBurnBasisPoints,
+    change: commonChange(targets[check.id]?.data?.targets ?? []),
+  }))
+  return { pins, config, checks }
 }

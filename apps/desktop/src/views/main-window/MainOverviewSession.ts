@@ -172,6 +172,9 @@ export interface MainOverviewSnapshot {
   liveUsageSettled: boolean
   /** The newest local sessions, or null before the first successful read. */
   recentSessions: SessionListEntry[] | null
+  /** All sessions in the activity window, or null before the first
+   *  successful read. The allowance chart names them on hover. */
+  windowSessions: SessionListEntry[] | null
   /** Each recent session's estimated limit share, or null before the first
    *  successful read. A failed read keeps the last value. */
   sessionLimitAllocations: SessionLimitAllocationSummaryPayload | null
@@ -200,6 +203,7 @@ export class MainOverviewSession {
     liveUsage: null,
     liveUsageSettled: false,
     recentSessions: null,
+    windowSessions: null,
     sessionLimitAllocations: null,
     loading: false,
     refreshing: false,
@@ -694,7 +698,7 @@ export class MainOverviewSession {
     const entries = this.sessionList.getSnapshot().entries
     if (entries) {
       const rows = overviewRecentEntries(entries)
-      this.update({ recentSessions: rows })
+      this.update({ recentSessions: rows, windowSessions: entries })
     }
   }
 

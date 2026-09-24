@@ -13,6 +13,7 @@ import { OverviewAllowanceWeeks } from "./OverviewAllowanceWeeks"
 import { OverviewAllowanceTotals } from "./OverviewAllowanceTotals"
 import { OverviewSpendChart } from "./OverviewSpendChart"
 import { OverviewSpendTotals } from "./OverviewSpendTotals"
+import type { UsageInput } from "./usageSessions"
 import type { WasteMarks } from "./wasteMarks"
 import { SHOW_WEEK_FLOWER } from "./weekChart"
 import {
@@ -47,6 +48,7 @@ export function OverviewUsage({
   showFigures = true,
   center,
   waste,
+  usage,
   loading = false,
 }: {
   metric: OverviewMetric
@@ -64,6 +66,8 @@ export function OverviewUsage({
   center?: ReactNode
   /** The wasteful sessions and config checks to mark on the allowance chart. */
   waste?: WasteMarks
+  /** The sessions and limit shares that the week chart names on hover. */
+  usage?: UsageInput
   loading?: boolean
 }) {
   const costFailed = usageError && !totals
@@ -160,6 +164,7 @@ export function OverviewUsage({
                 controls={chartControls}
                 action={center}
                 waste={waste}
+                usage={usage}
               />
             ) : (
               <OverviewAllowanceChart

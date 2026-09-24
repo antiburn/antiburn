@@ -45,6 +45,7 @@ import {
   type Band,
   type Plot,
 } from "./weekLines"
+import { usageSessions, type UsageInput } from "./usageSessions"
 import type { WasteMarks } from "./wasteMarks"
 
 // Room around the plot. Each side gets the same room, so the plot sits in
@@ -202,6 +203,7 @@ export function OverviewAllowanceWeeks({
   controls,
   action,
   waste,
+  usage,
 }: {
   account: AllowanceUsageAccountPayload
   rangeEndEpoch: number
@@ -209,6 +211,8 @@ export function OverviewAllowanceWeeks({
   /** The action under the key, in the middle. */
   action?: ReactNode
   waste?: WasteMarks | undefined
+  /** The sessions and limit shares that the hover cards name. */
+  usage?: UsageInput | undefined
 }) {
   const frameRef = useRef<HTMLDivElement | null>(null)
   const width = useElementWidth(frameRef)
@@ -236,6 +240,7 @@ export function OverviewAllowanceWeeks({
   const shortLimits = spokes.filter((spoke) => spoke.peakPercent >= LIMIT_PERCENT).length
   const pins = waste?.pins ?? []
   const config = waste?.config ?? []
+  const sessions = usageSessions(usage, account.provider, account.accountKey)
   const { placed } = layoutPins(NO_RING, weeks, current, pins)
   const pinRows = Math.min(MAX_PIN_ROWS, Math.max(0, ...placed.map((item) => item.stack + 1)))
 
@@ -1040,6 +1045,8 @@ export function OverviewAllowanceWeeks({
                   limits,
                   placed,
                   config,
+                  checks: waste?.checks ?? [],
+                  sessions,
                 }}
                 style={tooltipStyle}
               />

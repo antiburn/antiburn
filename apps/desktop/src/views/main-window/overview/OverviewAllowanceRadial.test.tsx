@@ -78,6 +78,11 @@ describe("OverviewAllowanceRadial", () => {
       atEpoch: at,
       title: `Session ${handle}`,
       navigationHandle: handle,
+      repo: "web",
+      agent: "Claude",
+      models: [],
+      costUsd: null,
+      alsoFailed: [],
     })
     const waste: WasteMarks = {
       // Three sessions in this week and one from last week, all near one time of week.
