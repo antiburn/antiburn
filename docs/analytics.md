@@ -363,13 +363,6 @@ no later pass can report it again, even after the app restarts. The account
 identity that selects which window to look at never reaches the event, the
 same narrowing `limit_factor_observed` applies.
 
-Quota-window diagnostics use each turn's recorded timestamp to determine which
-meter reading covers its spend. The first release with this correction replaces
-15-minute time spreading with exact timestamp allocation. Compare estimate bias
-and unexplained-share distributions separately across that app-version boundary.
-The event fields, consent gates, trigger, and durable duplicate suppression stay
-the same; no turn timestamps or costs leave the device.
-
 The `inert_capped` label covers either too many distinct unknown types or one
 type name that exceeds the local string limit. From the next release after
 0.5.0, `unrecognizedTypes` carries up to 16 of those names, sanitized rather
