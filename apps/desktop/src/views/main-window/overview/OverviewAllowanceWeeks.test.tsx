@@ -142,6 +142,17 @@ describe("OverviewAllowanceWeeks", () => {
     expect(screen.getByText("Session overdepth")).toBeInTheDocument()
   })
 
+  it("points a boxless note at the part in focus", () => {
+    const { container } = renderChart(undefined, usage)
+    const day = container.querySelector("[data-week-day='0']")!
+    fireEvent.pointerMove(day.closest("svg")!, { clientX: 40, clientY: 40 })
+    fireEvent.pointerEnter(day)
+    expect(container.querySelector(".overview-note")).not.toBeNull()
+    expect(container.querySelector(".ui-tooltip")).toBeNull()
+    expect(container.querySelector(".overview-note-leader")).not.toBeNull()
+    expect(container.querySelector(".overview-note-dot")).not.toBeNull()
+  })
+
   it("shows the avoidable share and the suggested change on a check", () => {
     const marks: WasteMarks = {
       ...waste,

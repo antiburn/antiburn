@@ -508,3 +508,76 @@
     transition: none;
   }
 }
+
+/*
+ * Chart note. The week chart annotates the part in focus like a printed
+ * infographic: a typeset note with no box, a hairline leader, and a dot on
+ * the anchor. In dark mode, a surface halo keeps the text clear where it
+ * crosses a line. Light mode has no halo, because it shows as a white edge.
+ * The note fades in and rises after the leader starts to draw. A new focus
+ * mounts a new note, so the entrance plays again.
+ */
+.overview-note {
+  --note-halo:
+    0 0 3px var(--color-surface), 0 0 3px var(--color-surface), 0 0 6px var(--color-surface);
+  animation: overview-note-in var(--duration-slow) var(--ease-out-quart)
+    calc(var(--duration-slow) * 0.35) both;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .overview-note {
+    text-shadow: var(--note-halo);
+  }
+}
+
+:root[data-theme="dark"] .overview-note {
+  text-shadow: var(--note-halo);
+}
+
+.overview-note-kicker {
+  letter-spacing: 0.06em;
+}
+
+.overview-note-leader {
+  stroke-dasharray: 1;
+  animation: overview-leader-in calc(var(--duration-slow) * 1.4) var(--ease-out-quart) both;
+}
+
+.overview-note-dot {
+  animation: overview-note-dot-in var(--duration-slow) var(--ease-out-quart) both;
+}
+
+@keyframes overview-note-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes overview-leader-in {
+  from {
+    stroke-dashoffset: 1;
+  }
+
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes overview-note-dot-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* A session's share of the span, as a 2px bar under its row. */
+.overview-share-bar {
+  block-size: 2px;
+}
+
+.overview-share-bar > span {
+  display: block;
+  block-size: 100%;
+  inline-size: calc(var(--share) * 1%);
+  border-radius: inherit;
+}

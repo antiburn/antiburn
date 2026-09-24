@@ -1,5 +1,12 @@
 import { FoldVertical, UnfoldVertical } from "lucide-react"
-import { useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react"
+import {
+  Fragment,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent,
+  type ReactNode,
+} from "react"
 
 import type { AllowanceUsageAccountPayload } from "../../../lib/providerUsageIpc"
 import { cn } from "../../../lib/cn"
@@ -66,6 +73,14 @@ const PIN_STEP = 8
 const PIN_HEAD = 3
 const PIN_GAP = 6
 const MAX_PIN_ROWS = 5
+// The note's leader goes diagonally from the anchor, then flat, then a gap
+// before the text. The first text line sits on the flat part.
+const NOTE_RISE = 22
+const NOTE_RUN = 16
+const NOTE_GAP = 6
+const NOTE_LINE = 8
+// A note with no anchor sits this far from the pointer.
+const POINTER_GAP = 14
 // Callouts name each group of one check's pins, above the pin heads, in up
 // to two rows. Text widths are estimates, so callouts can keep apart.
 const CALLOUT_ROWS = 3
@@ -290,6 +305,10 @@ export function OverviewAllowanceWeeks({
   const top = apart ? rowPlot.y0 : plot.y0
   const bandByStart = new Map(newest.map((week, index) => [week.startsAtEpoch, bands[index]!]))
   const bandOf = (start: number): Band => bandByStart.get(start) ?? full
+  const pinHead = (item: PlacedPin) =>
+    apart
+      ? bandOf(item.weekStart).top + PIN_HEAD + 1 + item.stack * PIN_STEP
+      : plot.y0 - PIN_GAP - item.stack * PIN_STEP
 
   // Apart, each row names its own groups of pins beside the first pin head:
   // the check on one line, the session or the count under it. A callout
@@ -401,13 +420,67 @@ export function OverviewAllowanceWeeks({
       ? `${WEEK_KEY}${focus.start}`
       : legendLayer(focus, current?.startsAtEpoch)
 
-  const tooltipStyle: CSSProperties | undefined = pointer
-    ? {
-        left: pointer.x > width / 2 ? pointer.x - 14 : pointer.x + 14,
-        top: pointer.y > height / 2 ? pointer.y - 14 : pointer.y + 14,
-        translate: `${pointer.x > width / 2 ? "-100%" : "0"} ${pointer.y > height / 2 ? "-100%" : "0"}`,
+  // The note points at the part in focus: a pin head, a limit hit, the dot on
+  // the guide, the foot of a day, or the average line. A pin head and the
+  // guide dot already mark their point, so only the other anchors get a dot.
+  const anchor = ((): (Point & { dot: boolean }) | null => {
+    if (!focus) return null
+    if (focus.kind === "pin") {
+      const item = placed.find((candidate) => candidate.key === focus.key)
+      return item ? { x: plotX(plot, item.fraction), y: pinHead(item), dot: false } : null
+    }
+    if (focus.kind === "limit") {
+      const limit = limits.find((item) => item.weekStart === focus.weekStart)
+      return limit
+        ? { x: plotX(plot, limit.from), y: bandY(bandOf(limit.weekStart), 100), dot: true }
+        : null
+    }
+    if (focus.kind === "day") {
+      return { x: plotX(plot, (focus.day + 0.5) / DAYS_PER_WEEK), y: plot.y1, dot: true }
+    }
+    if (focus.kind === "rolling" && rolling != null && pointer) {
+      return { x: pointer.x, y: bandY(full, rolling), dot: true }
+    }
+    if (guide != null && guideDot) {
+      return {
+        x: plotX(plot, guide),
+        y: bandY(bandOf(guideDot.start), guideDot.level),
+        dot: false,
       }
-    : undefined
+    }
+    return null
+  })()
+  // The note goes away from the nearer side edge, and down from a point in
+  // the top of the chart or up from a point lower down. With no anchor, it
+  // sits beside the pointer and has no leader.
+  const note = (() => {
+    const from = anchor ?? pointer
+    if (!focus || !from) return null
+    const side = from.x > width / 2 ? -1 : 1
+    const down = from.y < height * 0.45
+    const translate = `${side < 0 ? "-100%" : "0"} ${down ? "0" : "-100%"}`
+    const align: "left" | "right" = side < 0 ? "right" : "left"
+    if (!anchor) {
+      const style: CSSProperties = {
+        left: from.x + side * POINTER_GAP,
+        top: from.y + (down ? POINTER_GAP : -POINTER_GAP),
+        translate,
+      }
+      return { style, align, leader: null }
+    }
+    const bend = { x: from.x + side * NOTE_RISE, y: from.y + (down ? NOTE_RISE : -NOTE_RISE) }
+    const end = { x: bend.x + side * NOTE_RUN, y: bend.y }
+    const style: CSSProperties = {
+      left: end.x + side * NOTE_GAP,
+      top: end.y + (down ? -NOTE_LINE : NOTE_LINE),
+      translate,
+    }
+    return {
+      style,
+      align,
+      leader: `M${from.x},${from.y} L${bend.x},${bend.y} L${end.x},${end.y}`,
+    }
+  })()
   const flagLit = showsFlag(focus)
   const configTop = Math.max(plot.y0, BUTTON_ROOM)
 
@@ -685,9 +758,7 @@ export function OverviewAllowanceWeeks({
                 const band = bandOf(item.weekStart)
                 const week = weeks.find((window) => window.startsAtEpoch === item.weekStart)
                 const level = week ? levelAt(week, item.fraction) : null
-                const head = apart
-                  ? band.top + PIN_HEAD + 1 + item.stack * PIN_STEP
-                  : plot.y0 - PIN_GAP - item.stack * PIN_STEP
+                const head = pinHead(item)
                 // The stem ends on the week's line, at the session's time. A pin
                 // past the line's last reading has no stem.
                 const stem = level == null ? 0 : Math.max(0, bandY(band, level) - head)
@@ -1031,25 +1102,56 @@ export function OverviewAllowanceWeeks({
               })}
             </svg>
 
-            {focus && tooltipStyle && (
-              <OverviewRadialTooltip
-                focus={focus}
-                fraction={guide}
-                data={{
-                  clock,
-                  current,
-                  past,
-                  weeks,
-                  spokes,
-                  rolling,
-                  limits,
-                  placed,
-                  config,
-                  checks: waste?.checks ?? [],
-                  sessions,
-                }}
-                style={tooltipStyle}
-              />
+            {focus && note && (
+              // A new focus mounts a new note, so its entrance plays again.
+              <Fragment key={JSON.stringify(focus)}>
+                {note.leader && anchor && (
+                  <svg
+                    width={width}
+                    height={height}
+                    className="pointer-events-none absolute inset-0 z-10 overflow-visible"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d={note.leader}
+                      pathLength={1}
+                      fill="none"
+                      className="overview-note-leader stroke-label"
+                      strokeWidth={1}
+                      strokeOpacity={0.75}
+                    />
+                    {anchor.dot && (
+                      <circle
+                        cx={anchor.x}
+                        cy={anchor.y}
+                        r={3}
+                        className="overview-note-dot fill-label stroke-surface"
+                        strokeWidth={2}
+                        paintOrder="stroke"
+                      />
+                    )}
+                  </svg>
+                )}
+                <OverviewRadialTooltip
+                  focus={focus}
+                  fraction={guide}
+                  data={{
+                    clock,
+                    current,
+                    past,
+                    weeks,
+                    spokes,
+                    rolling,
+                    limits,
+                    placed,
+                    config,
+                    checks: waste?.checks ?? [],
+                    sessions,
+                  }}
+                  style={note.style}
+                  note={note.align}
+                />
+              </Fragment>
             )}
           </>
         )}

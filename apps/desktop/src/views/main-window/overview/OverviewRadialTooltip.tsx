@@ -1,5 +1,7 @@
 import type { CSSProperties, ReactNode } from "react"
 
+import { cn } from "../../../lib/cn"
+
 import { formatCost } from "../../../lib/presentation/sessionAnalysis"
 import { formatTokenBurnPercent } from "../../../lib/presentation/checks"
 import type { AllowanceWindowLevelsPayload } from "../../../lib/providerUsageIpc"
@@ -120,25 +122,54 @@ function TopSessions({
   }
   return (
     <>
-      <p className="mt-(--space-xs) text-label-secondary">
+      <p className="mt-(--space-sm) text-label-secondary">
         {heading ?? "Top sessions"}, est. share of{" "}
         {metric === "weekly" ? "the week" : "5 hours"}
       </p>
-      {list.slice(0, NEARBY_LIMIT).map((session) => (
-        <p key={session.key} className="flex justify-between gap-(--space-sm)">
-          <span className="min-w-0 truncate">{session.title}</span>
-          <span className="shrink-0 text-label-secondary tabular-nums">
-            {share(
-              (metric === "weekly" ? session.weeklyPercent : session.fiveHourPercent) ?? 0,
-            )}
-          </span>
-        </p>
-      ))}
-      {list.length > NEARBY_LIMIT && (
-        <p className="text-label-tertiary">{list.length - NEARBY_LIMIT} more</p>
-      )}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-(--space-md) text-left">
+        {list.slice(0, NEARBY_LIMIT).map((session) => {
+          const value =
+            (metric === "weekly" ? session.weeklyPercent : session.fiveHourPercent) ?? 0
+          return (
+            <div key={session.key} className="contents">
+              <span className="truncate pt-0.5 text-label">{session.title}</span>
+              <span className="pt-0.5 text-right text-label-secondary tabular-nums">
+                {share(value)}
+              </span>
+              <span className="overview-share-bar col-span-2 mb-0.5 rounded-full bg-separator">
+                <span
+                  className="bg-label/70"
+                  style={{ "--share": Math.min(100, value) } as CSSProperties}
+                />
+              </span>
+            </div>
+          )
+        })}
+        {list.length > NEARBY_LIMIT && (
+          <p className="col-span-2 text-label-tertiary">{list.length - NEARBY_LIMIT} more</p>
+        )}
+      </div>
     </>
   )
+}
+
+/** The small capitals line above a note's lede. */
+function Kicker({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <p
+      className={cn(
+        "overview-note-kicker type-metadata font-semibold text-label-secondary uppercase",
+        className,
+      )}
+    >
+      {children}
+    </p>
+  )
+}
+
+/** The note's headline: one bold line that says what the reader sees. */
+function Lede({ children, className }: { children: ReactNode; className?: string }) {
+  return <p className={cn("type-headline mb-0.5 text-label", className)}>{children}</p>
 }
 
 function Row({ label, value }: { label: ReactNode; value: ReactNode }) {
@@ -176,8 +207,8 @@ function timeCard(fraction: number, data: RadialData): ReactNode {
   )
   return (
     <>
-      <p className="font-semibold">{formatWhen(epoch)}</p>
-      <Row label="This week" value={thisWeek != null ? percent(thisWeek) : "–"} />
+      <Kicker>{formatWhen(epoch)}</Kicker>
+      <Lede>{thisWeek != null ? `${percent(thisWeek)} used this week` : "No reading yet"}</Lede>
       {pastAverage != null && <Row label="Past weeks, average" value={percent(pastAverage)} />}
       {short && <Row label="5-hour window peak" value={percent(short.peakPercent)} />}
       {nearby.slice(0, NEARBY_LIMIT).map((item) => (
@@ -203,21 +234,20 @@ function weekCard(start: number, fraction: number | null, data: RadialData): Rea
   const waste = data.placed.filter((item) => item.weekStart === week.startsAtEpoch)
   return (
     <>
-      <p className="font-semibold">
-        {isCurrent ? "This week" : `Week of ${formatDate(week.startsAtEpoch)}`}
-      </p>
+      <Kicker>{isCurrent ? "This week" : `Week of ${formatDate(week.startsAtEpoch)}`}</Kicker>
+      {last && (
+        <Lede>
+          {isCurrent ? `At ${percent(last.percent)}` : `Ended at ${percent(last.percent)}`}
+        </Lede>
+      )}
       {level != null && fraction != null && (
         <Row label={formatWhen(week.startsAtEpoch + fraction * span)} value={percent(level)} />
       )}
-      {isCurrent && last && (
-        <Row
-          label="Now"
-          value={`${percent(last.percent)} · resets ${formatDate(week.resetsAtEpoch)}`}
-        />
-      )}
-      {!isCurrent && last && <Row label="Ended at" value={percent(last.percent)} />}
+      {isCurrent && <Row label="Resets" value={formatDate(week.resetsAtEpoch)} />}
       {!isCurrent && Number.isFinite(peak) && <Row label="Peak" value={percent(peak)} />}
-      {waste.length > 0 && <p className="text-brand">{sessions(waste.length)}</p>}
+      {waste.length > 0 && (
+        <p className="text-burn-check-failure-text">{sessions(waste.length)}</p>
+      )}
       <TopSessions data={data} from={week.startsAtEpoch} to={week.resetsAtEpoch} />
     </>
   )
@@ -243,17 +273,17 @@ function dayCard(day: number, data: RadialData): ReactNode {
   const waste = data.placed.filter((item) => Math.floor(item.fraction * DAYS_PER_WEEK) === day)
   return (
     <>
-      <p className="font-semibold">{formatDate(data.clock.startsAtEpoch + from * clockSpan)}</p>
+      <Kicker>{formatDate(data.clock.startsAtEpoch + from * clockSpan)}</Kicker>
+      {thisWeek && <Lede>+{percent(thisWeek.end - thisWeek.start)} of the week used</Lede>}
       {thisWeek && (
-        <Row
-          label="Used this week"
-          value={`+${percent(thisWeek.end - thisWeek.start)} (${percent(thisWeek.start)} → ${percent(thisWeek.end)})`}
-        />
+        <Row label="Level" value={`${percent(thisWeek.start)} → ${percent(thisWeek.end)}`} />
       )}
       {pastAverage != null && (
         <Row label="Past weeks, average" value={`+${percent(pastAverage)}`} />
       )}
-      {waste.length > 0 && <p className="text-brand">{sessions(waste.length)}</p>}
+      {waste.length > 0 && (
+        <p className="text-burn-check-failure-text">{sessions(waste.length)}</p>
+      )}
       {topChecks(waste).map((line) => (
         <p key={line} className="text-label-secondary">
           {line}
@@ -284,11 +314,11 @@ function pinCard(key: string, data: RadialData): ReactNode {
   ].filter(Boolean)
   return (
     <>
-      <p className="font-semibold">{pin.label}</p>
-      <p>{pin.title}</p>
-      <p className="text-label-secondary">
-        {formatWhen(pin.atEpoch)} · {weeksAgo(data, item.weekStart)}
-      </p>
+      <Kicker className="text-burn-check-failure-text">
+        {pin.label} · {formatWhen(pin.atEpoch)}
+      </Kicker>
+      <Lede>{pin.title}</Lede>
+      <p className="text-label-secondary">{weeksAgo(data, item.weekStart)}</p>
       {facts.length > 0 && <p className="text-label-secondary">{facts.join(" · ")}</p>}
       {pin.alsoFailed.length > 0 && (
         <p>
@@ -307,8 +337,8 @@ function checkCard(detector: string, data: RadialData): ReactNode {
   const facts = data.checks?.find((check) => check.detector === detector)
   return (
     <>
-      <p className="font-semibold">{items[0]!.pin.label}</p>
-      <Row label="Sessions pinned" value={items.length} />
+      <Kicker className="text-burn-check-failure-text">{items[0]!.pin.label}</Kicker>
+      <Lede>{sessions(items.length)}</Lede>
       <Row label="This week" value={items.filter((item) => item.current).length} />
       {facts?.burnBasisPoints != null && (
         <Row
@@ -329,7 +359,8 @@ function configCard(detector: string, data: RadialData): ReactNode {
   if (!share) return null
   return (
     <>
-      <p className="font-semibold">{share.label}</p>
+      <Kicker>Setup check</Kicker>
+      <Lede>{share.label}</Lede>
       <Row
         label="Fails in"
         value={`${share.finding} of ${share.sessions} sessions (${percent(share.share * 100)})`}
@@ -344,11 +375,10 @@ function shortCard(key: string, data: RadialData): ReactNode {
   if (!spoke) return null
   return (
     <>
-      <p className="font-semibold">5-hour window</p>
-      <p className="text-label-secondary">
-        {formatWhen(spoke.startsAtEpoch)} – {formatTime(spoke.resetsAtEpoch)}
-      </p>
-      <Row label="Peak" value={percent(spoke.peakPercent)} />
+      <Kicker>
+        5-hour window · {formatWhen(spoke.startsAtEpoch)} – {formatTime(spoke.resetsAtEpoch)}
+      </Kicker>
+      <Lede>Peaked at {percent(spoke.peakPercent)}</Lede>
       {spoke.peakPercent >= LIMIT_PERCENT && (
         <p className="text-system-red-text">Hit the 5-hour limit</p>
       )}
@@ -368,11 +398,10 @@ function limitCard(weekStart: number, data: RadialData): ReactNode {
   const week = data.weeks.find((window) => window.startsAtEpoch === weekStart)
   return (
     <>
-      <p className="font-semibold text-system-red-text">Hit the weekly limit</p>
-      <Row
-        label="At"
-        value={`${formatDate(limit.hitAtEpoch)}, ${formatTime(limit.hitAtEpoch)}`}
-      />
+      <Kicker className="text-system-red-text">
+        Weekly limit · {formatDate(limit.hitAtEpoch)}, {formatTime(limit.hitAtEpoch)}
+      </Kicker>
+      <Lede>Hit the weekly limit</Lede>
       <Row
         label={limit.current ? "At 100% for" : "At 100% until the reset, for"}
         value={duration(limit.untilEpoch - limit.hitAtEpoch)}
@@ -393,10 +422,10 @@ function rollingCard(rolling: number | null): ReactNode {
   if (rolling == null) return null
   return (
     <>
-      <p className="font-semibold">
+      <Kicker>Last 28 days</Kicker>
+      <Lede>
         Average usage <span className="tabular-nums">{percent(rolling)}</span>
-      </p>
-      <p className="text-label-secondary">Typical level over the last 28 days</p>
+      </Lede>
     </>
   )
 }
@@ -426,22 +455,32 @@ function body(focus: RadialFocus, fraction: number | null, data: RadialData): Re
   }
 }
 
-/** The hover card for the part of the week flower in focus. */
+/** The detail for the part of the chart in focus. By default it is a hover
+ *  card. As a note, it has no box and aligns its text to the given side. */
 export function OverviewRadialTooltip({
   focus,
   fraction,
   data,
   style,
+  note,
 }: {
   focus: RadialFocus
   fraction: number | null
   data: RadialData
   style: CSSProperties
+  note?: "left" | "right"
 }) {
   const content = body(focus, fraction, data)
   if (!content) return null
   return (
-    <div className="ui-tooltip pointer-events-none absolute w-max max-w-80" style={style}>
+    <div
+      className={cn(
+        "pointer-events-none absolute w-max",
+        note ? "overview-note type-callout z-10 max-w-60 select-none" : "ui-tooltip max-w-80",
+        note === "right" && "text-right",
+      )}
+      style={style}
+    >
       {content}
     </div>
   )
