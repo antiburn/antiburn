@@ -231,19 +231,17 @@ pub(super) fn quota_usage_with_turn_dollars(
 
     let bucketed = dollars.by_bucket(model_scope);
 
-    // Assign each bucket to the period whose `[start, reset)` contains its
-    // start. A bucket that straddles a reset lands in the period containing
-    // its start, never the one its tail spills into.
-    let mut by_period: Vec<Vec<&crate::store::provider_limit::BucketedSessionDollars>> =
-        vec![Vec::new(); periods.len()];
-    for row in &bucketed {
-        if let Some(index) = periods.iter().position(|period| {
-            row.bucket_start_epoch >= period.starts_at_epoch
-                && row.bucket_start_epoch < period.resets_at_epoch
-        }) {
-            by_period[index].push(row);
-        }
-    }
+    let by_period: Vec<Vec<_>> = periods
+        .iter()
+        .map(|period| {
+            bucketed
+                .iter()
+                .filter_map(|row| {
+                    row.in_period(period.starts_at_epoch, period.resets_at_epoch, now)
+                })
+                .collect()
+        })
+        .collect();
 
     let session_keys: HashSet<SessionKey> = bucketed.iter().map(|row| row.key.clone()).collect();
     let session_titles = session_titles_and_distros(store, &session_keys)?;
@@ -287,10 +285,8 @@ pub(super) fn quota_usage_with_turn_dollars(
                     && observed_at_epoch < period.resets_at_epoch
             })
             .collect();
-        let bucket_dollars: Vec<(i64, f64)> = rows
-            .iter()
-            .map(|&row| (row.bucket_start_epoch, row.usd))
-            .collect();
+        let bucket_dollars: Vec<&[(i64, f64)]> =
+            rows.iter().map(|row| row.usage.as_slice()).collect();
         let shared = share_period_capped(
             &ShareInput {
                 start: period.starts_at_epoch,
@@ -307,11 +303,7 @@ pub(super) fn quota_usage_with_turn_dollars(
         let mut unattributed_usd = 0.0;
         let mut unattributed_sessions: HashSet<SessionKey> = HashSet::new();
         let mut unattributed_by_bucket: BTreeMap<i64, (f64, f64, bool)> = BTreeMap::new();
-        for (row, percent) in rows
-            .iter()
-            .copied()
-            .zip(shared.bucket_percent.iter().copied())
-        {
+        for (row, percent) in rows.iter().zip(shared.bucket_percent.iter().copied()) {
             match &row.account {
                 crate::store::provider_limit::Resolved::Bound(_) => {
                     let wsl_distro = session_titles
@@ -623,10 +615,14 @@ fn session_quota_for_store(
                             && observed_at_epoch < period.resets_at_epoch
                     })
                     .collect();
-                let bucket_dollars: Vec<(i64, f64)> = dollars
-                    .iter()
-                    .map(|row| (row.bucket_start_epoch, row.usd))
+                let dollars: Vec<_> = dollars
+                    .into_iter()
+                    .filter_map(|row| {
+                        row.in_period(period.starts_at_epoch, period.resets_at_epoch, now)
+                    })
                     .collect();
+                let bucket_dollars: Vec<&[(i64, f64)]> =
+                    dollars.iter().map(|row| row.usage.as_slice()).collect();
                 let shared = share_period_capped(
                     &ShareInput {
                         start: period.starts_at_epoch,
@@ -653,9 +649,11 @@ fn session_quota_for_store(
                         percent_sum += p;
                         any_percent = true;
                     }
-                    let in_shared_segment = shared
-                        .coverage_until
-                        .is_some_and(|coverage_until| row.bucket_start_epoch < coverage_until);
+                    let in_shared_segment = shared.coverage_until.is_some_and(|coverage_until| {
+                        row.usage
+                            .iter()
+                            .all(|&(ts_ms, _)| ts_ms <= coverage_until.saturating_mul(1_000))
+                    });
                     if !in_shared_segment {
                         all_shared = false;
                     }
@@ -664,18 +662,7 @@ fn session_quota_for_store(
                     continue;
                 }
 
-                // Every one of this session's own buckets fell in a shared
-                // meter segment: report the shared percent directly, with
-                // no need for a factor point at all. Otherwise fall back to
-                // today's single factor division over the session's whole
-                // usd. `share_period` already priced the tail buckets with
-                // the factor, so the shared sum is the session's percent in
-                // both cases. Only the confidence differs: a session with a
-                // bucket past the last reading reports the factor's
-                // confidence, and one whose lane has learned no factor yet
-                // still reports "measured" for the shared part it already
-                // has, the same rule the Limits screen applies to the same
-                // buckets, rather than drop a correctly priced contribution.
+                // Keep the known contribution if the tail has no factor.
                 if !any_percent {
                     continue;
                 }
@@ -1862,6 +1849,115 @@ mod tests {
                 .iter()
                 .any(|window| window.lane == "model:fable"),
             "the model-scoped window draws its own area"
+        );
+    }
+    #[test]
+    fn session_and_limits_use_actual_turn_times_on_both_sides_of_a_reading() {
+        let store = memory_store();
+        let account_key = account('t');
+        let key = insert_session(&store, "timed-session");
+        let other = insert_session(&store, "other-session");
+        for session in [&key, &other] {
+            bind_account(&store, session, &account_key);
+            save_breakdown(&store, session, 1_000_000);
+        }
+        let period_id = insert_five_hour_period(&store, &account_key, 0, 18_000);
+        insert_observation(&store, period_id, &account_key, 289, 92.0);
+        insert_point(&store, &account_key, LANE_FIVE_HOUR, 0, 1.0);
+        insert_turn(&store, &key, 100_000, 300_000);
+        insert_turn(&store, &other, 200_000, 100_000);
+        let request = || SessionQuotaRequest {
+            agent: AGENT.into(),
+            session_id: key.session_id.clone(),
+            wsl_distro: None,
+        };
+        let limits_request = || QuotaUsageRequest {
+            provider: PROVIDER.into(),
+            account_key: account_key.clone(),
+            lane: LANE_FIVE_HOUR.into(),
+            range_start_epoch: 0,
+            range_end_epoch: 18_000,
+        };
+        let initial = session_quota_for_store(&store, 300, request()).unwrap();
+        assert_eq!(initial.entries[0].percent, Some(69.0));
+        let limits = quota_usage_for_store(&store, 300, limits_request()).unwrap();
+        assert_eq!(limits.periods[0].estimated_percent, Some(92.0));
+
+        insert_turn(&store, &key, 300_001, 100_000);
+        insert_turn(&store, &key, 500_000, 900_000);
+        let updated = session_quota_for_store(&store, 310, request()).unwrap();
+        let limits = quota_usage_for_store(&store, 310, limits_request()).unwrap();
+        let session = limits.periods[0]
+            .sessions
+            .iter()
+            .find(|s| s.session_id == key.session_id)
+            .unwrap();
+        assert_eq!(updated.entries[0].percent, session.percent);
+        assert_eq!(updated.entries[0].usd, session.usd);
+        let tail_usd = session.usd / 4.0;
+        assert!((session.percent.unwrap() - (69.0 + tail_usd)).abs() < 1e-9);
+        assert_eq!(updated.entries[0].confidence, "learned");
+        assert!((limits.periods[0].estimated_percent.unwrap() - (92.0 + tail_usd)).abs() < 1e-9);
+
+        insert_observation(&store, period_id, &account_key, 310, 94.0);
+        let refreshed = session_quota_for_store(&store, 310, request()).unwrap();
+        assert_eq!(refreshed.entries[0].percent, Some(71.0));
+        let limits = quota_usage_for_store(&store, 310, limits_request()).unwrap();
+        assert_eq!(limits.periods[0].estimated_percent, Some(94.0));
+    }
+
+    #[test]
+    fn session_and_limits_split_a_bucket_at_an_off_grid_reset() {
+        let store = memory_store();
+        let account_key = account('r');
+        let key = insert_session(&store, "reset-session");
+        bind_account(&store, &key, &account_key);
+        save_breakdown(&store, &key, 1_000_000);
+        let first = insert_five_hour_period(&store, &account_key, 120, 18_120);
+        let second = insert_five_hour_period(&store, &account_key, 18_120, 36_120);
+        insert_turn(&store, &key, 18_119_999, 100_000);
+        insert_turn(&store, &key, 18_120_000, 300_000);
+        insert_observation(&store, first, &account_key, 18_119, 20.0);
+        insert_observation(&store, second, &account_key, 18_200, 10.0);
+        insert_point(&store, &account_key, LANE_FIVE_HOUR, 0, 1.0);
+        let now = 18_300;
+        let session = session_quota_for_store(
+            &store,
+            now,
+            SessionQuotaRequest {
+                agent: AGENT.into(),
+                session_id: key.session_id.clone(),
+                wsl_distro: None,
+            },
+        )
+        .unwrap();
+        let limits = quota_usage_for_store(
+            &store,
+            now,
+            QuotaUsageRequest {
+                provider: PROVIDER.into(),
+                account_key,
+                lane: LANE_FIVE_HOUR.into(),
+                range_start_epoch: 120,
+                range_end_epoch: 36_120,
+            },
+        )
+        .unwrap();
+        assert_eq!(session.entries.len(), 2);
+        for entry in &session.entries {
+            let period = limits
+                .periods
+                .iter()
+                .find(|p| p.period_id == entry.period.as_ref().unwrap().period_id)
+                .unwrap();
+            assert_eq!(period.sessions.len(), 1);
+            assert_eq!(entry.usd, period.sessions[0].usd);
+            assert_eq!(entry.percent, period.sessions[0].percent);
+        }
+        assert_eq!(limits.periods[1].sessions[0].percent, Some(10.0));
+        assert!(
+            (limits.periods[1].sessions[0].usd - 3.0 * limits.periods[0].sessions[0].usd).abs()
+                < 1e-9
         );
     }
 }

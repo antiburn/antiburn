@@ -1631,3 +1631,112 @@ fn shared_turn_input_keeps_the_group_limit_before_account_or_model_filtering() {
             .is_none()
     );
 }
+
+#[test]
+fn quota_buckets_keep_exact_usage_times_and_half_open_period_boundaries() {
+    let store = memory_store();
+    let key = insert_session(&store, "timed-usage");
+    observe_account(&store, &account('a'));
+    for timestamp in [99_999, 100_000, 100_001, 199_999, 200_000] {
+        insert_turn(&store, &key, timestamp, 100_000);
+    }
+    insert_unpublished_turn(&store, &key, 150_000, 900_000);
+    let rows = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), None, 100, 200)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    let mut timestamps: Vec<_> = row.usage.iter().map(|&(ts, _)| ts).collect();
+    timestamps.sort_unstable();
+    assert_eq!(timestamps, vec![100_000, 100_001, 199_999]);
+    assert!((row.usd - row.usage.iter().map(|&(_, usd)| usd).sum::<f64>()).abs() < 1e-9);
+    let current = row.in_period(100, 200, 150).unwrap();
+    assert_eq!(current.usage.len(), 2);
+    assert!((current.usd - row.usd * 2.0 / 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn quota_turn_limit_rejects_a_truncated_result_even_inside_one_bucket() {
+    let store = memory_store();
+    let key = insert_session(&store, "bounded-usage");
+    observe_account(&store, &account('a'));
+    insert_turn(&store, &key, 100_000, 1);
+    store
+        .lock()
+        .execute(
+            "WITH RECURSIVE turns(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM turns WHERE n < ?1)
+         INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+             thread_id, turn_index, scope, role, ts_ms, model, input_tokens,
+             cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
+         SELECT 'native', ?2, ?3, 1, 'synthetic', 'synthetic', n, 'main', 'assistant',
+             100000, ?4, 1, 0, 0, 0, 0 FROM turns",
+            params![MAX_QUOTA_TURNS as i64, AGENT, key.session_id, MODEL],
+        )
+        .unwrap();
+    assert!(store.quota_turn_input(0, 900).unwrap().is_none());
+}
+
+#[test]
+fn timed_quota_costs_keep_one_hour_cache_prices_and_do_not_invent_unknown_fast_prices() {
+    let store = memory_store();
+    let key = insert_session(&store, "timed-pricing");
+    observe_account(&store, &account('a'));
+    insert_turn_with_one_hour_cache_write(&store, &key, 100_000, 100_000);
+    insert_turn(&store, &key, 200_000, 100_000);
+    store
+        .lock()
+        .execute("UPDATE turn SET speed = 'fast' WHERE ts_ms = 200000", [])
+        .unwrap();
+    let rows = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), None, 0, 900)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.usage.len(), 2);
+    for &(ts_ms, usd) in &row.usage {
+        let expected = if ts_ms == 100_000 {
+            100_000.0
+                * lookup_turn_pricing(MODEL, None)
+                    .unwrap()
+                    .input_cost_per_token
+                * 2.0
+        } else {
+            assert!(lookup_turn_pricing(MODEL, Some("fast")).is_none());
+            0.0
+        };
+        assert!((usd - expected).abs() < 1e-9);
+    }
+    assert!((row.usd - row.usage.iter().map(|&(_, usd)| usd).sum::<f64>()).abs() < 1e-9);
+}
+
+#[test]
+fn timed_quota_costs_keep_a_known_fast_mode_price() {
+    let store = memory_store();
+    let key = insert_session_for_agent(&store, "fast-pricing", "codex");
+    bind_account(&store, &key, &account('a'));
+    store
+        .lock()
+        .execute(
+            "UPDATE session_provider_account SET provider = 'openai'",
+            [],
+        )
+        .unwrap();
+    insert_turn_with_model(&store, &key, 100_000, 100_000, "gpt-6-astra");
+    store
+        .lock()
+        .execute("UPDATE turn SET speed = 'fast'", [])
+        .unwrap();
+    let rows = store
+        .attributed_turn_dollars_by_bucket("openai", &account('a'), None, 0, 900)
+        .unwrap()
+        .unwrap();
+    let expected = lookup_turn_pricing("gpt-6-astra", Some("fast"))
+        .unwrap()
+        .input_cost_per_token
+        * 100_000.0;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].usage, vec![(100_000, expected)]);
+    assert_eq!(rows[0].usd, expected);
+}
