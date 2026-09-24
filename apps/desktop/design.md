@@ -822,7 +822,10 @@ Notes for what isn't expressible as a token:
   pink for cache marks, brand orange for a compaction or carry, and the `measure` blue wherever
   the view draws a reading. One meaning per color across a view: when two marks share a color
   they never share a shape, and a legend names each. Layers rest in the `chart-rest` greys and
-  take their color when the key or the pointer names them. A chart with several layers on one
+  take their color when the key or the pointer names them. A key that can pin a layer makes each
+  entry a toggle button: a click keeps that layer in focus (pressed: `surface-secondary` fill,
+  `label` ink, `rounded-control`) until a second click, and pointing at another entry previews it
+  meanwhile. A chart with several layers on one
   category stays on one hue and separates the layers by weight and opacity, so a further layer
   never needs a second hue to stay legible. Layer styling is Tailwind utilities on the SVG
   elements, not stylesheet rules. `waste-warn` is its own token because `brand` is too dark on

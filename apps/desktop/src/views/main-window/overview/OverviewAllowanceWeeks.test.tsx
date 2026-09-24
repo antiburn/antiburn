@@ -225,6 +225,22 @@ describe("OverviewAllowanceWeeks", () => {
     expect(container.querySelector(`[data-week="${WEEK}"]`)).toHaveStyle({ opacity: "0.25" })
   })
 
+  it("keeps a clicked key in focus until a second click", () => {
+    const { container } = renderChart()
+    const item = screen.getAllByText("2 weeks ago")[1]!.closest("[role=listitem]")!
+    const toggle = item.querySelector("button")!
+    const other = container.querySelector(`[data-week="${WEEK}"]`)
+    fireEvent.pointerEnter(item)
+    fireEvent.click(toggle)
+    fireEvent.pointerLeave(item)
+    expect(toggle).toHaveAttribute("aria-pressed", "true")
+    expect(other).toHaveStyle({ opacity: "0.25" })
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-pressed", "false")
+    expect(other).not.toHaveStyle({ opacity: "0.25" })
+  })
+
   it("lights a week and its 5-hour windows from its key entry", () => {
     const { container } = renderChart()
     fireEvent.pointerEnter(screen.getAllByText("2 weeks ago")[1]!.closest("[role=listitem]")!)

@@ -234,6 +234,8 @@ export function OverviewAllowanceWeeks({
   const height = useElementHeight(frameRef)
   const [pointer, setPointer] = useState<Point | null>(null)
   const [explicit, setExplicit] = useState<RadialFocus | null>(null)
+  // The key the user clicked. It stays in focus until a second click.
+  const [solo, setSolo] = useState<RadialFocus | null>(null)
   const [apart, setApart] = useState(false)
 
   const weeks = account.chart.weeklyWindows.filter((window) => window.lane === "weekly")
@@ -336,11 +338,33 @@ export function OverviewAllowanceWeeks({
     })
   })
 
+  const legendKeyOf = (next: RadialFocus | null) =>
+    next?.kind === "week"
+      ? `${WEEK_KEY}${next.start}`
+      : legendLayer(next, current?.startsAtEpoch)
+  const soloKey = legendKeyOf(solo)
+  // With a week pinned, the pointer reads that week only. With a layer
+  // pinned, the pointer shows a part of that layer, or else the layer.
+  const soloWeek = solo?.kind === "week" ? solo.start : null
+  const inSolo = <T extends { weekStart: number }>(items: readonly T[]) =>
+    soloWeek == null ? items : items.filter((item) => item.weekStart === soloWeek)
   const snapped =
     !explicit && pointer && ready
-      ? weekPointerFocus(plot, pointer, weeks, bandOf, spokes, rolling, limits, apart)
+      ? weekPointerFocus(
+          plot,
+          pointer,
+          soloWeek == null ? weeks : weeks.filter((week) => week.startsAtEpoch === soloWeek),
+          bandOf,
+          inSolo(spokes),
+          soloWeek == null ? rolling : null,
+          inSolo(limits),
+          apart,
+        )
       : null
-  const focus = explicit ?? snapped?.focus ?? null
+  const fitsSolo = (next: RadialFocus) =>
+    soloWeek != null ? next.kind !== "time" : legendKeyOf(next) === soloKey
+  const pointed = snapped && (!solo || fitsSolo(snapped.focus)) ? snapped.focus : solo
+  const focus = explicit ?? pointed ?? null
   const guide = snapped?.fraction ?? null
   const focusWeek =
     focus?.kind === "week"
@@ -353,17 +377,17 @@ export function OverviewAllowanceWeeks({
 
   // The dot on the guide: the level of the part in focus at the guide's time.
   const guideDot = (() => {
-    if (guide == null || !snapped) return null
-    if (snapped.focus.kind === "short") {
-      const key = snapped.focus.key
+    if (guide == null || !snapped || !pointed) return null
+    if (pointed.kind === "short") {
+      const key = pointed.key
       const spoke = spokes.find((item) => item.key === key)
       const level = spoke ? spokeLevelAt(spoke, guide) : null
       return spoke && level != null ? { start: spoke.weekStart, level } : null
     }
     const week =
-      snapped.focus.kind === "week"
+      pointed.kind === "week"
         ? weeks.find((window) => window.startsAtEpoch === focusWeek)
-        : snapped.focus.kind === "time"
+        : pointed.kind === "time"
           ? current
           : undefined
     const level = week ? levelAt(week, guide) : null
@@ -415,10 +439,13 @@ export function OverviewAllowanceWeeks({
     ...(limits.length || shortLimits ? [LIMIT_LEGEND] : []),
     ...(placed.length || config.length ? [WASTE_LEGEND] : []),
   ]
-  const activeKey =
-    focus?.kind === "week"
-      ? `${WEEK_KEY}${focus.start}`
-      : legendLayer(focus, current?.startsAtEpoch)
+  const activeKey = legendKeyOf(focus)
+  const focusOfKey = (key: string | null): RadialFocus | null =>
+    key == null
+      ? null
+      : key.startsWith(WEEK_KEY)
+        ? { kind: "week", start: Number(key.slice(WEEK_KEY.length)) }
+        : { kind: "layer", layer: key as RadialLayer }
 
   // The note points at the part in focus: a pin head, a limit hit, the dot on
   // the guide, the foot of a day, or the average line. A pin head and the
@@ -1162,15 +1189,9 @@ export function OverviewAllowanceWeeks({
         className="mt-(--space-md) justify-center"
         items={legendItems}
         activeKey={activeKey}
-        onActiveChange={(key) =>
-          setExplicit(
-            key == null
-              ? null
-              : key.startsWith(WEEK_KEY)
-                ? { kind: "week", start: Number(key.slice(WEEK_KEY.length)) }
-                : { kind: "layer", layer: key as RadialLayer },
-          )
-        }
+        onActiveChange={(key) => setExplicit(focusOfKey(key))}
+        pinnedKey={soloKey}
+        onPinnedChange={(key) => setSolo(focusOfKey(key))}
       />
       {action && (
         <div className="mt-(--space-md) flex justify-center">

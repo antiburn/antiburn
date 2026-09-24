@@ -18,6 +18,10 @@ export interface ChartLegendItem {
  * A chart that can bring one layer forward passes `onActiveChange`. The key
  * then reports the entry under the pointer, and fades the other entries while
  * `activeKey` is set.
+ *
+ * A chart that can keep one layer forward also passes `onPinnedChange`. Each
+ * entry is then a toggle button: a click pins the entry, and a second click
+ * releases it. The pinned entry shows as pressed.
  */
 export function ChartLegend({
   items,
@@ -26,6 +30,8 @@ export function ChartLegend({
   size = "small",
   activeKey = null,
   onActiveChange,
+  pinnedKey = null,
+  onPinnedChange,
 }: {
   items: readonly ChartLegendItem[]
   ariaLabel: string
@@ -34,8 +40,25 @@ export function ChartLegend({
   size?: "small" | "large"
   activeKey?: string | null
   onActiveChange?: (key: string | null) => void
+  pinnedKey?: string | null
+  onPinnedChange?: (key: string | null) => void
 }) {
   const large = size === "large"
+  const swatch = (item: ChartLegendItem) => (
+    <span
+      aria-hidden="true"
+      className={cn(
+        item.shape === "line"
+          ? large
+            ? "h-0.75 w-3.5 rounded-full"
+            : "h-0.5 w-2.5 rounded-full"
+          : large
+            ? "size-2.5 rounded-small"
+            : "size-2 rounded-small",
+        item.swatch,
+      )}
+    />
+  )
   return (
     <div
       role="list"
@@ -46,34 +69,44 @@ export function ChartLegend({
         className,
       )}
     >
-      {items.map((item) => (
-        <span
-          key={item.key}
-          role="listitem"
-          className={cn(
-            "inline-flex items-center gap-(--space-xs)",
-            onActiveChange && "transition-opacity duration-(--duration-fast)",
-            activeKey && activeKey !== item.key && "opacity-40",
-          )}
-          onPointerEnter={onActiveChange && (() => onActiveChange(item.key))}
-          onPointerLeave={onActiveChange && (() => onActiveChange(null))}
-        >
+      {items.map((item) => {
+        const pinned = pinnedKey === item.key
+        return (
           <span
-            aria-hidden="true"
+            key={item.key}
+            role="listitem"
             className={cn(
-              item.shape === "line"
-                ? large
-                  ? "h-0.75 w-3.5 rounded-full"
-                  : "h-0.5 w-2.5 rounded-full"
-                : large
-                  ? "size-2.5 rounded-small"
-                  : "size-2 rounded-small",
-              item.swatch,
+              "inline-flex items-center gap-(--space-xs)",
+              onActiveChange && "transition-opacity duration-(--duration-fast)",
+              activeKey && activeKey !== item.key && "opacity-40",
             )}
-          />
-          {item.label}
-        </span>
-      ))}
+            onPointerEnter={onActiveChange && (() => onActiveChange(item.key))}
+            onPointerLeave={onActiveChange && (() => onActiveChange(null))}
+          >
+            {onPinnedChange ? (
+              <button
+                type="button"
+                aria-pressed={pinned}
+                className={cn(
+                  "inline-flex items-center gap-(--space-xs) rounded-control px-(--space-xs) transition-colors duration-(--duration-fast) hover:text-label",
+                  pinned && "bg-surface-secondary text-label",
+                )}
+                onFocus={onActiveChange && (() => onActiveChange(item.key))}
+                onBlur={onActiveChange && (() => onActiveChange(null))}
+                onClick={() => onPinnedChange(pinned ? null : item.key)}
+              >
+                {swatch(item)}
+                {item.label}
+              </button>
+            ) : (
+              <>
+                {swatch(item)}
+                {item.label}
+              </>
+            )}
+          </span>
+        )
+      })}
     </div>
   )
 }
