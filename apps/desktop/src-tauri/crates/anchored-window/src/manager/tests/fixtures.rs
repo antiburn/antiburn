@@ -10,6 +10,7 @@ pub(super) fn config() -> AnchoredWindowConfig {
         anchor_label: "anchor".to_string(),
         route: "index.html#/companion".to_string(),
         title: "companion".to_string(),
+        interface_scale: 1.0,
         width: 320.0,
         corner_radius: 8.0,
         initial_height: 120.0,

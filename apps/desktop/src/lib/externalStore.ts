@@ -25,14 +25,20 @@ export type ExternalStore<T> = {
 
 export type ExternalStoreConfig<T> = {
   initial: T
-  /** Fetched once when the store starts, before `subscribe` is awaited. */
+  /**
+   * Fetched once when the store starts, after `subscribe` is attached. A
+   * push the channel delivers before this resolves wins over its result —
+   * see the `revision` guard in `start()`.
+   */
   load?: () => Promise<T>
   /** Restore `initial` after the final listener leaves. */
   resetOnStop?: boolean
   /**
    * Attach a push channel that calls `set` with every update it sees, and
    * resolve to the function that detaches it. Modeled on the app's `onXxx`
-   * IPC helpers, which are themselves `async () => UnlistenFn`.
+   * IPC helpers, which are themselves `async () => UnlistenFn`. Attached
+   * before `load` runs, so a push that arrives during the load, or during
+   * this attachment's own handshake, is never missed.
    */
   subscribe?: (set: (value: T) => void) => Promise<() => void>
 }
@@ -45,24 +51,37 @@ export function createExternalStore<T>(config: ExternalStoreConfig<T>): External
   // a stop-then-restart) can tell its own attempt is stale.
   let generation = 0
   let unlisten: (() => void) | null = null
+  // Bumped every publish, so a load() or refresh() in flight can tell a push
+  // already landed a newer value while it waited, and skip overwriting it.
+  let revision = 0
+  // Bumped every config.load() call, so an earlier load() or refresh() that
+  // resolves after a later one can tell it is not the latest, and skip
+  // overwriting the later result. Together with `revision`, a load result
+  // publishes only when no push landed and no later load started while it
+  // was in flight.
+  let loadRequest = 0
 
   function publish(value: T): void {
     snapshot = value
+    revision += 1
     for (const listener of listeners) listener()
   }
 
   async function start(): Promise<void> {
     started = true
     const thisGeneration = generation
-
-    if (config.load) {
-      const value = await config.load().catch(() => undefined)
-      if (thisGeneration !== generation) return
-      if (value !== undefined) publish(value)
-    }
+    const thisRevision = revision
 
     if (config.subscribe) {
-      const stop = await config.subscribe(publish).catch(() => null)
+      const stop = await config
+        .subscribe((value) => {
+          // A push from a generation this store has already left behind
+          // (the last listener left, or the store restarted) must not
+          // resurrect a snapshot nobody is reading any more.
+          if (thisGeneration !== generation) return
+          publish(value)
+        })
+        .catch(() => null)
       if (thisGeneration !== generation) {
         // The last listener left (or the store was restarted) while the
         // channel was still connecting. There is nothing left to publish
@@ -71,6 +90,18 @@ export function createExternalStore<T>(config: ExternalStoreConfig<T>): External
         return
       }
       unlisten = stop
+    }
+
+    if (config.load) {
+      const thisLoadRequest = ++loadRequest
+      const value = await config.load().catch(() => undefined)
+      if (thisGeneration !== generation) return
+      // Publish only when no push landed (revision unchanged) and no later
+      // load() or refresh() started (loadRequest unchanged) while this one
+      // was in flight — either means a newer value already won.
+      if (value !== undefined && revision === thisRevision && loadRequest === thisLoadRequest) {
+        publish(value)
+      }
     }
   }
 
@@ -96,7 +127,13 @@ export function createExternalStore<T>(config: ExternalStoreConfig<T>): External
 
     refresh: async () => {
       if (!config.load) return
-      publish(await config.load())
+      const thisRevision = revision
+      const thisLoadRequest = ++loadRequest
+      const value = await config.load()
+      // Same guard as `start()`'s load: a push that landed, or a later
+      // load()/refresh() that started, while this one was in flight is
+      // newer than its result.
+      if (revision === thisRevision && loadRequest === thisLoadRequest) publish(value)
     },
 
     set(value: T) {

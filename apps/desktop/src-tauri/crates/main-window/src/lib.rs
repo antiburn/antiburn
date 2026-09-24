@@ -76,6 +76,7 @@ pub fn build<F>(
     app: &AppHandle,
     initialization_script: String,
     placement: Option<&Placement>,
+    interface_scale: f64,
     on_page_load: F,
 ) -> tauri::Result<BuiltWindow>
 where
@@ -85,6 +86,7 @@ where
         .initialization_script(initialization_script)
         .title("antiburn")
         .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+        .zoom_hotkeys_enabled(false)
         .resizable(true)
         .maximizable(true)
         .decorations(cfg!(target_os = "macos"))
@@ -98,6 +100,7 @@ where
         .hidden_title(true);
 
     let window = builder.build()?;
+    window.set_zoom(interface_scale)?;
     // Geometry failure must not leak a hidden label that blocks every retry.
     // Keep the usable default window and let the shell persist its later move.
     let applied = apply_placement(&window, placement).ok();

@@ -133,6 +133,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;
         }
+        event::Interaction::SessionFiltersChanged { action, agent } => {
+            let _ = (action, agent);
+        }
     }
 }
 
@@ -891,7 +894,7 @@ mod enabled {
         let model_scope = lane
             .lane
             .strip_prefix(crate::store::provider_limit::MODEL_LANE_PREFIX);
-        let bucket_dollars: Vec<(i64, f64)> = store
+        let dollars = store
             .attributed_turn_dollars_by_bucket(
                 &lane.provider,
                 &lane.account_key,
@@ -899,10 +902,9 @@ mod enabled {
                 period.starts_at_epoch,
                 period.resets_at_epoch,
             )
-            .ok()??
-            .into_iter()
-            .map(|row| (row.bucket_start_epoch, row.usd))
-            .collect();
+            .ok()??;
+        let bucket_dollars: Vec<&[(i64, f64)]> =
+            dollars.iter().map(|row| row.usage.as_slice()).collect();
 
         let shared = share_period(&ShareInput {
             start: period.starts_at_epoch,
@@ -923,7 +925,8 @@ mod enabled {
         let estimate_residual = last_reading.and_then(|(last_epoch, meter_percent)| {
             let total: f64 = bucket_dollars
                 .iter()
-                .filter(|&&(bucket_start, _)| bucket_start < last_epoch)
+                .flat_map(|bucket| bucket.iter())
+                .filter(|&&(ts_ms, _)| ts_ms <= last_epoch.saturating_mul(1_000))
                 .map(|&(_, usd)| usd)
                 .sum();
             factor_point_at_or_earliest(&points, last_epoch)
@@ -2657,6 +2660,54 @@ mod enabled {
                     .quota_window_already_reported(period_id)
                     .expect("reads the marker")
             );
+        }
+
+        #[test]
+        fn closed_window_bias_excludes_usage_after_the_last_reading_in_the_same_bucket() {
+            let store = quota_window_test_store();
+            let period_id = quota_window_insert_period(&store, 0, 900);
+            quota_window_insert_observation(&store, period_id, 200, 20.0);
+            {
+                let connection = store.lock();
+                connection.execute_batch(
+                    "INSERT INTO session (environment_key, agent, session_id, source_kind,
+                         source_label, first_seen_at, last_seen_at)
+                     VALUES ('native', 'claude-code', 'timed-analytics', 'inline', 'synthetic', '', '');
+                     INSERT INTO session_evidence (environment_key, agent, session_id, status, published_fence)
+                     VALUES ('native', 'claude-code', 'timed-analytics', 'ready', 1);
+                     INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+                         thread_id, turn_index, scope, role, ts_ms, model, input_tokens,
+                         cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
+                     VALUES ('native', 'claude-code', 'timed-analytics', 1, 'synthetic', 'synthetic',
+                         0, 'main', 'assistant', 100000, 'claude-opus-4-6', 100000, 0, 0, 0, 0),
+                         ('native', 'claude-code', 'timed-analytics', 1, 'synthetic', 'synthetic',
+                         1, 'main', 'assistant', 300000, 'claude-opus-4-6', 900000, 0, 0, 0, 0);"
+                ).unwrap();
+                connection.execute(
+                    "INSERT INTO provider_account_seen (agent, provider, account_key, first_seen_epoch)
+                     VALUES ('claude-code', 'anthropic', ?1, 0)", [quota_window_test_account()],
+                ).unwrap();
+            }
+            let rate =
+                antiburn_local::analysis::lookup_turn_pricing("claude-opus-4-6", None).unwrap();
+            store
+                .upsert_factor_point(&crate::store::provider_limit::FactorPoint {
+                    id: 0,
+                    provider: "anthropic".into(),
+                    account_key: quota_window_test_account(),
+                    lane: "fiveHour".into(),
+                    effective_at_epoch: 0,
+                    usd_per_percent: rate.input_cost_per_token * 100_000.0 / 20.0,
+                    method: "delta".into(),
+                    sample_count: 1,
+                    plan: None,
+                    plan_tier: None,
+                })
+                .unwrap();
+            let reports = quota_window_closed_reports(&store, &quota_window_touched(), 1_000, true);
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].1.estimate_bias, Some("within_5"));
+            assert_eq!(reports[0].1.unexplained_band, Some("none"));
         }
 
         /// The durable marker, not an in-memory hint, suppresses a second

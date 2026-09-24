@@ -19,10 +19,9 @@
 //!
 //! The first-run flow uses a window instead of a bounded-height popover surface.
 //!
-//! Chrome follows [`crate::settings`] rather than inventing a second pattern:
-//! fixed size, non-resizable, and on macOS an overlay title bar with the
-//! floating title hidden, so the frontend paints its own
-//! `data-tauri-drag-region` strip (`src/views/onboarding/OnboardingFlow.tsx`).
+//! The resizable window follows interface scale and fits its monitor's work area.
+//! On macOS, the overlay title bar hides its title and keeps the native controls.
+//! The frontend owns the `data-tauri-drag-region` strip.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -30,7 +29,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
-use crate::window_placement::center_on_active_monitor;
+use crate::window_placement::{center_on_active_monitor, resize_on_current_monitor};
 use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_script};
 
 /// Window label. Also listed in `capabilities/default.json`.
@@ -39,10 +38,7 @@ pub const LABEL: &str = "onboarding";
 /// Dedicated frontend entry for the onboarding window.
 const URL: &str = "onboarding.html";
 
-/// Fixed geometry. 480 tall leaves ~379pt of body under the 44pt header and
-/// over the 57pt footer, which is more than the tallest step needs; 680 wide is
-/// what stops the permission notice wrapping and the paths truncating.
-/// Non-resizable, like Settings — every step is designed for this rectangle.
+/// Preferred content size at 100% interface scale.
 const WIDTH: f64 = 680.0;
 const HEIGHT: f64 = 480.0;
 
@@ -195,27 +191,32 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
     // visibly jumps from a default position to the right one. Deliberately no
     // `.center()`: the builder's centering computes against the primary
     // monitor before the window has a screen.
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
-        .initialization_script(renderer_generation_script(generation))
+    let interface_scale = crate::interface_scale::current(app);
+    let (width, height) = preferred_dimensions(interface_scale);
+    let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
+        .initialization_script(crate::interface_scale::append_initialization_script(
+            renderer_generation_script(generation),
+            interface_scale,
+        ))
         .title("Set up antiburn")
-        .inner_size(WIDTH, HEIGHT)
-        .resizable(false)
+        .inner_size(width, height)
+        .resizable(true)
         .maximizable(false)
+        .zoom_hotkeys_enabled(false)
         .visible(false)
         .on_page_load(|window, payload| {
             window_lifecycle::trace_page_load::<OnboardingWindowState>(window, payload, LABEL);
         });
 
     #[cfg(target_os = "macos")]
-    {
+    let builder = {
         // Overlay keeps decorations while making the title bar transparent;
         // `hidden_title` drops the floating title text. `.title(...)` above
         // stays so Mission Control and accessibility still name the window.
-        builder = builder
+        builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true);
-    }
+            .hidden_title(true)
+    };
 
     let window = match builder.build() {
         Ok(window) => window,
@@ -225,13 +226,20 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
         }
     };
     crate::wayland_titlebar::repair(&window);
-    center_on_active_monitor(&window, WIDTH, HEIGHT);
+    crate::interface_scale::apply_window(&window, interface_scale)?;
+    center_on_active_monitor(&window, width, height);
     Ok(())
 }
 
 /// Reveal onboarding after React commits its shell.
 pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
     let app = window.app_handle();
+    if let Err(error) =
+        crate::interface_scale::apply_window(window, crate::interface_scale::current(app))
+    {
+        ::tracing::error!(event = "interface_scale_apply_failed", window = LABEL, error = %error);
+        return;
+    }
     if window_lifecycle::renderer_ready::<OnboardingWindowState>(
         app,
         LABEL,
@@ -243,10 +251,28 @@ pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
     }
 }
 
+fn preferred_dimensions(scale: crate::interface_scale::InterfaceScale) -> (f64, f64) {
+    (WIDTH * scale.factor(), HEIGHT * scale.factor())
+}
+
+/// Resize retained onboarding without opening, focusing, or restarting its renderer.
+pub fn reconcile_interface_scale(
+    app: &AppHandle,
+    scale: crate::interface_scale::InterfaceScale,
+) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return Ok(());
+    };
+    let (width, height) = preferred_dimensions(scale);
+    resize_on_current_monitor(&window, width, height)
+}
+
 fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let was_exposed =
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
-    center_on_active_monitor(window, WIDTH, HEIGHT);
+    let (width, height) =
+        preferred_dimensions(crate::interface_scale::current(window.app_handle()));
+    center_on_active_monitor(window, width, height);
     window.show()?;
     window.unminimize()?;
     // This window opens without a click behind it. Focus activates the regular
@@ -330,6 +356,19 @@ pub fn is_pending(app: &AppHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creation_reveal_and_live_resize_use_the_same_scaled_dimensions() {
+        for &percent in crate::interface_scale::presets() {
+            let scale = crate::interface_scale::InterfaceScale::new(percent).unwrap();
+            assert_eq!(
+                preferred_dimensions(scale),
+                (WIDTH * scale.factor(), HEIGHT * scale.factor())
+            );
+        }
+        let scale = crate::interface_scale::InterfaceScale::new(200).unwrap();
+        assert_eq!(preferred_dimensions(scale), (1360.0, 960.0));
+    }
 
     /// The shell must open the entry that mounts the first-run view.
     #[test]

@@ -12,6 +12,7 @@ import { sessionKey } from "../../lib/sessionSubject"
 import { liveSessions } from "../../lib/sessionLifecycle"
 import { toActivityEntry } from "../../lib/activityEntries"
 import { MainWindowNavigationSession } from "./MainWindowNavigationSession"
+import { parseSessionFilters, serializeSessionFilters } from "../../lib/sessionFilters"
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -121,7 +122,11 @@ beforeEach(() => {
   mocks.setSettings.mockImplementation(async (settings) => settings)
   mocks.getMainWindowVisible.mockResolvedValue(true)
   mocks.existingMainWindowSessionTargets.mockImplementation(async (targets) => targets)
-  mocks.listRecentSessions.mockResolvedValue([entry("one"), entry("two")])
+  const now = Date.now()
+  mocks.listRecentSessions.mockResolvedValue([
+    entry("one", { timestamp: new Date(now).toISOString() }),
+    entry("two", { timestamp: new Date(now - 1).toISOString() }),
+  ])
   mocks.loadSessionAnalysis.mockResolvedValue(payload("Loaded"))
   mocks.getLiveUsage.mockResolvedValue(null)
   mocks.getSessionLimitAllocations.mockResolvedValue(null)
@@ -130,6 +135,21 @@ beforeEach(() => {
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
 describe("MainActivitySession", () => {
+  it("reopens the same detail only on a deliberate reveal without reloading analysis", async () => {
+    const { session } = start()
+    await ready(session)
+    const before = session.getSnapshot()
+    const reads = mocks.loadSessionAnalysis.mock.calls.length
+    session.revealDetail()
+    session.revealDetail()
+    expect(session.getSnapshot().detailRevealRevision).toBe(before.detailRevealRevision + 2)
+    expect(session.getSnapshot().subject).toBe(before.subject)
+    expect(mocks.loadSessionAnalysis).toHaveBeenCalledTimes(reads)
+    session.clearSelection()
+    session.revealDetail()
+    expect(session.getSnapshot().detailRevealRevision).toBe(before.detailRevealRevision + 2)
+  })
+
   it("loads the shared list for a visible window without starting detail work", async () => {
     const { session } = startList()
 
@@ -267,7 +287,7 @@ describe("MainActivitySession", () => {
   it("records a restored external session as user exposure only after activation", async () => {
     const { session } = start(false)
     session.restoreNavigation(
-      { kind: "all" },
+      parseSessionFilters("all"),
       { agent: "codex", sessionId: "linked", wslDistro: null },
       "user",
     )
@@ -480,40 +500,67 @@ describe("MainActivitySession", () => {
     session.selectEntry(session.getSnapshot().entries![0]!)
     session.openRelated({ agent: "claude", sessionId: "related", wslDistro: null })
     session.goBack()
-    session.setFilter({ kind: "notable" })
+    session.setSpendFilter("notable")
 
     expect(onNavigation.mock.calls).toEqual([["user"], ["user"], ["user"], ["user"]])
   })
 
-  it("reports sidebar filter analytics through the navigation restore path", async () => {
+  it("reports explicit filter navigation but suppresses history restoration analytics", async () => {
     const { session } = start()
     await ready(session)
     const navigation = new MainWindowNavigationSession(session)
     navigation.navigate({
       section: "activity",
-      filter: { kind: "all" },
+      filters: parseSessionFilters("all"),
       subject: session.getSnapshot().subject,
     })
     mocks.noteInteraction.mockClear()
 
     navigation.navigate({
       section: "activity",
-      filter: { kind: "notable" },
+      filters: parseSessionFilters("notable"),
       subject: session.getSnapshot().subject,
     })
 
     expect(mocks.noteInteraction).toHaveBeenCalledWith({
-      kind: "sessionFilterSelected",
-      filter: "notable",
+      kind: "sessionFiltersChanged",
+      action: "spend_notable",
     })
     mocks.noteInteraction.mockClear()
 
     navigation.back()
 
     expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "sessionFilterSelected" }),
+      expect.objectContaining({ kind: "sessionFiltersChanged" }),
     )
   })
+
+  it.each([
+    { next: { agents: ["codex"], result: "failing", spend: "all" }, action: "result_failing" },
+    { next: { agents: ["codex"], result: "all", spend: "material" }, action: "spend_material" },
+    {
+      next: { agents: ["codex", "claude-code"], result: "all", spend: "all" },
+      action: "agent_added",
+      agent: "claude-code",
+    },
+    { next: { agents: [], result: "all", spend: "all" }, action: "cleared_all" },
+  ] as const)(
+    "classifies navigation by changed facet: $action",
+    async ({ next, action, ...detail }) => {
+      const { session } = start()
+      await ready(session)
+      session.restoreNavigation({ agents: ["codex"], result: "all", spend: "all" }, null)
+      mocks.noteInteraction.mockClear()
+
+      session.restoreNavigation({ ...next, agents: [...next.agents] }, null, "user", true)
+
+      expect(mocks.noteInteraction).toHaveBeenCalledExactlyOnceWith({
+        kind: "sessionFiltersChanged",
+        action,
+        ...detail,
+      })
+    },
+  )
 
   it("reports automatic selection for replacement and suppresses restored navigation", async () => {
     const session = new MainActivitySession()
@@ -526,7 +573,7 @@ describe("MainActivitySession", () => {
     expect(onNavigation).toHaveBeenCalledExactlyOnceWith("automatic")
     onNavigation.mockClear()
     session.restoreNavigation(
-      { kind: "notable" },
+      parseSessionFilters("notable"),
       { agent: "codex", sessionId: "restored", wslDistro: null },
       "user",
     )
@@ -534,7 +581,7 @@ describe("MainActivitySession", () => {
     expect(onNavigation).not.toHaveBeenCalled()
     expect(session.getSnapshot()).toEqual(
       expect.objectContaining({
-        filter: { kind: "notable" },
+        filters: parseSessionFilters("notable"),
         subject: { agent: "codex", sessionId: "restored", wslDistro: null },
       }),
     )
@@ -550,7 +597,7 @@ describe("MainActivitySession", () => {
     await ready(session)
 
     expect(onNavigation).toHaveBeenCalledWith("automatic")
-    expect(session.getSnapshot().filter).toEqual({ kind: "failing" })
+    expect(session.getSnapshot().filters).toEqual(parseSessionFilters("failing"))
   })
 
   it("keeps selection outside a changed range but clears confirmed removal", async () => {
@@ -676,20 +723,62 @@ describe("MainActivitySession", () => {
     )
   })
 
+  it.each(["filter-first", "metric-first"])(
+    "preserves both preferences when writes overlap (%s)",
+    async (order) => {
+      const { session } = start()
+      await ready(session)
+      let stored = { ...DEFAULT_SETTINGS }
+      const gate = deferred<void>()
+      let first = true
+      mocks.getSettings.mockImplementation(async () => ({ ...stored }))
+      mocks.setSettings.mockImplementation(async (settings) => {
+        if (first) {
+          first = false
+          await gate.promise
+        }
+        stored = settings
+        mocks.events.get("settings")!(stored)
+        return stored
+      })
+      let metricWrite: Promise<void>
+      if (order === "filter-first") {
+        session.setResultFilter("failing")
+        await vi.waitFor(() => expect(mocks.setSettings).toHaveBeenCalledTimes(1))
+        metricWrite = session.setBadgeMetric("weeklyPercent")
+      } else {
+        metricWrite = session.setBadgeMetric("weeklyPercent")
+        await vi.waitFor(() => expect(mocks.setSettings).toHaveBeenCalledTimes(1))
+        session.setResultFilter("failing")
+      }
+      gate.resolve()
+      await metricWrite
+      await vi.waitFor(() => expect(mocks.setSettings).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => {
+        expect(parseSessionFilters(stored.sessionFilter).result).toBe("failing")
+        expect(stored.sessionBadgeMetric).toBe("weeklyPercent")
+        expect(session.getSnapshot().filters.result).toBe("failing")
+        expect(session.getSnapshot().settings.sessionBadgeMetric).toBe("weeklyPercent")
+      })
+    },
+  )
+
   it("selects a filter optimistically, persists it, and reports the change", async () => {
     const { session } = start()
     await ready(session)
 
-    session.setFilter({ kind: "notable" })
+    session.setSpendFilter("notable")
 
-    expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
-    expect(session.getSnapshot().settings.sessionFilter).toBe("notable")
+    const filters = { agents: [], result: "all" as const, spend: "notable" as const }
+    expect(session.getSnapshot().filters).toEqual(filters)
+    expect(session.getSnapshot().settings.sessionFilter).toBe(serializeSessionFilters(filters))
+    await vi.waitFor(() => expect(mocks.setSettings).toHaveBeenCalledTimes(1))
     expect(mocks.setSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionFilter: "notable" }),
+      expect.objectContaining({ sessionFilter: serializeSessionFilters(filters) }),
     )
     expect(mocks.noteInteraction).toHaveBeenCalledWith({
-      kind: "sessionFilterSelected",
-      filter: "notable",
+      kind: "sessionFiltersChanged",
+      action: "spend_notable",
     })
   })
 
@@ -702,20 +791,22 @@ describe("MainActivitySession", () => {
       navigation.select("activity")
       const pending = deferred<typeof DEFAULT_SETTINGS>()
       mocks.setSettings.mockReturnValueOnce(pending.promise)
-      session.setFilter({ kind: "notable" })
+      session.setSpendFilter("notable")
       const snapshot = navigation.getSnapshot()
       const saved = { ...session.getSnapshot().settings }
-      expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
+      expect(session.getSnapshot().filters).toEqual(parseSessionFilters("notable"))
       if (order === "event-first") mocks.events.get("settings")!(saved)
       pending.resolve(saved)
       await pending.promise
       if (order === "response-first") mocks.events.get("settings")!(saved)
       expect(navigation.getSnapshot()).toBe(snapshot)
-      expect(session.getSnapshot().filter).toEqual({ kind: "notable" })
+      expect(session.getSnapshot().filters).toEqual(parseSessionFilters("notable"))
       navigation.back()
-      expect(navigation.getSnapshot().destination.filter).toEqual({ kind: "all" })
+      expect(navigation.getSnapshot().destination.filters).toEqual(parseSessionFilters("all"))
       navigation.forward()
-      expect(navigation.getSnapshot().destination.filter).toEqual({ kind: "notable" })
+      expect(navigation.getSnapshot().destination.filters).toEqual(
+        parseSessionFilters("notable"),
+      )
     },
   )
 
@@ -727,22 +818,18 @@ describe("MainActivitySession", () => {
       reject = fail
     })
     mocks.setSettings.mockReturnValueOnce(pending)
-    session.setFilter({ kind: "notable" })
-    session.setFilter({ kind: "failing" })
+    session.setSpendFilter("notable")
+    session.setResultFilter("failing")
     await Promise.resolve()
     reject(new Error("stale save failed"))
     await pending.catch(() => undefined)
     await Promise.resolve()
-    expect(session.getSnapshot().filter).toEqual({ kind: "failing" })
+    expect(session.getSnapshot().filters).toEqual({
+      agents: [],
+      result: "failing",
+      spend: "notable",
+    })
     expect(session.getSnapshot().settingsError).toBe(false)
-  })
-
-  it("reports a rejected current filter write", async () => {
-    const { session } = start()
-    await ready(session)
-    mocks.setSettings.mockRejectedValueOnce(new Error("save failed"))
-    session.setFilter({ kind: "notable" })
-    await vi.waitFor(() => expect(session.getSnapshot().settingsError).toBe(true))
   })
 
   it("does nothing when the requested filter already matches", async () => {
@@ -750,7 +837,10 @@ describe("MainActivitySession", () => {
     await ready(session)
     mocks.noteInteraction.mockClear()
 
-    session.setFilter({ kind: "all" })
+    session.clearFilters()
+    session.resetAgents()
+    session.setResultFilter("all")
+    session.setSpendFilter("all")
 
     expect(mocks.setSettings).not.toHaveBeenCalled()
     expect(mocks.noteInteraction).not.toHaveBeenCalled()
@@ -761,9 +851,15 @@ describe("MainActivitySession", () => {
     const { session } = start()
     await ready(session)
 
-    expect(session.getSnapshot().filter).toEqual({ kind: "failing" })
+    expect(session.getSnapshot().filters).toEqual({
+      agents: [],
+      result: "failing",
+      spend: "all",
+    })
+    session.setResultFilter("failing")
+    expect(mocks.setSettings).not.toHaveBeenCalled()
     expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "sessionFilterSelected" }),
+      expect.objectContaining({ kind: "sessionFiltersChanged" }),
     )
   })
 
@@ -771,18 +867,18 @@ describe("MainActivitySession", () => {
     const { session } = start()
     await ready(session)
 
-    session.setFilter({ kind: "agent", agent: "codex" })
+    session.toggleAgent("codex")
     expect(mocks.noteInteraction).toHaveBeenCalledWith({
-      kind: "sessionFilterSelected",
-      filter: "agent",
+      kind: "sessionFiltersChanged",
+      action: "agent_added",
       agent: "codex",
     })
 
     mocks.noteInteraction.mockClear()
-    session.setFilter({ kind: "agent", agent: "some-future-harness" })
+    session.toggleAgent("some-future-harness")
     expect(mocks.noteInteraction).toHaveBeenCalledWith({
-      kind: "sessionFilterSelected",
-      filter: "agent",
+      kind: "sessionFiltersChanged",
+      action: "agent_added",
     })
   })
 
@@ -790,14 +886,142 @@ describe("MainActivitySession", () => {
     mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "bogus" })
     const { session } = start()
     await ready(session)
-    expect(session.getSnapshot().filter).toEqual({ kind: "all" })
+    expect(session.getSnapshot().filters).toEqual(parseSessionFilters("all"))
+  })
+
+  it("restores versioned filters in canonical order without writing or reporting", async () => {
+    mocks.getSettings.mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      sessionFilter:
+        'v1:{"agents":["codex","claude-code","codex"],"result":"passing","spend":"material"}',
+    })
+    const { session } = start()
+    await ready(session)
+    expect(session.getSnapshot().filters).toEqual({
+      agents: ["claude-code", "codex"],
+      result: "passing",
+      spend: "material",
+    })
+    session.setSpendFilter("material")
+    expect(mocks.setSettings).not.toHaveBeenCalled()
+    expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "sessionFiltersChanged" }),
+    )
+  })
+
+  it("keeps rapid changes optimistic and saves them in gesture order", async () => {
+    const { session } = start()
+    await ready(session)
+    const first = deferred<IpcModule.AppSettings>()
+    mocks.setSettings.mockImplementationOnce(() => first.promise)
+    session.toggleAgent("codex")
+    session.toggleAgent("claude-code")
+    session.setResultFilter("failing")
+    const latest = {
+      agents: ["claude-code", "codex"],
+      result: "failing" as const,
+      spend: "all" as const,
+    }
+    expect(session.getSnapshot().filters).toEqual(latest)
+    await vi.waitFor(() => expect(mocks.setSettings).toHaveBeenCalledTimes(1))
+    const firstSaved = {
+      ...DEFAULT_SETTINGS,
+      sessionFilter: serializeSessionFilters({
+        agents: ["codex"],
+        result: "all",
+        spend: "all",
+      }),
+    }
+    mocks.events.get("settings")!(firstSaved)
+    expect(session.getSnapshot().filters).toEqual(latest)
+    first.resolve(firstSaved)
+    await vi.waitFor(() => expect(mocks.setSettings).toHaveBeenCalledTimes(3))
+    expect(
+      mocks.setSettings.mock.calls.map(([settings]) =>
+        parseSessionFilters(settings.sessionFilter),
+      ),
+    ).toEqual([
+      { agents: ["codex"], result: "all", spend: "all" },
+      { agents: ["claude-code", "codex"], result: "all", spend: "all" },
+      latest,
+    ])
+    expect(session.getSnapshot().filters).toEqual(latest)
+  })
+
+  it("reports one gesture per actual facet reset and retains the other facets", async () => {
+    mocks.getSettings.mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      sessionFilter: serializeSessionFilters({
+        agents: ["codex", "claude-code"],
+        result: "failing",
+        spend: "material",
+      }),
+    })
+    const { session } = start()
+    await ready(session)
+    mocks.noteInteraction.mockClear()
+    session.toggleAgent("codex")
+    session.resetAgents()
+    expect(session.getSnapshot().filters).toEqual({
+      agents: [],
+      result: "failing",
+      spend: "material",
+    })
+    session.resetAgents()
+    session.setResultFilter("all")
+    session.setSpendFilter("all")
+    session.clearFilters()
+    expect(mocks.noteInteraction.mock.calls.map(([interaction]) => interaction)).toEqual([
+      { kind: "sessionFiltersChanged", action: "agent_removed", agent: "codex" },
+      { kind: "sessionFiltersChanged", action: "agents_all" },
+      { kind: "sessionFiltersChanged", action: "result_all" },
+      { kind: "sessionFiltersChanged", action: "spend_all" },
+    ])
+    session.toggleAgent("cursor")
+    session.setResultFilter("passing")
+    mocks.noteInteraction.mockClear()
+    session.clearFilters()
+    expect(mocks.noteInteraction).toHaveBeenCalledExactlyOnceWith({
+      kind: "sessionFiltersChanged",
+      action: "cleared_all",
+    })
+    await vi.waitFor(() => expect(mocks.setSettings).toHaveBeenCalledTimes(7))
+  })
+
+  it("reports a saved-settings notification failure and recovers on the next save", async () => {
+    const { session } = start()
+    await ready(session)
+    let failOnce = true
+    const unsubscribe = session.subscribeInactive(() => {
+      if (session.getSnapshot().settings.sessionBadgeMetric === "weeklyPercent" && failOnce) {
+        failOnce = false
+        throw new Error("Listener failed")
+      }
+    })
+    await session.setBadgeMetric("weeklyPercent")
+    expect(session.getSnapshot().settingsError).toBe(true)
+    await session.setBadgeMetric("cost")
+    expect(session.getSnapshot().settingsError).toBe(false)
+    unsubscribe()
+  })
+
+  it("retains an optimistic filter on save failure and recovers on the next change", async () => {
+    const { session } = start()
+    await ready(session)
+    mocks.setSettings.mockRejectedValueOnce(new Error("Unavailable"))
+    session.setResultFilter("passing")
+    await vi.waitFor(() => expect(session.getSnapshot().settingsError).toBe(true))
+    expect(session.getSnapshot().filters.result).toBe("passing")
+    session.setSpendFilter("material")
+    await vi.waitFor(() => expect(session.getSnapshot().settingsError).toBe(false))
+    expect(session.getSnapshot().filters).toEqual({
+      agents: [],
+      result: "passing",
+      spend: "material",
+    })
   })
 
   it("orders navigation like the list and excludes non-opening rows", async () => {
-    // Set explicit, distinct timestamps here. The default fixture stamps
-    // both entries with `new Date()` at call time. The two calls can land in
-    // the same millisecond or in different ones, and that changes the sort
-    // order, so this test needs its own unambiguous times.
     mocks.listRecentSessions.mockResolvedValue([
       entry("one", { timestamp: "2026-01-01T00:00:02.000Z" }),
       entry("two", { timestamp: "2026-01-01T00:00:01.000Z" }),
@@ -878,6 +1102,7 @@ describe("MainActivitySession", () => {
     mocks.listRecentSessions.mockResolvedValue([entry("one")])
     const { session } = start()
     await ready(session)
+    expect(session.getSnapshot().subject?.sessionId).toBe("one")
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(1))
     mocks.events.get("update")!(update(entry("one")))
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledTimes(2))
@@ -1005,7 +1230,7 @@ describe("MainActivitySession incremental cost classification", () => {
       expect(after.subject).toBe(before.subject)
       expect(after.history).toBe(before.history)
       expect(after.analysis).toBe(before.analysis)
-      expect(after.filter).toBe(before.filter)
+      expect(after.filters).toBe(before.filters)
       expect(after.settings).toBe(before.settings)
       expect(mocks.listRecentSessions).toHaveBeenCalledTimes(1)
       expect(mocks.loadSessionAnalysis).toHaveBeenCalledTimes(analysisCalls)

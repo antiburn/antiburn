@@ -4,7 +4,7 @@ import type { BurnCheckDetectorId } from "./insightsIpc"
 import { detectPlatform, type Platform } from "./platform"
 import { MAIN_VIEWS, type MainViewId } from "./navigation/mainViews"
 
-import type { SessionFilter } from "./sessionFilters"
+import type { SessionFilters } from "./sessionFilters"
 import { SETTINGS_PANES, settingsPaneLabel, type SettingsPane } from "./settingsPanes"
 import {
   settingsControlLabel,
@@ -17,8 +17,8 @@ export type SettingsSearchTarget =
   | { kind: "setting"; control: SettingsControlId; pane?: never }
 
 export type AppSearchTarget =
-  | { kind: "view"; section: Exclude<MainViewId, "activity">; filter?: never }
-  | { kind: "view"; section: "activity"; filter?: SessionFilter }
+  | { kind: "view"; section: Exclude<MainViewId, "activity">; filters?: never }
+  | { kind: "view"; section: "activity"; filters?: SessionFilters }
   | SettingsSearchTarget
   | { kind: "check"; check: BurnCheckDetectorId }
 
@@ -33,7 +33,7 @@ export function resolveSettingsSearchTarget(target: SettingsSearchTarget): {
 
 function viewTarget(section: MainViewId): AppSearchTarget {
   return section === "activity"
-    ? { kind: "view", section, filter: { kind: "all" } }
+    ? { kind: "view", section, filters: { agents: [], result: "all", spend: "all" } }
     : { kind: "view", section }
 }
 
@@ -63,7 +63,7 @@ export const APP_SEARCH_CATALOG: readonly AppSearchResult[] = [
     target: {
       kind: "view" as const,
       section: "activity" as const,
-      filter: { kind: "agent" as const, agent },
+      filters: { agents: [agent], result: "all" as const, spend: "all" as const },
     },
   })),
   ...SETTINGS_PANES.map(({ id: pane, label }) => ({

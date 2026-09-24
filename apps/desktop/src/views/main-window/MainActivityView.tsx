@@ -1,13 +1,19 @@
-import { lazy, Suspense, useSyncExternalStore } from "react"
+import { lazy, Suspense, useRef, useState, useSyncExternalStore } from "react"
+import { CalendarDays } from "lucide-react"
 
 import { SessionList } from "../../components/session/SessionList"
+import { PushButton } from "../../components/ui/PushButton"
+import { openSettingsWindow } from "../../lib/ipc"
 import type { SessionQuotaOpenTarget } from "../../components/session/SessionQuotaSection"
 import { renderAgentIcon } from "../../lib/agentIcon"
-import { filterSessionEntries } from "../../lib/sessionFilters"
+import { filterSessionEntries, sessionFilterCounts } from "../../lib/sessionFilters"
+import { agentDisplayName } from "../../lib/presentation/agents"
+import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import type { SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
 import { SessionEmptyDetail } from "./SessionEmptyDetail"
+import { SessionFiltersHeader } from "./SessionFiltersHeader"
 import { CollectionDetailPane, type CollectionItem } from "./CollectionDetailPane"
 import {
   type MainActivitySession,
@@ -44,6 +50,8 @@ export function MainActivityView({
    *  Quota screen to open. */
   onOpenQuota?: (target: SessionQuotaOpenTarget) => void
 }) {
+  const [rangeError, setRangeError] = useState(false)
+  const filterButtonRef = useRef<HTMLButtonElement | null>(null)
   const state = useSyncExternalStore(
     active ? session.subscribe : session.subscribeInactive,
     session.getSnapshot,
@@ -51,34 +59,60 @@ export function MainActivityView({
   )
   const snoozes = useSnoozedBurnChecks()
   const snoozedDetectors = snoozedDetectorIds(snoozes.records)
+  const calendarEntries = orderedActivityEntries(state)
+  const highCostThresholdUsd = costOutlierThreshold(
+    calendarEntries.flatMap((entry) => (entry.cost ? [entry.cost.totalUsd] : [])),
+  )
+  const eligibleEntries = calendarEntries.map((entry) => {
+    if (!entry.cost) return entry
+    const isHighCost =
+      highCostThresholdUsd != null && entry.cost.totalUsd > highCostThresholdUsd
+    return entry.cost.isHighCost === isHighCost
+      ? entry
+      : { ...entry, cost: { ...entry.cost, isHighCost } }
+  })
   const filteredEntries =
     snoozes.status === "ready"
-      ? filterSessionEntries(
-          state.entries ?? [],
-          hygieneBySession,
-          state.filter,
-          snoozedDetectors,
-        )
+      ? filterSessionEntries(eligibleEntries, hygieneBySession, state.filters, snoozedDetectors)
       : []
-  const ordered = orderedActivityEntries({ ...state, entries: filteredEntries }).filter(
-    (entry) => entry.sessionId,
+  const counts = sessionFilterCounts(
+    eligibleEntries,
+    hygieneBySession,
+    state.filters,
+    snoozedDetectors,
   )
-  const items = ordered
-    .filter((entry) => entry.sessionId)
-    .map((entry) => itemForSubject(subjectForEntry(entry)))
+  const agents = Object.keys(counts.agents).sort((left, right) =>
+    agentDisplayName(left).localeCompare(agentDisplayName(right)),
+  )
+  const ordered = filteredEntries.filter((entry) => entry.sessionId)
+  const items = ordered.map((entry) => itemForSubject(subjectForEntry(entry)))
   const selected = state.subject ? itemForSubject(state.subject) : null
   const index = selected ? items.findIndex((item) => item.id === selected.id) : -1
   const previous = index > 0 ? ordered[index - 1] : undefined
   const next = index >= 0 ? ordered[index + 1] : undefined
-  // A non-empty list can filter down to nothing. The day-window empty copy
-  // would be misleading here, so this state gets its own short message.
-  const filterEmpty = (state.entries?.length ?? 0) > 0 && filteredEntries.length === 0
+  const filterEmpty = eligibleEntries.length > 0 && filteredEntries.length === 0
+  const days = state.settings.activityWindowDays
+
+  async function changeTimeRange() {
+    setRangeError(false)
+    try {
+      await openSettingsWindow("general", "recentDays")
+    } catch {
+      setRangeError(true)
+    }
+  }
+
+  function clearFilters() {
+    session.clearFilters()
+    filterButtonRef.current?.focus()
+  }
 
   return (
     <CollectionDetailPane<SessionItem>
       title="Sessions"
       items={items}
       selection={selected}
+      externalDetailRevealRevision={state.detailRevealRevision}
       onSelectionChange={(item) =>
         session.selectEntry({
           ...item.subject,
@@ -91,8 +125,29 @@ export function MainActivityView({
       detailEmptyMessage="Select a session to view its details."
       detailEmptyContent={<SessionEmptyDetail />}
       detailOwnsViewport
-      renderCollection={({ openDetail }) => (
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      renderCollection={({ openDetail, compact }) => (
+        <div className="session-filter-collection flex min-h-0 min-w-0 flex-1 flex-col">
+          {state.entries !== null && snoozes.status === "ready" && (
+            <SessionFiltersHeader
+              filters={state.filters}
+              counts={counts}
+              agents={agents}
+              onToggleAgent={session.toggleAgent}
+              onResetAgents={session.resetAgents}
+              onResultChange={session.setResultFilter}
+              onSpendChange={session.setSpendFilter}
+              onClear={session.clearFilters}
+              highCostThresholdUsd={highCostThresholdUsd ?? undefined}
+              days={days}
+              onChangeTimeRange={() => void changeTimeRange()}
+              triggerRef={filterButtonRef}
+            />
+          )}
+          {rangeError && (
+            <p role="status" className="px-4 py-2 type-callout text-label-secondary">
+              Could not open time-range settings. Try again.
+            </p>
+          )}
           {state.listError && (
             <div role="status" className="px-4 py-2 type-callout text-label-secondary">
               Could not load sessions.{" "}
@@ -103,7 +158,7 @@ export function MainActivityView({
           )}
           {state.settingsError && (
             <p role="status" className="px-4 py-2 type-callout text-label-secondary">
-              Could not save the badge preference. Try again.
+              Could not save the session preferences. Try again.
             </p>
           )}
           {snoozes.status === "error" ? (
@@ -117,16 +172,30 @@ export function MainActivityView({
           ) : (
             <SessionList
               entries={filteredEntries}
+              toolbarTopPadding="space-sm"
+              hideEmptyToolbar
               {...(filterEmpty
                 ? {
-                    emptyTitle: "No sessions match this filter.",
-                    emptyDescription: "Choose a different filter to see more sessions.",
+                    emptyTitle: "No matching sessions",
+                    emptyDescription: "",
+                    emptyIcon: null,
+                    emptyActions: <PushButton onClick={clearFilters}>Clear filters</PushButton>,
                   }
-                : {})}
+                : {
+                    emptyDescription:
+                      "Try a wider time range. New sessions appear here as they are discovered on this machine.",
+                    emptyIcon: <CalendarDays size={20} strokeWidth={1.75} aria-hidden="true" />,
+                    emptyActions: (
+                      <PushButton onClick={() => void changeTimeRange()}>
+                        Change time range
+                      </PushButton>
+                    ),
+                  })}
               draggableHeader={false}
               days={state.settings.activityWindowDays}
               selectedKey={selected?.id ?? null}
               onSelect={session.selectEntry}
+              openOnClick={compact}
               onOpenDetail={(entry) => {
                 if (entry.sessionId) openDetail(itemForSubject(subjectForEntry(entry)))
               }}

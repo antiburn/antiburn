@@ -166,7 +166,7 @@ CREATE TABLE consent_grant (
 /// flipped default.
 ///
 /// `liveUsageEnabled` used to default to `false`. It does not merely default
-/// that way for keys nobody ever touched: [`super::write_settings`] writes
+/// that way for keys nobody ever touched: [`super::Store::replace_settings`] writes
 /// every settings key on every save, so any install that has ever saved
 /// settings at all — finishing onboarding is enough — already has an
 /// explicit `liveUsageEnabled|false` row from that old default, indistinguishable

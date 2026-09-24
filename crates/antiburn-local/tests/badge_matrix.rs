@@ -128,6 +128,14 @@ fn pi_fixture(name: &str) -> &'static str {
         "excess_cache_rehydration_finding" => {
             include_str!("fixtures/pi_characterization/excess_cache_rehydration_finding.jsonl")
         }
+        "cache_continuous_transient_miss" => {
+            include_str!("fixtures/pi_characterization/cache_continuous_transient_miss.jsonl")
+        }
+        "overthinking_aborted_zero_usage_content" => {
+            include_str!(
+                "fixtures/pi_characterization/overthinking_aborted_zero_usage_content.jsonl"
+            )
+        }
         other => panic!("unknown pi fixture: {other}"),
     }
 }
@@ -686,7 +694,7 @@ fn matrix() -> Vec<Row> {
             harness: "codex",
             fixture: "context_reread",
             badge: ExcessCacheRehydration,
-            expected: Finding,
+            expected: NotAssessed(SignalMissing),
         },
         // ---------------- Pi ----------------
         Row {
@@ -720,6 +728,13 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
+            // An aborted response with only zero usage leaves effort unassessed.
+            harness: "pi",
+            fixture: "overthinking_aborted_zero_usage_content",
+            badge: ModelOverthinking,
+            expected: NotAssessed(SignalMissing),
+        },
+        Row {
             harness: "pi",
             fixture: "minimal_session",
             badge: ModelOverthinking,
@@ -745,14 +760,21 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
-            // Pi V3 does not identify which persisted input tokens are repeated.
+            // The old fixture has no complete same-route miss and recovery episode.
             harness: "pi",
             fixture: "excess_cache_rehydration_finding",
             badge: ExcessCacheRehydration,
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
-            // Pi V3 cannot prove that repeated paid context is absent.
+            // This fixture has repeated accounting but only a transient miss.
+            harness: "pi",
+            fixture: "cache_continuous_transient_miss",
+            badge: ExcessCacheRehydration,
+            expected: NotAssessed(SignalMissing),
+        },
+        Row {
+            // Pi V3 cannot prove that repeated paid context is absent without a route.
             harness: "pi",
             fixture: "minimal_session",
             badge: ExcessCacheRehydration,

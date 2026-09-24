@@ -1,12 +1,23 @@
 # Main-window navigation and local search
 
 The retained main renderer owns a bounded history of 100 destinations. A destination is
-Overview, Limits, Sessions with its filter and optional session identity, or Checks with an
+Overview, Limits, Sessions with its contextual filters and optional session identity, or Checks with an
 optional check ID. Explicit navigation appends; Back and Forward restore; automatic initial
 selection replaces. Selecting the same destination can reveal it again without appending.
 New navigation after Back removes the forward branch. Deleted session targets are pruned.
-History lives for the renderer lifetime. The sidebar stays visible on all platforms;
+History lives for the renderer lifetime. The sidebar stays visible above the 720 CSS pixel
+navigation breakpoint and becomes a modal drawer below it;
 previously saved collapse preferences are ignored without being deleted.
+
+Explicit session targets and Back/Forward reveal the selected detail in compact layouts,
+including a repeated target after the collection's Back action. Ordinary row selection and
+filter changes do not force detail open. The navigation owner sends a reveal intent to the
+session owner; the generic collection pane receives only its monotonically increasing revision.
+
+Session destinations retain the selected agents, check result, and spend facet. Agent order
+does not create a distinct history entry. Returning through the Sessions sidebar item keeps
+these facets and the retained session selection. Native session requests also keep the
+current facets. Back and Forward restore the full facet state with the session identity.
 
 The shell sends one revisioned `main:navigation-target` request containing a destination.
 Live events and generation-scoped peek/acknowledgement recovery use the same request.
@@ -45,12 +56,12 @@ descriptors. Search combines these descriptors without maintaining independent
 label or alias lists. Settings panes share sidebar order and require exhaustive
 icon and renderer bindings. Check descriptors use the existing detector IDs.
 
-Fixed filter definitions supply the sidebar's labels and grouping, while live
-session state supplies counts. Fixed filters are excluded from search because
-their sidebar placement will change separately. The top-level Sessions result
-still opens the full list. Agent filter labels share one formatter; search includes
-registered agents, while the sidebar shows agents present in loaded sessions,
-including unfamiliar slugs.
+The contextual filter menu owns result and spend choices, while live session state
+supplies counts. Fixed filters are excluded from search. The top-level Sessions
+search result explicitly clears all facets and opens the full list. Agent search
+results select only that agent and clear result and spend facets. Agent filter
+labels share one formatter; search includes registered agents, while the contextual
+menu shows agents present in loaded sessions, including unfamiliar slugs.
 This distinction does not cause additional reads or background discovery.
 
 Settings control IDs determine their owning pane. The internal search target

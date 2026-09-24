@@ -11,7 +11,11 @@ import {
 import type { MainViewId } from "../../lib/navigation/mainViews"
 import type { CHECK_LABELS } from "../../lib/presentation/checks"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
-import { sessionFilterId, type SessionFilter } from "../../lib/sessionFilters"
+import {
+  normalizeSessionFilters,
+  serializeSessionFilters,
+  type SessionFilters,
+} from "../../lib/sessionFilters"
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 
 import type { MainActivitySession } from "./MainActivitySession"
@@ -25,7 +29,7 @@ const NATIVE_VIEW_IDS = {
 
 export type MainDestination = {
   section: MainViewId
-  filter?: SessionFilter
+  filters?: SessionFilters
   subject?: SessionSubject | null
   check?: keyof typeof CHECK_LABELS
 }
@@ -45,7 +49,9 @@ function normalizeDestination(destination: MainDestination): MainDestination {
   if (destination.section === "activity") {
     return {
       section: "activity",
-      filter: destination.filter ?? { kind: "all" },
+      filters: normalizeSessionFilters(
+        destination.filters ?? { agents: [], result: "all", spend: "all" },
+      ),
       subject: destination.subject ?? null,
     }
   }
@@ -60,7 +66,7 @@ function normalizeDestination(destination: MainDestination): MainDestination {
 function destinationKey(destination: MainDestination): string {
   return JSON.stringify([
     destination.section,
-    destination.filter ? sessionFilterId(destination.filter) : null,
+    destination.filters ? serializeSessionFilters(destination.filters) : null,
     destination.subject ? sessionKey(destination.subject) : null,
     destination.check ?? null,
   ])
@@ -96,8 +102,8 @@ export class MainWindowNavigationSession {
     activity.onNavigation = (origin) => {
       if (this.restoring) return
       if (origin === "automatic" && this.snapshot.selected !== "activity") return
-      const { filter, subject } = activity.getSnapshot()
-      this.commit({ section: "activity", filter, subject }, origin === "automatic", origin)
+      const { filters, subject } = activity.getSnapshot()
+      this.commit({ section: "activity", filters, subject }, origin === "automatic", origin)
     }
     activity.onDeleted = (subject) => this.pruneSubject(subject)
     activity.onSessionInventoryInvalidated = () => this.requestDeletedSubjectReconciliation()
@@ -116,24 +122,29 @@ export class MainWindowNavigationSession {
 
   select(section: MainViewId): void {
     if (section === "activity" && this.activity) {
-      this.navigate({
-        section,
-        filter: { kind: "all" },
-        subject: this.activity.getSnapshot().subject,
-      })
+      this.navigate(
+        {
+          section,
+          filters: this.activity.getSnapshot().filters,
+          subject: this.activity.getSnapshot().subject,
+        },
+        false,
+      )
       return
     }
     this.navigate({ section })
   }
 
-  navigate(destination: MainDestination): void {
+  navigate(destination: MainDestination, revealDetail = true): void {
     this.commit(destination, false, "user")
+    if (revealDetail) this.revealDetail()
   }
 
   back = (): void => {
     if (this.index === 0) return
     this.index -= 1
     this.restore("user")
+    this.revealDetail()
     noteInteraction({ kind: "navigationHistoryMoved", direction: "back" })
   }
 
@@ -141,7 +152,13 @@ export class MainWindowNavigationSession {
     if (this.index >= this.history.length - 1) return
     this.index += 1
     this.restore("user")
+    this.revealDetail()
     noteInteraction({ kind: "navigationHistoryMoved", direction: "forward" })
+  }
+
+  private revealDetail(): void {
+    if (this.snapshot.selected === "activity" && this.activity?.getSnapshot().subject)
+      this.activity.revealDetail()
   }
 
   private commit(
@@ -172,7 +189,7 @@ export class MainWindowNavigationSession {
     try {
       if (destination.section === "activity" && this.activity) {
         this.activity.restoreNavigation(
-          destination.filter ?? { kind: "all" },
+          destination.filters ?? { agents: [], result: "all", spend: "all" },
           destination.subject ?? null,
           origin,
           reportFilterSelection,
@@ -292,7 +309,11 @@ export class MainWindowNavigationSession {
       this.history = [
         {
           section: "activity",
-          filter: this.activity?.getSnapshot().filter ?? { kind: "all" },
+          filters: this.activity?.getSnapshot().filters ?? {
+            agents: [],
+            result: "all",
+            spend: "all",
+          },
           subject: null,
         },
       ]
@@ -332,7 +353,7 @@ export class MainWindowNavigationSession {
     const activity = this.activity?.getSnapshot()
     return {
       section: "activity",
-      filter: activity?.filter ?? { kind: "all" },
+      filters: activity?.filters ?? { agents: [], result: "all", spend: "all" },
       subject: request.destination.target ?? activity?.subject ?? null,
     }
   }

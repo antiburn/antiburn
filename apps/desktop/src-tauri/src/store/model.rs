@@ -944,6 +944,9 @@ fn visible_by_default() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub theme: ThemePreference,
+    /// The application interface size as one supported percentage preset.
+    #[serde(default = "default_interface_scale_percent")]
+    pub interface_scale_percent: u16,
     /// Calendar days of activity the popover list shows.
     pub activity_window_days: u32,
     /// Days to keep local session data. `-1` keeps it until explicit deletion.
@@ -1035,11 +1038,7 @@ pub struct AppSettings {
     pub skills_mcp_expanded: bool,
     /// The metric shown in each activity-session badge.
     pub session_badge_metric: SessionBadgeMetric,
-    /// The selected Sessions sidebar filter, as its persisted id.
-    ///
-    /// The renderer owns the vocabulary (`lib/sessionFilters.ts`): this side
-    /// stores and returns the id verbatim, and does not validate it. An id
-    /// this release does not recognize is the renderer's to fall back on.
+    /// Store the Sessions filters verbatim. The renderer parses and migrates them.
     #[serde(default = "default_session_filter")]
     pub session_filter: String,
     /// The days the reader works, which is what the elapsed marker, the pace
@@ -1047,7 +1046,11 @@ pub struct AppSettings {
     pub working_week: WorkingWeek,
 }
 
-/// The persisted id for the unfiltered "All Sessions" view.
+fn default_interface_scale_percent() -> u16 {
+    crate::interface_scale::DEFAULT_PERCENT
+}
+
+/// Keep the legacy default for an unfiltered collection.
 fn default_session_filter() -> String {
     "all".to_string()
 }
@@ -1056,6 +1059,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: ThemePreference::System,
+            interface_scale_percent: default_interface_scale_percent(),
             activity_window_days: DEFAULT_ACTIVITY_DAYS,
             session_data_retention_days: RETAIN_SESSION_DATA_FOREVER,
             onboarding_completed: false,
@@ -1136,6 +1140,8 @@ impl AppSettings {
         if !self.tray_icon_visible && !self.dock_icon_visible {
             self.dock_icon_visible = true;
         }
+        self.interface_scale_percent =
+            crate::interface_scale::normalize_percent(self.interface_scale_percent);
         self.activity_window_days = self
             .activity_window_days
             .clamp(MIN_ACTIVITY_DAYS, MAX_ACTIVITY_DAYS);

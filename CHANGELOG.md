@@ -27,7 +27,13 @@ CI changes, and documentation that no user acts on stay out — see
   journal types fail closed, and this version cannot report a clean Burn Check
   result.
 
-## [0.7.2] - 2026-09-22
+### Fixed
+
+- The Windows install command no longer fails when many installs share one
+  network address. It finds the latest release through the GitHub release page,
+  as the macOS and Linux installer does, instead of the rate-limited GitHub API.
+
+## [0.7.3] - 2026-09-23
 
 ### Added
 
@@ -43,6 +49,11 @@ CI changes, and documentation that no user acts on stay out — see
   history. Search (Cmd+K or Ctrl+K) finds views, agent session filters,
   Settings controls, and checks by name, and opens a Settings result focused
   on its control without changing its value.
+- Settings → Appearance has an "Interface size" control (90% to 200%, 100%
+  by default) that scales text and controls across the main window,
+  Settings, onboarding, popover, HUD, and notifications, and is remembered
+  across launches. Zoom In, Zoom Out, and Actual Size (Cmd or Ctrl with
+  plus, minus, and 0) work throughout the app.
 - Overview shows usage in one unit at a time: Cost, or Subscription, which
   reports each provider account's average subscription utilization, time
   lost to limit hits, and a 30-day utilization chart that marks days with a
@@ -77,6 +88,9 @@ CI changes, and documentation that no user acts on stay out — see
   so Overview shows current session counts without a visit to Sessions.
 - Snoozed Burn Checks are excluded from totals, filters, prompts, and
   savings, and savings count only the current fix cycle.
+- Overview and Limits charts use the same blue as the session Cost chart,
+  and the large headline figures use a neutral charcoal in the light theme
+  and soft white in the dark theme.
 
 ### Fixed
 
@@ -97,6 +111,12 @@ CI changes, and documentation that no user acts on stay out — see
   such as Unused Skills, instead of needing a second click.
 - Overview session titles and model names stay on one line, and the
   active-session shimmer and fork indicator no longer disappear.
+- Overview loads and stays responsive while sessions are analyzed after
+  launch. Its charts no longer wait behind that work, and redraws are held
+  and batched instead of firing as each session finishes.
+- Overview no longer flashes the wrong usage unit while its data loads, and
+  a live update can no longer be overwritten by an older read that finishes
+  after it.
 - The Limits chart aligns with the surrounding content, and every session
   above the share threshold is listed instead of stopping at forty.
 - Long-running sessions whose file changes the file watcher misses are

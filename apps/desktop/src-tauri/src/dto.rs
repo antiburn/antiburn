@@ -256,6 +256,13 @@ pub struct AgentScanState {
     pub sessions_seen: i64,
 }
 
+/// Whether the insights worker pool has a backlog to drain right now.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightsBacklog {
+    pub active: bool,
+}
+
 /// What a scan is doing, or last did.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3650,6 +3657,8 @@ mod tests {
                 paid_tokens: 235,
                 pairs_considered: 1,
                 pairs_skipped: 0,
+                transient_miss_episodes: 0,
+                possible_rehydration_episodes: 1,
             });
 
             let payload = SessionHygienePayload::for_evidence(

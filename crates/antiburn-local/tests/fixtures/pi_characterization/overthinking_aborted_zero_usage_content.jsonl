@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"overthinking-zero-content","timestamp":"2026-01-01T00:00:00Z"}
+{"type":"thinking_level_change","id":"thinking-xhigh","parentId":null,"timestamp":"2026-01-01T00:00:01Z","thinkingLevel":"xhigh"}
+{"type":"message","id":"aborted-zero-content","parentId":"thinking-xhigh","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","model":"gpt-5.6-luna","provider":"openai-codex","api":"openai-codex-responses","stopReason":"aborted","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"content":[{"type":"text","text":"partial response"}]}}
+{"type":"thinking_level_change","id":"thinking-medium","parentId":"aborted-zero-content","timestamp":"2026-01-01T00:00:03Z","thinkingLevel":"medium"}
+{"type":"message","id":"worked-medium","parentId":"thinking-medium","timestamp":"2026-01-01T00:00:04Z","message":{"role":"assistant","model":"gpt-6-astra","provider":"openai-codex","api":"openai-codex-responses","usage":{"input":100,"output":10,"cacheRead":0,"cacheWrite":0},"content":[{"type":"text","text":"worked"}]}}

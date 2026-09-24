@@ -1258,7 +1258,11 @@ fn representative_paths_are_quoted_bounded_and_optional() {
         "/sessions/four.jsonl".to_owned(),
     ];
     let prompt = prompt_with_evidence_paths("Fix this.", &paths, None).unwrap();
-    assert!(prompt.contains("Representative session evidence"));
+    assert!(prompt.contains(
+        "Representative session evidence (inspect only; not configuration edit targets):"
+    ));
+    assert!(!prompt.contains("&#x20;"));
+    assert!(prompt.ends_with("\"/sessions/three.jsonl\""));
     assert!(prompt.contains(r#"- "/sessions/one.jsonl""#));
     assert!(prompt.contains(r#"- "/sessions/two\"quoted.jsonl""#));
     assert!(prompt.contains(r#"- "/sessions/three.jsonl""#));

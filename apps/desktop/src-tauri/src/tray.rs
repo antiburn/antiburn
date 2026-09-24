@@ -134,6 +134,9 @@ const MENU_HUD_CELEBRATE: &str = "hud-celebrate";
 #[cfg(debug_assertions)]
 const HUD_DEV_EVENT: &str = "hud_dev";
 const MENU_QUIT: &str = "quit";
+const MENU_ZOOM_IN: &str = "zoom-in";
+const MENU_ZOOM_OUT: &str = "zoom-out";
+const MENU_ACTUAL_SIZE: &str = "actual-size";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
 const PIN_LABEL: &str = "Pin Window";
@@ -282,6 +285,31 @@ fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let settings_item = MenuItem::with_id(app, MENU_SETTINGS, "Settings...", true, Some("Cmd+,"))?;
     // The tray handler receives application menu events with the same ID.
     app_menu.insert_items(&[&settings_item, &PredefinedMenuItem::separator(app)?], 2)?;
+    // On macOS, NumpadAdd maps to the "+" character, without a keypad modifier.
+    // The webview shortcut handler also accepts Command+=.
+    let zoom_in = MenuItem::with_id(
+        app,
+        MENU_ZOOM_IN,
+        "Zoom In",
+        true,
+        Some("CmdOrCtrl+NumpadAdd"),
+    )?;
+    let zoom_out = MenuItem::with_id(app, MENU_ZOOM_OUT, "Zoom Out", true, Some("CmdOrCtrl+-"))?;
+    let actual_size = MenuItem::with_id(
+        app,
+        MENU_ACTUAL_SIZE,
+        "Actual Size",
+        true,
+        Some("CmdOrCtrl+0"),
+    )?;
+    let view_menu = items
+        .iter()
+        .filter_map(|item| item.as_submenu())
+        .find(|submenu| submenu.text().ok().as_deref() == Some("View"))
+        .ok_or_else(|| anyhow::anyhow!("the default macOS menu has no View submenu"))?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let view_items: [&dyn IsMenuItem<Wry>; 4] = [&separator, &zoom_in, &zoom_out, &actual_size];
+    view_menu.append_items(&view_items)?;
     app.set_menu(menu)?;
     Ok(())
 }
@@ -372,8 +400,8 @@ fn toggle_random_usage(app: &AppHandle) -> bool {
     }
 
     let active = app
-        .try_state::<crate::store::Store>()
-        .map(|store| store.settings_snapshot())
+        .try_state::<crate::UiReadStore>()
+        .map(|store| store.0.settings_snapshot())
         .is_some_and(|settings| settings.live_usage_active());
     let summary = app
         .try_state::<crate::usage_alerts::LiveUsage>()
@@ -662,7 +690,7 @@ fn usage_used_percent(summary: &crate::dto::LiveUsageSummary) -> Option<f64> {
 }
 
 fn columns_for_used_percent(used: f64) -> usize {
-    ((100.0 - used) * COLUMN_COUNT as f64 / 100.0).round() as usize
+    ((100.0 - used) / 20.0).ceil() as usize
 }
 
 fn provider_is_displayable(
@@ -733,6 +761,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         None::<&str>,
     )?;
     let settings_item = MenuItem::with_id(app, MENU_SETTINGS, "Settings…", true, None::<&str>)?;
+    let zoom_in_item = MenuItem::with_id(app, MENU_ZOOM_IN, "Zoom In", true, None::<&str>)?;
+    let zoom_out_item = MenuItem::with_id(app, MENU_ZOOM_OUT, "Zoom Out", true, None::<&str>)?;
+    let actual_size_item =
+        MenuItem::with_id(app, MENU_ACTUAL_SIZE, "Actual Size", true, None::<&str>)?;
     #[cfg(debug_assertions)]
     let reset_onboarding_item = MenuItem::with_id(
         app,
@@ -790,6 +822,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &open_popover_item,
         &pin_item,
         &settings_item,
+        &zoom_in_item,
+        &zoom_out_item,
+        &actual_size_item,
         #[cfg(debug_assertions)]
         &reset_onboarding_item,
         #[cfg(debug_assertions)]
@@ -879,14 +914,18 @@ fn build_hud_dev_menu(app: &AppHandle) -> tauri::Result<HudDevMenu> {
 /// Put the HUD in the notch and store that, as a drop on the notch does.
 #[cfg(debug_assertions)]
 fn dev_island(app: &AppHandle) {
-    if !antiburn_hud::island_overlay(app) {
-        ::tracing::warn!(event = "hud_island_unavailable", trigger = "tray");
-        return;
-    }
-    crate::hud::save_dock(
-        &app.state::<crate::store::Store>(),
-        antiburn_hud::dock_settings(),
-    );
+    antiburn_hud::refresh_notch();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if !antiburn_hud::island_overlay(&app) {
+            ::tracing::warn!(event = "hud_island_unavailable", trigger = "tray");
+            return;
+        }
+        crate::hud::save_dock(
+            &app.state::<crate::store::Store>(),
+            antiburn_hud::dock_settings(),
+        );
+    });
 }
 
 /// Toggle the fake notch on the primary display.
@@ -906,11 +945,14 @@ fn toggle_fake_notch(app: &AppHandle) {
 /// Dock the HUD at `edge` and store that, as a drag drop does.
 #[cfg(debug_assertions)]
 fn dev_dock(app: &AppHandle, edge: antiburn_hud::DockEdge) {
-    antiburn_hud::dock_overlay(app, edge);
-    crate::hud::save_dock(
-        &app.state::<crate::store::Store>(),
-        antiburn_hud::dock_settings(),
-    );
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        antiburn_hud::dock_overlay(&app, edge);
+        crate::hud::save_dock(
+            &app.state::<crate::store::Store>(),
+            antiburn_hud::dock_settings(),
+        );
+    });
 }
 
 /// Send one development override to the HUD webview.
@@ -975,6 +1017,15 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 ::tracing::error!(event = "settings_window_open_failed", error = %error);
             }
         }
+        MENU_ZOOM_IN => {
+            change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Increase)
+        }
+        MENU_ZOOM_OUT => {
+            change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Decrease)
+        }
+        MENU_ACTUAL_SIZE => {
+            change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Reset)
+        }
         #[cfg(debug_assertions)]
         MENU_RESET_ONBOARDING => {
             let app = app.clone();
@@ -1013,9 +1064,10 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             }
             // The live-usage event carries the summary, so the views take the
             // filtered copy from here instead of asking for it again.
+            let store = &app.state::<crate::UiReadStore>().0;
             let _ = app.emit(
                 crate::usage_alerts::EVENT_CHANGED,
-                commands::cached_live_usage(app),
+                commands::local_usage::cached_live_usage_for_store(app, store),
             );
         }
         #[cfg(debug_assertions)]
@@ -1031,7 +1083,12 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         #[cfg(debug_assertions)]
         MENU_HUD_FAKE_NOTCH => toggle_fake_notch(app),
         #[cfg(debug_assertions)]
-        MENU_HUD_WAKE => antiburn_hud::wake_overlay(app, "dev_menu"),
+        MENU_HUD_WAKE => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                antiburn_hud::wake_overlay(&app, "dev_menu")
+            });
+        }
         #[cfg(debug_assertions)]
         MENU_HUD_SPEND_OFF => dev_emit(
             app,
@@ -1063,6 +1120,21 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         _ => {}
     }
+}
+
+fn change_interface_scale(app: &AppHandle, change: crate::interface_scale::InterfaceScaleChange) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::commands::set_interface_scale(
+            app,
+            change,
+            crate::interface_scale::InterfaceScaleSource::Menu,
+        )
+        .await
+        {
+            ::tracing::error!(event = "interface_scale_menu_failed", %error);
+        }
+    });
 }
 
 /// Light the menu-bar item, or put it out.
@@ -1124,10 +1196,27 @@ mod tests {
     }
 
     #[test]
-    fn remaining_allowance_rounds_to_the_nearest_column() {
-        assert_eq!(columns_for_used_percent(0.0), 5);
-        assert_eq!(columns_for_used_percent(50.0), 3);
-        assert_eq!(columns_for_used_percent(100.0), 0);
+    fn remaining_allowance_keeps_one_column_until_fully_depleted() {
+        for (used, expected_columns) in [
+            (0.0, 5),
+            (19.0, 5),
+            (20.0, 4),
+            (39.0, 4),
+            (40.0, 3),
+            (59.0, 3),
+            (60.0, 2),
+            (79.0, 2),
+            (80.0, 1),
+            (99.0, 1),
+            (99.9, 1),
+            (100.0, 0),
+        ] {
+            assert_eq!(
+                columns_for_used_percent(used),
+                expected_columns,
+                "{used}% used"
+            );
+        }
     }
 
     #[test]
@@ -1195,7 +1284,7 @@ mod tests {
         assert_eq!(random_debug_used_percent(100), 100.0);
         let used = random_debug_used_percent(57);
         assert_eq!(used, 57.0);
-        assert_eq!(columns_for_used_percent(used), 2);
+        assert_eq!(columns_for_used_percent(used), 3);
         assert_eq!(
             usage_tooltip(Some(used), true),
             "antiburn — 43% remaining (simulated)"

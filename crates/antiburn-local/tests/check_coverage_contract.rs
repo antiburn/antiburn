@@ -542,11 +542,7 @@ fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
                 DetectorId::UnusedMcpServers
                     | DetectorId::UnusedBuiltInTools
                     | DetectorId::UnusedSkills
-            ) && !(agent_index == 3
-                && matches!(
-                    detector,
-                    DetectorId::OverpoweredSubagents | DetectorId::CacheChurn
-                ))
+            ) && !(agent_index == 3 && detector == DetectorId::OverpoweredSubagents)
             {
                 assert_eq!(
                     eligible(detector, &evidence),

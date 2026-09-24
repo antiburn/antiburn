@@ -1859,13 +1859,10 @@ pub async fn report_async(app: &AppHandle, observation: Observation) {
 /// returned task with the other schedulers.
 pub fn spawn(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let events = app.state::<SessionEvents>();
-    // Tokio elapsed time lets paused-clock tests control lifecycle deadlines.
-    let base_epoch = crate::scan::unix_now();
-    let base_instant = Instant::now();
     let source: Arc<dyn ReconcileSource> = Arc::new((*app.state::<Store>()).clone());
     let inbox = events.claim_actor();
     if inbox.is_some() {
-        seed(&events, source.as_ref(), base_epoch);
+        seed(&events, source.as_ref(), crate::scan::unix_now());
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1874,8 +1871,9 @@ pub fn spawn(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
             return;
         };
         let events = app.state::<SessionEvents>();
-        let now = move || base_epoch + base_instant.elapsed().as_secs() as i64;
-        run(&events, inbox, source, &now).await;
+        // Use the same wall clock as activity reports. System sleep must not
+        // leave the expiry clock behind those timestamps.
+        run(&events, inbox, source, &crate::scan::unix_now).await;
     })
 }
 

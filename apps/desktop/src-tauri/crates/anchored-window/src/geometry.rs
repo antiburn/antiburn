@@ -100,5 +100,35 @@ pub(crate) fn place_left_preferred(
     Point { x, y }
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
+pub(crate) fn fit_companion_frame(
+    anchor: Rect,
+    work_area: Rect,
+    requested_size: (f64, f64),
+    gap: f64,
+    margin: f64,
+) -> Rect {
+    let margin = margin
+        .max(0.0)
+        .min((work_area.width.min(work_area.height) - 1.0).max(0.0) / 2.0);
+    let width = requested_size
+        .0
+        .min((work_area.width - 2.0 * margin).max(1.0))
+        .floor()
+        .max(1.0);
+    let height = requested_size
+        .1
+        .min((work_area.height - 2.0 * margin).max(1.0))
+        .floor()
+        .max(1.0);
+    let point = place_left_preferred(anchor, work_area, width, height, 1.0, gap, margin);
+    Rect {
+        x: point.x,
+        y: point.y,
+        width,
+        height,
+    }
+}
+
 #[cfg(test)]
 mod tests;

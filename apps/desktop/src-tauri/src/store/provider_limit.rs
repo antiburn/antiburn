@@ -38,6 +38,10 @@ use super::{SessionKey, Store};
 /// gives up rather than load an unbounded result.
 const MAX_ATTRIBUTION_GROUPS: usize = 20_000;
 
+/// Allow twice the documented 240,000-turn/30-day workload over 70 days.
+/// Bound the shared scan before allocation, including unrelated accounts.
+const MAX_QUOTA_TURNS: usize = 2 * 70 * (240_000 / 30);
+
 /// Provider periods one candidate scan may return.
 const MAX_CANDIDATE_PERIODS: usize = 64;
 
@@ -247,6 +251,8 @@ pub(crate) enum Resolved {
 pub(crate) struct BucketedSessionDollars {
     pub key: SessionKey,
     pub bucket_start_epoch: i64,
+    /// Recorded `(timestamp_ms, usd)` usage inside this chart bucket.
+    pub usage: Vec<(i64, f64)>,
     pub usd: f64,
     pub turn_count: i64,
     pub account: Resolved,
@@ -346,10 +352,9 @@ const ATTRIBUTED_TURN_SQL: &str = "SELECT g.environment_key, g.agent, g.session_
         AND a.agent = g.agent AND a.session_id = g.session_id
       LIMIT ?3";
 
-/// [`ATTRIBUTED_TURN_SQL`], grouped further by 15-minute bucket, for the
-/// quota screen's per-session-per-bucket contribution chart. Same
-/// group-first shape, joins, fences, limit, and params; the inner scan
-/// additionally groups by bucket, and the outer query carries it through.
+/// Group published usage by session, model, speed, and chart bucket.
+/// Retain turn timestamps for meter allocation. Bound the token-bearing
+/// rows before JSON aggregation, and join session metadata once per group.
 const ATTRIBUTED_TURN_BUCKET_SQL: &str = "SELECT g.environment_key, g.agent, g.session_id,
             a.provider_hints_json,
             COALESCE((
@@ -364,7 +369,7 @@ const ATTRIBUTED_TURN_BUCKET_SQL: &str = "SELECT g.environment_key, g.agent, g.s
             g.model, g.speed,
             g.input_tokens, g.cache_read_tokens, g.cache_write_tokens,
             g.output_tokens, g.turn_count, g.cache_write_1h_tokens,
-            g.bucket
+            g.bucket, g.timed_tokens
        FROM (
             SELECT t.environment_key, t.agent, t.session_id, t.model, t.speed,
                    SUM(t.input_tokens) AS input_tokens,
@@ -373,13 +378,21 @@ const ATTRIBUTED_TURN_BUCKET_SQL: &str = "SELECT g.environment_key, g.agent, g.s
                    SUM(t.output_tokens) AS output_tokens,
                    COUNT(*) AS turn_count,
                    SUM(t.cache_write_1h_tokens) AS cache_write_1h_tokens,
-                   t.ts_ms / 900000 AS bucket
-              FROM turn t INDEXED BY turn_usage_timestamp
-              JOIN session_evidence e
-                ON e.environment_key = t.environment_key
-               AND e.agent = t.agent AND e.session_id = t.session_id
-               AND e.published_fence = t.claim_fence
-             WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2
+                   t.ts_ms / 900000 AS bucket,
+                   json_group_array(json_array(t.ts_ms, t.input_tokens, t.output_tokens,
+                       t.cache_read_tokens, t.cache_write_tokens, t.cache_write_1h_tokens))
+                       AS timed_tokens
+              FROM (
+                    SELECT t.* FROM turn t INDEXED BY turn_usage_timestamp
+                    JOIN session_evidence e
+                      ON e.environment_key = t.environment_key
+                     AND e.agent = t.agent AND e.session_id = t.session_id
+                     AND e.published_fence = t.claim_fence
+                    WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2
+                      AND (t.input_tokens > 0 OR t.output_tokens > 0
+                           OR t.cache_read_tokens > 0 OR t.cache_write_tokens > 0)
+                    LIMIT ?4
+              ) t
              GROUP BY t.environment_key, t.agent, t.session_id, t.model, t.speed, bucket
        ) g
        JOIN session s
@@ -537,8 +550,7 @@ impl Store {
     /// Priced, attributed turn dollars for one account, grouped by session
     /// and 15-minute bucket, for the quota screen's contribution chart.
     ///
-    /// The range is `(from_epoch, to_epoch]`, same as
-    /// [`Store::attributed_turn_dollars_between`]. A row resolved to a
+    /// The range is `[from_epoch, to_epoch)`. A row resolved to a
     /// different account is dropped; a row resolved to no account at all is
     /// kept under [`Resolved::Unbound`] rather than dropped, so the caller
     /// can report unattributed spend instead of losing it silently. `None`
@@ -570,7 +582,7 @@ impl Store {
         let connection = self.lock();
         let wait_ms = started.elapsed().as_millis() as u64;
         let read_started = std::time::Instant::now();
-        let input = read_quota_turn_input(&connection, from_epoch, to_epoch)?;
+        let input = read_quota_turn_input(&connection, from_epoch, to_epoch, MAX_QUOTA_TURNS)?;
         drop(connection);
         tracing::debug!(
             wait_ms,
@@ -603,10 +615,31 @@ impl Store {
         from_epoch: i64,
         to_epoch: i64,
     ) -> Result<Vec<i64>> {
+        Ok(self
+            .attributed_turn_minutes(from_epoch, to_epoch)?
+            .for_account(provider, account_key))
+    }
+
+    /// The same scan [`Store::attributed_turn_epochs`] ran per account,
+    /// shared across every account a caller resolves from it.
+    ///
+    /// Scans the minute-epoch rows once, resolves each distinct session's
+    /// account bindings once across every provider (not filtered to one, the
+    /// way a single [`Store::attributed_turn_epochs`] call was), and reads
+    /// [`Store::provider_known_accounts`]'s fallback map once for every
+    /// provider `provider_account_seen` has, the same single query
+    /// [`read_quota_turn_input`] already runs for [`QuotaTurnInput`].
+    /// [`TurnMinutes::for_account`] then resolves one account from this scan
+    /// with no further store access, so a caller that needs several accounts
+    /// over the same range pays for the scan once, not once per account.
+    pub(crate) fn attributed_turn_minutes(
+        &self,
+        from_epoch: i64,
+        to_epoch: i64,
+    ) -> Result<TurnMinutes> {
         if to_epoch <= from_epoch {
-            return Ok(Vec::new());
+            return Ok(TurnMinutes::default());
         }
-        let known = self.provider_known_accounts(provider)?;
         let start_ms = from_epoch.saturating_mul(1_000).saturating_add(1);
         let end_ms = to_epoch.saturating_mul(1_000);
         let connection = self.lock();
@@ -637,34 +670,47 @@ impl Store {
                     .insert(minute_epoch);
             }
         }
-        if minutes_by_session.is_empty() {
-            return Ok(Vec::new());
-        }
 
-        let mut account_statement = connection.prepare(
-            "SELECT COALESCE((
-                 SELECT json_group_array(json_object(
-                     'accountKey', spa.account_key
-                 ))
-                   FROM session_provider_account spa
-                  WHERE spa.environment_key = ?1
-                    AND spa.agent = ?2 AND spa.session_id = ?3
-                    AND spa.provider = ?4
-             ), '[]')",
-        )?;
-
-        let mut epochs: BTreeSet<i64> = BTreeSet::new();
-        for (key, minute_epochs) in &minutes_by_session {
-            let accounts_json: String = account_statement.query_row(
-                params![key.environment_key, key.agent, key.session_id, provider],
-                |row| row.get(0),
+        let mut accounts_by_session: HashMap<SessionKey, String> = HashMap::new();
+        if !minutes_by_session.is_empty() {
+            let mut account_statement = connection.prepare(
+                "SELECT COALESCE((
+                     SELECT json_group_array(json_object(
+                         'provider', spa.provider,
+                         'accountKey', spa.account_key
+                     ))
+                       FROM session_provider_account spa
+                      WHERE spa.environment_key = ?1
+                        AND spa.agent = ?2 AND spa.session_id = ?3
+                 ), '[]')",
             )?;
-            let resolved = resolve_account(&accounts_json, known.get(&key.agent));
-            if resolved.as_deref() == Some(account_key) {
-                epochs.extend(minute_epochs.iter().copied());
+            for key in minutes_by_session.keys() {
+                let accounts_json: String = account_statement.query_row(
+                    params![key.environment_key, key.agent, key.session_id],
+                    |row| row.get(0),
+                )?;
+                accounts_by_session.insert(key.clone(), accounts_json);
             }
         }
-        Ok(epochs.into_iter().collect())
+
+        let mut known_accounts: HashMap<(String, String), BTreeSet<String>> = HashMap::new();
+        {
+            let mut statement = connection
+                .prepare("SELECT provider, agent, account_key FROM provider_account_seen")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                known_accounts
+                    .entry((row.get(0)?, row.get(1)?))
+                    .or_default()
+                    .insert(row.get(2)?);
+            }
+        }
+
+        Ok(TurnMinutes {
+            minutes_by_session,
+            accounts_by_session,
+            known_accounts,
+        })
     }
 
     /// The epoch span, in seconds, of one session's own published turns:
@@ -768,6 +814,17 @@ impl Store {
             .provider_usage_period_history(period_id)?
             .map(|history| history.observations)
             .unwrap_or_default())
+    }
+
+    /// Several periods' readings in one round trip. A thin name over
+    /// [`Store::provider_usage_observations_for`] for the quota screen's
+    /// call sites that already have every period id they need, the way
+    /// [`Store::quota_period_samples`] is one for a single period.
+    pub(crate) fn quota_period_samples_for(
+        &self,
+        period_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<ProviderUsageObservation>>> {
+        self.provider_usage_observations_for(period_ids)
     }
 
     /// Every `(provider, account)` this app has observed a quota period for,
@@ -1839,6 +1896,7 @@ struct BucketTurnRow {
     turn_count: i64,
     cache_write_1h_tokens: i64,
     bucket_start_epoch: i64,
+    timed_tokens: Vec<[i64; 6]>,
 }
 
 #[derive(Deserialize)]
@@ -1850,6 +1908,50 @@ struct ProviderAccountObservation {
 
 pub(crate) struct AccountTurnDollars {
     rows: Vec<(Option<String>, BucketedSessionDollars)>,
+}
+
+/// [`Store::attributed_turn_minutes`]'s shared scan: every session's turn
+/// minutes in the requested range, its unfiltered account bindings, and the
+/// per-provider known-account fallback map, all read once.
+#[derive(Default)]
+pub(crate) struct TurnMinutes {
+    minutes_by_session: HashMap<SessionKey, BTreeSet<i64>>,
+    accounts_by_session: HashMap<SessionKey, String>,
+    known_accounts: HashMap<(String, String), BTreeSet<String>>,
+}
+
+impl TurnMinutes {
+    /// Exactly what [`Store::attributed_turn_epochs`] returned before this
+    /// scan was shared across accounts: this account's ascending,
+    /// minute-rounded turn epochs.
+    pub(crate) fn for_account(&self, provider: &str, account_key: &str) -> Vec<i64> {
+        let mut epochs: BTreeSet<i64> = BTreeSet::new();
+        for (key, minute_epochs) in &self.minutes_by_session {
+            let accounts_json = self
+                .accounts_by_session
+                .get(key)
+                .map(String::as_str)
+                .unwrap_or("[]");
+            let bound: BTreeSet<String> =
+                serde_json::from_str::<Vec<ProviderAccountObservation>>(accounts_json)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|observation| {
+                        observation.provider == provider && observation.account_key.len() == 64
+                    })
+                    .map(|observation| observation.account_key)
+                    .collect();
+            let resolved = resolve_bound_account(
+                Some(&bound),
+                self.known_accounts
+                    .get(&(provider.to_string(), key.agent.clone())),
+            );
+            if resolved.as_deref() == Some(account_key) {
+                epochs.extend(minute_epochs.iter().copied());
+            }
+        }
+        epochs.into_iter().collect()
+    }
 }
 
 impl QuotaTurnInput {
@@ -1903,6 +2005,7 @@ impl QuotaTurnInput {
                 BucketedSessionDollars {
                     key: row.key.clone(),
                     bucket_start_epoch: row.bucket_start_epoch,
+                    usage: price_timed_tokens(row),
                     usd: priced.input_usd
                         + priced.output_usd
                         + priced.cache_read_usd
@@ -1913,6 +2016,66 @@ impl QuotaTurnInput {
             ));
         }
         AccountTurnDollars { rows }
+    }
+}
+
+fn price_timed_tokens(row: &BucketTurnRow) -> Vec<(i64, f64)> {
+    let rates = row
+        .model
+        .as_deref()
+        .and_then(|model| lookup_turn_pricing(model.trim(), row.speed.as_deref()));
+    row.timed_tokens
+        .iter()
+        .map(|&[ts_ms, input, output, read, write, write_1h]| {
+            let tokens = ModelTokens {
+                input_tokens: input.max(0) as u64,
+                output_tokens: output.max(0) as u64,
+                cache_read_tokens: read.max(0) as u64,
+                cache_creation_tokens: write.max(0) as u64,
+                cache_creation_1h_tokens: write_1h.max(0) as u64,
+            };
+            let usd = rates.as_ref().map_or(0.0, |rates| {
+                tokens.input_tokens as f64 * rates.input_cost_per_token
+                    + tokens.output_tokens as f64 * rates.output_cost_per_token
+                    + tokens.cache_read_tokens as f64 * rates.cache_read_cost_per_token
+                    + calculate_cache_write_cost(&tokens, rates)
+            });
+            (ts_ms, usd)
+        })
+        .collect()
+}
+
+impl BucketedSessionDollars {
+    pub(crate) fn in_period(&self, start: i64, reset: i64, now: i64) -> Option<Self> {
+        if self.bucket_start_epoch >= reset
+            || self
+                .bucket_start_epoch
+                .saturating_add(CONTRIBUTION_BUCKET_SECS)
+                <= start
+        {
+            return None;
+        }
+        let usage: Vec<_> = self
+            .usage
+            .iter()
+            .copied()
+            .filter(|&(ts_ms, _)| {
+                ts_ms >= start.saturating_mul(1_000)
+                    && ts_ms < reset.saturating_mul(1_000)
+                    && ts_ms <= now.saturating_mul(1_000)
+            })
+            .collect();
+        if usage.is_empty() {
+            return None;
+        }
+        Some(Self {
+            usd: usage.iter().map(|&(_, usd)| usd).sum(),
+            turn_count: usage.len() as i64,
+            usage,
+            key: self.key.clone(),
+            bucket_start_epoch: self.bucket_start_epoch,
+            account: self.account.clone(),
+        })
     }
 }
 
@@ -1932,10 +2095,14 @@ impl AccountTurnDollars {
                 .or_insert_with(|| BucketedSessionDollars {
                     usd: 0.0,
                     turn_count: 0,
-                    ..row.clone()
+                    usage: Vec::new(),
+                    key: row.key.clone(),
+                    bucket_start_epoch: row.bucket_start_epoch,
+                    account: row.account.clone(),
                 });
             entry.usd += row.usd;
             entry.turn_count += row.turn_count;
+            entry.usage.extend_from_slice(&row.usage);
         }
         buckets.into_values().collect()
     }
@@ -1945,18 +2112,22 @@ fn read_quota_turn_input(
     connection: &Connection,
     from_epoch: i64,
     to_epoch: i64,
+    max_turns: usize,
 ) -> Result<Option<QuotaTurnInput>> {
-    let start_ms = from_epoch.saturating_mul(1_000).saturating_add(1);
-    let end_ms = to_epoch.saturating_mul(1_000);
+    let start_ms = from_epoch.saturating_mul(1_000).saturating_sub(1);
+    let end_ms = to_epoch.saturating_mul(1_000).saturating_sub(1);
     let mut statement = connection.prepare(ATTRIBUTED_TURN_BUCKET_SQL)?;
     let mut query = statement.query(params![
         start_ms,
         end_ms,
-        (MAX_ATTRIBUTION_GROUPS + 1) as i64
+        (MAX_ATTRIBUTION_GROUPS + 1) as i64,
+        (max_turns + 1) as i64
     ])?;
     let mut rows = Vec::new();
+    let mut turn_count = 0usize;
     while let Some(row) = query.next()? {
-        if rows.len() == MAX_ATTRIBUTION_GROUPS {
+        turn_count = turn_count.saturating_add(row.get::<_, usize>(11)?);
+        if rows.len() == MAX_ATTRIBUTION_GROUPS || turn_count > max_turns {
             return Ok(None);
         }
         rows.push(BucketTurnRow {
@@ -1976,6 +2147,7 @@ fn read_quota_turn_input(
             turn_count: row.get(11)?,
             cache_write_1h_tokens: row.get(12)?,
             bucket_start_epoch: row.get::<_, i64>(13)? * CONTRIBUTION_BUCKET_SECS,
+            timed_tokens: serde_json::from_str(&row.get::<_, String>(14)?)?,
         });
     }
     let mut known_accounts: HashMap<(String, String), BTreeSet<String>> = HashMap::new();

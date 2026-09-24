@@ -7,7 +7,7 @@
 //! Every query here filters on the same four columns: `environment_key`,
 //! `agent`, `session_id`, and `claim_fence`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -73,6 +73,8 @@ pub struct TurnFacts {
     pub repeated_context_pairs_considered: u64,
     /// Candidate pairs excluded by route, order, identity, or compaction boundaries.
     pub repeated_context_pairs_skipped: u64,
+    pub transient_miss_episodes: u64,
+    pub possible_rehydration_episodes: u64,
     /// Only pairs under this contract contribute to the candidate token totals.
     pub repeated_context_accounting: Option<RepeatedContextAccounting>,
     /// Unknown requests or excluded pairs prevent a complete result.
@@ -187,6 +189,8 @@ pub fn query_turn_facts(
         query_compaction_boundaries(conn, key, scope, &mut diagnostics)?;
     let duplicate_turn_identities = query_duplicate_turn_identities(conn, key, scope)?;
     let repeated_context = query_repeated_context(conn, key, scope)?;
+    let (transient_miss_episodes, possible_rehydration_episodes) =
+        query_cache_miss_episodes(conn, key, scope)?;
 
     Ok(TurnFacts {
         eligibility: core.eligibility,
@@ -226,6 +230,8 @@ pub fn query_turn_facts(
         repeated_context_uncached_input_paid_tokens: repeated_context.uncached_input_paid_tokens,
         repeated_context_pairs_considered: repeated_context.pairs_considered,
         repeated_context_pairs_skipped: repeated_context.pairs_skipped,
+        transient_miss_episodes,
+        possible_rehydration_episodes,
         repeated_context_accounting: repeated_context.accounting,
         repeated_context_incomplete: repeated_context.incomplete
             || (key.agent == "opencode" && duplicate_turn_identities > 0),
@@ -1426,6 +1432,266 @@ fn query_repeated_context(
     })
 }
 
+#[derive(Clone)]
+struct CacheEpisodeTurn {
+    source_key: String,
+    thread_id: String,
+    timestamp_ms: Option<i64>,
+    context_tokens: u64,
+    cache_read_tokens: u64,
+    one_hour_cache_active: bool,
+    model: Option<String>,
+    provider: Option<String>,
+    api: Option<String>,
+    user_inactive_secs: Option<u64>,
+    linked: bool,
+}
+
+const CACHE_EPISODE_SCAN_SQL: &str = "SELECT source_key, thread_id, ts_ms, input_tokens,
+        cache_read_tokens, cache_write_tokens, is_compaction_boundary, role, model,
+        provider, api, uuid, parent_uuid, turn_index, cache_write_1h_tokens
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+    AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+    AND scope = 'main'
+  ORDER BY source_key, thread_id, turn_index";
+
+fn query_cache_miss_episodes(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    scope: &FenceScope<'_>,
+) -> rusqlite::Result<(u64, u64)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
+    let mut statement = conn.prepare(CACHE_EPISODE_SCAN_SQL)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence,
+        published_fence,
+        source_keys_json
+    ])?;
+    let mut window = VecDeque::with_capacity(3);
+    let mut current_thread: Option<(String, String)> = None;
+    let mut previous_timestamp = None;
+    let mut last_user_timestamp = None;
+    let mut last_identity: Option<String> = None;
+    let mut last_index: Option<i64> = None;
+    let mut continuity_since_assistant = true;
+    let mut one_hour_cache_expires_ms: Option<i64> = None;
+    let mut one_hour_cache_route: Option<(Option<String>, Option<String>, Option<String>)> = None;
+    let mut transient = 0_u64;
+    let mut possible_rehydrations = 0_u64;
+
+    while let Some(row) = rows.next()? {
+        let source_key: String = row.get(0)?;
+        let thread_id: String = row.get(1)?;
+        let timestamp_ms: Option<i64> = row.get(2)?;
+        let input_tokens = as_u64(row.get(3)?);
+        let cache_read_tokens = as_u64(row.get(4)?);
+        let cache_write_tokens = as_u64(row.get(5)?);
+        let compaction: bool = row.get(6)?;
+        let role: String = row.get(7)?;
+        let model: Option<String> = row.get(8)?;
+        let provider: Option<String> = row.get(9)?;
+        let api: Option<String> = row.get(10)?;
+        let uuid: Option<String> = row.get(11)?;
+        let parent_uuid: Option<String> = row.get(12)?;
+        let turn_index: i64 = row.get(13)?;
+        let cache_write_1h_tokens = as_u64(row.get(14)?);
+        let thread = (source_key.clone(), thread_id.clone());
+        if current_thread.as_ref() != Some(&thread) {
+            current_thread = Some(thread);
+            window.clear();
+            previous_timestamp = None;
+            last_user_timestamp = None;
+            last_identity = None;
+            last_index = None;
+            continuity_since_assistant = true;
+            one_hour_cache_expires_ms = None;
+            one_hour_cache_route = None;
+        }
+        if compaction {
+            window.clear();
+            last_user_timestamp = None;
+            continuity_since_assistant = true;
+            one_hour_cache_expires_ms = None;
+            one_hour_cache_route = None;
+        }
+        let linked = if key.agent == "opencode" {
+            // OpenCode validates persisted order; parentID names the answered user message.
+            last_index.is_none_or(|previous| previous.checked_add(1) == Some(turn_index))
+                && uuid.as_deref().is_some_and(|id| !id.is_empty())
+                && uuid != last_identity
+        } else {
+            match (last_identity.as_deref(), parent_uuid.as_deref()) {
+                (Some(previous), Some(parent)) => previous == parent,
+                (None, None) => true,
+                _ => false,
+            }
+        };
+        last_identity = uuid;
+        last_index = Some(turn_index);
+        continuity_since_assistant &= linked;
+        if !linked {
+            one_hour_cache_expires_ms = None;
+            one_hour_cache_route = None;
+        }
+        if role == "user" {
+            last_user_timestamp = timestamp_ms;
+            continue;
+        }
+        if role != "assistant" {
+            continue;
+        }
+        let route = (model.clone(), provider.clone(), api.clone());
+        if one_hour_cache_route
+            .as_ref()
+            .is_some_and(|previous_route| previous_route != &route)
+        {
+            one_hour_cache_expires_ms = None;
+        }
+        one_hour_cache_route = Some(route);
+        let one_hour_cache_active = if let Some(timestamp_ms) = timestamp_ms {
+            if one_hour_cache_expires_ms.is_some_and(|expires| timestamp_ms >= expires) {
+                one_hour_cache_expires_ms = None;
+            }
+            if cache_write_1h_tokens > 0 {
+                one_hour_cache_expires_ms = Some(timestamp_ms.saturating_add(60 * 60 * 1_000));
+            } else if one_hour_cache_expires_ms.is_some() && cache_read_tokens > 0 {
+                // Anthropic refreshes this TTL at the start of each cache hit.
+                one_hour_cache_expires_ms = Some(timestamp_ms.saturating_add(60 * 60 * 1_000));
+            }
+            one_hour_cache_expires_ms.is_some()
+        } else {
+            one_hour_cache_expires_ms = None;
+            false
+        };
+        let inactive = timestamp_ms
+            .zip(last_user_timestamp)
+            .zip(previous_timestamp)
+            .and_then(|((current, prompt), previous)| {
+                (prompt >= previous && current >= prompt)
+                    .then(|| u64::try_from((prompt - previous) / 1_000).unwrap_or(0))
+            });
+        let turn = CacheEpisodeTurn {
+            source_key,
+            thread_id,
+            timestamp_ms,
+            context_tokens: input_tokens
+                .saturating_add(cache_read_tokens)
+                .saturating_add(cache_write_tokens),
+            cache_read_tokens,
+            one_hour_cache_active,
+            model,
+            provider,
+            api,
+            user_inactive_secs: inactive,
+            linked: continuity_since_assistant,
+        };
+        previous_timestamp = timestamp_ms;
+        last_user_timestamp = None;
+        continuity_since_assistant = true;
+        if turn.context_tokens == 0 {
+            window.clear();
+            one_hour_cache_expires_ms = None;
+            one_hour_cache_route = None;
+            continue;
+        }
+        window.push_back(turn);
+        if window.len() == 3 {
+            let prior = &window[0];
+            let miss = &window[1];
+            let recovered = &window[2];
+            if recovered_cache_hit(prior, miss, recovered)
+                && let Some(idle) = miss.user_inactive_secs
+            {
+                if idle
+                    >= cache_rehydration_idle_secs(
+                        key.agent,
+                        prior.provider.as_deref(),
+                        prior.api.as_deref(),
+                        prior.one_hour_cache_active,
+                    )
+                    .unwrap_or(u64::MAX)
+                {
+                    possible_rehydrations = possible_rehydrations.saturating_add(1);
+                } else {
+                    transient = transient.saturating_add(1);
+                }
+            }
+            window.pop_front();
+        }
+    }
+    Ok((transient, possible_rehydrations))
+}
+
+fn recovered_cache_hit(
+    previous: &CacheEpisodeTurn,
+    miss: &CacheEpisodeTurn,
+    recovered: &CacheEpisodeTurn,
+) -> bool {
+    previous.source_key == miss.source_key
+        && miss.source_key == recovered.source_key
+        && previous.thread_id == miss.thread_id
+        && miss.thread_id == recovered.thread_id
+        && previous.timestamp_ms.is_some()
+        && miss.timestamp_ms.is_some()
+        && recovered.timestamp_ms.is_some()
+        && previous.timestamp_ms <= miss.timestamp_ms
+        && miss.timestamp_ms <= recovered.timestamp_ms
+        && previous.linked
+        && miss.linked
+        && recovered.linked
+        && previous.model == miss.model
+        && miss.model == recovered.model
+        && previous.provider == miss.provider
+        && miss.provider == recovered.provider
+        && previous.api == miss.api
+        && miss.api == recovered.api
+        && previous.context_tokens > 0
+        && miss.context_tokens as f64 / previous.context_tokens as f64 >= 0.8
+        && recovered.context_tokens as f64 / miss.context_tokens as f64 >= 0.8
+        && cache_read_ratio(previous) >= 0.5
+        && cache_read_ratio(miss) < 0.5
+        && cache_read_ratio(recovered) >= 0.5
+}
+
+fn cache_read_ratio(turn: &CacheEpisodeTurn) -> f64 {
+    if turn.context_tokens == 0 {
+        0.0
+    } else {
+        turn.cache_read_tokens as f64 / turn.context_tokens as f64
+    }
+}
+
+fn cache_rehydration_idle_secs(
+    agent: &str,
+    provider: Option<&str>,
+    api: Option<&str>,
+    one_hour_cache: bool,
+) -> Option<u64> {
+    match (agent, provider, api) {
+        ("claude" | "claude-code", None, None)
+        | ("claude" | "claude-code", Some("anthropic"), None) => Some(60 * 60),
+        (_, Some("anthropic"), Some("messages" | "anthropic-messages"))
+            if agent == "claude" || agent == "claude-code" || one_hour_cache =>
+        {
+            Some(60 * 60)
+        }
+        ("pi", Some("anthropic"), Some("messages" | "anthropic-messages"))
+        | ("opencode", Some("anthropic"), None) => {
+            Some(if one_hour_cache { 60 * 60 } else { 5 * 60 })
+        }
+        ("codex", None, None)
+        | ("codex", Some("openai"), None)
+        | ("opencode", Some("openai"), None)
+        | (_, Some("openai"), Some("responses" | "openai-responses" | "openai-completions"))
+        | (_, Some("openai-codex"), Some("openai-codex-responses")) => Some(30 * 60),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1498,6 +1764,92 @@ mod tests {
         insert_turn_rows(conn, &KEY, 1, rows).expect("insert rows");
     }
 
+    fn cache_episode_row(
+        index: u64,
+        role: &'static str,
+        timestamp_ms: Option<i64>,
+        uuid: &str,
+        parent_uuid: Option<&str>,
+        usage: (u64, u64),
+        compaction: bool,
+    ) -> TurnRow {
+        let mut row = base_row("s1", index);
+        row.thread_id = "thread".to_owned();
+        row.role = role;
+        row.ts_ms = timestamp_ms;
+        row.uuid = Some(uuid.to_owned());
+        row.parent_uuid = parent_uuid.map(str::to_owned);
+        row.model = Some("gpt-5.6-luna".to_owned());
+        row.provider = Some("openai-codex".to_owned());
+        row.api = Some("openai-codex-responses".to_owned());
+        row.input_tokens = usage.0;
+        row.cache_read_tokens = usage.1;
+        row.cache_write_tokens = 0;
+        row.is_compaction_boundary = compaction;
+        row
+    }
+
+    fn recovered_episode(idle_secs: u64) -> Vec<TurnRow> {
+        let idle_ms = i64::try_from(idle_secs.saturating_mul(1_000)).unwrap();
+        let prompt_ms = 1_000_i64.saturating_add(idle_ms);
+        let miss_ms = prompt_ms.saturating_add(1_000);
+        vec![
+            cache_episode_row(
+                0,
+                "assistant",
+                Some(1_000),
+                "a",
+                None,
+                (2_000, 8_000),
+                false,
+            ),
+            cache_episode_row(1, "user", Some(prompt_ms), "u0", Some("a"), (0, 0), false),
+            cache_episode_row(
+                2,
+                "assistant",
+                Some(miss_ms),
+                "m",
+                Some("u0"),
+                (10_000, 0),
+                false,
+            ),
+            cache_episode_row(3, "user", Some(miss_ms + 1), "u1", Some("m"), (0, 0), false),
+            cache_episode_row(
+                4,
+                "assistant",
+                Some(miss_ms + 2_000),
+                "r",
+                Some("u1"),
+                (2_000, 8_000),
+                false,
+            ),
+        ]
+    }
+
+    fn cache_episode_counts(rows: &[TurnRow]) -> (u64, u64) {
+        let conn = test_connection();
+        insert(&conn, rows);
+        query_cache_miss_episodes(&conn, &KEY, &FenceScope::single(1))
+            .expect("query cache miss episodes")
+    }
+
+    fn cache_episode_counts_for(agent: &'static str, rows: &[TurnRow]) -> (u64, u64) {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent,
+            session_id: "s1",
+        };
+        conn.execute(
+            "INSERT INTO session (environment_key, agent, session_id) VALUES (?1, ?2, ?3)",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .expect("insert agent session");
+        insert_turn_rows(&conn, &key, 1, rows).expect("insert agent turn rows");
+        query_cache_miss_episodes(&conn, &key, &FenceScope::single(1))
+            .expect("query cache miss episodes")
+    }
+
     #[test]
     fn an_empty_session_reads_as_all_zero() {
         let conn = test_connection();
@@ -1521,6 +1873,170 @@ mod tests {
         assert_eq!(facts.repeated_context_uncached_input_tokens, 0);
         assert_eq!(facts.repeated_context_pairs_considered, 0);
         assert_eq!(facts.repeated_context_pairs_skipped, 0);
+        assert_eq!(facts.transient_miss_episodes, 0);
+        assert_eq!(facts.possible_rehydration_episodes, 0);
+    }
+
+    #[test]
+    fn cache_episode_gate_distinguishes_transient_and_idle_recovery() {
+        assert_eq!(cache_episode_counts(&recovered_episode(1)), (1, 0));
+        assert_eq!(cache_episode_counts(&recovered_episode(1_800)), (0, 1));
+    }
+
+    #[test]
+    fn anthropic_cache_episode_gate_uses_the_prior_request_ttl() {
+        let anthropic_episode = |idle_secs| {
+            let mut rows = recovered_episode(idle_secs);
+            for row in &mut rows {
+                if row.role == "assistant" {
+                    row.provider = Some("anthropic".to_owned());
+                    row.api = Some("anthropic-messages".to_owned());
+                }
+            }
+            rows
+        };
+
+        assert_eq!(
+            cache_episode_counts_for("pi", &anthropic_episode(299)),
+            (1, 0)
+        );
+        assert_eq!(
+            cache_episode_counts_for("pi", &anthropic_episode(300)),
+            (0, 1)
+        );
+
+        let mut one_hour_episode = anthropic_episode(300);
+        one_hour_episode[0].cache_write_1h_tokens = 8_000;
+        assert_eq!(cache_episode_counts_for("pi", &one_hour_episode), (1, 0));
+        let mut before_one_hour_expiry = anthropic_episode(3_599);
+        before_one_hour_expiry[0].cache_write_1h_tokens = 8_000;
+        assert_eq!(
+            cache_episode_counts_for("pi", &before_one_hour_expiry),
+            (1, 0)
+        );
+        let mut one_hour_expiry = anthropic_episode(3_600);
+        one_hour_expiry[0].cache_write_1h_tokens = 8_000;
+        assert_eq!(cache_episode_counts_for("pi", &one_hour_expiry), (0, 1));
+    }
+
+    #[test]
+    fn opencode_episodes_use_validated_order_and_distinct_message_ids() {
+        let mut rows = recovered_episode(1_800);
+        for row in &mut rows {
+            row.parent_uuid = None;
+            if row.role == "assistant" {
+                row.provider = Some("openai".to_owned());
+                row.api = None;
+            }
+        }
+        assert_eq!(cache_episode_counts_for("opencode", &rows), (0, 1));
+
+        rows[3].turn_index += 1;
+        assert_eq!(cache_episode_counts_for("opencode", &rows), (0, 0));
+    }
+
+    #[test]
+    fn a_cache_hit_carries_and_refreshes_the_one_hour_ttl() {
+        let prompt_ms = 3_000_i64 + 360 * 1_000;
+        let miss_ms = prompt_ms + 1_000;
+        let mut first_write =
+            cache_episode_row(0, "assistant", Some(1_000), "write", None, (0, 0), false);
+        first_write.cache_write_tokens = 10_000;
+        first_write.cache_write_1h_tokens = 10_000;
+        let rows = vec![
+            first_write,
+            cache_episode_row(1, "user", Some(2_000), "u0", Some("write"), (0, 0), false),
+            cache_episode_row(
+                2,
+                "assistant",
+                Some(3_000),
+                "hit",
+                Some("u0"),
+                (2_000, 8_000),
+                false,
+            ),
+            cache_episode_row(3, "user", Some(prompt_ms), "u1", Some("hit"), (0, 0), false),
+            cache_episode_row(
+                4,
+                "assistant",
+                Some(miss_ms),
+                "miss",
+                Some("u1"),
+                (10_000, 0),
+                false,
+            ),
+            cache_episode_row(
+                5,
+                "user",
+                Some(miss_ms + 1),
+                "u2",
+                Some("miss"),
+                (0, 0),
+                false,
+            ),
+            cache_episode_row(
+                6,
+                "assistant",
+                Some(miss_ms + 2_000),
+                "recovered",
+                Some("u2"),
+                (2_000, 8_000),
+                false,
+            ),
+        ]
+        .into_iter()
+        .map(|mut row| {
+            if row.role == "assistant" {
+                row.provider = Some("anthropic".to_owned());
+                row.api = Some("anthropic-messages".to_owned());
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+
+        assert_eq!(cache_episode_counts_for("pi", &rows), (1, 0));
+    }
+
+    #[test]
+    fn incomplete_cache_episode_shapes_do_not_establish_a_cause() {
+        let mut missing_time = recovered_episode(1);
+        missing_time[4].ts_ms = None;
+        assert_eq!(cache_episode_counts(&missing_time), (0, 0));
+
+        let mut broken_link = recovered_episode(1);
+        broken_link[1].parent_uuid = Some("other-parent".to_owned());
+        assert_eq!(cache_episode_counts(&broken_link), (0, 0));
+
+        let mut changed_model = recovered_episode(1);
+        changed_model[4].model = Some("gpt-6-astra".to_owned());
+        assert_eq!(cache_episode_counts(&changed_model), (0, 0));
+
+        let mut changed_route = recovered_episode(1);
+        changed_route[4].provider = Some("openai".to_owned());
+        changed_route[4].api = Some("responses".to_owned());
+        assert_eq!(cache_episode_counts(&changed_route), (0, 0));
+
+        let mut compacted = recovered_episode(1);
+        compacted.insert(
+            3,
+            cache_episode_row(
+                3,
+                "system",
+                Some(compacted[2].ts_ms.unwrap() + 1),
+                "compact",
+                Some("m"),
+                (0, 0),
+                true,
+            ),
+        );
+        compacted[4].parent_uuid = Some("compact".to_owned());
+        compacted[4].turn_index = 4;
+        compacted[5].turn_index = 5;
+        assert_eq!(cache_episode_counts(&compacted), (0, 0));
+
+        let mut unrecovered = recovered_episode(1);
+        unrecovered.truncate(3);
+        assert_eq!(cache_episode_counts(&unrecovered), (0, 0));
     }
 
     #[test]

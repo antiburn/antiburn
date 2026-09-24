@@ -59,6 +59,14 @@ filter. For example, `RUST_LOG=trace pnpm --filter @antiburn/desktop dev`
 enables trace output. Logs can contain local diagnostic values. Check them
 before you share them.
 
+Claude usage recovery emits local `claude_credential_reread` and
+`claude_refresh_outcome` debug events. Their fixed outcome values distinguish
+changed credentials, deferred background recovery, cooldown, missing CLI,
+metadata failures, launch failures, verification timeouts, and settled refreshes.
+`live_source_failed` also includes the typed error detail. These events contain
+no credentials or CLI output. A settled refresh means the credential carrier
+changed; the subsequent usage request still determines whether recovery worked.
+
 ## Restart onboarding
 
 Select **Reset Onboarding** in the debug-build tray menu. This action sets

@@ -3,6 +3,7 @@ mod window;
 
 use crate::companion::CompanionWindow;
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
@@ -17,6 +18,7 @@ use crate::{REQUEST_EVENT, STATE_EVENT, platform};
 
 struct Inner<T, P> {
     config: AnchoredWindowConfig,
+    interface_scale_bits: AtomicU64,
     lifecycle: Mutex<Lifecycle<T, P>>,
     frame_update: Mutex<()>,
     #[cfg(target_os = "macos")]
@@ -46,6 +48,9 @@ where
             normalized_heights(config.initial_height, config.min_height, config.max_height);
         Self {
             inner: Arc::new(Inner {
+                interface_scale_bits: AtomicU64::new(
+                    normalize_interface_scale(config.interface_scale).to_bits(),
+                ),
                 config,
                 lifecycle: Mutex::new(Lifecycle::new(initial_height)),
                 frame_update: Mutex::new(()),
@@ -108,6 +113,33 @@ where
             self.inner.config.min_height,
             self.inner.config.max_height,
         )
+    }
+
+    pub(super) fn interface_scale(&self) -> f64 {
+        normalize_interface_scale(f64::from_bits(
+            self.inner.interface_scale_bits.load(Ordering::Acquire),
+        ))
+    }
+
+    /// Apply a host-owned scale to the existing companion without creating one.
+    pub fn set_interface_scale(
+        &self,
+        app: &tauri::AppHandle,
+        interface_scale: f64,
+    ) -> tauri::Result<()> {
+        let interface_scale = normalize_interface_scale(interface_scale);
+        self.inner
+            .interface_scale_bits
+            .store(interface_scale.to_bits(), Ordering::Release);
+        let _frame_update = self.lock_frame_update();
+        let Some(window) = self.companion(app) else {
+            return Ok(());
+        };
+        #[cfg(target_os = "macos")]
+        window.set_interface_scale(interface_scale)?;
+        #[cfg(not(target_os = "macos"))]
+        window.set_zoom(interface_scale)?;
+        self.apply_size_and_position(app, &window)
     }
 
     /// Rebuild a destroyed renderer only while a target still owns it.
@@ -537,6 +569,14 @@ where
                 state: self.state(),
             },
         )
+    }
+}
+
+fn normalize_interface_scale(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
     }
 }
 

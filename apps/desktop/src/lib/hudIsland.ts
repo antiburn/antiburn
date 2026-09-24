@@ -9,7 +9,7 @@ type HudIslandPhase = "off" | "preview" | "collapsed" | "expanded"
 /** The island geometry the shell reports, in logical pixels. */
 export interface HudIslandState {
   island: HudIslandPhase
-  /** The drawable strip either side of the notch. */
+  /** The scaled drawable strip either side of the notch, in native logical points. */
   wing: number
   /** The transparent gutter outside each wing, where the top corners curve out. */
   fillet: number
@@ -17,6 +17,14 @@ export interface HudIslandState {
   notch: number
   /** The notch height: the collapsed row. */
   height: number
+  /** Applied WebView scale, not the display backing factor. */
+  scale: number
+  /** Native geometry revision carried by content measurements. */
+  revision: number
+  /** Expanded ink width and available body height, in native logical points. */
+  bodyWidth: number
+  bodyMaxHeight: number
+  headerOffset: number
 }
 
 /** The dock state the shell stores, as `set_hud_island` returns it. */
@@ -32,6 +40,32 @@ export const HUD_ISLAND_OFF: HudIslandState = {
   fillet: 0,
   notch: 0,
   height: 0,
+  scale: 1,
+  revision: 0,
+  bodyWidth: 0,
+  bodyMaxHeight: 0,
+  headerOffset: 0,
+}
+
+/** Convert the native geometry once, at the renderer boundary. */
+export function islandCssGeometry(state: HudIslandState) {
+  const scale = state.scale
+  const expanded = state.island === "expanded"
+  // Keep the camera in place when the native window is clamped to a display edge.
+  const leftWing = expanded ? state.headerOffset + state.wing : state.wing
+  const rightWing = expanded ? state.bodyWidth - state.notch - leftWing : state.wing
+  return {
+    wing: state.wing / scale,
+    leftWing: leftWing / scale,
+    rightWing: rightWing / scale,
+    fillet: state.fillet / scale,
+    notch: state.notch / scale,
+    height: state.height / scale,
+    headerWidth: (expanded ? state.bodyWidth : state.notch + state.wing * 2) / scale,
+    headerOffset: expanded ? 0 : state.headerOffset / scale,
+    bodyWidth: state.bodyWidth / scale,
+    bodyMaxHeight: state.bodyMaxHeight / scale,
+  }
 }
 
 const ISLAND_STATE_EVENT = "hud-island:state"

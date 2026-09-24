@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"overthinking-missing","timestamp":"2026-01-01T00:00:00Z"}
+{"type":"thinking_level_change","id":"thinking-max","parentId":null,"timestamp":"2026-01-01T00:00:01Z","thinkingLevel":"max"}
+{"type":"message","id":"missing-usage","parentId":"thinking-max","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","model":"gpt-5.6-luna","provider":"openai-codex","api":"openai-codex-responses","content":[{"type":"text","text":"unknown usage"}]}}

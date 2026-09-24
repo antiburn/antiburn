@@ -1640,6 +1640,8 @@ pub(crate) mod tests {
                         pairs_considered: 1,
                         pairs_skipped: 0,
                         paid_tokens: 100,
+                        transient_miss_episodes: 0,
+                        possible_rehydration_episodes: 1,
                     });
                 },
             );

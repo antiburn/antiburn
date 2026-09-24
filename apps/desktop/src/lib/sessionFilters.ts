@@ -1,14 +1,4 @@
-/**
- * The Sessions sidebar filter vocabulary.
- *
- * A `SessionFilter` selects a subset of the loaded session list. Its id is
- * the persisted form: it survives a round trip through `AppSettings` and
- * doubles as a nav item id, so the format and parse helpers here are the
- * single place that shape stays in sync with itself.
- */
-
 import type { SessionListEntry } from "../components/session/SessionList"
-import { agentDisplayName } from "./presentation/agents"
 import { sessionBurnCheckPresentation } from "./presentation/burnChecks"
 import { INITIAL_SESSION_HYGIENE, sessionHygieneChecks } from "./presentation/sessionHygiene"
 import type { BurnCheckDetectorId } from "./insightsIpc"
@@ -19,24 +9,67 @@ import {
   FIXED_SESSION_FILTERS,
   type SessionFilter,
 } from "./navigation/sessionFilterDefinitions"
-export type { SessionFilter } from "./navigation/sessionFilterDefinitions"
 
 /** A priced session counts as Material at or above this cost, in US dollars. */
 export const MATERIAL_COST_FLOOR_USD = 1
 
-/** The persisted, nav-item id for one filter. Stable across releases. */
-export function sessionFilterId(filter: SessionFilter): string {
-  return filter.kind === "agent" ? `agent:${filter.agent}` : filter.kind
+export type SessionResultFilter = "all" | "failing" | "passing"
+export type SessionSpendFilter = "all" | "notable" | "material"
+
+export interface SessionFilters {
+  agents: string[]
+  result: SessionResultFilter
+  spend: SessionSpendFilter
 }
 
-/**
- * Parse a persisted or nav-selected id back into a filter.
- *
- * An id this app never wrote — an older release, a hand-edited database, or
- * an agent slug that dropped out of the loaded list — parses to `all`. A
- * filter can always fall back to showing everything.
- */
-export function parseSessionFilterId(id: string): SessionFilter {
+export function normalizeSessionFilters(filters: SessionFilters): SessionFilters {
+  return { ...filters, agents: [...new Set(filters.agents)].sort() }
+}
+
+export function serializeSessionFilters(filters: SessionFilters): string {
+  const { agents, result, spend } = normalizeSessionFilters(filters)
+  return `v1:${JSON.stringify({ agents, result, spend })}`
+}
+
+export function parseSessionFilters(saved: string): SessionFilters {
+  const all: SessionFilters = { agents: [], result: "all", spend: "all" }
+  if (!saved.startsWith("v1:")) {
+    const legacy = parseSessionFilterId(saved)
+    switch (legacy.kind) {
+      case "agent":
+        return legacy.agent.trim() ? { ...all, agents: [legacy.agent] } : all
+      case "failing":
+      case "passing":
+        return { ...all, result: legacy.kind }
+      case "notable":
+      case "material":
+        return { ...all, spend: legacy.kind }
+      case "all":
+        return all
+    }
+  }
+  try {
+    const value: unknown = JSON.parse(saved.slice(3))
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return all
+    if (!("agents" in value) || !("result" in value) || !("spend" in value)) return all
+    const { agents, result, spend } = value
+    if (
+      !Array.isArray(agents) ||
+      !agents.every(
+        (agent): agent is string => typeof agent === "string" && agent.trim().length > 0,
+      ) ||
+      (result !== "all" && result !== "failing" && result !== "passing") ||
+      (spend !== "all" && spend !== "notable" && spend !== "material")
+    )
+      return all
+    return normalizeSessionFilters({ agents, result, spend })
+  } catch {
+    return all
+  }
+}
+
+/** Parse a legacy filter. Preserve unknown agents and reset unknown kinds. */
+function parseSessionFilterId(id: string): SessionFilter {
   const fixed = FIXED_SESSION_FILTERS.find((filter) => filter.id === id)
   if (fixed) return { kind: fixed.id }
   if (id.startsWith("agent:")) {
@@ -65,84 +98,92 @@ function hygieneCountsFor(
   ).counts
 }
 
-/** Whether one entry belongs to the given filter. */
-export function matchesSessionFilter(
+function resultMatches(
   entry: SessionListEntry,
   hygieneSnapshot: SessionHygieneSnapshot,
-  filter: SessionFilter,
-  snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
-): boolean {
-  switch (filter.kind) {
-    case "notable":
-      return entry.cost?.isHighCost === true
-    case "material":
-      return entry.cost != null && entry.cost.totalUsd >= MATERIAL_COST_FLOOR_USD
-    case "agent":
-      return entry.agent === filter.agent
-    case "failing":
-      return hygieneCountsFor(hygieneSnapshot, entry, snoozed).failed >= 1
-    case "passing": {
-      const counts = hygieneCountsFor(hygieneSnapshot, entry, snoozed)
-      return counts.failed === 0 && counts.passed >= 1
-    }
-    case "all":
-      return true
+  snoozed: ReadonlySet<BurnCheckDetectorId>,
+): Record<SessionResultFilter, boolean> {
+  const counts = hygieneCountsFor(hygieneSnapshot, entry, snoozed)
+  return {
+    all: true,
+    failing: counts.failed >= 1,
+    passing: counts.failed === 0 && counts.passed >= 1,
   }
 }
 
-/** The entries one filter selects, in the order they arrived. */
+function spendMatches(entry: SessionListEntry): Record<SessionSpendFilter, boolean> {
+  return {
+    all: true,
+    notable: entry.cost?.isHighCost === true,
+    material: entry.cost != null && entry.cost.totalUsd >= MATERIAL_COST_FLOOR_USD,
+  }
+}
+
+/** Preserve entry order and the full-cohort high-cost classification. */
 export function filterSessionEntries(
   entries: readonly SessionListEntry[],
   hygieneSnapshot: SessionHygieneSnapshot,
-  filter: SessionFilter,
+  filters: SessionFilters,
   snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
 ): SessionListEntry[] {
-  return entries.filter((entry) =>
-    matchesSessionFilter(entry, hygieneSnapshot, filter, snoozed),
+  const agents = new Set(filters.agents)
+  return entries.filter(
+    (entry) =>
+      (agents.size === 0 || agents.has(entry.agent)) &&
+      spendMatches(entry)[filters.spend] &&
+      (filters.result === "all" ||
+        resultMatches(entry, hygieneSnapshot, snoozed)[filters.result]),
   )
 }
 
-/** A count for every fixed filter, plus one row per harness present. */
 export interface SessionFilterCounts {
-  notable: number
-  material: number
-  failing: number
-  passing: number
   all: number
-  /** Harnesses present in the loaded list, sorted by display name. */
-  agents: Array<{ agent: string; displayName: string; count: number }>
+  matching: number
+  agentsAll: number
+  agents: Record<string, number>
+  result: Record<SessionResultFilter, number>
+  spend: Record<SessionSpendFilter, number>
 }
 
-/**
- * Fold the loaded list into a count per filter.
- *
- * Every fixed filter counts over the whole list in one pass. Agent counts key
- * on the raw slug, so two sessions from the same harness always fold into one
- * row regardless of how it renders.
- */
+/** Count each candidate with the other facets unchanged. */
 export function sessionFilterCounts(
   entries: readonly SessionListEntry[],
   hygieneSnapshot: SessionHygieneSnapshot,
+  filters: SessionFilters,
   snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
 ): SessionFilterCounts {
-  let notable = 0
-  let material = 0
-  let failing = 0
-  let passing = 0
-  const agentCounts = new Map<string, number>()
-
-  for (const entry of entries) {
-    if (matchesSessionFilter(entry, hygieneSnapshot, { kind: "notable" })) notable += 1
-    if (matchesSessionFilter(entry, hygieneSnapshot, { kind: "material" })) material += 1
-    const counts = hygieneCountsFor(hygieneSnapshot, entry, snoozed)
-    if (counts.failed >= 1) failing += 1
-    else if (counts.passed >= 1) passing += 1
-    agentCounts.set(entry.agent, (agentCounts.get(entry.agent) ?? 0) + 1)
+  const agents = new Set(filters.agents)
+  const agentCounts = new Map(filters.agents.map((agent) => [agent, 0]))
+  const counts: SessionFilterCounts = {
+    all: entries.length,
+    matching: 0,
+    agentsAll: 0,
+    agents: {},
+    result: { all: 0, failing: 0, passing: 0 },
+    spend: { all: 0, notable: 0, material: 0 },
   }
 
-  const agents = [...agentCounts.entries()]
-    .map(([agent, count]) => ({ agent, displayName: agentDisplayName(agent), count }))
-    .sort((left, right) => left.displayName.localeCompare(right.displayName))
-
-  return { notable, material, failing, passing, all: entries.length, agents }
+  for (const entry of entries) {
+    const result = resultMatches(entry, hygieneSnapshot, snoozed)
+    const spend = spendMatches(entry)
+    const agentMatches = agents.size === 0 || agents.has(entry.agent)
+    const otherFacetsMatch = result[filters.result] && spend[filters.spend]
+    agentCounts.set(entry.agent, (agentCounts.get(entry.agent) ?? 0) + Number(otherFacetsMatch))
+    if (otherFacetsMatch) {
+      counts.agentsAll += 1
+      if (agentMatches) counts.matching += 1
+    }
+    if (agentMatches && spend[filters.spend]) {
+      counts.result.all += 1
+      counts.result.failing += Number(result.failing)
+      counts.result.passing += Number(result.passing)
+    }
+    if (agentMatches && result[filters.result]) {
+      counts.spend.all += 1
+      counts.spend.notable += Number(spend.notable)
+      counts.spend.material += Number(spend.material)
+    }
+  }
+  counts.agents = Object.fromEntries(agentCounts)
+  return counts
 }

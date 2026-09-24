@@ -12,8 +12,9 @@ import { AXIS_TICK } from "../../../components/session/analysis/chartLabels"
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
-import { Skeleton } from "../../../components/ui/Skeleton"
+import { cn } from "../../../lib/cn"
 import { useElementHeight, useElementWidth } from "../../../lib/useElementWidth"
+import { useEntranceProps } from "./overviewEntrance"
 
 import "./overview.css"
 
@@ -28,6 +29,12 @@ const AXIS_LABEL_STEP = 7
 const AXIS_LABEL_CLEARANCE = 3
 
 const GUIDE_PERCENTS = [100, 75, 50, 25]
+
+const LEGEND_ITEMS = [
+  { key: "short", label: "5-hour window", swatch: "bg-context-stroke/20" },
+  { key: "weekly", label: "Week", swatch: "bg-context-stroke/60" },
+  { key: "rolling", label: "Average usage", swatch: "bg-gray-500", shape: "line" },
+] as const
 
 export function OverviewAllowanceChart({
   account,
@@ -46,7 +53,14 @@ export function OverviewAllowanceChart({
     return (
       <section className="overview-chart" aria-label="Allowance chart" aria-busy={loading}>
         {loading ? (
-          <Skeleton className="block min-h-(--overview-chart-height) w-full flex-1" />
+          <>
+            {/* The legend the plot draws above itself, held open so the rest of
+                the page does not shift down when the plot replaces this. */}
+            <div aria-hidden="true" className="overview-chart-legend invisible mb-(--space-sm)">
+              <ChartLegend ariaLabel="Layers" items={LEGEND_ITEMS} />
+            </div>
+            <div aria-hidden="true" className="overview-chart-placeholder" />
+          </>
         ) : (
           <p className="type-body text-label-secondary">No allowance history to chart yet.</p>
         )}
@@ -77,11 +91,13 @@ function AllowancePlot({
   controls?: ReactNode
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const entranceProps = useEntranceProps("allowance-chart", "overview-chart-in", true)
   const width = useElementWidth(containerRef)
   const height = useElementHeight(containerRef)
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
   const rawId = useId()
   const clipId = `overview-allowance-clip-${rawId.replace(/:/g, "")}`
+  const fillId = `overview-allowance-fill-${rawId.replace(/:/g, "")}`
 
   const slots = chartDaySlots(rangeStartEpoch, rangeEndEpoch)
   const lastIndex = CHART_DAYS - 1
@@ -128,17 +144,14 @@ function AllowancePlot({
         `${Math.round(lastRolling)} percent.`
 
   return (
-    <section className="overview-chart" aria-label="Allowance chart">
+    <section
+      {...entranceProps}
+      className={cn("overview-chart", entranceProps.className)}
+      aria-label="Allowance chart"
+    >
       <p className="sr-only">{summary}</p>
-      <div className="mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
-        <ChartLegend
-          ariaLabel="Layers"
-          items={[
-            { key: "short", label: "5-hour window", swatch: "bg-token-in/20" },
-            { key: "weekly", label: "Week", swatch: "bg-token-in/60" },
-            { key: "rolling", label: "Average usage", swatch: "bg-gray-500", shape: "line" },
-          ]}
-        />
+      <div className="overview-chart-legend mb-(--space-sm) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-(--space-md)">
+        <ChartLegend ariaLabel="Layers" items={LEGEND_ITEMS} />
         {controls}
       </div>
       <div ref={containerRef} className="relative min-h-(--overview-chart-height) flex-1">
@@ -150,6 +163,12 @@ function AllowancePlot({
                 <clipPath id={clipId}>
                   <rect x={plotLeft} y={plotTop} width={plotWidth} height={plotHeight} />
                 </clipPath>
+                {/* The session Context chart's fill: the blue is strongest under
+                    the line and fades out toward the baseline. */}
+                <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
+                  <stop offset={0} stopColor="var(--color-context-fill-top)" />
+                  <stop offset={1} stopColor="var(--color-context-fill-base)" />
+                </linearGradient>
               </defs>
 
               {GUIDE_PERCENTS.map((percent) => (
@@ -203,22 +222,24 @@ function AllowancePlot({
                       y={rect.y}
                       width={rect.width}
                       height={rect.height}
-                      className="fill-token-in/[0.18]"
+                      className="fill-context-stroke/[0.18]"
                     />
                   )
                 })}
 
-                <g className="opacity-50">
+                {/* The gradient carries its own alpha, so the group draws at
+                    full strength: a solid blue line over a fading fill. */}
+                <g>
                   {account.chart.weeklyWindows.map((window) => {
                     const area = weeklyAreaPath(window, x, y)
                     if (!area) return null
                     return (
                       <g key={`${window.lane}-${window.startsAtEpoch}`}>
-                        <path d={area} className="fill-token-in" stroke="none" />
+                        <path d={area} fill={`url(#${fillId})`} stroke="none" />
                         <path
                           d={weeklyTopLinePath(window, x, y)}
                           fill="none"
-                          className="stroke-token-in stroke-1"
+                          className="stroke-context-stroke stroke-1"
                         />
                       </g>
                     )

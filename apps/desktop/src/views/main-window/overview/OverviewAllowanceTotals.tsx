@@ -7,6 +7,7 @@ import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFig
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
 import { planLabel } from "../../../lib/presentation/liveUsage"
+import { useEntranceProps } from "./overviewEntrance"
 
 export function OverviewAllowanceTotals({
   accounts: allAccounts,
@@ -19,8 +20,11 @@ export function OverviewAllowanceTotals({
   loading?: boolean
   error?: boolean
 }) {
+  const entranceProps = useEntranceProps("allowance-totals", "overview-figures-in", !loading)
   const accounts = allAccounts.filter(hasFigure)
   if (!loading && accounts.length === 0) {
+    // This section carries no entrance class here, so its animation never
+    // runs. The key stays free for the real figures to draw in later.
     return (
       <section aria-label="Allowance">
         <p role={error ? "alert" : undefined} className="type-body text-label-secondary">
@@ -32,13 +36,20 @@ export function OverviewAllowanceTotals({
     )
   }
 
+  // Each placeholder wraps a sample of the line it stands in for, so it takes
+  // that line's own height. Fixed heights here were shorter than the real
+  // figures, and everything below the section shifted down as they landed.
   const cells: HeroFigureCell[] = loading
     ? [
         {
           key: "loading",
-          label: <Skeleton className="h-3 w-24" />,
-          figure: <Skeleton className="h-8 w-28" />,
-          caption: <Skeleton className="h-3 w-36 max-w-full" />,
+          label: <Skeleton className="w-24">Provider</Skeleton>,
+          figure: (
+            <Skeleton className="w-28">
+              <SegmentFigure>00%</SegmentFigure>
+            </Skeleton>
+          ),
+          caption: <Skeleton className="w-36 max-w-full">Average subscription usage</Skeleton>,
         },
       ]
     : accounts.map((account) => ({
@@ -51,7 +62,7 @@ export function OverviewAllowanceTotals({
         tooltip: utilizationTooltip(account, utilizationSpanDays),
       }))
   return (
-    <section aria-label="Allowance" aria-busy={loading}>
+    <section aria-label="Allowance" aria-busy={loading} {...entranceProps}>
       <HeroFigures cells={cells} />
     </section>
   )

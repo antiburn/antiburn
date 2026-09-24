@@ -14,12 +14,15 @@ vi.mock("./overview/OverviewUsage", () => ({
   OverviewUsage: ({
     metric,
     onMetricChange,
+    loading,
   }: {
     metric: OverviewMetric
     onMetricChange: (metric: OverviewMetric) => void
+    loading?: boolean
   }) => (
     <div>
       <output aria-label="Usage metric">{metric}</output>
+      <output aria-label="Usage state">{loading ? "held" : "shown"}</output>
       <button onClick={() => onMetricChange("cost")}>Cost</button>
       <button onClick={() => onMetricChange("allowance")}>Subscription</button>
     </div>
@@ -64,6 +67,16 @@ function allowance(accounts: AllowanceUsageAccountPayload[]): Partial<MainOvervi
   }
 }
 
+/** A local usage summary, so `loading` turns on the unit being unresolved
+ *  rather than on the spend figures being unread. */
+const usage: Partial<MainOverviewSnapshot> = {
+  usage: {
+    totals: { today: [], week: [], month: [] },
+    days: [],
+    generatedAt: "",
+  } as unknown as MainOverviewSnapshot["usage"],
+}
+
 function setup(initial: Partial<MainOverviewSnapshot> = {}) {
   const session = new MainOverviewSession({
     getSnapshot: () => ({ entries: [] }),
@@ -99,15 +112,75 @@ function expectMetric(metric: OverviewMetric) {
   expect(screen.getByLabelText("Usage metric")).toHaveTextContent(metric)
 }
 
+function expectUsageState(state: "held" | "shown") {
+  expect(screen.getByLabelText("Usage state")).toHaveTextContent(state)
+}
+
 describe("OverviewView metric preference", () => {
-  it("defaults to cost without a known plan and does not save the default", () => {
-    const view = setup()
-    expectMetric("cost")
+  it("settles on cost only once both the allowance and live-usage reads land without a plan", () => {
+    const view = setup(usage)
     view.update(allowance([]))
+    // The allowance read landed with no plan, but live usage has not
+    // answered yet, so the unit stays undecided rather than picking cost.
+    expectUsageState("held")
+    view.update({
+      liveUsage: { providers: [], errors: [], meters: [], generatedAt: "" },
+      liveUsageSettled: true,
+    })
     expectMetric("cost")
     view.update(allowance([{ ...account, plan: null }]))
     expectMetric("cost")
     expect(readOverviewViewPrefs().metric).toBeUndefined()
+  })
+
+  it("never shows cost when a plan arrives from a still-pending live-usage read", () => {
+    const view = setup(usage)
+    view.update(allowance([]))
+    expectUsageState("held")
+    view.update({
+      liveUsage: { providers: [liveProvider], errors: [], meters: [], generatedAt: "" },
+      liveUsageSettled: true,
+    })
+    expectMetric("allowance")
+    expectUsageState("shown")
+  })
+
+  it("holds the figures until it knows which unit to show them in", () => {
+    const view = setup(usage)
+    // Nothing chosen, nothing remembered and nothing read: the unit on screen
+    // is a guess, so the figures wait rather than land under the wrong tab.
+    expectUsageState("held")
+    view.update(allowance([account]))
+    expectMetric("allowance")
+    expectUsageState("shown")
+  })
+
+  it.each([
+    ["a plan", true, "allowance"],
+    ["no plan", false, "cost"],
+  ] as const)("opens on the unit %s left behind last run", (_label, hadPlan, expected) => {
+    // The session remembers the answer from a run's settled reads; this
+    // covers the view reading that memory back before any read of its own
+    // has answered.
+    writeOverviewViewPrefs({ hadSubscriptionPlan: hadPlan })
+    setup(usage)
+    expectMetric(expected)
+    expectUsageState("shown")
+  })
+
+  it("corrects a remembered answer that no longer holds", () => {
+    writeOverviewViewPrefs({ hadSubscriptionPlan: true })
+    const view = setup(usage)
+    expectMetric("allowance")
+    view.update(allowance([]))
+    // The allowance read alone disagrees, but live usage has not answered
+    // yet, so the remembered answer still stands.
+    expectMetric("allowance")
+    view.update({
+      liveUsage: { providers: [], errors: [], meters: [], generatedAt: "" },
+      liveUsageSettled: true,
+    })
+    expectMetric("cost")
   })
 
   it("defaults to subscription when a plan is already available", () => {
@@ -117,8 +190,8 @@ describe("OverviewView metric preference", () => {
   })
 
   it.each(["history", "live"] as const)("uses a plan that arrives later from %s", (source) => {
-    const view = setup()
-    expectMetric("cost")
+    const view = setup(usage)
+    expectUsageState("held")
     view.update(
       source === "history"
         ? allowance([account])
@@ -168,8 +241,8 @@ describe("OverviewView metric preference", () => {
 
   it("treats an invalid saved metric as no preference", () => {
     localStorage.setItem("antiburn.overview.view.v1", JSON.stringify({ metric: "invalid" }))
-    const view = setup()
-    expectMetric("cost")
+    const view = setup(usage)
+    expectUsageState("held")
     view.update(allowance([account]))
     expectMetric("allowance")
   })

@@ -305,6 +305,19 @@ struct Presentation {
     pending: Option<(OpenKind, Instant)>,
 }
 
+/// The open-request instant a revealed generation settled its content
+/// against. [`MainWindowState::finish_reveal`] sets this from the same
+/// `pending` entry `main_window_renderer_ready` and `main_window_revealed`
+/// already timed, so it survives `finish_reveal` taking `pending` for its
+/// own report.
+#[derive(Debug, Clone, Copy)]
+struct ContentOrigin {
+    generation: u64,
+    kind: OpenKind,
+    requested_at: Instant,
+    reported: bool,
+}
+
 #[derive(Default)]
 struct PlacementWriteQueue {
     pending: Option<String>,
@@ -363,6 +376,7 @@ pub struct MainWindowState {
     navigation_target: Mutex<NavigationTargetState>,
     navigation_target_revision: AtomicU64,
     sample_targets: Mutex<VecDeque<SampleTarget>>,
+    content_origin: Mutex<Option<ContentOrigin>>,
 }
 
 impl MainWindowState {
@@ -384,6 +398,7 @@ impl MainWindowState {
             navigation_target: Mutex::new(NavigationTargetState::default()),
             navigation_target_revision: AtomicU64::new(0),
             sample_targets: Mutex::new(VecDeque::new()),
+            content_origin: Mutex::new(None),
         }
     }
 
@@ -568,7 +583,7 @@ impl MainWindowState {
             && !another_window_owns_activation
     }
 
-    fn finish_reveal(&self, now: Instant) -> (OpenKind, Duration) {
+    fn finish_reveal(&self, now: Instant, generation: Option<u64>) -> (OpenKind, Duration) {
         let mut presentation = lock(&self.presentation);
         presentation.has_revealed = true;
         presentation.restore_after_activation = false;
@@ -576,7 +591,35 @@ impl MainWindowState {
             .pending
             .take()
             .unwrap_or((OpenKind::WarmReopen, now));
+        drop(presentation);
+        // Write on every reveal, even a generationless one, so a stale
+        // origin from an earlier generation cannot satisfy a late
+        // `mark_content_ready` for a reveal that never named one.
+        *lock(&self.content_origin) = generation.map(|generation| ContentOrigin {
+            generation,
+            kind,
+            requested_at,
+            reported: false,
+        });
         (kind, now.saturating_duration_since(requested_at))
+    }
+
+    /// Marks this generation's first settled content after a reveal.
+    /// Returns the open kind and the elapsed time since the same
+    /// open-request instant [`Self::finish_reveal`] reported, or `None` for
+    /// a generation that never reached [`Self::finish_reveal`], a stale one,
+    /// or a repeat report.
+    fn mark_content_ready(&self, generation: u64, now: Instant) -> Option<(OpenKind, Duration)> {
+        let mut origin = lock(&self.content_origin);
+        let origin = origin.as_mut()?;
+        if origin.generation != generation || origin.reported {
+            return None;
+        }
+        origin.reported = true;
+        Some((
+            origin.kind,
+            now.saturating_duration_since(origin.requested_at),
+        ))
     }
 
     fn request_details(&self, now: Instant) -> (OpenKind, Duration) {
@@ -1303,15 +1346,21 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
         elapsed_ms = elapsed.as_millis() as u64
     );
     window_lifecycle::arm_stale_warning::<MainWindowState>(app, generation, LABEL);
+    let interface_scale = crate::interface_scale::current(app);
     let built = antiburn_main_window::build(
         app,
-        renderer_generation_script(generation),
+        crate::interface_scale::append_initialization_script(
+            renderer_generation_script(generation),
+            interface_scale,
+        ),
         placement.as_ref(),
+        interface_scale.factor(),
         |window, payload| {
             window_lifecycle::trace_page_load::<MainWindowState>(window, payload, LABEL);
         },
     )?;
     crate::wayland_titlebar::repair(&built.window);
+    crate::interface_scale::apply_window(&built.window, interface_scale)?;
     let applied = built
         .placement
         .or_else(|| antiburn_main_window::capture(&built.window, None));
@@ -1355,6 +1404,15 @@ fn renderer_ready_on_main(app: &AppHandle, generation: u64) {
     {
         return;
     }
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    if let Err(error) =
+        crate::interface_scale::apply_window(&window, crate::interface_scale::current(app))
+    {
+        ::tracing::error!(event = "interface_scale_apply_failed", window = LABEL, error = %error);
+        return;
+    }
     let (open_kind, elapsed) = state.request_details(Instant::now());
     ::tracing::info!(
         event = "main_window_renderer_ready",
@@ -1368,14 +1426,37 @@ fn renderer_ready_on_main(app: &AppHandle, generation: u64) {
     }
 }
 
+/// Record when the main window's first activity and cached usage state
+/// settle after a reveal. Mirrors [`crate::popover::content_ready`].
+pub fn content_ready(window: &WebviewWindow, generation: u64) {
+    let app = window.app_handle();
+    // Ends the insights worker's launch-time ramp throttle regardless of
+    // whether this report is the one that gets logged below: the window
+    // having content is what the ramp waits for, not the log dedup.
+    crate::insights_worker::notify_ramp(app);
+    let Some(state) = app.try_state::<MainWindowState>() else {
+        return;
+    };
+    if let Some((open_kind, elapsed)) = state.mark_content_ready(generation, Instant::now()) {
+        ::tracing::info!(
+            event = "main_window_content_ready",
+            window = LABEL,
+            generation,
+            open_kind = open_kind.as_str(),
+            elapsed_ms = elapsed.as_millis() as u64
+        );
+    }
+}
+
 fn reveal(window: Option<&WebviewWindow>) -> tauri::Result<()> {
     let Some(window) = window else {
         return Ok(());
     };
     antiburn_main_window::reveal(window)?;
     let state = window.app_handle().state::<MainWindowState>();
-    let (open_kind, elapsed) = state.finish_reveal(Instant::now());
-    if let Some(generation) = state.readiness().ready_generation() {
+    let ready_generation = state.readiness().ready_generation();
+    let (open_kind, elapsed) = state.finish_reveal(Instant::now(), ready_generation);
+    if let Some(generation) = ready_generation {
         state.retire_target_on_reveal(generation);
     }
     // This marks native show and focus completion. It does not mark a painted frame.
@@ -1967,6 +2048,7 @@ mod tests {
             navigation_target: Mutex::new(NavigationTargetState::default()),
             navigation_target_revision: AtomicU64::new(0),
             sample_targets: Mutex::new(VecDeque::new()),
+            content_origin: Mutex::new(None),
         }
     }
 
@@ -2053,6 +2135,50 @@ mod tests {
     }
 
     #[test]
+    fn content_ready_reports_once_for_the_revealed_generation_and_ignores_others() {
+        let state = state();
+        let now = Instant::now();
+        state.note_open_request(OpenTrigger::Interaction, now);
+        state.finish_reveal(now, Some(7));
+
+        // A stale generation never reported here reports nothing.
+        assert_eq!(state.mark_content_ready(6, now), None);
+
+        let (kind, elapsed) = state
+            .mark_content_ready(7, now + Duration::from_millis(50))
+            .expect("the revealed generation reports once");
+        assert_eq!(kind, OpenKind::FirstOpen);
+        assert_eq!(elapsed, Duration::from_millis(50));
+
+        // A repeat report for the same generation reports nothing.
+        assert_eq!(
+            state.mark_content_ready(7, now + Duration::from_millis(60)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_reveal_with_no_generation_leaves_content_ready_unreported() {
+        let state = state();
+        let now = Instant::now();
+        state.finish_reveal(now, None);
+        assert_eq!(state.mark_content_ready(1, now), None);
+    }
+
+    #[test]
+    fn a_generationless_reveal_clears_a_stale_origin_from_an_earlier_generation() {
+        let state = state();
+        let now = Instant::now();
+        state.finish_reveal(now, Some(7));
+
+        // A later reveal with no generation must clear the earlier origin,
+        // not leave it standing for a late report to match against.
+        state.finish_reveal(now, None);
+
+        assert_eq!(state.mark_content_ready(7, now), None);
+    }
+
+    #[test]
     fn open_kind_moves_from_first_request_to_warm_reopen() {
         let state = state();
         let now = Instant::now();
@@ -2060,7 +2186,7 @@ mod tests {
             state.note_open_request(OpenTrigger::Interaction, now),
             OpenKind::FirstOpen
         );
-        assert_eq!(state.finish_reveal(now).0, OpenKind::FirstOpen);
+        assert_eq!(state.finish_reveal(now, None).0, OpenKind::FirstOpen);
         assert_eq!(
             state.note_open_request(OpenTrigger::Interaction, now),
             OpenKind::WarmReopen
@@ -2073,7 +2199,7 @@ mod tests {
         let first = Instant::now();
         state.note_open_request(OpenTrigger::ColdLaunch, first);
         state.note_open_request(OpenTrigger::Interaction, first + Duration::from_secs(1));
-        let (kind, elapsed) = state.finish_reveal(first + Duration::from_secs(2));
+        let (kind, elapsed) = state.finish_reveal(first + Duration::from_secs(2), None);
         assert_eq!(kind, OpenKind::ColdLaunch);
         assert_eq!(elapsed, Duration::from_secs(2));
     }
@@ -2700,7 +2826,7 @@ mod tests {
         let now = Instant::now();
         assert!(!state.should_restore_after_activation(false, false, false));
         state.note_open_request(OpenTrigger::Interaction, now);
-        state.finish_reveal(now);
+        state.finish_reveal(now, None);
         assert!(state.should_restore_after_activation(true, true, false));
         assert!(!state.should_restore_after_activation(true, true, true));
         state.note_closed();

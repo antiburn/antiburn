@@ -2,8 +2,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::{SessionEvidence, TurnRowStore};
 use antiburn_local::insights::{DetectorId, eligible};
@@ -26,6 +27,10 @@ pub(crate) const LEASE_RENEW_SECS: u64 = 60;
 pub(crate) const IDLE_POLL_SECS: u64 = 60;
 /// Parse several independent transcripts at once without saturating the machine.
 const WORKER_CONCURRENCY: usize = 4;
+/// How long `spawn` waits for the main window's first content-ready
+/// notification before ramping to full concurrency on its own. Covers a
+/// launch that never opens the main window (tray-only, HUD).
+const WORKER_RAMP_SECS: u64 = 30;
 pub(crate) const BACKOFF_BASE_SECS: i64 = 30;
 pub(crate) const BACKOFF_MAX_SECS: i64 = 900;
 pub(crate) const MAX_EVIDENCE_ATTEMPTS: i64 = 5;
@@ -42,10 +47,79 @@ pub(crate) const EVIDENCE_ERROR_UNSUPPORTED: &str = "source-unsupported";
 /// this suffix safely.
 const UNREADABLE_REASON_SEPARATOR: &str = ":";
 
+/// The insights worker pool's shared backlog state: how many workers are
+/// currently busy, how many evidence rows they have drained since the pool
+/// last went idle, and when the current busy stretch began.
+#[derive(Default)]
+struct Backlog {
+    active: usize,
+    processed: usize,
+    started_at: Option<Instant>,
+}
+
 /// This handle wakes the worker.
 #[derive(Default)]
 pub struct WorkerHandle {
     wake: Notify,
+    backlog: Mutex<Backlog>,
+    /// Ends `spawn`'s launch-time throttle early. See [`notify_ramp`].
+    ramp: Notify,
+}
+
+impl WorkerHandle {
+    /// Marks one worker's idle→busy transition. Returns the pending count
+    /// only for the worker that takes the pool from zero to one active
+    /// worker, so `worker_loop` logs the backlog's start once per stretch,
+    /// not once per worker.
+    fn note_backlog_busy(&self, store: &Store) -> Option<usize> {
+        let mut backlog = self.backlog.lock().expect("backlog lock");
+        backlog.active += 1;
+        if backlog.active == 1 {
+            backlog.started_at = Some(Instant::now());
+            Some(
+                store
+                    .pending_evidence_count(&crate::agents::evidence_cohort())
+                    .unwrap_or(0),
+            )
+        } else {
+            None
+        }
+    }
+
+    /// Counts one evidence row as processed in the current busy stretch.
+    fn note_backlog_processed(&self) {
+        self.backlog.lock().expect("backlog lock").processed += 1;
+    }
+
+    /// Marks one worker's busy→idle transition. Returns the drained total
+    /// and its elapsed time only when this was the last busy worker and the
+    /// stretch processed at least one row, resetting the counters for the
+    /// next stretch.
+    fn note_backlog_idle(&self) -> Option<(usize, u64)> {
+        let mut backlog = self.backlog.lock().expect("backlog lock");
+        if backlog.active == 0 {
+            return None;
+        }
+        backlog.active -= 1;
+        if backlog.active == 0 && backlog.processed > 0 {
+            let elapsed_ms = backlog
+                .started_at
+                .map(|started_at| started_at.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            let processed = backlog.processed;
+            backlog.processed = 0;
+            backlog.started_at = None;
+            Some((processed, elapsed_ms))
+        } else {
+            None
+        }
+    }
+
+    /// Whether the pool has at least one worker busy on the backlog right
+    /// now. Backs the `get_insights_backlog` command's initial read.
+    pub fn backlog_active(&self) -> bool {
+        self.backlog.lock().expect("backlog lock").active > 0
+    }
 }
 
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
@@ -139,15 +213,50 @@ fn run_record_pass_with(
     )
 }
 
+/// The first minute after a cold launch runs one worker, so the main
+/// window's first paint competes with a single parse thread rather than
+/// [`WORKER_CONCURRENCY`]. Full concurrency resumes as soon as the main
+/// window reports its content ready, or after [`WORKER_RAMP_SECS`],
+/// whichever comes first.
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut workers = JoinSet::new();
-        for _ in 0..WORKER_CONCURRENCY {
+        workers.spawn(run_worker(app.clone()));
+        let handle = app.state::<WorkerHandle>();
+        let (reason, elapsed) =
+            await_ramp(&handle.ramp, Duration::from_secs(WORKER_RAMP_SECS)).await;
+        for _ in 1..WORKER_CONCURRENCY {
             workers.spawn(run_worker(app.clone()));
         }
+        ::tracing::info!(
+            event = "insights_worker_ramped",
+            workers = WORKER_CONCURRENCY,
+            reason,
+            elapsed_ms = elapsed.as_millis() as u64
+        );
         while workers.join_next().await.is_some() {}
     })
+}
+
+/// Waits for `ramp` or `timeout`, whichever comes first. A small function
+/// so a test with paused time can drive both branches directly. Times
+/// itself against tokio's own clock, not [`Instant`], so a paused-time test
+/// sees the timeout branch's elapsed time as the requested timeout instead
+/// of the real time the wait actually took.
+async fn await_ramp(ramp: &Notify, timeout: Duration) -> (&'static str, Duration) {
+    let started = tokio::time::Instant::now();
+    tokio::select! {
+        () = ramp.notified() => ("content_ready", started.elapsed()),
+        () = tokio::time::sleep(timeout) => ("timeout", started.elapsed()),
+    }
+}
+
+/// Ends [`spawn`]'s launch-time throttle. The main window's
+/// `main_window::content_ready` calls this on its first report; a launch
+/// that never opens the main window ramps on [`WORKER_RAMP_SECS`] instead.
+pub fn notify_ramp(app: &tauri::AppHandle) {
+    app.state::<WorkerHandle>().ramp.notify_one();
 }
 
 async fn run_worker(app: tauri::AppHandle) {
@@ -175,6 +284,13 @@ async fn run_worker(app: tauri::AppHandle) {
     let announce_idle = move || {
         let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
     };
+    let backlog_app = app.clone();
+    let announce_backlog = move |active: bool| {
+        let _ = backlog_app.emit(
+            commands::INSIGHTS_BACKLOG_CHANGED_EVENT,
+            crate::dto::InsightsBacklog { active },
+        );
+    };
     let analytics_app = app.clone();
     let report_ingested = move |agent: AgentKind, ingested: IngestedIncidents| {
         crate::analytics::record_provider_incidents_ingested(&analytics_app, agent, &ingested);
@@ -182,13 +298,17 @@ async fn run_worker(app: tauri::AppHandle) {
     let clock = || unix_now();
     let store = app.state::<Store>();
     let handle = app.state::<WorkerHandle>();
+    let signals = WorkerLoopSignals {
+        idle: &announce_idle,
+        backlog: &announce_backlog,
+    };
     worker_loop(
         &store,
         &handle,
         &clock,
         &run_pass,
         &announce,
-        &announce_idle,
+        &signals,
         &report_ingested,
     )
     .await;
@@ -408,12 +528,19 @@ pub(crate) async fn process_next(
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
+    on_claimed: &(dyn Fn() + Send + Sync),
 ) -> anyhow::Result<bool> {
     let Some(claim) =
         store.claim_next_evidence(&crate::agents::evidence_cohort(), clock(), LEASE_SECS)?
     else {
         return Ok(false);
     };
+    // Mark the pool busy now, before this claim's pass runs. The pass
+    // itself can take a while, and a published pass's `announce` event
+    // reaches the frontend as soon as the pass returns — waiting for that
+    // return to also flip the backlog signal would let the event arrive
+    // while the backlog still read idle.
+    on_claimed();
     let Some(record) = store.session(&claim.key)? else {
         return Ok(true);
     };
@@ -464,14 +591,17 @@ pub(crate) async fn process_next_work(
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
+    on_claimed: &(dyn Fn() + Send + Sync),
 ) -> anyhow::Result<bool> {
     let now = clock();
     if let Some(recovery) = store.next_remediation_write_recovery(now)? {
+        on_claimed();
         crate::remediation::recover_uncertain_write(store, &recovery, now)?;
         return Ok(true);
     }
     let remediation_first = store.take_remediation_work_turn();
     if remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
+        on_claimed();
         let _ = crate::remediation::evaluate_dirty_remediation(
             store.state_dir(),
             store,
@@ -480,11 +610,20 @@ pub(crate) async fn process_next_work(
         )?;
         return Ok(true);
     }
-    let processed = process_next(store, clock, run_pass, announce, report_ingested).await?;
+    let processed = process_next(
+        store,
+        clock,
+        run_pass,
+        announce,
+        report_ingested,
+        on_claimed,
+    )
+    .await?;
     if processed {
         return Ok(true);
     }
     if !remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
+        on_claimed();
         let _ = crate::remediation::evaluate_dirty_remediation(
             store.state_dir(),
             store,
@@ -496,27 +635,70 @@ pub(crate) async fn process_next_work(
     Ok(false)
 }
 
+/// `worker_loop`'s two report-only signals to the app layer: `checks:
+/// report-changed` on every settle, and the pool-wide backlog start/drain.
+/// Bundled into one parameter so adding the backlog signal did not tip the
+/// loop over clippy's argument-count limit.
+pub(crate) struct WorkerLoopSignals<'a> {
+    pub idle: &'a (dyn Fn() + Send + Sync),
+    pub backlog: &'a (dyn Fn(bool) + Send + Sync),
+}
+
 pub(crate) async fn worker_loop(
     store: &Store,
     handle: &WorkerHandle,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
-    announce_idle: &(dyn Fn() + Send + Sync),
+    signals: &WorkerLoopSignals<'_>,
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) {
     let mut processed = false;
+    let busy = AtomicBool::new(false);
+    // Fires as soon as `process_next_work` claims a unit of work, before it
+    // runs that work. Guarded so the pool-wide busy count only counts this
+    // worker's idle-to-busy edge once per stretch, the same guard the old
+    // `if !busy` check at the loop level used to apply after the work
+    // finished instead of before it started.
+    let on_claimed = || {
+        if !busy.swap(true, Ordering::SeqCst)
+            && let Some(pending) = handle.note_backlog_busy(store)
+        {
+            ::tracing::info!(event = "insights_backlog_started", pending);
+            (signals.backlog)(true);
+        }
+    };
     loop {
-        match process_next_work(store, clock, run_pass, announce, report_ingested).await {
+        match process_next_work(
+            store,
+            clock,
+            run_pass,
+            announce,
+            report_ingested,
+            &on_claimed,
+        )
+        .await
+        {
             Ok(true) => {
+                handle.note_backlog_processed();
                 processed = true;
-                announce_idle();
+                (signals.idle)();
                 continue;
             }
             Ok(false) => {
+                if busy.swap(false, Ordering::SeqCst)
+                    && let Some((drained, elapsed_ms)) = handle.note_backlog_idle()
+                {
+                    ::tracing::info!(
+                        event = "insights_backlog_drained",
+                        processed = drained,
+                        elapsed_ms
+                    );
+                    (signals.backlog)(false);
+                }
                 if processed {
                     processed = false;
-                    announce_idle();
+                    (signals.idle)();
                 }
                 tokio::select! {
                     () = handle.wake.notified() => {}
@@ -524,6 +706,16 @@ pub(crate) async fn worker_loop(
                 }
             }
             Err(error) => {
+                if busy.swap(false, Ordering::SeqCst)
+                    && let Some((drained, elapsed_ms)) = handle.note_backlog_idle()
+                {
+                    ::tracing::info!(
+                        event = "insights_backlog_drained",
+                        processed = drained,
+                        elapsed_ms
+                    );
+                    (signals.backlog)(false);
+                }
                 ::tracing::error!(event = "insights_worker_failed", error = %error);
                 tokio::time::sleep(Duration::from_secs(IDLE_POLL_SECS)).await;
             }

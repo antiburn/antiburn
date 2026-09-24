@@ -403,6 +403,12 @@ pub struct RepeatedContext {
     /// Old persisted evidence uses zero until analysis refreshes it.
     #[serde(default)]
     pub paid_tokens: u64,
+    /// Cache misses followed by recovered hits during continuous activity.
+    #[serde(default)]
+    pub transient_miss_episodes: u64,
+    /// Recovered misses after a supported route-specific user idle interval.
+    #[serde(default)]
+    pub possible_rehydration_episodes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1333,7 +1339,7 @@ mod tests {
             "coverage": coverage,
             "provenance": {
                 "parserRevision": PARSER_REVISION,
-                "analyzerRevision": 24,
+                "analyzerRevision": 25,
                 "evidenceSchemaRevision": EVIDENCE_SCHEMA_REVISION,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
@@ -1359,7 +1365,7 @@ mod tests {
             "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "skillCoverage": {"state": "unsupported"}, "mcpCoverage": {"state": "unsupported"}, "toolDefinitions": {"state": "unsupported"}}},
             "models": {"state": "complete", "value": {"byModel": {}, "controlObservations": [], "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "effortTiersByModel": {}, "fastModesByModel": {}, "serviceTiers": {"state": "unsupported"}, "effortSignal": {"eligibleTurns": 0, "presentTurns": 0}, "speedSignal": {"eligibleTurns": 0, "presentTurns": 0}, "dominantMainModel": null}},
             "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "delegatedModels": [], "children": [], "examples": []}},
-            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0, "paidTokens": 0}}}},
+            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0, "paidTokens": 0, "transientMissEpisodes": 0, "possibleRehydrationEpisodes": 0}}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},
             "quotaIncidents": {"state": "complete", "value": {"incidents": []}},
             "providerIncidents": {"state": "complete", "value": {"incidents": []}}

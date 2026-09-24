@@ -13,6 +13,7 @@ sources:
   - src/styles/hud.css
   - src/styles/main-window.css
   - src/styles/burn-checks-report.css
+  - src/styles/interface-scale.css
   - src/styles/session-analysis-colors.css
   - src/styles/session-rows.css
   - src/styles/session-detail.css
@@ -464,6 +465,7 @@ motion:
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
+  overview-entrance: "700ms ease-out; the chart reveals from the left with a clip-path inset, the headline figures fade in; plays once per app run and is recorded on animationend; reduced motion clamps it through the shared rule"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
   hud-led-blink: "steps(1) loop; --led-period 300ms to 3s on eight geometric rungs, set per segment from the spend rate; 300ms is the flash-safety cap for a 6px dot"
   led-sweep: "4000ms loop in src/styles/hud.css, the session list's shimmer cycle and its phase: installLivePhase in src/lib/livePhase.ts sets the start time of every live animation from the wall clock, on an animation frame, so a title shimmer and a meter sweep hold the same point of the cycle however late either one starts and whatever a render does; it sets the start time again when an animation starts, when the window comes back, and once each cycle, so a window that stopped painting returns in step; the stylesheets declare no animation-delay, because a delay would move the phase; the sweep is held back 0.2s because a stepped segment snaps on where the soft shimmer fades in; a gleam crosses the lit segments of each live meter in about 2s, rows 100ms apart, and runs the ring's lit arc once; each segment takes one of two brightness levels, off or the peak, instead of a smooth ramp, and the band is about three segments wide; it peaks at 0.56 in the popover; the floating HUD does not sweep, because it shows the spend-rate blink alone; the gleam takes a shade of the segment's own colour, white above a dark segment and dark above a light one; unlit segments do not move; a meter that is scoped to one model sweeps only while a live session runs that model; reduced motion stops the loop and holds the brand tint on the next segment to light"
@@ -547,13 +549,14 @@ components:
     separator: "{colors.separator} hairline between two unselected neighbours"
   list-display-toolbar:
     className: "ListDisplayToolbar + SegmentedControl variant=text-tabs"
-    selectedInk: "{colors.accent}"
+    selectedInk: "{colors.accent} by default; {colors.label} for the Sessions metric through selectedTone=neutral"
     indicatorColor: "{colors.label}"
     typography: "{typography.footnote}" # size="regular" (default): 24px row, 12px gap
     height: 32px
     padding: "0 12px"
     motion: "100ms color and underline opacity crossfade; no moving indicator"
     largeSize: 'size="large": {typography.body}, 28px row, 16px gap; used by the Overview usage unit control'
+    descriptions: "Each metric option can attach a Tooltip and aria-describedby text to its actual focusable button"
   scroll:
     className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
@@ -830,7 +833,7 @@ Notes for what isn't expressible as a token:
   minimum of 1000 × 560. The initial outer frame uses at most 85% of each usable display dimension,
   including native chrome. A smaller work area takes precedence over the normal minimum. Saved
   user sizes can exceed the initial cap and remain constrained to the usable work area. It paints the opaque
-  `surface-window` canvas. A shared 40px titlebar spans the window. macOS reserves 78px
+  `surface-window` canvas. A shared titlebar spans the window, 40px high at 100%. macOS reserves 78 native logical pixels
   for native traffic lights, matching the 32px center spacing of adjacent toolbar icons. Native button centers target 20 logical pixels below the
   window top, using AppKit coordinate conversion. Horizontal native positions remain unchanged.
   Resize, display-scale, focus, and fullscreen-exit notifications align the buttons synchronously
@@ -851,7 +854,9 @@ Notes for what isn't expressible as a token:
   charts, and explicit `data-no-window-drag` regions keep their own input behavior.
   The overlay passes pointer input through to the view; there is no blocking drag sheet.
   Windows and Linux reserve 40px above the detail pane, Overview, and Limits content for right-side caption controls.
-  The sidebar stays visible at 220px on all platforms. Navigation starts below the toolbar
+  The sidebar stays visible at 220 CSS pixels when the CSS viewport is at least 720px wide.
+  Narrower viewports use a modal navigation drawer; its trigger sits below the shared toolbar.
+  Navigation starts below the toolbar
   without a brand header or Search row. Search stays after Forward. Command+K / Control+K
   open the palette. Previously saved collapsed preferences do not change this layout.
   Search opens an immediate, top-centered
@@ -895,23 +900,87 @@ Features, Settings, and Checks, limited to five per category. Search is navigati
 Settings opens its separate window at a stable control ID, and a check opens its disclosure.
 Neither path executes an action or changes a setting. Queries stay local and are not persisted.
 
+### Interface scaling
+
+Interface size is a reader preference, not a display-resolution heuristic. The operating
+system owns display DPI; the shell applies one native webview zoom factor on top of it.
+The supported percentages live in `interface-scale.json`: 90, 100, 110, 125, 150, 175, and 200. The default and Actual Size action use 100%. Do not animate zoom or multiply the
+type, spacing, radius, or icon tokens by that factor in CSS.
+
+All app-owned web surfaces follow the same saved preference: main window, Settings,
+onboarding, popover, previews, HUD, HUD detail, and nudges. Native menus, traffic lights,
+and operating-system notifications retain native sizing. Before revealing a new surface,
+the native window owner applies zoom and supplies its geometry. Existing main-window
+bounds remain under user control. Preferred utility-window bounds grow with interface
+size but fit inside the current monitor's work area.
+Settings remains resizable, with a minimum content size of 721 × 480 CSS pixels
+multiplied by the interface scale. The extra pixel protects its 720px navigation
+breakpoint from native rounding. The minimum updates when scale or monitor changes
+and is capped by the available work area after native chrome. Compact Settings
+navigation remains a fallback only when the display cannot fit the scaled minimum.
+Onboarding also resizes around its current center during live scale changes,
+clamps to its current monitor's work area, and preserves its renderer and step.
+
+Layout responds to the resulting **CSS viewport**, not physical pixels, screen labels,
+or `devicePixelRatio`. Below 720px, main and Settings navigation use a modal drawer with
+Escape dismissal and focus restoration. Arrow keys select tabs without closing the
+drawer; activation closes it. Settings rows stack controls at a 360px container width.
+Onboarding source columns stack below 720px and retain scrolling. Constrained surfaces
+must reflow or scroll; reducing the chosen zoom to fit is not allowed.
+Below 720px, Overview stacks usage and provider limits in one full-width column.
+Each pane retains its own bounded vertical scroll area; the wide layout stays unchanged.
+
+`styles/interface-scale.css` owns these adaptations. The shell supplies
+`--interface-scale` only to preserve native chrome geometry. On macOS,
+`--native-titlebar-clearance` is `40px / --interface-scale`, preserving a 40 native
+logical pixel band at every preset, including 90%. Settings and onboarding keep
+their content below it; the main toolbar shares it outside the traffic-light inset.
+The main toolbar reserves 78 native logical pixels horizontally for traffic lights.
+Its web controls scale horizontally; hover fills stay inside the fixed native-height band.
+Windows and Linux have web-owned titlebars: their 40 CSS pixel height and caption controls
+scale with the interface. Compact main navigation reserves the toolbar once above its
+trigger, rather than adding a second inset inside the workspace. Drawer sidebars use normal
+flow, not the wide layout's absolute positioning. Overview's compact grid has two content
+rows, with no obsolete titlebar spacer. Search keeps its input and footer fixed while the
+results shrink and scroll inside the viewport-bounded dialog.
+Below 720 CSS pixels, Checks stacks its collection and detail in two flexible scroll
+regions, so the fixed desktop collection width cannot push controls outside the window.
+
+The Interface size control is a presentational primitive. A Settings-owned search adapter
+exposes its stable `interfaceSize` target without changing the value on navigation. Its Settings owner invokes
+the dedicated scale command; general settings updates cannot change this preference.
+The shell owns serialization, persistence, all-surface propagation, geometry conversion,
+and consent-gated change analytics. Reusable native window crates accept values and
+geometry only; they must not import app settings, commands, or analytics.
+
+Release validation and its native-platform gates are documented in the
+[interface-scale QA runbook](../../docs/runbooks/interface-scale-qa.md). Browser fixtures
+exercise layout and interactions; they do not prove native zoom, monitor transitions,
+traffic-light clearance, or native preview hit testing.
+
 ### Main window collection and detail architecture
 
-The fixed 220px navigation sidebar, 340px collection pane, and flexible detail pane fill
-the workspace. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
+when the CSS viewport is at least 900px wide. Below 900px, the collection and detail share
+one pane. Activating a row opens detail; Back restores the collection's focus and scroll.
+Each pane owns its scroll viewport. Generic pane labels are visually hidden;
 the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
 the detail retains 440px; at the 1100px default width, it receives 540px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
 Sessions initially selects the newest active session, or the newest session from today in the
 local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;
 clearing or deleting a selection does not trigger another automatic selection.
+An explicit session target from another window reveals and focuses the compact detail pane.
+A newer target request can reopen the same session after Back. The session boundary passes
+only a reveal revision to the generic pane; ordinary selection and refresh do not create one.
 The default collection uses 40px minimum rows, semantic selected fills, and the shared
 keyboard-only focus treatment. Arrow keys, Home, and End select rows; Enter focuses the detail
 region. Visited sections retain their state and scroll position while hidden.
 
 `MainWindowLayout` owns chrome and columns. `CollectionDetailPane` owns selection and detail
 slots; a custom collection slot owns its own viewport, including any virtualization. These
-components do not load data or subscribe to events. Sessions supplies the existing virtualized
+components do not load feature data or subscribe to domain events. The window boundary observes
+the CSS viewport through a ref-counted resize subscription. Sessions supplies the existing virtualized
 `SessionList` and shared session detail in embedded mode. Selected session rows use `surface-selected/60` for a softer fill in both themes;
 hover and tooltip states retain that fill. This yields a 5.4% black tint in light mode and
 an 8.4% white tint in dark mode, without reducing text or badge opacity. Sidebar and generic
@@ -939,17 +1008,84 @@ dot; the timestamp never wraps. When the repository name exceeds
 not reserve inline space for the vendor mark. Group labels use sentence case. A
 shared `ListDisplayToolbar` places the pinned activity label and the right-aligned `text-tabs` badge metric control on one row with the labels Cost,
 Week %, and 5h %. Its accessible group name replaces redundant visible labels. The selected choice uses accent ink and a
-primary-label hairline underline. The control crossfades only color and underline opacity over `--duration-quick`; it never slides a moving indicator.
+primary-label hairline underline by default. Sessions opts into neutral primary-label ink while retaining the underline. Each option links its
+own shared tooltip description to its focusable radio: Cost explains estimated session cost, while Week % and 5h % explain the estimated share
+of the provider limit for that window when available. The control crossfades only color and underline opacity over `--duration-quick`; it never slides a moving indicator.
+
+The Sessions collection starts with a contextual filter header. Its first row pairs the primary Sessions heading with a round `CountPill` showing the full eligible total
+with a trailing Filters menu. Its unfilled icon-only trigger uses a 14px descending-line filter icon, the regular control-height token for both dimensions, and the existing expanded pointer target. The descending lines identify filtering; a “Filter sessions” tooltip appears on hover and keyboard focus. Opening the menu clears the trigger tooltip and prevents it from reopening until the menu closes. The trigger has no resting fill or border. It uses secondary ink at rest, primary ink with a circular `surface-hover` fill on hover, and primary ink with `surface-selected` while the menu is open. It retains its accessible Filters name, keyboard focus ring and shared pressed-opacity feedback.
+A compact Today or N days control sits immediately before Filters in the right-aligned action group. The Sessions title and total badge form the left-hand group. When any facet is active, a quiet middle dot separates the badge from secondary caption text “Showing X” with tabular numerals, including “Showing 0” for no matches. It disappears when filters clear. A separate atomic polite live region contains both total and matching counts as text, so a matching-count change is announced even when the total stays fixed. The visible badge and summary are hidden from assistive technology to avoid duplicate counts. The range uses secondary caption text.
+Both collection totals use the regular `CountPill` size: `type-caption` (11px) with `space-lg` (16px) height and minimum width, matching the check-section count dimensions. Filter and overflow counts retain the compact metadata size.
+The Filters menu closes after the mouse leaves its bounds and the trigger by more than
+`space-sm` (8px), then stays outside for `duration-slow` (300ms). Re-entry cancels the timer.
+Associated tooltip surfaces stay inside this grace area. Keyboard input cancels pointer dismissal
+until the mouse returns to the menu or trigger; touch keeps tap-away dismissal. Hover-away dismissal does not restore focus to the trigger, so its tooltip stays closed when the pointer is elsewhere. Escape and explicit menu actions retain keyboard focus recovery. Closing or unmounting
+removes the timer and pointer listeners. The grace area does not intercept clicks on adjacent controls.
+The range uses a quiet `surface-hover` fill on hover with `px-1` horizontal padding and `rounded-control`.
+It shows only Today or N days, with no arrow suffix, and keeps its full accessible label and keyboard focus treatment.
+It opens Settings → General at the existing activity-range
+control. Its tooltip explains that active sessions are always included. Counts, facet choices, and list empty states share the same eligible
+calendar-day collection, including active sessions and rows without a transcript id. High-cost classification uses this same collection across
+all agents before facets apply. Its automatic threshold is the greater of $2 or three times the median known cost, with at least eight known
+costs required. Known zero costs count; unknown costs do not. High-cost badges, counts, and filtering use the same strict above-threshold comparison.
+Agent checkboxes support multiple selection; result and spend remain single-choice groups. The menu stays
+open across choices. Unselected zero-count options stay visible at 50% opacity but are disabled for pointer and keyboard input. Selected options
+and each All option stay enabled even with zero matches, so users can remove or reset filters. Agent menu rows pair vendor marks with visible names, accessible menu labels, and
+typeahead text. Vendor marks use 14px in menu rows. Active chips use 12px vendor marks centered in a 14px box to balance their visual weight against the 14px check-result marks. Agent chips show only the mark and remove icon; the whole chip provides its vendor-name tooltip. Failed and Passed menu
+rows and active chips reuse the shared 14px Burn Check marks and colors. Active facet labels use primary `text-label` ink; remove icons retain their secondary hierarchy. Active pills describe selected constraints and omit counts, including from their accessible removal labels. Contextual match counts remain in the menu; the header badge retains the full time-range total. Active chips use the quieter `surface-card` fill at rest and `surface-secondary` on hover in both themes.
+Status marks sit 8px from their chip labels; the label or vendor mark sits 4px from its remove icon.
+The minimum-spend option reads “$1 or more” in the menu and “≥ $1” in the pill; its accessible name remains “$1 or more”.
+The menu selection checkmark remains separate. High cost keeps
+its short label in the menu and chip. The menu shows the current threshold as secondary `Over $N` text. The menu row and chip expose a
+tooltip: “Based on all agents in this time range: 3× the median session cost, with a $2 minimum.” The chip tooltip also includes the current threshold.
+Whole-dollar thresholds omit `.00`; fractional amounts retain cents. Menu hover and keyboard highlight use the sidebar's `surface-selected` fill and primary `label` ink in both themes. The selection checkmark remains the active-filter indicator. Vendor and status colors remain intact;
+helper text stays secondary and count badges retain their neutral `CountPill` treatment. Every menu option uses `CountPill`. Active chips wrap across the full header width.
+Clear filters appears in a separated menu footer whenever any facet is active. It closes the menu and returns focus to Filters.
+No separate Clear column reserves space beside the chips. Keyboard chip removal moves focus to the
+next chip, then the previous chip, then Filters. Unknown agent slugs use the registry's generic icon and title-cased fallback name.
+The Sessions menu uses the opaque `surface-overlay` token so its background follows the explicit app appearance along with its labels.
+The shared menu border and shadow provide elevation without using an input-field fill.
+
+The whole visible chip removes its filter. Header targets extend one `--spacing` unit minus 0.5px beyond each edge. The `gap-2` gaps retain
+a 1px gutter so fractional layout rounding does not route edge clicks to a neighbor. Range and Filters extend two spacing units upward into
+the available header padding; their lower extension stays clear of the chip row. Sessions metric targets extend two spacing units minus 1px
+vertically and 1.5 spacing units minus 0.5px horizontally into the toolbar's existing padding and `gap-3` gaps. Keep a gutter before the first card.
+These extensions scale with the actual rem-based layout: at the standard 13px root size, action targets are approximately 29–31px high, facet
+targets 26–27px, and metric targets 30.5px. Header and metric controls retain opacity feedback but do not scale on press, so target edges stay
+under the pointer throughout the click. Preserve text, underline, toolbar, and card geometry. These metric extensions apply
+only inside the main Sessions collection. A decorative 1px separator at 50% token strength follows the header contents with `--space-sm` (8px) above it. The following Sessions
+`CollectionToolbar` uses the same `--space-sm` top padding, giving the separator equal 8px spacing above and below, plus the line itself.
+The separator aligns with the header's `px-3` content inset and card edges. It stays visible with no active chips and follows wrapped chip rows.
+It ignores pointer input and assistive technology.
+Filters apply immediately and add no entrance, height,
+or stagger animation.
+When eligible sessions exist but facets exclude them all, show the primary balanced heading “No matching sessions” and one Clear filters button
+as a compact centered group with `mt-3` between the heading and action. Empty states with descriptions keep `mt-4` before their actions.
+Omit the decorative icon, explanation, and Change filters action; the visible header supplies scope and filter editing.
+Clear filters resets facets and returns focus to Filters while preserving the date range and metric. When the range itself is empty, use a calendar icon, range-aware heading, discovery guidance, and Change time range
+to open the same Settings control. Recovery actions wrap in a centered row. Hide the metric toolbar while no rows are visible and retain its selected metric.
+Selected zero-count facets remain visible and removable. These recovery treatments belong to the main Sessions collection; shared popover defaults stay unchanged.
 The detail toolbar shows the session title. Shared Back and Forward own main-window history;
 the popover retains its related-session Back behavior. Embedded adjacent-session shortcuts stay inside the detail pane. Hidden panes pause
 hygiene reads, relative-time clocks, and active-row motion. The menu-bar list shares this card presentation
 while keeping its existing navigation behavior.
 
-Burn checks keeps a screen-reader-only page heading and a compact collection header.
-Both panes use `CollectionToolbar`: `pt-2`, `h-8`, `mb-1`, and `px-3` share Tailwind’s
-rem-based geometry. At the 13px root these resolve to 6.5px, 26px, 3.25px, and 9.75px.
-Burn checks adds no first-card top inset. Labels use `type-caption`. Passed and Snoozed
-separators use 8px spacing on each side; collapsed headings have no bottom margin.
+Sessions and Checks share `CollectionHeader`: `px-3 pt-3`, a `min-h-8` title row,
+a primary title, a round CountPill total badge and secondary range metadata, and an inset half-opacity
+separator with `space-sm` above it. Sessions facets sit between the title row and separator.
+Checks retains its screen-reader page heading and shows a visible `Checks` collection title.
+Show only the total number in a round `CountPill` beside it, with tabular numerals and an atomic polite
+announcement, matching the Sessions count treatment. Align titles, badges, and controls centrally. Count report categories, including snoozed
+and unassessed checks, rather than individual session results. Hide the count until a report exists.
+Its right-aligned `30 days` is a fixed analysis period, not a range selector. A plain,
+keyboard-focusable label explains on hover and focus: “Checks use the last 30 days of sessions.”
+Sessions keeps its independent editable activity range. Do not add a Filters action to Checks.
+Below the separator, both panes use `CollectionToolbar` with `space-sm` top padding,
+`h-8`, `mb-1`, and `px-3`. At the 13px root the latter three resolve to 26px, 3.25px,
+and 9.75px. Checks places its failure icon, `Failed checks` label, and category count on
+this second row, aligned with Sessions' date/metric row. Burn checks adds no first-card top
+inset. Labels use `type-caption`. Passed and Snoozed separators use 8px spacing on each side;
+collapsed headings have no bottom margin.
 Their disclosure controls retain a 40px minimum hit area.
 Resource cards use `session-card` fill, `rounded-control`, 16px padding, and 16px separation.
 Project context appears once below the title and actions, using the full text-column width.
@@ -1261,10 +1397,32 @@ Reduced motion stops the loop; the detail window states the rate in words.
 
 ### Notch island
 
+The native HUD owner reports a revisioned layout in native logical points and
+its applied WebView scale. The renderer converts the hardware-bound header to
+CSS pixels once. The notch gap, header height and fillets stay fixed on
+the display. Each wing starts at 30 native points at 100% and grows with interface
+size, capped equally by the available space on both sides of the camera gap.
+When expanded, the header fills the native-resolved body width. Its wings extend
+to the body's side edges, inside the fixed fillet gutters. They can differ in
+width when the body is clamped to a display edge; the camera gap stays anchored.
+Body padding still uses half the compact wing width, not the expanded wings.
+Header marks scale uniformly, with their height capped to leave `space-xs` above
+and below them. Their shared size retains the existing 2.5-spacing-unit mark,
+1.4-times-wide and 0.4-times-high live LED; no horizontal stretching applies.
+The expanded body uses its own
+native-resolved width, grows with interface size below the header, and stays
+inside the notch display's usable bounds. Long body content scrolls below the
+fixed header. The transparent side gutters and header offset come from the same
+native layout, not a second renderer placement calculation. Drag preview retains
+the floating frame. Scale requests during a drag apply to the HUD after the drop;
+other app windows apply the saved preference immediately.
+
 On a display with a notch, the HUD can sit in it. The island is pure black
 (`hud-island`, as `bg-hud-island`) in both themes, so it merges with the
-notch, and its captions take one light ink (`hud-island-ink`). Collapsed, it
-is the notch row alone: a 30px wing either side of the notch, with its
+notch, and its captions take one light ink (`hud-island-ink`). Monochrome usage
+LEDs use that same ink on the island so they stay visible in both themes;
+provider accents and floating HUD colors stay unchanged. Collapsed, it
+is the notch row alone: a scale-aware wing either side of the notch, with its
 bottom corners at a 14px radius and 6px fillets curving out into the bezel
 (`.hud-island`, `.hud-island-fillets`). Expanded, the HUD content hangs
 below the row, the corners open to 24px and the fillets to 19px

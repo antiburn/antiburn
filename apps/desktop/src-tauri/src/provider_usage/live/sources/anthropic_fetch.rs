@@ -47,9 +47,9 @@
 //!
 //! On macOS the secret read is also cached aggressively: once the Keychain
 //! item has been read and parsed, the token is held in memory until its own
-//! `expiresAt` and the item's secret is not read again while it is live —
-//! worst case, one secret read per token lifetime. Background polls
-//! therefore re-read the secret only when the token they hold has expired,
+//! `expiresAt`. A foreground authentication rejection bypasses the cache
+//! for one read. A failed read preserves the cached credential. Background polls read the secret again only when the
+//! cached token has expired,
 //! and the touch — the one path adjacent to a fresh secret read — runs only
 //! in user context, so any Keychain prompt the OS ever judges owed appears
 //! while the reader is looking at the screen.
@@ -746,7 +746,7 @@ impl ClaudeDirectFetch {
     ///
     /// On macOS the Keychain secret is read through
     /// [`ClaudeDirectFetch::keychain_credentials`]: while the cached token is
-    /// live, the item's secret is not read again at all.
+    /// live, recovery can bypass the cache for one read.
     fn read_carriers(
         &self,
     ) -> (
@@ -754,47 +754,8 @@ impl ClaudeDirectFetch {
         Option<FetchFailure>,
         Vec<ClaudeCredentials>,
     ) {
-        let mut carriers = Vec::new();
-        let mut native_carriers = Vec::new();
-        #[cfg(target_os = "macos")]
-        let mut error = None;
-        #[cfg(not(target_os = "macos"))]
-        let error = None;
-        #[cfg(target_os = "macos")]
-        if self.try_keychain {
-            let cached = self
-                .keychain_credentials
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-                .filter(|credentials| credentials.is_live(OffsetDateTime::now_utc()));
-            if let Some(credentials) = cached {
-                native_carriers.push(credentials.clone());
-                carriers.push(credentials);
-            } else {
-                match macos_keychain::read().credentials() {
-                    Ok(parsed) => {
-                        *self
-                            .keychain_credentials
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = parsed.clone();
-                        if let Some(credentials) = parsed {
-                            native_carriers.push(credentials.clone());
-                            carriers.push(credentials);
-                        }
-                    }
-                    Err(failure) => error = Some(failure),
-                }
-            }
-        }
-        if let Some(credentials) = self
-            .credentials_path
-            .as_deref()
-            .and_then(read_credentials_file)
-        {
-            native_carriers.push(credentials.clone());
-            carriers.push(credentials);
-        }
+        let (native_carriers, error) = self.read_native_carriers(false);
+        let mut carriers = native_carriers.clone();
         if let Some(path) = self.pi_auth_path.as_deref()
             && let Some(entry) = pi_auth::read_entry(path, pi_auth::ANTHROPIC_KEY)
                 .filter(|entry| !entry.refresh_token.is_empty())
@@ -827,9 +788,69 @@ impl ClaudeDirectFetch {
         }
         (carriers, error, native_carriers)
     }
+
+    fn read_native_carriers(
+        &self,
+        refresh_keychain: bool,
+    ) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = refresh_keychain;
+        let mut carriers = Vec::new();
+        #[cfg(target_os = "macos")]
+        let mut error = None;
+        #[cfg(not(target_os = "macos"))]
+        let error = None;
+        #[cfg(target_os = "macos")]
+        if self.try_keychain {
+            match self.read_keychain_credentials(refresh_keychain, || {
+                macos_keychain::read().credentials()
+            }) {
+                Ok(Some(credentials)) => {
+                    carriers.push(credentials);
+                }
+                Ok(None) => {}
+                Err(failure) => error = Some(failure),
+            }
+        }
+        if let Some(credentials) = self
+            .credentials_path
+            .as_deref()
+            .and_then(read_credentials_file)
+        {
+            carriers.push(credentials);
+        }
+        (carriers, error)
+    }
 }
 
 impl ClaudeDirectFetch {
+    #[cfg(target_os = "macos")]
+    fn read_keychain_credentials(
+        &self,
+        force_read: bool,
+        read: impl FnOnce() -> Result<Option<ClaudeCredentials>, FetchFailure>,
+    ) -> Result<Option<ClaudeCredentials>, FetchFailure> {
+        if !force_read {
+            let cached = self
+                .keychain_credentials
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+                .filter(|credential| credential.is_live(OffsetDateTime::now_utc()));
+            if cached.is_some() {
+                return Ok(cached);
+            }
+        }
+        // Replace the cache only after a successful read. A temporary read
+        // failure does not prove that the cached credential is invalid.
+        let current = read()?;
+        *self
+            .keychain_credentials
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = current.clone();
+        Ok(current)
+    }
+
     /// The delegated-refresh path the module doc's "Delegating refresh to
     /// the CLI" section describes: touch, verify by metadata, read the
     /// secret once, retry the usage call once.
@@ -844,6 +865,10 @@ impl ClaudeDirectFetch {
         now: OffsetDateTime,
     ) -> Result<Option<ProviderUsageSnapshot>, FetchFailure> {
         let Some(env) = self.touch_env.as_deref() else {
+            ::tracing::debug!(
+                event = "claude_refresh_outcome",
+                outcome = "environment_unavailable"
+            );
             return Err(auth_failure(SourceErrorDetail::RefreshPending));
         };
         let settled = match claude_touch::touch(env, &self.touch_gate) {
@@ -860,11 +885,14 @@ impl ClaudeDirectFetch {
         };
         // The change has settled: the one permitted secret read, through the
         // normal carriers. On macOS this also refills the expiry cache.
-        let (_, _, native_carriers) = self.read_carriers();
+        let (native_carriers, read_error) = self.read_native_carriers(true);
         let Some(credentials) = native_carriers
             .into_iter()
             .find(|credentials| credentials.is_live(now))
         else {
+            if let Some(failure) = read_error {
+                return Err(failure);
+            }
             // The CLI wrote its carrier and the credential is still dead: an
             // `invalid_grant`-style terminal failure. The fix is `claude
             // /login`, so the touch stays blocked until the material changes
@@ -944,7 +972,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // skip anyway should not pay for either — nor re-raise a Keychain
         // access prompt the reader has already seen.
         let outcome = self.cooldown.poll(now, max_age, || {
-            let (carriers, carrier_error, native_carriers) = self.read_carriers();
+            let (carriers, mut carrier_error, native_carriers) = self.read_carriers();
             // The touch below requires a *native* carrier: Pi's read-only
             // entry alone never triggers one — see the module doc's
             // "Delegating refresh to the CLI" section.
@@ -963,21 +991,67 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 log_cache_reading_used(cached, now, "fresh");
                 return Ok(Some(snapshot_from_cache(cached.clone(), native)));
             }
-            let fetched = fetch_from_carriers(
+            let previous_tokens: Vec<_> = carriers
+                .iter()
+                .map(|carrier| carrier.access_token.clone())
+                .collect();
+            let mut fetched = fetch_from_carriers(
                 self.transport.as_ref(),
                 carriers,
                 self.claude_json_path.as_deref(),
                 now,
             );
+            // Read the native carrier once before CLI recovery. Another Claude
+            // process can replace a token before its recorded expiry.
+            if matches!(fetched, Err(ProviderUsageError::Authentication))
+                && native_present
+                && user_initiated(max_age)
+            {
+                let (current, read_error) = self.read_native_carriers(true);
+                let changed: Vec<_> = current
+                    .into_iter()
+                    .filter(|credential| {
+                        credential.is_live(now)
+                            && !previous_tokens.contains(&credential.access_token)
+                    })
+                    .collect();
+                let outcome = if !changed.is_empty() {
+                    "changed"
+                } else if read_error.is_some() {
+                    "unreadable"
+                } else {
+                    "unchanged"
+                };
+                ::tracing::debug!(
+                    event = "claude_credential_reread",
+                    outcome,
+                    keychain_read_failed = read_error.is_some()
+                );
+                carrier_error = read_error;
+                if !changed.is_empty() {
+                    fetched = fetch_from_carriers(
+                        self.transport.as_ref(),
+                        changed,
+                        self.claude_json_path.as_deref(),
+                        now,
+                    );
+                }
+            }
             // Only the expired/rejected credential state — never a network
             // or 5xx failure — reaches for the CLI, and only in user context.
             // A background poll with a native carrier does not touch; the
             // next user-initiated poll does, so that state is pending.
             let fetched = match fetched {
                 Err(ProviderUsageError::Authentication) if native_present => {
-                    if user_initiated(max_age) {
+                    if let Some(failure) = carrier_error.take() {
+                        Err(failure)
+                    } else if user_initiated(max_age) {
                         self.touch_then_retry(now)
                     } else {
+                        ::tracing::debug!(
+                            event = "claude_refresh_outcome",
+                            outcome = "background_deferred"
+                        );
                         Err(auth_failure(SourceErrorDetail::RefreshPending))
                     }
                 }
@@ -1718,6 +1792,41 @@ mod tests {
     /// behaves — `cooldown.rs`'s own suite owns that.
     const TEST_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_failed_forced_keychain_read_preserves_the_credential_for_a_later_check() {
+        let source = ClaudeDirectFetch::at(PathBuf::from("/nonexistent/.credentials.json"));
+        let credential = ClaudeCredentials {
+            access_token: "cached-access".into(),
+            expires_at_ms: (real_now_secs() + 3_600) * 1_000,
+            subscription_type: None,
+            rate_limit_tier: None,
+        };
+        *source.keychain_credentials.lock().unwrap() = Some(credential);
+        let result =
+            source.read_keychain_credentials(true, || Err(ProviderUsageError::Unavailable.into()));
+        assert_eq!(result.err().unwrap().error, ProviderUsageError::Unavailable);
+        let retained = source
+            .read_keychain_credentials(false, || panic!("the next check uses the retained cache"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.access_token, "cached-access");
+        let replacement = ClaudeCredentials {
+            access_token: "replacement-access".into(),
+            ..retained
+        };
+        let fresh = source
+            .read_keychain_credentials(true, || Ok(Some(replacement)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(fresh.access_token, "replacement-access");
+        let cached = source
+            .read_keychain_credentials(false, || panic!("the replacement is cached"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.access_token, "replacement-access");
+    }
+
     /// A popover-shaped `max_age` — well under a minute, matching
     /// `cooldown.rs`'s own `SHORT_MAX_AGE` — for the `fetch_with_cache`
     /// tests below, which care whether the cache is fresh enough to
@@ -2191,6 +2300,38 @@ mod tests {
     }
 
     #[test]
+    fn native_rereads_do_not_recover_an_expired_pi_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(&pi_path, r#"{"anthropic":{"type":"oauth","access":"stale-access","refresh":"pi-refresh","expires":1}}"#).unwrap();
+        struct PanicRunner;
+        impl super::super::pi_refresh::RefreshRunner for PanicRunner {
+            fn run(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                panic!("native recovery must not refresh Pi")
+            }
+            fn check(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                panic!("native recovery must not check Pi")
+            }
+        }
+        let mut source = ClaudeDirectFetch::with_pi(
+            pi_path,
+            Box::new(UnreachableTransport),
+            PiRefresher::with_runner(Box::new(PanicRunner)),
+        );
+        let native_path = dir.path().join(".credentials.json");
+        fs::write(
+            &native_path,
+            credentials_file((real_now_secs() + 3_600) * 1_000, "max"),
+        )
+        .unwrap();
+        source.credentials_path = Some(native_path);
+        let (native, error) = source.read_native_carriers(true);
+        assert!(error.is_none());
+        assert_eq!(native.len(), 1);
+        assert!(native[0].is_live(OffsetDateTime::now_utc()));
+    }
+
+    #[test]
     fn an_expired_pi_entry_recovers_through_the_delegated_refresh_and_retries_once() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pi_path = dir.path().join("pi-auth.json");
@@ -2507,6 +2648,139 @@ mod tests {
     /// The seconds-relative-to-now the touch tests stamp credentials with.
     fn real_now_secs() -> i64 {
         OffsetDateTime::now_utc().unix_timestamp()
+    }
+
+    struct RotatingTransport {
+        path: PathBuf,
+        calls: Arc<AtomicUsize>,
+        replacement: Option<String>,
+        result: Result<String, ProviderUsageError>,
+    }
+
+    impl AnthropicTransport for RotatingTransport {
+        fn usage(&self, token: &str) -> Result<String, ProviderUsageError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                if let Some(replacement) = &self.replacement {
+                    fs::write(&self.path, replacement).unwrap();
+                }
+                return Err(ProviderUsageError::Authentication);
+            }
+            assert_eq!(token, "rotated-access");
+            self.result.clone()
+        }
+
+        fn profile(&self, _token: &str) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_replaced_credential_is_retried_before_cli_recovery() {
+        for result in [
+            Ok(LIVE_USAGE_BODY.to_string()),
+            Err(ProviderUsageError::RateLimited),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(".credentials.json");
+            let body = credentials_file((real_now_secs() + 3_600) * 1_000, "max");
+            fs::write(&path, &body).unwrap();
+            let mut replacement: serde_json::Value = serde_json::from_str(&body).unwrap();
+            replacement["claudeAiOauth"]["accessToken"] = "rotated-access".into();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let expected_error = result.as_ref().err().copied();
+            let source = ClaudeDirectFetch::at_with_touch(
+                path.clone(),
+                Box::new(RotatingTransport {
+                    path,
+                    calls: Arc::clone(&calls),
+                    replacement: Some(replacement.to_string()),
+                    result,
+                }),
+                Box::new(UntouchableEnv),
+            );
+            let outcome = source.fetch(USER_MAX_AGE);
+            assert_eq!(outcome.error, expected_error);
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    struct TemporarilyRejectedTransport(AtomicUsize);
+
+    impl AnthropicTransport for TemporarilyRejectedTransport {
+        fn usage(&self, _token: &str) -> Result<String, ProviderUsageError> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(ProviderUsageError::Authentication)
+            } else {
+                Ok(LIVE_USAGE_BODY.to_string())
+            }
+        }
+        fn profile(&self, _token: &str) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn an_unchanged_credential_can_recover_on_a_later_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.json");
+        fs::write(
+            &path,
+            credentials_file((real_now_secs() + 3_600) * 1_000, "max"),
+        )
+        .unwrap();
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let source = ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(TemporarilyRejectedTransport(AtomicUsize::new(0))),
+            Box::new(FileTouchEnv {
+                path,
+                binary_present: true,
+                writes_on_spawn: None,
+                spawns: Arc::clone(&spawns),
+            }),
+        );
+        assert_eq!(
+            source.fetch(USER_MAX_AGE).detail,
+            Some(SourceErrorDetail::RefreshPending)
+        );
+        source.cooldown.open_for_test();
+        let recovered = source.fetch(USER_MAX_AGE);
+        assert_eq!(recovered.error, None);
+        assert_eq!(recovered.snapshots.len(), 1);
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_unchanged_rejected_credential_is_not_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.json");
+        fs::write(
+            &path,
+            credentials_file((real_now_secs() + 3_600) * 1_000, "max"),
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let source = ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(RotatingTransport {
+                path: path.clone(),
+                calls: Arc::clone(&calls),
+                replacement: None,
+                result: Ok(LIVE_USAGE_BODY.to_string()),
+            }),
+            Box::new(FileTouchEnv {
+                path,
+                binary_present: true,
+                writes_on_spawn: None,
+                spawns: Arc::clone(&spawns),
+            }),
+        );
+        let outcome = source.fetch(USER_MAX_AGE);
+        assert_eq!(outcome.detail, Some(SourceErrorDetail::RefreshPending));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
     }
 
     #[test]

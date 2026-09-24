@@ -24,6 +24,7 @@ export type Milestones = number[]
 /** Every persisted preference. Mirrors Rust `AppSettings`. */
 export interface AppSettings {
   theme: ThemePreference
+  interfaceScalePercent: number
   /** Calendar days of activity the popover list shows. */
   activityWindowDays: number
   /** Days to keep local session data. `-1` keeps it until explicit deletion. */
@@ -128,11 +129,7 @@ export interface AppSettings {
   skillsMcpExpanded: boolean
   /** The metric shown in each activity-session badge. */
   sessionBadgeMetric: "cost" | "weeklyPercent" | "fiveHourPercent"
-  /**
-   * The selected Sessions sidebar filter, as its persisted id (see
-   * `sessionFilterId`/`parseSessionFilterId` in `lib/sessionFilters.ts`). An
-   * id this release does not recognize parses back to `all`.
-   */
+  /** The renderer parses and migrates this saved Sessions filter string. */
   sessionFilter: string
   /** Weeks start on Monday. */
   workingWeek: "five" | "six" | "seven"
@@ -208,6 +205,12 @@ export interface ScanStatus {
    * productive one without inferring it from `listChanged` alone.
    */
   reDescribed: number
+}
+
+/** Whether the insights worker pool has a backlog to drain right now.
+ *  Mirrors Rust `InsightsBacklog`. */
+export interface InsightsBacklog {
+  active: boolean
 }
 
 /**

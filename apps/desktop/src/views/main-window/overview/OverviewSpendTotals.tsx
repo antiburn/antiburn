@@ -12,6 +12,7 @@ import {
 import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFigures"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
+import { useEntranceProps } from "./overviewEntrance"
 
 const SPANS: ReadonlyArray<{
   key: keyof ProviderUsageWindowsPayload
@@ -40,6 +41,11 @@ export function OverviewSpendTotals({
   totals: ProviderUsageWindowsPayload | null
   loading?: boolean
 }) {
+  const entranceProps = useEntranceProps(
+    "spend-totals",
+    "overview-figures-in",
+    !loading && totals != null,
+  )
   const cells: HeroFigureCell[] = SPANS.map((span) => ({
     key: span.key,
     label: (
@@ -49,16 +55,27 @@ export function OverviewSpendTotals({
       </>
     ),
     tooltip: spendTooltip(span.span),
+    // The placeholders wrap a sample of the line they stand in for, so they
+    // take that line's own height and nothing below the section shifts as the
+    // real figures land.
     ...(loading || !totals
       ? {
-          figure: <Skeleton className="h-8 w-28" />,
-          caption: <Skeleton className="h-3 w-36 max-w-full" />,
+          figure: (
+            <Skeleton className="w-28">
+              <SegmentFigure>$0.00</SegmentFigure>
+            </Skeleton>
+          ),
+          caption: <Skeleton className="w-36 max-w-full">0 tokens, 0 sessions</Skeleton>,
         }
       : spendCell(totals[span.key])),
   }))
 
   return (
-    <section aria-label="Estimated local spend" aria-busy={loading || undefined}>
+    <section
+      aria-label="Estimated local spend"
+      aria-busy={loading || undefined}
+      {...entranceProps}
+    >
       <HeroFigures cells={cells} />
     </section>
   )

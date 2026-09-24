@@ -718,6 +718,11 @@ impl PiStreamState {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
         };
+        if role == "assistant" && is_aborted_empty_zero_usage(value) {
+            self.observe_branch_assistant_metadata(value);
+            observe_inert(value, sink);
+            return;
+        }
         event.ts_ms = Some(timestamp);
         event.usage_ts_ms = (role == "assistant")
             .then(|| value.pointer("/message/timestamp").and_then(Value::as_i64))
@@ -752,6 +757,9 @@ impl PiStreamState {
             }
             // Keep the agent policy separate from message.providerThinkingLevel. The latter is not an agent-selected level.
             event.thinking_mode = self.current_thinking_mode.clone();
+            if !has_any_pi_usage(value.pointer("/message/usage")) {
+                event.thinking_mode = None;
+            }
             self.observe_subagent_calls(value, &event, sink);
         }
         // Read explicit identities only. The shared parser also infers skill names from paths and commands.
@@ -998,24 +1006,16 @@ impl PiStreamState {
     }
 
     fn observe_assistant_metadata(&mut self, value: &Value, inherited: bool) {
-        if let Some(model) = value
-            .pointer("/message/model")
-            .and_then(Value::as_str)
-            .and_then(bounded_provider_hint_value)
+        self.observe_branch_assistant_metadata(value);
+        if !inherited
+            && self.model.is_none()
+            && let Some(model) = value
+                .pointer("/message/model")
+                .and_then(Value::as_str)
+                .and_then(bounded_provider_hint_value)
         {
-            if !inherited && self.model.is_none() {
-                self.model = Some(model.clone());
-            }
-            self.current_model = Some(model);
+            self.model = Some(model);
         }
-        if let Some(provider) = value
-            .pointer("/message/provider")
-            .and_then(Value::as_str)
-            .and_then(bounded_provider_hint_value)
-        {
-            self.current_provider = Some(provider);
-        }
-
         if !inherited
             && let Some(api) = value
                 .pointer("/message/api")
@@ -1026,6 +1026,23 @@ impl PiStreamState {
             let reports_cache_writes = api == "anthropic-messages";
             self.cache_write_tokens_available =
                 Some(self.cache_write_tokens_available.unwrap_or(true) && reports_cache_writes);
+        }
+    }
+
+    fn observe_branch_assistant_metadata(&mut self, value: &Value) {
+        if let Some(model) = value
+            .pointer("/message/model")
+            .and_then(Value::as_str)
+            .and_then(bounded_provider_hint_value)
+        {
+            self.current_model = Some(model);
+        }
+        if let Some(provider) = value
+            .pointer("/message/provider")
+            .and_then(Value::as_str)
+            .and_then(bounded_provider_hint_value)
+        {
+            self.current_provider = Some(provider);
         }
     }
 
@@ -1341,6 +1358,35 @@ fn observe_inert(value: &Value, sink: &mut dyn RecordSink) {
     }
 }
 
+fn is_aborted_empty_zero_usage(value: &Value) -> bool {
+    value.pointer("/message/stopReason").and_then(Value::as_str) == Some("aborted")
+        && value
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        && value
+            .pointer("/message/usage")
+            .and_then(Value::as_object)
+            .is_some_and(|usage| {
+                ["input", "output", "cacheRead", "cacheWrite"]
+                    .iter()
+                    .all(|key| usage.get(*key).and_then(Value::as_u64) == Some(0))
+            })
+}
+
+fn has_any_pi_usage(usage: Option<&Value>) -> bool {
+    usage.and_then(Value::as_object).is_some_and(|usage| {
+        ["input", "output", "cacheRead", "cacheWrite"]
+            .iter()
+            .any(|key| {
+                usage
+                    .get(*key)
+                    .and_then(Value::as_u64)
+                    .is_some_and(|count| count > 0)
+            })
+    })
+}
+
 fn unrecognized(discriminator: &str, sink: &mut dyn RecordSink) {
     sink.record(NormalizedRecord::Observation(Box::new(
         EvidenceObservation::UnrecognizedType {
@@ -1601,6 +1647,37 @@ mod tests {
                      "usage":{"input":1,"output":2,"cacheRead":0,"cacheWrite":0}}]
             })).collect::<Vec<_>>()}
         }})
+    }
+
+    #[test]
+    fn empty_zero_usage_abort_updates_branch_model_and_provider_state() {
+        let mut state = PiStreamState::default();
+        let mut sink = SubagentSink::default();
+        state.observe(
+            json!({"type":"model_change","id":"old","parentId":null,"timestamp":1,
+                "modelId":"claude-old","provider":"anthropic"}),
+            &mut sink,
+        );
+        state.observe(
+            json!({"type":"message","id":"aborted","parentId":"old","timestamp":2,
+                "message":{"role":"assistant","model":"gpt-new","provider":"openai-codex",
+                    "api":"openai-codex-responses","stopReason":"aborted",
+                    "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"content":[]}}),
+            &mut sink,
+        );
+
+        assert_eq!(state.current_model.as_deref(), Some("gpt-new"));
+        assert_eq!(state.current_provider.as_deref(), Some("openai-codex"));
+        assert!(sink.events.is_empty());
+
+        state.observe(
+            json!({"type":"message","id":"completed","parentId":"aborted","timestamp":3,
+                "message":{"role":"assistant","usage":{"input":10,"output":2},
+                    "content":[{"type":"text","text":"done"}]}}),
+            &mut sink,
+        );
+        assert_eq!(sink.events.len(), 1);
+        assert_eq!(sink.events[0].model.as_deref(), Some("gpt-new"));
     }
 
     #[test]

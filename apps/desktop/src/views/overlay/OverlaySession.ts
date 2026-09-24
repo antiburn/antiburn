@@ -478,18 +478,25 @@ export class OverlaySession {
         .catch(() => {})
     }
 
-    // The shell owns the island. The HUD asks once, then follows its events.
-    void getHudIslandState()
-      .then((island) => {
-        if (this.isCurrent(generation)) this.applyIsland(island)
-      })
-      .catch(() => {})
+    // Subscribe before the snapshot so a change cannot fall between them.
     void onHudIslandState((island) => {
       if (this.isCurrent(generation)) this.applyIsland(island)
     })
       .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopIslandListening = dispose
-        else dispose()
+        if (!this.isCurrent(generation)) {
+          dispose()
+          return
+        }
+        this.stopIslandListening = dispose
+      })
+      .catch(() => {})
+      .then(() => {
+        if (!this.isCurrent(generation)) return
+        void getHudIslandState()
+          .then((island) => {
+            if (this.isCurrent(generation)) this.applyIsland(island)
+          })
+          .catch(() => {})
       })
       .catch(() => {})
 
@@ -632,7 +639,9 @@ export class OverlaySession {
    * floating frame goes away when the HUD lands in the notch.
    */
   private applyIsland(island: HudIslandState): void {
-    this.update({ island })
+    if (island.revision < this.snapshot.island.revision) return
+    this.commitLayout({ island })
+    void this.syncWindow(false, this.activityGeneration)
     if (island.island !== "off") {
       this.clearShowTimer()
       this.hideDetail()
@@ -906,9 +915,12 @@ export class OverlaySession {
   private syncWindow(animate: boolean, generation: number): Promise<void> {
     if (!this.panel || !this.isCurrent(generation)) return Promise.resolve()
     const height = Math.ceil(this.panel.getBoundingClientRect().height)
-    return resizeOverlayWindow(height, false, animate && !prefersReducedMotion()).catch(
-      () => {},
-    )
+    return resizeOverlayWindow(
+      height,
+      false,
+      animate && !prefersReducedMotion(),
+      this.snapshot.island.revision,
+    ).catch(() => {})
   }
 
   private async beginDrag(screenX: number, screenY: number, generation: number): Promise<void> {
@@ -938,7 +950,7 @@ export class OverlaySession {
       monitor = result[0]
       position = result[1]
     } catch {
-      if (this.isCurrent(generation)) this.settleDrag()
+      if (this.isCurrent(generation)) this.endDrag("origin_failed")
       return
     }
     if (!this.isCurrent(generation) || !this.snapshot.dragging) return

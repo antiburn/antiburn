@@ -1,9 +1,10 @@
-import { useState, type KeyboardEvent } from "react"
+import { useId, useState, type KeyboardEvent } from "react"
 
 import type {
   ProviderUsageDayPayload,
   ProviderUsageWindowPayload,
 } from "../../../lib/providerUsageIpc"
+import { cn } from "../../../lib/cn"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { axisDayLabel, dayLabel } from "../../../lib/presentation/chartDates"
 import {
@@ -15,15 +16,18 @@ import {
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
-import { Skeleton } from "../../../components/ui/Skeleton"
+import { useEntranceProps } from "./overviewEntrance"
 
 import "./overview.css"
 
+/* Every agent stacks in the one blue the session Context chart uses, and
+   the columns fade toward the baseline like that chart's area. The opacity
+   steps are what tell the agents apart, so the swatches take the same steps. */
 const LAYER_STYLES = [
-  { fill: "fill-token-in", swatch: "bg-token-in" },
-  { fill: "fill-token-in/55", swatch: "bg-token-in/55" },
-  { fill: "fill-token-in/30", swatch: "bg-token-in/30" },
-  { fill: "fill-token-in/[0.18]", swatch: "bg-token-in/[0.18]" },
+  { opacity: 1, swatch: "bg-context-stroke" },
+  { opacity: 0.55, swatch: "bg-context-stroke/55" },
+  { opacity: 0.3, swatch: "bg-context-stroke/30" },
+  { opacity: 0.18, swatch: "bg-context-stroke/[0.18]" },
 ] as const
 
 function spendScale(max: number): { ceiling: number; guideFractions: number[] } {
@@ -69,6 +73,7 @@ export function OverviewSpendChart({
   loading?: boolean
 }) {
   const [focusDate, setFocusDate] = useState<string | null>(null)
+  const fillId = `overview-spend-fill-${useId().replace(/:/g, "")}`
   const lastIndex = days.length - 1
   const foundFocus =
     focusDate == null ? -1 : days.findIndex((day) => day.localDate === focusDate)
@@ -139,14 +144,39 @@ export function OverviewSpendChart({
       ?.focus()
   }
 
+  const placeholder = loading || days.length === 0
+  const entranceProps = useEntranceProps("spend-chart", "overview-chart-in", !placeholder)
+
   return (
     <section
-      className="overview-chart"
+      {...entranceProps}
+      className={cn("overview-chart", entranceProps.className)}
       aria-label="Estimated spend by day"
       aria-busy={loading || undefined}
     >
-      {loading || days.length === 0 ? (
-        <Skeleton className="block min-h-(--overview-chart-height) w-full flex-1" />
+      {placeholder ? (
+        <>
+          {/* The same frame the chart draws in: the agent legend above, the
+              value labels beside and the day labels below, all held open and
+              invisible. The block then sits exactly where the plot will, and
+              nothing on the page moves when the chart replaces it. */}
+          <div aria-hidden="true" className="invisible mb-(--space-sm)">
+            <ChartLegend
+              ariaLabel="Agents"
+              items={[{ key: "placeholder", label: "Agent", swatch: "bg-transparent" }]}
+            />
+          </div>
+          <div
+            aria-hidden="true"
+            className="grid min-h-(--overview-chart-height) flex-auto grid-cols-[minmax(0,1fr)_auto] grid-rows-[minmax(0,1fr)_auto] gap-x-(--space-sm) gap-y-(--space-xs) pt-(--space-sm)"
+          >
+            <div className="overview-chart-placeholder" />
+            <div className="type-metadata invisible">
+              <SegmentFigure>$0.00</SegmentFigure>
+            </div>
+            <div className="type-caption invisible h-[1.4em]" />
+          </div>
+        </>
       ) : (
         <>
           <ChartLegend
@@ -175,8 +205,23 @@ export function OverviewSpendChart({
                 preserveAspectRatio="none"
                 aria-hidden="true"
               >
+                <defs>
+                  {/* Drawn in plot space, not per column, so a tall column is
+                      solid at the top and a short one sits in the faded band. */}
+                  <linearGradient
+                    id={fillId}
+                    gradientUnits="userSpaceOnUse"
+                    x1={0}
+                    y1={0}
+                    x2={0}
+                    y2={100}
+                  >
+                    <stop offset={0} stopColor="var(--color-context-stroke)" />
+                    <stop offset={1} stopColor="var(--color-context-fill-top)" />
+                  </linearGradient>
+                </defs>
                 {series.map(({ agent, rects, style }) => (
-                  <g key={agent} data-agent={agent}>
+                  <g key={agent} data-agent={agent} fillOpacity={style.opacity}>
                     {rects.map(({ index, lower: segmentLower, upper }) => (
                       <rect
                         key={index}
@@ -184,7 +229,7 @@ export function OverviewSpendChart({
                         y={100 - upper}
                         width={columnWidth}
                         height={upper - segmentLower}
-                        className={style.fill}
+                        fill={`url(#${fillId})`}
                       />
                     ))}
                   </g>

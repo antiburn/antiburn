@@ -61,7 +61,7 @@ exact binding limits. The same document has the exhaustive prompt matrix.
 | Codex       | Supported         | D/T/S/M/K/O/F               | Prompts for all nine checks                                 |
 | OpenCode    | Supported         | D/S/M/K/O                   | Prompts for D, S, M, B, K, O, and C                         |
 | Cursor      | Finding-only O    | None                        | Current M/K inventory; prompts for characterized O findings |
-| Pi          | Supported         | D/T/O                       | Prompts for D, T, S, M, K, and O; B and C unavailable       |
+| Pi          | Supported         | D/T/O/C                     | Prompts for D, T, S, M, K, O, and C; B unavailable          |
 | Antigravity | Finding-only D/O  | None                        | Current M/K inventory; prompts for D and O                  |
 
 ### Second-tier product coverage
