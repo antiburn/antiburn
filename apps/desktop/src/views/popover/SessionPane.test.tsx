@@ -78,6 +78,7 @@ function analysisPayload(sourcePath: string | null): SessionAnalysisPayload {
     startedAtEpoch: null,
     analysisPending: false,
     analysisStale: false,
+    calledTools: null,
   }
 }
 

@@ -36,7 +36,8 @@ use crate::dto::{
     ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
     BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
-    ChecksReportPayload, CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome,
+    CalledToolPayload, ChecksReportPayload, CopyPromptFixBurnCheckOutcome,
+    CopyPromptFixBurnCheckTargetOutcome,
     DeferredPermissionDir, HygieneSummaryPayload, InsightsBacklog, LiveUsageSummary,
     OrchestrationStatus, PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason,
     ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
@@ -936,15 +937,22 @@ fn session_analysis(
     // worker's job — see its announce callback in `insights_worker::spawn`
     // — so this command never caches one itself or reports a row fact
     // for it.
-    let (analysis, analysis_pending, analysis_stale) =
+    let (analysis, analysis_pending, analysis_stale, called_tools) =
         match analysis::analysis_from_rows(&store, &key, &session_id, kind) {
             Some(replayed) => {
-                let evidence_status = store.evidence(&key).ok().flatten().map(|row| row.status);
-                (replayed, false, analysis_is_stale(evidence_status))
+                let evidence_row = store.evidence(&key).ok().flatten();
+                let called_tools = stored_called_tools(evidence_row.as_ref());
+                let evidence_status = evidence_row.map(|row| row.status);
+                (
+                    replayed,
+                    false,
+                    analysis_is_stale(evidence_status),
+                    called_tools,
+                )
             }
             None => {
                 requeue_and_wake_worker(app, &store, &key);
-                (analysis::SessionAnalysis::unavailable(), true, false)
+                (analysis::SessionAnalysis::unavailable(), true, false, None)
             }
         };
     let relations = resolve_lineage(app, &key, wsl_distro.as_deref());
@@ -983,7 +991,20 @@ fn session_analysis(
         project_path: stored_project_path(stored.as_ref()),
         analysis_pending,
         analysis_stale,
+        called_tools,
     })
+}
+
+/// The called-tool list from a session's last published evidence.
+///
+/// The list is informational, so it serves the last evidence the row holds,
+/// the same prior-evidence rule the hygiene payload follows. `None` when no
+/// evidence is stored, when it cannot be parsed, or when the source records
+/// no tool evidence.
+fn stored_called_tools(row: Option<&crate::store::EvidenceRow>) -> Option<Vec<CalledToolPayload>> {
+    let evidence_json = row?.evidence_json.as_ref()?;
+    let evidence = serde_json::from_str::<SessionEvidence>(evidence_json).ok()?;
+    crate::dto::session_called_tools(&evidence.tools)
 }
 
 /// The transcript path to reveal, from the store's own record of the source
@@ -1074,6 +1095,9 @@ fn subagent_analysis(
         project_path: None,
         analysis_pending,
         analysis_stale,
+        // The stored tool evidence counts the whole session, so it cannot
+        // describe one sub-agent.
+        called_tools: None,
     })
 }
 

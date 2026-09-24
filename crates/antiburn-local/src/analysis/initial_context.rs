@@ -8,10 +8,12 @@
 //! [`crate::analysis::model`] stream, which discards the per-source text this needs). It
 //! is best-effort: agent-specific parsing stays isolated.
 //!
-//! Supported agents today: Claude Code and Codex (both delivered as JSONL by the
-//! app). Everything else returns `None` ("unavailable"). A supported agent whose
-//! session has no skills or MCP servers still returns a breakdown, with empty
-//! `sources`.
+//! Supported agents today: Claude Code, Codex, and Oh My Pi (all delivered as
+//! JSONL by the app). Everything else returns `None` ("unavailable"). A
+//! supported agent whose session has no skills or MCP servers still returns a
+//! breakdown, with empty `sources`. An Oh My Pi session returns `None` when it
+//! has no `session_init` row, because only that row records the startup
+//! context.
 
 use std::collections::{HashMap, HashSet};
 
@@ -138,6 +140,7 @@ fn parse_initial_context_with_catalog(
     }
     let result = match agent.to_ascii_lowercase().as_str() {
         "codex" => parse_codex(payload, catalog),
+        "omp" => return OmpContextAccumulator::from_payload(payload).finish().0,
         _ => InitialContextTokenParseResult::Unsupported,
     };
     match result {
@@ -159,6 +162,7 @@ pub fn parse_skill_descriptions(agent: &str, payload: &str) -> HashMap<String, S
     match agent.to_ascii_lowercase().as_str() {
         "claude" => collect_claude_skill_descriptions(payload, &mut out),
         "codex" => collect_codex_skill_descriptions(payload, &mut out),
+        "omp" => out.extend(OmpContextAccumulator::from_payload(payload).finish().1),
         _ => {}
     }
     out
@@ -466,6 +470,55 @@ impl CodexContextAccumulator {
             &HashSet::new(),
             tool_catalog::embedded(),
         ));
+        let breakdown = to_output(normalize_breakdown(self.source_rows));
+        (Some(breakdown), self.skill_descriptions)
+    }
+}
+
+/// The startup context that an Oh My Pi `session_init` row records.
+///
+/// The row holds the system prompt and the tool names. The system prompt
+/// lists each skill as a `- <name>: <description>` bullet in a `<skills>`
+/// block. The row does not record tool or MCP definitions, so this
+/// accumulator gives skill rows only. OMP writes the row at the start of a
+/// subagent session only, so a top-level session has no startup context.
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct OmpContextAccumulator {
+    source_rows: Vec<InitialContextTokenSourceCount>,
+    skill_descriptions: HashMap<String, String>,
+    observed: bool,
+}
+
+impl OmpContextAccumulator {
+    fn from_payload(payload: &str) -> Self {
+        let mut accumulator = Self::default();
+        for value in parse_json_lines(payload) {
+            accumulator.observe(&value);
+        }
+        accumulator
+    }
+
+    /// Reads the first `session_init` row. Other rows have no effect.
+    pub(crate) fn observe(&mut self, value: &Value) {
+        if self.observed || value.get("type").and_then(Value::as_str) != Some("session_init") {
+            return;
+        }
+        self.observed = true;
+        let Some(prompt) = value.get("systemPrompt").and_then(Value::as_str) else {
+            return;
+        };
+        if let Some((start, end)) = section_bounds(prompt, "<skills>") {
+            let section = &prompt[start..end];
+            self.source_rows =
+                parse_named_markdown_bullets(section, InitialContextTokenSource::Skill, None);
+            insert_bullet_descriptions(section, &mut self.skill_descriptions);
+        }
+    }
+
+    pub(crate) fn finish(self) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+        if !self.observed {
+            return (None, HashMap::new());
+        }
         let breakdown = to_output(normalize_breakdown(self.source_rows));
         (Some(breakdown), self.skill_descriptions)
     }
