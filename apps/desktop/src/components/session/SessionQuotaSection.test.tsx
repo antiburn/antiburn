@@ -161,7 +161,7 @@ describe("SessionQuotaSection", () => {
     expect(screen.queryByText((text) => text.startsWith("contributed to"))).toBeNull()
   })
 
-  it("shows the Measured tag for a shared-meter entry", () => {
+  it("shows the contribution without a confidence tag", () => {
     render(
       <SessionQuotaSection
         sessionQuota={payload([boundEntry({ confidence: "measured" })])}
@@ -169,7 +169,8 @@ describe("SessionQuotaSection", () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: HEADER_NAME }))
-    expect(screen.getByText("Measured")).toBeTruthy()
+    expect(screen.getByText("12%")).toBeTruthy()
+    expect(screen.queryByText(/^(Measured|Learned|Seeded|Allocated)$/)).toBeNull()
   })
 
   it("shows the unattributed copy for an unbound entry", () => {
@@ -181,7 +182,7 @@ describe("SessionQuotaSection", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: HEADER_NAME }))
     expect(screen.getByText("Not linked to an account")).toBeTruthy()
-    expect(screen.getByText("Unattributed")).toBeTruthy()
+    expect(screen.queryByText("Unattributed")).toBeNull()
     // The unbound row has no button of its own, only the (now-expanded) header.
     expect(screen.getAllByRole("button")).toHaveLength(1)
   })

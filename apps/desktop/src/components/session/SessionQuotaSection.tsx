@@ -19,23 +19,6 @@ export interface SessionQuotaOpenTarget {
 const ROW_CLASS =
   "group col-span-full grid grid-cols-subgrid items-center gap-3 rounded-control px-1.5 py-1.5 text-left type-callout transition-colors duration-[var(--duration-fast)] ease-out"
 
-/** A muted pill for a row's confidence: the same shape the list uses for a
- *  small count, so a reader recognizes it as metadata rather than a value. */
-function ConfidenceTag({ children }: { children: string }) {
-  return (
-    <span className="shrink-0 rounded-full bg-surface-tertiary/40 px-1.5 py-0.5 text-center type-caption text-label-tertiary">
-      {children}
-    </span>
-  )
-}
-
-function confidenceLabel(confidence: SessionQuotaEntryPayload["confidence"]): string {
-  if (confidence === "measured") return "Measured"
-  if (confidence === "learned") return "Learned"
-  if (confidence === "seeded") return "Seeded"
-  return "Unattributed"
-}
-
 /** "42%", or an em dash when the lane cannot state one. */
 function formatPercent(value: number | null): string {
   return value == null ? "—" : `${Math.round(value)}%`
@@ -175,7 +158,6 @@ function BoundQuotaRow({
       <span className="w-16 shrink-0 text-center tabular-nums text-label-tertiary">
         {formatSpendFigure(entry.usd)}
       </span>
-      <ConfidenceTag>{confidenceLabel(entry.confidence)}</ConfidenceTag>
     </button>
   )
 }
@@ -187,10 +169,9 @@ function UnboundQuotaRow({ entry }: { entry: SessionQuotaEntryPayload }) {
       <span className="min-w-0 flex-1">
         <span className="block truncate text-label-secondary">Not linked to an account</span>
       </span>
-      <span className="w-16 shrink-0 text-right tabular-nums text-label-tertiary">
+      <span className="col-start-4 w-16 shrink-0 text-center tabular-nums text-label-tertiary">
         {formatSpendFigure(entry.usd)}
       </span>
-      <ConfidenceTag>Unattributed</ConfidenceTag>
     </div>
   )
 }
@@ -316,7 +297,7 @@ export function SessionQuotaSection({
       </button>
 
       {expanded && (
-        <div className="mt-1 grid grid-cols-[1fr_auto_auto_auto_auto] gap-1.5">
+        <div className="mt-1 grid grid-cols-[1fr_auto_auto_auto] gap-1.5">
           {[...groups.entries()].map(([key, group]) => (
             <AccountGroup
               key={key}

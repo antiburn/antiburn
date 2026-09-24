@@ -1631,3 +1631,261 @@ fn shared_turn_input_keeps_the_group_limit_before_account_or_model_filtering() {
             .is_none()
     );
 }
+
+#[test]
+fn quota_buckets_keep_exact_usage_times_and_half_open_period_boundaries() {
+    let store = memory_store();
+    let key = insert_session(&store, "timed-usage");
+    observe_account(&store, &account('a'));
+    for timestamp in [99_999, 100_000, 100_001, 199_999, 200_000] {
+        insert_turn(&store, &key, timestamp, 100_000);
+    }
+    insert_unpublished_turn(&store, &key, 150_000, 900_000);
+    let rows = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), None, 100, 200)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    let mut timestamps: Vec<_> = row.usage.iter().map(|&(ts, _)| ts).collect();
+    timestamps.sort_unstable();
+    assert_eq!(timestamps, vec![100_000, 100_001, 199_999]);
+    assert!((row.usd - row.usage.iter().map(|&(_, usd)| usd).sum::<f64>()).abs() < 1e-9);
+    let current = row.in_period(100, 200, 150).unwrap();
+    assert_eq!(current.usage.len(), 2);
+    assert!((current.usd - row.usd * 2.0 / 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn quota_turn_limit_rejects_a_truncated_result_even_inside_one_bucket() {
+    const TEST_TURN_LIMIT: usize = 100;
+    let store = memory_store();
+    let key = insert_session(&store, "bounded-usage");
+    observe_account(&store, &account('a'));
+    insert_turn(&store, &key, 100_000, 1);
+    store
+        .lock()
+        .execute(
+            "WITH RECURSIVE turns(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM turns WHERE n < ?1)
+         INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+             thread_id, turn_index, scope, role, ts_ms, model, input_tokens,
+             cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
+         SELECT 'native', ?2, ?3, 1, 'synthetic', 'synthetic', n, 'main', 'assistant',
+             100000, ?4, 1, 0, 0, 0, 0 FROM turns",
+            params![TEST_TURN_LIMIT as i64, AGENT, key.session_id, MODEL],
+        )
+        .unwrap();
+    assert!(
+        read_quota_turn_input(&store.lock(), 0, 900, TEST_TURN_LIMIT)
+            .unwrap()
+            .is_none()
+    );
+    let exact = read_quota_turn_input(&store.lock(), 0, 900, TEST_TURN_LIMIT + 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        exact.rows.iter().map(|row| row.turn_count).sum::<i64>(),
+        101
+    );
+}
+
+#[test]
+fn timed_quota_costs_keep_one_hour_cache_prices_and_do_not_invent_unknown_fast_prices() {
+    let store = memory_store();
+    let key = insert_session(&store, "timed-pricing");
+    observe_account(&store, &account('a'));
+    insert_turn_with_one_hour_cache_write(&store, &key, 100_000, 100_000);
+    insert_turn(&store, &key, 200_000, 100_000);
+    store
+        .lock()
+        .execute("UPDATE turn SET speed = 'fast' WHERE ts_ms = 200000", [])
+        .unwrap();
+    let rows = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), None, 0, 900)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.usage.len(), 2);
+    for &(ts_ms, usd) in &row.usage {
+        let expected = if ts_ms == 100_000 {
+            100_000.0
+                * lookup_turn_pricing(MODEL, None)
+                    .unwrap()
+                    .input_cost_per_token
+                * 2.0
+        } else {
+            assert!(lookup_turn_pricing(MODEL, Some("fast")).is_none());
+            0.0
+        };
+        assert!((usd - expected).abs() < 1e-9);
+    }
+    assert!((row.usd - row.usage.iter().map(|&(_, usd)| usd).sum::<f64>()).abs() < 1e-9);
+}
+
+#[test]
+fn timed_quota_costs_keep_a_known_fast_mode_price() {
+    let store = memory_store();
+    let key = insert_session_for_agent(&store, "fast-pricing", "codex");
+    bind_account(&store, &key, &account('a'));
+    store
+        .lock()
+        .execute(
+            "UPDATE session_provider_account SET provider = 'openai'",
+            [],
+        )
+        .unwrap();
+    insert_turn_with_model(&store, &key, 100_000, 100_000, "gpt-6-astra");
+    store
+        .lock()
+        .execute("UPDATE turn SET speed = 'fast'", [])
+        .unwrap();
+    let rows = store
+        .attributed_turn_dollars_by_bucket("openai", &account('a'), None, 0, 900)
+        .unwrap()
+        .unwrap();
+    let expected = lookup_turn_pricing("gpt-6-astra", Some("fast"))
+        .unwrap()
+        .input_cost_per_token
+        * 100_000.0;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].usage, vec![(100_000, expected)]);
+    assert_eq!(rows[0].usd, expected);
+}
+
+#[test]
+fn quota_turn_input_keeps_a_small_account_beside_a_seventy_day_workload() {
+    let store = memory_store();
+    let small = insert_session(&store, "small-account");
+    let busy = insert_session(&store, "busy-account");
+    bind_account(&store, &small, &account('a'));
+    bind_account(&store, &busy, &account('b'));
+    insert_turn(&store, &small, 100_000, 100_000);
+    insert_turn(&store, &busy, 1, 1);
+    let workload = 70 * (240_000 / 30);
+    let end_epoch = 70 * 86_400;
+    store
+        .lock()
+        .execute(
+            "WITH RECURSIVE turns(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM turns WHERE n < ?1)
+         INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+             thread_id, turn_index, scope, role, ts_ms, model, input_tokens,
+             cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
+         SELECT 'native', ?2, ?3, 1, 'synthetic', 'synthetic', n, 'main', 'assistant',
+             n * 10800, ?4, 1, 0, 0, 0, 0 FROM turns",
+            params![workload - 1, AGENT, busy.session_id, MODEL],
+        )
+        .unwrap();
+    let input = store
+        .quota_turn_input(0, end_epoch)
+        .unwrap()
+        .expect("the full supported workload fits");
+    assert_eq!(
+        input.rows.iter().map(|row| row.turn_count).sum::<i64>(),
+        workload + 1
+    );
+    let rows = input
+        .for_account(PROVIDER, &account('a'), None)
+        .by_bucket(None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, small);
+    assert_eq!(rows[0].usage.len(), 1);
+    assert!(rows[0].usd > 0.0);
+    assert_eq!(
+        input
+            .for_account(PROVIDER, &account('b'), None)
+            .by_bucket(None)
+            .iter()
+            .map(|row| row.turn_count)
+            .sum::<i64>(),
+        workload
+    );
+}
+
+#[test]
+fn timed_pricing_keeps_model_specific_provider_routes_before_period_clipping() {
+    let hints = serde_json::json!([
+        {"model": MODEL, "provider": "openrouter"},
+        {"model": "gpt-6-astra", "provider": "openai"}
+    ])
+    .to_string();
+    let row = |model: &str| BucketTurnRow {
+        key: SessionKey::new("native", "opencode", "mixed-provider"),
+        hints_json: Some(hints.clone()),
+        accounts_json: "[]".into(),
+        model: Some(model.into()),
+        speed: None,
+        input_tokens: 400_000,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        turn_count: 2,
+        cache_write_1h_tokens: 0,
+        bucket_start_epoch: 0,
+        timed_tokens: vec![
+            [100_000, 100_000, 0, 0, 0, 0],
+            [300_000, 300_000, 0, 0, 0, 0],
+        ],
+    };
+    let mut input = QuotaTurnInput {
+        rows: vec![row(MODEL), row("gpt-6-astra")],
+        known_accounts: HashMap::from([
+            (
+                ("openrouter".into(), "opencode".into()),
+                BTreeSet::from([account('a')]),
+            ),
+            (
+                ("openai".into(), "opencode".into()),
+                BTreeSet::from([account('b')]),
+            ),
+        ]),
+    };
+    for (provider, account_key, model) in [
+        ("openrouter", account('a'), MODEL),
+        ("openai", account('b'), "gpt-6-astra"),
+    ] {
+        let rows = input
+            .for_account(provider, &account_key, None)
+            .by_bucket(None);
+        assert_eq!(rows.len(), 1);
+        let expected = lookup_turn_pricing(model, None)
+            .unwrap()
+            .input_cost_per_token
+            * 400_000.0;
+        assert_eq!(rows[0].usd, expected);
+        assert_eq!(rows[0].in_period(0, 900, 900).unwrap().usd, expected);
+        assert_eq!(rows[0].in_period(0, 200, 200).unwrap().usd, expected / 4.0);
+    }
+    assert!(
+        input
+            .for_account("anthropic", &account('a'), None)
+            .by_bucket(None)
+            .is_empty()
+    );
+
+    input.rows[0].hints_json = Some(
+        serde_json::json!([
+            {"model": MODEL, "provider": "openrouter"},
+            {"model": MODEL, "provider": "openai"}
+        ])
+        .to_string(),
+    );
+    assert!(
+        input
+            .for_account("openrouter", &account('a'), None)
+            .by_bucket(None)
+            .is_empty()
+    );
+    let openai = input
+        .for_account("openai", &account('b'), None)
+        .by_bucket(None);
+    assert_eq!(openai.len(), 1);
+    assert_eq!(openai[0].usage.len(), 2);
+    assert_eq!(
+        openai[0].usd,
+        lookup_turn_pricing("gpt-6-astra", None)
+            .unwrap()
+            .input_cost_per_token
+            * 400_000.0
+    );
+}
