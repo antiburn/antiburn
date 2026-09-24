@@ -117,7 +117,7 @@ pub fn route_for_agent(slug: &str) -> Route {
         AgentKind::Kiro => Route::Fixed(KIRO),
         // Bring-your-own-key clients. The reader holds the provider account,
         // so the model is the only thing that can name it.
-        AgentKind::Cline | AgentKind::OpenCode | AgentKind::Pi => Route::ByModel,
+        AgentKind::Cline | AgentKind::OpenCode | AgentKind::Pi | AgentKind::Omp => Route::ByModel,
     }
 }
 
@@ -260,11 +260,11 @@ mod tests {
         for (slug, provider) in fixed {
             assert_eq!(route_for_agent(slug), Route::Fixed(provider), "{slug}");
         }
-        for slug in ["cline", "opencode", "pi"] {
+        for slug in ["cline", "opencode", "pi", "omp"] {
             assert_eq!(route_for_agent(slug), Route::ByModel, "{slug}");
         }
         assert_eq!(
-            fixed.len() + 3,
+            fixed.len() + 4,
             AgentKind::ALL.len(),
             "every engine agent should be named above"
         );

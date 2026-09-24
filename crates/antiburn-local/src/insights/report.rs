@@ -328,6 +328,16 @@ fn source_supports_finding(detector: DetectorId, format: crate::analysis::Source
                 | DetectorId::OldModelUsage
                 | DetectorId::CacheChurn,
         ) | (
+            // Overdepth reads the largest single request, so an abandoned
+            // branch cannot change another request's context. A subagent
+            // check has no evidence: OMP children live in sibling files
+            // this reader does not open, so `evidence.subagents` stays
+            // `Unsupported` and S is unreachable.
+            SourceFormat::OmpV3Jsonl,
+            DetectorId::SessionsOverDepth
+                | DetectorId::ModelOverthinking
+                | DetectorId::OldModelUsage,
+        ) | (
             SourceFormat::CursorJsonl
                 | SourceFormat::CursorCliAgentJsonl
                 | SourceFormat::CursorCliStoreDb

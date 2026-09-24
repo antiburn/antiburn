@@ -33,6 +33,7 @@ described in [Network](#network).
 | Kiro           | Supported                | Safe V2 CLI facts only                | Unavailable              | Not supported | V2 requires exact local `.json` and `.jsonl` siblings. V3, IDE stores, and manual `/chat save` exports fail closed.                                                                                    |
 | Amp            | Supported                | Partial                               | Finding-only D/O         | Not supported | Thread JSON supports bounded depth and model findings; file-change records fail closed.                                                                                                                |
 | Pi             | macOS and Linux only     | Supported for Pi V1-V3 CLI sessions   | Supported                | Not supported | Includes `PI_AGENT_DIR`; documented V1/V2 migrations are normalized into the V3 reader; excluded on native Windows and WSL.                                                                            |
+| Oh My Pi       | macOS and Linux only     | Supported for the OMP v3 CLI core     | Finding-only D/T/O       | Not supported | Discovers `~/.omp/agent/sessions`, and `PI_CONFIG_DIR` or `PI_CODING_AGENT_DIR` when they resolve to an OMP tree. Named profiles and XDG redirects are not discovered. Extra journal types fail closed, so there is no clean result. |
 | Antigravity    | Supported, **disk-only** | Supported on characterized surfaces   | Finding-only D/O support | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis.                                                                                                                             |
 | Devin          | Supported, **disk-only** | Finding-only S                        | Finding-only S           | Not supported | Uses Devin Local migration-17 SQLite; legacy Windsurf roots keep the stable `windsurf` identity. Desktop ACP is child-only and optional.                                                               |
 
@@ -72,6 +73,7 @@ exact binding limits. The same document has the exhaustive prompt matrix.
 | Kiro           | Unavailable                    | None                        | Current M/K inventory; no remediation prompt |
 | Amp            | Finding-only D/O               | None                        | Current M/K inventory; no remediation prompt |
 | Devin          | Finding-only S                 | None                        | Current M/K inventory; no remediation prompt |
+| Oh My Pi       | Finding-only D/T/O             | None                        | No inventory; Auto Fix and Fix Prompts are a planned follow-up, not shipped |
 
 Each Auto Fix changes one winning control after a separate review and
 confirmation. It changes a global or user control when projects inherit it, and
@@ -87,8 +89,8 @@ or managed override can prevent an immediate behavior change; the review shows
 this warning. Check-level Copy can provide bounded generic text only when it can
 select at least one current target. Every returned prompt has a durable attempt
 reference. Native Windows can read supported setting attribution but
-cannot apply a change. Pi session discovery remains unavailable on native
-Windows. WSL is separate and cannot edit native host config. See the
+cannot apply a change. Pi and Oh My Pi session discovery remains unavailable on
+native Windows. WSL is separate and cannot edit native host config. See the
 [implementation guide](remediation.md) for precedence, verification, savings,
 privacy, and exact unavailable cases.
 

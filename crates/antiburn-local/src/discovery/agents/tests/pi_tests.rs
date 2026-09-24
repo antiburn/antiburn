@@ -22,6 +22,43 @@ fn agent_dir_accepts_pi_environment_overrides() {
     );
 }
 
+/// OMP reads `PI_CODING_AGENT_DIR` too. When one variable points both
+/// explorers at the OMP tree, Pi must yield nothing: its reader cannot
+/// parse an OMP journal, and the OMP explorer owns those files.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_coding_agent_dir_inside_the_omp_root_yields_no_pi_dirs() {
+    let home = TempDir::new().unwrap();
+    let omp_agent = home.path().join(".omp").join("agent");
+    tokio::fs::create_dir_all(omp_agent.join("sessions").join("--Users-test--"))
+        .await
+        .unwrap();
+    let prev_home = std::env::var_os("HOME");
+    let prev_override = std::env::var_os("PI_CODING_AGENT_DIR");
+    // SAFETY: serialised via `serial_test::serial`; no other test thread
+    // can observe the partial env state.
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("PI_CODING_AGENT_DIR", &omp_agent);
+    }
+
+    let dirs = log_dirs_in(home.path()).await;
+
+    // SAFETY: restore the environment within the serialised section.
+    unsafe {
+        match prev_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_override {
+            Some(value) => std::env::set_var("PI_CODING_AGENT_DIR", value),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    assert!(dirs.is_empty(), "Pi must not claim the OMP tree: {dirs:?}");
+}
+
 #[tokio::test]
 async fn test_log_dirs_finds_subdirs() {
     let home = TempDir::new().unwrap();

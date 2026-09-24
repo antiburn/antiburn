@@ -75,6 +75,7 @@ mod tests {
                     | AgentKind::Cursor
                     | AgentKind::OpenCode
                     | AgentKind::Pi
+                    | AgentKind::Omp
                     | AgentKind::Antigravity
                     | AgentKind::Copilot
                     | AgentKind::Cline
@@ -110,6 +111,7 @@ mod tests {
                 "amp-code",
                 "antigravity",
                 "windsurf",
+                "omp",
                 "pi",
             ]
         );

@@ -14,6 +14,7 @@ mod cursor;
 mod devin;
 mod generic_jsonl;
 mod kiro;
+mod omp;
 mod opencode;
 mod passive;
 pub(crate) mod pi;
@@ -26,6 +27,7 @@ static CODEX: codex::CodexSessionReader = codex::CodexSessionReader;
 static CURSOR: cursor::CursorSessionReader = cursor::CursorSessionReader;
 static OPENCODE: opencode::OpenCodeSessionReader = opencode::OpenCodeSessionReader;
 static PI: pi::PiSessionReader = pi::PiSessionReader;
+static OMP: omp::OmpSessionReader = omp::OmpSessionReader;
 static ANTIGRAVITY: antigravity::AntigravitySessionReader = antigravity::AntigravitySessionReader;
 static COPILOT: copilot::CopilotSessionReader = copilot::CopilotSessionReader;
 static CLINE: cline::ClineSessionReader = cline::ClineSessionReader;
@@ -56,6 +58,7 @@ pub fn reader_for(agent: &str) -> &'static dyn SessionReader {
         "opencode" => &OPENCODE,
         "kiro" => &KIRO,
         "amp-code" => &AMP,
+        "omp" => &OMP,
         "pi" => &PI,
         "antigravity" => &ANTIGRAVITY,
         "windsurf" => &WINDSURF,
@@ -73,6 +76,7 @@ pub fn has_dedicated_reader(agent: &str) -> bool {
             | "codex"
             | "cursor"
             | "opencode"
+            | "omp"
             | "pi"
             | "antigravity"
             | "copilot"
@@ -129,6 +133,7 @@ mod tests {
             "codex",
             "cursor",
             "opencode",
+            "omp",
             "pi",
             "antigravity",
             "copilot",

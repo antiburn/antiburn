@@ -43,7 +43,7 @@ release. A clean result still needs complete session facts and eligible activity
 
 ## Source Inventory
 
-The tables list all 32 `SourceFormat` keys. Known source shape and release
+The tables list all 33 `SourceFormat` keys. Known source shape and release
 version are separate facts. A version range is not always available; an accepted
 schema, header, or pinned producer commit with synthetic fixtures can establish
 a bounded contract. No row promises parity across all historical versions.
@@ -55,6 +55,7 @@ a bounded contract. No row promises parity across all historical versions.
 | `OpenCodeJsonl`                | OpenCode legacy exported session data                                     | Accepted export wrappers and native message/part shapes; pinned research below                                                                                                                                                            | Dedicated                             |
 | `OpenCodeSqliteV2`             | OpenCode SQLite `session`, `message`, `part` tables                       | Fixture-backed `id`/foreign-key contract in a read-only transaction snapshot; optional time/title/part-ID columns; not CoreV2 `session_message`                                                                                           | Dedicated                             |
 | `PiV3Jsonl`                    | Pi session JSONL                                                          | Leading header version 1, 2, or 3 with pinned read-time migrations and core/example-extension shapes; headerless and unsupported-version sources are rejected                                                                             | Dedicated                             |
+| `OmpV3Jsonl`                   | Oh My Pi session JSONL behind the title slot                              | Fixed-width 256-byte `type: "title"` slot, then an exact version 3 header; synthetic fixtures pin the accepted shape, an allowlist admits only the OMP core rows, and every other record type or header version fails closed                | Shared Pi-family reader               |
 | `CursorJsonl`                  | Cursor compatibility JSONL without a surface marker                       | Unversioned and uncharacterized                                                                                                                                                                                                           | Dedicated shared Cursor reader        |
 | `CursorCliAgentJsonl`          | Cursor agent transcript JSONL                                             | Separate partial export contract with content blocks and explicit subagent-path parent observations; no model fallback                                                                                                                    | Dedicated shared Cursor reader        |
 | `CursorCliStoreDb`             | Legacy Cursor CLI `chats/**/store.db` data                                | Private `blobs`/`meta` subset pinned by public reverse engineering; partial                                                                                                                                                               | Dedicated shared Cursor reader        |
@@ -96,6 +97,7 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `OpenCodeJsonl`                | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  |
 | `OpenCodeSqliteV2`             | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  |
 | `PiV3Jsonl`                    | Assessable  | Assessable  | Partial     | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Assessable  |
+| `OmpV3Jsonl`                   | Partial     | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
 | `CursorJsonl`                  | Unsupported | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Partial     | Unknown     | Unknown     |
 | `CursorCliAgentJsonl`          | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
 | `CursorCliStoreDb`             | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
@@ -206,12 +208,17 @@ evidence.
 
 ## Second-Tier Product Coverage
 
-GitHub Copilot, Cline, Kiro, Amp, and Devin remain second-tier in product
-documentation. This defers no implemented parser, finding path, prompt, Auto
-Fix, verification, or burn-estimate behavior. The accepted Copilot CLI v1 event
-and schema-v7 request-store bundle supports S/O results. It does not support D
-because the production reader has no request-depth evidence. The other current
-source and check limits remain the source inventory and coverage matrix above.
+GitHub Copilot, Cline, Kiro, Amp, Devin, and Oh My Pi remain second-tier in
+product documentation. This defers no implemented parser, finding path, prompt,
+Auto Fix, verification, or burn-estimate behavior. The accepted Copilot CLI v1
+event and schema-v7 request-store bundle supports S/O results. It does not
+support D because the production reader has no request-depth evidence. Oh My Pi
+supports D/T/O results from the shared Pi core. Overdepth reads the largest
+single request, so an in-file abandoned branch cannot change the context of
+another request. It does not support S, because OMP subagents live in sibling
+files this reader does not open. It has no inventory, no remediation prompt,
+and no clean result. The other current source and check limits remain the
+source inventory and coverage matrix above.
 
 ## Evidence Boundaries
 
@@ -643,6 +650,7 @@ each operation still needs an exact target binding at runtime.
 | `OpenCodeJsonl`                | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
 | `OpenCodeSqliteV2`             | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
 | `PiV3Jsonl`                    | D/T/S/M/K/O/C     | O              | T                  | D                     | T/O                 |
+| `OmpV3Jsonl`                   | None              | None           | None               | None                  | None                |
 | `CursorJsonl`                  | O                 | None           | None               | None                  | None                |
 | `CursorCliAgentJsonl`          | O                 | None           | None               | None                  | None                |
 | `CursorCliStoreDb`             | O                 | None           | None               | None                  | None                |

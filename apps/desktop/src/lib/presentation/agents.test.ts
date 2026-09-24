@@ -14,6 +14,7 @@ describe("defaultAgentSurface", () => {
     expect(defaultAgentSurface("opencode")).toBe("cli")
     expect(defaultAgentSurface("amp-code")).toBe("cli")
     expect(defaultAgentSurface("pi")).toBe("cli")
+    expect(defaultAgentSurface("omp")).toBe("cli")
   })
 
   it("returns 'ide_desktop' for editor-only agents", () => {
@@ -63,6 +64,7 @@ describe("agentSupportsAnalysis", () => {
     expect(agentSupportsAnalysis("opencode")).toBe(true)
     expect(agentSupportsAnalysis("antigravity")).toBe(true)
     expect(agentSupportsAnalysis("pi")).toBe(true)
+    expect(agentSupportsAnalysis("omp")).toBe(true)
     expect(agentSupportsAnalysis("cline")).toBe(true)
     expect(agentSupportsAnalysis("kiro")).toBe(true)
   })
@@ -98,6 +100,7 @@ describe("registry shape", () => {
         "cursor",
         "kiro",
         "opencode",
+        "omp",
         "pi",
         "windsurf",
       ].sort(),

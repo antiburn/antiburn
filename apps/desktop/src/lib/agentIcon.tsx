@@ -60,6 +60,7 @@ export const BRAND_MARKS: Record<string, BrandMark> = {
   opencode: fromSimpleIcons(siOpencode),
   windsurf: fromSimpleIcons(siWindsurf),
   pi: fromSimpleIcons(siPi),
+  omp: fromSimpleIcons(siPi),
   codex: OPENAI_MARK,
   antigravity: ANTIGRAVITY_MARK,
 }

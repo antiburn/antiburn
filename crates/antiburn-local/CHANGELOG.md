@@ -17,6 +17,19 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Added
+
+- Add `AgentKind::Omp` and `SourceFormat::OmpV3Jsonl`. Discovery reads
+  `~/.omp/agent/sessions`, honouring `PI_CONFIG_DIR` and the default-profile
+  `PI_CODING_AGENT_DIR`; named profiles and XDG redirects are not discovered.
+  The reader drops the fixed-width 256-byte title slot, requires an exact
+  version 3 header, and admits only the OMP core (`message` with role `user`,
+  `assistant`, `toolResult`, or `bashExecution`, `model_change`,
+  `thinking_level_change`, and `compaction`) before the shared Pi-family
+  scaffolding handles the row. Pi-only rows and other OMP record types stay
+  unrecognized. Session-overdepth, model-overthinking, and old-model findings
+  are allowed; overpowered-subagent and clean results are not.
+
 ## [0.11.0] - 2026-09-22
 
 ### Added

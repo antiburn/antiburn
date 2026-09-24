@@ -1481,6 +1481,7 @@ impl RemediationController {
             AgentKind::Antigravity => SourceFormat::AntigravityCascadeJson,
             AgentKind::Windsurf => SourceFormat::DevinLocalSqlite,
             AgentKind::Pi => SourceFormat::PiV3Jsonl,
+            AgentKind::Omp => SourceFormat::OmpV3Jsonl,
         };
         let cause = match resource.kind {
             crate::agent_config::ResourceKind::McpServer => FindingCause::UnusedMcpServer {
@@ -2179,6 +2180,7 @@ fn verification_source_matches_agent(agent: &str, source_format: SourceFormat) -
                 SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2
             )
             | ("pi", SourceFormat::PiV3Jsonl)
+            | ("omp", SourceFormat::OmpV3Jsonl)
     )
 }
 

@@ -588,7 +588,7 @@ pub(crate) fn model_attribution_matches(
 ) -> bool {
     let (observed_provider, observed_api) = observed_route;
     let normalized_model = match agent {
-        "opencode" | "pi" => {
+        "opencode" | "pi" | "omp" => {
             let Some((provider, model)) = model.and_then(|value| value.split_once('/')) else {
                 return false;
             };

@@ -69,6 +69,7 @@ pub(super) fn vendor_policy(agent: AgentKind) -> Option<&'static dyn VendorRemed
         | AgentKind::Cline
         | AgentKind::Kiro
         | AgentKind::AmpCode
+        | AgentKind::Omp
         | AgentKind::Windsurf => None,
     }
 }
