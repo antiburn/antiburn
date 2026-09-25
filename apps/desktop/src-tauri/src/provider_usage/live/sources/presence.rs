@@ -17,6 +17,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+#[cfg(target_os = "macos")]
 use super::claude_touch;
 #[cfg(target_os = "macos")]
 pub(super) use super::claude_touch::KeychainMetadata;
