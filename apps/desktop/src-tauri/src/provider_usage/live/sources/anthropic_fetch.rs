@@ -382,8 +382,19 @@ mod macos_keychain {
     }
 
     /// Reads one Keychain item. See [`KeychainRead`] for what each outcome
-    /// means.
+    /// means. Every outcome is logged once, with the `security` exit code
+    /// when the process reported one. The log never contains the secret.
     pub fn read() -> KeychainRead {
+        let (read, exit_code) = read_with_exit_code();
+        ::tracing::debug!(
+            event = "claude_keychain_read",
+            outcome = read.outcome(),
+            exit_code
+        );
+        read
+    }
+
+    fn read_with_exit_code() -> (KeychainRead, Option<i32>) {
         let mut child = match antiburn_local::platform::process::headless_std_command("security")
             .args(["find-generic-password", "-s", SERVICE_NAME, "-w"])
             .stdin(Stdio::null())
@@ -392,11 +403,11 @@ mod macos_keychain {
             .spawn()
         {
             Ok(child) => child,
-            Err(_) => return KeychainRead::Unreadable,
+            Err(_) => return (KeychainRead::Unreadable, None),
         };
 
         let Some(mut stdout) = child.stdout.take() else {
-            return KeychainRead::Unreadable;
+            return (KeychainRead::Unreadable, None);
         };
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -424,31 +435,24 @@ mod macos_keychain {
                 // for the reader thread — it will unblock on its own once
                 // the pipe closes and simply have nowhere left to send.
                 let _ = child.kill();
-                let _ = child.wait();
-                return KeychainRead::Unreadable;
+                let exit_code = child.wait().ok().and_then(|status| status.code());
+                return (KeychainRead::Unreadable, exit_code);
             }
         };
         let Ok(status) = child.wait() else {
-            return KeychainRead::Unreadable;
+            return (KeychainRead::Unreadable, None);
         };
         if !status.success() {
-            let read = classify_failed_exit(status.code());
-            ::tracing::debug!(
-                event = "claude_keychain_read",
-                outcome = read.outcome(),
-                exit_code = status.code()
-            );
-            return read;
+            return (classify_failed_exit(status.code()), status.code());
         }
         if bytes.is_empty() || bytes.len() > MAX_BYTES {
-            return KeychainRead::Unreadable;
+            return (KeychainRead::Unreadable, status.code());
         }
         let read = match String::from_utf8(bytes) {
             Ok(text) => KeychainRead::Found(text),
             Err(_) => KeychainRead::Unreadable,
         };
-        ::tracing::debug!(event = "claude_keychain_read", outcome = read.outcome());
-        read
+        (read, status.code())
     }
 
     /// Whether a nonzero exit from `security find-generic-password` means
@@ -939,7 +943,7 @@ impl ClaudeDirectFetch {
 /// The Keychain carrier from one secret read.
 ///
 /// The secret read can report the item as absent while the attribute read
-/// finds it. Detection uses the attribute read, so the meter then says
+/// finds it, or while the attribute read fails. Detection uses the attribute read, so the meter then says
 /// "Signed in". Without this check the source reports no carrier, the
 /// provider has no reading and no error, and every usage surface drops it
 /// without a log line. This function reports that state as a Keychain read
@@ -962,7 +966,8 @@ fn keychain_carrier(
             outcome = "found_without_login"
         );
     }
-    if secret_absent && matches!(metadata(), KeychainMetadata::Found(_)) {
+    // Only an attribute read that also finds no item confirms "no login".
+    if secret_absent && !matches!(metadata(), KeychainMetadata::Absent) {
         ::tracing::warn!(event = "claude_keychain_secret_missing");
         return Err(FetchFailure {
             error: ProviderUsageError::Unavailable,
@@ -2586,6 +2591,17 @@ mod tests {
         // an empty success that removes the provider.
         let outcome = with_carrier_error(Ok(None), Some(failure)).unwrap_err();
         assert_eq!(outcome.detail, Some(SourceErrorDetail::KeychainUnreadable));
+
+        // An attribute read that fails cannot confirm "no login" either.
+        let unconfirmed = keychain_carrier(macos_keychain::KeychainRead::Absent, || {
+            KeychainMetadata::Unreadable
+        })
+        .err()
+        .expect("an unconfirmed absence is a Keychain failure");
+        assert_eq!(
+            unconfirmed.detail,
+            Some(SourceErrorDetail::KeychainUnreadable)
+        );
     }
 
     #[cfg(target_os = "macos")]

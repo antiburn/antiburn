@@ -69,9 +69,10 @@ changed; the subsequent usage request still determines whether recovery worked.
 
 The `claude_keychain_read` debug event records each Keychain secret read as
 `absent`, `unreadable`, `found`, or `found_without_login`, with the `security`
-exit code when it fails. The `warn` event `claude_keychain_secret_missing`
-means that the attribute read found the `Claude Code-credentials` item but the
-secret read did not. The meter then shows a Keychain read failure. The debug
+exit code when the process reports one. The `warn` event `claude_keychain_secret_missing`
+means that the secret read found no `Claude Code-credentials` item but the
+attribute read found it or failed. The meter then shows a Keychain read
+failure, unless another credential carrier returns a reading. The debug
 event `live_source_absent` records a source that returned no reading and no
 error; that provider shows no usage.
 
