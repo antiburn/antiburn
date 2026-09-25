@@ -71,7 +71,8 @@ The debug event `live_usage_request` records each request to the Claude usage
 API with its endpoint (`usage` or `profile`) and HTTP status. It contains no
 token or body. The debug event `live_usage_rate_limit_backoff` records each
 rate limit with the count in a row, the wait before the next attempt, and the
-provider's `Retry-After` when it sent one.
+provider's `Retry-After` when it sent the delay-seconds form. An HTTP-date
+`Retry-After` is not read, so the event then has no `Retry-After` value.
 
 At launch, the `info` event `cli_located` records where antiburn finds the
 `claude` CLI: `process_path`, `install_dir` (an install directory outside the
