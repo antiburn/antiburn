@@ -207,6 +207,13 @@ fn version_key(name: &str) -> Option<Vec<u64>> {
 mod tests {
     use super::*;
 
+    /// The file name that the lookup accepts on this platform.
+    const CLAUDE_FILE: &str = if cfg!(target_os = "windows") {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+
     fn touch_executable(path: &Path) {
         fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         fs::write(path, b"#!/bin/sh\n").expect("write");
@@ -232,13 +239,13 @@ mod tests {
         let stray = tempfile::tempdir().expect("tempdir");
         let installed = tempfile::tempdir().expect("tempdir");
         fs::write(stray.path().join("claude"), b"not a program").expect("write");
-        touch_executable(&installed.path().join("claude"));
+        touch_executable(&installed.path().join(CLAUDE_FILE));
 
         let dirs = [stray.path().to_path_buf(), installed.path().to_path_buf()];
 
         assert_eq!(
             locate_in("claude", &dirs),
-            Some(installed.path().join("claude"))
+            Some(installed.path().join(CLAUDE_FILE))
         );
     }
 
@@ -246,7 +253,7 @@ mod tests {
     fn a_thin_gui_path_still_finds_a_native_install_under_home() {
         // The PATH that macOS gives an app started from Finder.
         let home = tempfile::tempdir().expect("tempdir");
-        touch_executable(&home.path().join(".local/bin/claude"));
+        touch_executable(&home.path().join(".local/bin").join(CLAUDE_FILE));
 
         let dirs = search_dirs_in(
             Some(OsString::from("/usr/bin:/bin:/usr/sbin:/sbin")),
@@ -256,7 +263,7 @@ mod tests {
 
         assert_eq!(
             locate_in("claude", &dirs),
-            Some(home.path().join(".local/bin/claude"))
+            Some(home.path().join(".local/bin").join(CLAUDE_FILE))
         );
     }
 
@@ -265,8 +272,8 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         let custom = tempfile::tempdir().expect("tempdir");
         let empty_home = tempfile::tempdir().expect("tempdir");
-        touch_executable(&home.path().join(".local/bin/claude"));
-        touch_executable(&custom.path().join("claude"));
+        touch_executable(&home.path().join(".local/bin").join(CLAUDE_FILE));
+        touch_executable(&custom.path().join(CLAUDE_FILE));
         let thin = || Some(OsString::from("/usr/bin:/bin:/usr/sbin:/sbin"));
 
         assert_eq!(
@@ -295,8 +302,8 @@ mod tests {
     fn the_process_path_wins_over_the_fallback_directories() {
         let home = tempfile::tempdir().expect("tempdir");
         let custom = tempfile::tempdir().expect("tempdir");
-        touch_executable(&home.path().join(".local/bin/claude"));
-        touch_executable(&custom.path().join("claude"));
+        touch_executable(&home.path().join(".local/bin").join(CLAUDE_FILE));
+        touch_executable(&custom.path().join(CLAUDE_FILE));
 
         let dirs = search_dirs_in(
             Some(custom.path().as_os_str().to_owned()),
@@ -306,20 +313,20 @@ mod tests {
 
         assert_eq!(
             locate_in("claude", &dirs),
-            Some(custom.path().join("claude"))
+            Some(custom.path().join(CLAUDE_FILE))
         );
     }
 
     #[test]
     fn extra_home_directories_are_searched() {
         let home = tempfile::tempdir().expect("tempdir");
-        touch_executable(&home.path().join(".claude/local/claude"));
+        touch_executable(&home.path().join(".claude/local").join(CLAUDE_FILE));
 
         let dirs = search_dirs_in(None, Some(home.path()), &[".claude/local"]);
 
         assert_eq!(
             locate_in("claude", &dirs),
-            Some(home.path().join(".claude/local/claude"))
+            Some(home.path().join(".claude/local").join(CLAUDE_FILE))
         );
     }
 
@@ -327,21 +334,21 @@ mod tests {
     fn nvm_versions_are_searched_newest_first() {
         let home = tempfile::tempdir().expect("tempdir");
         let nvm = home.path().join(".nvm/versions/node");
-        touch_executable(&nvm.join("v18.20.3/bin/claude"));
-        touch_executable(&nvm.join("v20.11.1/bin/claude"));
+        touch_executable(&nvm.join("v18.20.3/bin").join(CLAUDE_FILE));
+        touch_executable(&nvm.join("v20.11.1/bin").join(CLAUDE_FILE));
 
         let dirs = search_dirs_in(None, Some(home.path()), &[]);
 
         assert_eq!(
             locate_in("claude", &dirs),
-            Some(nvm.join("v20.11.1/bin/claude"))
+            Some(nvm.join("v20.11.1/bin").join(CLAUDE_FILE))
         );
     }
 
     #[test]
     fn a_directory_with_the_binary_name_is_not_a_binary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        fs::create_dir_all(dir.path().join("claude")).expect("mkdir");
+        fs::create_dir_all(dir.path().join(CLAUDE_FILE)).expect("mkdir");
 
         assert_eq!(locate_in("claude", &[dir.path().to_path_buf()]), None);
     }
