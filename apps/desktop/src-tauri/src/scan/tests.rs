@@ -2382,3 +2382,124 @@ fn assert_scheduler_source_contract(source: &str) {
 }
 
 mod producers;
+
+/// Write a Claude transcript that starts in `cwd` and edits each of `edits`.
+fn write_claude_session_in(
+    home: &std::path::Path,
+    session_id: &str,
+    cwd: &std::path::Path,
+    edits: &[std::path::PathBuf],
+) -> std::path::PathBuf {
+    let project = home.join(".claude").join("projects").join("-workspace");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut lines = vec![
+        serde_json::json!({
+            "session_id": session_id,
+            "cwd": cwd.to_string_lossy(),
+            "type": "user",
+            "timestamp": "2026-08-01T10:00:00Z",
+        })
+        .to_string(),
+    ];
+    for edit in edits {
+        lines.push(
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2026-08-01T10:01:00Z",
+                "message": {"role": "assistant", "content": [{
+                    "type": "tool_use",
+                    "name": "Edit",
+                    "input": {"file_path": edit.to_string_lossy()},
+                }]},
+            })
+            .to_string(),
+        );
+    }
+    let path = project.join(format!("{session_id}.jsonl"));
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    path
+}
+
+fn git_init(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let status = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir)
+        .status()
+        .expect("failed to run git init");
+    assert!(status.success());
+}
+
+#[tokio::test]
+async fn a_session_without_a_repository_stays_under_its_folder() {
+    let home = tempfile::TempDir::new().unwrap();
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("notes")).unwrap();
+    let path = write_claude_session_in(
+        home.path(),
+        "plain-folder",
+        &workspace,
+        &[workspace.join("notes/todo.md")],
+    );
+
+    let described = describe(
+        vec![log(AgentKind::Claude, path, 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+    )
+    .await;
+
+    assert!(described.rejected.is_empty());
+    assert_eq!(described.records.len(), 1);
+    assert_eq!(
+        described.records[0].cwd.as_deref(),
+        Some(workspace.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn a_session_started_above_repositories_moves_to_the_repository_it_worked_in() {
+    let home = tempfile::TempDir::new().unwrap();
+    let workspace = home.path().join("workspace");
+    git_init(&workspace.join("app"));
+    std::fs::create_dir_all(workspace.join("notes")).unwrap();
+    let path = write_claude_session_in(
+        home.path(),
+        "parent-folder",
+        &workspace,
+        &[workspace.join("app/README.md")],
+    );
+
+    let described = describe(
+        vec![log(AgentKind::Claude, path, 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+    )
+    .await;
+
+    let app = std::fs::canonicalize(workspace.join("app")).unwrap();
+    assert_eq!(described.records.len(), 1);
+    assert_eq!(
+        described.records[0].cwd.as_deref(),
+        Some(app.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn an_opted_out_folder_without_a_repository_is_rejected() {
+    let home = tempfile::TempDir::new().unwrap();
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let path = write_claude_session_in(home.path(), "opted-out", &workspace, &[]);
+    let ignored = HashSet::from([workspace.to_string_lossy().into_owned()]);
+
+    let described = describe(
+        vec![log(AgentKind::Claude, path, 1_800_000_000)],
+        home.path(),
+        &ignored,
+    )
+    .await;
+
+    assert!(described.records.is_empty());
+    assert_eq!(described.rejected.len(), 1);
+}

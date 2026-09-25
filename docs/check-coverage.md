@@ -229,11 +229,13 @@ signals do not authorize a finding, a clean result, remediation, or historical
 spend attribution; all check-specific route and API requirements below remain
 unchanged. See [`session-lifecycle-events.md`](session-lifecycle-events.md#scoped-sweep-evidence).
 
-Burn checks use only sessions admitted by the repository scan gate. A session
-needs a resolvable Git repository CWD, either recorded or inferred from
-transcript paths below a parent-folder CWD. Disabled roots and their linked
-worktrees are excluded before evidence processing; missing or unresolved CWDs
-are unavailable, never clean.
+Burn checks use only sessions admitted by the scan gate. A session in a Git
+repository, recorded or inferred from transcript paths below a parent-folder
+CWD, has a trusted project root when that repository is enabled and
+accessible. A session outside every repository has no trusted project root, so
+project resource checks for its agent cannot report clean in that window.
+Disabled roots and their linked worktrees are excluded before evidence
+processing; missing CWDs are unavailable, never clean.
 
 No current session reader proves a full historical resource inventory. The
 legacy per-session M/B/K rules deny `Clean`, even when a nested observed-resource

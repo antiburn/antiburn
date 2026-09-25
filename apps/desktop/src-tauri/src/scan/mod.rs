@@ -96,7 +96,6 @@ use antiburn_local::discovery::{
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
-#[cfg(not(test))]
 use antiburn_local::platform::git;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
@@ -1477,6 +1476,7 @@ async fn describe_with_states(
     let mut rejected = Vec::new();
     let mut changed = Vec::new();
     let mut list_changed = false;
+    let mut gate = GateCounts::default();
     for chunk in logs.chunks(METADATA_CONCURRENCY) {
         let mut set = JoinSet::new();
         for log in chunk {
@@ -1515,65 +1515,72 @@ async fn describe_with_states(
                         }
                         #[cfg(not(test))]
                         {
+                            gate.missing_cwd += 1;
                             rejected.push(record.key.clone());
                             continue;
                         }
                     }
                     let cwd = record.cwd.as_deref().expect("the CWD was checked above");
                     if ignored_paths::set_contains(ignored, cwd) {
+                        gate.ignored += 1;
                         rejected.push(record.key.clone());
                         continue;
                     }
-                    // Scan unit fixtures use synthetic paths instead of Git
-                    // repositories. Production always resolves the repository.
-                    #[cfg(test)]
-                    {
-                        if changed_record {
-                            changed.push(record.key.clone());
+                    let cwd = cwd.to_string();
+                    let mut record = record;
+                    let repo_root = match git::repo_root_at(std::path::Path::new(&cwd)).await {
+                        Ok(root) => Some(root),
+                        Err(_) => {
+                            // A session can start in a parent folder of
+                            // repositories. Use the repository that the
+                            // transcript worked in below that folder.
+                            let inferred = inferred_repo_root(&record, &cwd).await;
+                            if let Some(root) = &inferred {
+                                record.cwd = Some(root.to_string_lossy().into_owned());
+                            }
+                            inferred
                         }
-                        records.push(*record);
+                    };
+                    let root = match repo_root {
+                        Some(root) => git::canonical_main_repo_root(&root)
+                            .await
+                            .to_string_lossy()
+                            .into_owned(),
+                        // A session without repository evidence stays under
+                        // its recorded folder.
+                        None => {
+                            gate.outside_repo += 1;
+                            cwd.clone()
+                        }
+                    };
+                    // Apply the shared opt-out gate to both the working directory
+                    // and the canonical main root. This also covers linked worktrees.
+                    if ignored_paths::is_session_ignored(ignored, Some(&cwd), &root) {
+                        gate.ignored += 1;
+                        rejected.push(record.key.clone());
                         continue;
                     }
-                    #[cfg(not(test))]
-                    {
-                        let cwd = cwd.to_string();
-                        let mut record = record;
-                        let root = match git::repo_root_at(std::path::Path::new(&cwd)).await {
-                            Ok(root) => root,
-                            Err(_) => {
-                                // A session can start in a parent folder of
-                                // repositories. Use the repository that the
-                                // transcript worked in below that folder.
-                                let Some(root) = inferred_repo_root(&record, &cwd).await else {
-                                    rejected.push(record.key.clone());
-                                    continue;
-                                };
-                                record.cwd = Some(root.to_string_lossy().into_owned());
-                                root
-                            }
-                        };
-                        let cwd = cwd.as_str();
-                        let root = git::canonical_main_repo_root(&root).await;
-                        // Apply the shared opt-out gate to both the working directory
-                        // and the canonical main root. This also covers linked worktrees.
-                        if ignored_paths::is_session_ignored(
-                            ignored,
-                            Some(cwd),
-                            &root.to_string_lossy(),
-                        ) {
-                            rejected.push(record.key.clone());
-                            continue;
-                        }
-                        if changed_record {
-                            changed.push(record.key.clone());
-                        }
-                        records.push(*record);
+                    if changed_record {
+                        changed.push(record.key.clone());
                     }
+                    records.push(*record);
                 }
-                Ok((DescribeOutcome::Subagent(key), _)) => rejected.push(key),
+                Ok((DescribeOutcome::Subagent(key), _)) => {
+                    gate.subagent += 1;
+                    rejected.push(key);
+                }
                 Ok((DescribeOutcome::Skip, _)) | Err(_) => {}
             }
         }
+    }
+    if gate != GateCounts::default() {
+        ::tracing::debug!(
+            event = "scan_repo_gate",
+            missing_cwd = gate.missing_cwd,
+            ignored = gate.ignored,
+            subagent = gate.subagent,
+            outside_repo = gate.outside_repo,
+        );
     }
     // A rejected transcript's stale row, if any, is about to be evicted below
     // `describe_with_states`'s caller — either way the list must refetch to
@@ -1593,9 +1600,18 @@ async fn describe_with_states(
     }
 }
 
+/// Why one scan pass rejected sessions, and how many it admitted with no
+/// repository. The counts go to the log, so a missing session has a reason.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GateCounts {
+    missing_cwd: usize,
+    ignored: usize,
+    subagent: usize,
+    outside_repo: usize,
+}
+
 /// The repository that a file transcript worked in below `cwd`, when `cwd`
 /// itself is not in a repository.
-#[cfg(not(test))]
 async fn inferred_repo_root(record: &SessionRecord, cwd: &str) -> Option<std::path::PathBuf> {
     if record.source_kind != "file" {
         return None;

@@ -105,14 +105,18 @@ Dedicated reader registration alone does not establish usable session analysis.
 The table lists all 33 `SourceFormat` names from
 `crates/antiburn-local/src/analysis/evidence.rs`, each exactly once.
 
-Before a production session enters the local index, its CWD must resolve to a
-Git repository. When a file transcript's CWD is a parent folder of
-repositories, the scan reads the first 2 MB of the transcript, probes at most
-eight folders below that CWD, and uses the repository that holds the most
-distinct touched folders as the session CWD. The count is folders, not edits.
-The scan maps linked worktrees to the canonical main root and rejects missing
-or unresolved CWDs. A disabled repository is rejected when either its CWD or
-its canonical root is in the existing ignored-path set.
+Before a production session enters the local index, it needs a recorded CWD.
+The scan resolves that CWD to a Git repository. When a file transcript's CWD
+is a parent folder of repositories, the scan reads the first 2 MB of the
+transcript, probes at most eight folders below that CWD, and uses the
+repository that holds the most distinct touched folders as the session CWD.
+The count is folders, not edits. When the scan finds no repository, the
+session stays in the index under its recorded CWD. The scan maps linked
+worktrees to the canonical main root and rejects missing CWDs. A disabled
+repository or folder is rejected when either its CWD or its canonical root is
+in the existing ignored-path set. A scan pass that rejects a session, or keeps
+one outside a repository, writes a `scan_repo_gate` debug event with the
+count for each reason.
 Newly discovered repositories remain enabled by default.
 
 | `SourceFormat`                 | Agent         | Native source                                                                                                           | Discovery and framing                                                                                                                                                                                                                                                        | Parsed facts                                                                                                                                                                                                                                                                            | State                                                                                                                   |
