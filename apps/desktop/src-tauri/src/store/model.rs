@@ -970,6 +970,10 @@ pub struct AppSettings {
     /// Paused stops the *scheduler* only: an explicit rescan still runs, and
     /// everything already indexed stays browsable. See [`crate::scan`].
     pub discovery_paused: bool,
+    /// Whether the scan keeps a session whose working directory is not in a
+    /// Git repository. Off keeps the repository-only scan gate.
+    #[serde(default)]
+    pub include_non_repo_folders: bool,
     /// The master switch for desktop notifications. Off means nothing is
     /// delivered, whatever the per-kind preferences below say.
     pub notifications_enabled: bool,
@@ -1068,6 +1072,7 @@ impl Default for AppSettings {
             dock_icon_visible: true,
             auto_update: true,
             discovery_paused: false,
+            include_non_repo_folders: false,
             // On by default, and the per-kind switches with them: each kind
             // is about something the reader would want to act on, and none
             // repeats. A notification surface that has to be found before it

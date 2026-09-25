@@ -614,12 +614,13 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     }
     crate::app_presence::apply_transition(app, previous, saved);
 
-    // Finishing onboarding, widening the window past what the store holds, and
-    // resuming discovery all want fresh data immediately rather than at the
-    // next tick.
+    // Finishing onboarding, widening the window past what the store holds,
+    // resuming discovery, and changing the folder gate all want fresh data
+    // immediately rather than at the next tick.
     let wants_scan = finished_onboarding
         || saved.activity_window_days > previous.activity_window_days
-        || (previous.discovery_paused && !saved.discovery_paused);
+        || (previous.discovery_paused && !saved.discovery_paused)
+        || previous.include_non_repo_folders != saved.include_non_repo_folders;
     if wants_scan && !saved.discovery_paused {
         app.state::<ScanController>()
             .request(ScanTrigger::SettingsTransition);
@@ -719,6 +720,10 @@ fn record_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sa
         (
             previous.discovery_paused != saved.discovery_paused,
             "discovery_paused",
+        ),
+        (
+            previous.include_non_repo_folders != saved.include_non_repo_folders,
+            "include_non_repo_folders",
         ),
     ] {
         if changed {

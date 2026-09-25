@@ -60,6 +60,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   dockIconVisible: true,
   autoUpdate: true,
   discoveryPaused: false,
+  includeNonRepoFolders: false,
   notificationsEnabled: true,
   notifyUpdateAvailable: true,
   notifyScanFailure: true,

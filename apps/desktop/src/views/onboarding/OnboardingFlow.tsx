@@ -52,6 +52,9 @@ export interface OnboardingFlowProps {
   repositories: readonly LocalRepositoryItem[]
   /** Include or ignore one repository. */
   onToggleRepository: (item: LocalRepositoryItem, enabled: boolean) => void
+  /** Whether the scan keeps sessions from folders without git. */
+  includeNonRepoFolders: boolean
+  onIncludeNonRepoFoldersChange: (enabled: boolean) => void
   /** Run a discovery pass. Called when a step needs fresh results. */
   onDiscover: () => void
   /** The shell's scan status, or null before the first read. */
@@ -256,9 +259,16 @@ function SourcesAndRepos({
   onRemoveScanRoot,
   onRetryScan,
   onToggleRepository,
+  includeNonRepoFolders,
+  onIncludeNonRepoFoldersChange,
 }: Pick<
   OnboardingFlowProps,
-  "defaultRoots" | "scanRoots" | "onAddScanRoot" | "onRemoveScanRoot"
+  | "defaultRoots"
+  | "scanRoots"
+  | "onAddScanRoot"
+  | "onRemoveScanRoot"
+  | "includeNonRepoFolders"
+  | "onIncludeNonRepoFoldersChange"
 > & {
   blockedRoots: readonly string[]
   permissionFlow: FolderPermissionFlow
@@ -464,6 +474,19 @@ function SourcesAndRepos({
             />
           </div>
         ) : null}
+        <div className="mt-2 flex items-center gap-3 border-b border-separator pb-2">
+          <div className="min-w-0 flex-1">
+            <p className="type-callout text-label">Folders without git</p>
+            <p className="type-caption text-label-tertiary">
+              Counts sessions started in a folder that isn't a repository.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={includeNonRepoFolders}
+            onCheckedChange={onIncludeNonRepoFoldersChange}
+            aria-label="Include folders without git"
+          />
+        </div>
         <div className="mt-2 min-h-0 flex-1">
           {scanningAll ? null : scanFailed && repositories.length === 0 ? (
             <div className="flex h-full items-center justify-center px-6 text-center">
@@ -637,6 +660,8 @@ export function OnboardingFlow({
   onRemoveScanRoot,
   repositories,
   onToggleRepository,
+  includeNonRepoFolders,
+  onIncludeNonRepoFoldersChange,
   onDiscover,
   scanStatus,
   liveUsageMeters,
@@ -743,6 +768,8 @@ export function OnboardingFlow({
             onRemoveScanRoot={onRemoveScanRoot}
             onRetryScan={onDiscover}
             onToggleRepository={onToggleRepository}
+            includeNonRepoFolders={includeNonRepoFolders}
+            onIncludeNonRepoFoldersChange={onIncludeNonRepoFoldersChange}
           />
         )}
         {step === "ready" && (

@@ -2382,3 +2382,85 @@ fn assert_scheduler_source_contract(source: &str) {
 }
 
 mod producers;
+
+fn git_init(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).expect("create repo dir");
+    let status = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir)
+        .status()
+        .expect("run git init");
+    assert!(status.success());
+}
+
+/// A parent folder that holds one repository and one plain folder, plus a
+/// transcript that edits a file in each.
+fn folder_of_repos(dir: &std::path::Path) -> (std::path::PathBuf, SessionRecord) {
+    let workspace = dir.join("workspace");
+    git_init(&workspace.join("app"));
+    std::fs::create_dir_all(workspace.join("notes")).expect("create plain folder");
+    let transcript = dir.join("session.jsonl");
+    let line = |path: std::path::PathBuf| {
+        serde_json::json!({"input": {"file_path": path.to_string_lossy()}}).to_string()
+    };
+    std::fs::write(&transcript, line(workspace.join("app/README.md"))).expect("write transcript");
+    let mut session = record("claude", "folder-session", Some(1_000));
+    session.source_label = transcript.to_string_lossy().into_owned();
+    (workspace, session)
+}
+
+#[tokio::test]
+async fn repo_admission_uses_the_repository_that_holds_the_cwd() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, session) = folder_of_repos(dir.path());
+    let app = workspace.join("app");
+
+    let admission = repo_admission(&session, &app.to_string_lossy(), false).await;
+
+    let RepoAdmission::Repository(root) = admission else {
+        panic!("expected the CWD repository, got {admission:?}");
+    };
+    assert_eq!(
+        root.canonicalize().expect("canonical root"),
+        app.canonicalize().expect("canonical app")
+    );
+}
+
+#[tokio::test]
+async fn repo_admission_files_a_parent_folder_session_under_the_repo_it_touched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, session) = folder_of_repos(dir.path());
+
+    let admission = repo_admission(&session, &workspace.to_string_lossy(), false).await;
+
+    let expected = workspace.join("app").canonicalize().expect("canonical app");
+    assert_eq!(admission, RepoAdmission::InferredRepository(expected));
+}
+
+#[tokio::test]
+async fn repo_admission_keeps_a_folder_without_git_only_when_the_setting_is_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, session) = folder_of_repos(dir.path());
+    let notes = workspace.join("notes").to_string_lossy().into_owned();
+
+    assert_eq!(
+        repo_admission(&session, &notes, false).await,
+        RepoAdmission::Rejected
+    );
+    assert_eq!(
+        repo_admission(&session, &notes, true).await,
+        RepoAdmission::Folder
+    );
+}
+
+#[tokio::test]
+async fn repo_admission_reads_only_file_transcripts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, mut session) = folder_of_repos(dir.path());
+    session.source_kind = "providerDb".into();
+
+    assert_eq!(
+        repo_admission(&session, &workspace.to_string_lossy(), false).await,
+        RepoAdmission::Rejected
+    );
+}

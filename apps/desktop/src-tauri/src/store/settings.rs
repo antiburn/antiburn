@@ -200,6 +200,10 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("discoveryPaused")
             .map(|value| value == "true")
             .unwrap_or(defaults.discovery_paused),
+        include_non_repo_folders: stored
+            .get("includeNonRepoFolders")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.include_non_repo_folders),
         notifications_enabled: stored
             .get("notificationsEnabled")
             .map(|value| value == "true")
@@ -339,6 +343,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "discoveryPaused",
         bool_text(settings.discovery_paused)
+    ])?;
+    put.execute(params![
+        "includeNonRepoFolders",
+        bool_text(settings.include_non_repo_folders)
     ])?;
     put.execute(params![
         "notificationsEnabled",

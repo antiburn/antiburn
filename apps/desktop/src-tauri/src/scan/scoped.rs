@@ -596,7 +596,17 @@ async fn refresh_sessions_locked(
         previous_map.insert(key.clone(), record);
     }
 
-    let described = super::describe_with_states(logs, &home, &ignored, &previous_map).await;
+    let include_non_repo_folders = store
+        .settings()
+        .is_ok_and(|settings| settings.include_non_repo_folders);
+    let described = super::describe_with_gate(
+        logs,
+        &home,
+        &ignored,
+        &previous_map,
+        include_non_repo_folders,
+    )
+    .await;
     let record_keys = described
         .records
         .iter()

@@ -151,6 +151,11 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "Repositories",
     aliases: ["projects", "repo", "enabled repositories"],
   },
+  sourceNonRepoFolders: {
+    pane: "sources",
+    label: "Include folders without git",
+    aliases: ["non-repo folders", "missing sessions", "not a repository"],
+  },
   usageMeters: {
     pane: "usage",
     label: "Track Limits for",

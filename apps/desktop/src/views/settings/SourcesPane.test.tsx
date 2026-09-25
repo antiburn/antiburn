@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { DEFAULT_SETTINGS } from "../../lib/ipc"
 import { SourcesPane } from "./SourcesPane"
 
 /**
@@ -76,5 +77,39 @@ describe("SourcesPane scanning", () => {
 
     const button = await screen.findByRole("button", { name: /scanning/i })
     expect(button).toBeDisabled()
+  })
+})
+
+describe("SourcesPane folders without git", () => {
+  it("saves the switch and leaves it off by default", async () => {
+    let stored = { ...DEFAULT_SETTINGS }
+    invoke.mockImplementation((command: string, args?: { settings?: typeof stored }) => {
+      switch (command) {
+        case "get_settings":
+          return Promise.resolve(stored)
+        case "set_settings":
+          stored = args?.settings ?? stored
+          return Promise.resolve(stored)
+        case "get_scan_status":
+          return Promise.resolve(SCAN_STATUS)
+        case "list_scan_roots":
+        case "list_repositories":
+          return Promise.resolve([])
+        default:
+          return Promise.resolve(null)
+      }
+    })
+    render(<SourcesPane discoveryPaused={false} />)
+
+    const toggle = await screen.findByRole("switch", { name: "Include folders without git" })
+    expect(toggle).not.toBeChecked()
+
+    fireEvent.click(toggle)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: expect.objectContaining({ includeNonRepoFolders: true }),
+      }),
+    )
+    await waitFor(() => expect(toggle).toBeChecked())
   })
 })

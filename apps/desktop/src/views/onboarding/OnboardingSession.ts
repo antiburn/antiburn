@@ -19,6 +19,7 @@ import {
   requestFolderAccess,
   scanNow,
   setRepositoryEnabled,
+  setSettings,
   type Interaction,
   type LiveUsageMeterPayload,
   type RepositoryItemPayload,
@@ -69,6 +70,8 @@ export type OnboardingSnapshot = {
   disabledAgents: string[]
   /** Draft of the Do Not Disturb opt-in, persisted by `finish`. */
   nudgesRespectDnd: boolean
+  /** Whether the scan keeps sessions from folders without git. Saved at once. */
+  includeNonRepoFolders: boolean
   /** The aggregate check numbers the Ready step shows. Null until fetched. */
   hygieneSummary: HygieneSummary | null
   recheckingPermissions: boolean
@@ -132,6 +135,7 @@ export class OnboardingSession {
       liveUsageMeters: null,
       disabledAgents: [],
       nudgesRespectDnd: false,
+      includeNonRepoFolders: false,
       hygieneSummary: null,
       recheckingPermissions: false,
       finishing: false,
@@ -163,6 +167,24 @@ export class OnboardingSession {
 
   setNudgesRespectDnd = (enabled: boolean): void => {
     this.update({ nudgesRespectDnd: enabled, finishError: null })
+  }
+
+  /**
+   * Save the choice now, not at `finish`: the save starts a rescan, so the
+   * Ready step counts the sessions that the switch adds.
+   */
+  setIncludeNonRepoFolders = async (enabled: boolean): Promise<void> => {
+    const previous = this.snapshot.includeNonRepoFolders
+    this.update({ includeNonRepoFolders: enabled })
+    try {
+      const saved = await setSettings({
+        ...(await getSettings()),
+        includeNonRepoFolders: enabled,
+      })
+      this.update({ includeNonRepoFolders: saved.includeNonRepoFolders })
+    } catch {
+      this.update({ includeNonRepoFolders: previous })
+    }
   }
 
   /**
@@ -322,6 +344,7 @@ export class OnboardingSession {
         activityWindowDays: settings.activityWindowDays,
         launchAtLogin: settings.launchAtLogin,
         nudgesRespectDnd: settings.nudgesRespectDnd,
+        includeNonRepoFolders: settings.includeNonRepoFolders,
         analyticsSupported: info?.analyticsSupported ?? false,
         analyticsEnvironmentDisabled: info?.analyticsEnvironmentDisabled ?? false,
         scanRoots,

@@ -111,6 +111,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Off by default: the Focus-status check needs its own macOS
     // authorization prompt, so the reader opts in first.
     assert!(!defaults.nudges_respect_dnd);
+    // Off by default: the scan keeps only repository sessions.
+    assert!(!defaults.include_non_repo_folders);
 
     let saved = store
         .save_settings(&AppSettings {
@@ -124,6 +126,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             dock_icon_visible: true,
             auto_update: false,
             discovery_paused: true,
+            include_non_repo_folders: true,
             notifications_enabled: false,
             notify_update_available: false,
             notify_scan_failure: true,
@@ -186,6 +189,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(saved.skills_mcp_expanded);
     assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
+    assert!(saved.include_non_repo_folders);
     // Each notification preference is stored on its own key, so a reader who
     // silences the master switch keeps the per-kind choices they made.
     assert!(!saved.notifications_enabled);

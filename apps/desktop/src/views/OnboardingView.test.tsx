@@ -687,6 +687,24 @@ describe("OnboardingView", () => {
     await waitFor(() => expect(screen.queryByText("avery/widgets")).not.toBeInTheDocument())
   })
 
+  it("saves the folders-without-git switch as soon as it changes", async () => {
+    mockCommands({ list_repositories: [REPOSITORY] })
+    render(<OnboardingView />)
+
+    await advanceToSources()
+
+    const folders = await screen.findByRole("switch", { name: "Include folders without git" })
+    expect(folders).not.toBeChecked()
+
+    fireEvent.click(folders)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: expect.objectContaining({ includeNonRepoFolders: true }),
+      }),
+    )
+    expect(folders).toBeChecked()
+  })
+
   it("keeps repository rows after failure and hides retry while scanning", async () => {
     let attempts = 0
     let resolveRetry!: (status: typeof SCAN_STATUS) => void

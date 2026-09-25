@@ -111,7 +111,10 @@ repositories, the scan reads the first 2 MB of the transcript, probes at most
 eight folders below that CWD, and uses the repository that holds the most
 distinct touched folders as the session CWD. The count is folders, not edits.
 The scan maps linked worktrees to the canonical main root and rejects missing
-or unresolved CWDs. A disabled repository is rejected when either its CWD or
+or unresolved CWDs. The Sources setting "Include folders without git"
+(`includeNonRepoFolders`, off by default) keeps a session whose CWD resolves to
+no repository under its recorded CWD, with no repository root. The ignored-path
+set still applies to that CWD. A disabled repository is rejected when either its CWD or
 its canonical root is in the existing ignored-path set.
 Newly discovered repositories remain enabled by default.
 
