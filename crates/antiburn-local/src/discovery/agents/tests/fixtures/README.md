@@ -11,6 +11,7 @@ from the test that consumes it, so it must stay inside this crate.
 | `cursor-cli-agent-fork.json` | **Synthetic**, authored from the contract |
 | `claude-cli-job-fork.json` | **Synthetic**, authored from the contract |
 | `claude-desktop-session-sidecars.json` | **Synthetic**, authored from the contract |
+| `claude-desktop-cowork.json` | **Synthetic**, authored from the contract |
 | `opencode-cli-production-db.json` | Re-homed from `crates/analysis`, explicitly authorized |
 
 "Authored from the contract" means the values were derived from the parser code
@@ -87,6 +88,30 @@ directory, covering each arm of `desktop_manifest_session_log`:
 - `scheduled_tasks_sidecar` — the `scheduled-tasks.json` task configuration that
   the desktop app writes beside the manifests. It is not a session at all and
   must be skipped.
+
+### `claude-desktop-cowork.json`
+
+Consumed by the Cowork tests in `claude::tests`
+(`a_cowork_transcript_is_discovered_without_its_audit_logs_or_subagents` and
+its neighbours).
+
+Claude Desktop Cowork (agent mode) writes a Claude Code transcript below a
+nested `.claude/projects` root in
+`<app-config>/Claude/local-agent-mode-sessions/<org>/<account>/`. The record
+keys follow a key-only observation of Claude Desktop 2.2553.1 with embedded
+Claude Code 2.1.275. All values are invented.
+
+- `main_transcript` — the Cowork main transcript. It has no `entrypoint`
+  field, so the surface comes from the path.
+- `subagent_transcript` — a sub-agent file for
+  `<session>/subagents/agent-*.jsonl`. It only promotes its parent's recency.
+- `ditto_transcript` — the `agent/local_ditto_<id>` variant. It carries
+  `"entrypoint":"local-agent"`.
+- `audit_log` — the `audit.jsonl` shape that sits beside the nested `.claude`
+  directory. It repeats the transcript's `message.usage` objects, so discovery
+  must never admit it.
+- `manifest` — a `claude-code-sessions` manifest whose `cliSessionId` names the
+  nested transcript.
 
 ### `opencode-cli-production-db.json`
 

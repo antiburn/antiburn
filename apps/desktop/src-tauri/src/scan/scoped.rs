@@ -913,6 +913,39 @@ mod tests {
         assert!(!work.is_empty());
     }
 
+    /// Claude Desktop's Cowork session tree for `home`, through the real
+    /// registry.
+    fn claude_cowork_root(home: &Path) -> PathBuf {
+        Explorers::DISK
+            .watch_roots_for(&AgentKind::Claude, home)
+            .into_iter()
+            .map(|root| root.path)
+            .find(|path| path.ends_with("local-agent-mode-sessions"))
+            .expect("Claude watches its Cowork sessions")
+    }
+
+    #[test]
+    fn a_cowork_audit_log_is_quiet_but_a_nested_transcript_is_activity() {
+        let home = PathBuf::from("/home/avery");
+        let workspace = claude_cowork_root(&home).join("org/account/local_ws");
+        let audit = workspace.join("audit.jsonl");
+        let lookup = |_: &BTreeSet<String>| HashMap::new();
+
+        let work = classify_burst(std::slice::from_ref(&audit), &home, &lookup);
+        assert_eq!(work.quiet_agents, BTreeSet::from([AgentKind::Claude]));
+        assert!(work.agents.is_empty());
+
+        for transcript in [
+            workspace.join(".claude/projects/-home-avery-demo/new.jsonl"),
+            claude_manifest_root(&home)
+                .join("org/account/local_ws/.claude/projects/-home-avery-demo/new.jsonl"),
+        ] {
+            let work = classify_burst(&[audit.clone(), transcript], &home, &lookup);
+            assert_eq!(work.agents, BTreeSet::from([AgentKind::Claude]));
+            assert!(work.quiet_agents.is_empty());
+        }
+    }
+
     #[test]
     fn a_quiet_path_adds_nothing_to_an_agent_the_burst_already_rediscovers() {
         let home = PathBuf::from("/home/avery");

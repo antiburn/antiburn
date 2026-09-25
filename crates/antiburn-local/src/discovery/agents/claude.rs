@@ -5,6 +5,14 @@
 //! `~/Library/Application Support/Claude/claude-code-sessions/` (or the
 //! platform-equivalent config directory), which can advance a session's recency
 //! even when the underlying transcript file is not the freshest file on disk.
+//!
+//! Claude Desktop Cowork (agent mode) runs an embedded Claude Code with its own
+//! config directory. It writes the same transcript layout under a nested
+//! `.claude/projects` root, for example
+//! `<app-config>/Claude/local-agent-mode-sessions/<org>/<account>/local_<workspace>/.claude/projects/<slug>/<session>.jsonl`.
+//! Discovery reads each nested root like `~/.claude/projects`. The
+//! `audit*.jsonl` files beside a nested `.claude` directory repeat the
+//! transcript usage, so discovery never reads them.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -87,7 +95,7 @@ impl AgentExplorer for ClaudeExplorer {
     // path alone is insufficient. Prefer the in-file `entrypoint` marker
     // emitted on each user message (`claude-vscode`, `claude-desktop`,
     // `claude-cli`, `sdk-ts`, …). When content is absent, defer to
-    // `surface_paths` for the IDE manifest dir, and also treat the inline
+    // `surface_paths` for the desktop session trees, and also treat the inline
     // `claude-desktop:` label produced by `desktop_manifest_session_log`
     // as IDE/Desktop (that prefix is not itself a `surface_paths` root).
     fn session_surface_label(
@@ -121,31 +129,42 @@ impl AgentExplorer for ClaudeExplorer {
     }
 
     /// CLI: `~/.claude/projects/**` (also touched by Desktop/VS Code; content's
-    /// `entrypoint` marker disambiguates). IDE: `<app-config>/Claude/claude-code-sessions/**`.
+    /// `entrypoint` marker disambiguates). IDE: the Claude Desktop session
+    /// trees `<app-config>/Claude/{claude-code-sessions,local-agent-mode-sessions}/**`,
+    /// which include the nested Cowork transcript roots.
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         SurfacePaths {
             cli: vec![home.join(".claude").join("projects")],
-            ide_desktop: vec![app_config_dir_in("Claude", home).join("claude-code-sessions")],
+            ide_desktop: desktop_session_trees_in(home),
             mirror: Vec::new(),
         }
     }
 
-    /// Transcripts, the desktop manifest dir, and interactive fork job state
+    /// Transcripts, the desktop session trees, and interactive fork job state
     /// all move independently: a fork's `state.json` can change with no
     /// transcript write at all. Watch every root discovery reads.
     fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
-        vec![
-            WatchRoot::recursive(home.join(".claude").join("projects")),
-            WatchRoot::recursive(app_config_dir_in("Claude", home).join("claude-code-sessions")),
-            WatchRoot::recursive(home.join(".claude").join("jobs")),
-        ]
+        let mut roots = vec![WatchRoot::recursive(home.join(".claude").join("projects"))];
+        roots.extend(
+            desktop_session_trees_in(home)
+                .into_iter()
+                .map(WatchRoot::recursive),
+        );
+        roots.push(WatchRoot::recursive(home.join(".claude").join("jobs")));
+        roots
     }
 
     /// The desktop app rewrites a session's manifest under
     /// `claude-code-sessions` every 30 seconds while its tab is open, working
-    /// or not. The transcript under `~/.claude/projects` carries the activity.
+    /// or not. Cowork writes audit logs and workspace files under
+    /// `local-agent-mode-sessions`. These writes are quiet. A transcript under
+    /// a nested `.claude/projects` root in these trees carries the activity,
+    /// so it is not quiet.
     fn is_quiet_path(&self, path: &Path, home: &Path) -> bool {
-        path.starts_with(app_config_dir_in("Claude", home).join("claude-code-sessions"))
+        desktop_session_trees_in(home).iter().any(|tree| {
+            path.strip_prefix(tree)
+                .is_ok_and(|relative| !is_nested_transcript_path(relative))
+        })
     }
 
     // ---- Orchestration: Claude writes each spawned sub-agent as its own
@@ -229,6 +248,102 @@ pub(crate) fn sample_log_path(home: &Path) -> PathBuf {
         .join("session.jsonl")
 }
 
+/// Claude Desktop directories below `<app-config>/Claude` that can hold nested
+/// Claude Code config roots. `local-agent-mode-sessions` holds the Cowork
+/// sessions. `claude-code-sessions` holds the desktop manifests.
+const DESKTOP_SESSION_TREES: [&str; 2] = ["claude-code-sessions", "local-agent-mode-sessions"];
+
+/// Maximum number of directory levels between a desktop session tree and a
+/// nested `.claude` directory. The observed Cowork layouts use three levels
+/// (`<org>/<account>/local_<workspace>`) and four levels
+/// (`<org>/<account>/agent/local_ditto_<id>`). The limit keeps the walk away
+/// from deep workspace content.
+const MAX_NESTED_CLAUDE_DEPTH: usize = 4;
+
+fn desktop_session_trees_in(home: &Path) -> Vec<PathBuf> {
+    let app_config = app_config_dir_in("Claude", home);
+    DESKTOP_SESSION_TREES
+        .iter()
+        .map(|tree| app_config.join(tree))
+        .collect()
+}
+
+/// Whether `path` is a Claude Desktop audit log (`audit.jsonl`,
+/// `audit1.jsonl`, ...). An audit log repeats the `message.usage` objects of
+/// the transcript, so discovery must never read it as a session.
+fn is_audit_log(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|name| name.starts_with("audit") && name.ends_with(".jsonl"))
+}
+
+/// Whether `relative` (a path relative to a desktop session tree) is a
+/// `.jsonl` transcript inside a nested `.claude/projects/<slug>/` directory.
+/// Sub-agent transcripts below `<slug>/<session>/subagents/` also match.
+fn is_nested_transcript_path(relative: &Path) -> bool {
+    let is_jsonl = relative
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"));
+    if !is_jsonl || is_audit_log(relative) {
+        return false;
+    }
+    let components: Vec<_> = relative.components().map(|c| c.as_os_str()).collect();
+    // `.claude`, `projects`, `<slug>`, and the file name need four components.
+    components.windows(2).enumerate().any(|(index, pair)| {
+        pair[0] == ".claude" && pair[1] == "projects" && index + 3 < components.len()
+    })
+}
+
+/// Find each nested `<dir>/.claude/projects` root below `tree`, at most
+/// [`MAX_NESTED_CLAUDE_DEPTH`] directory levels down. The walk does not follow
+/// symbolic links and does not enter a `.claude` directory. Runs in a blocking
+/// context.
+fn nested_projects_roots_blocking(tree: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut stack = vec![(tree.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            if entry.file_name() == ".claude" {
+                let projects = path.join("projects");
+                if projects.is_dir() {
+                    roots.push(projects);
+                }
+                continue;
+            }
+            if depth < MAX_NESTED_CLAUDE_DEPTH {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    roots.sort();
+    roots
+}
+
+/// The direct child directories of one `.claude/projects` root. Runs in a
+/// blocking context.
+fn project_dirs_blocking(projects_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(projects_root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
 /// Point-locate a session transcript under a given home directory:
 /// `<project_dir>/{session_id}.jsonl` across all project dirs. Backs the
 /// `direct_session_source` override; separated for testability.
@@ -239,18 +354,19 @@ async fn locate_transcript_in(home: &Path, session_id: &str) -> Option<PathBuf> 
 
 /// Internal: find ALL Claude log directories under a given home directory.
 ///
-/// Separated from `all_log_dirs` for testability.
+/// The result holds the project directories of `~/.claude/projects` and of
+/// each nested Claude Desktop root (see [`nested_projects_roots_blocking`]).
 async fn all_log_dirs_in(home: &Path) -> Vec<PathBuf> {
     let projects_dir = home.join(".claude").join("projects");
+    let trees = desktop_session_trees_in(home);
     tokio::task::spawn_blocking(move || {
-        let Ok(entries) = std::fs::read_dir(&projects_dir) else {
-            return Vec::new();
-        };
-        entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
-            .collect()
+        let mut dirs = project_dirs_blocking(&projects_dir);
+        for tree in &trees {
+            for root in nested_projects_roots_blocking(tree) {
+                dirs.extend(project_dirs_blocking(&root));
+            }
+        }
+        dirs
     })
     .await
     .unwrap_or_default()
@@ -413,7 +529,7 @@ async fn recent_subagent_parent_logs(
                     continue;
                 };
                 let parent = project_dir.join(format!("{session_id}.jsonl"));
-                if !parent.try_exists().unwrap_or(false) {
+                if is_audit_log(&parent) || !parent.try_exists().unwrap_or(false) {
                     continue;
                 }
                 if already_discovered.contains(&parent.to_string_lossy().to_string()) {
@@ -497,6 +613,7 @@ async fn discover_recent_including_subagent_parents(
         recent_files_with_exts(&project_dirs, now, since_secs, &["jsonl"])
             .await
             .into_iter()
+            .filter(|file| !is_audit_log(&file.path))
             .map(|file| {
                 let log = SessionLog {
                     environment: Default::default(),
@@ -716,6 +833,7 @@ async fn resolve_cli_transcript_path(
     let candidates: Vec<PathBuf> = project_dirs
         .iter()
         .map(|dir| dir.join(format!("{cli_session_id}.jsonl")))
+        .filter(|candidate| !is_audit_log(candidate))
         .collect();
     // One blocking task for the whole probe, not one per existence check.
     tokio::task::spawn_blocking(move || {
@@ -1239,6 +1357,258 @@ mod tests {
 
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].updated_at, Some(now - 5));
+    }
+
+    fn cowork_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!("tests/fixtures/claude-desktop-cowork.json")).unwrap()
+    }
+
+    fn jsonl(records: &serde_json::Value) -> String {
+        records
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| format!("{record}\n"))
+            .collect()
+    }
+
+    async fn write_recent(path: &Path, content: &str, mtime: i64) {
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(path, content).await.unwrap();
+        set_file_mtime(path, mtime);
+    }
+
+    /// `<app-config>/Claude/local-agent-mode-sessions/<org>/<account>`.
+    fn cowork_account_dir(home: &Path) -> PathBuf {
+        app_config_dir_in("Claude", home)
+            .join("local-agent-mode-sessions")
+            .join("org-0001")
+            .join("account-0001")
+    }
+
+    fn file_paths(logs: &[SessionLog]) -> Vec<PathBuf> {
+        logs.iter()
+            .map(|log| match &log.source {
+                SessionSource::File(path) => path.clone(),
+                other => panic!("expected a file source, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cowork_transcript_is_discovered_without_its_audit_logs_or_subagents() {
+        let fixture = cowork_fixture();
+        let session_id = fixture["session_id"].as_str().unwrap();
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let workspace = cowork_account_dir(home.path()).join("local_workspace-0001");
+        let project = workspace.join(".claude/projects/-home-avery-projects-demo-app");
+        let transcript = project.join(format!("{session_id}.jsonl"));
+        let subagent = project
+            .join(session_id)
+            .join("subagents")
+            .join("agent-a0000000000000001.jsonl");
+        write_recent(&transcript, &jsonl(&fixture["main_transcript"]), now - 50).await;
+        write_recent(&subagent, &jsonl(&fixture["subagent_transcript"]), now - 5).await;
+        for name in ["audit.jsonl", "audit1.jsonl"] {
+            write_recent(
+                &workspace.join(name),
+                &jsonl(&fixture["audit_log"]),
+                now - 5,
+            )
+            .await;
+        }
+
+        let logs = discover_recent_in(home.path(), now, 86_400).await;
+
+        assert_eq!(file_paths(&logs), vec![transcript]);
+        // The sub-agent only promotes its parent's recency.
+        assert_eq!(logs[0].updated_at, Some(now - 5));
+    }
+
+    #[tokio::test]
+    async fn a_local_ditto_cowork_transcript_is_discovered() {
+        let fixture = cowork_fixture();
+        let session_id = fixture["ditto_session_id"].as_str().unwrap();
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let transcript = cowork_account_dir(home.path())
+            .join("agent")
+            .join("local_ditto_0001")
+            .join(".claude/projects/-home-avery-projects-demo-app")
+            .join(format!("{session_id}.jsonl"));
+        write_recent(&transcript, &jsonl(&fixture["ditto_transcript"]), now - 5).await;
+
+        let logs = discover_recent_in(home.path(), now, 86_400).await;
+
+        assert_eq!(file_paths(&logs), vec![transcript]);
+    }
+
+    #[tokio::test]
+    async fn an_audit_log_inside_a_project_dir_is_never_a_session() {
+        let fixture = cowork_fixture();
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let project = cowork_account_dir(home.path())
+            .join("local_workspace-0001")
+            .join(".claude/projects/-home-avery-projects-demo-app");
+        let native_project = home
+            .path()
+            .join(".claude/projects/-home-avery-projects-demo-app");
+        for dir in [&project, &native_project] {
+            for name in ["audit.jsonl", "audit1.jsonl"] {
+                write_recent(&dir.join(name), &jsonl(&fixture["audit_log"]), now - 5).await;
+            }
+            // A `subagents/` tree below an `audit` directory must not promote
+            // `audit.jsonl` as its parent.
+            write_recent(
+                &dir.join("audit/subagents/agent-a0000000000000001.jsonl"),
+                &jsonl(&fixture["subagent_transcript"]),
+                now - 5,
+            )
+            .await;
+        }
+
+        let logs = discover_recent_in(home.path(), now, 86_400).await;
+
+        assert!(logs.is_empty(), "audit logs must not be sessions: {logs:?}");
+        let dirs = all_log_dirs_in(home.path()).await;
+        assert_eq!(resolve_cli_transcript_path(&dirs, "audit").await, None);
+        assert_eq!(resolve_cli_transcript_path(&dirs, "audit1").await, None);
+    }
+
+    #[tokio::test]
+    async fn a_desktop_manifest_resolves_to_a_nested_cowork_transcript() {
+        let fixture = cowork_fixture();
+        let session_id = fixture["session_id"].as_str().unwrap();
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let since_secs: i64 = 86_400;
+        let transcript = cowork_account_dir(home.path())
+            .join("local_workspace-0001")
+            .join(".claude/projects/-home-avery-projects-demo-app")
+            .join(format!("{session_id}.jsonl"));
+        // Only the manifest is recent, so only the manifest can promote the
+        // transcript.
+        write_recent(
+            &transcript,
+            &jsonl(&fixture["main_transcript"]),
+            now - (since_secs + 10),
+        )
+        .await;
+        let manifest = app_config_dir_in("Claude", home.path())
+            .join("claude-code-sessions/org-0001/account-0001/local_session.json");
+        write_recent(&manifest, &fixture["manifest"].to_string(), now - 5).await;
+
+        let logs = discover_recent_in(home.path(), now, since_secs).await;
+
+        assert_eq!(file_paths(&logs), vec![transcript.clone()]);
+        assert_eq!(logs[0].updated_at, Some(now - 5));
+        assert_eq!(
+            locate_transcript_in(home.path(), session_id).await,
+            Some(transcript)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nested_claude_root_below_a_manifest_tree_is_discovered() {
+        let fixture = cowork_fixture();
+        let session_id = fixture["session_id"].as_str().unwrap();
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let transcript = app_config_dir_in("Claude", home.path())
+            .join("claude-code-sessions/org-0001/account-0001/local_workspace-0001")
+            .join(".claude/projects/-home-avery-projects-demo-app")
+            .join(format!("{session_id}.jsonl"));
+        write_recent(&transcript, &jsonl(&fixture["main_transcript"]), now - 5).await;
+
+        let logs = discover_recent_in(home.path(), now, 86_400).await;
+
+        assert_eq!(file_paths(&logs), vec![transcript]);
+    }
+
+    #[tokio::test]
+    async fn nested_claude_roots_deeper_than_the_limit_are_not_walked() {
+        let home = TempDir::new().unwrap();
+        let tree = app_config_dir_in("Claude", home.path()).join("local-agent-mode-sessions");
+        let at_limit = tree.join("l1/l2/l3/l4/.claude/projects/-slug");
+        let beyond_limit = tree.join("l1/l2/l3/l4/l5/.claude/projects/-slug");
+        tokio::fs::create_dir_all(&at_limit).await.unwrap();
+        tokio::fs::create_dir_all(&beyond_limit).await.unwrap();
+
+        assert_eq!(
+            nested_projects_roots_blocking(&tree),
+            vec![tree.join("l1/l2/l3/l4/.claude/projects")]
+        );
+        assert_eq!(all_log_dirs_in(home.path()).await, vec![at_limit]);
+    }
+
+    #[test]
+    fn a_nested_cowork_transcript_classifies_as_ide_desktop() {
+        let fixture = cowork_fixture();
+        let home = PathBuf::from("/home/avery");
+        let transcript = cowork_account_dir(&home)
+            .join("local_workspace-0001")
+            .join(".claude/projects/-home-avery-projects-demo-app/session.jsonl");
+        let log = SessionLog {
+            environment: Default::default(),
+            agent_type: AgentKind::Claude,
+            source: SessionSource::File(transcript),
+            updated_at: None,
+        };
+        let content = jsonl(&fixture["main_transcript"]);
+        assert!(entrypoint_surface(&content).is_none());
+
+        assert_eq!(
+            ClaudeExplorer.session_surface_label(&log, Some(&content), &home),
+            "ide_desktop"
+        );
+        assert_eq!(
+            ClaudeExplorer.session_surface_label(&log, None, &home),
+            "ide_desktop"
+        );
+    }
+
+    #[test]
+    fn only_nested_cowork_transcripts_are_activity_in_the_desktop_trees() {
+        let home = PathBuf::from("/home/avery");
+        let workspace = cowork_account_dir(&home).join("local_workspace-0001");
+        let project = workspace.join(".claude/projects/-home-avery-projects-demo-app");
+        let manifests = app_config_dir_in("Claude", &home).join("claude-code-sessions");
+
+        for activity in [
+            project.join("session.jsonl"),
+            project.join("session/subagents/agent-a0000000000000001.jsonl"),
+            manifests.join("org/account/local_ws/.claude/projects/-slug/session.jsonl"),
+        ] {
+            assert!(
+                !ClaudeExplorer.is_quiet_path(&activity, &home),
+                "{} must be activity",
+                activity.display()
+            );
+        }
+        for quiet in [
+            workspace.join("audit.jsonl"),
+            workspace.join("audit1.jsonl"),
+            project.join("audit.jsonl"),
+            workspace.join("outputs/report.md"),
+            workspace.join(".claude/settings.json"),
+            workspace.join(".claude/projects/stray.jsonl"),
+            manifests.join("org/account/local_session.json"),
+            manifests.join("org/account/scheduled-tasks.json"),
+        ] {
+            assert!(
+                ClaudeExplorer.is_quiet_path(&quiet, &home),
+                "{} must be quiet",
+                quiet.display()
+            );
+        }
+        assert!(
+            !ClaudeExplorer
+                .is_quiet_path(&home.join(".claude/projects/-slug/session.jsonl"), &home)
+        );
     }
 
     #[tokio::test]
