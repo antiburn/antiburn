@@ -614,6 +614,27 @@ describe("live detection notes", () => {
     )
   })
 
+  it("names Claude Desktop instead of saying nothing was found", () => {
+    for (const detection of ["notInstalled", "installedNotSignedIn"] as const) {
+      expect(liveDetectionNote("anthropic", detection, true, undefined, "Claude Desktop")).toBe(
+        "Found Claude Desktop. Limits need Claude Code signed in on this computer.",
+      )
+    }
+    // A found login, or Pi's own note, keeps its wording.
+    expect(
+      liveDetectionNote(
+        "anthropic",
+        "signedIn",
+        true,
+        "Claude Code (Keychain)",
+        "Claude Desktop",
+      ),
+    ).toBe("Signed in through Claude Code (Keychain).")
+    expect(
+      liveDetectionNote("anthropic", "installedNotSignedIn", true, "Pi", "Claude Desktop"),
+    ).toBe("Found Pi, but it isn't signed in to Claude Code.")
+  })
+
   it("names the tool the login came from, never a command", () => {
     expect(liveDetectionNote("anthropic", "signedIn", true, "Claude Code (Keychain)")).toBe(
       "Signed in through Claude Code (Keychain).",
