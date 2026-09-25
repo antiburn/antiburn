@@ -1536,10 +1536,23 @@ async fn describe_with_states(
                     }
                     #[cfg(not(test))]
                     {
-                        let Ok(root) = git::repo_root_at(std::path::Path::new(cwd)).await else {
-                            rejected.push(record.key.clone());
-                            continue;
+                        let cwd = cwd.to_string();
+                        let mut record = record;
+                        let root = match git::repo_root_at(std::path::Path::new(&cwd)).await {
+                            Ok(root) => root,
+                            Err(_) => {
+                                // A session can start in a parent folder of
+                                // repositories. Use the repository that the
+                                // transcript worked in below that folder.
+                                let Some(root) = inferred_repo_root(&record, &cwd).await else {
+                                    rejected.push(record.key.clone());
+                                    continue;
+                                };
+                                record.cwd = Some(root.to_string_lossy().into_owned());
+                                root
+                            }
                         };
+                        let cwd = cwd.as_str();
                         let root = git::canonical_main_repo_root(&root).await;
                         // Apply the shared opt-out gate to both the working directory
                         // and the canonical main root. This also covers linked worktrees.
@@ -1578,6 +1591,20 @@ async fn describe_with_states(
         changed,
         list_changed,
     }
+}
+
+/// The repository that a file transcript worked in below `cwd`, when `cwd`
+/// itself is not in a repository.
+#[cfg(not(test))]
+async fn inferred_repo_root(record: &SessionRecord, cwd: &str) -> Option<std::path::PathBuf> {
+    if record.source_kind != "file" {
+        return None;
+    }
+    scanner::infer_repo_root_below_cwd(
+        std::path::Path::new(&record.source_label),
+        std::path::Path::new(cwd),
+    )
+    .await
 }
 
 /// Every session key `previous_records` already held, keyed the way

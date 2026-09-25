@@ -230,7 +230,8 @@ spend attribution; all check-specific route and API requirements below remain
 unchanged. See [`session-lifecycle-events.md`](session-lifecycle-events.md#scoped-sweep-evidence).
 
 Burn checks use only sessions admitted by the repository scan gate. A session
-needs a resolvable Git repository CWD. Disabled roots and their linked
+needs a resolvable Git repository CWD, either recorded or inferred from
+transcript paths below a parent-folder CWD. Disabled roots and their linked
 worktrees are excluded before evidence processing; missing or unresolved CWDs
 are unavailable, never clean.
 

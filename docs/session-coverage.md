@@ -106,8 +106,11 @@ The table lists all 33 `SourceFormat` names from
 `crates/antiburn-local/src/analysis/evidence.rs`, each exactly once.
 
 Before a production session enters the local index, its CWD must resolve to a
-Git repository. The scan maps linked worktrees to the canonical main root and
-rejects missing or unresolved CWDs. A disabled repository is rejected when
+Git repository. When a file transcript's CWD is a parent folder of
+repositories, the scan reads the first 2 MB of the transcript, probes at most
+eight folders below that CWD, and uses the repository that holds the most
+tool-call paths as the session CWD. The scan maps linked worktrees to the
+canonical main root and rejects missing or unresolved CWDs. A disabled repository is rejected when
 either its CWD or its canonical root is in the existing ignored-path set.
 Newly discovered repositories remain enabled by default.
 

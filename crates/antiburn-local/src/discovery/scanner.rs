@@ -987,6 +987,76 @@ pub fn extract_candidate_cwds_from_transcript(content: &str) -> Vec<String> {
     candidates
 }
 
+/// Bytes that [`infer_repo_root_below_cwd`] reads from the start of a
+/// transcript.
+const REPO_INFERENCE_HEAD_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Maximum `git` probes that [`infer_repo_root_below_cwd`] runs for one
+/// transcript. The scan repeats the inference for each rejected session on
+/// each pass, so the limit keeps that cost small.
+const REPO_INFERENCE_MAX_PROBES: usize = 8;
+
+/// Find the repository that a session worked in when its recorded `cwd` is a
+/// parent folder of repositories, not a repository.
+///
+/// Reads the head of the transcript and keeps the candidate folders below
+/// `cwd`. Returns the repository root that holds the most candidates. On a
+/// tie, the repository that the transcript touched first wins. Returns `None`
+/// when no candidate resolves to a repository.
+pub async fn infer_repo_root_below_cwd(
+    transcript: &Path,
+    cwd: &Path,
+) -> Option<std::path::PathBuf> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(transcript).await.ok()?;
+    let mut head = Vec::new();
+    file.take(REPO_INFERENCE_HEAD_BYTES)
+        .read_to_end(&mut head)
+        .await
+        .ok()?;
+    let content = String::from_utf8_lossy(&head);
+
+    let mut roots: Vec<(std::path::PathBuf, usize)> = Vec::new();
+    let mut probes = 0;
+    for candidate in extract_candidate_cwds_from_transcript(&content) {
+        let candidate = Path::new(&candidate);
+        if candidate == cwd || !candidate.starts_with(cwd) {
+            continue;
+        }
+        // Git reports canonical roots, so compare canonical paths.
+        let Ok(candidate) = tokio::fs::canonicalize(candidate).await else {
+            continue;
+        };
+        if let Some((_, count)) = roots
+            .iter_mut()
+            .find(|(root, _)| candidate.starts_with(root))
+        {
+            *count += 1;
+            continue;
+        }
+        if probes == REPO_INFERENCE_MAX_PROBES {
+            continue;
+        }
+        probes += 1;
+        if let Ok(root) = crate::platform::git::repo_root_at(&candidate).await {
+            let root = tokio::fs::canonicalize(&root).await.unwrap_or(root);
+            roots.push((root, 1));
+        }
+    }
+
+    let mut best: Option<(std::path::PathBuf, usize)> = None;
+    for (root, count) in roots {
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_count)| count > *best_count)
+        {
+            best = Some((root, count));
+        }
+    }
+    best.map(|(root, _)| root)
+}
+
 /// Maximum recursion depth when walking nested JSON structures.
 /// Prevents stack overflow on pathologically deep transcripts.
 const TRANSCRIPT_PATH_MAX_DEPTH: usize = 16;
@@ -2709,5 +2779,88 @@ also not json {{{{
         let content = "not json at all\n{invalid json}\n{\"valid\":\"but no paths\"}";
         let candidates = extract_candidate_cwds_from_transcript(content);
         assert!(candidates.is_empty());
+    }
+
+    fn git_init(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("create repo dir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
+            .expect("failed to run git init");
+        assert!(status.success());
+    }
+
+    fn tool_use_line(file_path: &Path) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use",
+                "name": "Edit",
+                "input": {"file_path": file_path.to_string_lossy()}
+            }]}
+        })
+        .to_string()
+    }
+
+    /// Build a parent folder of two repositories and a transcript that edits
+    /// `busy` twice and `quiet` once.
+    async fn workspace_of_repos(dir: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+        let workspace = dir.path().join("workspace");
+        for repo in ["busy", "quiet"] {
+            git_init(&workspace.join(repo));
+            std::fs::create_dir_all(workspace.join(repo).join("src")).expect("create src dir");
+        }
+        let lines = [
+            tool_use_line(&workspace.join("quiet/README.md")),
+            tool_use_line(&workspace.join("busy/README.md")),
+            tool_use_line(&workspace.join("busy/src/main.rs")),
+            tool_use_line(&dir.path().join("elsewhere/notes.md")),
+        ];
+        let transcript = write_temp_file(dir.path(), "session.jsonl", &lines.join("\n")).await;
+        (workspace, transcript)
+    }
+
+    #[tokio::test]
+    async fn infer_repo_root_picks_the_repo_the_session_touched_most() {
+        let dir = TempDir::new().unwrap();
+        let (workspace, transcript) = workspace_of_repos(&dir).await;
+
+        let root = infer_repo_root_below_cwd(&transcript, &workspace).await;
+
+        let expected = std::fs::canonicalize(workspace.join("busy")).unwrap();
+        assert_eq!(root, Some(expected));
+    }
+
+    #[tokio::test]
+    async fn infer_repo_root_ignores_repos_outside_the_recorded_cwd() {
+        let dir = TempDir::new().unwrap();
+        let (workspace, transcript) = workspace_of_repos(&dir).await;
+
+        let root = infer_repo_root_below_cwd(&transcript, &workspace.join("quiet/src")).await;
+
+        assert_eq!(root, None);
+    }
+
+    #[tokio::test]
+    async fn infer_repo_root_returns_none_without_repo_evidence() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("plain")).unwrap();
+        let transcript = write_temp_file(
+            dir.path(),
+            "session.jsonl",
+            &tool_use_line(&workspace.join("plain/notes.md")),
+        )
+        .await;
+
+        assert_eq!(
+            infer_repo_root_below_cwd(&transcript, &workspace).await,
+            None
+        );
+        assert_eq!(
+            infer_repo_root_below_cwd(&dir.path().join("missing.jsonl"), &workspace).await,
+            None
+        );
     }
 }
