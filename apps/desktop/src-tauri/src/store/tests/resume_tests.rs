@@ -690,7 +690,7 @@ fn conflicting_duplicate_source_outcomes_are_rejected_without_publishing() {
 #[test]
 fn current_resume_revisions_reject_each_prior_batch_revision() {
     let current = crate::analysis::resume_revisions();
-    assert_eq!(current.snapshot_revision, 11);
+    assert_eq!(current.snapshot_revision, 12);
     assert_eq!(current.parser_revision, 39);
     assert_eq!(current.analyzer_revision, 25);
     assert_eq!(current.metrics_schema_revision, 9);

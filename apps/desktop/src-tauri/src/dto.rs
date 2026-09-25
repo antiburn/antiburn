@@ -1942,7 +1942,12 @@ pub(crate) fn session_called_tools(
             calls: tool_use.calls,
         })
         .collect();
-    called.sort_by(|left, right| right.calls.cmp(&left.calls).then(left.name.cmp(&right.name)));
+    called.sort_by(|left, right| {
+        right
+            .calls
+            .cmp(&left.calls)
+            .then(left.name.cmp(&right.name))
+    });
     called.truncate(MAX_CALLED_TOOLS);
     Some(called)
 }
