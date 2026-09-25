@@ -44,6 +44,31 @@ pub(super) fn locate(binary: &str) -> Option<(PathBuf, Vec<PathBuf>)> {
     locate_in(binary, &dirs).map(|path| (path, dirs))
 }
 
+/// Where [`locate`] finds `binary`: through the process `PATH`, only in an
+/// install directory outside that `PATH`, or not at all. The value is safe
+/// to log because it contains no path and no user name.
+pub(super) fn origin(binary: &str) -> &'static str {
+    origin_in(
+        binary,
+        std::env::var_os("PATH"),
+        antiburn_local::paths::home_dir().as_deref(),
+    )
+}
+
+fn origin_in(binary: &str, path: Option<OsString>, home: Option<&Path>) -> &'static str {
+    let process_path: Vec<PathBuf> = path
+        .as_ref()
+        .map(|path| std::env::split_paths(path).collect())
+        .unwrap_or_default();
+    if locate_in(binary, &process_path).is_some() {
+        "process_path"
+    } else if locate_in(binary, &search_dirs_in(path, home, own_home_dirs(binary))).is_some() {
+        "install_dir"
+    } else {
+        "none"
+    }
+}
+
 /// Every directory to search, in order: the process `PATH`, the
 /// home-relative install directories, `extra_home_dirs`, the nvm
 /// per-version `bin` directories (newest first), and the fixed prefixes.
@@ -162,6 +187,37 @@ mod tests {
         assert_eq!(
             locate_in("claude", &dirs),
             Some(home.path().join(".local/bin/claude"))
+        );
+    }
+
+    #[test]
+    fn the_origin_names_the_directory_kind_without_a_path() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let custom = tempfile::tempdir().expect("tempdir");
+        let empty_home = tempfile::tempdir().expect("tempdir");
+        touch_executable(&home.path().join(".local/bin/claude"));
+        touch_executable(&custom.path().join("claude"));
+        let thin = || Some(OsString::from("/usr/bin:/bin:/usr/sbin:/sbin"));
+
+        assert_eq!(
+            origin_in("claude", thin(), Some(home.path())),
+            "install_dir"
+        );
+        assert_eq!(
+            origin_in(
+                "claude",
+                Some(custom.path().as_os_str().to_owned()),
+                Some(home.path())
+            ),
+            "process_path"
+        );
+        assert_eq!(
+            origin_in(
+                "antiburn-nonexistent-touch-binary",
+                thin(),
+                Some(empty_home.path())
+            ),
+            "none"
         );
     }
 

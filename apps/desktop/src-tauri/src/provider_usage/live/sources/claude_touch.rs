@@ -318,7 +318,7 @@ pub struct CliTouchEnvironment {
 }
 
 /// The binary the touch spawns — the CLI that owns the credential.
-const CLAUDE_BINARY: &str = "claude";
+pub(super) const CLAUDE_BINARY: &str = "claude";
 
 /// How long the CLI gets to start before `/status` is typed at it. Typing
 /// into a PTY nobody is reading yet is harmless; typing before the CLI's
