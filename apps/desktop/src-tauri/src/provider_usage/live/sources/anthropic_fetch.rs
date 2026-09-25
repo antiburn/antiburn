@@ -747,15 +747,20 @@ impl ClaudeDirectFetch {
     /// On macOS the Keychain secret is read through
     /// [`ClaudeDirectFetch::keychain_credentials`]: while the cached token is
     /// live, recovery can bypass the cache for one read.
+    ///
+    /// The last value is true when Pi's own refresh rejected its expired
+    /// entry: that entry needs a new sign-in, not Pi's next run.
     fn read_carriers(
         &self,
     ) -> (
         Vec<ClaudeCredentials>,
         Option<FetchFailure>,
         Vec<ClaudeCredentials>,
+        bool,
     ) {
         let (native_carriers, error) = self.read_native_carriers(false);
         let mut carriers = native_carriers.clone();
+        let mut pi_rejected = false;
         if let Some(path) = self.pi_auth_path.as_deref()
             && let Some(entry) = pi_auth::read_entry(path, pi_auth::ANTHROPIC_KEY)
                 .filter(|entry| !entry.refresh_token.is_empty())
@@ -774,9 +779,11 @@ impl ClaudeDirectFetch {
                     // `fetch_from_carriers` reports an all-expired set as
                     // an authentication failure, which is already the
                     // sign-in-again state a terminal rejection asks for.
-                    Recovery::AlreadyValid | Recovery::SignInWithPi | Recovery::Unavailable => {
+                    Recovery::SignInWithPi => {
+                        pi_rejected = true;
                         entry
                     }
+                    Recovery::AlreadyValid | Recovery::Unavailable => entry,
                 }
             };
             carriers.push(ClaudeCredentials {
@@ -786,7 +793,7 @@ impl ClaudeDirectFetch {
                 rate_limit_tier: None,
             });
         }
-        (carriers, error, native_carriers)
+        (carriers, error, native_carriers, pi_rejected)
     }
 
     fn read_native_carriers(
@@ -972,7 +979,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // skip anyway should not pay for either — nor re-raise a Keychain
         // access prompt the reader has already seen.
         let outcome = self.cooldown.poll(now, max_age, || {
-            let (carriers, mut carrier_error, native_carriers) = self.read_carriers();
+            let (carriers, mut carrier_error, native_carriers, pi_rejected) = self.read_carriers();
             // The touch below requires a *native* carrier: Pi's read-only
             // entry alone never triggers one — see the module doc's
             // "Delegating refresh to the CLI" section.
@@ -995,6 +1002,11 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 .iter()
                 .map(|carrier| carrier.access_token.clone())
                 .collect();
+            // Every carrier held a token and every token expired, so an
+            // authentication failure below is expiry, not a rejection.
+            let all_expired = !pi_rejected
+                && !carriers.is_empty()
+                && !carriers.iter().any(|carrier| carrier.is_live(now));
             let mut fetched = fetch_from_carriers(
                 self.transport.as_ref(),
                 carriers,
@@ -1055,6 +1067,11 @@ impl LiveUsageSource for ClaudeDirectFetch {
                         Err(auth_failure(SourceErrorDetail::RefreshPending))
                     }
                 }
+                // Only Pi's entry is left, and Pi keeps a refresh token for
+                // it (see `read_carriers`). Pi refreshes it on its next run.
+                Err(ProviderUsageError::Authentication) if all_expired => {
+                    Err(auth_failure(SourceErrorDetail::CredentialExpired))
+                }
                 other => other.map_err(FetchFailure::from),
             };
             with_carrier_error(fetched, carrier_error).map_err(|mut failure| {
@@ -1081,7 +1098,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
         self.limit_reset_diagnostic
             .observe(|| {
                 let now = OffsetDateTime::now_utc();
-                let (carriers, carrier_error, _) = self.read_carriers();
+                let (carriers, carrier_error, _, _) = self.read_carriers();
                 let live = carriers.iter().find(|credentials| credentials.is_live(now));
                 match live {
                     Some(credentials) => self.transport.limit_reset(&credentials.access_token),
@@ -2565,7 +2582,7 @@ mod tests {
             rate_limit_tier: None,
         };
         *source.keychain_credentials.lock().unwrap() = Some(live);
-        let (carriers, error, native_carriers) = source.read_carriers();
+        let (carriers, error, native_carriers, _) = source.read_carriers();
         assert!(error.is_none());
         assert_eq!(carriers.len(), 1);
         assert_eq!(carriers[0].access_token, "cached-token");
@@ -2963,8 +2980,39 @@ mod tests {
         let outcome = source.fetch(USER_MAX_AGE);
 
         assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
-        // No native carrier: nothing here can refresh it, and the plain
-        // sign-in-again copy is the true one.
+        // No native carrier, so no touch. Pi keeps a refresh token and
+        // refreshes the entry on its next run, so no sign-in is needed.
+        assert_eq!(outcome.detail, Some(SourceErrorDetail::CredentialExpired));
+    }
+
+    #[test]
+    fn a_pi_entry_whose_refresh_pi_rejected_needs_a_new_sign_in() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{"anthropic": {"type": "oauth", "access": "synthetic-access",
+              "refresh": "synthetic-refresh", "expires": 1000}}"#,
+        )
+        .expect("write pi auth");
+        struct RejectingRunner;
+        impl super::super::pi_refresh::RefreshRunner for RejectingRunner {
+            fn run(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                super::super::pi_refresh::RunOutcome::Rejected
+            }
+            fn check(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                super::super::pi_refresh::RunOutcome::Rejected
+            }
+        }
+        let source = ClaudeDirectFetch::with_pi(
+            path,
+            Box::new(UnreachableTransport),
+            PiRefresher::with_runner(Box::new(RejectingRunner)),
+        );
+
+        let outcome = source.fetch(TEST_MAX_AGE);
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
         assert_eq!(outcome.detail, None);
     }
 

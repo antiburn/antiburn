@@ -75,7 +75,7 @@ export function liveUsageObservations(
           provider: meter.provider,
           state: provider.freshness === "stale" ? "stale" : "fresh",
         })
-      } else if (status.kind === "grace") {
+      } else if (status.kind === "grace" || status.kind === "stale") {
         observations.push({ provider: meter.provider, state: "stale" })
         observations.push({ provider: meter.provider, state: failedState(status.category) })
       } else {

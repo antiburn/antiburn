@@ -1096,7 +1096,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
     const statuses = screen.getAllByRole("status")
     expect(statuses).toHaveLength(3)
     expect(
-      screen.getByText("Google rate limited usage checks. Wait, then retry."),
+      screen.getByText("Couldn't get Google usage yet. antiburn checks again shortly."),
     ).toBeInTheDocument()
     expect(
       screen.getByText("Claude usage changed. Update antiburn, then retry."),
@@ -1136,20 +1136,43 @@ describe("UsageView — the grace period", () => {
     expect(
       within(card).getByRole("region", { name: "Anthropic plan limits" }),
     ).toBeInTheDocument()
-    expect(
-      within(card).getByText(
-        "Claude is temporarily limiting usage checks. Last updated 4 min ago.",
-      ),
-    ).toBeInTheDocument()
+    expect(within(card).getByText("Last updated 4 min ago.")).toBeInTheDocument()
     expect(within(card).queryByRole("status")).not.toBeInTheDocument()
   })
 
-  it("hides a reading past its grace period and keeps the orange failure note", () => {
-    // 11 minutes before `live()`'s generatedAt of 12:00:00Z.
+  it("keeps a rate-limited reading past its grace period, dimmed, without a failure note", () => {
+    // Two hours before `live()`'s generatedAt of 12:00:00Z.
     render(
       <UsageView
         summary={summary()}
-        live={withGracedReading("2027-01-15T11:49:00Z")}
+        live={withGracedReading("2027-01-15T10:00:00Z")}
+        now={NOW}
+      />,
+    )
+
+    const card = screen.getByText("Anthropic").closest("li")!
+    const limits = within(card).getByRole("region", { name: "Anthropic plan limits" })
+    expect(limits.closest(".opacity-60")).not.toBeNull()
+    expect(limits.closest("[title]")).toHaveAttribute("title", "Last updated 2 hr ago.")
+    expect(within(card).queryByRole("status")).not.toBeInTheDocument()
+  })
+
+  it("hides a reading after a terminal sign-in failure and keeps the orange failure note", () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({
+          providers: [{ ...liveProvider(), observedAt: "2027-01-15T11:49:00Z" }],
+          errors: [
+            {
+              source: "claude-usage-fetch",
+              provider: "anthropic",
+              displayName: "Claude",
+              category: "authentication",
+              detail: "signInRequired",
+            },
+          ],
+        })}
         now={NOW}
       />,
     )
@@ -1159,7 +1182,7 @@ describe("UsageView — the grace period", () => {
       within(card).queryByRole("region", { name: "Anthropic plan limits" }),
     ).not.toBeInTheDocument()
     expect(within(card).getByRole("status")).toHaveTextContent(
-      "Claude rate limited usage checks. Wait, then retry.",
+      "Sign in inside Claude Code again, then retry.",
     )
   })
 
