@@ -1180,7 +1180,8 @@ export function SessionDetailPresentation({
               )}
 
               {tab === "tools" &&
-                (firstSession?.initialContext ? (
+                (firstSession?.initialContext &&
+                (firstSession.initialContext.sources.length > 0 || !calledTools?.length) ? (
                   <div className="flex flex-col gap-y-4">
                     {/* The wasted tokens are the finding of this tab, so they
                         head the table they summarize. The figure has no

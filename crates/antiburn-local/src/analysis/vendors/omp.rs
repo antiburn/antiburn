@@ -308,7 +308,7 @@ mod tests {
     }
 
     fn skill_read_row() -> &'static str {
-        r#"{"type":"message","id":"m3","parentId":"i1","timestamp":"2026-01-01T00:00:04.000Z","message":{"role":"assistant","provider":"anthropic","api":"messages","model":"claude-opus-4-6","timestamp":4,"usage":{"input":10,"output":4,"cacheRead":0,"cacheWrite":0},"content":[{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"skill://deep-research/references/a.md"}},{"type":"toolCall","id":"c2","name":"read","arguments":{"path":"src/lib.rs"}}]}}"#
+        r#"{"type":"message","id":"m3","parentId":"i1","timestamp":"2026-01-01T00:00:04.000Z","message":{"role":"assistant","provider":"anthropic","api":"messages","model":"claude-opus-4-6","timestamp":4,"usage":{"input":10,"output":4,"cacheRead":0,"cacheWrite":0},"content":[{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"skill://deep-research/references/a.md"}},{"type":"toolCall","id":"c2","name":"read","arguments":{"path":"src/lib.rs"}},{"type":"toolCall","id":"c3","name":"read","arguments":{"path":"skill://team_research"}}]}}"#
     }
 
     fn stream_summary(body: &str) -> crate::analysis::interface::SessionSummary {
@@ -388,7 +388,16 @@ mod tests {
             .flat_map(|event| &event.tools)
             .map(|tool| (tool.name.as_str(), tool.detail.as_deref()))
             .collect();
-        assert_eq!(tools, [("skill", Some("deep-research")), ("read", None)]);
+        // OMP matches the URI name exactly, so a name outside Pi's name
+        // rules is still a skill use.
+        assert_eq!(
+            tools,
+            [
+                ("skill", Some("deep-research")),
+                ("read", None),
+                ("skill", Some("team_research")),
+            ]
+        );
     }
 
     #[test]

@@ -6,11 +6,11 @@ export interface CalledToolsProps {
 }
 
 /**
- * The Tools tab's fallback reading for an agent that records no startup
+ * The Tools tab's fallback reading for a session with no sized startup
  * context: the tools the session called, and how often.
  *
- * It names its own limit. Without a startup context there is no list of what
- * the session loaded, so nothing here can price a tool that sat in every
+ * It names its own limit. Without a sized startup context there is no list of
+ * what the session loaded, so nothing here can price a tool that sat in every
  * request and was never called.
  */
 export function CalledTools({ tools }: CalledToolsProps) {
@@ -21,8 +21,8 @@ export function CalledTools({ tools }: CalledToolsProps) {
       <div className="flex flex-col gap-y-1">
         <h3 className="type-headline text-label">Tools called</h3>
         <p className="type-callout text-label-tertiary">
-          This agent does not record the context it loads at startup, so what a loaded but never
-          called item cost is unavailable. These are the tools the session did call.
+          This session has no startup context with sizes, so the cost of items that were loaded
+          but never called is unavailable. These are the tools the session did call.
         </p>
       </div>
       <div className="grid min-w-0 grid-cols-[1fr_auto] gap-x-6 gap-y-1 rounded-control bg-surface-card/50 px-3 py-2">

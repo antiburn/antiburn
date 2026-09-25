@@ -854,6 +854,15 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(screen.queryByText("Tools called")).toBeNull()
   })
 
+  it("lists called tools when the startup context has no sized item", () => {
+    const emptyContext = summary({ sessions: [metrics({ initialContext: { sources: [] } })] })
+    view({ summary: emptyContext, calledTools: [{ name: "Bash", calls: 12 }] })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+
+    expect(screen.getByText("Tools called")).toBeTruthy()
+    expect(screen.getByText("Bash")).toBeTruthy()
+  })
+
   it("keeps the empty state when the session has neither reading", () => {
     view({ summary: summary(), calledTools: [] })
     fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))

@@ -834,8 +834,7 @@ impl PiStreamState {
                         .pointer("/arguments/path")
                         .and_then(Value::as_str)
                         .and_then(|path| path.strip_prefix("skill://"))
-                        .and_then(|rest| rest.split('/').next())
-                        .and_then(pi_skill_identity)
+                        .and_then(skill_uri_identity)
                 {
                     // The dialect loads a skill through its URI. Count the
                     // call as a skill use, the same as a `skill` tool call.
@@ -1394,6 +1393,17 @@ fn pi_skill_identity(name: &str) -> Option<&str> {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'))
+    .then_some(name)
+}
+
+// OMP resolves `skill://<name>` by an exact match of the URL host, without
+// Pi's name rules. Keep a bounded, path-free name; the use count matches it
+// to a listed skill later.
+fn skill_uri_identity(rest: &str) -> Option<&str> {
+    let name = rest.split(['/', '?', '#']).next()?;
+    (!name.is_empty()
+        && name.len() <= 128
+        && !name.chars().any(|c| c.is_whitespace() || c.is_control()))
     .then_some(name)
 }
 
