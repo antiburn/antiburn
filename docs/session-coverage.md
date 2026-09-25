@@ -207,6 +207,13 @@ path after discovery. SQLite readers fingerprint rows visible through the live
 connection, including uncheckpointed WAL rows, and compare again after a
 transaction snapshot completes.
 
+Claude Code, the VS Code extension, and the Claude Desktop Code tab all write
+`~/.claude/projects`. The scan reads the Claude surface from the first
+`entrypoint` marker in the first eight transcript lines. `claude-desktop`,
+`claude-vscode`, other IDE markers, and Cowork's `local-agent` give
+`ide_desktop`; other markers give `cli`. A transcript without a marker uses
+the path, which gives `cli`.
+
 The evidence accumulator retains at most 16,384 distinct thread UUIDs. Each UUID
 must be at most 256 bytes. A new UUID after the set is full, or an oversized
 UUID, makes attribution incomplete and records `Partial(CapExceeded)`. Resume

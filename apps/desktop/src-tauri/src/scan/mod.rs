@@ -1894,13 +1894,14 @@ async fn describe_one_with_activity(
 
     let (updated_at_epoch, activity_source, activity_cursor) =
         semantic_activity_for_log(&log, previous.as_ref(), &children, preview).await;
+    let surface = session_surface(&log, preview, home);
     let descriptor = SourceDescriptor {
         agent: log.agent_type,
         session_id: session_id.clone(),
         environment: log.environment.clone(),
         source: log.source.clone(),
         source_format: crate::analysis::source_format(log.agent_type, &log.source),
-        surface: log.surface_label(home).to_string(),
+        surface: surface.to_string(),
         updated_at_epoch: log.updated_at,
     };
     let source_fingerprint = Explorers::DISK
@@ -1916,7 +1917,7 @@ async fn describe_one_with_activity(
         title,
         title_source,
         cwd: metadata.and_then(|metadata| metadata.cwd.clone()),
-        surface: log.surface_label(home).to_string(),
+        surface: surface.to_string(),
         updated_at_epoch,
         activity_cursor,
         activity_source,
@@ -1924,6 +1925,21 @@ async fn describe_one_with_activity(
         fork_parent_session_id,
         source_fingerprint,
     }))
+}
+
+/// The session's surface label. Claude Code, the VS Code extension, and the
+/// Claude Desktop Code tab all write to `~/.claude/projects`, so for Claude
+/// the path alone gives `cli`. The `entrypoint` marker in the transcript
+/// head gives the correct surface.
+fn session_surface(
+    log: &SessionLog,
+    preview: Option<&str>,
+    home: &std::path::Path,
+) -> &'static str {
+    match (log.agent_type, preview) {
+        (AgentKind::Claude, Some(content)) => log.surface_label_with_content(content, home),
+        _ => log.surface_label(home),
+    }
 }
 
 /// The fork parent this session's own source declares, if any.
