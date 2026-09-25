@@ -113,20 +113,30 @@ fn search_dirs_in(
     dirs
 }
 
-/// The first executable file named `binary` in `dirs`. On Windows, the usual
-/// executable extensions are also tried.
+/// The first executable file named `binary` in `dirs`.
 pub(super) fn locate_in(binary: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let names = file_names(binary, cfg!(target_os = "windows"));
     dirs.iter().find_map(|dir| {
-        #[cfg(target_os = "windows")]
-        for extension in ["exe", "cmd", "bat", "ps1"] {
-            let candidate = dir.join(format!("{binary}.{extension}"));
-            if is_executable(&candidate) {
-                return Some(candidate);
-            }
-        }
-        let candidate = dir.join(binary);
-        is_executable(&candidate).then_some(candidate)
+        names
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|candidate| is_executable(candidate))
     })
+}
+
+/// The file names that the spawn can run for `binary`. `CreateProcessW` runs
+/// `.exe` directly and `.cmd` or `.bat` through `cmd.exe`. It cannot run a
+/// `.ps1` script or the extensionless `sh` shim that npm also writes, so the
+/// search continues past those to a runnable CLI.
+fn file_names(binary: &str, windows: bool) -> Vec<String> {
+    if windows {
+        ["exe", "cmd", "bat"]
+            .iter()
+            .map(|extension| format!("{binary}.{extension}"))
+            .collect()
+    } else {
+        vec![binary.to_owned()]
+    }
 }
 
 /// Whether `path` is a file that the spawn can run. On Unix, a file without
@@ -205,6 +215,15 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
         }
+    }
+
+    #[test]
+    fn windows_names_only_the_extensions_that_create_process_can_run() {
+        assert_eq!(
+            file_names("claude", true),
+            ["claude.exe", "claude.cmd", "claude.bat"]
+        );
+        assert_eq!(file_names("claude", false), ["claude"]);
     }
 
     #[cfg(unix)]
