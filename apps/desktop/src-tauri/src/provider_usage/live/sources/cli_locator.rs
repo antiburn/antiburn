@@ -10,6 +10,17 @@
 //!
 //! This module searches the process `PATH` first, then the usual install
 //! locations. It only reads file metadata. It never runs a binary.
+//!
+//! # Trust
+//!
+//! The extra directories are the same directories that the reader's login
+//! shell puts on `PATH`: directories in the reader's home, and the Homebrew
+//! and `/usr/local` prefixes. When the reader types `claude` in a terminal,
+//! the shell runs a binary from these directories. A process that can write
+//! to them can already run code as the reader. The search therefore gives no
+//! authority that the reader's own shell does not give. The process `PATH`
+//! stays first, so an app that starts from a terminal keeps the terminal's
+//! choice.
 
 use std::ffi::OsString;
 use std::fs;
@@ -109,13 +120,32 @@ pub(super) fn locate_in(binary: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         for extension in ["exe", "cmd", "bat", "ps1"] {
             let candidate = dir.join(format!("{binary}.{extension}"));
-            if candidate.is_file() {
+            if is_executable(&candidate) {
                 return Some(candidate);
             }
         }
         let candidate = dir.join(binary);
-        candidate.is_file().then_some(candidate)
+        is_executable(&candidate).then_some(candidate)
     })
+}
+
+/// Whether `path` is a file that the spawn can run. On Unix, a file without
+/// an execute bit fails to spawn, so the search continues past it to the next
+/// directory, like a shell `PATH` lookup. A symlink is followed.
+fn is_executable(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && has_execute_bit(&metadata))
+}
+
+#[cfg(unix)]
+fn has_execute_bit(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+/// Windows has no execute bit. The extension decides what can run.
+#[cfg(not(unix))]
+fn has_execute_bit(_metadata: &fs::Metadata) -> bool {
+    true
 }
 
 /// A `PATH` for a child process that runs `binary`. The binary's own
@@ -170,6 +200,27 @@ mod tests {
     fn touch_executable(path: &Path) {
         fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         fs::write(path, b"#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_without_an_execute_bit_does_not_hide_a_later_install() {
+        let stray = tempfile::tempdir().expect("tempdir");
+        let installed = tempfile::tempdir().expect("tempdir");
+        fs::write(stray.path().join("claude"), b"not a program").expect("write");
+        touch_executable(&installed.path().join("claude"));
+
+        let dirs = [stray.path().to_path_buf(), installed.path().to_path_buf()];
+
+        assert_eq!(
+            locate_in("claude", &dirs),
+            Some(installed.path().join("claude"))
+        );
     }
 
     #[test]
