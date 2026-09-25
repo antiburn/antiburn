@@ -555,6 +555,50 @@ fn account_observation_migration_initializes_the_latest_timestamp() {
     assert_eq!(latest, 1234);
 }
 
+#[test]
+fn surface_migration_reopens_only_claude_rows_labelled_cli() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..57] {
+        connection.execute_batch(sql).unwrap();
+    }
+    for (agent, session_id, surface) in [
+        ("claude-code", "desktop-labelled-cli", "cli"),
+        ("claude-code", "already-ide", "ide_desktop"),
+        ("codex", "codex-cli", "cli"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO session (
+                    environment_key, agent, session_id, source_kind, source_label,
+                    surface, first_seen_at, last_seen_at, activity_cursor
+                 ) VALUES ('native', ?1, ?2, 'file', 'synthetic', ?3, 't', 't', 'cursor')",
+                [agent, session_id, surface],
+            )
+            .unwrap();
+    }
+    connection.pragma_update(None, "user_version", 57).unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-surface-migration-test").to_path_buf(),
+    )
+    .unwrap();
+    let cursor = |session_id: &str| {
+        store
+            .lock()
+            .query_row(
+                "SELECT activity_cursor FROM session WHERE session_id = ?1",
+                [session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+
+    assert_eq!(cursor("desktop-labelled-cli"), "");
+    assert_eq!(cursor("already-ide"), "cursor");
+    assert_eq!(cursor("codex-cli"), "cursor");
+}
+
 /// Opting out is a withdrawal, not a pause: nothing queued survives it, and
 /// neither does the identifier that would let a later opt-in be joined to it.
 #[test]

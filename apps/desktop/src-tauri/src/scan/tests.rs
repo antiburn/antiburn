@@ -318,6 +318,32 @@ fn a_direct_lookup_miss_keeps_the_transcript_fallback_pair() {
 }
 
 #[tokio::test]
+async fn a_claude_desktop_transcript_in_the_shared_tree_is_labelled_desktop() {
+    let home = tempfile::TempDir::new().unwrap();
+    let cli_path = write_claude_session(home.path(), "cli-session");
+    let desktop_path = write_claude_session(home.path(), "desktop-session");
+    // The Code tab writes the same tree and marks the user record.
+    let content = std::fs::read_to_string(&desktop_path).unwrap().replace(
+        r#""type":"user","#,
+        r#""type":"user","entrypoint":"claude-desktop","#,
+    );
+    std::fs::write(&desktop_path, content).unwrap();
+
+    for (path, expected) in [(cli_path, "cli"), (desktop_path, "ide_desktop")] {
+        let DescribeOutcome::Session(record) = describe_one(
+            log(AgentKind::Claude, path, 1_800_000_000),
+            home.path(),
+            None,
+        )
+        .await
+        else {
+            panic!("Claude session should be described");
+        };
+        assert_eq!(record.surface, expected);
+    }
+}
+
+#[tokio::test]
 async fn a_native_codex_title_refreshes_while_wsl_keeps_its_own_fallback() {
     let home = tempfile::TempDir::new().unwrap();
     let session_id = "same-id-in-two-environments";
