@@ -108,10 +108,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "analytics")]
 use std::sync::Mutex;
+use std::time::Duration;
 #[cfg(feature = "analytics")]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -367,6 +367,7 @@ mod macos_keychain {
                     error: super::ProviderUsageError::Unavailable,
                     detail: Some(super::SourceErrorDetail::KeychainUnreadable),
                     last_known: None,
+                    retry_after: None,
                 }),
             }
         }
@@ -588,7 +589,7 @@ impl ClaudeDirectFetch {
             #[cfg(target_os = "macos")]
             try_keychain: true,
             config_cache_path: claude_config_cache::default_config_path(),
-            transport: Box::new(LiveAnthropicTransport),
+            transport: Box::new(LiveAnthropicTransport::default()),
             cooldown: Cooldown::new(),
             pi_refresh: PiRefresher::new(),
             touch_env: Some(Box::new(claude_touch::CliTouchEnvironment::new(
@@ -615,7 +616,7 @@ impl ClaudeDirectFetch {
             #[cfg(target_os = "macos")]
             try_keychain: false,
             config_cache_path: None,
-            transport: Box::new(LiveAnthropicTransport),
+            transport: Box::new(LiveAnthropicTransport::default()),
             cooldown: Cooldown::new(),
             pi_refresh: PiRefresher::unavailable(),
             touch_env: None,
@@ -925,6 +926,7 @@ fn auth_failure(detail: SourceErrorDetail) -> FetchFailure {
         error: ProviderUsageError::Authentication,
         detail: Some(detail),
         last_known: None,
+        retry_after: None,
     }
 }
 
@@ -1058,6 +1060,9 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 other => other.map_err(FetchFailure::from),
             };
             with_carrier_error(fetched, carrier_error).map_err(|mut failure| {
+                if failure.error == ProviderUsageError::RateLimited {
+                    failure.retry_after = self.transport.take_retry_after();
+                }
                 failure.last_known = native.as_ref().and_then(|native| {
                     cached
                         .filter(|cached| now - cached.observed_at <= cooldown::MAX_AGE)
@@ -1126,19 +1131,49 @@ trait AnthropicTransport: Send + Sync {
     }
     /// The profile body, or `None` when enrichment fails.
     fn profile(&self, access_token: &str) -> Option<String>;
+    /// The `Retry-After` delay of the last rate-limited usage request, once.
+    fn take_retry_after(&self) -> Option<Duration> {
+        None
+    }
 }
 
-struct LiveAnthropicTransport;
+/// The production transport. All calls run inside the source's cooldown
+/// lock, so the two caches below see one request at a time.
+#[derive(Default)]
+struct LiveAnthropicTransport {
+    /// The `Retry-After` from the last usage response that was a rate limit.
+    retry_after: Mutex<Option<Duration>>,
+    /// The last profile body, keyed by a hash of the access token it answered
+    /// for. The profile describes the account, and one access token belongs
+    /// to one account, so a new request is needed only for a new token.
+    profile: Mutex<Option<(u64, String)>>,
+}
 
 impl AnthropicTransport for LiveAnthropicTransport {
     fn usage(&self, access_token: &str) -> Result<String, ProviderUsageError> {
-        let response = claude_request(USAGE_ENDPOINT, access_token)
-            .send()
-            .map_err(|_| ProviderUsageError::Unavailable)?;
+        let sent = claude_request(USAGE_ENDPOINT, access_token).send();
+        log_request(
+            "usage",
+            sent.as_ref().ok().map(|response| response.status()),
+        );
+        let response = sent.map_err(|_| ProviderUsageError::Unavailable)?;
         if let Some(error) = http::status_error(response.status()) {
+            if error == ProviderUsageError::RateLimited {
+                *self
+                    .retry_after
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = retry_after(&response);
+            }
             return Err(error);
         }
         http::read_capped_body(response)
+    }
+
+    fn take_retry_after(&self) -> Option<Duration> {
+        self.retry_after
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     #[cfg(feature = "analytics")]
@@ -1176,15 +1211,52 @@ impl AnthropicTransport for LiveAnthropicTransport {
     }
 
     fn profile(&self, access_token: &str) -> Option<String> {
-        let response = claude_request(PROFILE_ENDPOINT, access_token).send().ok()?;
+        let key = token_key(access_token);
+        let mut cached = self
+            .profile
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached_key, body)) = cached.as_ref()
+            && *cached_key == key
+        {
+            return Some(body.clone());
+        }
+        let sent = claude_request(PROFILE_ENDPOINT, access_token).send();
+        log_request(
+            "profile",
+            sent.as_ref().ok().map(|response| response.status()),
+        );
+        let response = sent.ok()?;
         if http::status_error(response.status()).is_some() {
             return None;
         }
-        http::read_capped_body(response).ok()
+        let body = http::read_capped_body(response).ok()?;
+        *cached = Some((key, body.clone()));
+        Some(body)
     }
 }
 
-#[cfg(feature = "analytics")]
+/// A hash that tells two access tokens apart without keeping either.
+fn token_key(access_token: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    access_token.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Log one outgoing request to the Claude usage API. `status` is `None`
+/// when no response arrived. The event contains no token and no body.
+fn log_request(endpoint: &'static str, status: Option<reqwest::StatusCode>) {
+    ::tracing::debug!(
+        event = "live_usage_request",
+        provider = "anthropic",
+        endpoint,
+        status = status.map(|status| status.as_u16())
+    );
+}
+
+/// The `Retry-After` delay in seconds. The HTTP-date form is not read; the
+/// backoff in [`cooldown`] still applies without it.
 fn retry_after(response: &reqwest::blocking::Response) -> Option<Duration> {
     response
         .headers()
@@ -1254,6 +1326,7 @@ fn fetch_with_cache_at(
                 error,
                 detail: None,
                 last_known,
+                retry_after: None,
             })
         }
     }
@@ -1279,6 +1352,12 @@ fn fetch_from_carriers(
         live = true;
         match fetch_live(transport, credentials, claude_json_path, now) {
             Ok(snapshot) => return Ok(Some(snapshot)),
+            // Every carrier normally holds the same account, and a rate
+            // limit applies to that account. Another carrier adds a request
+            // but not an answer.
+            Err(ProviderUsageError::RateLimited) => {
+                return Err(ProviderUsageError::RateLimited);
+            }
             Err(next) => {
                 error = Some(match error {
                     Some(current) => preferred_error(current, next),
@@ -2213,6 +2292,69 @@ mod tests {
             .expect("live carrier")
             .expect("snapshot");
         assert_eq!(result.windows.len(), 1);
+    }
+
+    /// A transport that always answers with a rate limit and counts calls.
+    struct AlwaysRateLimited {
+        calls: Arc<AtomicUsize>,
+        retry_after: Option<Duration>,
+    }
+
+    impl AnthropicTransport for AlwaysRateLimited {
+        fn usage(&self, _: &str) -> Result<String, ProviderUsageError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderUsageError::RateLimited)
+        }
+        fn profile(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn take_retry_after(&self) -> Option<Duration> {
+            self.retry_after
+        }
+    }
+
+    #[test]
+    fn a_rate_limit_stops_the_carrier_fan_out() {
+        let live = |token: &str| ClaudeCredentials {
+            access_token: token.into(),
+            expires_at_ms: (NOW + 3_600) * 1_000,
+            subscription_type: None,
+            rate_limit_tier: None,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let transport = AlwaysRateLimited {
+            calls: Arc::clone(&calls),
+            retry_after: None,
+        };
+        let result =
+            fetch_from_carriers(&transport, vec![live("first"), live("second")], None, now());
+        assert_eq!(result.err(), Some(ProviderUsageError::RateLimited));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_provider_retry_after_reaches_the_cooldown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let credentials = dir.path().join(".credentials.json");
+        fs::write(&credentials, credentials_file(i64::MAX, "max")).expect("write");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source = ClaudeDirectFetch::at_with_config_cache(
+            credentials,
+            dir.path().join("missing.claude.json"),
+            Box::new(AlwaysRateLimited {
+                calls: Arc::clone(&calls),
+                retry_after: Some(Duration::from_secs(600)),
+            }),
+        );
+
+        let outcome = source.fetch(Duration::ZERO);
+        assert_eq!(outcome.error, Some(ProviderUsageError::RateLimited));
+        let left = source.cooldown.backoff_left_for_test().expect("a backoff");
+        assert!(left > Duration::from_secs(590));
+
+        // An eager caller during the backoff sends nothing.
+        source.fetch(Duration::ZERO);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

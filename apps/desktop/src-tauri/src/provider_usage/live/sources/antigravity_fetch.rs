@@ -704,6 +704,7 @@ impl From<RefreshError> for FetchFailure {
             error: failure.error,
             detail: failure.detail,
             last_known: None,
+            retry_after: None,
         }
     }
 }

@@ -67,6 +67,12 @@ metadata failures, launch failures, verification timeouts, and settled refreshes
 no credentials or CLI output. A settled refresh means the credential carrier
 changed; the subsequent usage request still determines whether recovery worked.
 
+The debug event `live_usage_request` records each request to the Claude usage
+API with its endpoint (`usage` or `profile`) and HTTP status. It contains no
+token or body. The debug event `live_usage_rate_limit_backoff` records each
+rate limit with the count in a row, the wait before the next attempt, and the
+provider's `Retry-After` when it sent one.
+
 At launch, the `info` event `cli_located` records where antiburn finds the
 `claude` CLI: `process_path`, `install_dir` (an install directory outside the
 process `PATH`), or `none`. It contains no path. Release logs include it.
