@@ -162,7 +162,7 @@ export function OverviewProviderLimits({
                           {entry.displayName}
                         </h3>
                         <p className="type-footnote pt-(--space-md) text-label-secondary">
-                          {liveErrorNote(entry.category, entry.provider)}
+                          {liveErrorNote(entry.category, entry.provider, entry.detail)}
                         </p>
                       </div>
                     </Fragment>

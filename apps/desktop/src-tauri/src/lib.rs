@@ -378,6 +378,8 @@ pub fn run() {
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);
+        // Only file metadata, but keep it off the launch path.
+        tauri::async_runtime::spawn_blocking(provider_usage::live::sources::log_cli_location);
         let settings = app.state::<store::Store>().settings().ok();
         let snapshot = app.state::<usage_alerts::LiveUsage>().snapshot();
         tray::sync_usage(

@@ -910,7 +910,7 @@ describe("PopoverSession event-driven refresh", () => {
     unsubscribe()
   })
 
-  it("forces a usage refresh on membership changes, except resync", async () => {
+  it("forces a usage refresh on visible membership changes, except resync", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
     const session = new PopoverSession()
@@ -925,6 +925,12 @@ describe("PopoverSession event-driven refresh", () => {
 
     // A resync refetches the list but leaves usage to its own floor/poll.
     indexChangedHandler?.({ seq: 2, cause: "resync" })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    // Hidden, a membership change refreshes the list but not usage.
+    popoverHiddenHandler?.()
+    indexChangedHandler?.({ seq: 3, cause: "scan_pass" })
     await vi.advanceTimersByTimeAsync(0)
     expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
 

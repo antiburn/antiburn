@@ -453,7 +453,10 @@ export class PopoverSession {
   // Membership changed: a session arrived, left, or the whole list was
   // invalidated. The refetch coalesces so an event burst runs one query.
   // A `resync` cause means events were lost; it refetches everything but
-  // leaves the usage refresh to its own floor and poll.
+  // leaves the usage refresh to its own floor and poll. A hidden popover does
+  // not refresh usage: a forced refresh can start a Claude CLI recovery and a
+  // Keychain read, and nobody looks at the result. `popover:shown` refreshes
+  // usage when the popover opens again.
   private listenSessionIndexChanged = async (generation: number): Promise<void> => {
     const unlisten = await onSessionIndexChanged((change) => {
       if (generation !== this.generation) return
@@ -461,7 +464,7 @@ export class PopoverSession {
       void this.refreshRepositoryList()
       void this.refreshChecks()
       this.requestSessionLimitAllocationRefresh(false, true)
-      if (change.cause !== "resync") {
+      if (change.cause !== "resync" && this.visible) {
         this.lastUsageRefreshAt = Date.now()
         void this.refreshUsage()
       }

@@ -48,6 +48,7 @@ pub mod antigravity_fetch;
 mod antigravity_local;
 mod claude_config_cache;
 mod claude_touch;
+mod cli_locator;
 mod codex_app_server;
 pub mod codex_fetch;
 pub(crate) mod codex_rollout;
@@ -67,6 +68,18 @@ use super::model::{Freshness, ProviderUsageSnapshot};
 /// reader sees one row in the source registry either way.
 const CODEX_SOURCE_ID: &str = "codex-usage-fetch";
 const ANTIGRAVITY_SOURCE_ID: &str = "antigravity-usage-fetch";
+
+/// Log once where the Claude CLI is found. `via = "install_dir"` means that
+/// the process `PATH` does not contain the CLI, which is normal for an app
+/// that starts from Finder. The Claude token recovery then depends on
+/// [`cli_locator`]. The event contains no path.
+pub fn log_cli_location() {
+    ::tracing::info!(
+        event = "cli_located",
+        cli = "claude",
+        via = cli_locator::origin(claude_touch::CLAUDE_BINARY)
+    );
+}
 
 /// Every source this build registers, in no particular order — ranking is
 /// [`preferred`]'s job, not registration order's.
