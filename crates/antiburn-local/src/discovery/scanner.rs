@@ -1000,7 +1000,8 @@ const REPO_INFERENCE_MAX_PROBES: usize = 8;
 /// parent folder of repositories, not a repository.
 ///
 /// Reads the head of the transcript and keeps the candidate folders below
-/// `cwd`. Returns the repository root that holds the most candidates. On a
+/// `cwd`. Returns the repository root that holds the most distinct candidate
+/// folders. The count is folders, not edits. On a
 /// tie, the repository that the transcript touched first wins. Returns `None`
 /// when no candidate resolves to a repository.
 pub async fn infer_repo_root_below_cwd(
