@@ -67,6 +67,14 @@ metadata failures, launch failures, verification timeouts, and settled refreshes
 no credentials or CLI output. A settled refresh means the credential carrier
 changed; the subsequent usage request still determines whether recovery worked.
 
+At launch, the `info` event `cli_located` records where antiburn finds the
+`claude` CLI: `process_path`, `install_dir` (an install directory outside the
+process `PATH`), or `none`. It contains no path. Release logs include it.
+An app that starts from Finder gets only `/usr/bin:/bin:/usr/sbin:/sbin`;
+`open` from a terminal passes the terminal's `PATH` instead. To reproduce a
+Finder launch from a terminal, run
+`osascript -e 'tell application "Finder" to open (POSIX file "/path/to/antiburn.app" as alias)'`.
+
 ## Restart onboarding
 
 Select **Reset Onboarding** in the debug-build tray menu. This action sets
