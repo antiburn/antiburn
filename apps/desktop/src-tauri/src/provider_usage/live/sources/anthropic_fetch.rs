@@ -119,7 +119,7 @@ use time::OffsetDateTime;
 use crate::provider_usage::live::SourceErrorDetail;
 use crate::provider_usage::live::anthropic;
 use crate::provider_usage::live::model::{
-    Confidence, Detection, Freshness, LoginCarrier, Presence, ProviderUsageError,
+    Confidence, DesktopApp, Detection, Freshness, LoginCarrier, Presence, ProviderUsageError,
     ProviderUsageSnapshot, UsageSource,
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
@@ -233,6 +233,80 @@ fn detect_presence(
         Err(_) => Presence::UNKNOWN,
         Ok(false) if probe.binary_present(BINARY) => Presence::new(Detection::InstalledNotSignedIn),
         Ok(false) => Presence::new(Detection::NotInstalled),
+    }
+}
+
+/// Where Claude Desktop may be installed: app folders and a launcher on
+/// `PATH`. Empty in tests, so that a test never depends on its machine.
+#[derive(Default)]
+struct DesktopAppLocations {
+    paths: Vec<PathBuf>,
+    binary: Option<&'static str>,
+}
+
+/// Note Claude Desktop on a presence that found no login.
+///
+/// Claude Desktop keeps its own sign-in, which antiburn does not read, so the
+/// app never makes the meter signed in. When no Claude Code login was found,
+/// the note can still say that the app is here instead of "Couldn't find
+/// Claude Code". Only file metadata is read.
+fn with_claude_desktop(
+    presence: Presence,
+    probe: &impl PresenceProbe,
+    app: &DesktopAppLocations,
+) -> Presence {
+    if presence.detection == Detection::SignedIn {
+        return presence;
+    }
+    let installed = app
+        .paths
+        .iter()
+        .any(|path| presence::path_exists(probe, path).unwrap_or(false))
+        || app
+            .binary
+            .is_some_and(|binary| probe.binary_present(binary));
+    presence.with_desktop_app(installed.then_some(DesktopApp::ClaudeDesktop))
+}
+
+/// Claude Desktop on macOS: the app bundle.
+#[cfg(target_os = "macos")]
+fn claude_desktop_locations(home: Option<&Path>) -> DesktopAppLocations {
+    let mut paths = vec![PathBuf::from("/Applications/Claude.app")];
+    if let Some(home) = home {
+        paths.push(home.join("Applications/Claude.app"));
+    }
+    DesktopAppLocations {
+        paths,
+        binary: None,
+    }
+}
+
+/// Claude Desktop on Windows: the Squirrel install folder, or the per-user
+/// data folder of the MSIX package that claude.ai/download installs.
+#[cfg(target_os = "windows")]
+fn claude_desktop_locations(home: Option<&Path>) -> DesktopAppLocations {
+    let paths = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join("AppData").join("Local")))
+        .map(|local| {
+            vec![
+                local.join("AnthropicClaude"),
+                local.join("Packages").join("Claude_pzs8sxrjxfjjc"),
+            ]
+        })
+        .unwrap_or_default();
+    DesktopAppLocations {
+        paths,
+        binary: None,
+    }
+}
+
+/// Claude Desktop on Linux (beta): the `claude-desktop` package's launcher.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn claude_desktop_locations(_home: Option<&Path>) -> DesktopAppLocations {
+    DesktopAppLocations {
+        paths: Vec::new(),
+        binary: Some("claude-desktop"),
     }
 }
 
@@ -500,6 +574,8 @@ pub struct ClaudeDirectFetch {
     /// The cooldown, in-flight dedup, and terminal state the touch runs
     /// behind, so one expired credential cannot spawn PTYs repeatedly.
     touch_gate: claude_touch::TouchGate,
+    /// Where Claude Desktop may be installed.
+    desktop_app: DesktopAppLocations,
     /// The last credential successfully parsed out of the Keychain, held
     /// until its own `expiresAt` so a live token's secret is never read
     /// twice — see the module doc's "Delegating refresh to the CLI" section.
@@ -595,6 +671,7 @@ impl ClaudeDirectFetch {
                 default_credentials_path(),
             ))),
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: claude_desktop_locations(antiburn_local::paths::home_dir().as_deref()),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -620,6 +697,7 @@ impl ClaudeDirectFetch {
             pi_refresh: PiRefresher::unavailable(),
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -648,6 +726,7 @@ impl ClaudeDirectFetch {
             pi_refresh: PiRefresher::unavailable(),
             touch_env: Some(touch_env),
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -675,6 +754,7 @@ impl ClaudeDirectFetch {
             pi_refresh: PiRefresher::unavailable(),
             touch_env: Some(touch_env),
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -707,6 +787,7 @@ impl ClaudeDirectFetch {
             pi_refresh: PiRefresher::unavailable(),
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -734,6 +815,7 @@ impl ClaudeDirectFetch {
             pi_refresh,
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -950,18 +1032,20 @@ impl LiveUsageSource for ClaudeDirectFetch {
     }
 
     fn detect(&self, online: bool) -> Presence {
-        detect_presence(
-            &SystemPresenceProbe {
-                #[cfg(target_os = "macos")]
-                try_keychain: self.try_keychain,
-            },
+        let probe = SystemPresenceProbe {
+            #[cfg(target_os = "macos")]
+            try_keychain: self.try_keychain,
+        };
+        let presence = detect_presence(
+            &probe,
             self.credentials_path.as_deref(),
             self.pi_auth_path.as_deref(),
             || match (online, self.pi_auth_path.as_deref()) {
                 (true, Some(path)) => self.pi_refresh.status(path, pi_auth::ANTHROPIC_KEY),
                 _ => PiStatus::Unknown,
             },
-        )
+        );
+        with_claude_desktop(presence, &probe, &self.desktop_app)
     }
 
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
@@ -1773,6 +1857,58 @@ mod tests {
                 .insert(path.into(), Err(io::ErrorKind::NotFound));
         }
         assert_eq!(detected(&probe), Detection::NotInstalled);
+    }
+
+    #[test]
+    fn claude_desktop_is_noted_only_when_no_login_was_found() {
+        const APP: &str = "/fixture/Applications/Claude.app";
+        let mut probe = RecordingPresence::default();
+        probe.paths.insert(APP.into(), Ok(true));
+        let app = DesktopAppLocations {
+            paths: vec![PathBuf::from(APP)],
+            binary: None,
+        };
+
+        let not_installed =
+            with_claude_desktop(Presence::new(Detection::NotInstalled), &probe, &app);
+        assert_eq!(not_installed.detection, Detection::NotInstalled);
+        assert_eq!(not_installed.desktop_app, Some(DesktopApp::ClaudeDesktop));
+
+        let signed_in = with_claude_desktop(
+            Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain),
+            &probe,
+            &app,
+        );
+        assert_eq!(signed_in.desktop_app, None);
+
+        // No app on disk: nothing is noted.
+        let absent = with_claude_desktop(
+            Presence::new(Detection::InstalledNotSignedIn),
+            &RecordingPresence::default(),
+            &app,
+        );
+        assert_eq!(absent.desktop_app, None);
+    }
+
+    #[test]
+    fn claude_desktop_on_linux_is_found_by_its_launcher() {
+        let probe = RecordingPresence {
+            binary: true,
+            ..Default::default()
+        };
+        let app = DesktopAppLocations {
+            paths: Vec::new(),
+            binary: Some("claude-desktop"),
+        };
+        let presence = with_claude_desktop(Presence::new(Detection::NotInstalled), &probe, &app);
+        assert_eq!(presence.desktop_app, Some(DesktopApp::ClaudeDesktop));
+        assert!(
+            probe
+                .calls
+                .borrow()
+                .iter()
+                .any(|call| call == "binary_present")
+        );
     }
 
     #[test]
