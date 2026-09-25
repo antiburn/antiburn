@@ -25,6 +25,7 @@ import {
   liveErrorNote,
   livePlanAccountLabel,
   livePlanLabel,
+  liveDisplayableProviders,
   liveProviderStatus,
   liveStatusNote,
   liveWindows,
@@ -207,7 +208,9 @@ function usageCards(
     cards.set(local.provider, card)
   }
 
-  for (const reading of live.providers) {
+  // The displayable readings, so a stale reading loses the figure of a
+  // period that reset since; a failed provider keeps its card through its error.
+  for (const reading of liveDisplayableProviders(live)) {
     const card = cards.get(reading.provider) ?? {
       local: [],
       live: [],

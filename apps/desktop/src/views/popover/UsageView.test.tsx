@@ -1157,6 +1157,43 @@ describe("UsageView — the grace period", () => {
     expect(within(card).queryByRole("status")).not.toBeInTheDocument()
   })
 
+  it("drops the figure of a stale window whose period reset since the reading", () => {
+    // The reading is two hours old; its five-hour window reset an hour ago.
+    const reading = liveProvider()
+    const reset = {
+      ...reading,
+      observedAt: "2027-01-15T10:00:00Z",
+      windows: reading.windows.map((window) => ({
+        ...window,
+        usedPercent: 87,
+        resetsAt: "2027-01-15T11:00:00Z",
+      })),
+    }
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({
+          providers: [reset],
+          errors: [
+            {
+              source: "claude-usage-fetch",
+              provider: "anthropic",
+              displayName: "Claude",
+              category: "rateLimited",
+            },
+          ],
+        })}
+        now={NOW}
+      />,
+    )
+
+    const card = screen.getByText("Anthropic").closest("li")!
+    expect(
+      within(card).getByRole("region", { name: "Anthropic plan limits" }),
+    ).toBeInTheDocument()
+    expect(within(card).queryByText(/87/)).not.toBeInTheDocument()
+  })
+
   it("hides a reading after a terminal sign-in failure and keeps the orange failure note", () => {
     render(
       <UsageView
