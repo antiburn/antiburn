@@ -162,6 +162,29 @@ describe("OverviewProviderLimits", () => {
     expect(screen.getByText(note)).toBeInTheDocument()
   })
 
+  it.each([
+    ["refreshPending", "Couldn't update Claude usage. Try again shortly."],
+    ["cliMissing", "Couldn't update Claude usage. Open Claude Code to check your sign-in."],
+  ] as const)("keeps the %s detail when Claude has no reading to show", (detail, note) => {
+    render(
+      <OverviewProviderLimits
+        live={liveSummary({
+          providers: [],
+          errors: [
+            sourceError({
+              provider: "anthropic",
+              displayName: "Claude",
+              detail,
+            }),
+          ],
+        })}
+      />,
+    )
+    const card = screen.getByRole("group", { name: "Claude" })
+    expect(card).toHaveTextContent(note)
+    expect(card).not.toHaveTextContent("sign-in expired")
+  })
+
   it("shows the sign-in action for a failed provider", () => {
     render(
       <OverviewProviderLimits

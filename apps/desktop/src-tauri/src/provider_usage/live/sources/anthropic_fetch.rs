@@ -186,7 +186,7 @@ pub fn default_credentials_path() -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
-/// The CLI's own executable name on `PATH`.
+/// The CLI's own executable name. See [`super::cli_locator`] for where it is searched.
 const BINARY: &str = "claude";
 
 /// Presence rules, in order: the credentials file is a login; the Keychain

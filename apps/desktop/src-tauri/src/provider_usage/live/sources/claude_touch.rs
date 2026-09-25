@@ -56,6 +56,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use super::cli_locator;
+
 /// The floor under the verification poll interval. Each macOS poll spawns a
 /// `security` subprocess; anything faster turns verification into a
 /// subprocess storm.
@@ -331,7 +333,7 @@ impl CliTouchEnvironment {
 
 impl TouchEnvironment for CliTouchEnvironment {
     fn binary_present(&self) -> bool {
-        binary_on_path(CLAUDE_BINARY)
+        cli_locator::locate(CLAUDE_BINARY).is_some()
     }
 
     fn fingerprint(&self) -> Option<Fingerprint> {
@@ -354,9 +356,15 @@ impl TouchEnvironment for CliTouchEnvironment {
 
         use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+        let (binary, dirs) = cli_locator::locate(CLAUDE_BINARY)?;
         let pty = native_pty_system().openpty(PtySize::default()).ok()?;
-        let mut command = CommandBuilder::new(CLAUDE_BINARY);
+        let mut command = CommandBuilder::new(&binary);
         command.env("TERM", "xterm-256color");
+        // An app started from Finder has a thin `PATH`. The CLI and any
+        // `node` it needs must resolve without the reader's shell profile.
+        if let Some(path) = cli_locator::child_path(&binary, &dirs) {
+            command.env("PATH", path);
+        }
         let child = pty.slave.spawn_command(command).ok()?;
         drop(pty.slave);
         let mut reader = pty.master.try_clone_reader().ok()?;
@@ -403,28 +411,6 @@ impl TouchChild for PtyTouchChild {
         let _ = self.child.wait();
         self.master.take();
     }
-}
-
-/// Whether `binary` names an executable file on the reader's `PATH` — the
-/// same resolution spawning it would use, without spawning anything.
-pub(super) fn binary_on_path(binary: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        if dir.as_os_str().is_empty() {
-            return false;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            ["exe", "cmd", "bat", "ps1"]
-                .iter()
-                .any(|extension| dir.join(format!("{binary}.{extension}")).is_file())
-                || dir.join(binary).is_file()
-        }
-        #[cfg(not(target_os = "windows"))]
-        dir.join(binary).is_file()
-    })
 }
 
 /// A stable content hash for fingerprinting. Collision resistance is not a
@@ -745,11 +731,5 @@ mod tests {
         gate.clear_terminal();
         gate.open_cooldown_for_test();
         assert!(gate.begin(&Fingerprint("dead".into())));
-    }
-
-    #[test]
-    fn an_absent_path_reads_as_no_binary() {
-        // A name that cannot exist on any real `PATH`.
-        assert!(!binary_on_path("antiburn-nonexistent-touch-binary"));
     }
 }

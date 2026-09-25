@@ -48,6 +48,7 @@ pub mod antigravity_fetch;
 mod antigravity_local;
 mod claude_config_cache;
 mod claude_touch;
+mod cli_locator;
 mod codex_app_server;
 pub mod codex_fetch;
 pub(crate) mod codex_rollout;

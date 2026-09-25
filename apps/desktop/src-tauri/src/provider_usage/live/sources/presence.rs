@@ -20,6 +20,7 @@ use std::path::Path;
 use super::claude_touch;
 #[cfg(target_os = "macos")]
 pub(super) use super::claude_touch::KeychainMetadata;
+use super::cli_locator;
 
 /// The metadata primitives a detector may use. Injectable so a test can
 /// assert exactly which calls a detector made — and that none of them
@@ -60,7 +61,7 @@ impl PresenceProbe for SystemPresenceProbe {
     }
 
     fn binary_present(&self, binary: &str) -> bool {
-        claude_touch::binary_on_path(binary)
+        cli_locator::locate(binary).is_some()
     }
 }
 
