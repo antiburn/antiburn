@@ -25,10 +25,17 @@ version and refuses the release if there is none.
   The reader drops the fixed-width 256-byte title slot, requires an exact
   version 3 header, and admits only the OMP core (`message` with role `user`,
   `assistant`, `toolResult`, or `bashExecution`, `model_change`,
-  `thinking_level_change`, and `compaction`) before the shared Pi-family
-  scaffolding handles the row. Pi-only rows and other OMP record types stay
-  unrecognized. Session-overdepth, model-overthinking, and old-model findings
-  are allowed; overpowered-subagent and clean results are not.
+  `thinking_level_change`, `compaction`, and `custom` rows with a
+  characterized `customType`) before the shared Pi-family scaffolding handles
+  the row. `title_change`, `credential_pin`, `ttsr_injection`, and
+  `session_init` are signal-free housekeeping rows. The skill listing in a
+  `session_init` system prompt becomes the session's initial context, and a
+  `read` of a `skill://<name>` path counts as a use of that skill. Pi-only
+  rows and other OMP record types stay unrecognized. Session-overdepth,
+  model-overthinking, and old-model findings are allowed;
+  overpowered-subagent and clean results are not.
+- **Breaking:** the Pi-family stream state keeps OMP startup context in resume
+  snapshots; advance the resume snapshot revision to 12.
 
 ## [0.11.0] - 2026-09-22
 

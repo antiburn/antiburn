@@ -353,6 +353,7 @@ export function SessionPane({
       subagentCount={payload?.orchestration?.subagentCount ?? 0}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
+      calledTools={payload?.calledTools ?? null}
       sessionQuota={sessionQuota}
       {...(onOpenQuota ? { onOpenQuota } : {})}
       {...(onBack ? { onBack } : {})}

@@ -90,6 +90,12 @@ interface OrchestrationPayload {
   members: SubagentMemberPayload[]
 }
 
+/** One tool a session called, with how many times it called it. */
+export interface CalledToolPayload {
+  name: string
+  calls: number
+}
+
 /** Everything the session-analysis surface renders for one session. */
 export interface SessionAnalysisPayload {
   summary: ActiveSessionsSummary | null
@@ -136,6 +142,10 @@ export interface SessionAnalysisPayload {
    * moved on. The data on screen is real, just not the latest — unlike
    * `analysisPending`, which means there is nothing to show yet. */
   analysisStale: boolean
+  /** The tools this session called, most-called first, bounded by the
+   * backend. Null when the source records no tool evidence. The Tools tab
+   * falls back to this list for an agent that records no startup context. */
+  calledTools: CalledToolPayload[] | null
 }
 
 /* -------------------------------------------------------------------------

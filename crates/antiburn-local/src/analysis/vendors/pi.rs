@@ -25,12 +25,13 @@ use serde_json::Value;
 
 use crate::analysis::evidence::MAX_SUBAGENT_CHILDREN;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
+use crate::analysis::initial_context::OmpContextAccumulator;
 use crate::analysis::interface::{
     ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord, ProviderHint,
     RawSource, RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionReader,
     SessionSummary, TurnContent, VisitOutcome, bounded_provider_hint_value, push_provider_hint,
 };
-use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
+use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall};
 use crate::analysis::records::{
     RecordShape, extract_content_parts, parse_record, parse_ts, parse_usage, thread_identity_field,
 };
@@ -316,6 +317,7 @@ impl PiSessionReader {
         dialect: PiDialect,
     ) -> anyhow::Result<PiStreamState> {
         let label = dialect.label;
+        state.skill_uri_reads = dialect.skill_uri_reads;
         let mut reader = BoundedJsonlReader::new(reader);
 
         while let Some(record) = reader.next_record(cancel) {
@@ -348,7 +350,8 @@ impl PiSessionReader {
                     // A row can be valid Pi input and still sit outside this
                     // producer's characterized contract. Such a row fails
                     // closed here instead of reaching the shared handler.
-                    if !(dialect.admits)(&value) {
+                    let class = (dialect.classify)(&value);
+                    if class == DialectRow::Outside {
                         unrecognized(
                             value
                                 .get("type")
@@ -359,7 +362,7 @@ impl PiSessionReader {
                         state.reject_admission();
                         continue;
                     }
-                    state.observe_admitted(value, sink);
+                    state.observe_admitted(value, class == DialectRow::Housekeeping, sink);
                 }
             }
         }
@@ -382,25 +385,42 @@ pub(crate) struct PiDialect {
     /// that the reader must drop. It receives the raw record bytes, so a
     /// fixed-width slot can check its physical size.
     prologue: fn(&[u8], &Value) -> bool,
-    /// Tells if a record is inside this producer's characterized contract.
-    /// A record outside it becomes an unrecognized type.
-    admits: fn(&Value) -> bool,
+    /// Places a record in this producer's characterized contract. A record
+    /// outside it becomes an unrecognized type.
+    classify: fn(&Value) -> DialectRow,
+    /// Tells if a `read` call of a `skill://<name>` path loads that skill.
+    skill_uri_reads: bool,
+}
+
+/// The place of one record in a producer's characterized contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DialectRow {
+    /// The shared Pi-family handler reads the record.
+    Shared,
+    /// A producer-only record kind that carries no analysis signal. The
+    /// reader keeps its thread link and timestamp. A record of this kind
+    /// that has a shared parser signal is unrecognized.
+    Housekeeping,
+    /// The record is outside the characterized contract.
+    Outside,
 }
 
 impl PiDialect {
     /// Pi writes the session header first, so it has no prologue. Its own
     /// row handler decides which record kinds it accepts.
-    pub(crate) const PI: Self = Self::new("Pi", |_, _| false, |_| true);
+    pub(crate) const PI: Self = Self::new("Pi", |_, _| false, |_| DialectRow::Shared, false);
 
     pub(crate) const fn new(
         label: &'static str,
         prologue: fn(&[u8], &Value) -> bool,
-        admits: fn(&Value) -> bool,
+        classify: fn(&Value) -> DialectRow,
+        skill_uri_reads: bool,
     ) -> Self {
         Self {
             label,
             prologue,
-            admits,
+            classify,
+            skill_uri_reads,
         }
     }
 }
@@ -458,6 +478,12 @@ pub(crate) struct PiStreamState {
     policy_by_id: HashMap<String, PiPolicy>,
     subagent_calls: HashMap<String, PiSubagentCall>,
     subagent_incomplete: bool,
+    /// The startup context from an OMP `session_init` row. Only the OMP
+    /// dialect admits that row, so this stays empty for Pi.
+    startup_context: OmpContextAccumulator,
+    /// Set from the dialect on each visit, so the snapshot does not keep it.
+    #[serde(skip)]
+    skill_uri_reads: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
@@ -479,10 +505,15 @@ impl PiStreamState {
         matches!(self.admission, PiAdmission::AwaitingHeader)
     }
 
-    pub(crate) fn observe_admitted(&mut self, value: Value, sink: &mut dyn RecordSink) {
+    pub(crate) fn observe_admitted(
+        &mut self,
+        value: Value,
+        housekeeping: bool,
+        sink: &mut dyn RecordSink,
+    ) {
         self.admission_checked = true;
         match self.admission {
-            PiAdmission::Accepted => self.observe(value, sink),
+            PiAdmission::Accepted => self.observe(value, housekeeping, sink),
             PiAdmission::Rejected => {}
             PiAdmission::AwaitingHeader => {
                 let Some(reason) = pi_header_rejection(&value) else {
@@ -497,7 +528,7 @@ impl PiStreamState {
         }
     }
 
-    fn observe(&mut self, value: Value, sink: &mut dyn RecordSink) {
+    fn observe(&mut self, value: Value, housekeeping: bool, sink: &mut dyn RecordSink) {
         let mut value = value;
         self.migrate_entry(&mut value);
         if let Some(reason) = pi_lineage_reason(&value) {
@@ -527,7 +558,7 @@ impl PiStreamState {
             self.current_provider = policy.provider;
             self.current_thinking_mode = policy.thinking_mode;
         }
-        self.observe_row(&value, thread_id, sink);
+        self.observe_row(&value, thread_id, housekeeping, sink);
         // Use the thread resolver's bound and keep each identity's first policy.
         if !self.threads.capped()
             && let Some(id) = id
@@ -586,7 +617,13 @@ impl PiStreamState {
         }
     }
 
-    fn observe_row(&mut self, value: &Value, thread_id: Option<String>, sink: &mut dyn RecordSink) {
+    fn observe_row(
+        &mut self,
+        value: &Value,
+        thread_id: Option<String>,
+        housekeeping: bool,
+        sink: &mut dyn RecordSink,
+    ) {
         let row_type = value.get("type").and_then(Value::as_str);
         let id = thread_identity_field(value, "id");
         let parent_id = thread_identity_field(value, "parentId");
@@ -640,6 +677,15 @@ impl PiStreamState {
             sink.record(NormalizedRecord::Observation(Box::new(
                 EvidenceObservation::RecordTimestamp { ts_ms },
             )));
+        }
+        if housekeeping {
+            if is_inert_shape(value) {
+                self.startup_context.observe(value);
+                observe_inert(value, sink);
+            } else {
+                unrecognized(row_type.unwrap_or("<missing>"), sink);
+            }
+            return;
         }
         match row_type {
             Some("session") => {
@@ -782,6 +828,18 @@ impl PiStreamState {
                         .and_then(Value::as_str)
                         .and_then(pi_skill_identity)
                         .map(str::to_owned);
+                } else if self.skill_uri_reads
+                    && name == "read"
+                    && let Some(skill) = block
+                        .pointer("/arguments/path")
+                        .and_then(Value::as_str)
+                        .and_then(|path| path.strip_prefix("skill://"))
+                        .and_then(skill_uri_identity)
+                {
+                    // The dialect loads a skill through its URI. Count the
+                    // call as a skill use, the same as a `skill` tool call.
+                    tool = ToolCall::new("skill");
+                    tool.detail = Some(skill.to_owned());
                 }
                 Some(tool)
             })
@@ -1256,6 +1314,7 @@ impl PiStreamState {
         }
         coverage_gaps.sort_unstable();
         coverage_gaps.dedup();
+        let (initial_context, skill_descriptions) = self.startup_context.finish();
         SessionSummary {
             cache_write_tokens_available: self.cache_write_tokens_available.unwrap_or(true),
             context_window: None,
@@ -1265,8 +1324,8 @@ impl PiStreamState {
             started_at_ms: self.started_at_ms,
             coverage_gaps,
             late_tools: Vec::new(),
-            initial_context: None,
-            skill_descriptions: HashMap::new(),
+            initial_context,
+            skill_descriptions,
         }
     }
 }
@@ -1334,6 +1393,17 @@ fn pi_skill_identity(name: &str) -> Option<&str> {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'))
+    .then_some(name)
+}
+
+// OMP resolves `skill://<name>` by an exact match of the URL host, without
+// Pi's name rules. Keep a bounded, path-free name; the use count matches it
+// to a listed skill later.
+fn skill_uri_identity(rest: &str) -> Option<&str> {
+    let name = rest.split(['/', '?', '#']).next()?;
+    (!name.is_empty()
+        && name.len() <= 128
+        && !name.chars().any(|c| c.is_whitespace() || c.is_control()))
     .then_some(name)
 }
 
@@ -1655,14 +1725,16 @@ mod tests {
         let mut sink = SubagentSink::default();
         state.observe(
             json!({"type":"model_change","id":"old","parentId":null,"timestamp":1,
-                "modelId":"claude-old","provider":"anthropic"}),
+            "modelId":"claude-old","provider":"anthropic"}),
+            false,
             &mut sink,
         );
         state.observe(
             json!({"type":"message","id":"aborted","parentId":"old","timestamp":2,
-                "message":{"role":"assistant","model":"gpt-new","provider":"openai-codex",
-                    "api":"openai-codex-responses","stopReason":"aborted",
-                    "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"content":[]}}),
+            "message":{"role":"assistant","model":"gpt-new","provider":"openai-codex",
+                "api":"openai-codex-responses","stopReason":"aborted",
+                "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"content":[]}}),
+            false,
             &mut sink,
         );
 
@@ -1672,8 +1744,9 @@ mod tests {
 
         state.observe(
             json!({"type":"message","id":"completed","parentId":"aborted","timestamp":3,
-                "message":{"role":"assistant","usage":{"input":10,"output":2},
-                    "content":[{"type":"text","text":"done"}]}}),
+            "message":{"role":"assistant","usage":{"input":10,"output":2},
+                "content":[{"type":"text","text":"done"}]}}),
+            false,
             &mut sink,
         );
         assert_eq!(sink.events.len(), 1);
@@ -1685,9 +1758,9 @@ mod tests {
         for (mode, workers) in [("single", 1), ("parallel", 3), ("chain", 2)] {
             let mut state = PiStreamState::default();
             let mut sink = SubagentSink::default();
-            state.observe(subagent_call(), &mut sink);
-            state.observe(subagent_result(mode, workers), &mut sink);
-            state.observe(subagent_result(mode, workers), &mut sink);
+            state.observe(subagent_call(), false, &mut sink);
+            state.observe(subagent_result(mode, workers), false, &mut sink);
+            state.observe(subagent_result(mode, workers), false, &mut sink);
             assert_eq!(state.current_model.as_deref(), Some("parent-model"));
             assert_eq!(state.model.as_deref(), Some("parent-model"));
             assert!(state.finish().coverage_gaps.is_empty());
@@ -1736,12 +1809,13 @@ mod tests {
     fn official_subagent_join_keeps_dispatch_parent_after_a_model_change() {
         let mut state = PiStreamState::default();
         let mut sink = SubagentSink::default();
-        state.observe(subagent_call(), &mut sink);
+        state.observe(subagent_call(), false, &mut sink);
         state.observe(
             json!({"type":"model_change","timestamp":2,"modelId":"new-parent"}),
+            false,
             &mut sink,
         );
-        state.observe(subagent_result("single", 1), &mut sink);
+        state.observe(subagent_result("single", 1), false, &mut sink);
         assert_eq!(state.current_model.as_deref(), Some("new-parent"));
         assert!(sink.observations.iter().any(|observation| matches!(observation,
             EvidenceObservation::SubagentSpawn { parent_model: Some(model), .. } if model == "parent-model"
@@ -1766,8 +1840,8 @@ mod tests {
         for result in cases {
             let mut state = PiStreamState::default();
             let mut sink = SubagentSink::default();
-            state.observe(subagent_call(), &mut sink);
-            state.observe(result, &mut sink);
+            state.observe(subagent_call(), false, &mut sink);
+            state.observe(result, false, &mut sink);
             assert!(
                 state
                     .finish()
@@ -1782,7 +1856,7 @@ mod tests {
             );
         }
         let mut state = PiStreamState::default();
-        state.observe(subagent_call(), &mut SubagentSink::default());
+        state.observe(subagent_call(), false, &mut SubagentSink::default());
         assert!(
             state
                 .finish()
@@ -1797,7 +1871,7 @@ mod tests {
         oversized["message"]["content"][0]["id"] =
             json!("x".repeat(crate::analysis::EVIDENCE_STRING_CAP + 1));
         let mut state = PiStreamState::default();
-        state.observe(oversized, &mut SubagentSink::default());
+        state.observe(oversized, false, &mut SubagentSink::default());
         assert!(state.subagent_calls.is_empty());
         assert!(
             state
@@ -1810,7 +1884,7 @@ mod tests {
         for index in 0..=MAX_SUBAGENT_CALLS {
             let mut call = subagent_call();
             call["message"]["content"][0]["id"] = json!(format!("call-{index}"));
-            state.observe(call, &mut sink);
+            state.observe(call, false, &mut sink);
         }
         assert_eq!(state.subagent_calls.len(), MAX_SUBAGENT_CALLS);
         let serialized = postcard::to_allocvec(&state).unwrap();
@@ -1830,8 +1904,8 @@ mod tests {
         }] {
             let mut state = PiStreamState::default();
             let mut sink = SubagentSink::default();
-            state.observe(subagent_call(), &mut sink);
-            state.observe(result, &mut sink);
+            state.observe(subagent_call(), false, &mut sink);
+            state.observe(result, false, &mut sink);
             assert!(
                 state
                     .finish()
@@ -2061,11 +2135,12 @@ mod tests {
     fn policy_storage_stops_at_the_thread_cap_without_borrowing_untracked_policy() {
         let mut state = PiStreamState::default();
         let mut sink = SummarySink::default();
-        state.observe(json!({"type":"thinking_level_change","id":"low","parentId":null,"timestamp":1,"thinkingLevel":"low"}), &mut sink);
+        state.observe(json!({"type":"thinking_level_change","id":"low","parentId":null,"timestamp":1,"thinkingLevel":"low"}), false, &mut sink);
         let mut index = 0;
         while !state.threads.capped() {
             state.observe(
                 json!({"type":"custom","id":format!("row-{index}"),"parentId":"low","timestamp":2}),
+                false,
                 &mut sink,
             );
             index += 1;
@@ -2076,11 +2151,11 @@ mod tests {
         let mut resumed: PiStreamState =
             postcard::from_bytes(&postcard::to_allocvec(&state).unwrap()).unwrap();
         for state in [&mut state, &mut resumed] {
-            state.observe(json!({"type":"thinking_level_change","id":"untracked","parentId":"low","timestamp":3,"thinkingLevel":"max"}), &mut sink);
+            state.observe(json!({"type":"thinking_level_change","id":"untracked","parentId":"low","timestamp":3,"thinkingLevel":"max"}), false, &mut sink);
             assert_eq!(state.current_thinking_mode.as_deref(), Some("max"));
-            state.observe(json!({"type":"message","id":"child","parentId":"untracked","timestamp":4,"message":{"role":"assistant","content":[]}}), &mut sink);
+            state.observe(json!({"type":"message","id":"child","parentId":"untracked","timestamp":4,"message":{"role":"assistant","content":[]}}), false, &mut sink);
             assert_eq!(state.current_thinking_mode, None);
-            state.observe(json!({"type":"message","id":"known-child","parentId":"low","timestamp":5,"message":{"role":"assistant","content":[]}}), &mut sink);
+            state.observe(json!({"type":"message","id":"known-child","parentId":"low","timestamp":5,"message":{"role":"assistant","content":[]}}), false, &mut sink);
             assert_eq!(state.current_thinking_mode.as_deref(), Some("low"));
             assert_eq!(state.policy_by_id.len(), retained);
         }
@@ -2371,6 +2446,7 @@ mod tests {
                     "content": []
                 }
             }),
+            false,
             &mut sink,
         );
 
@@ -2395,10 +2471,12 @@ mod tests {
             let mut sink = SummarySink::default();
             state.observe(
                 json!({"type": "thinking_level_change", "timestamp": 1, "thinkingLevel": "low"}),
+                false,
                 &mut sink,
             );
             state.observe(
                 json!({"type": "thinking_level_change", "timestamp": 2, "thinkingLevel": invalid}),
+                false,
                 &mut sink,
             );
             assert_eq!(state.current_thinking_mode, None);

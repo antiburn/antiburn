@@ -15,7 +15,7 @@ use antiburn_local::analysis::tool_catalog::{comparable_tool_name, situational_t
 use antiburn_local::analysis::{
     ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, LoadedSource,
     ModelEvidence, ModelRun, RepeatedContextAccounting, SessionCost, SessionEvidence, SourceFormat,
-    ToolDefinition, lookup_pricing,
+    ToolDefinition, ToolEvidence, lookup_pricing,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
@@ -145,6 +145,14 @@ pub struct BillableTokens {
     pub cache_creation_tokens: u64,
 }
 
+/// One tool this session called, with how many times it called it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalledToolPayload {
+    pub name: String,
+    pub calls: u64,
+}
+
 /// Everything the session-analysis surface needs for one session.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -212,6 +220,12 @@ pub struct SessionAnalysis {
     /// show yet. The view keeps polling and swaps in the fresh pass once the
     /// worker publishes it.
     pub analysis_stale: bool,
+    /// The tools this session called, most-called first, capped at
+    /// [`MAX_CALLED_TOOLS`]. `None` when the session has no tool evidence.
+    ///
+    /// The Tools tab shows this when the agent records no startup context,
+    /// so the loaded-but-unused reading is unavailable.
+    pub called_tools: Option<Vec<CalledToolPayload>>,
 }
 
 /// A protected directory the last pass declined to read, and how many working
@@ -1905,6 +1919,39 @@ fn session_unused_resources(evidence: &SessionEvidence) -> Option<SessionUnusedR
     })
 }
 
+/// The longest called-tool list the session payload carries. A session can
+/// call more distinct tools than a reader can use, and the list is a
+/// fallback reading, so it stays bounded.
+pub const MAX_CALLED_TOOLS: usize = 50;
+
+/// The tools a session called, most-called first, then by name. `None`
+/// when the source records no tool evidence at all.
+///
+/// Partial evidence counts: a partial read still names real calls, and the
+/// list carries no verdict that an undercount could invert.
+pub(crate) fn session_called_tools(
+    tools: &EvidenceValue<ToolEvidence>,
+) -> Option<Vec<CalledToolPayload>> {
+    let tools = observed(tools)?;
+    let mut called: Vec<CalledToolPayload> = tools
+        .by_name
+        .iter()
+        .filter(|(_, tool_use)| tool_use.calls > 0)
+        .map(|(name, tool_use)| CalledToolPayload {
+            name: name.clone(),
+            calls: tool_use.calls,
+        })
+        .collect();
+    called.sort_by(|left, right| {
+        right
+            .calls
+            .cmp(&left.calls)
+            .then(left.name.cmp(&right.name))
+    });
+    called.truncate(MAX_CALLED_TOOLS);
+    Some(called)
+}
+
 /// Reads the accounting `Cache Churn` used for this session's
 /// `repeated_context`, or `None` when neither cache-write nor
 /// uncached-input accounting applies.
@@ -2967,6 +3014,62 @@ pub struct LiveUsageSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn called_tools_rank_by_calls_and_stay_bounded() {
+        use antiburn_local::analysis::{ToolClass, ToolUse};
+
+        let tools = |entries: &[(&str, u64)]| {
+            EvidenceValue::Complete(ToolEvidence {
+                by_name: entries
+                    .iter()
+                    .map(|(name, calls)| {
+                        (
+                            (*name).to_string(),
+                            ToolUse {
+                                calls: *calls,
+                                class: ToolClass::Unclassified,
+                            },
+                        )
+                    })
+                    .collect(),
+            })
+        };
+
+        let ranked = session_called_tools(&tools(&[
+            ("Read", 3),
+            ("Bash", 12),
+            ("Edit", 12),
+            ("Never", 0),
+        ]))
+        .expect("complete tool evidence produces a list");
+        assert_eq!(
+            ranked
+                .iter()
+                .map(|tool| (tool.name.as_str(), tool.calls))
+                .collect::<Vec<_>>(),
+            vec![("Bash", 12), ("Edit", 12), ("Read", 3)],
+            "most-called first, ties by name, and a tool with no call is left out"
+        );
+
+        let many: Vec<(String, u64)> = (0..MAX_CALLED_TOOLS + 10)
+            .map(|index| (format!("tool-{index:03}"), index as u64 + 1))
+            .collect();
+        let capped = session_called_tools(&tools(
+            &many
+                .iter()
+                .map(|(name, calls)| (name.as_str(), *calls))
+                .collect::<Vec<_>>(),
+        ))
+        .expect("complete tool evidence produces a list");
+        assert_eq!(capped.len(), MAX_CALLED_TOOLS);
+        assert_eq!(capped[0].name, "tool-059", "the cap keeps the top callers");
+
+        assert!(
+            session_called_tools(&EvidenceValue::<ToolEvidence>::Unsupported).is_none(),
+            "a source with no tool evidence reports nothing, not an empty list"
+        );
+    }
 
     #[test]
     fn quota_usage_payload_serializes_camel_case_fields_and_boundary_source_strings() {
