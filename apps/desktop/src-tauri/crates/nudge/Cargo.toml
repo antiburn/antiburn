@@ -35,7 +35,7 @@ tracing = "0.1"
 # crates.io; pinned to a v2.1 commit for reproducibility.
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 # Remove the existing material before Tauri adds its scaled replacement.
-window-vibrancy = "0.6"
+window-vibrancy = "0.8"
 # Finds the display showing the frontmost window (`CGWindowListCopyWindowInfo` +
 # `CGDisplay`), so the notification appears where the user is actually looking
 # rather than always on the primary display.
