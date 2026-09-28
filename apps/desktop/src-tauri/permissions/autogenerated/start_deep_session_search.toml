@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-deep-session-search"
+description = "Enables the start_deep_session_search command without any pre-configured scope."
+commands.allow = ["start_deep_session_search"]
+
+[[permission]]
+identifier = "deny-start-deep-session-search"
+description = "Denies the start_deep_session_search command without any pre-configured scope."
+commands.deny = ["start_deep_session_search"]

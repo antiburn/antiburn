@@ -8,6 +8,7 @@ import {
   type MainWindowSectionId,
   type MainWindowSessionIdentity,
 } from "../../lib/ipc"
+import type { EvidenceReference } from "../../lib/sessionEvidenceIpc"
 import type { MainViewId } from "../../lib/navigation/mainViews"
 import type { CHECK_LABELS } from "../../lib/presentation/checks"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
@@ -31,6 +32,7 @@ export type MainDestination = {
   section: MainViewId
   filters?: SessionFilters
   subject?: SessionSubject | null
+  evidence?: EvidenceReference
   check?: keyof typeof CHECK_LABELS
 }
 
@@ -53,6 +55,9 @@ function normalizeDestination(destination: MainDestination): MainDestination {
         destination.filters ?? { agents: [], result: "all", spend: "all" },
       ),
       subject: destination.subject ?? null,
+      ...(destination.subject && destination.evidence
+        ? { evidence: destination.evidence }
+        : {}),
     }
   }
   if (destination.section === "burnChecks") {
@@ -69,6 +74,7 @@ function destinationKey(destination: MainDestination): string {
     destination.filters ? serializeSessionFilters(destination.filters) : null,
     destination.subject ? sessionKey(destination.subject) : null,
     destination.check ?? null,
+    destination.evidence ?? null,
   ])
 }
 
@@ -102,8 +108,12 @@ export class MainWindowNavigationSession {
     activity.onNavigation = (origin) => {
       if (this.restoring) return
       if (origin === "automatic" && this.snapshot.selected !== "activity") return
-      const { filters, subject } = activity.getSnapshot()
-      this.commit({ section: "activity", filters, subject }, origin === "automatic", origin)
+      const { filters, subject, evidence } = activity.getSnapshot()
+      this.commit(
+        { section: "activity", filters, subject, ...(evidence ? { evidence } : {}) },
+        origin === "automatic",
+        origin,
+      )
     }
     activity.onDeleted = (subject) => this.pruneSubject(subject)
     activity.onSessionInventoryInvalidated = () => this.requestDeletedSubjectReconciliation()
@@ -122,11 +132,13 @@ export class MainWindowNavigationSession {
 
   select(section: MainViewId): void {
     if (section === "activity" && this.activity) {
+      const { filters, subject, evidence } = this.activity.getSnapshot()
       this.navigate(
         {
           section,
-          filters: this.activity.getSnapshot().filters,
-          subject: this.activity.getSnapshot().subject,
+          filters,
+          subject,
+          ...(evidence ? { evidence } : {}),
         },
         false,
       )
@@ -193,6 +205,7 @@ export class MainWindowNavigationSession {
           destination.subject ?? null,
           origin,
           reportFilterSelection,
+          destination.evidence ?? null,
         )
       }
     } finally {

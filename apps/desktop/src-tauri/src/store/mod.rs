@@ -29,12 +29,21 @@
 //! the persisted creation identity of one session row.
 
 pub(crate) mod codex_rollout_checkpoint;
+mod deep_session_search;
 pub mod model;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;
 mod remediation;
 mod schema;
+mod session_evidence;
+mod session_search;
 mod settings;
+
+pub(crate) use deep_session_search::{
+    DeepContentChunk, DeepContentCursor, DeepSessionIdentity, DeepSessionManifest,
+};
+pub(crate) use session_evidence::{RetainedContentRow, StoredEvidenceReference};
+pub(crate) use session_search::SessionSearchResult;
 
 #[cfg(test)]
 mod privacy_tests;
@@ -452,6 +461,7 @@ impl Store {
         connection.pragma_update(None, "journal_mode", "WAL").ok();
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
+        session_search::register_session_search_functions(&connection)?;
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
             settings_snapshot: Arc::new(RwLock::new(AppSettings::default())),
@@ -504,6 +514,20 @@ impl Store {
             tx.pragma_update(None, "user_version", 51)?;
             tx.commit()?;
             current = 51;
+        }
+        // Search preview builds used v51 before main assigned it to session incarnations.
+        if current == 51
+            && guard.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'session_search_state')
+                    AND NOT EXISTS(SELECT 1 FROM pragma_table_info('session') WHERE name = 'incarnation')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let tx = guard.transaction()?;
+            tx.execute_batch(schema::MIGRATIONS[50])?;
+            tx.pragma_update(None, "user_version", 51)?;
+            tx.commit()?;
         }
         // Branch builds assigned v52 to the refusal column before main used
         // v52 for model lanes. Apply the main migrations to that shape.
@@ -3015,6 +3039,7 @@ impl Store {
             "DELETE FROM repository WHERE last_seen_at <> ?1",
             params![seen_at],
         )?;
+        Store::refresh_session_search_repositories_in(&tx)?;
         tx.commit()?;
         Ok(())
     }

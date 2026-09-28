@@ -1,4 +1,7 @@
-import { AGENT_SLUGS, agentSessionFilterLabel } from "./presentation/agents"
+import type { EvidenceReference, SessionEvidenceHit } from "./sessionEvidenceIpc"
+import { sessionKey, type SessionSubject } from "./sessionSubject"
+import type { SessionSearchEntry } from "./sessionSearchIpc"
+import { AGENT_SLUGS, agentDisplayName, agentSessionFilterLabel } from "./presentation/agents"
 import { CHECK_DEFINITIONS } from "./presentation/checkDefinitions"
 import type { BurnCheckDetectorId } from "./insightsIpc"
 import { detectPlatform, type Platform } from "./platform"
@@ -21,6 +24,7 @@ export type AppSearchTarget =
   | { kind: "view"; section: "activity"; filters?: SessionFilters }
   | SettingsSearchTarget
   | { kind: "check"; check: BurnCheckDetectorId }
+  | { kind: "session"; subject: SessionSubject; evidence?: EvidenceReference }
 
 export function resolveSettingsSearchTarget(target: SettingsSearchTarget): {
   pane: SettingsPane
@@ -43,7 +47,12 @@ export type AppSearchResult = {
   detail: string
   aliases: readonly string[]
   target: AppSearchTarget
+  evidence?: SessionEvidenceHit
   platform?: "macos"
+  session?: Pick<
+    SessionSearchEntry,
+    "agent" | "repository" | "cwdLabel" | "models" | "wslDistro"
+  >
 }
 export type AppSearchGroup = { label: string; results: AppSearchResult[] }
 
@@ -125,16 +134,88 @@ export function searchApp(
     .map((entry) => entry.result)
 }
 
-export function groupAppResults(query: string, results = searchApp(query)): AppSearchGroup[] {
-  const best = query.trim() ? results[0] : undefined
-  const remaining = results.filter((result) => result !== best)
+export function sessionAppResult(entry: SessionSearchEntry): AppSearchResult {
+  return {
+    id: `session:${encodeURIComponent(JSON.stringify([entry.environmentKey, entry.agent, entry.sessionId]))}`,
+    label: entry.title || entry.sessionId,
+    detail: [
+      "Sessions",
+      agentDisplayName(entry.agent),
+      entry.repository || entry.cwdLabel,
+      ...entry.models,
+      entry.wslDistro ? `WSL: ${entry.wslDistro}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    aliases: [],
+    session: {
+      agent: entry.agent,
+      repository: entry.repository,
+      cwdLabel: entry.cwdLabel,
+      models: entry.models,
+      wslDistro: entry.wslDistro,
+    },
+    target: {
+      kind: "session",
+      subject: {
+        agent: entry.agent,
+        sessionId: entry.sessionId,
+        wslDistro: entry.wslDistro,
+        repo: entry.repository,
+        timestamp: entry.timestamp,
+        ...(entry.title ? { title: entry.title } : {}),
+      },
+    },
+  }
+}
+
+export function evidenceAppResult(hit: SessionEvidenceHit): AppSearchResult {
+  const result = sessionAppResult(hit.session)
+  if (result.target.kind !== "session") return result
+  return {
+    ...result,
+    evidence: hit,
+    target: { ...result.target, evidence: hit.reference },
+  }
+}
+
+export function searchTargetKey(result: AppSearchResult): string {
+  const target = result.target
+  return JSON.stringify(
+    target.kind === "session" ? [target.kind, sessionKey(target.subject)] : target,
+  )
+}
+
+export function groupAppResults(
+  query: string,
+  results = searchApp(query),
+  sessions: AppSearchResult[] = [],
+  selectedId?: string | null,
+): AppSearchGroup[] {
+  const normalized = query.trim().toLocaleLowerCase()
+  const exactSession = sessions.find(
+    (result) =>
+      result.label.toLocaleLowerCase() === normalized ||
+      (result.target.kind === "session" &&
+        result.target.subject.sessionId.toLocaleLowerCase() === normalized),
+  )
+  const best = normalized
+    ? results[0]?.label.toLocaleLowerCase() === normalized
+      ? results[0]
+      : (exactSession ?? results[0] ?? sessions[0])
+    : undefined
+  const remaining = [...results, ...sessions].filter((result) => result !== best)
   const groups: AppSearchGroup[] = best ? [{ label: "Best match", results: [best] }] : []
   for (const [kind, label] of [
     ["view", "Features"],
     ["setting", "Settings"],
+    ["session", "Sessions"],
     ["check", "Checks"],
   ] as const) {
-    const matches = remaining.filter((result) => result.target.kind === kind).slice(0, 5)
+    const candidates = remaining.filter((result) => result.target.kind === kind)
+    const matches = candidates.slice(0, kind === "session" ? undefined : 5)
+    const selected = candidates.find((result) => result.id === selectedId)
+    if (selected && !matches.includes(selected)) matches[matches.length - 1] = selected
     if (matches.length) groups.push({ label, results: matches })
   }
   return groups

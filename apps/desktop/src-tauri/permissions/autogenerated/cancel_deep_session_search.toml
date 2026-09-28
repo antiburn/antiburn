@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-deep-session-search"
+description = "Enables the cancel_deep_session_search command without any pre-configured scope."
+commands.allow = ["cancel_deep_session_search"]
+
+[[permission]]
+identifier = "deny-cancel-deep-session-search"
+description = "Denies the cancel_deep_session_search command without any pre-configured scope."
+commands.deny = ["cancel_deep_session_search"]

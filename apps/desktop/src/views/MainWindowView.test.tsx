@@ -1,4 +1,5 @@
 import { isMacOS } from "../lib/platform"
+import { searchSessions } from "../lib/sessionSearchIpc"
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -34,6 +35,12 @@ vi.mock("./main-window/OverviewView", () => ({
   ),
 }))
 
+vi.mock("../lib/sessionSearchIpc", () => ({
+  searchSessions: vi
+    .fn()
+    .mockResolvedValue({ results: [], nextCursor: null, hasMore: false, indexing: false }),
+}))
+
 vi.mock("./main-window/quota/QuotaView", () => ({
   QuotaView: ({ onSelectSession }: { onSelectSession: (subject: SessionSubject) => void }) => (
     <div>
@@ -65,10 +72,12 @@ const activityMocks = vi.hoisted(() => {
   class FakeMainActivitySession {
     revealDetail = vi.fn()
     snapshot: {
+      settings: { activityWindowDays: number }
       entries: SessionListEntry[] | null
       filters: SessionFilters
       subject: SessionSubject | null
     } = {
+      settings: { activityWindowDays: 7 },
       entries: null,
       subject: null,
       filters: { agents: [], result: "all", spend: "all" },
@@ -203,8 +212,14 @@ describe("MainWindowView", () => {
     render(<MainWindowView />)
     fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
     expect(noteInteraction).toHaveBeenCalledWith({ kind: "appSearchOpened" })
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "sound" } })
-    await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Search antiburn" }), {
+      target: { value: "sound" },
+    })
+    await act(async () =>
+      fireEvent.keyDown(screen.getByRole("combobox", { name: "Search antiburn" }), {
+        key: "Enter",
+      }),
+    )
     expect(openSettingsWindow).toHaveBeenCalledWith("notifications", "sound")
     expect(noteInteraction).toHaveBeenCalledWith({
       kind: "appSearchResultOpened",
@@ -218,7 +233,7 @@ describe("MainWindowView", () => {
     render(<MainWindowView />)
     expect(screen.getByRole("button", { name: "Search antiburn" })).toBeVisible()
     fireEvent.keyDown(document, { key: "k", metaKey: true })
-    expect(screen.getByRole("combobox")).toHaveFocus()
+    expect(screen.getByRole("combobox", { name: "Search antiburn" })).toHaveFocus()
     fireEvent.click(screen.getByRole("button", { name: "Close search" }))
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Search antiburn" })).toHaveFocus()
@@ -226,8 +241,14 @@ describe("MainWindowView", () => {
   it("focuses the destination after choosing a view from search", async () => {
     render(<MainWindowView />)
     fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "burn checks" } })
-    await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Search antiburn" }), {
+      target: { value: "burn checks" },
+    })
+    await act(async () =>
+      fireEvent.keyDown(screen.getByRole("combobox", { name: "Search antiburn" }), {
+        key: "Enter",
+      }),
+    )
     expect(screen.getByRole("tabpanel", { name: "Checks" })).toHaveFocus()
   })
   it.each([
@@ -251,8 +272,14 @@ describe("MainWindowView", () => {
       expect(panel).toBeVisible()
       fireEvent.click(tab(label === "Overview" ? "Checks" : "Overview"))
       fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
-      fireEvent.change(screen.getByRole("combobox"), { target: { value: label } })
-      await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+      fireEvent.change(screen.getByRole("combobox", { name: "Search antiburn" }), {
+        target: { value: label },
+      })
+      await act(async () =>
+        fireEvent.keyDown(screen.getByRole("combobox", { name: "Search antiburn" }), {
+          key: "Enter",
+        }),
+      )
       expect(panel).toBeVisible()
       expect(panel).toHaveFocus()
     }
@@ -261,8 +288,14 @@ describe("MainWindowView", () => {
     vi.mocked(openSettingsWindow).mockRejectedValueOnce(new Error("unavailable"))
     render(<MainWindowView />)
     fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "sound" } })
-    await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Search antiburn" }), {
+      target: { value: "sound" },
+    })
+    await act(async () =>
+      fireEvent.keyDown(screen.getByRole("combobox", { name: "Search antiburn" }), {
+        key: "Enter",
+      }),
+    )
     expect(screen.getByRole("alert")).toHaveTextContent("Could not open")
     expect(noteInteraction).not.toHaveBeenCalledWith({
       kind: "appSearchResultOpened",
@@ -292,8 +325,14 @@ describe("MainWindowView", () => {
       )
       fireEvent.click(tab("Overview"))
       fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
-      fireEvent.change(screen.getByRole("combobox"), { target: { value: label } })
-      await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+      fireEvent.change(screen.getByRole("combobox", { name: "Search antiburn" }), {
+        target: { value: label },
+      })
+      await act(async () =>
+        fireEvent.keyDown(screen.getByRole("combobox", { name: "Search antiburn" }), {
+          key: "Enter",
+        }),
+      )
       expect(activitySession().getSnapshot().filters, label).toEqual({
         agents: [agent],
         result: "all",
@@ -323,8 +362,14 @@ describe("MainWindowView", () => {
         fireEvent.click(tab("Sessions"))
       } else {
         fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
-        fireEvent.change(screen.getByRole("combobox"), { target: { value: "Sessions" } })
-        await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+        fireEvent.change(screen.getByRole("combobox", { name: "Search antiburn" }), {
+          target: { value: "Sessions" },
+        })
+        await act(async () =>
+          fireEvent.keyDown(screen.getByRole("combobox", { name: "Search antiburn" }), {
+            key: "Enter",
+          }),
+        )
       }
       const expectedFilters =
         source === "sidebar" ? selectedFilters : { agents: [], result: "all", spend: "all" }
@@ -435,6 +480,19 @@ describe("MainWindowView", () => {
     )
     expect(capability.permissions).toContain("allow-open-settings-window")
     expect(capability.permissions).toContain("allow-open-burn-check-sample")
+  })
+
+  it("permits evidence search, navigation and cancellation in the main window", () => {
+    expect(capability.windows).toContain("main")
+    expect(capability.permissions).toEqual(
+      expect.arrayContaining([
+        "allow-search-sessions",
+        "allow-fetch-session-evidence",
+        "allow-start-deep-session-search",
+        "allow-continue-deep-session-search",
+        "allow-cancel-deep-session-search",
+      ]),
+    )
   })
 
   it("shows a recoverable Settings error", async () => {
@@ -601,8 +659,12 @@ describe("MainWindowView", () => {
       fireEvent.click(screen.getByRole("button", { name: "Forward" }))
       expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
       fireEvent.click(screen.getByRole("button", { name: "Search antiburn" }))
-      fireEvent.change(screen.getByRole("combobox"), { target: { value: "Overview" } })
-      fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" })
+      fireEvent.change(screen.getByRole("combobox", { name: "Search antiburn" }), {
+        target: { value: "Overview" },
+      })
+      fireEvent.keyDown(screen.getByRole("combobox", { name: "Search antiburn" }), {
+        key: "Enter",
+      })
       expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
     })
 
@@ -638,5 +700,56 @@ describe("MainWindowView", () => {
       // return visit must not tear it down and refetch.
       expect(document.querySelector("#quota-panel h1")).not.toBeNull()
     })
+  })
+})
+
+it("opens an older WSL search result with cleared facets and restores prior facets through Back", async () => {
+  vi.mocked(searchSessions).mockResolvedValueOnce({
+    results: [
+      {
+        environmentKey: "wsl:ubuntu",
+        agent: "codex",
+        sessionId: "older-session",
+        wslDistro: "Ubuntu",
+        title: "Outside recent history",
+        repository: "archived-repo",
+        cwdLabel: "repo",
+        models: ["model"],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+    ],
+    nextCursor: null,
+    hasMore: false,
+    indexing: false,
+  })
+  render(<MainWindowView />)
+  fireEvent.click(screen.getByRole("tab", { name: "Sessions" }))
+  act(() =>
+    activitySession().setFilters({
+      agents: ["claude-code"],
+      result: "failing",
+      spend: "notable",
+    }),
+  )
+  fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
+  fireEvent.change(screen.getByRole("combobox", { name: "Search antiburn" }), {
+    target: { value: "older-session" },
+  })
+  const result = await screen.findByRole("option", { name: /Outside recent history/ })
+  await act(async () => fireEvent.click(result))
+  expect(activitySession().getSnapshot()).toMatchObject({
+    filters: { agents: [], result: "all", spend: "all" },
+    subject: { agent: "codex", sessionId: "older-session", wslDistro: "Ubuntu" },
+  })
+  expect(screen.getByRole("tabpanel", { name: "Sessions" })).toHaveFocus()
+  expect(noteInteraction).toHaveBeenCalledWith({
+    kind: "appSearchResultOpened",
+    category: "session",
+  })
+  fireEvent.click(screen.getByRole("button", { name: "Back" }))
+  expect(activitySession().getSnapshot().filters).toEqual({
+    agents: ["claude-code"],
+    result: "failing",
+    spend: "notable",
   })
 })

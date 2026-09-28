@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppSearch } from "./AppSearch"
@@ -65,13 +65,15 @@ describe("app search palette", () => {
     })
     expect(screen.queryByRole("dialog")).toBeNull()
   })
-  it("does not choose during composition, and announces no results", () => {
+  it("does not choose during composition, and announces no results", async () => {
     const choose = vi.fn()
     const input = open(choose)
     fireEvent.keyDown(input, { key: "Enter", isComposing: true })
     expect(choose).not.toHaveBeenCalled()
     fireEvent.change(input, { target: { value: "no matching result xyz" } })
-    expect(screen.getByRole("status")).toHaveTextContent("No matching destinations")
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("0 content matches so far."),
+    )
     expect(input).not.toHaveAttribute("aria-activedescendant")
     fireEvent.keyDown(input, { key: "ArrowDown" })
     fireEvent.keyDown(input, { key: "Enter" })

@@ -12,6 +12,7 @@ import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 import type { SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
+import { SessionEvidenceView } from "./SessionEvidenceView"
 import { SessionEmptyDetail } from "./SessionEmptyDetail"
 import { SessionFiltersHeader } from "./SessionFiltersHeader"
 import { CollectionDetailPane, type CollectionItem } from "./CollectionDetailPane"
@@ -230,6 +231,19 @@ export function MainActivityView({
               </div>
             )}
             <SessionPane
+              key={`${item.id}:${state.evidence?.key ?? "overview"}`}
+              evidence={
+                state.evidence ? (
+                  <>
+                    {state.active && (
+                      <SessionEvidenceView
+                        key={state.evidence.key}
+                        reference={state.evidence}
+                      />
+                    )}
+                  </>
+                ) : undefined
+              }
               embedded
               active={state.active}
               subject={item.subject}

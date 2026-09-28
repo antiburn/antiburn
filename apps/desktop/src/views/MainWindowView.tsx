@@ -170,6 +170,16 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     if (target.kind === "setting") {
       const destination = resolveSettingsSearchTarget(target)
       await openSettingsWindow(destination.pane, destination.control)
+    } else if (target.kind === "session") {
+      flushSync(() =>
+        navigationSession.navigate({
+          section: "activity",
+          filters: { agents: [], result: "all", spend: "all" },
+          subject: target.subject,
+          ...(target.evidence ? { evidence: target.evidence } : {}),
+        }),
+      )
+      document.getElementById("activity-panel")?.focus({ preventScroll: true })
     } else if (target.kind === "check")
       navigationSession.navigate({ section: "burnChecks", check: target.check })
     else {
@@ -194,7 +204,12 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   return (
     <>
       {searchOpen && (
-        <AppSearch onChoose={chooseSearchResult} onClose={() => setSearchOpen(false)} />
+        <AppSearch
+          key={activity.settings.activityWindowDays}
+          activityWindowDays={activity.settings.activityWindowDays}
+          onChoose={chooseSearchResult}
+          onClose={() => setSearchOpen(false)}
+        />
       )}
       <MainWindowLayout
         canBack={navigation.canBack}

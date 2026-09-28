@@ -86,8 +86,11 @@ mod retention;
 mod runtime_pricing;
 mod runtime_pricing_config;
 mod scan;
+mod session_evidence;
 mod session_lifecycle;
 mod session_projection;
+mod session_search;
+mod session_search_scope;
 mod settings;
 mod startup_registration;
 mod storage_health;
@@ -240,6 +243,7 @@ pub fn run() {
         // engine's state helpers as an explicit argument.
         let data_dir = app.path().app_data_dir()?;
         app.manage(store::Store::open(&data_dir)?);
+        app.manage(session_evidence::deep::DeepSearchController::default());
         app.manage(remediation::RemediationController::new(data_dir.clone()));
         let main_window_state = main_window::MainWindowState::load(&app.state::<store::Store>());
         app.manage(main_window_state);

@@ -63,6 +63,11 @@
     "allow-request-main-window-recovery",
     "allow-reveal-source",
     "allow-open-project-folder",
+    "allow-search-sessions",
+    "allow-fetch-session-evidence",
+    "allow-start-deep-session-search",
+    "allow-continue-deep-session-search",
+    "allow-cancel-deep-session-search",
     "allow-set-interface-scale",
     "allow-set-settings"
   ]

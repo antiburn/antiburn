@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { APP_SEARCH_CATALOG, groupAppResults, searchApp } from "./appSearch"
+import { APP_SEARCH_CATALOG, groupAppResults, searchApp, sessionAppResult } from "./appSearch"
 import { SETTINGS_PANES } from "./settingsPanes"
 import { CHECK_LABELS } from "./presentation/checks"
 import { AGENT_SLUGS } from "./presentation/agents"
@@ -142,4 +142,33 @@ describe("static app search", () => {
     ])
       expect(parseSettingsSearchRequest(invalid)).toBeNull()
   })
+})
+
+it("prioritizes exact session IDs without losing native/WSL identity", () => {
+  const metadata = {
+    environmentKey: "native",
+    agent: "codex",
+    sessionId: "settings",
+    wslDistro: null,
+    title: "A session",
+    repository: "repo",
+    cwdLabel: "repo",
+    models: ["model"],
+    timestamp: "2026-09-17T00:00:00Z",
+  }
+  const native = sessionAppResult(metadata)
+  const wsl = sessionAppResult({
+    ...metadata,
+    environmentKey: "wsl:ubuntu lts",
+    wslDistro: "Ubuntu LTS",
+  })
+  expect(native.id).not.toBe(wsl.id)
+  expect(wsl.id).not.toMatch(/\s/)
+  expect(wsl.target).toMatchObject({
+    kind: "session",
+    subject: { sessionId: "settings", wslDistro: "Ubuntu LTS" },
+  })
+  expect(groupAppResults("settings", searchApp("settings"), [native])[0]?.results[0]?.id).toBe(
+    native.id,
+  )
 })

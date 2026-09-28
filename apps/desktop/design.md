@@ -864,6 +864,13 @@ Notes for what isn't expressible as a token:
   close target, labeled result groups and keyboard focus management.
   The Features, Settings, and Checks groups omit repeated group names beneath results.
   Distinct setting paths remain visible.
+  The Sessions group uses the Activity window selected in Settings. It combines indexed
+  session metadata with an idle-triggered scan of retained messages, reasoning, and tool
+  content. Progressive results keep their visible order while the scan continues. A selected
+  content match shows its recorded excerpt below the list and opens the exact retained passage.
+  Stop keeps the results found so far; Continue resumes the same scan. Newly arrived session
+  rows use the shared fast duration and out-quart easing, with a smaller opacity change when
+  reduced motion is active.
   The `command-palette-scrim` gently dims the background with 4% black in light mode
   and 12% black in dark mode. The palette opens immediately without background blur.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.

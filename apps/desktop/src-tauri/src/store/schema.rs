@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57, V58,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1270,4 +1270,289 @@ CREATE UNIQUE INDEX remediation_active_passive_target
 CREATE UNIQUE INDEX remediation_active_action_target
     ON remediation (environment_key, agent, scope_kind, scope_key, target_key)
     WHERE state != 'recurred' AND origin = 'action';
+"#;
+
+/// v58 adds a progressively populated full-text index over session metadata.
+///
+/// The migration creates only empty derived tables. Search requests copy a
+/// bounded batch from `session`, while these triggers keep new and changed
+/// rows current. No transcript body or analysis evidence enters this index.
+const V58: &str = r#"
+DROP TRIGGER IF EXISTS session_search_session_insert;
+DROP TRIGGER IF EXISTS session_search_session_update;
+DROP TRIGGER IF EXISTS session_search_session_delete;
+DROP TRIGGER IF EXISTS session_search_analysis_insert;
+DROP TRIGGER IF EXISTS session_search_analysis_update;
+DROP TRIGGER IF EXISTS session_search_analysis_delete;
+DROP TABLE IF EXISTS session_search_fts;
+DROP TABLE IF EXISTS session_search_document;
+DROP TABLE IF EXISTS session_search_state;
+
+CREATE TABLE session_search_state (
+    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+    generation         INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+    backfill_rowid      INTEGER NOT NULL DEFAULT 0 CHECK (backfill_rowid >= 0),
+    backfill_target_rowid INTEGER NOT NULL CHECK (backfill_target_rowid >= 0),
+    backfill_complete   INTEGER NOT NULL DEFAULT 0 CHECK (backfill_complete IN (0, 1))
+) STRICT;
+
+INSERT INTO session_search_state(
+    id, generation, backfill_rowid, backfill_target_rowid, backfill_complete
+)
+SELECT 1,
+       0,
+       0,
+       COALESCE(MAX(rowid), 0),
+       CASE WHEN MAX(rowid) IS NULL THEN 1 ELSE 0 END
+  FROM session;
+
+CREATE TABLE session_search_document (
+    id               INTEGER PRIMARY KEY,
+    environment_key  TEXT NOT NULL,
+    agent             TEXT NOT NULL,
+    agent_aliases     TEXT NOT NULL,
+    session_id        TEXT NOT NULL,
+    wsl_distro        TEXT,
+    title             TEXT NOT NULL,
+    repository        TEXT NOT NULL,
+    cwd               TEXT NOT NULL,
+    models            TEXT NOT NULL,
+    updated_at_epoch  INTEGER NOT NULL,
+    UNIQUE (environment_key, agent, session_id)
+) STRICT;
+
+CREATE VIRTUAL TABLE session_search_fts USING fts5(
+    title,
+    repository,
+    cwd,
+    agent,
+    agent_aliases,
+    models,
+    session_id,
+    wsl_distro,
+    content = 'session_search_document',
+    content_rowid = 'id',
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER session_search_document_insert
+AFTER INSERT ON session_search_document
+BEGIN
+    INSERT INTO session_search_fts(
+        rowid, title, repository, cwd, agent, agent_aliases, models,
+        session_id, wsl_distro
+    ) VALUES (
+        NEW.id, NEW.title, NEW.repository, NEW.cwd, NEW.agent, NEW.agent_aliases,
+        NEW.models, NEW.session_id, NEW.wsl_distro
+    );
+    UPDATE session_search_state SET generation = generation + 1 WHERE id = 1;
+END;
+
+CREATE TRIGGER session_search_document_delete
+AFTER DELETE ON session_search_document
+BEGIN
+    INSERT INTO session_search_fts(
+        session_search_fts, rowid, title, repository, cwd, agent, agent_aliases,
+        models, session_id, wsl_distro
+    ) VALUES (
+        'delete', OLD.id, OLD.title, OLD.repository, OLD.cwd, OLD.agent,
+        OLD.agent_aliases, OLD.models, OLD.session_id, OLD.wsl_distro
+    );
+    UPDATE session_search_state SET generation = generation + 1 WHERE id = 1;
+END;
+
+CREATE TRIGGER session_search_document_update
+AFTER UPDATE ON session_search_document
+WHEN OLD.environment_key IS NOT NEW.environment_key
+  OR OLD.agent IS NOT NEW.agent
+  OR OLD.agent_aliases IS NOT NEW.agent_aliases
+  OR OLD.session_id IS NOT NEW.session_id
+  OR OLD.wsl_distro IS NOT NEW.wsl_distro
+  OR OLD.title IS NOT NEW.title
+  OR OLD.repository IS NOT NEW.repository
+  OR OLD.cwd IS NOT NEW.cwd
+  OR OLD.models IS NOT NEW.models
+  OR OLD.updated_at_epoch IS NOT NEW.updated_at_epoch
+BEGIN
+    INSERT INTO session_search_fts(
+        session_search_fts, rowid, title, repository, cwd, agent, agent_aliases,
+        models, session_id, wsl_distro
+    ) VALUES (
+        'delete', OLD.id, OLD.title, OLD.repository, OLD.cwd, OLD.agent,
+        OLD.agent_aliases, OLD.models, OLD.session_id, OLD.wsl_distro
+    );
+    INSERT INTO session_search_fts(
+        rowid, title, repository, cwd, agent, agent_aliases, models,
+        session_id, wsl_distro
+    ) VALUES (
+        NEW.id, NEW.title, NEW.repository, NEW.cwd, NEW.agent, NEW.agent_aliases,
+        NEW.models, NEW.session_id, NEW.wsl_distro
+    );
+    UPDATE session_search_state SET generation = generation + 1 WHERE id = 1;
+END;
+
+CREATE TRIGGER session_search_session_insert
+AFTER INSERT ON session
+BEGIN
+    INSERT INTO session_search_document(
+        environment_key, agent, agent_aliases, session_id, wsl_distro, title,
+        repository, cwd, models, updated_at_epoch
+    ) VALUES (
+        NEW.environment_key,
+        NEW.agent,
+        CASE NEW.agent
+            WHEN 'claude-code' THEN 'Claude Code Claude'
+            WHEN 'codex' THEN 'Codex OpenAI'
+            WHEN 'copilot' THEN 'GitHub Copilot'
+            WHEN 'opencode' THEN 'OpenCode'
+            WHEN 'amp-code' THEN 'Amp'
+            ELSE replace(NEW.agent, '-', ' ')
+        END,
+        NEW.session_id,
+        NEW.wsl_distro,
+        COALESCE(NEW.title, ''),
+        COALESCE((
+            SELECT repository.repo_name
+              FROM repository
+             WHERE repository.repo_root IS NOT NULL
+               AND COALESCE(repository.wsl_distro, '') = COALESCE(NEW.wsl_distro, '')
+               AND (
+                   session_search_path_identity(
+                       COALESCE(NEW.cwd, ''), NEW.wsl_distro
+                   ) = session_search_path_identity(
+                       repository.repo_root, repository.wsl_distro
+                   )
+                   OR substr(
+                       session_search_path_identity(
+                           COALESCE(NEW.cwd, ''), NEW.wsl_distro
+                       ),
+                       1,
+                       length(session_search_path_identity(
+                           repository.repo_root, repository.wsl_distro
+                       )) + 1
+                   ) = session_search_path_identity(
+                       repository.repo_root, repository.wsl_distro
+                   ) || '/'
+               )
+             ORDER BY length(repository.repo_root) DESC, repository.key
+             LIMIT 1
+        ), ''),
+        COALESCE(NEW.cwd, ''),
+        '',
+        COALESCE(NEW.updated_at_epoch, 0)
+    );
+END;
+
+CREATE TRIGGER session_search_session_update
+AFTER UPDATE OF environment_key, agent, session_id, wsl_distro, title, cwd, updated_at_epoch
+ON session
+BEGIN
+    INSERT INTO session_search_document(
+        environment_key, agent, agent_aliases, session_id, wsl_distro, title,
+        repository, cwd, models, updated_at_epoch
+    ) VALUES (
+        NEW.environment_key,
+        NEW.agent,
+        CASE NEW.agent
+            WHEN 'claude-code' THEN 'Claude Code Claude'
+            WHEN 'codex' THEN 'Codex OpenAI'
+            WHEN 'copilot' THEN 'GitHub Copilot'
+            WHEN 'opencode' THEN 'OpenCode'
+            WHEN 'amp-code' THEN 'Amp'
+            ELSE replace(NEW.agent, '-', ' ')
+        END,
+        NEW.session_id,
+        NEW.wsl_distro,
+        COALESCE(NEW.title, ''),
+        COALESCE((
+            SELECT repository.repo_name
+              FROM repository
+             WHERE repository.repo_root IS NOT NULL
+               AND COALESCE(repository.wsl_distro, '') = COALESCE(NEW.wsl_distro, '')
+               AND (
+                   session_search_path_identity(
+                       COALESCE(NEW.cwd, ''), NEW.wsl_distro
+                   ) = session_search_path_identity(
+                       repository.repo_root, repository.wsl_distro
+                   )
+                   OR substr(
+                       session_search_path_identity(
+                           COALESCE(NEW.cwd, ''), NEW.wsl_distro
+                       ),
+                       1,
+                       length(session_search_path_identity(
+                           repository.repo_root, repository.wsl_distro
+                       )) + 1
+                   ) = session_search_path_identity(
+                       repository.repo_root, repository.wsl_distro
+                   ) || '/'
+               )
+             ORDER BY length(repository.repo_root) DESC, repository.key
+             LIMIT 1
+        ), ''),
+        COALESCE(NEW.cwd, ''),
+        COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.model'), ' ')
+              FROM session_analysis, json_each(session_analysis.inclusive_models_json)
+             WHERE session_analysis.environment_key = NEW.environment_key
+               AND session_analysis.agent = NEW.agent
+               AND session_analysis.session_id = NEW.session_id
+               AND json_extract(value, '$.model') IS NOT NULL
+        ), ''),
+        COALESCE(NEW.updated_at_epoch, 0)
+    )
+    ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
+        wsl_distro = excluded.wsl_distro,
+        agent_aliases = excluded.agent_aliases,
+        title = excluded.title,
+        repository = excluded.repository,
+        cwd = excluded.cwd,
+        updated_at_epoch = excluded.updated_at_epoch;
+END;
+
+CREATE TRIGGER session_search_session_delete
+AFTER DELETE ON session
+BEGIN
+    DELETE FROM session_search_document
+     WHERE environment_key = OLD.environment_key
+       AND agent = OLD.agent
+       AND session_id = OLD.session_id;
+END;
+
+CREATE TRIGGER session_search_analysis_insert
+AFTER INSERT ON session_analysis
+BEGIN
+    UPDATE session_search_document SET models = COALESCE((
+        SELECT GROUP_CONCAT(json_extract(value, '$.model'), ' ')
+          FROM json_each(NEW.inclusive_models_json)
+         WHERE json_extract(value, '$.model') IS NOT NULL
+    ), '')
+    WHERE environment_key = NEW.environment_key
+      AND agent = NEW.agent
+      AND session_id = NEW.session_id;
+END;
+
+CREATE TRIGGER session_search_analysis_update
+AFTER UPDATE OF inclusive_models_json ON session_analysis
+BEGIN
+    UPDATE session_search_document
+       SET models = COALESCE((
+           SELECT GROUP_CONCAT(json_extract(value, '$.model'), ' ')
+             FROM json_each(NEW.inclusive_models_json)
+            WHERE json_extract(value, '$.model') IS NOT NULL
+       ), '')
+     WHERE environment_key = NEW.environment_key
+       AND agent = NEW.agent
+       AND session_id = NEW.session_id;
+END;
+
+CREATE TRIGGER session_search_analysis_delete
+AFTER DELETE ON session_analysis
+BEGIN
+    UPDATE session_search_document
+       SET models = ''
+     WHERE environment_key = OLD.environment_key
+       AND agent = OLD.agent
+       AND session_id = OLD.session_id;
+END;
 "#;

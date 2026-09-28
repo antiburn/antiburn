@@ -1684,3 +1684,45 @@ describe("SessionDetailPresentation — native drag toolbar", () => {
     }
   })
 })
+
+describe("SessionDetailPresentation — retained evidence", () => {
+  it("opens evidence independently of analysis and returns to Context", () => {
+    view({ evidence: <p>Recorded passage with supporting context.</p> })
+    expect(screen.getByRole("tab", { name: "Evidence" }).getAttribute("aria-selected")).toBe(
+      "true",
+    )
+    expect(screen.getByText("Recorded passage with supporting context.")).toBeTruthy()
+    expect(screen.getAllByRole("tabpanel")).toHaveLength(1)
+    fireEvent.click(screen.getByRole("tab", { name: "Context" }))
+    expect(screen.queryByText("Recorded passage with supporting context.")).toBeNull()
+    fireEvent.click(screen.getByRole("tab", { name: "Evidence" }))
+    expect(screen.getByText("Recorded passage with supporting context.")).toBeTruthy()
+  })
+
+  it("does not hide retained evidence when analysis is unavailable", () => {
+    view({ summary: null, loading: true, error: true, evidence: <p>Retained message.</p> })
+    expect(screen.getByText("Retained message.")).toBeTruthy()
+    expect(screen.getByRole("tab", { name: "Evidence" })).toBeTruthy()
+    expect(screen.queryByText("Couldn't read this session.")).toBeNull()
+  })
+})
+
+it("offers recorded findings only when existing analysis establishes them", () => {
+  const props = presentationProps({ evidence: <p>Recorded passage.</p> })
+  const { rerender } = render(<SessionDetailPresentation {...props} />)
+  expect(screen.queryByRole("button", { name: "View recorded findings" })).toBeNull()
+  rerender(
+    <SessionDetailPresentation
+      {...props}
+      hygiene={{
+        ...props.hygiene,
+        badges: props.hygiene.badges.map((badge, index) => ({
+          ...badge,
+          status: index === 0 ? "finding" : "clean",
+        })),
+      }}
+    />,
+  )
+  fireEvent.click(screen.getByRole("button", { name: "View recorded findings" }))
+  expect(screen.getByRole("tab", { name: "Cost" })).toHaveAttribute("aria-selected", "true")
+})

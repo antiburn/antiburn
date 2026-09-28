@@ -316,7 +316,7 @@ export async function openPrivacyPolicy(): Promise<void> {
 export type Interaction =
   | { kind: "navigationHistoryMoved"; direction: "back" | "forward" }
   | { kind: "appSearchOpened" }
-  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "check" }
+  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "check" | "session" }
   | {
       kind: "onboardingStepViewed"
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"

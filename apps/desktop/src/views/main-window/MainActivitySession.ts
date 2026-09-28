@@ -1,3 +1,4 @@
+import type { EvidenceReference } from "../../lib/sessionEvidenceIpc"
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { activityDayAge } from "../../components/activity/activityWindow"
 import { groupActivityByDay } from "../../components/activity/activityFeedGrouping"
@@ -51,6 +52,7 @@ export interface MainActivitySnapshot {
   settings: AppSettings
   settingsError: boolean
   subject: SessionSubject | null
+  evidence: EvidenceReference | null
   history: SessionSubject[]
   analysis: { key: string; payload: SessionAnalysisPayload | null; error: boolean } | null
   loading: boolean
@@ -121,6 +123,7 @@ export class MainActivitySession {
     subject: SessionSubject | null,
     origin: SurfaceOrigin = "automatic",
     reportFilterSelection = false,
+    evidence: EvidenceReference | null = null,
   ): void {
     this.restoringNavigation = true
     try {
@@ -152,6 +155,7 @@ export class MainActivitySession {
       )
         this.open(subject, [], origin)
       else if (!subject && this.snapshot.subject) this.clearSelection()
+      this.update({ evidence: subject ? evidence : null })
     } finally {
       this.restoringNavigation = false
     }
@@ -164,6 +168,7 @@ export class MainActivitySession {
     settings: DEFAULT_SETTINGS,
     settingsError: false,
     subject: null,
+    evidence: null,
     history: [],
     analysis: null,
     loading: false,
@@ -569,6 +574,7 @@ export class MainActivitySession {
     this.sessionQuotaTask = null
     this.update({
       subject,
+      evidence: null,
       history,
       analysis: null,
       loading: true,
@@ -590,6 +596,7 @@ export class MainActivitySession {
     this.sessionQuotaTask = null
     this.update({
       subject: null,
+      evidence: null,
       history: [],
       analysis: null,
       loading: false,

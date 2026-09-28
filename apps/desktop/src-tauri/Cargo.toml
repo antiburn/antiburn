@@ -101,7 +101,7 @@ reqwest = { version = "0.13.4", default-features = false, features = ["blocking"
 # Held at 0.32 to match `antiburn-local`: `libsqlite3-sys` sets
 # `links = "sqlite3"`, so the app and the engine it path-depends on must agree
 # on one version. The engine's own pin carries the full reasoning.
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite = { version = "0.32.1", features = ["bundled", "functions", "hooks"] }
 # Only to install the process-wide crypto provider `reqwest`'s
 # `rustls-no-provider` feature leaves unset — `ring`, matching what
 # `tauri-plugin-updater`'s own rustls dependency already resolves to.

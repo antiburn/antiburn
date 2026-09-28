@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { MainWindowNavigationRequest } from "../../lib/ipc"
+import type { EvidenceReference } from "../../lib/sessionEvidenceIpc"
 import type { SessionFilters } from "../../lib/sessionFilters"
 import type { SessionSubject } from "../../lib/sessionSubject"
 import type { MainActivitySession } from "./MainActivitySession"
@@ -41,7 +42,11 @@ class FakeActivitySession {
   onNavigation?: (origin: "user" | "automatic") => void
   onDeleted?: (subject: SessionSubject) => void
   onSessionInventoryInvalidated?: () => void
-  private snapshot: { filters: SessionFilters; subject: SessionSubject | null } = {
+  private snapshot: {
+    filters: SessionFilters
+    subject: SessionSubject | null
+    evidence?: EvidenceReference | null
+  } = {
     filters: { agents: [], result: "all", spend: "all" },
     subject: null,
   }
@@ -50,8 +55,10 @@ class FakeActivitySession {
       filters: SessionFilters,
       selected: SessionSubject | null,
       _origin: "user" | "automatic",
+      _reportFilterSelection = false,
+      evidence: EvidenceReference | null = null,
     ) => {
-      this.snapshot = { filters, subject: selected }
+      this.snapshot = { filters, subject: selected, ...(evidence ? { evidence } : {}) }
     },
   )
   getSnapshot = () => this.snapshot
@@ -476,4 +483,61 @@ describe("MainWindowNavigationSession", () => {
     session.forward()
     expect(session.getSnapshot().selected).toBe("quota")
   })
+})
+
+it("keeps separate history entries for evidence within the same session", () => {
+  const { activity, session } = setup()
+  const first: EvidenceReference = {
+    key: "first",
+    environmentKey: "native",
+    agent: "codex",
+    sessionId: "one",
+    sourceGeneration: 1,
+    publishedFence: 1,
+    turnRowId: 1,
+    sourceKey: "source",
+    threadId: "main",
+    scope: "main",
+    turnIndex: 1,
+    partIndex: 0,
+  }
+  const second = { ...first, key: "second", turnIndex: 2 }
+  session.navigate({ section: "activity", subject: subject("one"), evidence: first })
+  session.navigate({ section: "activity", subject: subject("one"), evidence: second })
+  expect(session.getSnapshot().destination.evidence).toEqual(second)
+  session.back()
+  expect(session.getSnapshot().destination.evidence).toEqual(first)
+  expect(activity.restoreNavigation).toHaveBeenLastCalledWith(
+    { agents: [], result: "all", spend: "all" },
+    subject("one"),
+    "user",
+    false,
+    first,
+  )
+  session.forward()
+  expect(session.getSnapshot().destination.evidence).toEqual(second)
+})
+
+it("retains evidence and facets when returning through the Sessions sidebar", () => {
+  const { activity, session } = setup()
+  const filters: SessionFilters = { agents: ["codex"], result: "failing", spend: "notable" }
+  const evidence: EvidenceReference = {
+    key: "sidebar-passage",
+    environmentKey: "native",
+    agent: "codex",
+    sessionId: "one",
+    sourceGeneration: 1,
+    publishedFence: 1,
+    turnRowId: 1,
+    sourceKey: "source",
+    threadId: "main",
+    scope: "main",
+    turnIndex: 1,
+    partIndex: 0,
+  }
+  session.navigate({ section: "activity", filters, subject: subject("one"), evidence })
+  session.select("quota")
+  session.select("activity")
+  expect(session.getSnapshot().destination).toMatchObject({ filters, evidence })
+  expect(activity.getSnapshot()).toMatchObject({ filters, evidence, subject: subject("one") })
 })

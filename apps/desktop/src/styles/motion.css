@@ -132,3 +132,17 @@
   animation: chart-mark-in var(--duration-slow) ease-out both;
   animation-delay: var(--chart-mark-delay, 0ms);
 }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Keep incoming search text readable while softening its appearance. */
+  .app-search:not([data-keyboard-navigation="true"])
+    .app-search-result[data-session-arrival="true"]:not([aria-selected="true"]) {
+    transition-duration: var(--duration-quick) !important;
+  }
+
+  @starting-style {
+    .app-search-result[data-session-arrival="true"]:not([aria-selected="true"]) {
+      opacity: 0.85;
+    }
+  }
+}

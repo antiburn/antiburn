@@ -1,5 +1,5 @@
 import { confirm } from "@tauri-apps/plugin-dialog"
-import { useCallback } from "react"
+import { useCallback, type ReactNode } from "react"
 
 import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
 import type { SessionQuotaOpenTarget } from "../../components/session/SessionQuotaSection"
@@ -70,6 +70,7 @@ export interface SessionPaneProps {
   embedded?: boolean
   /** Pause hidden hygiene work while keeping the pane mounted. */
   active?: boolean
+  evidence?: ReactNode
 }
 
 /** All-zero token counts. Use this value when a subject has no billable-token summary. */
@@ -207,6 +208,7 @@ export function SessionPane({
   onDeleted,
   embedded = false,
   active = true,
+  evidence,
 }: SessionPaneProps) {
   /**
    * Delete: antiburn's own records only.
@@ -383,6 +385,7 @@ export function SessionPane({
       renderAgentIcon={renderAgentIcon}
       embedded={embedded}
       active={active}
+      evidence={evidence}
     />
   )
 }

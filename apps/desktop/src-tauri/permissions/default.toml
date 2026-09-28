@@ -1,6 +1,12 @@
 [default]
 description = "Compatibility permissions for antiburn's existing interactive windows."
 permissions = [
+  "allow-search-sessions",
+  "allow-fetch-session-evidence",
+  "allow-start-deep-session-search",
+  "allow-continue-deep-session-search",
+  "allow-cancel-deep-session-search",
+
   "allow-add-scan-root",
   "allow-app-info",
   "allow-begin-popover-hold",

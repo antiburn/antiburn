@@ -177,6 +177,7 @@ export interface SessionDetailPresentationProps {
   /** Remove the popover surface when a host supplies the surrounding pane. */
   embedded?: boolean
   active?: boolean
+  evidence?: ReactNode
 }
 
 /* -------------------------------------------------------------------------
@@ -479,8 +480,8 @@ function RefreshingIndicator() {
   )
 }
 
-/** The three views of one session's analysis. */
-type SessionDetailTab = "overview" | "cost" | "tools"
+/** The sections of one session. */
+type SessionDetailTab = "overview" | "cost" | "tools" | "evidence"
 
 const DETAIL_TABS: ReadonlyArray<{ value: SessionDetailTab; label: string }> = [
   { value: "overview", label: "Context" },
@@ -701,13 +702,14 @@ export function SessionDetailPresentation({
   projectFolder,
   embedded = false,
   active = true,
+  evidence,
 }: SessionDetailPresentationProps) {
   const subagent = session.subagent
   const { bindModifiers, modified } = useDiscussionModifiers(
     active && !!onCopyDiscussionPrompt,
     localSessionKey(session.agent, session.sessionId, session.wslDistro),
   )
-  const [tab, setTab] = useState<SessionDetailTab>("overview")
+  const [tab, setTab] = useState<SessionDetailTab>(evidence ? "evidence" : "overview")
   // Which chart layer the key points at. The pointer sets it and the pointer
   // clears it; a click pins a layer, which holds when the pointer leaves.
   const [hovered, setHovered] = useState<ChartSeries | null>(null)
@@ -1022,7 +1024,7 @@ export function SessionDetailPresentation({
       </div>
 
       <div key={sessionIdentityKey(session)} className="relative flex min-h-0 flex-1 flex-col">
-        {(showSkeleton || (ready && (error || empty))) && (
+        {tab !== "evidence" && (showSkeleton || (ready && (error || empty))) && (
           <div className="min-h-0 flex-1 overflow-y-auto py-3">
             {showSkeleton && <SessionDetailSkeleton />}
             {ready && error && (
@@ -1066,7 +1068,7 @@ export function SessionDetailPresentation({
           </div>
         )}
 
-        {ready && !error && !empty && summary && (
+        {tab !== "evidence" && ready && !error && !empty && summary && (
           <>
             {subagent && (
               <SubagentBadge
@@ -1203,25 +1205,50 @@ export function SessionDetailPresentation({
                   </p>
                 ))}
             </div>
-
-            {/* The wide pane floats its section picker over the bottom of the
-                content, in reach of the reading it switches, instead of in
-                the toolbar beside the title. The wrapper lets pointer events
-                through to the content on either side of the pill. */}
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-6">
-              <SegmentedControl
-                className="ui-segmented-solid session-detail-tabs session-detail-floating-tabs pointer-events-auto type-callout shrink-0 rounded-full! bg-surface/80! shadow-raised [&_button]:rounded-full!"
-                options={DETAIL_TABS}
-                value={tab}
-                onChange={setTab}
-                ariaLabel="Session detail sections"
-                semantics="tabs"
-                variant="native-tabs"
-                equalWidth={false}
-                idPrefix="session-detail-tabs"
-              />
-            </div>
           </>
+        )}
+        {tab === "evidence" && evidence && (
+          <div
+            id="session-detail-tabs-panel"
+            role="tabpanel"
+            aria-labelledby="session-detail-tabs-evidence"
+            className="min-h-0 flex-1 overflow-y-auto px-10 py-4 pb-20"
+          >
+            {ready &&
+              !error &&
+              !empty &&
+              hygieneChecks.some((check) => check.status === "finding") && (
+                <div className="mb-4 flex justify-end">
+                  <button
+                    type="button"
+                    className="rounded-control px-3 py-2 type-callout text-label hover:bg-surface-hover"
+                    onClick={() => setTab("cost")}
+                  >
+                    View recorded findings
+                  </button>
+                </div>
+              )}
+            {evidence}
+          </div>
+        )}
+        {(evidence || (ready && !error && !empty && summary)) && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-6">
+            <SegmentedControl
+              className="ui-segmented-solid session-detail-tabs session-detail-floating-tabs pointer-events-auto type-callout shrink-0 rounded-full! bg-surface/80! shadow-raised [&_button]:rounded-full!"
+              options={
+                evidence
+                  ? [...DETAIL_TABS, { value: "evidence", label: "Evidence" }]
+                  : DETAIL_TABS
+              }
+              value={tab}
+              onChange={setTab}
+              ariaLabel="Session detail sections"
+              semantics="tabs"
+              variant="native-tabs"
+              equalWidth={false}
+              idPrefix="session-detail-tabs"
+            />
+          </div>
         )}
       </div>
     </div>
