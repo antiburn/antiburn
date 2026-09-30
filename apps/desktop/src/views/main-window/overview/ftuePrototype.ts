@@ -1,6 +1,8 @@
-// Prototype: a fake first-run scan. The sidebar starts it; the Overview fixes
-// section reads it. The timers here are the external system, so no component
-// needs an effect.
+// Prototype: a fake first-run scan. The Overview fixes section reads it, and
+// the debug-only "Reset FTUE" tray item restarts it. The timers and the tray
+// event are the external system, so no component needs an effect.
+
+import { onFtueReset } from "../../../lib/ipc"
 
 export interface FtueSnapshot {
   /** Share of sessions read, 0 to 1. */
@@ -18,6 +20,29 @@ let snapshot: FtueSnapshot = DONE
 let timer: ReturnType<typeof setTimeout> | undefined
 const listeners = new Set<() => void>()
 
+// The tray's reset event has one listener for as long as an Overview view is
+// mounted, and none otherwise. `resetGeneration` drops a listener that
+// resolves after a newer subscribe/unsubscribe cycle already moved on.
+let unlistenReset: (() => void) | null = null
+let resetGeneration = 0
+
+function startResetListener(): void {
+  const generation = ++resetGeneration
+  void onFtueReset(() => startFtue()).then((stop) => {
+    if (generation !== resetGeneration) {
+      stop()
+      return
+    }
+    unlistenReset = stop
+  })
+}
+
+function stopResetListener(): void {
+  resetGeneration += 1
+  unlistenReset?.()
+  unlistenReset = null
+}
+
 function update(next: Partial<FtueSnapshot>): void {
   snapshot = { ...snapshot, ...next }
   for (const listener of listeners) listener()
@@ -25,7 +50,11 @@ function update(next: Partial<FtueSnapshot>): void {
 
 export function subscribeFtue(listener: () => void): () => void {
   listeners.add(listener)
-  return () => listeners.delete(listener)
+  if (listeners.size === 1) startResetListener()
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) stopResetListener()
+  }
 }
 
 export function ftueSnapshot(): FtueSnapshot {

@@ -887,6 +887,19 @@ export async function onPopoverHidden(handler: () => void): Promise<UnlistenFn> 
   return listen(POPOVER_HIDDEN_EVENT, () => handler())
 }
 
+/**
+ * Event the shell emits after the debug-only "Reset FTUE" tray item wipes the
+ * local index. Mirrors `commands::FTUE_RESET_EVENT` in
+ * `src-tauri/src/commands/mod.rs`.
+ */
+const FTUE_RESET_EVENT = "ftue:reset"
+
+/** Subscribe to a debug-only FTUE reset. The result unsubscribes. */
+export async function onFtueReset(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen(FTUE_RESET_EVENT, () => handler())
+}
+
 /** Event the shell emits after it refreshes the cached live-usage snapshot. */
 const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
 

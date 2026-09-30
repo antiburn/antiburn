@@ -64,6 +64,7 @@ permissions = [
   "allow-remove-scan-root",
   "allow-remove-remote-host",
   "allow-request-folder-access",
+  "allow-reset-ftue",
   "allow-resize-overlay-window",
   "allow-restart-onboarding",
   "allow-restart-to-update",

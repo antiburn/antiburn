@@ -2276,7 +2276,8 @@ pub async fn delete_session_data(
     Ok(removed.is_some())
 }
 
-/// Forget all session data in antiburn's local store.
+/// Forget all session data in antiburn's local store, and ask the scanner to
+/// refill it.
 ///
 /// **antiburn's own records only.** Not one provider file is touched: the
 /// the agents' source transcripts stay exactly where they are, and a later
@@ -2284,11 +2285,13 @@ pub async fn delete_session_data(
 /// Preferences, scan folders, and repository include choices are kept — this is
 /// "forget what you worked out", not "forget who I am".
 ///
-/// Returns how many sessions were dropped, so the confirmation can report a
-/// number rather than a shrug.
-#[tauri::command]
-pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
-    let host_ids = crate::remote_sessions::host_ids(&app)?;
+/// Shared by [`clear_local_index`] and the debug-only [`reset_ftue`], so the
+/// two wipes cannot drift apart.
+///
+/// Returns how many sessions were dropped, so a caller can report a number
+/// rather than a shrug.
+async fn wipe_local_session_data(app: &tauri::AppHandle) -> CommandResult<usize> {
+    let host_ids = crate::remote_sessions::host_ids(app)?;
     let action_app = app.clone();
     let (removed, revision) = run_blocking(move || {
         crate::remote_sync::with_destructive_lifecycle_guard(&action_app, &host_ids, || {
@@ -2301,7 +2304,7 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     .await?;
     // Report the broad removal and list invalidation before requesting index refill.
     crate::session_lifecycle::report(
-        &app,
+        app,
         crate::session_lifecycle::SyncObservation::Removed {
             scope: crate::session_lifecycle::RemovalScope::Broad,
             reason: crate::session_lifecycle::RemovalReason::Deleted,
@@ -2309,7 +2312,7 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
         },
     );
     crate::session_lifecycle::report(
-        &app,
+        app,
         crate::session_lifecycle::SyncObservation::IndexChanged {
             reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
         },
@@ -2318,10 +2321,38 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     // leaving a reader looking at an empty list until the next tick.
     app.state::<ScanController>()
         .request(ScanTrigger::IndexCleared);
-    for host_id in crate::remote_sessions::host_ids(&app)? {
-        crate::remote_sync::enqueue_automatic(&app, &host_id);
+    for host_id in crate::remote_sessions::host_ids(app)? {
+        crate::remote_sync::enqueue_automatic(app, &host_id);
     }
     Ok(removed)
+}
+
+/// Forget all session data in antiburn's local store.
+///
+/// Returns how many sessions were dropped, so the confirmation can report a
+/// number rather than a shrug.
+#[tauri::command]
+pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
+    wipe_local_session_data(&app).await
+}
+
+/// Event asking the retained renderer to replay the Overview's demo FTUE run.
+pub const FTUE_RESET_EVENT: &str = "ftue:reset";
+
+/// Debug tool: wipe the local index and show the Overview as a first run.
+///
+/// This runs the exact wipe [`clear_local_index`] runs, so the real scan and
+/// analysis pipeline reads every session again from zero. It does not reset
+/// onboarding; combine with "Reset Onboarding" for a full first-run replay.
+#[tauri::command]
+pub async fn reset_ftue(app: tauri::AppHandle) -> CommandResult<()> {
+    wipe_local_session_data(&app).await?;
+    crate::main_window::on_main_value(&app, |app| {
+        crate::main_window::open_at_section(app, crate::main_window::MainWindowSection::Overview)
+    })
+    .await??;
+    let _ = app.emit(FTUE_RESET_EVENT, ());
+    Ok(())
 }
 
 /* --------------------------------------------------------------------------
