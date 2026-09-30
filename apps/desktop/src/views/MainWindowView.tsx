@@ -1,9 +1,10 @@
-import { Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
+import { Flame, Gauge, House, MessagesSquare, Settings, Sparkles } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
 import { noteInteraction, openSettingsWindow } from "../lib/ipc"
+import { startFtue } from "./main-window/overview/ftuePrototype"
 import { MAIN_VIEWS, isMainViewId, type MainViewId } from "../lib/navigation/mainViews"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
@@ -223,6 +224,18 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
                     Could not open Settings. Try again.
                   </p>
                 )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeNavigation()
+                    selectSection("overview")
+                    startFtue()
+                  }}
+                  className="mb-1 flex h-7 w-full items-center gap-2 rounded-control px-2 type-body text-brand hover:bg-surface-hover"
+                >
+                  <Sparkles size={14} strokeWidth={2} aria-hidden="true" />
+                  <span>Start FTUE</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {

@@ -7,6 +7,9 @@ import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFig
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
 import { planLabel } from "../../../lib/presentation/liveUsage"
+import { ChevronDown } from "lucide-react"
+
+import { cn } from "../../../lib/cn"
 import { useEntranceProps } from "./overviewEntrance"
 
 export function OverviewAllowanceTotals({
@@ -14,11 +17,15 @@ export function OverviewAllowanceTotals({
   utilizationSpanDays,
   loading = false,
   error = false,
+  selectedKey,
+  onSelect,
 }: {
   accounts: readonly AllowanceUsageAccountPayload[]
   utilizationSpanDays: number
   loading?: boolean
   error?: boolean
+  selectedKey?: string | null
+  onSelect?: (key: string) => void
 }) {
   const entranceProps = useEntranceProps("allowance-totals", "overview-figures-in", !loading)
   const accounts = allAccounts.filter(hasFigure)
@@ -39,6 +46,7 @@ export function OverviewAllowanceTotals({
   // Each placeholder wraps a sample of the line it stands in for, so it takes
   // that line's own height. Fixed heights here were shorter than the real
   // figures, and everything below the section shifted down as they landed.
+  const selectable = onSelect != null
   const cells: HeroFigureCell[] = loading
     ? [
         {
@@ -54,12 +62,35 @@ export function OverviewAllowanceTotals({
       ]
     : accounts.map((account) => ({
         key: `${account.provider}:${account.accountKey}`,
-        label: <AccountLabel account={account} />,
+        label: (
+          <>
+            <AccountLabel account={account} />
+            {selectable && (
+              <ChevronDown
+                size={14}
+                strokeWidth={2}
+                aria-hidden="true"
+                className={cn(
+                  "ms-1 inline align-[-2px] text-label-tertiary transition-transform duration-fast",
+                  `${account.provider}:${account.accountKey}` === selectedKey && "rotate-180",
+                )}
+              />
+            )}
+          </>
+        ),
         figure: (
           <SegmentFigure>{`${Math.round(account.utilization.utilizationPercent)}%`}</SegmentFigure>
         ),
         caption: "Average subscription usage",
         tooltip: utilizationTooltip(account, utilizationSpanDays),
+        ...(selectable
+          ? {
+              ...(selectedKey != null
+                ? { selected: `${account.provider}:${account.accountKey}` === selectedKey }
+                : {}),
+              onSelect: () => onSelect(`${account.provider}:${account.accountKey}`),
+            }
+          : {}),
       }))
   return (
     <section aria-label="Allowance" aria-busy={loading} {...entranceProps}>

@@ -283,7 +283,7 @@ export function OverviewRecentSessions({
       ) : (
         <div className="overview-recent-rows grid grid-cols-[auto_1fr_auto_auto_auto] @max-[720px]:grid-cols-[auto_1fr_auto_auto] gap-y-1.5">
           {entries && snoozes.status === "ready"
-            ? entries.map((entry) => (
+            ? entries.slice(0, OVERVIEW_RECENT_SESSION_COUNT).map((entry) => (
                 <OverviewRecentSessionRow
                   key={localSessionKey(
                     entry.agent,

@@ -5,6 +5,8 @@ import { cn } from "../../lib/cn"
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { type MainOverviewSession } from "./MainOverviewSession"
+import { ftueSnapshot, subscribeFtue } from "./overview/ftuePrototype"
+import { OverviewFixes } from "./overview/OverviewFixes"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
@@ -28,6 +30,10 @@ export function OverviewView({
     session.getSnapshot,
     session.getSnapshot,
   )
+  // Prototype: the first-run scan reveals the cards as each stage ends.
+  const ftue = useSyncExternalStore(subscribeFtue, ftueSnapshot, ftueSnapshot)
+  const readingDone = ftue.reading >= 1
+  const analysisDone = ftue.analysis >= 1
   const [selectedMetric, setMetric] = useState<OverviewMetric | null>(() => {
     const saved = readOverviewViewPrefs().metric
     return saved === "cost" || saved === "allowance" ? saved : null
@@ -84,32 +90,50 @@ export function OverviewView({
             </p>
           )}
 
-          <OverviewUsage
-            metric={metric}
-            onMetricChange={(next) => {
-              setMetric(next)
-              writeOverviewViewPrefs({ metric: next })
-            }}
-            totals={usage?.totals ?? null}
-            days={usage?.days ?? []}
-            allowance={state.allowance}
-            allowanceLoading={state.allowanceLoading || !metricSettled}
-            allowanceError={state.allowanceError}
-            usageError={state.usageError}
-            onRetryUsage={session.refresh}
-            loading={loading}
-          />
+          <div
+            inert={!analysisDone}
+            className={cn(
+              "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)] bg-surface-sidebar p-(--space-lg) transition-[opacity,translate] duration-slow",
+              !analysisDone && "translate-y-2 opacity-0",
+            )}
+          >
+            <OverviewUsage
+              metric={metric}
+              onMetricChange={(next) => {
+                setMetric(next)
+                writeOverviewViewPrefs({ metric: next })
+              }}
+              totals={usage?.totals ?? null}
+              days={usage?.days ?? []}
+              allowance={state.allowance}
+              allowanceLoading={state.allowanceLoading || !metricSettled}
+              allowanceError={state.allowanceError}
+              usageError={state.usageError}
+              onRetryUsage={session.refresh}
+              loading={loading}
+            />
+          </div>
 
-          <OverviewRecentSessions
-            active={active && state.active}
-            entries={state.recentSessions}
-            loading={loading && !state.recentSessions}
-            onSelect={onSelectSession}
-            onOpenAll={onOpenSessions}
-            metric={metric}
-            liveUsage={state.liveUsage ?? undefined}
-            sessionLimitAllocations={state.sessionLimitAllocations}
-          />
+          <OverviewFixes />
+
+          <div
+            inert={!readingDone}
+            className={cn(
+              "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)] bg-surface-sidebar p-(--space-lg) transition-[opacity,translate] duration-slow",
+              !readingDone && "translate-y-2 opacity-0",
+            )}
+          >
+            <OverviewRecentSessions
+              active={active && state.active}
+              entries={state.recentSessions}
+              loading={loading && !state.recentSessions}
+              onSelect={onSelectSession}
+              onOpenAll={onOpenSessions}
+              metric={metric}
+              liveUsage={state.liveUsage ?? undefined}
+              sessionLimitAllocations={state.sessionLimitAllocations}
+            />
+          </div>
         </div>
       </ScrollPane>
 
