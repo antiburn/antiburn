@@ -5,7 +5,7 @@ import { cn } from "../../lib/cn"
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { type MainOverviewSession } from "./MainOverviewSession"
-import { ftueSnapshot, subscribeFtue } from "./overview/ftuePrototype"
+import { ftueSnapshot, subscribeFtue } from "./overview/ftueStore"
 import { OverviewFixes } from "./overview/OverviewFixes"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
@@ -30,10 +30,12 @@ export function OverviewView({
     session.getSnapshot,
     session.getSnapshot,
   )
-  // Prototype: the first-run scan reveals the cards as each stage ends.
+  // The first-run scan reveals these cards as each real stage ends. Outside
+  // first run (`showSteps` false) both cards show at once, same as the rest
+  // of the page.
   const ftue = useSyncExternalStore(subscribeFtue, ftueSnapshot, ftueSnapshot)
-  const readingDone = ftue.reading >= 1
-  const analysisDone = ftue.analysis >= 1
+  const readingDone = !ftue.showSteps || ftue.read.done
+  const analysisDone = !ftue.showSteps || ftue.check.done
   const [selectedMetric, setMetric] = useState<OverviewMetric | null>(() => {
     const saved = readOverviewViewPrefs().metric
     return saved === "cost" || saved === "allowance" ? saved : null

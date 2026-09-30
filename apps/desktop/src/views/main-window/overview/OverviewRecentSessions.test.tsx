@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionListEntry } from "../../../components/session/SessionList"
 import * as SnoozedBurnChecks from "../../../lib/snoozedBurnChecks"
+import { OVERVIEW_RECENT_SESSION_COUNT } from "../MainOverviewSession"
 import { OverviewRecentSessions } from "./OverviewRecentSessions"
 
 function entry(sessionId: string, title: string): SessionListEntry {
@@ -131,9 +132,9 @@ describe("OverviewRecentSessions", () => {
       />,
     )
     const skeleton = container.querySelector(".overview-recent-rows")
-    expect(skeleton?.children).toHaveLength(6)
+    expect(skeleton?.children).toHaveLength(OVERVIEW_RECENT_SESSION_COUNT)
 
-    const entries = Array.from({ length: 6 }, (_, index) =>
+    const entries = Array.from({ length: OVERVIEW_RECENT_SESSION_COUNT }, (_, index) =>
       entry(`s${index}`, `Session ${index}`),
     )
     rerender(
@@ -145,6 +146,6 @@ describe("OverviewRecentSessions", () => {
       />,
     )
     const list = container.querySelector(".overview-recent-rows")
-    expect(list?.children).toHaveLength(6)
+    expect(list?.children).toHaveLength(OVERVIEW_RECENT_SESSION_COUNT)
   })
 })

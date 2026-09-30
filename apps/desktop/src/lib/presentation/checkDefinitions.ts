@@ -33,3 +33,18 @@ export const CHECK_DEFINITIONS = {
 export const CHECK_LABELS = Object.fromEntries(
   Object.entries(CHECK_DEFINITIONS).map(([id, definition]) => [id, definition.label]),
 ) as Record<BurnCheckDetectorId, string>
+
+/** Short, plain problem phrases for a failing category. The Overview's
+ *  first-run summary lists these instead of the category label, so the
+ *  reader sees what is wrong, not just its name. */
+export const CHECK_PROBLEM_PHRASES: Record<BurnCheckDetectorId, string> = {
+  sessionsOverDepth: "sessions run long before compacting",
+  modelOverthinking: "thinking level is higher than the work needs",
+  overpoweredSubagents: "subagents run on the main model",
+  unusedMcpServers: "MCP servers are loaded but never called",
+  unusedBuiltInTools: "built-in tools are loaded but never used",
+  unusedSkills: "skills are injected but never used",
+  oldModelUsage: "sessions use old model versions",
+  overuseOfFastMode: "fast mode runs where it doesn't pay off",
+  cacheChurn: "cache is rehydrated more than it needs to be",
+}
