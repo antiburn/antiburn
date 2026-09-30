@@ -2337,6 +2337,10 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
 }
 
 /// Event asking the retained renderer to replay the Overview's demo FTUE run.
+/// Only [`reset_ftue`] emits it, hence the `cfg`; the webview's own listener
+/// matches this string as its own literal, since it cannot import a Rust
+/// constant.
+#[cfg(debug_assertions)]
 pub const FTUE_RESET_EVENT: &str = "ftue:reset";
 
 /// Debug tool: wipe the local index and show the Overview as a first run.
@@ -2344,8 +2348,12 @@ pub const FTUE_RESET_EVENT: &str = "ftue:reset";
 /// This runs the exact wipe [`clear_local_index`] runs, so the real scan and
 /// analysis pipeline reads every session again from zero. It does not reset
 /// onboarding; combine with "Reset Onboarding" for a full first-run replay.
-#[tauri::command]
-pub async fn reset_ftue(app: tauri::AppHandle) -> CommandResult<()> {
+///
+/// Not a `#[tauri::command]`: the debug tray is its only caller, so it is a
+/// plain function rather than an IPC surface a release build would still
+/// register and any webview could invoke.
+#[cfg(debug_assertions)]
+pub(crate) async fn reset_ftue(app: tauri::AppHandle) -> CommandResult<()> {
     wipe_local_session_data(&app).await?;
     crate::main_window::on_main_value(&app, |app| {
         crate::main_window::open_at_section(app, crate::main_window::MainWindowSection::Overview)

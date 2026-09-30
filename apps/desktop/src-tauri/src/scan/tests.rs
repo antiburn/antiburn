@@ -889,6 +889,7 @@ async fn an_opted_out_working_directory_never_reaches_the_store() {
 
     assert_eq!(records.records.len(), 1);
     assert_eq!(records.records[0].key.agent, "codex");
+    assert_eq!(records.gate.ignored, 1);
 }
 
 #[tokio::test]
@@ -1233,6 +1234,10 @@ async fn a_sidechain_transcript_is_rejected_not_listed() {
     assert_eq!(described.records.len(), 1, "only the parent is listable");
     assert_eq!(described.rejected.len(), 1);
     assert_eq!(described.rejected[0].session_id, "aaaa-1111");
+    assert_eq!(
+        described.gate.subagent, 1,
+        "a rejected sub-agent is a companion, not a dropped session"
+    );
 }
 
 #[tokio::test]
@@ -1262,6 +1267,7 @@ async fn a_codex_subagent_thread_is_rejected_not_listed() {
     assert!(described.records.is_empty());
     assert_eq!(described.rejected.len(), 1);
     assert_eq!(described.rejected[0].session_id, "child-1");
+    assert_eq!(described.gate.subagent, 1);
 }
 
 #[tokio::test]
@@ -2476,5 +2482,75 @@ async fn repo_admission_reads_only_file_transcripts() {
     assert_eq!(
         repo_admission(&session, &workspace.to_string_lossy(), false).await,
         RepoAdmission::Rejected
+    );
+}
+
+#[test]
+fn read_gate_counts_maps_exclusions_and_keeps_kept_separate() {
+    let gate = GateCounts {
+        missing_cwd: 2,
+        ignored: 3,
+        subagent: 5,
+        no_repo: 7,
+        folder: 1,
+    };
+
+    let payload = read_gate_counts(&gate, 41);
+
+    assert_eq!(
+        payload,
+        ReadGateCounts {
+            kept: 41,
+            outside_repository: 7,
+            excluded: 3,
+            unreadable: 2,
+        },
+        "subagent is a companion count, never a gate exclusion reason"
+    );
+}
+
+#[tokio::test]
+async fn the_read_total_shrinks_by_exactly_the_subagent_count_found() {
+    let home = tempfile::TempDir::new().unwrap();
+    let parent = write_claude_session(home.path(), "11111111-2222-3333-4444-555555555556");
+    let sidechain = write_claude_sidechain(home.path(), "aaaa-2222");
+    let other = write_codex_session(home.path(), "codex-xyz");
+    let logs = vec![
+        log(AgentKind::Claude, parent, 1_800_000_000),
+        log(AgentKind::Claude, sidechain, 1_800_000_050),
+        log(AgentKind::Codex, other, 1_800_000_100),
+    ];
+    let total_logs = logs.len();
+
+    let mut last_completed = 0;
+    let mut last_total = 0;
+    let mut forced_calls = 0;
+    let described = describe_with_gate(
+        logs,
+        home.path(),
+        &HashSet::new(),
+        &std::collections::HashMap::new(),
+        false,
+        &mut |completed, total, force| {
+            assert!(completed <= total, "completed must never exceed total");
+            last_completed = completed;
+            last_total = total;
+            if force {
+                forced_calls += 1;
+            }
+        },
+    )
+    .await;
+
+    assert_eq!(described.gate.subagent, 1);
+    assert_eq!(
+        last_total,
+        total_logs - 1,
+        "the one sub-agent transcript is excluded from the final total"
+    );
+    assert_eq!(last_completed, last_total, "every real session was read");
+    assert_eq!(
+        forced_calls, 1,
+        "the last log always forces one final report"
     );
 }

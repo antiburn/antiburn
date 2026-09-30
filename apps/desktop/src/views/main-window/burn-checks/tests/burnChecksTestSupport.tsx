@@ -38,6 +38,7 @@ export function setWindowWidth(value: number): void {
 
 export const report: ChecksReportPayload = {
   evidenceSettled: false,
+  windowSessions: 0,
   pendingEvidence: 0,
   estimatedTokenBurnBasisPoints: 800,
   estimatedTokenBurnBasisPointsByDetectorMask: Array<number | null>(512).fill(null),

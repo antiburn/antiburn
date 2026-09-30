@@ -294,6 +294,78 @@ pub struct ScanStatus {
     /// R5: how many session rows the last pass added or refreshed.
     /// This lets a reader detect a productive pass without `list_changed`.
     pub re_described: usize,
+    /// The stage the current or most recent pass reached. Stays at its last
+    /// value once a pass ends, the same as every other field here — a fresh
+    /// pass moves it forward again from [`ScanPhase::Finding`].
+    pub phase: ScanPhase,
+    /// Sessions each agent explorer found this pass, filled in as each
+    /// explorer finishes. An agent that found none is absent.
+    pub found_by_agent: Vec<AgentFoundCount>,
+    /// Progress through the metadata-read stage.
+    pub read: ReadProgress,
+    /// The read stage's repository gate outcome. `None` until a pass has
+    /// completed that stage at least once.
+    pub gate: Option<ReadGateCounts>,
+}
+
+/// The stage a pass has reached. [`Self::Idle`] is the state before any pass
+/// has ever run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScanPhase {
+    #[default]
+    Idle,
+    /// Discovery: every agent explorer is walking its session files.
+    Finding,
+    /// Reading each found session's metadata and applying the repository gate.
+    Reading,
+    /// Writing this pass's new or refreshed records to the store.
+    Saving,
+}
+
+/// Sessions one agent explorer found in the current or most recent pass.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFoundCount {
+    /// The agent's discovery slug. A view maps this to a display label; this
+    /// payload carries the fact, not the wording.
+    pub agent: String,
+    pub sessions: usize,
+}
+
+/// Progress through the metadata-read stage.
+///
+/// `total` starts at the file count the discovery stage found, and shrinks by
+/// one each time the read stage recognizes a sub-agent transcript — a
+/// transcript can only be told apart from a session by reading it, so this is
+/// the earliest a companion can be excluded without a second read pass over
+/// the same files. `completed` never exceeds `total`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadProgress {
+    pub completed: usize,
+    pub total: usize,
+}
+
+/// How the read stage's repository gate resolved every session it read.
+///
+/// A sub-agent transcript is not a gate outcome — it is excluded from
+/// [`ReadProgress::total`] instead, never counted here. A session the gate
+/// keeps under a folder (`includeNonRepoFolders` on) is not an exclusion
+/// either, so it counts in [`Self::kept`], not in the reasons below.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadGateCounts {
+    /// Sessions the gate kept: in a repository, or in a folder when
+    /// `includeNonRepoFolders` is on.
+    pub kept: usize,
+    /// The working directory is outside every repository, and
+    /// `includeNonRepoFolders` is off.
+    pub outside_repository: usize,
+    /// The working directory is in a folder the reader excluded.
+    pub excluded: usize,
+    /// The working directory is missing, or could not be read.
+    pub unreadable: usize,
 }
 
 /* -------------------------------------------------------------------------
@@ -874,6 +946,10 @@ pub enum ChecksCategoryLifecyclePayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReportPayload {
     pub evidence_settled: bool,
+    /// Sessions the report window's denominator counts, regardless of
+    /// evidence state. `pending_evidence` is the subset of this total that is
+    /// still queued or processing.
+    pub window_sessions: u64,
     /// Sessions with evidence that is queued or processing for this report window.
     pub pending_evidence: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
@@ -2621,6 +2697,7 @@ impl ChecksReportPayload {
             .flatten();
         Self {
             evidence_settled,
+            window_sessions: report.context.coverage.discovered,
             pending_evidence,
             estimated_token_burn_basis_points,
             estimated_token_burn_basis_points_by_detector_mask,
@@ -3216,6 +3293,7 @@ mod tests {
         #[test]
         fn checks_report_serializes_only_display_fields() {
             let mut report = report();
+            report.context.coverage.discovered = 42;
             report.finding_agents[0].extend(["codex".to_owned(), "claude-code".to_owned()]);
             report.clean_agents[0].insert("cursor".to_owned());
             report.clean_agents[1].insert("opencode".to_owned());
@@ -3257,6 +3335,7 @@ mod tests {
             assert!(value.get("quotaPressure").is_none());
             assert!(value.get("providerIncidents").is_none());
             assert_eq!(value["evidenceSettled"], true);
+            assert_eq!(value["windowSessions"], 42);
             assert_eq!(value["pendingEvidence"], 0);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_000);
             let aggregates = value["estimatedTokenBurnBasisPointsByDetectorMask"]
@@ -3287,7 +3366,8 @@ mod tests {
                     "estimatedTokenBurnBasisPoints",
                     "estimatedTokenBurnBasisPointsByDetectorMask",
                     "evidenceSettled",
-                    "pendingEvidence"
+                    "pendingEvidence",
+                    "windowSessions"
                 ]
             );
             let category_keys: Vec<&str> = value["categories"][0]

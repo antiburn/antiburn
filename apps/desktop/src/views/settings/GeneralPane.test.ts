@@ -15,6 +15,10 @@ function status(overrides: Partial<ScanStatus> = {}): ScanStatus {
     agents: [],
     listChanged: false,
     reDescribed: 0,
+    phase: "idle",
+    foundByAgent: [],
+    read: { completed: 0, total: 0 },
+    gate: null,
     ...overrides,
   }
 }

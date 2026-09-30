@@ -488,6 +488,8 @@ pub(crate) fn simulate_burn_checks(app: &AppHandle, report: &mut crate::dto::Che
     }
     report.estimated_token_burn_basis_points = Some(125);
     report.evidence_settled = false;
+    // 8 assessed sessions (below) plus 12 still pending.
+    report.window_sessions = 20;
     report.pending_evidence = 12;
     for category in &mut report.categories {
         category.finding = 0;

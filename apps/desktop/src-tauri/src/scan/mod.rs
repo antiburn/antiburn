@@ -103,7 +103,7 @@ use tokio::task::JoinSet;
 
 use crate::agents;
 use crate::analysis;
-use crate::dto::ScanStatus;
+use crate::dto::{AgentFoundCount, ReadGateCounts, ReadProgress, ScanPhase, ScanStatus};
 use crate::repositories;
 use crate::session_lifecycle::{self, AnonymousCover, AnonymousGen};
 use crate::storage_health::{self, checked};
@@ -125,6 +125,11 @@ pub const TICK: Duration = Duration::from_secs(300);
 /// How many session logs have their metadata read at once. Bounds open files
 /// and blocking-pool pressure during a whole-machine pass.
 const METADATA_CONCURRENCY: usize = 16;
+
+/// How often the read stage's `scan:progress` event may repeat while the
+/// stage is still running. The stage always emits one more event right after
+/// its last file, whatever this interval says.
+const READ_PROGRESS_THROTTLE: Duration = Duration::from_millis(150);
 
 /// Scope key for the engine's ignored-path store. The engine namespaces opt-outs
 /// so one machine can hold several independent sets; this app keeps one.
@@ -766,6 +771,10 @@ pub(crate) async fn try_run_pass(
             status.re_described = 0;
             status.error = None;
             status.cancelled = false;
+            status.phase = ScanPhase::Finding;
+            status.found_by_agent = Vec::new();
+            status.read = ReadProgress::default();
+            status.gate = None;
         });
         let _ = app.emit(EVENT_STARTED, started);
     }
@@ -938,9 +947,14 @@ async fn pass(
                             status.completed_agents = completed;
                             status.total_agents = total;
                             status.sessions += found;
+                            if found > 0 {
+                                status.found_by_agent.push(AgentFoundCount {
+                                    agent: agent.slug().to_string(),
+                                    sessions: found,
+                                });
+                            }
                         });
                         let _ = progress_app.emit(EVENT_PROGRESS, status);
-                        let _ = agent;
                     },
                 )
                 .await
@@ -960,12 +974,44 @@ async fn pass(
         .collect::<Vec<_>>();
     let previous_records = store.session_records_for_activity_keys(&activity_keys)?;
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
+
+    // The read stage's total starts at every file discovery found. A
+    // sub-agent transcript can only be told apart from a session by reading
+    // it, so `read_progress` (below) shrinks this total as it finds one,
+    // rather than guessing the exclusion up front.
+    {
+        let controller = app.state::<ScanController>();
+        let status = controller.update(|status| {
+            status.phase = ScanPhase::Reading;
+            status.read = ReadProgress {
+                completed: 0,
+                total: logs.len(),
+            };
+        });
+        let _ = app.emit(EVENT_PROGRESS, status);
+    }
+    let read_app = app.clone();
+    let mut last_read_emit = Instant::now();
     let described = describe_with_gate(
         logs,
         &home,
         &ignored,
         &previous_records,
         include_non_repo_folders,
+        &mut |completed, total, force| {
+            // W4-style throttle: at most one event every ~150ms while the
+            // stage runs, but the caller always forces the last one so the
+            // final frame is never stale.
+            if !force && last_read_emit.elapsed() < READ_PROGRESS_THROTTLE {
+                return;
+            }
+            last_read_emit = Instant::now();
+            let controller = read_app.state::<ScanController>();
+            let status = controller.update(|status| {
+                status.read = ReadProgress { completed, total };
+            });
+            let _ = read_app.emit(EVENT_PROGRESS, status);
+        },
     )
     .await;
     let Described {
@@ -973,7 +1019,18 @@ async fn pass(
         rejected,
         changed,
         list_changed,
+        gate,
     } = &described;
+    {
+        let kept = records.len();
+        let gate_counts = read_gate_counts(gate, kept);
+        let controller = app.state::<ScanController>();
+        let status = controller.update(|status| {
+            status.phase = ScanPhase::Saving;
+            status.gate = Some(gate_counts);
+        });
+        let _ = app.emit(EVENT_PROGRESS, status);
+    }
     let evidence_agents: Vec<&str> = match scope {
         PassScope::Full => agents::evidence_cohort(),
         PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
@@ -1460,6 +1517,8 @@ struct Described {
     /// patch: this pass indexed a session absent from `previous_records`, or
     /// rejected a sub-agent transcript.
     list_changed: bool,
+    /// How the repository gate resolved every read session.
+    gate: GateCounts,
 }
 
 /// Read metadata for every discovered log, at a bounded concurrency, and drop
@@ -1480,30 +1539,50 @@ async fn describe_with_states(
     ignored: &std::collections::HashSet<String>,
     previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
 ) -> Described {
-    describe_with_gate(logs, home, ignored, previous_records, false).await
+    describe_with_gate(
+        logs,
+        home,
+        ignored,
+        previous_records,
+        false,
+        &mut |_, _, _| {},
+    )
+    .await
 }
 
 /// Describe `logs` and apply the repository scan gate.
 ///
 /// `include_non_repo_folders` keeps a session whose CWD has no repository
 /// under that CWD. See [`repo_admission`].
+///
+/// `on_progress(completed, total, force)` reports read progress as it runs.
+/// `total` starts at `logs.len()` and drops by one for every sub-agent
+/// transcript this pass recognizes — a transcript can only be told apart from
+/// a session by reading it, so a call never raises `total` back up, and
+/// `completed` never exceeds it. `force` is true only for the call after the
+/// last log, so a caller that throttles still sees a final, accurate frame.
 async fn describe_with_gate(
     logs: Vec<SessionLog>,
     home: &std::path::Path,
     ignored: &std::collections::HashSet<String>,
     previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
     include_non_repo_folders: bool,
+    on_progress: &mut (dyn FnMut(usize, usize, bool) + Send),
 ) -> Described {
     // Scan unit fixtures skip the repository gate. The `repo_admission` tests
     // cover the setting.
     #[cfg(test)]
     let _ = include_non_repo_folders;
     let indexed_titles = indexed_titles_for_logs(&logs).await;
+    let total_logs = logs.len();
     let mut records = Vec::with_capacity(logs.len());
     let mut rejected = Vec::new();
     let mut changed = Vec::new();
     let mut list_changed = false;
     let mut gate = GateCounts::default();
+    let mut read_completed = 0_usize;
+    let mut read_total = total_logs;
+    let mut read_done = 0_usize;
     for chunk in logs.chunks(METADATA_CONCURRENCY) {
         let mut set = JoinSet::new();
         for log in chunk {
@@ -1529,6 +1608,18 @@ async fn describe_with_gate(
             });
         }
         while let Some(joined) = set.join_next().await {
+            // A sub-agent transcript is a companion, not a session: it
+            // shrinks the read total instead of advancing `read_completed`.
+            // Checked by reference, and counted before the match below, so
+            // every `continue` inside that match still reports progress.
+            let is_subagent = matches!(&joined, Ok((DescribeOutcome::Subagent(_), _)));
+            read_done += 1;
+            if is_subagent {
+                read_total = read_total.saturating_sub(1);
+            } else {
+                read_completed += 1;
+            }
+            on_progress(read_completed, read_total, read_done == total_logs);
             match joined {
                 Ok((DescribeOutcome::Session(record), changed_record)) => {
                     if record.cwd.is_none() {
@@ -1643,6 +1734,19 @@ async fn describe_with_gate(
         rejected,
         changed,
         list_changed,
+        gate,
+    }
+}
+
+/// Map the read stage's internal gate tally to the IPC payload shape. `kept`
+/// is not a [`GateCounts`] field: it is the caller's own count of records
+/// that passed the gate, since [`GateCounts`] only tracks exclusions.
+fn read_gate_counts(gate: &GateCounts, kept: usize) -> ReadGateCounts {
+    ReadGateCounts {
+        kept,
+        outside_repository: gate.no_repo,
+        excluded: gate.ignored,
+        unreadable: gate.missing_cwd,
     }
 }
 

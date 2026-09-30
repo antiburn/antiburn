@@ -1139,9 +1139,10 @@ fn section_navigation_destination(
 /// Show and focus the retained main window, and route it straight to `section`.
 ///
 /// For a native caller, not a webview under IPC — the debug-only tray reset
-/// is the first one. It skips the caller-label check
+/// is its only caller today, hence the `cfg`. It skips the caller-label check
 /// [`section_navigation_destination`] applies, because that check exists only
 /// to stop an untrusted webview from asking for a window it must not open.
+#[cfg(debug_assertions)]
 pub(crate) fn open_at_section(app: &AppHandle, section: MainWindowSection) -> Result<(), String> {
     route_section_target(
         app,

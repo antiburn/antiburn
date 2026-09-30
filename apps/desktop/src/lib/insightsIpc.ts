@@ -42,6 +42,10 @@ export type ChecksCategoryLifecycle = "failing" | "awaitingVerification" | "pass
 export interface ChecksReportPayload {
   /** False while this report snapshot still has queued or running evidence work. */
   evidenceSettled: boolean
+  /** Sessions the report window's denominator counts, regardless of evidence
+   *  state. `pendingEvidence` is the subset of this total still queued or
+   *  processing. */
+  windowSessions: number
   /** Sessions with evidence queued or processing for this report window. */
   pendingEvidence: number
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */

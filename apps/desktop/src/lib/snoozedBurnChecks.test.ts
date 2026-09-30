@@ -176,6 +176,7 @@ describe("snoozed burn checks", () => {
       activeChecksReport(
         {
           evidenceSettled: true,
+          windowSessions: 0,
           pendingEvidence: 0,
           estimatedTokenBurnBasisPoints: 900,
           estimatedTokenBurnBasisPointsByDetectorMask: Array.from({ length: 512 }, (_, mask) =>
@@ -192,6 +193,7 @@ describe("snoozed burn checks", () => {
     const report = activeChecksReport(
       {
         evidenceSettled: true,
+        windowSessions: 0,
         pendingEvidence: 0,
         estimatedTokenBurnBasisPoints: 900,
         estimatedTokenBurnBasisPointsByDetectorMask: Array.from({ length: 512 }, (_, mask) =>
@@ -229,6 +231,7 @@ describe("snoozed burn checks", () => {
   it("preserves the estimate when snoozing an absent category", () => {
     const report = {
       evidenceSettled: true,
+      windowSessions: 0,
       pendingEvidence: 0,
       estimatedTokenBurnBasisPoints: 900,
       categories: [

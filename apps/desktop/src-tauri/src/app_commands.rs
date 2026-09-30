@@ -94,7 +94,6 @@ macro_rules! with_app_commands {
             commands::remove_scan_root => "remove_scan_root",
             remote_sessions::remove_remote_host => "remove_remote_host",
             commands::request_folder_access => "request_folder_access",
-            commands::reset_ftue => "reset_ftue",
             hud_commands::resize_overlay_window => "resize_overlay_window",
             commands::restart_onboarding => "restart_onboarding",
             commands::restart_to_update => "restart_to_update",

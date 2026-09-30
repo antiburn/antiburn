@@ -191,6 +191,56 @@ interface AgentScanState {
   sessionsSeen: number
 }
 
+/** The stage a pass has reached. Mirrors Rust `ScanPhase`. `idle` is the
+ *  state before any pass has ever run. */
+export type ScanPhase = "idle" | "finding" | "reading" | "saving"
+
+/** Sessions one agent explorer found this pass. Mirrors Rust `AgentFoundCount`. */
+export interface AgentFoundCount {
+  /** The agent's discovery slug. Map this to a display label with
+   *  `agentDisplayName` before rendering it. */
+  agent: string
+  sessions: number
+}
+
+/** Progress through the metadata-read stage. Mirrors Rust `ReadProgress`. */
+export interface ReadProgress {
+  completed: number
+  total: number
+}
+
+/**
+ * How the read stage's repository gate resolved every session it read.
+ * Mirrors Rust `ReadGateCounts`.
+ *
+ * A sub-agent transcript is not counted here — it is excluded from
+ * {@link ReadProgress.total} instead. A session the gate keeps under a
+ * folder (`includeNonRepoFolders` on) counts in `kept`, not as an exclusion.
+ */
+export interface ReadGateCounts {
+  /** Sessions the gate kept: in a repository, or in a folder when
+   *  `includeNonRepoFolders` is on. */
+  kept: number
+  /** The working directory is outside every repository, and
+   *  `includeNonRepoFolders` is off. */
+  outsideRepository: number
+  /** The working directory is in a folder the reader excluded. */
+  excluded: number
+  /** The working directory is missing, or could not be read. */
+  unreadable: number
+}
+
+/**
+ * Progress on the planned background history pass (PR #678). Optional and
+ * not yet produced by the backend: the Overview renders this line only when
+ * it is present and `state` is `"pending"` or `"running"`.
+ */
+export interface ScanHistoryProgress {
+  state: "none" | "pending" | "running" | "done"
+  completed: number
+  total: number
+}
+
 /** What a scan is doing, or last did. Mirrors Rust `ScanStatus`. */
 export interface ScanStatus {
   running: boolean
@@ -210,6 +260,19 @@ export interface ScanStatus {
    * productive one without inferring it from `listChanged` alone.
    */
   reDescribed: number
+  /** The stage the current or most recent pass reached. */
+  phase: ScanPhase
+  /** Sessions each agent explorer found this pass. An agent that found none
+   *  is absent. */
+  foundByAgent: AgentFoundCount[]
+  /** Progress through the metadata-read stage. */
+  read: ReadProgress
+  /** The read stage's repository gate outcome. `null` until a pass has
+   *  completed that stage at least once. */
+  gate: ReadGateCounts | null
+  /** The planned background history pass's progress. Not produced by the
+   *  backend yet — see {@link ScanHistoryProgress}. */
+  history?: ScanHistoryProgress
 }
 
 /** Whether the insights worker pool has a backlog to drain right now.

@@ -13,6 +13,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => ({
 
 const report = (burn: number): ChecksReportPayload => ({
   evidenceSettled: true,
+  windowSessions: 0,
   pendingEvidence: 0,
   estimatedTokenBurnBasisPoints: burn,
   estimatedTokenBurnBasisPointsByDetectorMask: [],
