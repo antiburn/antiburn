@@ -6,6 +6,7 @@ import {
   INITIAL_FTUE_LATCH,
   advanceFtueLatch,
   deriveFtueSnapshot,
+  hasScanHistory,
   resetFtueLatch,
   unlatchReadOutcome,
   type FtueInputs,
@@ -60,17 +61,18 @@ function inputs(overrides: Partial<FtueInputs> = {}): FtueInputs {
     scanStatus: null,
     checksReport: null,
     includeNonRepoFolders: false,
+    hasScanHistory: null,
     ...overrides,
   }
 }
 
 describe("advanceFtueLatch", () => {
-  it("stays undecided until both the scan status and the checks report have loaded", () => {
-    let latch = advanceFtueLatch(INITIAL_FTUE_LATCH, inputs({ scanStatus: status() }))
+  it("stays undecided until both the checks report and the scan history signal are known", () => {
+    let latch = advanceFtueLatch(INITIAL_FTUE_LATCH, inputs({ hasScanHistory: true }))
     expect(latch.decided).toBe(false)
     latch = advanceFtueLatch(latch, inputs({ checksReport: report() }))
     expect(latch.decided).toBe(false)
-    latch = advanceFtueLatch(latch, inputs({ scanStatus: status(), checksReport: report() }))
+    latch = advanceFtueLatch(latch, inputs({ checksReport: report(), hasScanHistory: true }))
     expect(latch.decided).toBe(true)
   })
 
@@ -78,19 +80,19 @@ describe("advanceFtueLatch", () => {
     const latch = advanceFtueLatch(
       INITIAL_FTUE_LATCH,
       inputs({
-        scanStatus: status({ finishedAt: "2026-10-01T00:00:00Z", phase: "saving" }),
         checksReport: report({ evidenceSettled: false }),
+        hasScanHistory: true,
       }),
     )
     expect(latch.showSteps).toBe(true)
   })
 
-  it("decides to show the steps block when the scan has never finished a pass", () => {
+  it("decides to show the steps block when the device has no persisted scan history", () => {
     const latch = advanceFtueLatch(
       INITIAL_FTUE_LATCH,
       inputs({
-        scanStatus: status({ finishedAt: null }),
         checksReport: report({ evidenceSettled: true }),
+        hasScanHistory: false,
       }),
     )
     expect(latch.showSteps).toBe(true)
@@ -100,8 +102,8 @@ describe("advanceFtueLatch", () => {
     const latch = advanceFtueLatch(
       INITIAL_FTUE_LATCH,
       inputs({
-        scanStatus: status({ finishedAt: "2026-10-01T00:00:00Z" }),
         checksReport: report({ evidenceSettled: true }),
+        hasScanHistory: true,
       }),
     )
     expect(latch.decided).toBe(true)
@@ -112,8 +114,8 @@ describe("advanceFtueLatch", () => {
     let latch = advanceFtueLatch(
       INITIAL_FTUE_LATCH,
       inputs({
-        scanStatus: status({ finishedAt: "2026-10-01T00:00:00Z" }),
         checksReport: report({ evidenceSettled: true }),
+        hasScanHistory: true,
       }),
     )
     expect(latch.showSteps).toBe(false)
@@ -122,11 +124,50 @@ describe("advanceFtueLatch", () => {
     latch = advanceFtueLatch(
       latch,
       inputs({
-        scanStatus: status({ phase: "finding", finishedAt: "2026-10-01T00:00:00Z" }),
+        scanStatus: status({ phase: "finding" }),
         checksReport: report({ evidenceSettled: false }),
+        hasScanHistory: true,
       }),
     )
     expect(latch.showSteps).toBe(false)
+  })
+
+  it("ordinary launch mid-pass, with persisted scan state, shows no steps", () => {
+    // A launch runs a full pass, same as a first run: discovery has reset
+    // and is under way. The persisted `scan_state` table (unlike the
+    // in-memory `finishedAt`) still shows this device has scanned before.
+    const midLaunchPass = status({
+      running: true,
+      phase: "finding",
+      foundByAgent: [],
+      agents: [
+        { agent: "claude-code", lastCompletedAt: "2026-09-30T12:00:00Z", sessionsSeen: 412 },
+      ],
+    })
+    const latch = advanceFtueLatch(
+      INITIAL_FTUE_LATCH,
+      inputs({
+        scanStatus: midLaunchPass,
+        checksReport: report({ evidenceSettled: true }),
+        hasScanHistory: hasScanHistory(midLaunchPass),
+      }),
+    )
+    expect(latch.decided).toBe(true)
+    expect(latch.showSteps).toBe(false)
+  })
+
+  it("a genuinely empty scan_state table shows the steps block", () => {
+    const firstRunPass = status({ running: true, phase: "finding", agents: [] })
+    const latch = advanceFtueLatch(
+      INITIAL_FTUE_LATCH,
+      inputs({
+        scanStatus: firstRunPass,
+        checksReport: report({ evidenceSettled: false }),
+        hasScanHistory: hasScanHistory(firstRunPass),
+      }),
+    )
+    expect(latch.decided).toBe(true)
+    expect(latch.showSteps).toBe(true)
   })
 
   it("picks up a pass already at the read outcome as done, mid-way", () => {
@@ -143,6 +184,7 @@ describe("advanceFtueLatch", () => {
           gate: { kept: 480, outsideRepository: 20, excluded: 0, unreadable: 0 },
         }),
         checksReport: report({ evidenceSettled: false }),
+        hasScanHistory: false,
       }),
     )
     expect(latch.showSteps).toBe(true)
@@ -192,6 +234,42 @@ describe("advanceFtueLatch", () => {
   })
 })
 
+describe("hasScanHistory", () => {
+  it("is null when the status itself is unknown", () => {
+    expect(hasScanHistory(null)).toBeNull()
+  })
+
+  it("is false for a genuinely empty scan_state table", () => {
+    expect(hasScanHistory(status({ agents: [] }))).toBe(false)
+  })
+
+  it("is false when an agent is registered but has never completed a pass", () => {
+    expect(
+      hasScanHistory(
+        status({ agents: [{ agent: "claude-code", lastCompletedAt: null, sessionsSeen: 0 }] }),
+      ),
+    ).toBe(false)
+  })
+
+  it("is true when any agent has a persisted completed pass, even mid-launch", () => {
+    expect(
+      hasScanHistory(
+        status({
+          running: true,
+          phase: "finding",
+          agents: [
+            {
+              agent: "claude-code",
+              lastCompletedAt: "2026-09-30T12:00:00Z",
+              sessionsSeen: 412,
+            },
+          ],
+        }),
+      ),
+    ).toBe(true)
+  })
+})
+
 describe("resetFtueLatch", () => {
   it("brings the steps block back and clears the latched step 1 and 2 numbers", () => {
     const settled: FtueLatch = {
@@ -237,15 +315,15 @@ describe("deriveFtueSnapshot", () => {
     const latch = advanceFtueLatch(
       INITIAL_FTUE_LATCH,
       inputs({
-        scanStatus: status({ finishedAt: "2026-10-01T00:00:00Z" }),
         checksReport: report({ evidenceSettled: true, windowSessions: 0, categories: [] }),
+        hasScanHistory: true,
       }),
     )
     const snapshot = deriveFtueSnapshot(
       latch,
       inputs({
-        scanStatus: status({ finishedAt: "2026-10-01T00:00:00Z" }),
         checksReport: report({ evidenceSettled: true, windowSessions: 0, categories: [] }),
+        hasScanHistory: true,
       }),
       false,
     )

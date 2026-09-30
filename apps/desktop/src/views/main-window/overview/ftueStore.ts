@@ -12,6 +12,7 @@ import {
   type ChecksReportPayload,
 } from "../../../lib/insightsIpc"
 import {
+  getScanStatus,
   getSettings,
   onFtueReset,
   onSettingsChanged,
@@ -92,6 +93,14 @@ export interface FtueInputs {
   scanStatus: ScanStatus | null
   checksReport: ChecksReportPayload | null
   includeNonRepoFolders: boolean
+  /**
+   * Whether the persisted `scan_state` table has ever recorded a completed
+   * pass for any agent — the durable "this device is not a first run" signal
+   * (`get_scan_status` fills `agents` from that table; a pushed `scan:*`
+   * event does not, so this must come from a direct `getScanStatus()` read,
+   * never from an event payload). Null until that read resolves.
+   */
+  hasScanHistory: boolean | null
 }
 
 export interface FtueLatch {
@@ -118,10 +127,22 @@ export const INITIAL_FTUE_LATCH: FtueLatch = {
 /**
  * Advance the latch from one set of inputs.
  *
- * Decides "show the steps block" once, the first time both the scan status
- * and the checks report have loaded: true when the checks report is not
- * settled, or the scan has never finished a pass. The answer then holds for
- * the rest of the session (see {@link resetFtueLatch} for `ftue:reset`).
+ * Decides "show the steps block" once, the first time both the checks report
+ * and {@link FtueInputs.hasScanHistory} are known: true when the checks
+ * report is not settled, or the device has no persisted scan history. The
+ * answer then holds for the rest of the session (see {@link resetFtueLatch}
+ * for `ftue:reset`).
+ *
+ * `hasScanHistory` — not `ScanStatus.finishedAt` — is the signal, because
+ * `finished_at` lives only in the in-memory `ScanController` and is cleared
+ * every time a pass starts (`scan/mod.rs`): every launch runs a full pass, so
+ * an Overview that reads status during that ~3 s window would otherwise
+ * misread an ordinary launch as a first run. The persisted `scan_state` table
+ * survives across launches — cleared only by the index wipe — so it tells
+ * "never scanned before" from "scanning again" correctly. One accepted
+ * consequence: a revision-bump re-ingest marks evidence unsettled again,
+ * which brings the steps block back after such an upgrade even though
+ * `hasScanHistory` stays true. That is fine for now.
  *
  * Steps 1 and 2 each latch their own numbers the first time they finish, so
  * a later routine pass — every 5 minutes, and every launch, per the scan
@@ -131,11 +152,11 @@ export const INITIAL_FTUE_LATCH: FtueLatch = {
  */
 export function advanceFtueLatch(latch: FtueLatch, inputs: FtueInputs): FtueLatch {
   let next = latch
-  if (!next.decided && inputs.scanStatus && inputs.checksReport) {
+  if (!next.decided && inputs.checksReport && inputs.hasScanHistory != null) {
     next = {
       ...next,
       decided: true,
-      showSteps: !inputs.checksReport.evidenceSettled || inputs.scanStatus.finishedAt == null,
+      showSteps: !inputs.checksReport.evidenceSettled || !inputs.hasScanHistory,
     }
   }
   const phase = inputs.scanStatus?.phase
@@ -180,6 +201,16 @@ function toFixCategory(category: ChecksCategoryPayload): FtueFixCategory {
           ? "passing"
           : "notChecked"
   return { id: category.id, label: CHECK_LABELS[category.id], status }
+}
+
+/**
+ * Whether the persisted `scan_state` table has ever recorded a completed
+ * pass for any agent — see {@link FtueInputs.hasScanHistory}. Null when
+ * `status` itself is unknown (no shell, or the read has not resolved yet).
+ */
+export function hasScanHistory(status: ScanStatus | null): boolean | null {
+  if (!status) return null
+  return status.agents.some((agent) => agent.lastCompletedAt != null)
 }
 
 function deriveHistory(history: ScanHistoryProgress | undefined): FtueHistoryProgress | null {
@@ -235,6 +266,7 @@ let latch: FtueLatch = INITIAL_FTUE_LATCH
 let liveScanStatus: ScanStatus | null = null
 let liveChecksReport: ChecksReportPayload | null = null
 let liveIncludeNonRepoFolders = false
+let liveHasScanHistory: boolean | null = null
 let dismissed = false
 
 function currentInputs(): FtueInputs {
@@ -242,6 +274,7 @@ function currentInputs(): FtueInputs {
     scanStatus: liveScanStatus,
     checksReport: liveChecksReport,
     includeNonRepoFolders: liveIncludeNonRepoFolders,
+    hasScanHistory: liveHasScanHistory,
   }
 }
 
@@ -273,6 +306,9 @@ function onSettings(settings: AppSettings): void {
 function onReset(): void {
   latch = resetFtueLatch()
   dismissed = false
+  // The wipe clears `scan_state`, so this device has no scan history again
+  // until the pass the reset triggers completes and re-populates it.
+  liveHasScanHistory = false
   recompute()
 }
 
@@ -324,6 +360,20 @@ async function start(): Promise<void> {
       .catch(() => undefined)
   }
 
+  // The durable "ever scanned before" signal, read directly rather than from
+  // a push event — see {@link FtueInputs.hasScanHistory}. Only needs to
+  // resolve once: the latch decides at most once per store generation.
+  function refreshScanHistory(): void {
+    void getScanStatus()
+      .then((status) => {
+        if (thisGeneration !== generation) return
+        liveHasScanHistory = hasScanHistory(status)
+        latch = advanceFtueLatch(latch, currentInputs())
+        recompute()
+      })
+      .catch(() => undefined)
+  }
+
   await Promise.all([
     attach(
       thisGeneration,
@@ -355,6 +405,7 @@ async function start(): Promise<void> {
   if (thisGeneration !== generation) return
   onScanStatus(scanStatusStore.getSnapshot())
   refreshChecks()
+  refreshScanHistory()
   void getSettings().then((settings) => {
     if (thisGeneration === generation) onSettings(settings)
   })
