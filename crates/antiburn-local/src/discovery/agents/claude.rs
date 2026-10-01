@@ -213,6 +213,8 @@ fn classify_entrypoint(entrypoint: &str) -> &'static str {
         || lower.contains("jetbrains")
         || lower.contains("intellij")
         || lower.contains("ide")
+        // Claude Desktop's Cowork agent mode.
+        || lower == "local-agent"
     {
         "ide_desktop"
     } else {

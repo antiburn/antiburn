@@ -632,6 +632,13 @@ fn surface_label_claude_entrypoint_marker_overrides_path() {
 
     let sdk_content = r#"{"type":"user","entrypoint":"sdk-ts","sessionId":"s"}"#;
     assert_eq!(log.surface_label_with_content(sdk_content, &home), "cli");
+
+    // Claude Desktop's Cowork agent mode.
+    let cowork_content = r#"{"type":"user","entrypoint":"local-agent","sessionId":"s"}"#;
+    assert_eq!(
+        log.surface_label_with_content(cowork_content, &home),
+        "ide_desktop"
+    );
 }
 
 #[test]

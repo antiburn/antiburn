@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57,
+    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57, V58,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1125,6 +1125,16 @@ CREATE INDEX provider_usage_observation_refusal
 /// v57 removes the allowance rollup after the Limits service replaces it.
 const V57: &str = r#"
 DROP TABLE IF EXISTS provider_usage_period_rollup;
+"#;
+
+/// v58 makes the next scan describe Claude sessions labelled `cli` again.
+/// Earlier scans labelled every session under `~/.claude/projects` as `cli`,
+/// including Claude Desktop and VS Code sessions. An empty activity cursor
+/// stops the scan from reusing the old record, so the scan reads the
+/// transcript head and stores the correct surface.
+const V58: &str = r#"
+UPDATE session SET activity_cursor = ''
+WHERE agent = 'claude-code' AND surface = 'cli';
 "#;
 
 /// v52 widens the factor sample and point lanes to admit a model-scoped
