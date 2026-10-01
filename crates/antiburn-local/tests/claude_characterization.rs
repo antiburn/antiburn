@@ -151,6 +151,10 @@ fn fixture(name: &str) -> &'static str {
         "api_error_records" => {
             include_str!("fixtures/claude_characterization/api_error_records.jsonl")
         }
+        "cowork_transcript" => {
+            include_str!("fixtures/claude_characterization/cowork_transcript.jsonl")
+        }
+        "cowork_audit" => include_str!("fixtures/claude_characterization/cowork_audit.jsonl"),
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -2157,4 +2161,84 @@ fn a_claude_fork_with_a_known_parent_excludes_the_inherited_prefix_from_its_own_
         }
         other => panic!("expected context_sources to be complete, got {other:?}"),
     }
+}
+
+/// Claude Desktop Cowork (observed with Claude Desktop 2.2553.1 and its
+/// embedded Claude Code 2.1.275) writes a standard Claude Code transcript
+/// under a nested `.claude/projects` root. Its usage parses like any other
+/// `ClaudeJsonl` source.
+#[test]
+fn a_claude_desktop_cowork_transcript_parses_with_usage() {
+    let input = input("cowork_transcript");
+    let (coverage, reasons, _) = collect_claude(&input);
+    assert_eq!(coverage, RecordCoverage::Complete, "{reasons:?}");
+
+    let sessions = analyze_sources_with(vec![input], false).sessions;
+    assert_eq!(sessions.len(), 1);
+    let metrics = &sessions[0];
+    assert_eq!(metrics.billable_input_tokens, 12 + 8);
+    assert_eq!(metrics.billable_output_tokens, 150 + 90);
+    assert_eq!(metrics.billable_cache_read_tokens, 8_000 + 10_000);
+    assert_eq!(metrics.billable_cache_creation_tokens, 2_000 + 300);
+    assert_eq!(metrics.model.as_deref(), Some("claude-sonnet-4-6"));
+}
+
+/// The Cowork `audit.jsonl` beside the nested `.claude` directory repeats the
+/// transcript's `message.usage` objects. Discovery must return the transcript
+/// and never the audit log, or the same tokens count twice.
+#[tokio::test]
+async fn a_cowork_audit_log_is_not_discovered_beside_its_transcript() {
+    use antiburn_local::discovery::SessionSource;
+    use antiburn_local::discovery::agents::claude::discover_recent_in_wsl;
+    use antiburn_local::platform::environment::{
+        AgentContext, DiscoveryEnvironment, WslEnvironmentInfo,
+    };
+
+    // The audit log alone would add the same usage again.
+    let audit = analyze_sources_with(vec![input("cowork_audit")], false).sessions;
+    let transcript = analyze_sources_with(vec![input("cowork_transcript")], false).sessions;
+    assert_eq!(
+        audit[0].billable_output_tokens,
+        transcript[0].billable_output_tokens
+    );
+
+    let home = tempfile::TempDir::new().expect("temporary home must be created");
+    let workspace = antiburn_local::discovery::app_config_dir_in("Claude", home.path())
+        .join("local-agent-mode-sessions/org-0001/account-0001/local_workspace-0001");
+    let project = workspace.join(".claude/projects/-home-avery-projects-demo-app");
+    fs::create_dir_all(&project).expect("project directory must be created");
+    let transcript_path = project.join("c0e0a000-0000-4000-8000-000000000001.jsonl");
+    fs::write(&transcript_path, fixture("cowork_transcript")).expect("transcript must be written");
+    for name in ["audit.jsonl", "audit1.jsonl"] {
+        fs::write(workspace.join(name), fixture("cowork_audit")).expect("audit must be written");
+    }
+
+    // The WSL entry point is the public discovery call that takes an explicit
+    // home. It runs the same Claude walk as native discovery.
+    let info = WslEnvironmentInfo {
+        context: AgentContext {
+            environment: DiscoveryEnvironment::Wsl {
+                distribution: "Synthetic".into(),
+                user: "avery".into(),
+            },
+            home: home.path().to_path_buf(),
+            platform_home: PathBuf::from("/home/avery"),
+        },
+        distribution: "Synthetic".into(),
+        user: "avery".into(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock must be after the epoch")
+        .as_secs() as i64;
+    let logs = discover_recent_in_wsl(&info, now, 86_400).await;
+
+    let paths: Vec<_> = logs
+        .iter()
+        .map(|log| match &log.source {
+            SessionSource::File(path) => path.clone(),
+            other => panic!("expected a file source, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(paths, vec![transcript_path]);
 }
