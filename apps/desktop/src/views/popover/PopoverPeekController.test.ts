@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PopoverPeekData } from "../../lib/popoverPeekIpc"
+import type { LiveUsageSourceErrorPayload } from "../../lib/providerUsageIpc"
 import { emptyBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 import { PopoverPeekController } from "./PopoverPeekController"
 
@@ -76,7 +77,15 @@ function checksData(): PopoverPeekData {
   }
 }
 
-function expiredProviderData(): PopoverPeekData {
+function expiredProviderData(
+  error: LiveUsageSourceErrorPayload = {
+    source: "claude",
+    provider: "anthropic",
+    displayName: "Claude",
+    category: "authentication",
+    detail: "signInRequired",
+  },
+): PopoverPeekData {
   const generatedAt = new Date("2026-09-08T01:00:00Z").toISOString()
   return {
     kind: "provider",
@@ -120,14 +129,7 @@ function expiredProviderData(): PopoverPeekData {
           accountEmail: null,
         },
       ],
-      errors: [
-        {
-          source: "claude",
-          provider: "anthropic",
-          displayName: "Claude",
-          category: "rateLimited",
-        },
-      ],
+      errors: [error],
       meters: [{ provider: "anthropic", displayName: "Claude", shown: true }],
       generatedAt,
     },
@@ -314,7 +316,26 @@ describe("PopoverPeekController", () => {
     expect(analytics.expose).toHaveBeenCalledWith(expect.objectContaining({ state: "ready" }))
   })
 
-  it("reports an expired provider cache as an error", () => {
+  it("reports a stale reading kept through a rate limit as ready", () => {
+    const controller = controllerWith(
+      vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+    )
+    controller.accept({
+      ...request(4, "anthropic"),
+      initialPresentation: expiredProviderData({
+        source: "claude",
+        provider: "anthropic",
+        displayName: "Claude",
+        category: "rateLimited",
+      }),
+    })
+
+    controller.confirmPresented(4)
+
+    expect(analytics.expose).toHaveBeenCalledWith(expect.objectContaining({ state: "ready" }))
+  })
+
+  it("reports a reading dropped after a terminal sign-in failure as an error", () => {
     const controller = controllerWith(
       vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
     )

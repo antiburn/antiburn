@@ -358,7 +358,7 @@ function meterNote({
   if (failure) {
     // A rate limit is a provider answering — the sign-in worked.
     return failure.category === "rateLimited"
-      ? "Signed in · rate limited · retrying"
+      ? "Signed in · checking again soon"
       : liveErrorNote(failure.category, provider, failure.detail)
   }
   return liveDetectionNote(provider, meter.detection ?? "unknown", on, meter.carrierLabel)

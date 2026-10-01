@@ -679,14 +679,53 @@ fn tray_dot_alpha_indices(rgba: &[u8], width: u32, height: u32) -> Vec<Vec<usize
 }
 
 fn usage_used_percent(summary: &crate::dto::LiveUsageSummary) -> Option<f64> {
+    let generated_at = parse_rfc3339(&summary.generated_at);
     summary
         .providers
         .iter()
         .filter(|provider| provider_is_displayable(summary, provider))
-        .flat_map(visible_windows)
+        .flat_map(|provider| {
+            // A reading that is not live says nothing about a period that
+            // has reset since, matching `liveDisplayableProviders`.
+            let not_live = provider.freshness == crate::dto::LiveUsageFreshness::Stale
+                || summary
+                    .errors
+                    .iter()
+                    .any(|error| error.provider == provider.provider);
+            visible_windows(provider)
+                .into_iter()
+                .filter(move |window| !(not_live && period_reset(window, generated_at)))
+        })
         .filter_map(|window| window.used_percent)
         .filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))
         .max_by(f64::total_cmp)
+}
+
+fn parse_rfc3339(value: &str) -> Option<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+}
+
+/// Whether the window's period reset at or before `at`.
+fn period_reset(window: &crate::dto::LiveUsageWindow, at: Option<time::OffsetDateTime>) -> bool {
+    match (window.resets_at.as_deref().and_then(parse_rfc3339), at) {
+        (Some(resets_at), Some(at)) => resets_at <= at,
+        _ => false,
+    }
+}
+
+/// Whether a failed check keeps the last reading. Matches
+/// `liveFailureIsRecoverable` in `lib/presentation/liveUsage.ts`.
+fn failure_is_recoverable(error: &crate::dto::LiveUsageSourceError) -> bool {
+    use crate::provider_usage::live::SourceErrorDetail;
+    match error.detail {
+        Some(SourceErrorDetail::SignInRequired) => false,
+        Some(
+            SourceErrorDetail::RefreshPending
+            | SourceErrorDetail::CredentialExpired
+            | SourceErrorDetail::CliMissing,
+        ) => true,
+        _ => matches!(error.category.as_str(), "rateLimited" | "unavailable"),
+    }
 }
 
 fn columns_for_used_percent(used: f64) -> usize {
@@ -697,13 +736,16 @@ fn provider_is_displayable(
     summary: &crate::dto::LiveUsageSummary,
     provider: &crate::dto::LiveProviderUsage,
 ) -> bool {
-    let Some(_error) = summary
+    let Some(error) = summary
         .errors
         .iter()
         .find(|error| error.provider == provider.provider)
     else {
         return true;
     };
+    if failure_is_recoverable(error) {
+        return true;
+    }
     let Ok(generated_at) = time::OffsetDateTime::parse(
         &summary.generated_at,
         &time::format_description::well_known::Rfc3339,
@@ -1384,6 +1426,33 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_reading_drives_the_meter_except_for_a_period_that_reset() {
+        let mut summary = crate::dto::LiveUsageSummary {
+            providers: vec![provider(
+                "anthropic",
+                "Asked Claude directly",
+                vec![
+                    window("five-hour", "primaryShort", None, Some(90.0)),
+                    window("seven-day", "primaryLong", None, Some(35.0)),
+                ],
+            )],
+            errors: vec![LiveUsageSourceError {
+                source: "claude-usage-fetch".to_string(),
+                provider: "anthropic".to_string(),
+                display_name: "Claude".to_string(),
+                category: "rateLimited".to_string(),
+                detail: None,
+            }],
+            // Two hours after the reading: past the grace period.
+            generated_at: "2026-09-04T14:00:00Z".to_string(),
+            ..Default::default()
+        };
+        summary.providers[0].windows[0].resets_at = Some("2026-09-04T13:00:00Z".to_string());
+        summary.providers[0].windows[1].resets_at = Some("2026-09-08T00:00:00Z".to_string());
+        assert_eq!(usage_used_percent(&summary), Some(35.0));
+    }
+
+    #[test]
     fn hidden_supplemental_and_expired_failed_readings_do_not_drive_the_meter() {
         let mut summary = crate::dto::LiveUsageSummary {
             providers: vec![
@@ -1407,8 +1476,8 @@ mod tests {
                 source: "codex".to_string(),
                 provider: "openai".to_string(),
                 display_name: "Codex".to_string(),
-                category: "unavailable".to_string(),
-                detail: None,
+                category: "authentication".to_string(),
+                detail: Some(crate::provider_usage::live::SourceErrorDetail::SignInRequired),
             }],
             generated_at: "2026-09-04T12:20:01Z".to_string(),
             ..Default::default()

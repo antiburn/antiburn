@@ -3141,6 +3141,12 @@ mod tests {
                 "google",
                 "authentication",
             ),
+            (
+                SourceErrorDetail::CredentialExpired,
+                "credentialExpired",
+                "anthropic",
+                "authentication",
+            ),
         ] {
             let json = serde_json::json!({
                 "source": "fixture", "provider": provider, "displayName": "Fixture",

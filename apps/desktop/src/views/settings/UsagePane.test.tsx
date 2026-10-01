@@ -539,7 +539,7 @@ describe("UsagePane — the grace period", () => {
       )
       await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
       expect(
-        screen.getByText(/^Signed in · 0 limits tracked .* · rate limited$/),
+        screen.getByText(/^Signed in · 0 limits tracked .* · checking again soon$/),
       ).toBeInTheDocument()
       expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()
       unmount()
@@ -564,7 +564,7 @@ describe("UsagePane — the grace period", () => {
     )
     pane({ liveUsageEnabled: true })
     await waitFor(() => expect(screen.getByText("Claude")).toBeInTheDocument())
-    expect(screen.getByText("Signed in · rate limited · retrying")).toBeInTheDocument()
+    expect(screen.getByText("Signed in · checking again soon")).toBeInTheDocument()
   })
 
   it("keeps the reading at the grace boundary too", async () => {
