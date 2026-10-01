@@ -127,22 +127,24 @@ export const INITIAL_FTUE_LATCH: FtueLatch = {
 /**
  * Advance the latch from one set of inputs.
  *
- * Decides "show the steps block" once, the first time both the checks report
- * and {@link FtueInputs.hasScanHistory} are known: true when the checks
- * report is not settled, or the device has no persisted scan history. The
- * answer then holds for the rest of the session (see {@link resetFtueLatch}
- * for `ftue:reset`).
+ * Decides "show the steps block" once, the first time
+ * {@link FtueInputs.hasScanHistory} is known: true when the device has no
+ * persisted scan history, false otherwise. The answer then holds for the
+ * rest of the session (see {@link resetFtueLatch} for `ftue:reset`).
  *
- * `hasScanHistory` — not `ScanStatus.finishedAt` — is the signal, because
- * `finished_at` lives only in the in-memory `ScanController` and is cleared
- * every time a pass starts (`scan/mod.rs`): every launch runs a full pass, so
- * an Overview that reads status during that ~3 s window would otherwise
- * misread an ordinary launch as a first run. The persisted `scan_state` table
- * survives across launches — cleared only by the index wipe — so it tells
- * "never scanned before" from "scanning again" correctly. One accepted
- * consequence: a revision-bump re-ingest marks evidence unsettled again,
- * which brings the steps block back after such an upgrade even though
- * `hasScanHistory` stays true. That is fine for now.
+ * `hasScanHistory` — not `ScanStatus.finishedAt` and not the checks report's
+ * `evidenceSettled` — is the only signal, because both of those are
+ * ordinarily unsettled for a few seconds after every launch: `finished_at`
+ * lives only in the in-memory `ScanController` and is cleared every time a
+ * pass starts (`scan/mod.rs`), and `evidenceSettled` goes false while the
+ * evidence worker catches up with whatever a live agent session wrote since
+ * the last launch. An Overview that read either signal during that window
+ * would misread an ordinary launch as a first run and show the steps block
+ * every time. The persisted `scan_state` table survives across launches —
+ * cleared only by the index wipe — so it tells "never scanned before" from
+ * "scanning again" correctly. One accepted consequence: a revision-bump
+ * re-ingest does not bring the steps block back, even though it marks
+ * evidence unsettled again — intended, since the device has scanned before.
  *
  * Steps 1 and 2 each latch their own numbers the first time they finish, so
  * a later routine pass — every 5 minutes, and every launch, per the scan
@@ -152,11 +154,11 @@ export const INITIAL_FTUE_LATCH: FtueLatch = {
  */
 export function advanceFtueLatch(latch: FtueLatch, inputs: FtueInputs): FtueLatch {
   let next = latch
-  if (!next.decided && inputs.checksReport && inputs.hasScanHistory != null) {
+  if (!next.decided && inputs.hasScanHistory != null) {
     next = {
       ...next,
       decided: true,
-      showSteps: !inputs.checksReport.evidenceSettled || !inputs.hasScanHistory,
+      showSteps: !inputs.hasScanHistory,
     }
   }
   const phase = inputs.scanStatus?.phase

@@ -67,16 +67,17 @@ function inputs(overrides: Partial<FtueInputs> = {}): FtueInputs {
 }
 
 describe("advanceFtueLatch", () => {
-  it("stays undecided until both the checks report and the scan history signal are known", () => {
-    let latch = advanceFtueLatch(INITIAL_FTUE_LATCH, inputs({ hasScanHistory: true }))
-    expect(latch.decided).toBe(false)
-    latch = advanceFtueLatch(latch, inputs({ checksReport: report() }))
+  it("stays undecided until the scan history signal is known", () => {
+    let latch = advanceFtueLatch(INITIAL_FTUE_LATCH, inputs({ checksReport: report() }))
     expect(latch.decided).toBe(false)
     latch = advanceFtueLatch(latch, inputs({ checksReport: report(), hasScanHistory: true }))
     expect(latch.decided).toBe(true)
   })
 
-  it("decides to show the steps block when the checks report is not settled", () => {
+  it("does not show the steps block for an ordinary launch whose evidence is briefly unsettled", () => {
+    // A live agent session almost always leaves the checks report briefly
+    // unsettled right after launch. `evidenceSettled` must not factor into
+    // this decision, or every ordinary launch would show the steps block.
     const latch = advanceFtueLatch(
       INITIAL_FTUE_LATCH,
       inputs({
@@ -84,7 +85,8 @@ describe("advanceFtueLatch", () => {
         hasScanHistory: true,
       }),
     )
-    expect(latch.showSteps).toBe(true)
+    expect(latch.decided).toBe(true)
+    expect(latch.showSteps).toBe(false)
   })
 
   it("decides to show the steps block when the device has no persisted scan history", () => {
@@ -98,7 +100,7 @@ describe("advanceFtueLatch", () => {
     expect(latch.showSteps).toBe(true)
   })
 
-  it("decides to skip the steps block once everything is already settled", () => {
+  it("decides to skip the steps block once the device has scanned before", () => {
     const latch = advanceFtueLatch(
       INITIAL_FTUE_LATCH,
       inputs({
@@ -148,7 +150,7 @@ describe("advanceFtueLatch", () => {
       INITIAL_FTUE_LATCH,
       inputs({
         scanStatus: midLaunchPass,
-        checksReport: report({ evidenceSettled: true }),
+        checksReport: report({ evidenceSettled: false }),
         hasScanHistory: hasScanHistory(midLaunchPass),
       }),
     )

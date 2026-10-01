@@ -762,6 +762,7 @@ pub(crate) async fn try_run_pass(
             ::tracing::debug!(event = "scan_request_dropped", trigger = trigger.label());
             return None;
         }
+        let full_pass = matches!(scope, PassScope::Full);
         let started = controller.update(|status| {
             status.running = true;
             status.completed_agents = 0;
@@ -771,10 +772,17 @@ pub(crate) async fn try_run_pass(
             status.re_described = 0;
             status.error = None;
             status.cancelled = false;
-            status.phase = ScanPhase::Finding;
-            status.found_by_agent = Vec::new();
-            status.read = ReadProgress::default();
-            status.gate = None;
+            // FTUE's first-run steps read `phase`/`found_by_agent`/`read`/
+            // `gate` as one full pass's outcome (see `pass`'s own `full_pass`
+            // gate). A scoped pass (T3/T5) must not blank them either: a
+            // reader who looks up only after such a pass started would
+            // otherwise see a finished full pass's result go blank.
+            if full_pass {
+                status.phase = ScanPhase::Finding;
+                status.found_by_agent = Vec::new();
+                status.read = ReadProgress::default();
+                status.gate = None;
+            }
         });
         let _ = app.emit(EVENT_STARTED, started);
     }
@@ -926,6 +934,12 @@ async fn pass(
 ) -> anyhow::Result<PassSummary> {
     let store = app.state::<Store>();
     let now = unix_now();
+    // FTUE's first-run steps read `phase`, `found_by_agent`, `read`, and
+    // `gate` as one full pass's outcome. A scoped pass (T3/T5) must not move
+    // them: it can start and finish while an unrelated watched agent is
+    // still writing, and a reader who looks up in that window would
+    // otherwise see a finished full pass's result go blank.
+    let full_pass = matches!(scope, PassScope::Full);
     // Discovery always covers the widest list the UI can request, so changing
     // the display window is instant. The retention setting controls older rows.
     let window_days = i64::from(crate::store::MAX_ACTIVITY_DAYS);
@@ -979,7 +993,7 @@ async fn pass(
     // sub-agent transcript can only be told apart from a session by reading
     // it, so `read_progress` (below) shrinks this total as it finds one,
     // rather than guessing the exclusion up front.
-    {
+    if full_pass {
         let controller = app.state::<ScanController>();
         let status = controller.update(|status| {
             status.phase = ScanPhase::Reading;
@@ -999,6 +1013,9 @@ async fn pass(
         &previous_records,
         include_non_repo_folders,
         &mut |completed, total, force| {
+            if !full_pass {
+                return;
+            }
             // W4-style throttle: at most one event every ~150ms while the
             // stage runs, but the caller always forces the last one so the
             // final frame is never stale.
@@ -1021,7 +1038,7 @@ async fn pass(
         list_changed,
         gate,
     } = &described;
-    {
+    if full_pass {
         let kept = records.len();
         let gate_counts = read_gate_counts(gate, kept);
         let controller = app.state::<ScanController>();

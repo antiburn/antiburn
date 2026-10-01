@@ -235,7 +235,11 @@ function FindStepRow({ snapshot }: { snapshot: FtueSnapshot }) {
 
 function ReadStepRow({ snapshot }: { snapshot: FtueSnapshot }) {
   const { done, completed, total, gate, includeNonRepoFolders } = snapshot.read
-  const value = total > 0 ? completed / total : 0
+  // Discovery has not told this step how many sessions there are to read
+  // yet, so there is nothing to count up from — "0 of 0" would read as
+  // already-finished progress rather than a step that has not begun.
+  const started = total > 0
+  const value = started ? completed / total : 0
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline justify-between">
@@ -244,7 +248,7 @@ function ReadStepRow({ snapshot }: { snapshot: FtueSnapshot }) {
         </span>
         {!done && (
           <span className="font-mono type-metadata tabular-nums text-label-tertiary">
-            {fmt(completed)} of {fmt(total)}
+            {started ? `${fmt(completed)} of ${fmt(total)}` : "Waiting"}
           </span>
         )}
       </div>
@@ -255,7 +259,10 @@ function ReadStepRow({ snapshot }: { snapshot: FtueSnapshot }) {
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(value * 100)}
-          className="h-1.5 overflow-hidden rounded-full bg-surface-tertiary"
+          className={cn(
+            "h-1.5 overflow-hidden rounded-full bg-surface-tertiary",
+            !started && "opacity-40",
+          )}
         >
           <div
             className="h-full rounded-full bg-brand-tint transition-[width] duration-medium ease-out"
@@ -305,32 +312,43 @@ function ReadStepRow({ snapshot }: { snapshot: FtueSnapshot }) {
 
 function CheckStepRow({ snapshot }: { snapshot: FtueSnapshot }) {
   const { done, windowSessions, pendingEvidence } = snapshot.check
+  // The checks report has its own denominator and settles on its own clock,
+  // independent of the scan. Reading it as "done" before step 2 finishes
+  // would show a finished check step next to a read step still in progress,
+  // so this step waits for step 2 regardless of what the report says.
+  const started = snapshot.read.done
+  const isDone = started && done
   const completed = Math.max(0, windowSessions - pendingEvidence)
   const value = windowSessions > 0 ? completed / windowSessions : 0
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline justify-between">
-        <span className={cn("type-callout", done ? "text-label-secondary" : "text-label")}>
+        <span className={cn("type-callout", isDone ? "text-label-secondary" : "text-label")}>
           Check sessions
         </span>
         <span className="font-mono type-metadata tabular-nums text-label-tertiary">
-          {done
+          {isDone
             ? `Checked ${fmt(windowSessions)}`
-            : `${fmt(completed)} of ${fmt(windowSessions)}`}
+            : started
+              ? `${fmt(completed)} of ${fmt(windowSessions)}`
+              : "Waiting"}
         </span>
       </div>
-      {!done && (
+      {!isDone && (
         <div
           role="progressbar"
           aria-label="Check sessions"
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={Math.round(value * 100)}
-          className="h-1.5 overflow-hidden rounded-full bg-surface-tertiary"
+          aria-valuenow={Math.round((started ? value : 0) * 100)}
+          className={cn(
+            "h-1.5 overflow-hidden rounded-full bg-surface-tertiary",
+            !started && "opacity-40",
+          )}
         >
           <div
             className="h-full rounded-full bg-brand-tint transition-[width] duration-medium ease-out"
-            style={{ width: `${value * 100}%` }}
+            style={{ width: `${(started ? value : 0) * 100}%` }}
           />
         </div>
       )}
