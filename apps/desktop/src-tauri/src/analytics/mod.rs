@@ -158,6 +158,14 @@ pub fn record_remote_host_changed(
 }
 
 #[cfg(not(feature = "analytics"))]
+pub fn record_claude_profile_changed(
+    _app: &tauri::AppHandle,
+    _change: event::ClaudeProfileChange,
+    _added_profiles: usize,
+) {
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn record_remote_sync_completed(
     _app: &tauri::AppHandle,
     _outcome: event::RemoteSyncOutcome,
@@ -503,6 +511,23 @@ mod enabled {
             Facts {
                 label: Some(label),
                 bucket: Some(event::bucket(configured_hosts as u64)),
+                ..Facts::default()
+            },
+        );
+    }
+
+    pub fn record_claude_profile_changed(
+        app: &tauri::AppHandle,
+        change: event::ClaudeProfileChange,
+        added_profiles: usize,
+    ) {
+        let label = change.label();
+        record(
+            app,
+            EventName::ClaudeProfileChanged,
+            Facts {
+                label: Some(label),
+                bucket: Some(event::bucket(added_profiles as u64)),
                 ..Facts::default()
             },
         );
@@ -2347,6 +2372,7 @@ mod enabled {
                 account: None,
                 account_uuid: None,
                 account_email: None,
+                account_label: None,
                 plan: None,
                 plan_tier: None,
                 refusal_kind: None,

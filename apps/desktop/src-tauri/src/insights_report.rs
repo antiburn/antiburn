@@ -248,6 +248,7 @@ fn reduce_with_state_on_snapshot(
             let incarnation: u64 = row.get(6)?;
             let source_generation: i64 = row.get(7)?;
             let source_fingerprint: Option<String> = row.get(8)?;
+            let source_label: String = row.get(9)?;
             if antiburn_local::analysis::ignored_instructions::source_supported(
                 evidence.capabilities.source_format,
             ) {
@@ -296,6 +297,20 @@ fn reduce_with_state_on_snapshot(
                 ignored_not_applicable += 1;
             }
             let agent_kind = crate::agents::kind_from_slug(&agent);
+            // Resource checks compare `~/.claude` inventory with session
+            // evidence. A Claude profile session ran with another inventory,
+            // so its presence makes the Claude assessment incomplete.
+            let profile_session = agent_kind.is_some_and(|agent| {
+                crate::remediation::claude_profile_source(
+                    agent,
+                    &request.environment_key,
+                    &source_label,
+                )
+            });
+            if profile_session {
+                resource_builder.mark_scan_failed(AgentKind::Claude);
+            }
+            let agent_kind = agent_kind.filter(|_| !profile_session);
             let project_root = cwd
                 .as_deref()
                 .and_then(|cwd| trusted_repository_for_cwd(Path::new(cwd), &repository_roots));
@@ -406,6 +421,17 @@ fn reduce_with_state_on_snapshot(
                 .transpose()
                 .context("stored initial context is invalid")?;
             let cwd: Option<String> = row.get(4)?;
+            let source_label: String = row.get(5)?;
+            // The same rule as the cohort pass: a profile session's uses
+            // belong to another inventory.
+            if crate::remediation::claude_profile_source(
+                agent_kind,
+                &request.environment_key,
+                &source_label,
+            ) {
+                resource_builder.mark_scan_failed(agent_kind);
+                continue;
+            }
             let project_root = cwd
                 .as_deref()
                 .and_then(|cwd| trusted_repository_for_cwd(Path::new(cwd), &repository_roots));

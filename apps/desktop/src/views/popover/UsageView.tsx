@@ -22,6 +22,7 @@ import type {
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import {
   liveAuthNote,
+  liveErrorMatches,
   liveErrorNote,
   liveGraceNote,
   livePlanAccountLabel,
@@ -484,9 +485,10 @@ function ProviderCard({
             )
             const accountLabel =
               accountGroupCount > 1
-                ? reading.accountKey
-                  ? `Account ${accountNumbers.get(key)}`
-                  : "Unassigned account"
+                ? reading.accountLabel?.trim() ||
+                  (reading.accountKey
+                    ? `Account ${accountNumbers.get(key)}`
+                    : "Unassigned account")
                 : undefined
             const primaryWindow = liveWindows(reading)[0]
             const status = liveProviderStatus({ errors, generatedAt }, reading)
@@ -527,7 +529,7 @@ function ProviderCard({
               (error) =>
                 !accounts.some(
                   ({ reading }) =>
-                    reading.provider === error.provider &&
+                    liveErrorMatches(error, reading) &&
                     liveProviderStatus({ errors, generatedAt }, reading).kind === "grace",
                 ),
             )
@@ -537,6 +539,7 @@ function ProviderCard({
                 role="status"
                 className="rounded-control bg-system-orange/10 px-2 py-1.5 type-caption text-system-orange"
               >
+                {accountGroupCount > 1 || error.accountLabel ? `${error.displayName}: ` : ""}
                 {liveErrorNote(error.category, error.provider, error.detail)}
               </p>
             ))}

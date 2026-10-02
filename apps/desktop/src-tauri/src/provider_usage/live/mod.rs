@@ -166,6 +166,25 @@ pub struct SourceOutcome {
     /// value in it becomes a line on the reader's screen.
     pub error: Option<ProviderUsageError>,
     pub detail: Option<SourceErrorDetail>,
+    /// The reader's name for the login that `error` belongs to, such as a
+    /// renamed Claude profile. `None` when the reader did not name it.
+    pub account_label: Option<String>,
+    /// Failures of further named logins that this source reads, such as
+    /// added Claude profiles.
+    pub account_failures: Vec<AccountFailure>,
+    /// When the provider accepts the next request for `error`'s login, when
+    /// it said so.
+    pub retry_at: Option<time::OffsetDateTime>,
+}
+
+/// A failure of one named login inside a source that reads several.
+#[derive(Debug)]
+pub struct AccountFailure {
+    /// The reader's name for the login.
+    pub account_label: String,
+    pub error: ProviderUsageError,
+    pub detail: Option<SourceErrorDetail>,
+    pub retry_at: Option<time::OffsetDateTime>,
 }
 
 impl SourceOutcome {
@@ -173,8 +192,7 @@ impl SourceOutcome {
     pub fn found(snapshots: Vec<ProviderUsageSnapshot>) -> SourceOutcome {
         SourceOutcome {
             snapshots,
-            error: None,
-            detail: None,
+            ..SourceOutcome::default()
         }
     }
 
@@ -196,9 +214,8 @@ impl SourceOutcome {
     /// A pass that failed in a way the reader should be told about.
     pub fn failed(error: ProviderUsageError) -> SourceOutcome {
         SourceOutcome {
-            snapshots: Vec::new(),
             error: Some(error),
-            detail: None,
+            ..SourceOutcome::default()
         }
     }
 }
@@ -330,7 +347,7 @@ pub fn summarize_collected(
             && !collected
                 .errors
                 .iter()
-                .any(|failure| failure.provider == meter.provider)
+                .any(|failure| failure.provider == meter.provider && !failure.additional_login)
         {
             meter.detection = Detection::SignedIn;
         }
@@ -381,6 +398,18 @@ pub fn summarize_collected(
                 }
             }
         });
+        if let (Some(store), Some(account_key), Some(label)) = (
+            store,
+            snapshot.account.as_deref(),
+            snapshot.account_label.as_deref(),
+        ) {
+            crate::claude_profiles::remember_account_label(
+                store,
+                snapshot.provider,
+                account_key,
+                label,
+            );
+        }
         ::tracing::debug!(
             event = "live_provider_account_resolution",
             provider = snapshot.provider,
@@ -473,6 +502,7 @@ pub fn summarize_collected(
             }),
             account_uuid: snapshot.account_uuid,
             account_email: snapshot.account_email,
+            account_label: snapshot.account_label,
         })
         .collect();
     providers.sort_by(|a, b| a.provider.cmp(&b.provider));
@@ -485,9 +515,13 @@ pub fn summarize_collected(
             .map(|failure| LiveUsageSourceError {
                 source: failure.source.to_string(),
                 provider: failure.provider.to_string(),
-                display_name: super::providers::display_name(failure.provider).to_string(),
+                display_name: failure.account_label.clone().unwrap_or_else(|| {
+                    super::providers::display_name(failure.provider).to_string()
+                }),
                 category: failure.error.category().to_string(),
                 detail: failure.detail,
+                account_label: failure.account_label,
+                retry_at: failure.retry_at.map(iso),
             })
             .collect(),
         meters,

@@ -138,6 +138,8 @@ export interface QuotaAccountPayload {
   provider: string
   displayName: string
   accountKey: string
+  /** The profile label the account was last read under, when it has one. */
+  accountLabel?: string | null
   lanes: QuotaLanePayload[]
 }
 
@@ -464,6 +466,8 @@ export interface LiveProviderUsagePayload {
   accountUuid: string | null
   /** The provider's account email for local display, when known. */
   accountEmail: string | null
+  /** The reader's own name for the login, such as a Claude profile label. */
+  accountLabel?: string | null
 }
 
 /** A source that failed, in terms a reader can act on. */
@@ -475,6 +479,10 @@ export interface LiveUsageSourceErrorPayload {
   category: string
   /** Which failure inside the category, when the source can say. Mirrors Rust `SourceErrorDetail`. */
   detail?: LiveUsageSourceErrorDetail
+  /** The reader's name for the login that failed. Matches a reading's `accountLabel`. */
+  accountLabel?: string | null
+  /** ISO-8601 time when the provider accepts the next request, from `Retry-After`. */
+  retryAt?: string
 }
 
 export type LiveUsageSourceErrorDetail =

@@ -39,6 +39,8 @@ export interface UnavailableLiveProvider {
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
   detail?: LiveUsageSourceErrorPayload["detail"]
+  /** When the provider accepts the next request, when it said so. */
+  retryAt?: string
 }
 import { modelMatchesScope } from "./models"
 import { relativeTime } from "./relativeTime"
@@ -400,6 +402,22 @@ export function maxLiveUsedPercent(provider: LiveProviderUsagePayload): number |
   }, null)
 }
 
+/**
+ * The name of one account's meter group. The reader's own label wins. Without
+ * one, a provider with several accounts numbers them.
+ */
+export function liveAccountName(
+  reading: LiveProviderUsagePayload,
+  accountNumber: number | undefined,
+  accountCount: number,
+): string {
+  const label = reading.accountLabel?.trim()
+  if (label) return label
+  return accountCount > 1
+    ? `${reading.displayName} account ${accountNumber}`
+    : reading.displayName
+}
+
 export interface LiveAccountEntry {
   reading: LiveProviderUsagePayload
   key: string
@@ -440,6 +458,25 @@ export type LiveProviderStatus =
   | { kind: "grace"; category: string; ageMs: number; detail?: LiveUsageSourceErrorDetail }
   | { kind: "failed"; category: string; detail?: LiveUsageSourceErrorDetail }
 
+function accountLabelKey(label: string | null | undefined): string {
+  return label?.trim() ?? ""
+}
+
+/**
+ * Whether an error belongs to a reading: the same provider and the same
+ * account label. A failure of one named login, such as a Claude profile,
+ * never marks another login of the same provider as failed.
+ */
+export function liveErrorMatches(
+  error: LiveUsageSourceErrorPayload,
+  reading: LiveProviderUsagePayload,
+): boolean {
+  return (
+    error.provider === reading.provider &&
+    accountLabelKey(error.accountLabel) === accountLabelKey(reading.accountLabel)
+  )
+}
+
 /**
  * A provider's live status: live, within grace after a failed check, or
  * failed past the grace.
@@ -453,7 +490,7 @@ export function liveProviderStatus(
   summary: { errors: readonly LiveUsageSourceErrorPayload[]; generatedAt: string },
   provider: LiveProviderUsagePayload,
 ): LiveProviderStatus {
-  const error = summary.errors.find((entry) => entry.provider === provider.provider)
+  const error = summary.errors.find((entry) => liveErrorMatches(entry, provider))
   if (!error) return { kind: "live" }
   const detail = error.detail ? { detail: error.detail } : {}
   const ageMs = Date.parse(summary.generatedAt) - Date.parse(provider.observedAt)
@@ -551,24 +588,40 @@ export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
 export function liveUnavailableProviders(
   summary: LiveUsageSummaryPayload,
 ): UnavailableLiveProvider[] {
+  const identity = (provider: string, label: string | null | undefined) =>
+    `${provider}\u0000${accountLabelKey(label)}`
   const showing = new Set(
     liveDisplayableProviders(summary)
       .filter((provider) => liveWindows(provider).length > 0)
-      .map((provider) => provider.provider),
+      .map((provider) => identity(provider.provider, provider.accountLabel)),
   )
   const seen = new Set<string>()
   const unavailable: UnavailableLiveProvider[] = []
   for (const error of summary.errors) {
-    if (!error.provider || showing.has(error.provider) || seen.has(error.provider)) continue
-    seen.add(error.provider)
+    const key = identity(error.provider, error.accountLabel)
+    if (!error.provider || showing.has(key) || seen.has(key)) continue
+    seen.add(key)
     unavailable.push({
       provider: error.provider,
       displayName: error.displayName || error.provider,
       category: error.category,
       ...(error.detail ? { detail: error.detail } : {}),
+      ...(error.retryAt ? { retryAt: error.retryAt } : {}),
     })
   }
   return unavailable
+}
+
+/**
+ * "Try again after 3:39 PM." while a provider's `Retry-After` is in force at
+ * `now`, or null. `now` is the summary's own time, so a render never reads
+ * the clock.
+ */
+export function liveRetryAfterNote(retryAt: string | undefined, now: number): string | null {
+  const at = retryAt ? Date.parse(retryAt) : Number.NaN
+  if (Number.isNaN(at) || at <= now) return null
+  const time = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+  return `Try again after ${time}.`
 }
 
 /** A failure category as two or three words, for a row with no room. */

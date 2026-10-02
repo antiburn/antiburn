@@ -387,17 +387,21 @@ fn collected_live_usage(app: &tauri::AppHandle, store: &Store) -> LiveUsageSumma
 pub async fn refresh_live_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
+    retry: Option<bool>,
 ) -> CommandResult<LiveUsageSummary> {
     // The sources deliberately expose a synchronous interface and include
     // blocking HTTP, Keychain, and subprocess work. The blocking pool is the
     // boundary for all of it.
     let utc_offset_minutes = utc_offset_minutes.unwrap_or(0);
+    // A Retry action asks every source again now. See
+    // `cooldown::RETRY_FAILURE_COOLDOWN` for the floor that bounds it.
+    let max_age = if retry.unwrap_or(false) {
+        std::time::Duration::ZERO
+    } else {
+        POPOVER_LIVE_USAGE_MAX_AGE
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        crate::usage_alerts::refresh_publish_and_evaluate(
-            &app,
-            POPOVER_LIVE_USAGE_MAX_AGE,
-            Some(utc_offset_minutes),
-        )
+        crate::usage_alerts::refresh_publish_and_evaluate(&app, max_age, Some(utc_offset_minutes))
     })
     .await
     .map_err(fail)

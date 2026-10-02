@@ -1835,3 +1835,49 @@ fn unsupported_remediation_envelope_versions_are_rejected_on_write_and_read() {
         .unwrap();
     assert!(store.remediation(&watch.remediation_id).is_err());
 }
+
+#[test]
+fn profile_sessions_are_known_from_their_transcript_path() {
+    let store = store();
+    let home = tempfile::TempDir::new().unwrap();
+    let mut default_session = session("default-session", 10);
+    default_session.source_label = home
+        .path()
+        .join(".claude/projects/demo/default-session.jsonl")
+        .to_string_lossy()
+        .into_owned();
+    let mut profile_session = session("profile-session", 10);
+    profile_session.source_label = home
+        .path()
+        .join(".claude-work/projects/demo/profile-session.jsonl")
+        .to_string_lossy()
+        .into_owned();
+    store
+        .upsert_sessions(
+            &[default_session, profile_session],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let connection = store.lock();
+
+    assert!(
+        !crate::remediation::profile_session_in(
+            &connection,
+            home.path(),
+            "native",
+            "claude-code",
+            "default-session"
+        )
+        .unwrap()
+    );
+    assert!(
+        crate::remediation::profile_session_in(
+            &connection,
+            home.path(),
+            "native",
+            "claude-code",
+            "profile-session"
+        )
+        .unwrap()
+    );
+}

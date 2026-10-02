@@ -295,7 +295,7 @@ fn claude_project_dir<'a>(file: &'a Path, agent_type: &AgentKind) -> Option<&'a 
     let encoded = project_dir.file_name()?.to_str()?;
 
     if projects_dir.file_name().and_then(|name| name.to_str()) != Some("projects")
-        || claude_dir.file_name().and_then(|name| name.to_str()) != Some(".claude")
+        || !super::agents::claude::is_config_dir(claude_dir)
         || !encoded.starts_with('-')
         || encoded.len() <= 1
         || encoded.contains('/')
@@ -309,8 +309,10 @@ fn claude_project_dir<'a>(file: &'a Path, agent_type: &AgentKind) -> Option<&'a 
 
 async fn infer_claude_project_cwd(project_dir: &Path) -> Option<String> {
     let encoded = project_dir.file_name()?.to_str()?;
-    // `project_dir` is `<home>/.claude/projects/<encoded>`; walk up three
-    // segments to bound the decoder's filesystem probe to the user's home.
+    // `project_dir` is `<home>/<config>/projects/<encoded>`; walk up three
+    // segments to bound the decoder's filesystem probe to the directory that
+    // holds the configuration directory, which is the user's home for
+    // `~/.claude` and `~/.claude-<profile>`.
     let home = project_dir.parent()?.parent()?.parent()?;
     let decoded = decode_hyphenated_absolute_path(encoded, home).await?;
     Some(decoded.to_string_lossy().to_string())
@@ -1985,6 +1987,36 @@ also not json {{{{
         let metadata = parse_session_metadata(&file).await;
 
         assert_eq!(metadata.agent_type, Some(AgentKind::OpenCode));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(claude_profiles)]
+    async fn test_parse_metadata_infers_cwd_under_a_registered_profile_dir() {
+        let dir = TempDir::new().unwrap();
+        let repo_root = dir.path().join("work").join("demo");
+        tokio::fs::create_dir_all(&repo_root).await.unwrap();
+        let profile = dir.path().join(".claude-work");
+        let project_dir = profile
+            .join("projects")
+            .join(encode_claude_project_path(&repo_root));
+        tokio::fs::create_dir_all(&project_dir).await.unwrap();
+        let file = write_temp_file(
+            &project_dir,
+            "042afd87-a800-4248-8234-5e9222dd6f22.jsonl",
+            "{}",
+        )
+        .await;
+
+        let unregistered = parse_session_metadata(&file).await;
+        crate::discovery::agents::claude::set_profile_config_dirs(vec![profile]);
+        let registered = parse_session_metadata(&file).await;
+        crate::discovery::agents::claude::set_profile_config_dirs(Vec::new());
+
+        assert_eq!(unregistered.cwd, None);
+        assert_eq!(
+            registered.cwd,
+            Some(repo_root.to_string_lossy().to_string())
+        );
     }
 
     #[tokio::test]

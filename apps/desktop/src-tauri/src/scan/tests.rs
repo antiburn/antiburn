@@ -1734,6 +1734,7 @@ fn refreshes_repositories_is_false_only_for_the_tick_and_the_watcher_triggers() 
         ScanTrigger::SettingsTransition,
         ScanTrigger::RepositoryToggle,
         ScanTrigger::ScanRootAdded,
+        ScanTrigger::ClaudeProfilesChanged,
         ScanTrigger::FolderAccessGranted,
         ScanTrigger::IndexCleared,
         ScanTrigger::ManualRescan,

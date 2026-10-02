@@ -893,6 +893,7 @@ fn fetch_cloud(
         summary.expect("a complete summary exists").windows
     };
     Ok(ProviderUsageSnapshot {
+        account_label: None,
         refusal_kind: None,
         provider: crate::provider_usage::providers::GOOGLE,
         account: google_subject(transport, &credentials.access_token),
@@ -1425,6 +1426,7 @@ mod tests {
         )
         .unwrap();
         ProviderUsageSnapshot {
+            account_label: None,
             refusal_kind: None,
             provider: crate::provider_usage::providers::GOOGLE,
             account: status.account,

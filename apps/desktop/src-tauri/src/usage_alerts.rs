@@ -754,6 +754,7 @@ mod tests {
                 plan: None,
                 account_uuid: None,
                 account_email: None,
+                account_label: None,
             }],
             errors: vec![LiveUsageSourceError {
                 source: "fixture".into(),
@@ -761,6 +762,8 @@ mod tests {
                 display_name: "Codex".into(),
                 category: "unavailable".into(),
                 detail: None,
+                account_label: None,
+                retry_at: None,
             }],
             generated_at: "2026-08-20T00:00:00Z".into(),
         };

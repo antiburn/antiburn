@@ -36,7 +36,7 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
 
 pub(super) const COHORT_SQL: &str = "
 SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_context_json, s.cwd,
-       s.incarnation, s.source_generation, s.source_fingerprint
+       s.incarnation, s.source_generation, s.source_fingerprint, s.source_label
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -57,7 +57,7 @@ SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_cont
    ORDER BY s.started_at_epoch DESC, s.session_id DESC";
 
 pub(super) const RESOURCE_USE_SQL: &str = "
-SELECT e.evidence_json, s.agent, s.session_id, a.initial_context_json, s.cwd
+SELECT e.evidence_json, s.agent, s.session_id, a.initial_context_json, s.cwd, s.source_label
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key

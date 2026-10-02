@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type {
@@ -8,6 +8,9 @@ import type {
   LiveUsageWindowPayload,
 } from "../../../lib/ipc"
 import { OverviewProviderLimits, meterSegmentsForWidth } from "./OverviewProviderLimits"
+
+const invoke = vi.hoisted(() => vi.fn())
+vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 const FORECAST = {
   unavailableReason: "sparseHistory",
@@ -197,6 +200,119 @@ describe("OverviewProviderLimits", () => {
     expect(screen.getByRole("group", { name: "Codex" })).toHaveTextContent(
       "Codex sign-in expired. Sign in again, then retry.",
     )
+  })
+
+  it("names profile accounts, rules between every group, and retries a failed one", async () => {
+    invoke.mockResolvedValue(null)
+    const { container } = render(
+      <OverviewProviderLimits
+        live={liveSummary({
+          providers: [
+            liveProvider({ accountKey: "personal", accountLabel: "Claude" }),
+            liveProvider({ accountKey: "work", accountLabel: "Claude Work" }),
+          ],
+          errors: [
+            sourceError({
+              source: "claude-usage-fetch",
+              provider: "anthropic",
+              displayName: "Claude Side",
+              category: "rateLimited",
+              accountLabel: "Claude Side",
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByRole("group", { name: "Claude Work, Max plan" })).toBeInTheDocument()
+    expect(screen.getByRole("group", { name: "Claude Side" })).toBeInTheDocument()
+    expect(container.querySelectorAll(".bg-separator")).toHaveLength(2)
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry Claude Side limits" }))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("refresh_live_usage", expect.anything()),
+    )
+  })
+
+  it("says what a retry found", async () => {
+    const failed = sourceError({
+      provider: "anthropic",
+      displayName: "Claude Side",
+      category: "rateLimited",
+      accountLabel: "Claude Side",
+    })
+    invoke.mockImplementation(async (command: string) =>
+      command === "refresh_live_usage" ? liveSummary({ errors: [failed] }) : null,
+    )
+    render(<OverviewProviderLimits live={liveSummary({ errors: [failed] })} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry Claude Side limits" }))
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/Tried again at .*: /)
+    expect(invoke).toHaveBeenCalledWith("refresh_live_usage", {
+      utcOffsetMinutes: expect.any(Number),
+      retry: true,
+    })
+  })
+
+  it("says when a retry could not run", async () => {
+    const failed = sourceError({
+      provider: "anthropic",
+      displayName: "Claude Side",
+      category: "rateLimited",
+      accountLabel: "Claude Side",
+    })
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "refresh_live_usage") throw "shell unavailable"
+      return null
+    })
+    render(<OverviewProviderLimits live={liveSummary({ errors: [failed] })} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry Claude Side limits" }))
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Could not check. Try again.")
+  })
+
+  it("names the time a rate limit lifts and holds Retry until then", () => {
+    render(
+      <OverviewProviderLimits
+        live={liveSummary({
+          errors: [
+            sourceError({
+              provider: "anthropic",
+              displayName: "Claude Side",
+              category: "rateLimited",
+              accountLabel: "Claude Side",
+              retryAt: "2027-01-15T12:10:00Z",
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByRole("status")).toHaveTextContent(/^Try again after .+\.$/)
+    expect(screen.getByRole("button", { name: "Retry Claude Side limits" })).toBeDisabled()
+  })
+
+  it("enables Retry once the provider's wait has passed", () => {
+    render(
+      <OverviewProviderLimits
+        live={liveSummary({
+          errors: [
+            sourceError({
+              provider: "anthropic",
+              displayName: "Claude Side",
+              category: "rateLimited",
+              accountLabel: "Claude Side",
+              retryAt: "2027-01-15T11:50:00Z",
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Retry Claude Side limits" })).toBeEnabled()
   })
 
   it("shows one quiet line when no provider reports anything", () => {

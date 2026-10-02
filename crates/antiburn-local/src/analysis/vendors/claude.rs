@@ -642,6 +642,10 @@ impl SessionReader for ClaudeSessionReader {
                     anyhow::bail!("Copilot bundle is not a Claude source")
                 }
             };
+            let mut state = state;
+            state
+                .context
+                .set_config_dir(claude_config_dir(&input.source));
             sink.finish(state.into_summary());
             Ok(VisitOutcome::Unvalidated)
         })()
@@ -732,6 +736,10 @@ impl ClaudeSessionReader {
             if matches!(outcome, VisitOutcome::SourceChanged(_)) {
                 return Ok(outcome);
             }
+            let mut state = state;
+            state
+                .context
+                .set_config_dir(claude_config_dir(&input.source));
             sink.finish(state.into_summary());
             Ok(outcome)
         })()
@@ -810,6 +818,10 @@ impl ClaudeSessionReader {
             let adapter =
                 postcard::to_allocvec(&state).context("encoding Claude adapter snapshot")?;
             let new_resume = pinned.resume_point()?;
+            let mut state = state;
+            state
+                .context
+                .set_config_dir(claude_config_dir(&input.source));
             sink.finish(state.into_summary());
             Ok(ResumedVisit {
                 outcome,
@@ -1036,6 +1048,18 @@ impl ClaudeSessionReader {
 
         Ok(state)
     }
+}
+
+/// The Claude Code configuration directory that holds a file transcript,
+/// when it is not `~/.claude`. `None` means the default `~/.claude`. Content
+/// sources carry no path, so they read as the default.
+fn claude_config_dir(source: &RawSource) -> Option<String> {
+    let RawSource::File(path) = source else {
+        return None;
+    };
+    let home = crate::paths::home_dir()?;
+    crate::discovery::agents::claude::non_default_config_dir(path, &home)
+        .map(|dir| dir.to_string_lossy().into_owned())
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]

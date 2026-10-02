@@ -47,6 +47,7 @@ pub mod anthropic_fetch;
 pub mod antigravity_fetch;
 mod antigravity_local;
 mod claude_config_cache;
+mod claude_profiles;
 mod claude_touch;
 mod cli_locator;
 mod codex_app_server;
@@ -85,7 +86,7 @@ pub fn log_cli_location() {
 /// [`preferred`]'s job, not registration order's.
 pub fn registered() -> Vec<Box<dyn LiveUsageSource>> {
     vec![
-        Box::new(anthropic_fetch::ClaudeDirectFetch::new()),
+        Box::new(claude_profiles::ClaudeProfilesFetch::new()),
         Box::new(antigravity_fetch::AntigravityDirectFetch::new()),
         Box::new(codex_fetch::CodexDirectFetch::new()),
     ]
@@ -139,6 +140,27 @@ pub fn collect(
                 provider: source.provider(),
                 error,
                 detail: outcome.detail,
+                account_label: outcome.account_label,
+                retry_at: outcome.retry_at,
+                additional_login: false,
+            });
+        }
+        for failure in outcome.account_failures {
+            ::tracing::warn!(
+                event = "live_account_failed",
+                source = source.id(),
+                provider = source.provider(),
+                category = failure.error.category(),
+                detail = ?failure.detail
+            );
+            collected.errors.push(SourceFailure {
+                source: source.id(),
+                provider: source.provider(),
+                error: failure.error,
+                detail: failure.detail,
+                account_label: Some(failure.account_label),
+                retry_at: failure.retry_at,
+                additional_login: true,
             });
         }
         for snapshot in outcome.snapshots {
@@ -170,6 +192,15 @@ pub struct SourceFailure {
     pub provider: &'static str,
     pub error: super::model::ProviderUsageError,
     pub detail: Option<super::model::SourceErrorDetail>,
+    /// The reader's name for the login that failed, when the source reads
+    /// several named logins for one provider.
+    pub account_label: Option<String>,
+    /// When the provider accepts the next request, when it said so.
+    pub retry_at: Option<time::OffsetDateTime>,
+    /// The failure belongs to a further login of the source, such as an
+    /// added Claude profile, and says nothing about the provider's own
+    /// sign-in.
+    pub additional_login: bool,
 }
 
 impl Collected {

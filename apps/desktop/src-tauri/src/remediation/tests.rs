@@ -508,6 +508,7 @@ fn resource_targets_do_not_expose_supporting_sessions_as_samples() {
     )
     .unwrap();
     let cached = CachedTarget {
+        profile_session: false,
         findings: Vec::new(),
         resource: Some(CachedResourceTarget {
             target,
@@ -552,6 +553,7 @@ fn a_new_prompt_cycle_does_not_reuse_a_recurred_prompt_group() {
         )
         .unwrap();
     let target = CachedTarget {
+        profile_session: false,
         findings: Vec::new(),
         resource: Some(CachedResourceTarget {
             target: insights_report::UnusedResourceTarget {

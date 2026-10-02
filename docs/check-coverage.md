@@ -297,20 +297,20 @@ limits; they do not establish complete history outside the selected window.
 
 | Agent       | Check | Finding | Prompt | Auto Fix | Verification | Estimate | Reachability limit                                                                                                                           |
 | ----------- | ----- | ------- | ------ | -------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code | I     | Y       | Y      | N        | N            | N        | `ClaudeJsonl` only; Clean covers sampled post-observation comparisons, not all activity.                                                    |
+| Claude Code | I     | Y       | Y      | N        | N            | N        | `ClaudeJsonl` only; Clean covers sampled post-observation comparisons, not all activity. Sessions from a non-default Claude configuration directory are not assessed. |
 | Codex       | I     | Y       | Y      | N        | N            | N        | `CodexRolloutJsonl` only; Clean covers sampled post-observation comparisons.                                                                 |
 | OpenCode    | I     | Y       | Y      | N        | N            | N        | `OpenCodeSqliteV2` only; JSONL export is not enabled; Clean covers sampled post-observation comparisons.                                    |
 | Pi          | I     | Y       | Y      | N        | N            | N        | `PiV3Jsonl` only; Clean covers sampled post-observation comparisons.                                                                         |
 | Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl`, `CursorCliStoreDb`, `CursorChatStoreDb`, and `CursorIdeComposer`; normalized store/composer routes may omit tool inputs. |
 | Antigravity | I     | Y       | Y      | N        | N            | N        | `AntigravityBrainJsonl` and `AntigravitySqlite`; SQLite needs assessable companion transcript content.                                         |
-| Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
-| Claude Code | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model.                                                               |
-| Claude Code | S     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one exact named agent definition.                                                                                             |
-| Claude Code | M     | Y       | Y      | C        | N            | Y        | Current inventory can find targets; Auto Fix needs indexed provenance and one exact MCP binding. Historical subsets cannot verify absence.   |
-| Claude Code | B     | Y       | Y      | Y        | N            | Y        | Only the allowlisted optional tools are reachable. Historical subsets cannot verify absence.                                                 |
-| Claude Code | K     | Y       | Y      | C        | N            | Y        | Current inventory can find targets; Auto Fix needs indexed provenance and one exact skill binding. Historical subsets cannot verify absence. |
-| Claude Code | O     | Y       | Y      | Y        | Y            | Y        | Auto Fix and verification need publication-time physical attribution.                                                                        |
-| Claude Code | F     | Y       | Y      | Y        | Y            | Y        | The source must record the fast tier and one current winning control must still be fast.                                                     |
+| Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control. Sessions from a non-default Claude configuration directory are prompt only. |
+| Claude Code | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model. Sessions from a non-default Claude configuration directory are prompt only, without verification. |
+| Claude Code | S     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one exact named agent definition. Sessions from a non-default Claude configuration directory are prompt only. |
+| Claude Code | M     | Y       | Y      | C        | N            | Y        | Current inventory can find targets; Auto Fix needs indexed provenance and one exact MCP binding. Historical subsets cannot verify absence. A session from a non-default Claude configuration directory makes the assessment incomplete. |
+| Claude Code | B     | Y       | Y      | Y        | N            | Y        | Only the allowlisted optional tools are reachable. Historical subsets cannot verify absence. A session from a non-default Claude configuration directory makes the assessment incomplete. |
+| Claude Code | K     | Y       | Y      | C        | N            | Y        | Current inventory can find targets; Auto Fix needs indexed provenance and one exact skill binding. Historical subsets cannot verify absence. A session from a non-default Claude configuration directory makes the assessment incomplete. |
+| Claude Code | O     | Y       | Y      | Y        | Y            | Y        | Auto Fix and verification need publication-time physical attribution. Sessions from a non-default Claude configuration directory are prompt only, without verification. |
+| Claude Code | F     | Y       | Y      | Y        | Y            | Y        | The source must record the fast tier and one current winning control must still be fast. Sessions from a non-default Claude configuration directory are prompt only, without verification. |
 | Claude Code | C     | Y       | Y      | N        | N            | Y        | No durable cache-policy target exists.                                                                                                       |
 | Codex       | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
 | Codex       | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model.                                                               |
@@ -768,6 +768,19 @@ batched across active layers. Findings from multiple projects that resolve to
 the same global control form one target, and prepare and apply revalidate every
 grouped project context. Model and reasoning edits remain pinned to the
 publication-time scope and physical target.
+
+A native `ClaudeJsonl` session whose transcript lives in a Claude
+configuration directory other than `~/.claude`, such as a profile that the
+reader added in Settings → Sources, is prompt only for every Claude Code
+operation below. Publication-time attribution, the editor, and resource
+inventory read only `~/.claude` and the project, so such a finding gets no
+config attribution, no Auto Fix, and no passive or Auto Fix verification. The
+prompt stays available. The rule uses the transcript path, so it also covers
+fork-job sessions that have a transcript path and sessions of a profile that
+the reader removed. A session
+from such a directory in the report window makes the Claude M, B, and K
+resource assessment incomplete, and Ignored Instructions does not assess it,
+because discovery reads user instructions from `~/.claude` only.
 
 | Agent                            | Operation                   | Result                        | Reason or exact limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------------- | --------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

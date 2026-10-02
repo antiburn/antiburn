@@ -2,6 +2,7 @@
 description = "Compatibility permissions for antiburn's existing interactive windows."
 permissions = [
   "allow-add-scan-root",
+  "allow-add-claude-profile",
   "allow-add-remote-host",
   "allow-app-info",
   "allow-begin-popover-hold",
@@ -44,6 +45,7 @@ permissions = [
   "allow-list-recent-sessions",
   "allow-list-repositories",
   "allow-list-scan-roots",
+  "allow-list-claude-profiles",
   "allow-note-interaction",
   "allow-open-analytics-documentation",
   "allow-open-folder-access-settings",
@@ -63,6 +65,8 @@ permissions = [
   "allow-refresh-live-usage",
   "allow-refresh-repositories",
   "allow-remove-scan-root",
+  "allow-remove-claude-profile",
+  "allow-rename-claude-profile",
   "allow-remove-remote-host",
   "allow-request-folder-access",
   "allow-resize-overlay-window",

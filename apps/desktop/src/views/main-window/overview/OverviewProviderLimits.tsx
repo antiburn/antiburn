@@ -1,4 +1,4 @@
-import { Fragment, useRef } from "react"
+import { Fragment, useRef, useState } from "react"
 
 import type {
   LiveUsageSummaryPayload,
@@ -11,13 +11,19 @@ import {
   livePlanAccountLabel,
   liveProviderStatus,
   liveUnavailableProviders,
+  liveRetryAfterNote,
+  liveUnavailableReason,
   liveWindows,
+  type UnavailableLiveProvider,
   orderedLiveAccounts,
+  liveAccountName,
 } from "../../../lib/presentation/liveUsage"
 
 import { WindowMeterRow } from "../../../components/providerUsage/UsageLimitsBar"
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
+import { PushButton } from "../../../components/ui/PushButton"
 import { Skeleton } from "../../../components/ui/Skeleton"
+import { refreshLiveUsage } from "../../../lib/ipc"
 import { useElementWidth } from "../../../lib/useElementWidth"
 
 /** The popover's dot count, used until the group has a measured width. */
@@ -86,6 +92,40 @@ export function OverviewProviderLimits({
   const accountNumbers = useStableAccountNumbers(
     limited.map(({ key, reading }) => ({ key, provider: reading.provider })),
   )
+  const [retrying, setRetrying] = useState(false)
+  // What the last Retry found, by failed account. A rate limit can outlast a
+  // retry, so the reader sees that the check ran.
+  const [retryNotes, setRetryNotes] = useState<ReadonlyMap<string, string>>(new Map())
+  const retry = (entry: UnavailableLiveProvider) => {
+    setRetrying(true)
+    void refreshLiveUsage({ retry: true })
+      .then((summary) => {
+        const still = summary.errors.find(
+          (error) =>
+            error.provider === entry.provider && error.displayName === entry.displayName,
+        )
+        const checkedAt = new Date().toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })
+        setRetryNotes(
+          new Map([
+            [
+              `${entry.provider}:${entry.displayName}`,
+              still
+                ? `Tried again at ${checkedAt}: ${liveUnavailableReason(still.category, still.detail)}.`
+                : `Checked at ${checkedAt}.`,
+            ],
+          ]),
+        )
+      })
+      .catch(() =>
+        setRetryNotes(
+          new Map([[`${entry.provider}:${entry.displayName}`, "Could not check. Try again."]]),
+        ),
+      )
+      .finally(() => setRetrying(false))
+  }
   const at = live ? Date.parse(live.generatedAt) || 0 : 0
   const nothing = !live || (limited.length === 0 && unavailable.length === 0)
 
@@ -111,10 +151,7 @@ export function OverviewProviderLimits({
                 <>
                   {limited.map(({ reading, key }, index) => {
                     const count = providerCounts.get(reading.provider) ?? 1
-                    const displayName =
-                      count > 1
-                        ? `${reading.displayName} account ${accountNumbers.get(key)}`
-                        : reading.displayName
+                    const displayName = liveAccountName(reading, accountNumbers.get(key), count)
                     const plan = livePlanAccountLabel(reading, count)
                     const status = liveProviderStatus(live, reading)
                     const graceNote =
@@ -153,20 +190,41 @@ export function OverviewProviderLimits({
                     )
                   })}
 
-                  {unavailable.map((entry, index) => (
-                    <Fragment key={entry.provider}>
-                      {index > 0 && <div className="h-px w-full bg-separator" />}
+                  {unavailable.map((entry, index) => {
+                    const waitNote = liveRetryAfterNote(entry.retryAt, at)
+                    const note =
+                      waitNote ?? retryNotes.get(`${entry.provider}:${entry.displayName}`)
+                    return (
+                      <Fragment key={`${entry.provider}:${entry.displayName}`}>
+                        {limited.length + index > 0 && (
+                          <div className="h-px w-full bg-separator" />
+                        )}
 
-                      <div role="group" aria-label={entry.displayName} className="min-w-0">
-                        <h3 className="type-footnote truncate font-medium tracking-wide text-label uppercase">
-                          {entry.displayName}
-                        </h3>
-                        <p className="type-footnote pt-(--space-md) text-label-secondary">
-                          {liveErrorNote(entry.category, entry.provider, entry.detail)}
-                        </p>
-                      </div>
-                    </Fragment>
-                  ))}
+                        <div role="group" aria-label={entry.displayName} className="min-w-0">
+                          <h3 className="type-footnote truncate font-medium tracking-wide text-label uppercase">
+                            {entry.displayName}
+                          </h3>
+                          <p className="type-footnote pt-(--space-md) text-label-secondary">
+                            {liveErrorNote(entry.category, entry.provider, entry.detail)}
+                          </p>
+                          <div className="mt-(--space-md) flex flex-wrap items-center gap-(--space-md)">
+                            <PushButton
+                              disabled={retrying || waitNote != null}
+                              ariaLabel={`Retry ${entry.displayName} limits`}
+                              onClick={() => retry(entry)}
+                            >
+                              {retrying ? "Retrying…" : "Retry"}
+                            </PushButton>
+                            {note && (
+                              <p role="status" className="type-footnote text-label-tertiary">
+                                {note}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </Fragment>
+                    )
+                  })}
                 </>
               )}
         </div>

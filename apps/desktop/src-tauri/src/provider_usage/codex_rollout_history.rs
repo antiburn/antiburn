@@ -87,6 +87,7 @@ impl RolloutReading {
     /// no finer-grained tier, unlike Claude's `rateLimitTier`.
     pub(crate) fn snapshot(&self, account_key: &str) -> ProviderUsageSnapshot {
         ProviderUsageSnapshot {
+            account_label: None,
             refusal_kind: self.refusal_kind.clone(),
             provider: OPENAI,
             account: Some(account_key.to_owned()),
