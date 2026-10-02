@@ -72,7 +72,9 @@ Placeholders below show the shape, never a real value.
 | `ANTIBURN_ANALYTICS_OPERATOR`        | With the analytics URL    | The operator name shown in Settings → Privacy.                                                                            | `Cadence AI (Vic) Pty Ltd`                                                                                                                                                                                                           |
 
 `GITHUB_TOKEN` is provided by Actions; it is not configured and must not be
-replaced by a personal access token.
+replaced by a personal access token in the build and signing workflows. The
+separate Homebrew publication workflow uses a tap-only PAT for its
+cross-repository write; see [Homebrew publication](#homebrew-publication).
 
 The workflow compiles official desktop builds with `distribution,analytics`.
 Keep both analytics secrets unset until the privacy policy is ready. A missing
@@ -378,6 +380,11 @@ deliberately a person's action.
 
 ### 2.9 Verify after publishing
 
+Confirm that [Update Homebrew tap](../../.github/workflows/update-homebrew-tap.yml)
+succeeds for this stable desktop tag and that the tap's own native macOS CI
+passes. Engine releases and prereleases do not update the tap. A failed tap bump
+does not unpublish the desktop release.
+
 ```bash
 curl -sSL https://github.com/antiburn/antiburn/releases/latest/download/latest.json | jq .
 curl -fsSL https://github.com/antiburn/antiburn/releases/latest/download/install.sh | sh -s -- --help
@@ -485,6 +492,81 @@ the consumer deletes the secret and revokes the token; the rewrite step
 becomes a no-op and everything else stays byte-identical.
 
 ---
+
+## Homebrew publication
+
+The macOS cask lives in the public
+[`antiburn/homebrew-tap`](https://github.com/antiburn/homebrew-tap) repository.
+Use `brew install --cask antiburn/tap/antiburn`. The tap supports stable desktop
+releases only; an upstream `homebrew/cask` submission is not required.
+
+[`update-homebrew-tap.yml`](../../.github/workflows/update-homebrew-tap.yml)
+runs after a desktop release is published. It reads that exact release and its
+`SHA256SUMS`, requires both macOS DMGs, updates only the cask version and two
+hashes, and runs Homebrew style and online strict audit before pushing a
+signed-off version-bump commit. The tap's push CI then tests both native macOS
+architectures. The build and signing workflow still stops at a draft.
+
+Updates are serialized. An identical rerun is a no-op. Older versions and
+changed hashes for an existing version fail. Policy changes to the cask need
+normal review; the updater does not rewrite them. Published assets never change.
+
+### Tap credential
+
+Store a fine-grained PAT as repository Actions secret `HOMEBREW_TAP_TOKEN` in
+`antiburn/antiburn`. Select resource owner `antiburn`, only repository
+`homebrew-tap`, and Contents read/write. Metadata read access is automatic.
+Do not grant Workflows or Administration permissions. Complete organization
+approval if required. The normal product `GITHUB_TOKEN` reads release data;
+the PAT authenticates only the tap checkout and push.
+
+```sh
+gh secret set HOMEBREW_TAP_TOKEN --repo antiburn/antiburn
+```
+
+Use the interactive prompt. Keep the token owner, expiration, and renewal
+reminder in the maintainer's private credential record. On rotation, replace the
+secret, verify tap access, and revoke the old token. Never log the value.
+
+Same-repository pull requests touching the updater run a non-writing preview
+against the current tap release. The preview checks the cask and performs a
+dry-run push to verify the credential; it does not commit a bump. Fork pull
+requests run the pure script tests through normal CI without the tap secret.
+Publication and manual recovery use updater code from the default branch.
+
+### Retry or refresh the cask
+
+After the workflow is merged, dispatch it with an exact published stable tag:
+
+```sh
+gh workflow run update-homebrew-tap.yml \
+  --repo antiburn/antiburn --ref main \
+  -f tag=antiburn-v<VERSION>
+```
+
+Inspect the Actions result, the cask version/hashes, and the tap's CI result.
+If access fails, check the token's expiration, approval, permissions, and tap
+branch rules. If a maintainer changed the tap concurrently, rerun against its
+latest state. Do not force-push or downgrade the tap.
+
+If Actions is unavailable, use a product checkout and the current, clean
+Homebrew tap checkout:
+
+```sh
+tap=$(brew --repository antiburn/tap)
+node scripts/update-homebrew-cask.mjs antiburn-v<VERSION> "$tap/Casks/antiburn.rb"
+brew style --cask antiburn/tap/antiburn
+brew audit --cask --strict --online antiburn/tap/antiburn
+```
+
+Review the diff in that tap checkout. Stage only `Casks/antiburn.rb`, then
+commit and push the validated change with Conventional Commits and DCO sign-off
+under the tap's rules. Do not validate an older installed tap while pushing a
+different checkout.
+
+A failed tap update leaves the desktop release available through curl and
+manual downloads. Fix the update and rerun the same tag. Do not rebuild or
+unpublish the product release to repair the tap.
 
 ## When a run fails
 
