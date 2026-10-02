@@ -96,6 +96,14 @@ export interface AppSettings {
    */
   liveUsageEnabled: boolean
   /**
+   * Whether the reader has started live usage from the Overview.
+   *
+   * False for a new install until a deliberate click in the Overview's usage
+   * area runs `start_live_usage`. That click, not setup finishing, is what
+   * may trigger the macOS Keychain prompt the credential read needs.
+   */
+  liveUsageStarted: boolean
+  /**
    * Canonical ids of the providers whose meter the reader turned off.
    *
    * A narrower form of the switch above: that one stops every provider, this

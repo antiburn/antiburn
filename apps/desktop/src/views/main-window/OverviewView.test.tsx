@@ -29,7 +29,11 @@ vi.mock("./overview/OverviewUsage", () => ({
   ),
 }))
 vi.mock("./overview/OverviewRecentSessions", () => ({ OverviewRecentSessions: () => null }))
-vi.mock("./overview/OverviewProviderLimits", () => ({ OverviewProviderLimits: () => null }))
+vi.mock("./overview/OverviewProviderLimits", () => ({
+  OverviewProviderLimits: ({ liveUsageStarted }: { liveUsageStarted: boolean }) => (
+    <output aria-label="Live usage started">{String(liveUsageStarted)}</output>
+  ),
+}))
 
 const account: AllowanceUsageAccountPayload = {
   provider: "anthropic",
@@ -245,5 +249,12 @@ describe("OverviewView metric preference", () => {
     expectUsageState("held")
     view.update(allowance([account]))
     expectMetric("allowance")
+  })
+})
+
+describe("OverviewView's provider limits card", () => {
+  it("passes settings.liveUsageStarted through, false before a shell answers", () => {
+    setup()
+    expect(screen.getByLabelText("Live usage started")).toHaveTextContent("false")
   })
 })

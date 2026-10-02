@@ -4,6 +4,7 @@ import { cn } from "../../lib/cn"
 
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
+import { useAppSettings } from "../settings/useAppSettings"
 import { type MainOverviewSession } from "./MainOverviewSession"
 import { OverviewFixes } from "./overview/OverviewFixes"
 import { overviewProgress, subscribeOverviewProgress } from "./overview/overviewProgressStore"
@@ -41,6 +42,7 @@ export function OverviewView({
   const isFirstRun = progress.mode === "firstRun"
   const readingDone = !isFirstRun || progress.read.done
   const analysisDone = !isFirstRun || progress.check.done
+  const { settings } = useAppSettings()
   const [selectedMetric, setMetric] = useState<OverviewMetric | null>(() => {
     const saved = readOverviewViewPrefs().metric
     return saved === "cost" || saved === "allowance" ? saved : null
@@ -155,7 +157,11 @@ export function OverviewView({
         viewportLabel="Provider limits card"
         topEdgeFade
       >
-        <OverviewProviderLimits live={state.liveUsage} loading={!state.liveUsageSettled} />
+        <OverviewProviderLimits
+          live={state.liveUsage}
+          loading={!state.liveUsageSettled}
+          liveUsageStarted={settings.liveUsageStarted}
+        />
       </ScrollPane>
     </div>
   )

@@ -152,6 +152,7 @@ const DEFAULT_TEST_SETTINGS: AppSettings = {
   milestones5h: [],
   milestonesWeekly: [],
   liveUsageEnabled: true,
+  liveUsageStarted: true,
   liveUsageHiddenProviders: [],
   disabledAgents: [],
   analyticsEnabled: true,

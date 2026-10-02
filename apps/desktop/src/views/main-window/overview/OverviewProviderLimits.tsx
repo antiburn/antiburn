@@ -18,7 +18,33 @@ import {
 import { WindowMeterRow } from "../../../components/providerUsage/UsageLimitsBar"
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
 import { Skeleton } from "../../../components/ui/Skeleton"
+import { startLiveUsage } from "../../../lib/ipc"
 import { useElementWidth } from "../../../lib/useElementWidth"
+
+/**
+ * Shown in place of every meter until the reader starts live usage. Minimum
+ * build: the maintainer iterates on this copy and layout after UAT.
+ */
+function LiveUsageEmptyState() {
+  return (
+    <div className="flex flex-col items-start gap-(--space-sm)">
+      <p className="type-callout text-label-secondary">
+        See your plan limits here once antiburn reads them from your provider.
+      </p>
+      <button
+        type="button"
+        onClick={() => void startLiveUsage()}
+        className="rounded-control bg-brand-tint px-4 py-1.5 type-footnote font-semibold! text-white shadow-[var(--shadow-raised)] transition-[filter] duration-fast hover:brightness-110 active:brightness-95"
+      >
+        Show live limits
+      </button>
+      <p className="type-footnote text-label-tertiary">
+        macOS may ask for Keychain access, so antiburn can read the credentials your coding
+        tools already use.
+      </p>
+    </div>
+  )
+}
 
 /** The popover's dot count, used until the group has a measured width. */
 const PANEL_METER_SEGMENTS = 32
@@ -69,9 +95,13 @@ function MeterGroup({ windows, now }: { windows: LiveUsageWindowPayload[]; now: 
 export function OverviewProviderLimits({
   live,
   loading = false,
+  liveUsageStarted,
 }: {
   live: LiveUsageSummaryPayload | null
   loading?: boolean
+  /** `settings.liveUsageStarted`. False shows the "Show live limits" prompt
+   *  instead of the meters, whatever `live` and `loading` say. */
+  liveUsageStarted: boolean
 }) {
   const limited = live
     ? orderedLiveAccounts(liveDisplayableProviders(live)).filter(
@@ -95,7 +125,9 @@ export function OverviewProviderLimits({
       aria-busy={loading || undefined}
       className="relative px-(--space-lg) py-(--space-lg)"
     >
-      {nothing && !loading ? (
+      {!liveUsageStarted ? (
+        <LiveUsageEmptyState />
+      ) : nothing && !loading ? (
         <p className="type-callout text-label-secondary">No providers set up for limits yet.</p>
       ) : (
         <div className="flex flex-col gap-(--space-xl)">

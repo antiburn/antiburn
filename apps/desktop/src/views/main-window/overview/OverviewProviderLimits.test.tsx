@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type {
@@ -86,7 +86,7 @@ describe("OverviewProviderLimits", () => {
   afterEach(() => vi.restoreAllMocks())
 
   it("draws a thirty-two-dot meter with the notch, the figure and the reset caption", () => {
-    render(<OverviewProviderLimits live={liveSummary()} />)
+    render(<OverviewProviderLimits live={liveSummary()} liveUsageStarted={true} />)
     const card = screen.getByRole("group", { name: /Claude/ })
     expect(card).toHaveAccessibleName("Claude, Max plan")
     expect(within(card).getByText("42%")).toBeInTheDocument()
@@ -107,7 +107,7 @@ describe("OverviewProviderLimits", () => {
     expect(meterSegmentsForWidth(300)).toBe(33)
     expect(meterSegmentsForWidth(603)).toBe(67)
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(603)
-    render(<OverviewProviderLimits live={liveSummary()} />)
+    render(<OverviewProviderLimits live={liveSummary()} liveUsageStarted={true} />)
     const card = screen.getByRole("group", { name: /Claude/ })
     const dots = card.querySelectorAll(".rounded-full")
     expect(dots).toHaveLength(67)
@@ -134,6 +134,7 @@ describe("OverviewProviderLimits", () => {
             }),
           ],
         })}
+        liveUsageStarted={true}
       />,
     )
     const card = screen.getByRole("group", { name: /Claude/ })
@@ -157,6 +158,7 @@ describe("OverviewProviderLimits", () => {
             }),
           ],
         })}
+        liveUsageStarted={true}
       />,
     )
     expect(screen.getByText(note)).toBeInTheDocument()
@@ -178,6 +180,7 @@ describe("OverviewProviderLimits", () => {
             }),
           ],
         })}
+        liveUsageStarted={true}
       />,
     )
     const card = screen.getByRole("group", { name: "Claude" })
@@ -192,6 +195,7 @@ describe("OverviewProviderLimits", () => {
           providers: [liveProvider({ freshness: "stale" })],
           errors: [sourceError()],
         })}
+        liveUsageStarted={true}
       />,
     )
     expect(screen.getByRole("group", { name: "Codex" })).toHaveTextContent(
@@ -200,13 +204,17 @@ describe("OverviewProviderLimits", () => {
   })
 
   it("shows one quiet line when no provider reports anything", () => {
-    render(<OverviewProviderLimits live={liveSummary({ providers: [] })} />)
+    render(
+      <OverviewProviderLimits live={liveSummary({ providers: [] })} liveUsageStarted={true} />,
+    )
     expect(screen.getByText(/No providers set up for limits yet/)).toBeInTheDocument()
     expect(screen.queryByText("Live")).toBeNull()
   })
 
   it("holds placeholders while loading", () => {
-    const { container } = render(<OverviewProviderLimits live={null} loading />)
+    const { container } = render(
+      <OverviewProviderLimits live={null} loading liveUsageStarted={true} />,
+    )
     expect(screen.queryByText(/No providers set up/)).toBeNull()
     expect(container.querySelector(".animate-pulse")).not.toBeNull()
     expect(screen.getByRole("region", { name: "Provider limits" })).toHaveAttribute(
@@ -219,10 +227,28 @@ describe("OverviewProviderLimits", () => {
   it("says there is nothing to show when the read answers with nothing", () => {
     // A failed read leaves no summary and stops the loading state. The panel
     // must answer, because a permanent skeleton states a read in progress.
-    render(<OverviewProviderLimits live={null} loading={false} />)
+    render(<OverviewProviderLimits live={null} loading={false} liveUsageStarted={true} />)
     expect(screen.getByText(/No providers set up for limits yet/)).toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Provider limits" })).not.toHaveAttribute(
       "aria-busy",
     )
+  })
+})
+
+describe("OverviewProviderLimits before live usage starts", () => {
+  it("shows the prompt instead of the meters, even with a summary on hand", () => {
+    render(
+      <OverviewProviderLimits live={liveSummary()} loading={false} liveUsageStarted={false} />,
+    )
+    expect(
+      screen.getByText(/See your plan limits here once antiburn reads them/),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("group", { name: /Claude/ })).toBeNull()
+    expect(screen.queryByText(/No providers set up for limits yet/)).toBeNull()
+  })
+
+  it("starts live usage from the prompt's button", () => {
+    render(<OverviewProviderLimits live={null} liveUsageStarted={false} />)
+    fireEvent.click(screen.getByRole("button", { name: "Show live limits" }))
   })
 })

@@ -74,6 +74,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: true,
+  liveUsageStarted: false,
   liveUsageHiddenProviders: [],
   disabledAgents: [],
   analyticsEnabled: true,
@@ -608,6 +609,18 @@ export async function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })) ?? EMPTY_LIVE_USAGE
   )
+}
+
+/**
+ * Start live usage from a deliberate click in the Overview.
+ *
+ * Before this, `settings.liveUsageStarted` stays false, so the credential
+ * read it gates — and, on macOS, the Keychain prompt that read can
+ * trigger — cannot run.
+ */
+export async function startLiveUsage(): Promise<AppSettings> {
+  if (!hasShell()) return { ...DEFAULT_SETTINGS, liveUsageStarted: true }
+  return invoke<AppSettings>("start_live_usage")
 }
 
 /** What live usage looks like with no source able to say anything. */
