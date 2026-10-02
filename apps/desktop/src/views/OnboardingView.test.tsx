@@ -635,7 +635,7 @@ describe("OnboardingView", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Scan did not finish")
     expect(screen.getByRole("alert")).toHaveTextContent("Could not read ~/.claude/projects.")
-    expect(screen.queryByText("Nothing found yet")).not.toBeInTheDocument()
+    expect(screen.queryByText(/No repos found yet/)).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled()
 
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
