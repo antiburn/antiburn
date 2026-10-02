@@ -16,6 +16,51 @@ listed here is not claimed — a cell that is absent means "not supported", not
 | Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application                                                                                                                                                                                                                                                                                                                                                                                             |
 | Mobile                                                | Out of scope                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
+## Installation and updates
+
+On macOS 13 or later, install the native Apple silicon or Intel package with
+the owned Homebrew tap:
+
+```sh
+brew install --cask antiburn/tap/antiburn
+```
+
+If a manual or curl installation already exists, quit antiburn and move only
+`/Applications/antiburn.app` to the Trash first. Keep the local data folder.
+Homebrew then installs the same app identity and uses the existing settings
+and history. Use Homebrew or the in-app updater for that installation; do not
+overwrite it with the curl installer.
+
+The macOS/Linux shell installer and Windows PowerShell installer remain
+available in the [README](../README.md#install). Manual packages are available
+from the [desktop releases](https://github.com/antiburn/antiburn/releases).
+
+antiburn can update itself. The cask declares `auto_updates true`, so normal
+bulk Homebrew upgrades can skip it. Request a Homebrew update explicitly:
+
+```sh
+brew update
+brew upgrade --cask antiburn/tap/antiburn
+```
+
+Normal Homebrew removal preserves settings and history:
+
+```sh
+brew uninstall --cask antiburn/tap/antiburn
+```
+
+To remove the app and its local data, settings, logs, cache, and webview state:
+
+```sh
+brew uninstall --cask --zap antiburn/tap/antiburn
+```
+
+Zap targets `~/Library/Application Support/ai.antiburn.desktop`,
+`~/Library/Caches/ai.antiburn.desktop`, `~/Library/Logs/antiburn`, and
+`~/Library/WebKit/ai.antiburn.desktop`. It preserves coding-agent transcripts,
+provider credentials, projects, and agent configuration changes. macOS can
+retain its own permission and historical login-item records after removal.
+
 ## Agents
 
 antiburn reads session data that a coding agent has already written to disk.
