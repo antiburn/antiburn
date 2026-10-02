@@ -527,14 +527,15 @@ pub fn note_usage_milestone(
     true
 }
 
-/// Say where antiburn went as the current setup window closes.
+/// Say where antiburn went once the first run's result has shown.
 ///
 /// Ungated (see [`allowed`]) and forced to hang off the menu-bar item whatever
 /// the reader's placement preference says: a notification that answers "where
 /// is it" by appearing in the opposite corner of the screen from the answer
-/// would be worse than none. Called only from [`crate::onboarding::finish`], so
-/// it appears after each setup run, including an explicit restart. Its copy and
-/// action follow the entry point that remains visible.
+/// would be worse than none. Called only from the settings-save transition
+/// that finishes the first run, so it appears after each setup run, including
+/// an explicit restart. Its copy and action follow the entry point that
+/// remains visible.
 pub fn note_menu_bar_home(app: &AppHandle) {
     let tray_visible = app
         .try_state::<Store>()

@@ -95,9 +95,7 @@ const MENU_OPEN_POPOVER: &str = "open-popover";
 const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
 #[cfg(debug_assertions)]
-const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
-#[cfg(debug_assertions)]
-const MENU_RESET_FTUE: &str = "reset-ftue";
+const MENU_RESET_FIRST_RUN: &str = "reset-first-run";
 #[cfg(debug_assertions)]
 const MENU_RANDOM_USAGE: &str = "random-usage";
 #[cfg(debug_assertions)]
@@ -148,9 +146,7 @@ const OPEN_LABEL: &str = "Open antiburn";
 #[cfg(target_os = "linux")]
 const OPEN_POPOVER_LABEL: &str = "Open Usage Popover";
 #[cfg(debug_assertions)]
-const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
-#[cfg(debug_assertions)]
-const RESET_FTUE_LABEL: &str = "Reset FTUE";
+const RESET_FIRST_RUN_LABEL: &str = "Reset First Run";
 #[cfg(debug_assertions)]
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
 #[cfg(debug_assertions)]
@@ -772,16 +768,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let actual_size_item =
         MenuItem::with_id(app, MENU_ACTUAL_SIZE, "Actual Size", true, None::<&str>)?;
     #[cfg(debug_assertions)]
-    let reset_onboarding_item = MenuItem::with_id(
+    let reset_first_run_item = MenuItem::with_id(
         app,
-        MENU_RESET_ONBOARDING,
-        RESET_ONBOARDING_LABEL,
+        MENU_RESET_FIRST_RUN,
+        RESET_FIRST_RUN_LABEL,
         true,
         None::<&str>,
     )?;
-    #[cfg(debug_assertions)]
-    let reset_ftue_item =
-        MenuItem::with_id(app, MENU_RESET_FTUE, RESET_FTUE_LABEL, true, None::<&str>)?;
     #[cfg(debug_assertions)]
     let random_usage_item = CheckMenuItem::with_id(
         app,
@@ -835,9 +828,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &zoom_out_item,
         &actual_size_item,
         #[cfg(debug_assertions)]
-        &reset_onboarding_item,
-        #[cfg(debug_assertions)]
-        &reset_ftue_item,
+        &reset_first_run_item,
         #[cfg(debug_assertions)]
         &random_usage_item,
         #[cfg(debug_assertions)]
@@ -1038,20 +1029,11 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Reset)
         }
         #[cfg(debug_assertions)]
-        MENU_RESET_ONBOARDING => {
+        MENU_RESET_FIRST_RUN => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = commands::reset_first_run(app).await {
-                    ::tracing::error!(event = "onboarding_restart_failed", trigger = "tray", error);
-                }
-            });
-        }
-        #[cfg(debug_assertions)]
-        MENU_RESET_FTUE => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = commands::reset_ftue(app).await {
-                    ::tracing::error!(event = "ftue_reset_failed", trigger = "tray", error);
+                    ::tracing::error!(event = "first_run_reset_failed", trigger = "tray", error);
                 }
             });
         }

@@ -21,6 +21,7 @@ macro_rules! with_app_commands {
             commands::end_popover_hold => "end_popover_hold",
             main_window::existing_main_window_session_targets => "existing_main_window_session_targets",
             commands::export_diagnostics => "export_diagnostics",
+            commands::finish_first_run => "finish_first_run",
             commands::finish_onboarding => "finish_onboarding",
             commands::ftue_diag => "ftue_diag", // TEMP ftue-diag
             commands::get_consent_diagnostics => "get_consent_diagnostics",
@@ -117,6 +118,7 @@ macro_rules! with_app_commands {
             commands::set_burn_check_snooze => "set_burn_check_snooze",
             commands::clear_burn_check_snooze => "clear_burn_check_snooze",
             hud_commands::show_hud_detail => "show_hud_detail",
+            commands::start_live_usage => "start_live_usage",
             commands::start_update_simulation => "start_update_simulation",
             remote_sessions::update_remote_host => "update_remote_host",
             hud_commands::take_hud_analytics_origin => "take_hud_analytics_origin",

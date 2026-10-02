@@ -140,6 +140,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             milestones_5h: Milestones::selected([75, 90]),
             milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
+            live_usage_started: true,
             live_usage_hidden_providers: HiddenMeters::default(),
             disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
@@ -347,6 +348,28 @@ fn settings_repair_malformed_stored_presence_values() {
 
     assert!(!settings.tray_icon_visible);
     assert!(settings.dock_icon_visible);
+}
+
+#[test]
+fn live_usage_started_falls_back_to_onboarding_completed_for_older_installs() {
+    // A fresh install with no stored rows at all defaults to not started.
+    let fresh = store();
+    assert!(!fresh.settings().unwrap().live_usage_started);
+
+    // An install that finished setup before `internal:liveUsageStarted`
+    // existed wrote only `onboardingCompleted`. Nothing should change for it:
+    // live usage stays exactly as active as it already was.
+    let older_install = store();
+    {
+        let connection = older_install.lock();
+        connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES (?1, ?2)",
+                params!["onboardingCompleted", "true"],
+            )
+            .unwrap();
+    }
+    assert!(older_install.settings().unwrap().live_usage_started);
 }
 
 #[test]

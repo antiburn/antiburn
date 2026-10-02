@@ -1885,8 +1885,7 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
     let main_minimized = app
         .get_webview_window(LABEL)
         .is_some_and(|window| window.is_minimized().unwrap_or(false));
-    let another_window_owns_activation = crate::onboarding::is_pending(app)
-        || window_is_visible(app, crate::onboarding::LABEL)
+    let another_window_owns_activation = window_is_visible(app, crate::onboarding::LABEL)
         || window_is_visible(app, crate::settings::LABEL)
         || [
             crate::popover::LABEL,

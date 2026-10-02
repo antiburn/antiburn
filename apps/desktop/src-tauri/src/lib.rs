@@ -498,16 +498,12 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
-/// Open onboarding while it is owed, or the ordinary main window afterwards.
+/// Open the ordinary main window. The first-run Overview is part of it.
 pub(crate) fn open_launch_surface(
     app: &tauri::AppHandle,
     trigger: main_window::OpenTrigger,
 ) -> tauri::Result<()> {
-    if onboarding::is_pending(app) {
-        onboarding::open(app)
-    } else {
-        main_window::open(app, trigger)
-    }
+    main_window::open(app, trigger)
 }
 
 /// Stop every background task. Safe to call when none ever started.

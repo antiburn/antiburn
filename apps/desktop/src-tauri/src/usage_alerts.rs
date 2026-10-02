@@ -655,7 +655,7 @@ mod tests {
     #[test]
     fn the_claude_reset_diagnostic_requires_every_product_gate() {
         let mut settings = crate::store::AppSettings {
-            onboarding_completed: true,
+            live_usage_started: true,
             ..crate::store::AppSettings::default()
         };
         assert!(claude_limit_reset_diagnostic_allowed(true, &settings));

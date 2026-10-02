@@ -264,6 +264,20 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageEnabled")
             .map(|value| value == "true")
             .unwrap_or(defaults.live_usage_enabled),
+        // No stored answer means either a fresh install (default: not
+        // started) or an install that finished setup before this flag
+        // existed. The onboarding-completed value tells the two apart: an
+        // install that already finished setup keeps live usage active
+        // exactly as it was.
+        live_usage_started: stored
+            .get("internal:liveUsageStarted")
+            .map(|value| value == "true")
+            .unwrap_or_else(|| {
+                stored
+                    .get("onboardingCompleted")
+                    .map(|value| value == "true")
+                    .unwrap_or(defaults.live_usage_started)
+            }),
         live_usage_hidden_providers: stored
             .get("liveUsageHiddenProviders")
             .map(|value| HiddenMeters::parse(value))
@@ -404,6 +418,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "liveUsageEnabled",
         bool_text(settings.live_usage_enabled)
+    ])?;
+    put.execute(params![
+        "internal:liveUsageStarted",
+        bool_text(settings.live_usage_started)
     ])?;
     put.execute(params![
         "liveUsageHiddenProviders",

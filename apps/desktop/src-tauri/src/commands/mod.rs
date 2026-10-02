@@ -593,6 +593,51 @@ pub async fn finish_onboarding(
     Ok(saved)
 }
 
+/// Mark the first run finished, as its result first shows.
+///
+/// Replaces `finish_onboarding` for the Overview's own first-run flow, which
+/// asks the reader nothing before it shows results. The settings-save path
+/// runs `apply_settings_transition`, which registers startup, requests a
+/// scan, and sends the menu-bar-home notification.
+#[tauri::command]
+pub async fn finish_first_run(app: tauri::AppHandle) -> CommandResult<AppSettings> {
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let store = app.state::<Store>().inner().clone();
+    let (previous, saved) = run_blocking(move || {
+        store
+            .update_settings(|settings| {
+                settings.onboarding_completed = true;
+            })
+            .map_err(fail)
+    })
+    .await?;
+    apply_settings_transition_on_main(&app, &previous, &saved).await?;
+    Ok(saved)
+}
+
+/// Start live usage from a deliberate click in the Overview.
+///
+/// Before this, `AppSettings::live_usage_active` stays false, so the
+/// credential read it gates — and, on macOS, the Keychain prompt that read
+/// can trigger — cannot run. Setting the flag through the settings-save path
+/// runs `apply_settings_transition`, which syncs the tray meter the same way
+/// any other transition into "live usage active" does.
+#[tauri::command]
+pub async fn start_live_usage(app: tauri::AppHandle) -> CommandResult<AppSettings> {
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let store = app.state::<Store>().inner().clone();
+    let (previous, saved) = run_blocking(move || {
+        store
+            .update_settings(|settings| {
+                settings.live_usage_started = true;
+            })
+            .map_err(fail)
+    })
+    .await?;
+    apply_settings_transition_on_main(&app, &previous, &saved).await?;
+    Ok(saved)
+}
+
 /// Report one interaction from the renderer.
 ///
 /// Infallible and silent: analytics that could fail an action the reader
@@ -634,12 +679,14 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
             .request(ScanTrigger::SettingsTransition);
     }
 
-    // Put the first-run window away and say where the app went. Done here
-    // rather than in the webview because the window closing and the
-    // notification arriving are one gesture, and only the shell can perform
-    // both halves of it.
+    // Say where antiburn went once the first run's result has shown, and warm
+    // the popover's hidden renderer so the first menu-bar click after that is
+    // instant. Done here, on the settings-save transition, so every path that
+    // finishes the first run — the ordinary one and an explicit restart —
+    // does both once.
     if finished_onboarding {
-        crate::onboarding::finish(app);
+        crate::notifications::note_menu_bar_home(app);
+        crate::popover::prewarm(app);
     }
 
     if !saved.live_usage_active() {
@@ -2306,8 +2353,8 @@ pub async fn delete_session_data(
 /// Preferences, scan folders, and repository include choices are kept — this is
 /// "forget what you worked out", not "forget who I am".
 ///
-/// Shared by [`clear_local_index`] and the debug-only [`reset_ftue`], so the
-/// two wipes cannot drift apart.
+/// Shared by [`clear_local_index`] and the debug-only [`reset_first_run`], so
+/// the two wipes cannot drift apart.
 ///
 /// Returns how many sessions were dropped, so a caller can report a number
 /// rather than a shrug.
@@ -2357,46 +2404,49 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     wipe_local_session_data(&app).await
 }
 
-/// Debug tool: return the app to a new install's first run. Runs the wipe
-/// [`reset_ftue`] runs, returns the main window to its default placement, and
-/// restarts onboarding. Preferences stay, as in [`clear_local_index`].
-#[cfg(debug_assertions)]
-pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> {
-    wipe_local_session_data(&app).await?;
-    crate::main_window::on_main_value(&app, crate::main_window::reset_placement).await?;
-    let _ = app.emit(FTUE_RESET_EVENT, ());
-    restart_onboarding(app).await
-}
-
-/// Event asking the retained renderer to replay the Overview's demo FTUE run.
-/// Only [`reset_ftue`] emits it, hence the `cfg`; the webview's own listener
-/// matches this string as its own literal, since it cannot import a Rust
-/// constant.
-#[cfg(debug_assertions)]
-pub const FTUE_RESET_EVENT: &str = "ftue:reset";
-
-/// Debug tool: wipe the local index and show the Overview as a first run.
+/// Debug tool: return the app to a new install's first run.
 ///
-/// This runs the exact wipe [`clear_local_index`] runs, so the real scan and
-/// analysis pipeline reads every session again from zero. It does not reset
-/// onboarding; "Reset Onboarding" ([`reset_first_run`]) also does that.
+/// Runs the exact wipe [`clear_local_index`] runs, so the real scan and
+/// analysis pipeline reads every session again from zero; returns the main
+/// window to its default placement; clears the first-run and live-usage
+/// flags; and opens the main window at the Overview. Other preferences stay,
+/// as in [`clear_local_index`].
 ///
 /// Not a `#[tauri::command]`: the debug tray is its only caller, so it is a
 /// plain function rather than an IPC surface a release build would still
 /// register and any webview could invoke.
 #[cfg(debug_assertions)]
-pub(crate) async fn reset_ftue(app: tauri::AppHandle) -> CommandResult<()> {
+pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> {
     // TEMP ftue-diag
-    ::tracing::info!(event = "ftue_diag", message = "reset_ftue: start");
+    ::tracing::info!(event = "ftue_diag", message = "reset_first_run: start");
     let removed = wipe_local_session_data(&app).await;
     // TEMP ftue-diag
     ::tracing::info!(
         event = "ftue_diag",
-        message = "reset_ftue: wipe done",
+        message = "reset_first_run: wipe done",
         removed = ?removed.as_ref().ok(),
         error = ?removed.as_ref().err().map(|error| format!("{error:?}")),
     );
     removed?;
+    crate::main_window::on_main_value(&app, crate::main_window::reset_placement).await?;
+    let store = app.state::<Store>().inner().clone();
+    let (previous, saved) = run_blocking(move || {
+        store
+            .update_settings(|settings| {
+                settings.onboarding_completed = false;
+                settings.live_usage_started = false;
+            })
+            .map_err(fail)
+    })
+    .await?;
+    apply_settings_transition_on_main(&app, &previous, &saved).await?;
+    let emitted = app.emit(FTUE_RESET_EVENT, ());
+    // TEMP ftue-diag
+    ::tracing::info!(
+        event = "ftue_diag",
+        message = "reset_first_run: ftue:reset emitted",
+        ok = emitted.is_ok(),
+    );
     let opened = crate::main_window::on_main_value(&app, |app| {
         crate::main_window::open_at_section(app, crate::main_window::MainWindowSection::Overview)
     })
@@ -2404,19 +2454,19 @@ pub(crate) async fn reset_ftue(app: tauri::AppHandle) -> CommandResult<()> {
     // TEMP ftue-diag
     ::tracing::info!(
         event = "ftue_diag",
-        message = "reset_ftue: main window opened",
+        message = "reset_first_run: main window opened",
         ok = matches!(opened, Ok(Ok(_))),
     );
     opened??;
-    let emitted = app.emit(FTUE_RESET_EVENT, ());
-    // TEMP ftue-diag
-    ::tracing::info!(
-        event = "ftue_diag",
-        message = "reset_ftue: ftue:reset emitted",
-        ok = emitted.is_ok(),
-    );
     Ok(())
 }
+
+/// Event asking the retained renderer to replay the Overview's demo FTUE run.
+/// Only [`reset_first_run`] emits it, hence the `cfg`; the webview's own
+/// listener matches this string as its own literal, since it cannot import a
+/// Rust constant.
+#[cfg(debug_assertions)]
+pub const FTUE_RESET_EVENT: &str = "ftue:reset";
 
 /* --------------------------------------------------------------------------
  * Folder permissions

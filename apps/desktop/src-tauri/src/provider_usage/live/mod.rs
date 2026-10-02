@@ -29,9 +29,9 @@
 //! credential they already hold, is ordinary traffic, not a risky one — so it
 //! runs by default rather than behind a first-run choice. Both sources still
 //! check [`crate::store::AppSettings::live_usage_active`] before doing
-//! anything: the reader's own opt-out switch, *and* onboarding having
-//! finished, so the credential read — and the macOS Keychain prompt it can
-//! trigger — never happens before the reader has seen what this app is. See
+//! anything: the reader's own opt-out switch, *and* a deliberate click in the
+//! Overview's usage area, so the credential read — and the macOS Keychain
+//! prompt it can trigger — never happens before the reader asks for it. See
 //! [`sources`] for what is registered and why.
 //!
 //! # Fail closed, everywhere
@@ -76,7 +76,8 @@ use crate::dto::{
 /// Implementations either read a local artefact another application wrote, or
 /// per feature and gated on
 /// [`crate::store::AppSettings::live_usage_active`] (an opt-out switch, on
-/// by default, and onboarding having finished) — call a provider endpoint
+/// by default, and the reader's own click to start live usage) — call a
+/// provider endpoint
 /// directly with a credential the reader's own tooling already stored, or
 /// spawn the reader's own installed CLI and ask it over its own protocol.
 /// Never a private-app endpoint, and never a credential written anywhere new.
@@ -232,9 +233,9 @@ pub fn summarize(
 ) -> LiveUsageSummary {
     // Read fresh, and default to *not* acting: an unreadable preference is not
     // permission, the same rule every notifier in this app follows. Both
-    // gates — the reader's switch and onboarding having finished — are folded
-    // into `live_usage_active` so this can never fetch pre-onboarding even
-    // though the switch itself now defaults on.
+    // gates — the reader's switch and the reader's own start click — are
+    // folded into `live_usage_active` so this can never fetch before that
+    // click even though the switch itself now defaults on.
     let settings = store.and_then(|store| store.settings().ok());
     let online = settings
         .as_ref()

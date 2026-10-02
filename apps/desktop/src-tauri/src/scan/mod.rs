@@ -445,7 +445,8 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         // The ledger of anonymous activity this task has reported. Only
         // passes this task runs can cover it.
         let mut ledger = AnonymousLedger::default();
-        // A fresh install has nothing to scan until the reader picks sources.
+        // A fresh install runs this pass too: the first-run Overview follows
+        // it, rather than waiting for an explicit scan request.
         if scheduled_scanning_allowed(&app) {
             run_covered_pass(&app, &mut ledger, ScanTrigger::Launch, PassScope::Full).await;
         }
@@ -718,13 +719,12 @@ fn deadline_after_health_change(
 
 /// Whether the scheduler may start a pass of its own right now.
 ///
-/// Two gates, both of them the reader's: onboarding has to be finished (before
-/// that there are no chosen sources to scan), and discovery must not be paused.
-/// Neither gate applies to an explicitly requested [`run_pass`].
+/// One gate, the reader's: discovery must not be paused. Does not apply to an
+/// explicitly requested [`run_pass`].
 fn scheduled_scanning_allowed(app: &AppHandle) -> bool {
     app.state::<Store>()
         .settings()
-        .map(|settings| settings.onboarding_completed && !settings.discovery_paused)
+        .map(|settings| !settings.discovery_paused)
         .unwrap_or(false)
 }
 

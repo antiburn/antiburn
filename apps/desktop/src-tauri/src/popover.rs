@@ -303,19 +303,6 @@ fn linux_anchor(window: &WebviewWindow) -> Option<AnchorRect> {
 #[cfg(target_os = "linux")]
 pub fn open_from_tray_menu(app: &AppHandle) {
     let requested_at = Instant::now();
-    // The same gate [`toggle`] applies: before the first run is finished the
-    // popover has nothing to show, so send the reader to the flow they are owed.
-    if crate::onboarding::is_pending(app) {
-        if let Err(error) = crate::onboarding::open(app) {
-            ::tracing::warn!(
-                event = "onboarding_window_open_failed",
-                trigger = "tray",
-                error = %error
-            );
-        }
-        return;
-    }
-
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };
@@ -1114,9 +1101,10 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
     }
 }
 
-/// Build one hidden renderer for the handoff from onboarding to the menu bar.
+/// Build one hidden renderer for the handoff into the menu bar once the first
+/// run finishes.
 pub fn prewarm(app: &AppHandle) {
-    if crate::onboarding::is_pending(app) || app.get_webview_window(LABEL).is_some() {
+    if app.get_webview_window(LABEL).is_some() {
         return;
     }
     let Some(state) = app.try_state::<PopoverState>() else {
@@ -1141,22 +1129,6 @@ pub fn prewarm(app: &AppHandle) {
 /// `anchor` is the item's screen rectangle as reported by the tray backend.
 pub fn toggle(app: &AppHandle, anchor: Rect) {
     let requested_at = Instant::now();
-    // Before the first run is finished the popover has nothing to show — the
-    // activity list is empty by construction, because the scan scheduler is
-    // gated on the same flag (see [`crate::scan`]). Send the click to the flow
-    // that is actually owed the reader, which also gets the window back for
-    // anyone who closed it partway through.
-    if crate::onboarding::is_pending(app) {
-        if let Err(error) = crate::onboarding::open(app) {
-            ::tracing::warn!(
-                event = "onboarding_window_open_failed",
-                trigger = "tray",
-                error = %error
-            );
-        }
-        return;
-    }
-
     if let Some(window) = app.get_webview_window(LABEL)
         && window.is_visible().unwrap_or(false)
     {
@@ -1609,14 +1581,7 @@ pub fn is_pinned(app: &AppHandle) -> bool {
 /// [`end_focus_hold`] does. The window sat there unfocused for as long as the
 /// menu was up, so without this there is no focus left to lose and the next
 /// click on another application would dismiss nothing.
-///
-/// Pinning is refused while the first run is unfinished. Re-showing is the
-/// point of a pin, and the popover must stay hidden during this period.
-/// Unpinning remains available so the tray action always does what it says.
 pub fn set_pinned(app: &AppHandle, pinned: bool) {
-    if pinned && crate::onboarding::is_pending(app) {
-        return;
-    }
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };

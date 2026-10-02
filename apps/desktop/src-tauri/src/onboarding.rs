@@ -7,8 +7,9 @@
 //! item, so a fresh install booted into the menu bar and waited — silently —
 //! for the reader to find a 16pt template glyph. The flow whose job is to
 //! establish trust sat behind the discovery problem it should have been
-//! solving. This window opens itself at launch instead (see
-//! [`crate::run`]'s setup).
+//! solving. This window used to open itself at launch instead; the first-run
+//! Overview in the main window does that job now, and this window remains
+//! only for an explicit "Restart setup".
 //!
 //! And 380pt is the wrong room for the work. The Repositories step stacks a
 //! folder-permission notice — whose three buttons wrap to two rows at that
@@ -24,7 +25,7 @@
 //! The frontend owns the `data-tauri-drag-region` strip.
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -41,28 +42,6 @@ const URL: &str = "onboarding.html";
 /// Preferred content size at 100% interface scale.
 const WIDTH: f64 = 680.0;
 const HEIGHT: f64 = 480.0;
-
-/// Give the final settings command time to return before its caller's webview
-/// is destroyed. The window is hidden immediately, so this delay is invisible.
-const FINISH_TEARDOWN_DELAY: Duration = Duration::from_secs(1);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FinishHandoffAction {
-    OpenMain,
-    PrewarmPopover,
-    DestroyOnboarding,
-}
-
-fn finish_handoff_schedule() -> [(Duration, FinishHandoffAction); 3] {
-    [
-        (Duration::ZERO, FinishHandoffAction::OpenMain),
-        (Duration::ZERO, FinishHandoffAction::PrewarmPopover),
-        (
-            FINISH_TEARDOWN_DELAY,
-            FinishHandoffAction::DestroyOnboarding,
-        ),
-    ]
-}
 
 // The reasons for those two numbers, as build errors rather than tests —
 // following `popover.rs`, and for the same reason: a geometry constant edited
@@ -288,61 +267,6 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Put the window away and point the reader at where the app now lives.
-///
-/// Called when the current setup run changes from pending to complete. The
-/// order is deliberate: the window goes first, so
-/// the notification arrives into the gap it leaves rather than on top of it —
-/// "where did that window go" is the question being answered, and it is asked
-/// after the window is gone.
-pub fn finish(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.hide();
-    }
-    crate::notifications::note_menu_bar_home(app);
-    // `finish` runs inside the onboarding webview's final command. Queue the
-    // main window after the response can leave this renderer.
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        for (delay, action) in finish_handoff_schedule() {
-            if delay.is_zero() {
-                tokio::task::yield_now().await;
-            } else {
-                tokio::time::sleep(delay).await;
-            }
-            let check_app = app.clone();
-            let _ = app.run_on_main_thread(move || {
-                if is_pending(&check_app) {
-                    return;
-                }
-                match action {
-                    FinishHandoffAction::OpenMain => {
-                        ::tracing::info!(event = "main_window_open_source", source = "onboarding");
-                        if let Err(error) = crate::main_window::open(
-                            &check_app,
-                            crate::main_window::OpenTrigger::Interaction,
-                        ) {
-                            ::tracing::warn!(
-                                event = "main_window_open_failed",
-                                trigger = "onboarding_finished",
-                                error = %error
-                            );
-                        }
-                    }
-                    FinishHandoffAction::PrewarmPopover => {
-                        crate::popover::prewarm(&check_app);
-                    }
-                    FinishHandoffAction::DestroyOnboarding => {
-                        if let Some(window) = check_app.get_webview_window(LABEL) {
-                            let _ = window.destroy();
-                        }
-                    }
-                }
-            });
-        }
-    });
-}
-
 /// Whether the first-run flow still owes the reader something.
 ///
 /// Missing managed state answers `false`: setup has not finished installing
@@ -377,21 +301,6 @@ mod tests {
         assert_eq!(
             LABEL, "onboarding",
             "also listed in capabilities/default.json"
-        );
-    }
-
-    #[test]
-    fn the_finish_handoff_schedules_main_and_prewarm_before_teardown() {
-        assert_eq!(
-            finish_handoff_schedule(),
-            [
-                (Duration::ZERO, FinishHandoffAction::OpenMain),
-                (Duration::ZERO, FinishHandoffAction::PrewarmPopover),
-                (
-                    FINISH_TEARDOWN_DELAY,
-                    FinishHandoffAction::DestroyOnboarding
-                ),
-            ]
         );
     }
 }
