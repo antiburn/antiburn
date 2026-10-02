@@ -17,8 +17,9 @@ import {
   type ChecksReportPayload,
 } from "../../../lib/insightsIpc"
 import {
+  finishFirstRun,
   ftueDiag, // TEMP ftue-diag
-  getScanStatus,
+  getFolderPermissions,
   getSettings,
   onFtueReset,
   onSettingsChanged,
@@ -32,13 +33,13 @@ import {
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { CHECK_LABELS } from "../../../lib/presentation/checkDefinitions"
 import { scanStatusStore } from "../../../lib/scanStatusStore"
+import type { DeferredPermissionDir } from "../../../lib/types/repository"
 import { withViewTransition } from "../../../lib/viewTransition"
 import {
   DOCK_START_DELAY_MS,
   DOCK_STEP_PAUSE_MS,
   INITIAL_FIRST_RUN_LATCH,
   advanceFirstRunLatch,
-  hasScanHistory,
   resetFirstRunLatch,
   unlatchReadOutcome,
   type FirstRunInputs,
@@ -71,6 +72,9 @@ interface ReadStep {
   /** The gate outcome, once the read stage this session has finished once. */
   gate: ReadGateCounts | null
   includeNonRepoFolders: boolean
+  /** Protected folders the last pass declined to read. Shown in the Read
+   *  step, in `firstRun` mode and whenever the opened steps show outside it. */
+  deferred: DeferredPermissionDir[]
 }
 
 interface CheckStep {
@@ -116,6 +120,13 @@ export interface OverviewProgress {
   /** Whether the find, read and check steps have all finished. */
   stepsDone: boolean
   dock: ProgressDock
+  /**
+   * Whether the check result (fixes found, clean, or empty) is on screen:
+   * the check step is done, and, in `firstRun` mode, every step has docked.
+   * `maybeFinishFirstRun` calls `finish_first_run` the moment this turns
+   * true.
+   */
+  resultReady: boolean
 }
 
 /**
@@ -143,6 +154,7 @@ export const INITIAL_DOCK: ProgressDock = {
 
 export interface ProgressInputs extends FirstRunInputs {
   includeNonRepoFolders: boolean
+  deferred: DeferredPermissionDir[]
 }
 
 /**
@@ -240,6 +252,7 @@ export function deriveOverviewProgress(
     total: readSource.total,
     gate: latch.step2Done ? latch.step2Gate : null,
     includeNonRepoFolders: inputs.includeNonRepoFolders,
+    deferred: inputs.deferred,
   }
 
   const check: CheckStep = useSteadyValues
@@ -265,6 +278,10 @@ export function deriveOverviewProgress(
 
   const categories = (inputs.checksReport?.categories ?? []).map(toFixCategory)
   const failingCount = categories.filter((category) => category.status === "needsFix").length
+  // Exhaustive once `check.done`: a done check is empty, clean, or has fixes,
+  // so "the result is known" collapses to `check.done` itself. 3 is find,
+  // read and check — the steps `dock.stepsDocked` counts.
+  const resultReady = check.done && (mode !== "firstRun" || dock.stepsDocked >= 3)
   return {
     mode,
     find,
@@ -274,6 +291,7 @@ export function deriveOverviewProgress(
     failingCount,
     history: deriveHistory(inputs.scanStatus?.history),
     stepsDone,
+    resultReady,
     dock,
   }
 }
@@ -286,7 +304,8 @@ let latch: FirstRunLatch = INITIAL_FIRST_RUN_LATCH
 let liveScanStatus: ScanStatus | null = null
 let liveChecksReport: ChecksReportPayload | null = null
 let liveIncludeNonRepoFolders = false
-let liveHasScanHistory: boolean | null = null
+let liveOnboardingCompleted: boolean | null = null
+let liveDeferred: DeferredPermissionDir[] = []
 let liveChecksReportCurrent = false
 let lastPass: LastPass = INITIAL_LAST_PASS
 // Counts scan status updates that show a running pass. A checks report
@@ -294,15 +313,19 @@ let lastPass: LastPass = INITIAL_LAST_PASS
 // arrives makes that report not current.
 let scanRunsSeen = 0
 let requestChecks: (() => void) | null = null
+let refreshFolderPermissions: (() => void) | null = null
 let dock: ProgressDock = INITIAL_DOCK
 let dockTimer: ReturnType<typeof setTimeout> | null = null
+// Set once, the first time the result shows — see `maybeFinishFirstRun`.
+let firstRunFinished = false
 
 function currentInputs(): ProgressInputs {
   return {
     scanStatus: liveScanStatus,
     checksReport: liveChecksReport,
     includeNonRepoFolders: liveIncludeNonRepoFolders,
-    hasScanHistory: liveHasScanHistory,
+    deferred: liveDeferred,
+    onboardingCompleted: liveOnboardingCompleted,
     checksReportCurrent: liveChecksReportCurrent,
   }
 }
@@ -314,6 +337,23 @@ function recompute(): void {
   snapshot = deriveOverviewProgress(latch, currentInputs(), dock, lastPass)
   for (const listener of listeners) listener()
   scheduleDocking()
+  maybeFinishFirstRun()
+}
+
+/**
+ * Commit the first run the moment its result first shows.
+ *
+ * Fires once per store generation, only in `firstRun` mode. A failure is
+ * logged rather than retried: the next launch reads `onboardingCompleted`
+ * still false and shows the first run again, which is an acceptable retry on
+ * its own.
+ */
+function maybeFinishFirstRun(): void {
+  if (firstRunFinished || snapshot.mode !== "firstRun" || !snapshot.resultReady) return
+  firstRunFinished = true
+  void finishFirstRun().catch((error: unknown) => {
+    console.error("finishFirstRun failed", error)
+  })
 }
 
 /**
@@ -352,8 +392,10 @@ function onScanStatus(status: ScanStatus | null): void {
     scanRunsSeen += 1
     liveChecksReportCurrent = false
   } else if (wasRunning) {
-    // The pass saved its sessions. Request a report that includes them.
+    // The pass saved its sessions. Request a report that includes them, and
+    // re-read which protected folders still need permission.
     requestChecks?.()
+    refreshFolderPermissions?.()
   }
   // TEMP ftue-diag
   void ftueDiag("onScanStatus", {
@@ -397,6 +439,9 @@ function logLatch(): void {
 
 function onSettings(settings: AppSettings): void {
   liveIncludeNonRepoFolders = settings.includeNonRepoFolders
+  liveOnboardingCompleted = settings.onboardingCompleted
+  latch = advanceFirstRunLatch(latch, currentInputs())
+  logLatch() // TEMP ftue-diag
   recompute()
 }
 
@@ -404,12 +449,15 @@ function onReset(): void {
   latch = resetFirstRunLatch()
   clearDockTimer()
   dock = INITIAL_DOCK
-  // The wipe clears `scan_state`, so this device has no scan history again
-  // until the pass the reset triggers completes and re-populates it.
-  liveHasScanHistory = false
+  // The wipe clears `onboardingCompleted`, so this device is a first run
+  // again until the pass the reset triggers finishes it.
+  liveOnboardingCompleted = false
   liveChecksReportCurrent = false
   // The wipe also clears every session the last pass found and read.
   lastPass = INITIAL_LAST_PASS
+  // The reset starts a new first run, so its result must call
+  // `finish_first_run` again once it shows.
+  firstRunFinished = false
   void ftueDiag("onReset", { generation, listeners: listeners.size }) // TEMP ftue-diag
   recompute()
 }
@@ -494,18 +542,18 @@ async function start(): Promise<void> {
   }
   requestChecks = refreshChecks
 
-  // The durable "ever scanned before" signal, read directly rather than from
-  // a push event — see {@link FirstRunInputs.hasScanHistory}. Only needs to
-  // resolve once: the latch decides at most once per store generation.
-  function refreshScanHistory(): void {
-    void getScanStatus()
-      .then((status) => {
+  // Which protected folders still need permission, read directly rather
+  // than from a push event. Called once at start, and again whenever a scan
+  // pass finishes — a granted folder or a new protected folder only shows up
+  // through this read.
+  function refreshPermissions(): void {
+    void getFolderPermissions()
+      .then((permissions) => {
         if (thisGeneration !== generation) return
-        liveHasScanHistory = hasScanHistory(status)
+        liveDeferred = permissions.deferred
         // TEMP ftue-diag
-        void ftueDiag("refreshScanHistory resolved", {
-          agentsLen: status?.agents.length ?? null,
-          hasScanHistory: liveHasScanHistory,
+        void ftueDiag("refreshFolderPermissions resolved", {
+          deferredLen: permissions.deferred.length,
         })
         latch = advanceFirstRunLatch(latch, currentInputs())
         logLatch() // TEMP ftue-diag
@@ -513,9 +561,10 @@ async function start(): Promise<void> {
       })
       .catch((error: unknown) => {
         // TEMP ftue-diag
-        void ftueDiag("refreshScanHistory rejected", { error: String(error) })
+        void ftueDiag("refreshFolderPermissions rejected", { error: String(error) })
       })
   }
+  refreshFolderPermissions = refreshPermissions
 
   await Promise.all([
     attach(
@@ -558,7 +607,7 @@ async function start(): Promise<void> {
   if (thisGeneration !== generation) return
   onScanStatus(scanStatusStore.getSnapshot())
   refreshChecks()
-  refreshScanHistory()
+  refreshPermissions()
   void getSettings().then((settings) => {
     if (thisGeneration === generation) onSettings(settings)
   })
@@ -567,6 +616,7 @@ async function start(): Promise<void> {
 function stop(): void {
   generation += 1
   requestChecks = null
+  refreshFolderPermissions = null
   clearDockTimer()
   // TEMP ftue-diag
   void ftueDiag("stop", { generation })

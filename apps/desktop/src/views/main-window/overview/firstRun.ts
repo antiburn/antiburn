@@ -16,13 +16,11 @@ export interface FirstRunInputs {
   scanStatus: ScanStatus | null
   checksReport: ChecksReportPayload | null
   /**
-   * Whether the persisted `scan_state` table has ever recorded a completed
-   * pass for any agent — the durable "this device is not a first run" signal
-   * (`get_scan_status` fills `agents` from that table; a pushed `scan:*`
-   * event does not, so this must come from a direct `getScanStatus()` read,
-   * never from an event payload). Null until that read resolves.
+   * `settings.onboardingCompleted`, at the first settings read of the
+   * session — the durable "this device is not a first run" signal. Null
+   * until that first read resolves.
    */
-  hasScanHistory: boolean | null
+  onboardingCompleted: boolean | null
   /**
    * Whether `checksReport` was requested after the last scan pass finished.
    * A report from before that point can miss the sessions the pass saved,
@@ -46,8 +44,8 @@ export interface FirstRunLatch {
 
 export const INITIAL_FIRST_RUN_LATCH: FirstRunLatch = {
   decided: false,
-  // Not a guess: showing first-run UI before the device's scan history is
-  // known would be as wrong as hiding it would be. Stays hidden until
+  // Not a guess: showing first-run UI before `onboardingCompleted` is known
+  // would be as wrong as hiding it would be. Stays hidden until
   // {@link advanceFirstRunLatch} decides, or {@link resetFirstRunLatch} forces
   // it on.
   showSteps: false,
@@ -64,23 +62,25 @@ export const INITIAL_FIRST_RUN_LATCH: FirstRunLatch = {
  * Advance the latch from one set of inputs.
  *
  * Decides "show the steps block" once, the first time
- * {@link FirstRunInputs.hasScanHistory} is known: true when the device has no
- * persisted scan history, false otherwise. The answer then holds for the
- * rest of the session (see {@link resetFirstRunLatch} for `ftue:reset`).
+ * {@link FirstRunInputs.onboardingCompleted} is known: true (show the steps)
+ * when the stored setting says the first run has not finished, false
+ * otherwise. The answer then holds for the rest of the session (see
+ * {@link resetFirstRunLatch} for `ftue:reset`).
  *
- * `hasScanHistory` — not `ScanStatus.finishedAt` and not the checks report's
- * `evidenceSettled` — is the only signal, because both of those are
+ * `onboardingCompleted` — not `ScanStatus.finishedAt` and not the checks
+ * report's `evidenceSettled` — is the signal, because both of those are
  * ordinarily unsettled for a few seconds after every launch: `finished_at`
  * lives only in the in-memory `ScanController` and is cleared every time a
  * pass starts (`scan/mod.rs`), and `evidenceSettled` goes false while the
  * evidence worker catches up with whatever a live agent session wrote since
  * the last launch. An Overview that read either signal during that window
  * would misread an ordinary launch as a first run and show the steps block
- * every time. The persisted `scan_state` table survives across launches —
- * cleared only by the index wipe — so it tells "never scanned before" from
- * "scanning again" correctly. One accepted consequence: a revision-bump
- * re-ingest does not bring the steps block back, even though it marks
- * evidence unsettled again — intended, since the device has scanned before.
+ * every time. The stored setting survives across launches — cleared only by
+ * an explicit reset — so it tells "never finished a first run" from
+ * "finished one already" correctly. One accepted consequence: a
+ * revision-bump re-ingest does not bring the steps block back, even though
+ * it marks evidence unsettled again — intended, since the device already
+ * finished a first run.
  *
  * Steps 1 and 2 each latch their own numbers the first time they finish, so
  * a later routine pass — every 5 minutes, and every launch, per the scan
@@ -99,11 +99,11 @@ export function advanceFirstRunLatch(
   inputs: FirstRunInputs,
 ): FirstRunLatch {
   let next = latch
-  if (!next.decided && inputs.hasScanHistory != null) {
+  if (!next.decided && inputs.onboardingCompleted != null) {
     next = {
       ...next,
       decided: true,
-      showSteps: !inputs.hasScanHistory,
+      showSteps: !inputs.onboardingCompleted,
     }
   }
   const phase = inputs.scanStatus?.phase
@@ -161,14 +161,4 @@ export function unlatchReadOutcome(latch: FirstRunLatch): FirstRunLatch {
     step3Done: false,
     step3Check: INITIAL_FIRST_RUN_LATCH.step3Check,
   }
-}
-
-/**
- * Whether the persisted `scan_state` table has ever recorded a completed
- * pass for any agent — see {@link FirstRunInputs.hasScanHistory}. Null when
- * `status` itself is unknown (no shell, or the read has not resolved yet).
- */
-export function hasScanHistory(status: ScanStatus | null): boolean | null {
-  if (!status) return null
-  return status.agents.some((agent) => agent.lastCompletedAt != null)
 }

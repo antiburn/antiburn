@@ -5,7 +5,6 @@ import type { ScanStatus } from "../../../lib/ipc"
 import {
   INITIAL_FIRST_RUN_LATCH,
   advanceFirstRunLatch,
-  hasScanHistory,
   resetFirstRunLatch,
   unlatchReadOutcome,
   type FirstRunInputs,
@@ -48,14 +47,14 @@ function inputs(overrides: Partial<FirstRunInputs> = {}): FirstRunInputs {
   return {
     scanStatus: null,
     checksReport: null,
-    hasScanHistory: null,
+    onboardingCompleted: null,
     checksReportCurrent: false,
     ...overrides,
   }
 }
 
 describe("advanceFirstRunLatch", () => {
-  it("stays undecided until the scan history signal is known", () => {
+  it("stays undecided until settings answer onboardingCompleted", () => {
     let latch = advanceFirstRunLatch(
       INITIAL_FIRST_RUN_LATCH,
       inputs({ checksReport: report() }),
@@ -63,7 +62,7 @@ describe("advanceFirstRunLatch", () => {
     expect(latch.decided).toBe(false)
     latch = advanceFirstRunLatch(
       latch,
-      inputs({ checksReport: report(), hasScanHistory: true }),
+      inputs({ checksReport: report(), onboardingCompleted: true }),
     )
     expect(latch.decided).toBe(true)
   })
@@ -76,30 +75,30 @@ describe("advanceFirstRunLatch", () => {
       INITIAL_FIRST_RUN_LATCH,
       inputs({
         checksReport: report({ evidenceSettled: false }),
-        hasScanHistory: true,
+        onboardingCompleted: true,
       }),
     )
     expect(latch.decided).toBe(true)
     expect(latch.showSteps).toBe(false)
   })
 
-  it("decides to show the steps block when the device has no persisted scan history", () => {
+  it("decides to show the steps block when the first run has not finished", () => {
     const latch = advanceFirstRunLatch(
       INITIAL_FIRST_RUN_LATCH,
       inputs({
         checksReport: report({ evidenceSettled: true }),
-        hasScanHistory: false,
+        onboardingCompleted: false,
       }),
     )
     expect(latch.showSteps).toBe(true)
   })
 
-  it("decides to skip the steps block once the device has scanned before", () => {
+  it("decides to skip the steps block once the first run has already finished", () => {
     const latch = advanceFirstRunLatch(
       INITIAL_FIRST_RUN_LATCH,
       inputs({
         checksReport: report({ evidenceSettled: true }),
-        hasScanHistory: true,
+        onboardingCompleted: true,
       }),
     )
     expect(latch.decided).toBe(true)
@@ -111,7 +110,7 @@ describe("advanceFirstRunLatch", () => {
       INITIAL_FIRST_RUN_LATCH,
       inputs({
         checksReport: report({ evidenceSettled: true }),
-        hasScanHistory: true,
+        onboardingCompleted: true,
       }),
     )
     expect(latch.showSteps).toBe(false)
@@ -122,16 +121,16 @@ describe("advanceFirstRunLatch", () => {
       inputs({
         scanStatus: status({ phase: "finding" }),
         checksReport: report({ evidenceSettled: false }),
-        hasScanHistory: true,
+        onboardingCompleted: true,
       }),
     )
     expect(latch.showSteps).toBe(false)
   })
 
-  it("ordinary launch mid-pass, with persisted scan state, shows no steps", () => {
+  it("ordinary launch mid-pass, with a finished first run, shows no steps", () => {
     // A launch runs a full pass, same as a first run: discovery has reset
-    // and is under way. The persisted `scan_state` table (unlike the
-    // in-memory `finishedAt`) still shows this device has scanned before.
+    // and is under way. The stored setting still shows this device already
+    // finished a first run.
     const midLaunchPass = status({
       running: true,
       phase: "finding",
@@ -145,21 +144,21 @@ describe("advanceFirstRunLatch", () => {
       inputs({
         scanStatus: midLaunchPass,
         checksReport: report({ evidenceSettled: false }),
-        hasScanHistory: hasScanHistory(midLaunchPass),
+        onboardingCompleted: true,
       }),
     )
     expect(latch.decided).toBe(true)
     expect(latch.showSteps).toBe(false)
   })
 
-  it("a genuinely empty scan_state table shows the steps block", () => {
+  it("a genuinely new install shows the steps block", () => {
     const firstRunPass = status({ running: true, phase: "finding", agents: [] })
     const latch = advanceFirstRunLatch(
       INITIAL_FIRST_RUN_LATCH,
       inputs({
         scanStatus: firstRunPass,
         checksReport: report({ evidenceSettled: false }),
-        hasScanHistory: hasScanHistory(firstRunPass),
+        onboardingCompleted: false,
       }),
     )
     expect(latch.decided).toBe(true)
@@ -167,9 +166,8 @@ describe("advanceFirstRunLatch", () => {
   })
 
   it("picks up a pass already at the read outcome as done, mid-way", () => {
-    // Onboarding already ran a pass before the Overview opened. Discovery
-    // and the read stage are both finished; only the checks report is not
-    // settled yet.
+    // A pass already ran before the Overview opened. Discovery and the read
+    // stage are both finished; only the checks report is not settled yet.
     const latch = advanceFirstRunLatch(
       INITIAL_FIRST_RUN_LATCH,
       inputs({
@@ -180,7 +178,7 @@ describe("advanceFirstRunLatch", () => {
           gate: { kept: 480, outsideRepository: 20, excluded: 0, unreadable: 0 },
         }),
         checksReport: report({ evidenceSettled: false }),
-        hasScanHistory: false,
+        onboardingCompleted: false,
       }),
     )
     expect(latch.showSteps).toBe(true)
@@ -304,46 +302,10 @@ describe("advanceFirstRunLatch step 3", () => {
   it("does not wait for the read step when the steps block is hidden", () => {
     const latch = advanceFirstRunLatch(
       INITIAL_FIRST_RUN_LATCH,
-      inputs({ checksReport: report({ windowSessions: 44 }), hasScanHistory: true }),
+      inputs({ checksReport: report({ windowSessions: 44 }), onboardingCompleted: true }),
     )
     expect(latch.showSteps).toBe(false)
     expect(latch.step3Done).toBe(true)
-  })
-})
-
-describe("hasScanHistory", () => {
-  it("is null when the status itself is unknown", () => {
-    expect(hasScanHistory(null)).toBeNull()
-  })
-
-  it("is false for a genuinely empty scan_state table", () => {
-    expect(hasScanHistory(status({ agents: [] }))).toBe(false)
-  })
-
-  it("is false when an agent is registered but has never completed a pass", () => {
-    expect(
-      hasScanHistory(
-        status({ agents: [{ agent: "claude-code", lastCompletedAt: null, sessionsSeen: 0 }] }),
-      ),
-    ).toBe(false)
-  })
-
-  it("is true when any agent has a persisted completed pass, even mid-launch", () => {
-    expect(
-      hasScanHistory(
-        status({
-          running: true,
-          phase: "finding",
-          agents: [
-            {
-              agent: "claude-code",
-              lastCompletedAt: "2026-09-30T12:00:00Z",
-              sessionsSeen: 412,
-            },
-          ],
-        }),
-      ),
-    ).toBe(true)
   })
 })
 

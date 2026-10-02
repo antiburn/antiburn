@@ -3,7 +3,12 @@ import { Circle, CircleAlert, CircleCheck } from "lucide-react"
 
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { cn } from "../../../lib/cn"
+import { scanNow } from "../../../lib/ipc"
 import { CHECK_PROBLEM_PHRASES } from "../../../lib/presentation/checkDefinitions"
+import {
+  useFolderPermissionFlow,
+  type FolderPermissionFlow,
+} from "../../../lib/useFolderPermissionFlow"
 import {
   enableNonRepoFolders,
   openFixes,
@@ -81,9 +86,15 @@ export function OverviewFixes() {
     progress.check.done && progress.check.windowSessions > 0 && progress.failingCount === 0
   const hasFixes = progress.check.done && progress.failingCount > 0
 
+  // A granted folder's rescan already feeds back through the store's own
+  // scan-status subscription, which refreshes `read.deferred` once that pass
+  // finishes.
+  const permissionFlow = useFolderPermissionFlow(progress.read.deferred, () => {
+    void scanNow()
+  })
+
   const firstRunStepDocked = (index: number) => !dock.stepsOpen && index < dock.stepsDocked
-  const resultReady =
-    (isEmpty || isClean || hasFixes) && (!isFirstRun || dock.stepsDocked >= STEPS.length)
+  const resultReady = progress.resultReady
   const fixesInMiddle = resultReady && !dock.fixesDocked
 
   const middleSteps = isFirstRun
@@ -91,6 +102,7 @@ export function OverviewFixes() {
     : isSteady && dock.stepsOpen
       ? STEPS
       : []
+  const showWelcome = isFirstRun && dock.stepsDocked === 0
   const showMiddle = middleSteps.length > 0 || fixesInMiddle
   const showRow = mode !== "pending"
 
@@ -123,12 +135,13 @@ export function OverviewFixes() {
           >
             {middleSteps.length > 0 && (
               <div className="flex w-full max-w-[36rem] flex-col gap-(--space-2xl) text-start">
+                {showWelcome && <FirstRunWelcome />}
                 {middleSteps.map((step) => (
                   <div key={step} style={{ viewTransitionName: stepTransitionName(step) }}>
                     {step === "find" ? (
                       <FindStepRow snapshot={progress} />
                     ) : step === "read" ? (
-                      <ReadStepRow snapshot={progress} />
+                      <ReadStepRow snapshot={progress} permissionFlow={permissionFlow} />
                     ) : (
                       <CheckStepRow snapshot={progress} isSteady={isSteady} />
                     )}
@@ -443,6 +456,23 @@ function StepProgressBar({
   )
 }
 
+/**
+ * The first run's own pitch and privacy line, reusing the onboarding
+ * Welcome step's copy. Shown only before the first step docks, so the
+ * steps block gets the full middle area once it is running.
+ */
+function FirstRunWelcome() {
+  return (
+    <div className="flex flex-col gap-(--space-xs) text-center">
+      <p className="type-title-3 text-label">Stop hitting your token limits.</p>
+      <p className="type-footnote text-label-secondary">
+        antiburn reads your coding agent session logs and analyses them locally. No account
+        needed, and your session content is never uploaded.
+      </p>
+    </div>
+  )
+}
+
 function FindStepRow({ snapshot }: { snapshot: OverviewProgress }) {
   const { done, rows } = snapshot.find
   const total = rows.reduce((sum, row) => sum + row.sessions, 0)
@@ -483,7 +513,43 @@ function FindStepRow({ snapshot }: { snapshot: OverviewProgress }) {
   )
 }
 
-function ReadStepRow({ snapshot }: { snapshot: OverviewProgress }) {
+/**
+ * One line asking for the protected folders the last pass could not read,
+ * with a button that starts {@link useFolderPermissionFlow}'s queue. Shown
+ * in the Read step wherever that step shows: the first run and the opened
+ * steps block outside it.
+ */
+function ReadFolderPermissionNotice({
+  deferredCount,
+  permissionFlow,
+}: {
+  deferredCount: number
+  permissionFlow: FolderPermissionFlow
+}) {
+  const asking = permissionFlow.phase === "asking" || permissionFlow.phase === "settling"
+  return (
+    <p className="type-footnote text-label-tertiary">
+      {fmt(deferredCount)} {pluralize(deferredCount, "folder needs", "folders need")} your
+      permission before antiburn can read {pluralize(deferredCount, "it", "them")}.{" "}
+      <button
+        type="button"
+        onClick={permissionFlow.start}
+        disabled={asking}
+        className="underline underline-offset-[3px] hover:text-label-secondary disabled:opacity-50"
+      >
+        {asking ? "Asking…" : "Allow access"}
+      </button>
+    </p>
+  )
+}
+
+function ReadStepRow({
+  snapshot,
+  permissionFlow,
+}: {
+  snapshot: OverviewProgress
+  permissionFlow: FolderPermissionFlow
+}) {
   const { done, completed, total, gate } = snapshot.read
   const started = total > 0
 
@@ -493,6 +559,13 @@ function ReadStepRow({ snapshot }: { snapshot: OverviewProgress }) {
     <div className="flex flex-col gap-2">
       <StepHeading {...data} />
       <StepProgressBar {...data} />
+
+      {snapshot.read.deferred.length > 0 && (
+        <ReadFolderPermissionNotice
+          deferredCount={snapshot.read.deferred.length}
+          permissionFlow={permissionFlow}
+        />
+      )}
 
       {SHOW_READ_GATE_DETAILS && done && gate && (
         <div className="flex flex-col gap-0.5 type-footnote text-label-tertiary">

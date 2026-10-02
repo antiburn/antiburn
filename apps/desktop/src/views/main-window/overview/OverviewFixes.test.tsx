@@ -18,13 +18,20 @@ vi.mock("./overviewProgressStore", () => ({
 }))
 
 function progress(overrides: Partial<OverviewProgress> = {}): OverviewProgress {
-  return {
-    mode: "firstRun",
+  const merged = {
+    mode: "firstRun" as const,
     find: {
       done: true,
       rows: [{ agent: "claude-code", label: "Claude Code", sessions: 49, done: true }],
     },
-    read: { done: false, completed: 0, total: 0, gate: null, includeNonRepoFolders: false },
+    read: {
+      done: false,
+      completed: 0,
+      total: 0,
+      gate: null,
+      includeNonRepoFolders: false,
+      deferred: [],
+    },
     check: { done: false, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
     categories: [],
     failingCount: 0,
@@ -33,12 +40,24 @@ function progress(overrides: Partial<OverviewProgress> = {}): OverviewProgress {
     dock: { stepsDocked: 0, stepsOpen: false, fixesDocked: false },
     ...overrides,
   }
+  // Mirrors `deriveOverviewProgress`'s own formula, so a test only states the
+  // check and dock fields it cares about rather than this derived one too.
+  const resultReady =
+    merged.check.done && (merged.mode !== "firstRun" || merged.dock.stepsDocked >= 3)
+  return { ...merged, resultReady }
 }
 
 describe("OverviewFixes's pending steps", () => {
   it("shows Waiting, not 0/0, for a read step discovery has not sized yet", () => {
     snapshot = progress({
-      read: { done: false, completed: 0, total: 0, gate: null, includeNonRepoFolders: false },
+      read: {
+        done: false,
+        completed: 0,
+        total: 0,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+      },
     })
     render(<OverviewFixes />)
     expect(screen.getByText("Read session data").parentElement).toHaveTextContent("Waiting")
@@ -47,7 +66,14 @@ describe("OverviewFixes's pending steps", () => {
 
   it("shows real numbers for a read step already under way", () => {
     snapshot = progress({
-      read: { done: false, completed: 12, total: 50, gate: null, includeNonRepoFolders: false },
+      read: {
+        done: false,
+        completed: 12,
+        total: 50,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+      },
     })
     render(<OverviewFixes />)
     expect(screen.getByText("12/50")).toBeInTheDocument()
@@ -58,7 +84,14 @@ describe("OverviewFixes's pending steps", () => {
     // while discovery is still mid-pass. The check step must not read as
     // done, or even as counting up, before step 2 does.
     snapshot = progress({
-      read: { done: false, completed: 0, total: 0, gate: null, includeNonRepoFolders: false },
+      read: {
+        done: false,
+        completed: 0,
+        total: 0,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+      },
       check: { done: true, windowSessions: 142, pendingEvidence: 0, deferredEvidence: 0 },
     })
     render(<OverviewFixes />)
@@ -68,7 +101,14 @@ describe("OverviewFixes's pending steps", () => {
 
   it("shows the check step done once both it and the read step finish", () => {
     snapshot = progress({
-      read: { done: true, completed: 49, total: 49, gate: null, includeNonRepoFolders: false },
+      read: {
+        done: true,
+        completed: 49,
+        total: 49,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+      },
       check: { done: true, windowSessions: 142, pendingEvidence: 0, deferredEvidence: 0 },
     })
     render(<OverviewFixes />)
@@ -105,7 +145,14 @@ describe("OverviewFixes's dock row", () => {
       done: true,
       rows: [{ agent: "claude-code", label: "Claude Code", sessions: 47, done: true }],
     },
-    read: { done: true, completed: 47, total: 47, gate: null, includeNonRepoFolders: false },
+    read: {
+      done: true,
+      completed: 47,
+      total: 47,
+      gate: null,
+      includeNonRepoFolders: false,
+      deferred: [],
+    },
     check: { done: true, windowSessions: 43, pendingEvidence: 0, deferredEvidence: 0 },
     categories: [
       {
@@ -174,7 +221,14 @@ describe("OverviewFixes's pending mode", () => {
     snapshot = progress({
       mode: "pending",
       find: { done: false, rows: [] },
-      read: { done: false, completed: 0, total: 0, gate: null, includeNonRepoFolders: false },
+      read: {
+        done: false,
+        completed: 0,
+        total: 0,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+      },
       check: { done: false, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
     })
     render(<OverviewFixes />)
@@ -190,7 +244,14 @@ describe("OverviewFixes's steady mode", () => {
       done: true,
       rows: [{ agent: "claude-code", label: "Claude Code", sessions: 47, done: true }],
     },
-    read: { done: true, completed: 47, total: 47, gate: null, includeNonRepoFolders: false },
+    read: {
+      done: true,
+      completed: 47,
+      total: 47,
+      gate: null,
+      includeNonRepoFolders: false,
+      deferred: [],
+    },
     check: { done: true, windowSessions: 43, pendingEvidence: 1, deferredEvidence: 0 },
     categories: [],
     failingCount: 0,
@@ -211,7 +272,14 @@ describe("OverviewFixes's steady mode", () => {
   it("counts the Run checks cell as started even though read.done is false", () => {
     snapshot = progress({
       ...steady,
-      read: { done: false, completed: 0, total: 0, gate: null, includeNonRepoFolders: false },
+      read: {
+        done: false,
+        completed: 0,
+        total: 0,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+      },
       dock: { stepsDocked: 0, stepsOpen: false, fixesDocked: false },
     })
     render(<OverviewFixes />)
@@ -241,5 +309,55 @@ describe("OverviewFixes's steady mode", () => {
     expect(screen.getByText("Read session data")).toBeInTheDocument()
     expect(screen.getByText("Run session checks")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Shrink" })).toBeInTheDocument()
+  })
+})
+
+describe("OverviewFixes's first-run welcome line", () => {
+  it("shows the pitch before any step has docked", () => {
+    snapshot = progress({ dock: { stepsDocked: 0, stepsOpen: false, fixesDocked: false } })
+    render(<OverviewFixes />)
+    expect(screen.getByText("Stop hitting your token limits.")).toBeInTheDocument()
+  })
+
+  it("hides the pitch once a step has docked", () => {
+    snapshot = progress({ dock: { stepsDocked: 1, stepsOpen: false, fixesDocked: false } })
+    render(<OverviewFixes />)
+    expect(screen.queryByText("Stop hitting your token limits.")).not.toBeInTheDocument()
+  })
+})
+
+describe("OverviewFixes's read step folder permission notice", () => {
+  it("stays hidden with nothing deferred", () => {
+    snapshot = progress({
+      read: {
+        done: false,
+        completed: 0,
+        total: 0,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+      },
+    })
+    render(<OverviewFixes />)
+    expect(screen.queryByText(/needs? your permission/)).not.toBeInTheDocument()
+  })
+
+  it("asks for the deferred folders and starts the flow on click", () => {
+    snapshot = progress({
+      read: {
+        done: false,
+        completed: 0,
+        total: 0,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [{ dir: "/Users/dave/work", pathCount: 3 }],
+      },
+    })
+    render(<OverviewFixes />)
+    expect(
+      screen.getByText(/1 folder needs your permission before antiburn can read it\./),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Allow access" }))
+    expect(screen.getByRole("button", { name: "Asking…" })).toBeInTheDocument()
   })
 })

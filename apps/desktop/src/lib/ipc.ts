@@ -481,6 +481,12 @@ export async function finishOnboarding(
   })
 }
 
+/** Mark the first run finished, as its result first shows in the Overview. */
+export async function finishFirstRun(): Promise<AppSettings> {
+  if (!hasShell()) return { ...DEFAULT_SETTINGS, onboardingCompleted: true }
+  return invoke<AppSettings>("finish_first_run")
+}
+
 /**
  * Per-provider token and cost totals derived from the sessions on this machine.
  *

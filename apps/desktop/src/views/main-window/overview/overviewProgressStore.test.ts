@@ -66,7 +66,8 @@ function inputs(overrides: Partial<ProgressInputs> = {}): ProgressInputs {
     scanStatus: null,
     checksReport: null,
     includeNonRepoFolders: false,
-    hasScanHistory: null,
+    deferred: [],
+    onboardingCompleted: null,
     checksReportCurrent: false,
     ...overrides,
   }
@@ -312,7 +313,7 @@ describe("deriveOverviewProgress", () => {
   it("shows a plain empty state's numbers when the window has no current sessions", () => {
     const emptyInputs = inputs({
       checksReport: report({ evidenceSettled: true, windowSessions: 0, categories: [] }),
-      hasScanHistory: true,
+      onboardingCompleted: true,
     })
     const latch = advanceFirstRunLatch(INITIAL_FIRST_RUN_LATCH, emptyInputs)
     const snapshot = deriveOverviewProgress(latch, emptyInputs, INITIAL_DOCK, INITIAL_LAST_PASS)

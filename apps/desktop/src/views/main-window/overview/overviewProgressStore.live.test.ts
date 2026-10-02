@@ -199,6 +199,10 @@ beforeEach(() => {
         return DEFAULT_TEST_SETTINGS
       case "set_settings":
         return { ...DEFAULT_TEST_SETTINGS, ...(args?.settings as object) }
+      case "get_folder_permissions":
+        return { deferred: [], granted: [], supported: true }
+      case "finish_first_run":
+        return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: true }
       default:
         throw new Error(`Unexpected command: ${command}`)
     }
@@ -317,6 +321,8 @@ describe("overviewProgressStore vs. a denied get_scan_status command", () => {
       if (command === "get_scan_status") throw new Error("main-window: command not allowed")
       if (command === "get_checks_report") return SETTLED_REPORT
       if (command === "get_settings") return DEFAULT_TEST_SETTINGS
+      if (command === "get_folder_permissions")
+        return { deferred: [], granted: [], supported: true }
       throw new Error(`Unexpected command: ${command}`)
     })
     const { subscribeOverviewProgress, overviewProgress } =
@@ -331,17 +337,21 @@ describe("overviewProgressStore vs. a denied get_scan_status command", () => {
     expect(overviewProgress().read.done).toBe(true)
   })
 
-  it("(e) stays stuck on both the first-run decision and the steps when it only ever catches up through the denied read", async () => {
+  it("(e) still resolves the first-run decision when the only recovery read is denied", async () => {
     // The pass already ran and finished before the Overview subscribed (no
-    // events left to catch), and the only recovery path — a direct
-    // `get_scan_status` read — is denied. This is the reported bug: the
-    // steps block never leaves (the "show steps" decision never resolves)
-    // and the find/read steps never latch, even though the device has
-    // scanned before and the pass that already ran found real sessions.
+    // events left to catch), and the usual recovery path — a direct
+    // `get_scan_status` read — is denied. This used to be the reported bug:
+    // the old "ever scanned before" signal came from that same denied read,
+    // so the steps block's decision never resolved. `onboardingCompleted`
+    // comes from `get_settings` instead, a call this scenario does not deny,
+    // so the decision — and the steps the find/read steps never latch to —
+    // resolve regardless.
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === "get_scan_status") throw new Error("main-window: command not allowed")
       if (command === "get_checks_report") return SETTLED_REPORT
       if (command === "get_settings") return DEFAULT_TEST_SETTINGS
+      if (command === "get_folder_permissions")
+        return { deferred: [], granted: [], supported: true }
       throw new Error(`Unexpected command: ${command}`)
     })
     runLaunchPass()
@@ -351,16 +361,15 @@ describe("overviewProgressStore vs. a denied get_scan_status command", () => {
     const stop = subscribeOverviewProgress(() => undefined)
     stops.push(stop)
 
-    // Give every microtask queue a chance to drain.
-    await vi.waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith("get_checks_report", expect.anything()),
-    )
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
+    await vi.waitFor(() => expect(overviewProgress().mode).toBe("steady"))
+    // Neither step 1 nor step 2 ever latches without the denied read to
+    // source their rows from — the steady row falls back to whatever
+    // `scanStatusStore`'s own snapshot holds, which is also empty here.
     expect(overviewProgress().find.done).toBe(false)
     expect(overviewProgress().read.done).toBe(false)
-    // Step 3 waits for the first-run decision, so it does not finish either.
-    expect(overviewProgress().check.done).toBe(false)
+    // Step 3 does not wait on either of them outside the steps block: it
+    // finishes from the settled checks report alone.
+    await vi.waitFor(() => expect(overviewProgress().check.done).toBe(true))
   })
 })
 
