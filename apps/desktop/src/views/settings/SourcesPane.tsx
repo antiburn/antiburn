@@ -16,6 +16,7 @@ import { scanStatusStore, withKnownAgents } from "../../lib/scanStatusStore"
 import type { LocalRepositoryItem } from "../../lib/types/repository"
 import { useFolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
 import { scanStatusLabel } from "../popover/ScanStatusBar"
+import { ClaudeProfilesSection } from "./ClaudeProfilesSection"
 import { SourcesSession } from "./SourcesSession"
 import { RemoteHostsSection } from "./RemoteHostsSection"
 import { useAppSettings } from "./useAppSettings"
@@ -41,10 +42,8 @@ export interface SourcesPaneProps {
 
 export function SourcesPane({ discoveryPaused, appVersion = "VERSION" }: SourcesPaneProps) {
   const [session] = useState(() => new SourcesSession())
-  const { repositories, scanRoots, permissions, scanning, remote } = useSyncExternalStore(
-    session.subscribe,
-    session.getSnapshot,
-  )
+  const { repositories, scanRoots, permissions, scanning, remote, claudeProfiles } =
+    useSyncExternalStore(session.subscribe, session.getSnapshot)
   const scanStatus = useSyncExternalStore(
     scanStatusStore.subscribe,
     scanStatusStore.getSnapshot,
@@ -177,6 +176,8 @@ export function SourcesPane({ discoveryPaused, appVersion = "VERSION" }: Sources
             })}
           </Card>
         </SettingsSectionGroup>
+
+        <ClaudeProfilesSection claudeProfiles={claudeProfiles} session={session} />
 
         <SettingsSectionGroup
           searchId="sourceFolders"

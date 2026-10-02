@@ -600,11 +600,14 @@ export async function getLiveUsage(
  *
  * The offset makes "used today" use the reader's calendar day.
  */
-export async function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
+export async function refreshLiveUsage(
+  options: { retry?: boolean } = {},
+): Promise<LiveUsageSummaryPayload> {
   if (!hasShell()) return EMPTY_LIVE_USAGE
   return (
     (await invoke<LiveUsageSummaryPayload | null>("refresh_live_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
+      ...(options.retry ? { retry: true } : {}),
     })) ?? EMPTY_LIVE_USAGE
   )
 }

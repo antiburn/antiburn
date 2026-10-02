@@ -2,6 +2,11 @@ import type { HygieneSummary } from "../../../src/lib/insightsIpc"
 import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
+import {
+  claudeProfilesFixtureCommand,
+  claudeProfilesLiveUsage,
+  hasClaudeProfilesFixture,
+} from "./claudeProfiles"
 import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
 
 declare global {
@@ -323,6 +328,15 @@ const nudge = {
 
 function dataFor(command: string, args: Record<string, unknown> | undefined): unknown {
   if (command.includes("remote_")) return remoteFixtureCommand(command, args)
+  if (hasClaudeProfilesFixture() && command.includes("claude_profile")) {
+    return claudeProfilesFixtureCommand(command, args)
+  }
+  if (
+    hasClaudeProfilesFixture() &&
+    (command === "get_live_usage" || command === "refresh_live_usage")
+  ) {
+    return claudeProfilesLiveUsage(liveUsage)
+  }
   const state = fixtureState()
   const fault = fixtureFault()
   const empty = state === "empty"
@@ -438,6 +452,20 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return ["/Users/fixture/.codex", "/Users/fixture/.claude"]
     case "list_scan_roots":
       return ["/Users/fixture/projects"]
+    case "list_claude_profiles":
+      return {
+        profiles: [
+          {
+            id: "default",
+            label: "Claude",
+            path: "/Users/fixture/.claude",
+            builtIn: true,
+          },
+        ],
+        suggestions: [],
+        maxProfiles: 16,
+        maxLabelChars: 80,
+      }
     case "list_repositories":
       return empty
         ? []

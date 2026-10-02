@@ -21,6 +21,7 @@ import { agentDisplayName } from "../../lib/presentation/agents"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { SettingsRow, SettingsSectionGroup } from "./SettingsSearchRows"
 import type { SourcesSession } from "./SourcesSession"
+import { makeDialogBackgroundInert, trapDialogFocus } from "./settingsDialog"
 import { openMainWindowRemoteHost } from "../../lib/mainWindowIpc"
 import "./remote-hosts.css"
 
@@ -35,38 +36,10 @@ const SYNC_OPTIONS: readonly { value: RemoteSyncIntervalSecs; label: string }[] 
 
 const ACTION_TARGET = "relative before:absolute before:inset-x-0 before:-inset-y-2.5"
 
-function makeDialogBackgroundInert(node: HTMLDivElement) {
-  const appRoot = node.ownerDocument.getElementById("root")
-  const wasInert = appRoot?.hasAttribute("inert")
-  appRoot?.setAttribute("inert", "")
-  return () => {
-    if (!wasInert) appRoot?.removeAttribute("inert")
-  }
-}
-
 function lastSyncLabel(epoch: number | null): string {
   return epoch == null
     ? "Never synced"
     : `Synced ${relativeTime(new Date(epoch * 1000).toISOString())}`
-}
-
-function trapDialogFocus(event: React.KeyboardEvent<HTMLElement>, close: () => void) {
-  if (event.key === "Escape") return close()
-  if (event.key !== "Tab") return
-  const controls = Array.from(
-    event.currentTarget.querySelectorAll<HTMLElement>(
-      "button:not(:disabled), input:not(:disabled), select:not(:disabled)",
-    ),
-  )
-  const first = controls[0]
-  const last = controls.at(-1)
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault()
-    last?.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault()
-    first?.focus()
-  }
 }
 
 function SetupInstructions({

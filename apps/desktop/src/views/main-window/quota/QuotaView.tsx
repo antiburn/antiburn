@@ -124,12 +124,18 @@ function windowNoun(
   return `${/^[aeiou]/i.test(words) ? "an" : "a"} ${words}`
 }
 
-/** The provider's display name, plus "account n" only when this provider has more than one. */
+/**
+ * The reader's profile label when the account has one. Otherwise the
+ * provider's display name, plus "account n" only when this provider has more
+ * than one.
+ */
 function accountLabel(
   account: QuotaAccountPayload,
   accounts: readonly QuotaAccountPayload[],
   numbers: ReadonlyMap<string, number>,
 ): string {
+  const label = account.accountLabel?.trim()
+  if (label) return label
   const sameProvider = accounts.filter((candidate) => candidate.provider === account.provider)
   if (sameProvider.length <= 1) return account.displayName
   const number = numbers.get(account.accountKey)
