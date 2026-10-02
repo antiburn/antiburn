@@ -39,6 +39,7 @@ export function OverviewUsage({
   allowance,
   allowanceLoading = false,
   allowanceError = false,
+  allowanceCollecting = false,
   usageError = false,
   onRetryUsage,
   loading = false,
@@ -50,6 +51,7 @@ export function OverviewUsage({
   allowance: AllowanceUsageSummaryPayload | null
   allowanceLoading?: boolean
   allowanceError?: boolean
+  allowanceCollecting?: boolean
   usageError?: boolean
   onRetryUsage?: () => void
   loading?: boolean
@@ -123,6 +125,7 @@ export function OverviewUsage({
             utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
             loading={allowanceLoading}
             error={allowanceError}
+            collecting={allowanceCollecting}
             selectedKey={chartOpen && selectedAccount ? accountTabKey(selectedAccount) : null}
             onSelect={selectTab}
           />

@@ -62,7 +62,8 @@ const CURRENT_EVIDENCE_PREDICATE: &str = "
     AND NOT (e.evidence_schema_revision IS NOT ?6)";
 
 const DENOMINATOR_SQL: &str = "
-SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
+SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending),
+       SUM(evidence_deferred)
   FROM (
     SELECT CASE
              WHEN s.started_at_epoch IS NULL THEN 'unknown_start'
@@ -76,7 +77,9 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
            CASE WHEN s.started_at_epoch IS NOT NULL AND e.status IS NULL
                  THEN 1 ELSE 0 END AS awaiting_provider_support,
             CASE WHEN e.status = 'pending' OR e.status = 'processing'
-                 THEN 1 ELSE 0 END AS evidence_pending
+                 THEN 1 ELSE 0 END AS evidence_pending,
+            CASE WHEN e.status = 'pending' AND e.next_attempt_at_epoch > ?7
+                 THEN 1 ELSE 0 END AS evidence_deferred
       FROM session s
       LEFT JOIN session_evidence e
         ON e.environment_key = s.environment_key
@@ -214,6 +217,9 @@ pub struct ReducedReport {
     pub report: EfficiencyReport,
     pub evidence_settled: bool,
     pub pending_evidence: u64,
+    /// The subset of `pending_evidence` that waits for a retry backoff.
+    /// The worker cannot claim these rows before their next attempt time.
+    pub deferred_evidence: u64,
     pub(crate) resources: ResourceAssessment,
 }
 
@@ -297,6 +303,7 @@ fn reduce_with_state_on_snapshot(
     let transaction = connection.unchecked_transaction()?;
     let mut coverage = CoverageCounts::default();
     let mut pending_evidence = 0_u64;
+    let mut deferred_evidence = 0_u64;
     let denominator_sql = DENOMINATOR_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
     {
         let mut statement = transaction.prepare(&denominator_sql)?;
@@ -307,6 +314,7 @@ fn reduce_with_state_on_snapshot(
             PARSER_REVISION,
             ANALYZER_REVISION,
             EVIDENCE_SCHEMA_REVISION,
+            request.computed_at_epoch,
         ])?;
         while let Some(row) = rows.next()? {
             let bucket = coverage_bucket(row.get::<_, String>(0)?.as_str())?;
@@ -315,6 +323,7 @@ fn reduce_with_state_on_snapshot(
             coverage.observe(bucket, count);
             coverage.awaiting_provider_support += awaiting_provider_support;
             pending_evidence += u64::try_from(row.get::<_, i64>(3)?)?;
+            deferred_evidence += u64::try_from(row.get::<_, i64>(4)?)?;
         }
     }
     ensure!(
@@ -523,6 +532,7 @@ fn reduce_with_state_on_snapshot(
         report,
         evidence_settled: pending_evidence == 0,
         pending_evidence,
+        deferred_evidence,
         resources,
     })
 }
@@ -3646,6 +3656,57 @@ pub(crate) mod tests {
 
             assert_eq!(report.report.context.coverage.unknown_start, 1);
             assert!(!report.evidence_settled);
+        }
+
+        #[tokio::test]
+        async fn a_backed_off_session_counts_as_deferred_until_its_next_attempt() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+            store
+                .upsert_sessions(&[session("live", 130, "sv1:live")], &["claude-code"])
+                .unwrap();
+            let claim = store
+                .claim_next_evidence(&["claude-code"], 10, 60)
+                .unwrap()
+                .unwrap();
+            assert_eq!(claim.key.session_id, "live");
+            assert!(
+                store
+                    .fail_evidence(
+                        &claim,
+                        EvidenceFailure::Retry {
+                            next_attempt_at_epoch: 230,
+                            counts_as_attempt: true,
+                        },
+                        "source_changed",
+                    )
+                    .unwrap()
+            );
+
+            let backed_off = reduce_report(
+                data_dir.path().to_path_buf(),
+                request(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
+            assert_eq!(backed_off.pending_evidence, 1);
+            assert_eq!(backed_off.deferred_evidence, 1);
+            assert!(!backed_off.evidence_settled);
+
+            let due = reduce_report(
+                data_dir.path().to_path_buf(),
+                ReportRequest {
+                    computed_at_epoch: 230,
+                    ..request()
+                },
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
+            assert_eq!(due.pending_evidence, 1);
+            assert_eq!(due.deferred_evidence, 0);
         }
     }
 

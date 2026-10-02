@@ -1296,9 +1296,30 @@ pub async fn get_scan_status(app: tauri::AppHandle) -> CommandResult<ScanStatus>
                 sessions_seen,
             })
             .collect();
+        // TEMP ftue-diag
+        ::tracing::info!(
+            event = "ftue_diag",
+            message = "get_scan_status",
+            phase = ?status.phase,
+            running = status.running,
+            agents_len = status.agents.len(),
+        );
         Ok(status)
     })
     .await
+}
+
+/// TEMP ftue-diag: a debug-only sink for `ftueStore`'s own frontend-side
+/// trace lines, so they land in the same debug log as the backend's.
+/// Never committed — strip before any PR.
+#[tauri::command]
+pub fn ftue_diag(message: String, data: serde_json::Value) {
+    #[cfg(debug_assertions)]
+    ::tracing::info!(event = "ftue_diag", message = %message, data = %data);
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (message, data);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -2336,6 +2357,17 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     wipe_local_session_data(&app).await
 }
 
+/// Debug tool: return the app to a new install's first run. Runs the wipe
+/// [`reset_ftue`] runs, returns the main window to its default placement, and
+/// restarts onboarding. Preferences stay, as in [`clear_local_index`].
+#[cfg(debug_assertions)]
+pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> {
+    wipe_local_session_data(&app).await?;
+    crate::main_window::on_main_value(&app, crate::main_window::reset_placement).await?;
+    let _ = app.emit(FTUE_RESET_EVENT, ());
+    restart_onboarding(app).await
+}
+
 /// Event asking the retained renderer to replay the Overview's demo FTUE run.
 /// Only [`reset_ftue`] emits it, hence the `cfg`; the webview's own listener
 /// matches this string as its own literal, since it cannot import a Rust
@@ -2347,19 +2379,42 @@ pub const FTUE_RESET_EVENT: &str = "ftue:reset";
 ///
 /// This runs the exact wipe [`clear_local_index`] runs, so the real scan and
 /// analysis pipeline reads every session again from zero. It does not reset
-/// onboarding; combine with "Reset Onboarding" for a full first-run replay.
+/// onboarding; "Reset Onboarding" ([`reset_first_run`]) also does that.
 ///
 /// Not a `#[tauri::command]`: the debug tray is its only caller, so it is a
 /// plain function rather than an IPC surface a release build would still
 /// register and any webview could invoke.
 #[cfg(debug_assertions)]
 pub(crate) async fn reset_ftue(app: tauri::AppHandle) -> CommandResult<()> {
-    wipe_local_session_data(&app).await?;
-    crate::main_window::on_main_value(&app, |app| {
+    // TEMP ftue-diag
+    ::tracing::info!(event = "ftue_diag", message = "reset_ftue: start");
+    let removed = wipe_local_session_data(&app).await;
+    // TEMP ftue-diag
+    ::tracing::info!(
+        event = "ftue_diag",
+        message = "reset_ftue: wipe done",
+        removed = ?removed.as_ref().ok(),
+        error = ?removed.as_ref().err().map(|error| format!("{error:?}")),
+    );
+    removed?;
+    let opened = crate::main_window::on_main_value(&app, |app| {
         crate::main_window::open_at_section(app, crate::main_window::MainWindowSection::Overview)
     })
-    .await??;
-    let _ = app.emit(FTUE_RESET_EVENT, ());
+    .await;
+    // TEMP ftue-diag
+    ::tracing::info!(
+        event = "ftue_diag",
+        message = "reset_ftue: main window opened",
+        ok = matches!(opened, Ok(Ok(_))),
+    );
+    opened??;
+    let emitted = app.emit(FTUE_RESET_EVENT, ());
+    // TEMP ftue-diag
+    ::tracing::info!(
+        event = "ftue_diag",
+        message = "reset_ftue: ftue:reset emitted",
+        ok = emitted.is_ok(),
+    );
     Ok(())
 }
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ftue-diag"
+description = "Enables the ftue_diag command without any pre-configured scope."
+commands.allow = ["ftue_diag"]
+
+[[permission]]
+identifier = "deny-ftue-diag"
+description = "Denies the ftue_diag command without any pre-configured scope."
+commands.deny = ["ftue_diag"]

@@ -27,6 +27,7 @@ function report(categories: ChecksCategoryPayload[]): ChecksReportPayload {
     evidenceSettled: true,
     windowSessions: 0,
     pendingEvidence: 0,
+    deferredEvidence: 0,
     estimatedTokenBurnBasisPoints: 1_625,
     categories,
   }
@@ -204,6 +205,7 @@ describe("Checks presentation", () => {
       ]),
       evidenceSettled: false,
       pendingEvidence: 1,
+      deferredEvidence: 0,
     })
 
     expect(presentation.noActiveChecks).toBe(false)

@@ -48,6 +48,9 @@ export interface ChecksReportPayload {
   windowSessions: number
   /** Sessions with evidence queued or processing for this report window. */
   pendingEvidence: number
+  /** The subset of `pendingEvidence` that waits for a retry backoff, for
+   *  example a live session whose transcript changed during its check. */
+  deferredEvidence: number
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
   /** Aggregate burn indexed by the active detector bit mask in canonical detector order. */

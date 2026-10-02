@@ -298,8 +298,8 @@ pub struct ScanStatus {
     /// value once a pass ends, the same as every other field here — a fresh
     /// pass moves it forward again from [`ScanPhase::Finding`].
     pub phase: ScanPhase,
-    /// Sessions each agent explorer found this pass, filled in as each
-    /// explorer finishes. An agent that found none is absent.
+    /// One entry for each agent a full pass searches, in a fixed order. Each
+    /// entry gets its count and `done` when that agent's explorer finishes.
     pub found_by_agent: Vec<AgentFoundCount>,
     /// Progress through the metadata-read stage.
     pub read: ReadProgress,
@@ -331,6 +331,9 @@ pub struct AgentFoundCount {
     /// payload carries the fact, not the wording.
     pub agent: String,
     pub sessions: usize,
+    /// Whether this agent's explorer has finished. `sessions` is final only
+    /// when this is true.
+    pub done: bool,
 }
 
 /// Progress through the metadata-read stage.
@@ -952,6 +955,9 @@ pub struct ChecksReportPayload {
     pub window_sessions: u64,
     /// Sessions with evidence that is queued or processing for this report window.
     pub pending_evidence: u64,
+    /// The subset of `pending_evidence` that waits for a retry backoff, for
+    /// example a live session whose transcript changed during its pass.
+    pub deferred_evidence: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
     /// Aggregate burn for each detector bit mask in canonical `DetectorId` order.
@@ -2627,6 +2633,7 @@ impl ChecksReportPayload {
             &report.report,
             report.evidence_settled,
             report.pending_evidence,
+            report.deferred_evidence,
             &resource_assessments,
         );
         for detector in resource_detectors {
@@ -2656,14 +2663,22 @@ impl ChecksReportPayload {
         report: &EfficiencyReport,
         evidence_settled: bool,
         pending_evidence: u64,
+        deferred_evidence: u64,
     ) -> Self {
-        Self::from_report_with_resources(report, evidence_settled, pending_evidence, &[])
+        Self::from_report_with_resources(
+            report,
+            evidence_settled,
+            pending_evidence,
+            deferred_evidence,
+            &[],
+        )
     }
 
     fn from_report_with_resources(
         report: &EfficiencyReport,
         evidence_settled: bool,
         pending_evidence: u64,
+        deferred_evidence: u64,
         resources: &[antiburn_local::insights::ResourceTokenBurnAssessment<'_>],
     ) -> Self {
         let categories = DetectorId::ALL
@@ -2699,6 +2714,7 @@ impl ChecksReportPayload {
             evidence_settled,
             window_sessions: report.context.coverage.discovered,
             pending_evidence,
+            deferred_evidence,
             estimated_token_burn_basis_points,
             estimated_token_burn_basis_points_by_detector_mask,
             categories,
@@ -3320,8 +3336,8 @@ mod tests {
                 not_applicable: 0,
             };
 
-            let value =
-                serde_json::to_value(ChecksReportPayload::from_report(&report, true, 0)).unwrap();
+            let value = serde_json::to_value(ChecksReportPayload::from_report(&report, true, 0, 0))
+                .unwrap();
             assert_eq!(
                 value["categories"][0]["agents"],
                 serde_json::json!(["claude-code", "codex"])
@@ -3363,6 +3379,7 @@ mod tests {
                 top_keys,
                 [
                     "categories",
+                    "deferredEvidence",
                     "estimatedTokenBurnBasisPoints",
                     "estimatedTokenBurnBasisPointsByDetectorMask",
                     "evidenceSettled",
@@ -3393,7 +3410,8 @@ mod tests {
             assert_eq!(value["categories"][0]["unavailable"], 1);
 
             let value =
-                serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4)).unwrap();
+                serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4, 0))
+                    .unwrap();
             assert_eq!(value["evidenceSettled"], false);
             assert_eq!(value["pendingEvidence"], 4);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_000);

@@ -779,11 +779,27 @@ pub(crate) async fn try_run_pass(
             // otherwise see a finished full pass's result go blank.
             if full_pass {
                 status.phase = ScanPhase::Finding;
-                status.found_by_agent = Vec::new();
+                // Every agent this pass searches, in a fixed order, so a
+                // reader sees which agents are still searching.
+                status.found_by_agent = AgentKind::ALL
+                    .iter()
+                    .map(|agent| AgentFoundCount {
+                        agent: agent.slug().to_string(),
+                        sessions: 0,
+                        done: false,
+                    })
+                    .collect();
                 status.read = ReadProgress::default();
                 status.gate = None;
             }
         });
+        // TEMP ftue-diag
+        ::tracing::info!(
+            event = "ftue_diag",
+            message = "scan:started",
+            phase = ?started.phase,
+            found_by_agent_len = started.found_by_agent.len(),
+        );
         let _ = app.emit(EVENT_STARTED, started);
     }
     ::tracing::debug!(event = "scan_pass_started", trigger = trigger.label());
@@ -849,6 +865,13 @@ pub(crate) async fn try_run_pass(
             );
         }
     }
+    // TEMP ftue-diag
+    ::tracing::info!(
+        event = "ftue_diag",
+        message = "scan:finished",
+        phase = ?finished.phase,
+        found_by_agent_len = finished.found_by_agent.len(),
+    );
     let _ = app.emit(EVENT_FINISHED, finished.clone());
     // The outcome, not a shaped event: whether this pass is worth reporting at
     // all is an analytics question, and this scheduler runs a full pass every
@@ -961,11 +984,13 @@ async fn pass(
                             status.completed_agents = completed;
                             status.total_agents = total;
                             status.sessions += found;
-                            if found > 0 {
-                                status.found_by_agent.push(AgentFoundCount {
-                                    agent: agent.slug().to_string(),
-                                    sessions: found,
-                                });
+                            if let Some(entry) = status
+                                .found_by_agent
+                                .iter_mut()
+                                .find(|entry| entry.agent == agent.slug())
+                            {
+                                entry.sessions = found;
+                                entry.done = true;
                             }
                         });
                         let _ = progress_app.emit(EVENT_PROGRESS, status);

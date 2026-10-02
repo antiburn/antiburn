@@ -554,6 +554,8 @@ pub(crate) async fn process_next(
     // while the backlog still read idle.
     on_claimed();
     let Some(record) = store.session(&claim.key)? else {
+        // TEMP ftue-diag
+        ::tracing::info!(event = "insights_claim_no_session", session_id = %claim.key.session_id, fence = claim.claim_fence);
         return Ok(true);
     };
     let Some(_agent) = crate::agents::kind_from_slug(&record.key.agent) else {
@@ -574,6 +576,8 @@ pub(crate) async fn process_next(
                 }
                 progress = observed;
                 if !store.renew_evidence_lease(&claim, clock(), LEASE_SECS)? {
+                    // TEMP ftue-diag
+                    ::tracing::info!(event = "insights_lease_lost", session_id = %claim.key.session_id, fence = claim.claim_fence);
                     signal.cancel();
                     let _ = pass.await;
                     break None;
@@ -587,6 +591,31 @@ pub(crate) async fn process_next(
     pass.analysis.analyzed_generation = claim.source_generation;
     let outcome = apply_outcome(store, &claim, &pass, clock())?;
     let published = outcome.applied && pass.outcome == PassOutcome::Published;
+    if !outcome.applied {
+        // TEMP ftue-diag
+        ::tracing::info!(
+            event = "insights_outcome_not_applied",
+            session_id = %claim.key.session_id,
+            fence = claim.claim_fence,
+            claim_generation = ?claim.source_generation,
+            outcome = ?pass.outcome,
+        );
+    }
+    if pass.outcome != PassOutcome::Published {
+        // Log each pass that does not publish. A retry sets a backoff, and
+        // the checks report then counts the session as deferred.
+        let row = store.evidence(&claim.key)?;
+        ::tracing::info!(
+            event = "insights_evidence_not_published",
+            agent = %claim.key.agent,
+            session_id = %claim.key.session_id,
+            outcome = ?pass.outcome,
+            applied = outcome.applied,
+            retry_count = claim.retry_count,
+            status = ?row.as_ref().map(|row| row.status),
+            next_attempt_at_epoch = ?row.and_then(|row| row.next_attempt_at_epoch),
+        );
+    }
     if published {
         fork_lineage::link_claude_fork(store, &claim.key)?;
         announce(&claim.key);
@@ -706,6 +735,10 @@ pub(crate) async fn worker_loop(
                         processed = drained,
                         elapsed_ms
                     );
+                    // TEMP ftue-diag
+                    for row in store.unsettled_evidence_rows().unwrap_or_default() {
+                        ::tracing::info!(event = "insights_unsettled_after_drain", now = clock(), row = %row);
+                    }
                     (signals.backlog)(false);
                 }
                 if processed {

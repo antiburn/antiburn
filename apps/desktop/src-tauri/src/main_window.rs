@@ -1817,6 +1817,27 @@ pub fn close(window: &WebviewWindow) {
     emit_visibility_changed(window);
 }
 
+/// Debug tool: forget the saved placement, return the main window to its
+/// default size and position, and hide it, as for a new install.
+#[cfg(debug_assertions)]
+pub(crate) fn reset_placement(app: &AppHandle) {
+    debug_assert_main_thread();
+    let state = app.state::<MainWindowState>();
+    state.placement_generation.fetch_add(1, Ordering::AcqRel);
+    *lock(&state.placement) = None;
+    app.state::<Store>().remove_internal_value(PLACEMENT_KEY);
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    match antiburn_main_window::reset_placement(&window) {
+        Ok(placement) => *lock(&state.placement) = Some(placement),
+        Err(error) => {
+            ::tracing::warn!(event = "main_window_placement_reset_failed", error = %error);
+        }
+    }
+    close(&window);
+}
+
 /// Read whether the main window can present work without treating blur as hidden.
 pub fn is_visible(window: &WebviewWindow) -> bool {
     #[cfg(target_os = "macos")]

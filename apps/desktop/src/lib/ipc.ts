@@ -678,6 +678,15 @@ export async function scanNow(activityWindowDays?: number): Promise<ScanStatus |
     : invoke<ScanStatus>("scan_now", { activityWindowDays })
 }
 
+// TEMP ftue-diag: never commit. Debug-only sink so `overviewProgressStore`'s
+// own trace lines land in the same antiburn-debug log as the backend's.
+export async function ftueDiag(message: string, data: unknown): Promise<void> {
+  if (!hasShell()) return
+  await invoke("ftue_diag", { message, data }).catch((error: unknown) => {
+    console.error("ftue_diag failed", error)
+  })
+}
+
 /** What the current or last scan is doing. */
 export async function getScanStatus(): Promise<ScanStatus | null> {
   if (!hasShell()) return null

@@ -201,10 +201,13 @@ export interface AgentFoundCount {
    *  `agentDisplayName` before rendering it. */
   agent: string
   sessions: number
+  /** Whether this agent's search has finished. `sessions` is final only
+   *  when this is true. */
+  done: boolean
 }
 
 /** Progress through the metadata-read stage. Mirrors Rust `ReadProgress`. */
-export interface ReadProgress {
+interface ReadProgress {
   completed: number
   total: number
 }

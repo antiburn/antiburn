@@ -112,6 +112,14 @@ where
     })
 }
 
+/// Return a window to the default size, centered on the active monitor.
+pub fn reset_placement(window: &WebviewWindow) -> tauri::Result<Placement> {
+    if window.is_maximized()? {
+        window.unmaximize()?;
+    }
+    apply_placement(window, None)
+}
+
 /// Show and focus an existing renderer.
 pub fn reveal(window: &WebviewWindow) -> tauri::Result<()> {
     window.show()?;

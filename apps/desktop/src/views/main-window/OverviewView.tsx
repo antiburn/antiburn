@@ -5,8 +5,8 @@ import { cn } from "../../lib/cn"
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { type MainOverviewSession } from "./MainOverviewSession"
-import { ftueSnapshot, subscribeFtue } from "./overview/ftueStore"
 import { OverviewFixes } from "./overview/OverviewFixes"
+import { overviewProgress, subscribeOverviewProgress } from "./overview/overviewProgressStore"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
@@ -31,11 +31,16 @@ export function OverviewView({
     session.getSnapshot,
   )
   // The first-run scan reveals these cards as each real stage ends. Outside
-  // first run (`showSteps` false) both cards show at once, same as the rest
-  // of the page.
-  const ftue = useSyncExternalStore(subscribeFtue, ftueSnapshot, ftueSnapshot)
-  const readingDone = !ftue.showSteps || ftue.read.done
-  const analysisDone = !ftue.showSteps || ftue.check.done
+  // first run (`mode` not `"firstRun"`) both cards show at once, same as the
+  // rest of the page.
+  const progress = useSyncExternalStore(
+    subscribeOverviewProgress,
+    overviewProgress,
+    overviewProgress,
+  )
+  const isFirstRun = progress.mode === "firstRun"
+  const readingDone = !isFirstRun || progress.read.done
+  const analysisDone = !isFirstRun || progress.check.done
   const [selectedMetric, setMetric] = useState<OverviewMetric | null>(() => {
     const saved = readOverviewViewPrefs().metric
     return saved === "cost" || saved === "allowance" ? saved : null
@@ -110,6 +115,7 @@ export function OverviewView({
               allowance={state.allowance}
               allowanceLoading={state.allowanceLoading || !metricSettled}
               allowanceError={state.allowanceError}
+              allowanceCollecting={isFirstRun}
               usageError={state.usageError}
               onRetryUsage={session.refresh}
               loading={loading}

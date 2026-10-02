@@ -22,6 +22,7 @@ macro_rules! with_app_commands {
             main_window::existing_main_window_session_targets => "existing_main_window_session_targets",
             commands::export_diagnostics => "export_diagnostics",
             commands::finish_onboarding => "finish_onboarding",
+            commands::ftue_diag => "ftue_diag", // TEMP ftue-diag
             commands::get_consent_diagnostics => "get_consent_diagnostics",
             commands::get_checks_report => "get_checks_report",
             commands::get_folder_permissions => "get_folder_permissions",

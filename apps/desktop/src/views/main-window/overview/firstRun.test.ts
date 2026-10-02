@@ -1,17 +1,16 @@
 import { describe, expect, it } from "vitest"
 
-import type { ChecksCategoryPayload, ChecksReportPayload } from "../../../lib/insightsIpc"
+import type { ChecksReportPayload } from "../../../lib/insightsIpc"
 import type { ScanStatus } from "../../../lib/ipc"
 import {
-  INITIAL_FTUE_LATCH,
-  advanceFtueLatch,
-  deriveFtueSnapshot,
+  INITIAL_FIRST_RUN_LATCH,
+  advanceFirstRunLatch,
   hasScanHistory,
-  resetFtueLatch,
+  resetFirstRunLatch,
   unlatchReadOutcome,
-  type FtueInputs,
-  type FtueLatch,
-} from "./ftueStore"
+  type FirstRunInputs,
+  type FirstRunLatch,
+} from "./firstRun"
 
 function status(overrides: Partial<ScanStatus> = {}): ScanStatus {
   return {
@@ -33,44 +32,39 @@ function status(overrides: Partial<ScanStatus> = {}): ScanStatus {
   }
 }
 
-function category(overrides: Partial<ChecksCategoryPayload> = {}): ChecksCategoryPayload {
-  return {
-    id: "modelOverthinking",
-    lifecycle: "passing",
-    finding: 0,
-    clean: 10,
-    unavailable: 0,
-    estimatedTokenBurnBasisPoints: null,
-    ...overrides,
-  }
-}
-
 function report(overrides: Partial<ChecksReportPayload> = {}): ChecksReportPayload {
   return {
     evidenceSettled: true,
     windowSessions: 0,
     pendingEvidence: 0,
+    deferredEvidence: 0,
     estimatedTokenBurnBasisPoints: null,
     categories: [],
     ...overrides,
   }
 }
 
-function inputs(overrides: Partial<FtueInputs> = {}): FtueInputs {
+function inputs(overrides: Partial<FirstRunInputs> = {}): FirstRunInputs {
   return {
     scanStatus: null,
     checksReport: null,
-    includeNonRepoFolders: false,
     hasScanHistory: null,
+    checksReportCurrent: false,
     ...overrides,
   }
 }
 
-describe("advanceFtueLatch", () => {
+describe("advanceFirstRunLatch", () => {
   it("stays undecided until the scan history signal is known", () => {
-    let latch = advanceFtueLatch(INITIAL_FTUE_LATCH, inputs({ checksReport: report() }))
+    let latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
+      inputs({ checksReport: report() }),
+    )
     expect(latch.decided).toBe(false)
-    latch = advanceFtueLatch(latch, inputs({ checksReport: report(), hasScanHistory: true }))
+    latch = advanceFirstRunLatch(
+      latch,
+      inputs({ checksReport: report(), hasScanHistory: true }),
+    )
     expect(latch.decided).toBe(true)
   })
 
@@ -78,8 +72,8 @@ describe("advanceFtueLatch", () => {
     // A live agent session almost always leaves the checks report briefly
     // unsettled right after launch. `evidenceSettled` must not factor into
     // this decision, or every ordinary launch would show the steps block.
-    const latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
       inputs({
         checksReport: report({ evidenceSettled: false }),
         hasScanHistory: true,
@@ -90,8 +84,8 @@ describe("advanceFtueLatch", () => {
   })
 
   it("decides to show the steps block when the device has no persisted scan history", () => {
-    const latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
       inputs({
         checksReport: report({ evidenceSettled: true }),
         hasScanHistory: false,
@@ -101,8 +95,8 @@ describe("advanceFtueLatch", () => {
   })
 
   it("decides to skip the steps block once the device has scanned before", () => {
-    const latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
       inputs({
         checksReport: report({ evidenceSettled: true }),
         hasScanHistory: true,
@@ -113,8 +107,8 @@ describe("advanceFtueLatch", () => {
   })
 
   it("holds the decision for the rest of the session even if the answer would change", () => {
-    let latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
+    let latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
       inputs({
         checksReport: report({ evidenceSettled: true }),
         hasScanHistory: true,
@@ -123,7 +117,7 @@ describe("advanceFtueLatch", () => {
     expect(latch.showSteps).toBe(false)
     // A later routine pass makes the report look unsettled again; the
     // decision must not flip back to showing the steps block.
-    latch = advanceFtueLatch(
+    latch = advanceFirstRunLatch(
       latch,
       inputs({
         scanStatus: status({ phase: "finding" }),
@@ -146,8 +140,8 @@ describe("advanceFtueLatch", () => {
         { agent: "claude-code", lastCompletedAt: "2026-09-30T12:00:00Z", sessionsSeen: 412 },
       ],
     })
-    const latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
       inputs({
         scanStatus: midLaunchPass,
         checksReport: report({ evidenceSettled: false }),
@@ -160,8 +154,8 @@ describe("advanceFtueLatch", () => {
 
   it("a genuinely empty scan_state table shows the steps block", () => {
     const firstRunPass = status({ running: true, phase: "finding", agents: [] })
-    const latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
       inputs({
         scanStatus: firstRunPass,
         checksReport: report({ evidenceSettled: false }),
@@ -176,12 +170,12 @@ describe("advanceFtueLatch", () => {
     // Onboarding already ran a pass before the Overview opened. Discovery
     // and the read stage are both finished; only the checks report is not
     // settled yet.
-    const latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
       inputs({
         scanStatus: status({
           phase: "saving",
-          foundByAgent: [{ agent: "claude-code", sessions: 412 }],
+          foundByAgent: [{ agent: "claude-code", sessions: 412, done: true }],
           read: { completed: 500, total: 500 },
           gate: { kept: 480, outsideRepository: 20, excluded: 0, unreadable: 0 },
         }),
@@ -191,7 +185,7 @@ describe("advanceFtueLatch", () => {
     )
     expect(latch.showSteps).toBe(true)
     expect(latch.step1Done).toBe(true)
-    expect(latch.step1Rows).toEqual([{ agent: "claude-code", sessions: 412 }])
+    expect(latch.step1Rows).toEqual([{ agent: "claude-code", sessions: 412, done: true }])
     expect(latch.step2Done).toBe(true)
     expect(latch.step2Read).toEqual({ completed: 500, total: 500 })
     expect(latch.step2Gate).toEqual({
@@ -203,12 +197,12 @@ describe("advanceFtueLatch", () => {
   })
 
   it("latches step 1 and 2 once, and ignores a later routine pass resetting them", () => {
-    let latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
+    let latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
       inputs({
         scanStatus: status({
           phase: "saving",
-          foundByAgent: [{ agent: "codex", sessions: 88 }],
+          foundByAgent: [{ agent: "codex", sessions: 88, done: true }],
           read: { completed: 88, total: 88 },
           gate: { kept: 88, outsideRepository: 0, excluded: 0, unreadable: 0 },
         }),
@@ -220,7 +214,7 @@ describe("advanceFtueLatch", () => {
 
     // A routine 5-minute tick starts a fresh pass: discovery resets to
     // empty and the phase moves back to "finding".
-    latch = advanceFtueLatch(
+    latch = advanceFirstRunLatch(
       latch,
       inputs({
         scanStatus: status({
@@ -231,8 +225,89 @@ describe("advanceFtueLatch", () => {
         checksReport: report({ evidenceSettled: true }),
       }),
     )
-    expect(latch.step1Rows).toEqual([{ agent: "codex", sessions: 88 }])
+    expect(latch.step1Rows).toEqual([{ agent: "codex", sessions: 88, done: true }])
     expect(latch.step2Read).toEqual({ completed: 88, total: 88 })
+  })
+})
+
+describe("advanceFirstRunLatch step 3", () => {
+  const readDone: FirstRunLatch = {
+    ...resetFirstRunLatch(),
+    step1Done: true,
+    step2Done: true,
+    step2Read: { completed: 44, total: 44 },
+    step2Gate: { kept: 44, outsideRepository: 0, excluded: 0, unreadable: 0 },
+  }
+
+  it("finishes when every pending session is deferred, such as a live session", () => {
+    const latch = advanceFirstRunLatch(
+      readDone,
+      inputs({
+        checksReport: report({
+          evidenceSettled: false,
+          windowSessions: 44,
+          pendingEvidence: 1,
+          deferredEvidence: 1,
+        }),
+        checksReportCurrent: true,
+      }),
+    )
+    expect(latch.step3Done).toBe(true)
+    expect(latch.step3Check).toEqual({ windowSessions: 44, deferredEvidence: 1 })
+  })
+
+  it("keeps running while a pending session can still be claimed", () => {
+    const latch = advanceFirstRunLatch(
+      readDone,
+      inputs({
+        checksReport: report({
+          evidenceSettled: false,
+          windowSessions: 44,
+          pendingEvidence: 2,
+          deferredEvidence: 1,
+        }),
+        checksReportCurrent: true,
+      }),
+    )
+    expect(latch.step3Done).toBe(false)
+  })
+
+  it("does not latch on a report requested before the pass finished", () => {
+    // The report from before the pass saved its sessions is empty and
+    // settled. Latching on it would show the empty state for good.
+    const latch = advanceFirstRunLatch(
+      readDone,
+      inputs({ checksReport: report({ windowSessions: 0 }), checksReportCurrent: false }),
+    )
+    expect(latch.step3Done).toBe(false)
+  })
+
+  it("stays done when a live session goes pending again after a turn", () => {
+    let latch = advanceFirstRunLatch(
+      readDone,
+      inputs({ checksReport: report({ windowSessions: 44 }), checksReportCurrent: true }),
+    )
+    latch = advanceFirstRunLatch(
+      latch,
+      inputs({
+        checksReport: report({
+          evidenceSettled: false,
+          windowSessions: 44,
+          pendingEvidence: 1,
+        }),
+        checksReportCurrent: true,
+      }),
+    )
+    expect(latch.step3Done).toBe(true)
+  })
+
+  it("does not wait for the read step when the steps block is hidden", () => {
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
+      inputs({ checksReport: report({ windowSessions: 44 }), hasScanHistory: true }),
+    )
+    expect(latch.showSteps).toBe(false)
+    expect(latch.step3Done).toBe(true)
   })
 })
 
@@ -272,132 +347,48 @@ describe("hasScanHistory", () => {
   })
 })
 
-describe("resetFtueLatch", () => {
+describe("resetFirstRunLatch", () => {
   it("brings the steps block back and clears the latched step 1 and 2 numbers", () => {
-    const settled: FtueLatch = {
+    const settled: FirstRunLatch = {
       decided: true,
       showSteps: false,
       step1Done: true,
-      step1Rows: [{ agent: "codex", sessions: 88 }],
+      step1Rows: [{ agent: "codex", sessions: 88, done: true }],
       step2Done: true,
       step2Read: { completed: 88, total: 88 },
       step2Gate: { kept: 88, outsideRepository: 0, excluded: 0, unreadable: 0 },
+      step3Done: true,
+      step3Check: { windowSessions: 88, deferredEvidence: 0 },
     }
-    const latch = resetFtueLatch()
+    const latch = resetFirstRunLatch()
     expect(latch.decided).toBe(true)
     expect(latch.showSteps).toBe(true)
     expect(latch.step1Done).toBe(false)
     expect(latch.step2Done).toBe(false)
+    expect(latch.step3Done).toBe(false)
     expect(latch).not.toEqual(settled)
   })
 })
 
 describe("unlatchReadOutcome", () => {
-  it("un-latches step 2 alone, so the pass an 'Include them' click triggers replaces it", () => {
-    const done: FtueLatch = {
+  it("un-latches steps 2 and 3, so the pass an 'Include them' click triggers replaces them", () => {
+    const done: FirstRunLatch = {
       decided: true,
       showSteps: true,
       step1Done: true,
-      step1Rows: [{ agent: "codex", sessions: 88 }],
+      step1Rows: [{ agent: "codex", sessions: 88, done: true }],
       step2Done: true,
       step2Read: { completed: 88, total: 88 },
       step2Gate: { kept: 68, outsideRepository: 20, excluded: 0, unreadable: 0 },
+      step3Done: true,
+      step3Check: { windowSessions: 68, deferredEvidence: 0 },
     }
     const latch = unlatchReadOutcome(done)
     expect(latch.step2Done).toBe(false)
     expect(latch.step2Gate).toBeNull()
+    expect(latch.step3Done).toBe(false)
     // Discovery is unaffected by this setting.
     expect(latch.step1Done).toBe(true)
-    expect(latch.step1Rows).toEqual([{ agent: "codex", sessions: 88 }])
-  })
-})
-
-describe("deriveFtueSnapshot", () => {
-  it("shows a plain empty state's numbers when the window has no current sessions", () => {
-    const latch = advanceFtueLatch(
-      INITIAL_FTUE_LATCH,
-      inputs({
-        checksReport: report({ evidenceSettled: true, windowSessions: 0, categories: [] }),
-        hasScanHistory: true,
-      }),
-    )
-    const snapshot = deriveFtueSnapshot(
-      latch,
-      inputs({
-        checksReport: report({ evidenceSettled: true, windowSessions: 0, categories: [] }),
-        hasScanHistory: true,
-      }),
-      false,
-    )
-    expect(snapshot.check).toEqual({ done: true, windowSessions: 0, pendingEvidence: 0 })
-    expect(snapshot.failingCount).toBe(0)
-  })
-
-  it("reports zero failing categories as a clean result, not an empty one", () => {
-    const checksReport = report({
-      evidenceSettled: true,
-      windowSessions: 40,
-      categories: [category({ lifecycle: "passing" }), category({ id: "cacheChurn" })],
-    })
-    const snapshot = deriveFtueSnapshot(INITIAL_FTUE_LATCH, inputs({ checksReport }), false)
-    expect(snapshot.check.windowSessions).toBe(40)
-    expect(snapshot.failingCount).toBe(0)
-    expect(snapshot.categories).toHaveLength(2)
-  })
-
-  it("counts only failing categories, and maps every lifecycle to a status", () => {
-    const checksReport = report({
-      categories: [
-        category({ id: "modelOverthinking", lifecycle: "failing" }),
-        category({ id: "cacheChurn", lifecycle: "awaitingVerification" }),
-        category({ id: "oldModelUsage", lifecycle: "passing" }),
-        category({ id: "overuseOfFastMode", lifecycle: null }),
-      ],
-    })
-    const snapshot = deriveFtueSnapshot(INITIAL_FTUE_LATCH, inputs({ checksReport }), false)
-    expect(snapshot.failingCount).toBe(1)
-    expect(snapshot.categories.map((c) => c.status)).toEqual([
-      "needsFix",
-      "awaitingVerification",
-      "passing",
-      "notChecked",
-    ])
-  })
-
-  it("shows the history line only while the background pass is pending or running", () => {
-    const withoutHistory = deriveFtueSnapshot(INITIAL_FTUE_LATCH, inputs(), false)
-    expect(withoutHistory.history).toBeNull()
-
-    const running = deriveFtueSnapshot(
-      INITIAL_FTUE_LATCH,
-      inputs({
-        scanStatus: status({ history: { state: "running", completed: 1_204, total: 6_300 } }),
-      }),
-      false,
-    )
-    expect(running.history).toEqual({ completed: 1_204, total: 6_300 })
-
-    const done = deriveFtueSnapshot(
-      INITIAL_FTUE_LATCH,
-      inputs({
-        scanStatus: status({ history: { state: "done", completed: 6_300, total: 6_300 } }),
-      }),
-      false,
-    )
-    expect(done.history).toBeNull()
-  })
-
-  it("maps the discovery slug to a display label", () => {
-    const snapshot = deriveFtueSnapshot(
-      INITIAL_FTUE_LATCH,
-      inputs({
-        scanStatus: status({
-          phase: "finding",
-          foundByAgent: [{ agent: "codex", sessions: 88 }],
-        }),
-      }),
-      false,
-    )
-    expect(snapshot.find.rows).toEqual([{ agent: "Codex", sessions: 88 }])
+    expect(latch.step1Rows).toEqual([{ agent: "codex", sessions: 88, done: true }])
   })
 })

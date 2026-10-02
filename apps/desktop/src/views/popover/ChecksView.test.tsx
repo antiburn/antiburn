@@ -47,6 +47,7 @@ const presentation: ChecksPresentation = {
   refreshUnavailable: false,
   burnChecks: aggregateBurnCheckPresentation({
     pendingEvidence: 0,
+    deferredEvidence: 0,
     windowSessions: 0,
     evidenceSettled: true,
     estimatedTokenBurnBasisPoints: 1_625,
@@ -134,6 +135,7 @@ describe("Checks", () => {
       refreshUnavailable: false,
       burnChecks: aggregateBurnCheckPresentation({
         pendingEvidence: 0,
+        deferredEvidence: 0,
         windowSessions: 0,
         evidenceSettled: true,
         estimatedTokenBurnBasisPoints: 0,
@@ -148,6 +150,7 @@ describe("Checks", () => {
       wins: [partialCategory],
       burnChecks: aggregateBurnCheckPresentation({
         pendingEvidence: 0,
+        deferredEvidence: 0,
         windowSessions: 0,
         evidenceSettled: true,
         estimatedTokenBurnBasisPoints: 0,
@@ -169,6 +172,7 @@ describe("Checks", () => {
       refreshUnavailable: false,
       burnChecks: aggregateBurnCheckPresentation({
         pendingEvidence: 0,
+        deferredEvidence: 0,
         windowSessions: 0,
         evidenceSettled: true,
         estimatedTokenBurnBasisPoints: null,
@@ -211,6 +215,7 @@ describe("Checks", () => {
           burnChecks: aggregateBurnCheckPresentation(
             {
               pendingEvidence: 0,
+              deferredEvidence: 0,
               windowSessions: 0,
               evidenceSettled: false,
               estimatedTokenBurnBasisPoints: 1_625,
@@ -529,6 +534,7 @@ describe("Checks", () => {
           refreshUnavailable: false,
           burnChecks: aggregateBurnCheckPresentation({
             pendingEvidence: 0,
+            deferredEvidence: 0,
             windowSessions: 0,
             evidenceSettled: true,
             estimatedTokenBurnBasisPoints: 0,
@@ -557,6 +563,7 @@ describe("Checks", () => {
           refreshUnavailable: false,
           burnChecks: aggregateBurnCheckPresentation({
             pendingEvidence: 0,
+            deferredEvidence: 0,
             windowSessions: 0,
             evidenceSettled: true,
             estimatedTokenBurnBasisPoints: 0,

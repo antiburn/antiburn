@@ -11,6 +11,14 @@ use super::{
 };
 
 impl Store {
+    /// Delete an internal scalar. Errors are swallowed, as in
+    /// [`Store::set_internal_value`].
+    #[cfg(debug_assertions)]
+    pub fn remove_internal_value(&self, key: &str) {
+        let connection = self.lock();
+        let _ = connection.execute("DELETE FROM setting WHERE key = ?1", [key]);
+    }
+
     /// Every preference, with defaults filled in for keys never written.
     pub fn settings(&self) -> Result<AppSettings> {
         let connection = self.lock();

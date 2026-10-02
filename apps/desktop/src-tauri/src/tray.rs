@@ -1041,7 +1041,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         MENU_RESET_ONBOARDING => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(error) = commands::restart_onboarding(app).await {
+                if let Err(error) = commands::reset_first_run(app).await {
                     ::tracing::error!(event = "onboarding_restart_failed", trigger = "tray", error);
                 }
             });
