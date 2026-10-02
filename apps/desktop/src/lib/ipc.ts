@@ -287,12 +287,6 @@ export async function setInterfaceScale(
   return invoke<AppSettings>("set_interface_scale", { change, source })
 }
 
-/** Make setup pending and open it at Welcome without clearing local data. */
-export async function restartOnboarding(): Promise<void> {
-  if (!hasShell()) return
-  await invoke("restart_onboarding")
-}
-
 /** Open the public analytics documentation in the system browser. */
 export async function openAnalyticsDocumentation(): Promise<void> {
   if (!hasShell()) return
@@ -319,10 +313,6 @@ export type Interaction =
   | { kind: "navigationHistoryMoved"; direction: "back" | "forward" }
   | { kind: "appSearchOpened" }
   | { kind: "appSearchResultOpened"; category: "view" | "setting" | "check" }
-  | {
-      kind: "onboardingStepViewed"
-      step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
-    }
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
@@ -475,31 +465,6 @@ export function noteInteraction(interaction: Interaction): void {
   void invoke("note_interaction", { interaction }).catch(() => {
     // Analytics must never surface an error into something the reader asked
     // for. A dropped event is not worth a line of user-facing text.
-  })
-}
-
-/** Commit the first-run choices and finish onboarding in one shell transition. */
-export async function finishOnboarding(
-  activityWindowDays: number,
-  launchAtLogin: boolean,
-  disabledAgents: string[],
-  nudgesRespectDnd: boolean,
-): Promise<AppSettings> {
-  if (!hasShell()) {
-    return {
-      ...DEFAULT_SETTINGS,
-      activityWindowDays,
-      launchAtLogin,
-      disabledAgents,
-      nudgesRespectDnd,
-      onboardingCompleted: true,
-    }
-  }
-  return invoke<AppSettings>("finish_onboarding", {
-    activityWindowDays,
-    launchAtLogin,
-    disabledAgents,
-    nudgesRespectDnd,
   })
 }
 
@@ -801,12 +766,6 @@ export async function refreshRepositories(): Promise<RepositoryItemPayload[]> {
 export async function listScanRoots(): Promise<string[]> {
   if (!hasShell()) return []
   return invoke<string[]>("list_scan_roots")
-}
-
-/** The directories the engine already searches without being asked. */
-export async function defaultScanRoots(): Promise<string[]> {
-  if (!hasShell()) return []
-  return invoke<string[]>("default_scan_roots")
 }
 
 /** Add a directory to scan. */

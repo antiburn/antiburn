@@ -115,7 +115,7 @@ pub trait LiveUsageSource: Send + Sync {
 
     /// Say whether this tool's login carrier is here, without reading a secret.
     ///
-    /// With `online` false — before onboarding finishes, or with live usage
+    /// With `online` false — before the first run finishes, or with live usage
     /// switched off — this reads metadata only: no credential file is opened
     /// and no Keychain prompt can appear. With `online` true a source may go
     /// one step further and ask the owning tool through its own CLI (Pi's

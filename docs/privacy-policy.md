@@ -32,8 +32,8 @@ host names, remote paths, and connection diagnostics are not analytics data.
 
 Official release builds send limited events about how the application works,
 which features are used, and coarse hourly ranges for the application's own
-resource use. This includes application launch and progress through the fixed
-onboarding steps.
+resource use. This includes application launch and progress through the
+first-run steps shown in the Overview.
 
 The event schema contains thirty-one fields:
 
@@ -100,7 +100,7 @@ type, and app runtime. We store them with the raw event.
 
 ## Why we use analytics
 
-We use these events to understand whether onboarding works, which product
+We use these events to understand whether first-run setup works, which product
 features are useful, which operations fail, when Claude makes its session
 limit-reset feature available, and whether antiburn has resource regressions.
 We do not use them for
@@ -112,8 +112,9 @@ Antiburn. You can object at any time by turning analytics off.
 ## When analytics starts
 
 Analytics starts automatically in official release builds. Launch and
-onboarding-step events can be recorded before onboarding is complete. The Ready
-screen explains the channel. Settings → Privacy provides the permanent opt-out.
+first-run-step events can be recorded before the first run finishes. The
+Overview's own first-run welcome text explains the channel. Settings → Privacy
+provides the permanent opt-out.
 
 Default source and development builds exclude the analytics client. A builder
 must select the `analytics` Cargo feature and provide an endpoint and operator

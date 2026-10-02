@@ -102,9 +102,9 @@ impl Kind {
 /// consequence of a button the reader pressed a second earlier, not something
 /// antiburn decided to say. [`Kind::Test`] exists so a reader can see what a
 /// notification looks like *before* deciding to allow them. [`Kind::MenuBarHome`]
-/// fires once in the app's whole life, as the first-run window closes, and it
+/// fires once in the app's whole life, as the first run finishes, and it
 /// is the only thing that says where the application just went — suppressing it
-/// would leave a reader who turned notifications off mid-onboarding with no
+/// would leave a reader who turned notifications off mid-first-run with no
 /// explanation of where the application remains available.
 pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
     if kind == Kind::Test || kind == Kind::MenuBarHome {

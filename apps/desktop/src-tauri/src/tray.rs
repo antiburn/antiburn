@@ -322,7 +322,7 @@ fn retire_popover_for_tray_visibility(visible: bool) -> bool {
 pub fn set_visible(app: &AppHandle, visible: bool) -> tauri::Result<()> {
     if retire_popover_for_tray_visibility(visible) {
         popover::set_pinned(app, false);
-        popover::hide_for_onboarding(app);
+        popover::hide_for_surface_handoff(app);
         if let Some(menu) = app.try_state::<TrayMenu>()
             && let Err(error) = menu.pin.set_text(PIN_LABEL)
         {

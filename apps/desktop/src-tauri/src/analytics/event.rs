@@ -29,12 +29,6 @@ use serde::Serialize;
 pub enum EventName {
     /// The application started.
     AppLaunched,
-    /// A new or explicitly restarted setup flow became visible.
-    #[cfg(feature = "analytics")]
-    OnboardingStarted,
-    /// One fixed onboarding step became visible.
-    #[cfg(feature = "analytics")]
-    OnboardingStepViewed,
     /// A discovery pass completed, with a bucketed count of what it found.
     #[cfg(feature = "analytics")]
     ScanCompleted,
@@ -154,8 +148,6 @@ pub enum EventName {
 #[cfg(all(test, feature = "analytics"))]
 pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppLaunched,
-    EventName::OnboardingStarted,
-    EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
     EventName::SettingToggled,
     EventName::AnalyticsOptedOut,
@@ -200,8 +192,6 @@ impl EventName {
     pub fn as_str(self) -> &'static str {
         match self {
             EventName::AppLaunched => "antiburn.app_launched",
-            EventName::OnboardingStarted => "antiburn.onboarding_started",
-            EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
             EventName::AnalyticsOptedOut => "antiburn.analytics_opted_out",
@@ -461,10 +451,6 @@ pub enum Interaction {
         action: ProjectFolderAction,
         outcome: ProjectFolderOutcome,
     },
-    /// A fixed onboarding step became visible.
-    OnboardingStepViewed {
-        step: OnboardingStep,
-    },
     /// A session was opened from the activity list. `agent` deserializes into
     /// the engine's own closed enum, so an unrecognised slug is a rejected
     /// command rather than a new value appearing in the data.
@@ -700,24 +686,6 @@ pub enum LiveUsageState {
     NoCredentials,
 }
 
-/// Which setup lifecycle is active.
-#[cfg(feature = "analytics")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnboardingFlow {
-    New,
-    Restart,
-}
-
-/// A screen in the fixed first-run flow.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnboardingStep {
-    Welcome,
-    AgentsDetected,
-    SourcesAndRepos,
-    Ready,
-}
-
 /// Where an agent ran. Two values, and neither names anything: a WSL
 /// distribution's *name* is chosen by the reader and is deliberately not
 /// carried, unlike the contract's own client, which sends it.
@@ -852,13 +820,6 @@ impl Interaction {
     /// The event and the facts this interaction becomes.
     pub fn resolve(self) -> (EventName, Facts) {
         match self {
-            Interaction::OnboardingStepViewed { step } => (
-                EventName::OnboardingStepViewed,
-                Facts {
-                    label: Some(step.as_str()),
-                    ..Facts::default()
-                },
-            ),
             Interaction::SessionOpened { agent, environment } => (
                 EventName::SessionOpened,
                 Facts {
@@ -1219,24 +1180,6 @@ wire_values!(LiveUsageState, {
     LiveUsageState::Unavailable => "unavailable",
     LiveUsageState::NoCredentials => "no_credentials",
 });
-
-#[cfg(feature = "analytics")]
-wire_values!(OnboardingFlow, {
-    OnboardingFlow::New => "new",
-    OnboardingFlow::Restart => "restart",
-});
-
-#[cfg(feature = "analytics")]
-impl OnboardingStep {
-    fn as_str(self) -> &'static str {
-        match self {
-            OnboardingStep::Welcome => "welcome",
-            OnboardingStep::AgentsDetected => "agents_detected",
-            OnboardingStep::SourcesAndRepos => "sources_and_repos",
-            OnboardingStep::Ready => "ready",
-        }
-    }
-}
 
 #[cfg(feature = "analytics")]
 impl Environment {
@@ -1891,14 +1834,12 @@ mod tests {
         fn listed(event: EventName) -> bool {
             match event {
                 EventName::AppLaunched
-                | EventName::OnboardingStepViewed
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
                 | EventName::AnalyticsOptedOut
                 | EventName::SessionOpened
                 | EventName::ErrorOccurred
                 | EventName::UnrecognizedRecordsObserved
-                | EventName::OnboardingStarted
                 | EventName::SurfaceViewed
                 | EventName::SettingsPaneViewed
                 | EventName::SurfaceStateObserved
@@ -1934,7 +1875,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            40,
+            38,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -2016,13 +1957,6 @@ mod tests {
     /// anything the renderer supplied verbatim.
     #[test]
     fn an_interaction_resolves_to_this_files_own_constants() {
-        let (name, facts) = Interaction::OnboardingStepViewed {
-            step: OnboardingStep::SourcesAndRepos,
-        }
-        .resolve();
-        assert_eq!(name, EventName::OnboardingStepViewed);
-        assert_eq!(facts.label, Some("sources_and_repos"));
-
         let (name, facts) = Interaction::SessionOpened {
             agent: AgentKind::Claude,
             environment: Environment::Wsl,

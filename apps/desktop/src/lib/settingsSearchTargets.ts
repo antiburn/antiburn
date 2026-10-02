@@ -36,7 +36,6 @@ export const SETTINGS_SEARCH_TARGETS = {
     platform: "macos",
   },
   startAtLogin: { pane: "general", label: "Start at login", aliases: ["startup", "launch"] },
-  setup: { pane: "general", label: "Run setup again", aliases: ["onboarding"] },
   theme: {
     pane: "appearance",
     label: "Appearance",

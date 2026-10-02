@@ -22,7 +22,6 @@ macro_rules! with_app_commands {
             main_window::existing_main_window_session_targets => "existing_main_window_session_targets",
             commands::export_diagnostics => "export_diagnostics",
             commands::finish_first_run => "finish_first_run",
-            commands::finish_onboarding => "finish_onboarding",
             commands::ftue_diag => "ftue_diag", // TEMP ftue-diag
             commands::get_consent_diagnostics => "get_consent_diagnostics",
             commands::get_checks_report => "get_checks_report",
@@ -31,7 +30,6 @@ macro_rules! with_app_commands {
             commands::get_burn_check_aggregate_wins => "get_burn_check_aggregate_wins",
             commands::get_burn_check_remediation_progress => "get_burn_check_remediation_progress",
             hud_commands::get_hud_detail_state => "get_hud_detail_state",
-            commands::get_hygiene_summary => "get_hygiene_summary",
             hud_token_map::get_hud_token_map => "get_hud_token_map",
             commands::get_live_sessions => "get_live_sessions",
             commands::get_live_sessions_for => "get_live_sessions_for",
@@ -97,7 +95,6 @@ macro_rules! with_app_commands {
             remote_sessions::remove_remote_host => "remove_remote_host",
             commands::request_folder_access => "request_folder_access",
             hud_commands::resize_overlay_window => "resize_overlay_window",
-            commands::restart_onboarding => "restart_onboarding",
             commands::restart_to_update => "restart_to_update",
             commands::reveal_source => "reveal_source",
             commands::open_project_folder => "open_project_folder",

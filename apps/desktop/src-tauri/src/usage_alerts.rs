@@ -6,13 +6,13 @@
 //! directly with the reader's own credentials.
 //!
 //! Milestone notifications are gated on `AppSettings::live_usage_active` —
-//! the Settings → Usage switch (on by default) *and* onboarding having
+//! the Settings → Usage switch (on by default) *and* the first run having
 //! finished — and that pairing is deliberate rather than leftover. Both
 //! consequences of the switch depend on the same traffic: a milestone is a
 //! statement about a threshold being *crossed*, which needs readings that
 //! keep moving, and only the sources this switch unlocks ever make a request
 //! to find out whether one has. So the one switch buys both, and its copy
-//! names both. The onboarding half of the gate holds even while the switch
+//! names both. The first-run half of the gate holds even while the switch
 //! itself defaults on: no credential is read, and no request or subprocess
 //! runs, until the reader has actually seen this app once.
 

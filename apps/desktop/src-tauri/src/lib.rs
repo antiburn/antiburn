@@ -18,7 +18,6 @@
 //! - [`global_click`] — dismissing the popover on clicks outside the app.
 //! - [`notifications`] — the policy on what may interrupt a reader.
 //! - [`nudges`] — presentation glue between that policy and the window.
-//! - [`onboarding`] — the standalone first-run window.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
 //! - [`provider_usage`] — per-provider totals derived from local sessions.
 //! - [`repositories`] — which repositories on this machine antiburn watches.
@@ -75,7 +74,6 @@ mod main_window;
 mod memory_probe;
 mod notifications;
 mod nudges;
-mod onboarding;
 mod popover;
 mod popover_peek;
 mod provider_accounts;
@@ -167,8 +165,9 @@ impl Schedulers {
 /// # Panics
 ///
 /// Panics if the webview runtime, tray item, or local database cannot be
-/// created. None has a meaningful degraded mode. The shell opens onboarding
-/// when required. Other windows load when the first interaction requests them.
+/// created. None has a meaningful degraded mode. The shell opens the main
+/// window at launch. Other windows load when the first interaction requests
+/// them.
 pub fn run() {
     macro_rules! command_handlers {
         ($( $handler:path => $name:literal, )*) => {
@@ -323,7 +322,6 @@ pub fn run() {
         app.manage(storage_health::StorageHealth::default());
         app.manage(settings::PendingPane::default());
         app.manage(settings::SettingsWindowState::default());
-        app.manage(onboarding::OnboardingWindowState::default());
         app.manage(WindowRebuildState::default());
         app.manage(nudges::AnchorOverride::default());
         app.manage(antiburn_nudge::NotificationGate::default());
@@ -538,11 +536,10 @@ enum ClosePolicy {
     HideMain,
     QuitApp,
     HidePopover,
-    HidePendingOnboarding,
     HideNudge,
 }
 
-fn close_policy(label: &str, onboarding_pending: bool, quit_when_main_closes: bool) -> ClosePolicy {
+fn close_policy(label: &str, quit_when_main_closes: bool) -> ClosePolicy {
     if label == main_window::LABEL {
         if quit_when_main_closes {
             ClosePolicy::QuitApp
@@ -553,8 +550,6 @@ fn close_policy(label: &str, onboarding_pending: bool, quit_when_main_closes: bo
         ClosePolicy::HidePopover
     } else if label == antiburn_nudge::NUDGE_LABEL {
         ClosePolicy::HideNudge
-    } else if label == onboarding::LABEL && onboarding_pending {
-        ClosePolicy::HidePendingOnboarding
     } else {
         ClosePolicy::Allow
     }
@@ -565,7 +560,6 @@ enum ManagedWindow {
     Main,
     Popover,
     Settings,
-    Onboarding,
 }
 
 impl ManagedWindow {
@@ -574,7 +568,6 @@ impl ManagedWindow {
             Self::Main => main_window::rebuild_after_destroy(app),
             Self::Popover => popover::rebuild_after_destroy(app),
             Self::Settings => settings::rebuild_after_destroy(app),
-            Self::Onboarding => onboarding::rebuild_after_destroy(app),
         }
     }
 }
@@ -584,7 +577,6 @@ fn rebuild_after_destroy_for_label(label: &str) -> Option<ManagedWindow> {
         main_window::LABEL => Some(ManagedWindow::Main),
         popover::LABEL => Some(ManagedWindow::Popover),
         settings::LABEL => Some(ManagedWindow::Settings),
-        onboarding::LABEL => Some(ManagedWindow::Onboarding),
         _ => None,
     }
 }
@@ -654,11 +646,7 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     .try_state::<store::Store>()
                     .map(|store| store.settings_snapshot())
                     .is_some_and(|settings| !settings.tray_icon_visible);
-            match close_policy(
-                window.label(),
-                onboarding::is_pending(window.app_handle()),
-                quit_when_main_closes,
-            ) {
+            match close_policy(window.label(), quit_when_main_closes) {
                 ClosePolicy::Allow => {}
                 ClosePolicy::HideMain => {
                     api.prevent_close();
@@ -676,12 +664,6 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     // Through `popover::hide` rather than `window.hide()`, so
                     // this path answers to the pin like every dismissal does.
                     popover::hide(window.app_handle());
-                }
-                ClosePolicy::HidePendingOnboarding => {
-                    api.prevent_close();
-                    // Preserve first-run progress until it is completed. The
-                    // Dock and tray can both reopen this same window.
-                    let _ = window.hide();
                 }
                 ClosePolicy::HideNudge => {
                     api.prevent_close();
@@ -968,33 +950,25 @@ mod tests {
     }
 
     #[test]
-    fn only_transient_or_incomplete_windows_intercept_close() {
+    fn only_transient_windows_intercept_close() {
         assert_eq!(
-            close_policy(super::main_window::LABEL, false, false),
+            close_policy(super::main_window::LABEL, false),
             ClosePolicy::HideMain
         );
         assert_eq!(
-            close_policy(super::main_window::LABEL, false, true),
+            close_policy(super::main_window::LABEL, true),
             ClosePolicy::QuitApp
         );
         assert_eq!(
-            close_policy(super::popover::LABEL, false, false),
+            close_policy(super::popover::LABEL, false),
             ClosePolicy::HidePopover
         );
         assert_eq!(
-            close_policy(super::onboarding::LABEL, true, false),
-            ClosePolicy::HidePendingOnboarding
-        );
-        assert_eq!(
-            close_policy(super::onboarding::LABEL, false, false),
+            close_policy(super::settings::LABEL, false),
             ClosePolicy::Allow
         );
         assert_eq!(
-            close_policy(super::settings::LABEL, false, false),
-            ClosePolicy::Allow
-        );
-        assert_eq!(
-            close_policy(antiburn_nudge::NUDGE_LABEL, false, false),
+            close_policy(antiburn_nudge::NUDGE_LABEL, false),
             ClosePolicy::HideNudge
         );
     }
@@ -1005,7 +979,6 @@ mod tests {
             (super::main_window::LABEL, super::ManagedWindow::Main),
             (super::popover::LABEL, super::ManagedWindow::Popover),
             (super::settings::LABEL, super::ManagedWindow::Settings),
-            (super::onboarding::LABEL, super::ManagedWindow::Onboarding),
         ];
 
         for (label, expected) in cases {

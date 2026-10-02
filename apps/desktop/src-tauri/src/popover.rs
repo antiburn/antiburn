@@ -381,7 +381,7 @@ pub struct PopoverState {
     nudge_key_handoff: Mutex<NudgeKeyHandoff>,
     /// The generation of the current renderer.
     renderer_generation: AtomicU64,
-    /// The bounded onboarding prewarm and its eviction callbacks.
+    /// The bounded first-run prewarm and its eviction callbacks.
     retention: Mutex<Retention>,
     /// Content-free timing for the active menu-bar open request.
     timing: timing::PopoverTiming,
@@ -1198,20 +1198,22 @@ pub fn hide(app: &AppHandle) {
     hide_window(app);
 }
 
-/// Hides the popover when setup must own the application surface.
+/// Hides the popover when another surface must own the window, such as the
+/// tray icon retiring it.
 ///
-/// This operation keeps the pin choice. The pin applies again after setup.
-pub fn hide_for_onboarding(app: &AppHandle) {
+/// This operation keeps the pin choice. The pin applies again once the
+/// popover can show again.
+pub fn hide_for_surface_handoff(app: &AppHandle) {
     if destroy_prewarm(app) {
         return;
     }
     if let Some(state) = app.try_state::<PopoverState>() {
-        cancel_pending_reveal_for_onboarding(&state);
+        cancel_pending_reveal_for_surface_handoff(&state);
     }
     hide_window(app);
 }
 
-fn cancel_pending_reveal_for_onboarding(state: &PopoverState) -> bool {
+fn cancel_pending_reveal_for_surface_handoff(state: &PopoverState) -> bool {
     state.timing.cancel_open();
     state.readiness().cancel_pending_reveal()
 }
@@ -2318,7 +2320,7 @@ mod tests {
     }
 
     #[test]
-    fn onboarding_restart_cancels_a_pending_cold_reveal() {
+    fn a_surface_handoff_cancels_a_pending_cold_reveal() {
         let state = PopoverState::default();
         let started_at = Instant::now();
         let generation = match state.readiness().request_open(started_at) {
@@ -2326,7 +2328,7 @@ mod tests {
             _ => unreachable!("a fresh lifecycle starts loading"),
         };
 
-        assert!(cancel_pending_reveal_for_onboarding(&state));
+        assert!(cancel_pending_reveal_for_surface_handoff(&state));
         assert!(matches!(
             state
                 .readiness()

@@ -80,9 +80,6 @@ pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Fa
 #[cfg(not(feature = "analytics"))]
 pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interaction) {
     match interaction {
-        event::Interaction::OnboardingStepViewed { step } => {
-            let _ = step;
-        }
         event::Interaction::SessionOpened { agent, environment } => {
             let _ = (agent, environment);
         }
@@ -173,12 +170,6 @@ pub fn record_remote_sync_completed(
     _cached_sessions: usize,
 ) {
 }
-
-#[cfg(not(feature = "analytics"))]
-pub fn prepare_onboarding_restart() {}
-
-#[cfg(not(feature = "analytics"))]
-pub fn record_onboarding_started(_app: &tauri::AppHandle) {}
 
 #[cfg(not(feature = "analytics"))]
 pub fn prepare_hud_exposure(_origin: event::Origin) {}
@@ -297,8 +288,7 @@ mod enabled {
 
     use super::delivery::{DeliverySchedule, FlushOutcome};
     use super::event::{
-        Event, EventName, Facts, Interaction, LiveUsageProvider, LiveUsageState, OnboardingFlow,
-        Origin, Surface,
+        Event, EventName, Facts, Interaction, LiveUsageProvider, LiveUsageState, Origin, Surface,
     };
     use super::{config, delivery, event, resources};
     use crate::store::{AppSettings, Store};
@@ -1218,71 +1208,7 @@ mod enabled {
     static LAST_LIMIT_FACTOR_OBSERVED: std::sync::Mutex<LastLimitFactorObserved> =
         std::sync::Mutex::new(BTreeMap::new());
 
-    #[derive(Debug, Clone, Copy, Default)]
-    struct OnboardingCapture {
-        flow: Option<OnboardingFlow>,
-        started: bool,
-    }
-
-    static ONBOARDING_CAPTURE: std::sync::Mutex<OnboardingCapture> =
-        std::sync::Mutex::new(OnboardingCapture {
-            flow: None,
-            started: false,
-        });
-
     static HUD_EXPOSURE_ORIGIN: std::sync::Mutex<Option<Origin>> = std::sync::Mutex::new(None);
-
-    /// Begin a distinct restart flow after its pending state persists.
-    pub fn prepare_onboarding_restart() {
-        *ONBOARDING_CAPTURE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = OnboardingCapture {
-            flow: Some(OnboardingFlow::Restart),
-            started: false,
-        };
-    }
-
-    fn onboarding_flow(app: &tauri::AppHandle) -> OnboardingFlow {
-        if app
-            .try_state::<Store>()
-            .is_some_and(|store| store.onboarding_flow_is_restart())
-        {
-            OnboardingFlow::Restart
-        } else {
-            OnboardingFlow::New
-        }
-    }
-
-    /// Record the first successful reveal of the active setup flow.
-    pub fn record_onboarding_started(app: &tauri::AppHandle) {
-        let _lifecycle = lock_settings_transition();
-        let flow = onboarding_flow(app);
-        let mut capture = ONBOARDING_CAPTURE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if capture.flow != Some(flow) {
-            *capture = OnboardingCapture {
-                flow: Some(flow),
-                started: false,
-            };
-        }
-        if capture.started {
-            return;
-        }
-        let _capture = CAPTURE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if record_event_locked(
-            app,
-            EventName::OnboardingStarted,
-            Facts {
-                label: Some(flow.as_str()),
-                ..Facts::default()
-            },
-        ) {
-            capture.started = true;
-        }
-    }
 
     /// Hold the origin until the HUD confirms an actual reveal.
     pub fn prepare_hud_exposure(origin: Origin) {
@@ -1405,7 +1331,7 @@ mod enabled {
     /// pass of each run, every crossing of a bucket boundary, and every transition
     /// into or out of failure.
     pub fn record_scan(app: &tauri::AppHandle, sessions: Option<u64>) {
-        // Ahead of the suppression check, not after it. A pass during onboarding,
+        // Ahead of the suppression check, not after it. A pass during first run,
         // or while the switch is off, must not leave a mark that then suppresses
         // the first pass the reader actually consented to.
         if !allowed(app) {

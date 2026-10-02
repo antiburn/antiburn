@@ -215,7 +215,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use this setting."
                   : loaded && !settings.analyticsEnabled
                     ? "Off. Antiburn deleted its analytics identifier and anything waiting to be sent."
-                    : `Sends app launches, onboarding progress, feature use, error categories, coarse Claude reset status, and hourly bands for antiburn's own resource use${
+                    : `Sends app launches, first-run progress, feature use, error categories, coarse Claude reset status, and hourly bands for antiburn's own resource use${
                         operator ? ` to ${operator}` : ""
                       }. Never prompts, sessions, source code, filenames, or paths.`
               }

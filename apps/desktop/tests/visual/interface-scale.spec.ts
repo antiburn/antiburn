@@ -4,7 +4,6 @@ const scales = [90, 100, 110, 125, 150, 175, 200] as const
 const surfaces = [
   "main",
   "settings",
-  "onboarding",
   "popover",
   "preview",
   "hud",
@@ -19,7 +18,7 @@ const layouts = [
 
 type Surface = (typeof surfaces)[number]
 type State = (typeof states)[number]
-type FixtureFault = "session-analysis" | "scale-save" | "onboarding-bootstrap" | "peek-data"
+type FixtureFault = "session-analysis" | "scale-save" | "peek-data"
 
 function fixtureUrl(
   surface: Surface,
@@ -509,38 +508,6 @@ test.describe("issue 507 targeted journeys", () => {
         await capture(page, `settings-${pane.toLowerCase()}-200-${theme}`, testInfo)
       }
     })
-
-    test(`onboarding advances through every step at 200% constrained in ${theme}`, async ({
-      page,
-    }, testInfo) => {
-      await openFixture(page, "onboarding", { scale: 200, theme })
-      const setup = page.getByRole("region", { name: "Set up antiburn" })
-      await expect(
-        setup.getByRole("heading", { name: "Stop hitting your token limits." }),
-      ).toBeVisible()
-      await expectNoHorizontalOverflow(page)
-      await expectControlsReachable(page)
-      await capture(page, `onboarding-welcome-200-${theme}`, testInfo)
-
-      await page.getByRole("button", { name: "Continue" }).click()
-      await expect(setup.getByRole("heading", { name: "Scan Locations: Agents" })).toBeVisible()
-      await expectNoHorizontalOverflow(page)
-      await expectControlsReachable(page)
-      await capture(page, `onboarding-agents-200-${theme}`, testInfo)
-
-      await page.getByRole("button", { name: "Continue" }).click()
-      await expect(setup.getByRole("heading", { name: "Scan Locations: Repos" })).toBeVisible()
-      await expectNoHorizontalOverflow(page)
-      await expectControlsReachable(page)
-      await capture(page, `onboarding-repos-200-${theme}`, testInfo)
-
-      await page.getByRole("button", { name: "Continue" }).click()
-      await expect(setup.getByRole("heading", { name: "Ready" })).toBeVisible()
-      await expect(setup.getByText("128 sessions from the last 7 days")).toBeVisible()
-      await expectNoHorizontalOverflow(page)
-      await expectControlsReachable(page)
-      await capture(page, `onboarding-ready-200-${theme}`, testInfo)
-    })
   }
 })
 
@@ -593,25 +560,6 @@ test.describe("interface-scale error recovery", () => {
     await control.selectOption("150")
     await expect(control).toHaveValue("150")
     await expect(alert).not.toBeVisible()
-  })
-
-  test("onboarding retries a bootstrap failure at 200%", async ({ page }, testInfo) => {
-    await openFixture(page, "onboarding", {
-      scale: 200,
-      theme: "dark",
-      fault: "onboarding-bootstrap",
-    })
-    await expect(page.getByText("antiburn could not start setup")).toBeVisible()
-    await expect(page.getByText("Fixture onboarding bootstrap failure")).toBeVisible()
-    await expectNoHorizontalOverflow(page)
-    await expectControlsReachable(page)
-    await capture(page, "onboarding-bootstrap-error-200-dark", testInfo)
-
-    await clearFixtureFault(page)
-    await page.getByRole("button", { name: "Try again" }).click()
-    await expect(
-      page.getByRole("heading", { name: "Stop hitting your token limits." }),
-    ).toBeVisible()
   })
 
   test("preview shows its unavailable state when data fails at 200%", async ({

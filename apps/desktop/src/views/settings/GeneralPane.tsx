@@ -1,21 +1,12 @@
 import { SettingsRow, SettingsToggleRow } from "./SettingsSearchRows"
-import { useCallback, useState, useSyncExternalStore } from "react"
-import { confirm } from "@tauri-apps/plugin-dialog"
+import { useCallback, useSyncExternalStore } from "react"
 
 import { Card } from "../../components/ui/Card"
 import { Pane } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
 import { RangeSlider } from "../../components/ui/RangeSlider"
 import { SectionGroup } from "../../components/ui/SectionGroup"
-import { StatusText } from "../../components/ui/StatusText"
-import {
-  cancelScan,
-  closeCurrentWindow,
-  restartOnboarding,
-  scanNow,
-  type AppInfo,
-  type ScanStatus,
-} from "../../lib/ipc"
+import { cancelScan, scanNow, type AppInfo, type ScanStatus } from "../../lib/ipc"
 import { isMacOS } from "../../lib/platform"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { scanStatusStore } from "../../lib/scanStatusStore"
@@ -66,8 +57,6 @@ export interface GeneralPaneProps extends AppSettingsController {
  * The monitoring toggle controls whether antiburn continues to scan in the background.
  */
 export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps) {
-  const [restartingSetup, setRestartingSetup] = useState(false)
-  const [restartFailed, setRestartFailed] = useState(false)
   const scanStatus = useSyncExternalStore(
     scanStatusStore.subscribe,
     scanStatusStore.getSnapshot,
@@ -82,25 +71,6 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
     const status = await cancelScan().catch(() => null)
     if (status) scanStatusStore.set(status)
   }, [])
-
-  async function handleRestartOnboarding() {
-    setRestartFailed(false)
-    try {
-      const proceed = await confirm(
-        "Setup opens at the Welcome step. Your indexed sessions and current settings stay on this machine. If you close setup before you finish, it returns the next time you open antiburn.",
-        { title: "Run setup again?", kind: "warning", okLabel: "Run setup again" },
-      )
-      if (!proceed) return
-
-      setRestartingSetup(true)
-      await restartOnboarding()
-      await closeCurrentWindow()
-    } catch {
-      setRestartFailed(true)
-    } finally {
-      setRestartingSetup(false)
-    }
-  }
 
   const running = scanStatus?.running ?? false
   const macOS = isMacOS()
@@ -217,31 +187,6 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
             checked={settings.launchAtLogin}
             onChange={(next) => void update({ launchAtLogin: next })}
           />
-        </Card>
-      </SectionGroup>
-
-      <SectionGroup title="Setup">
-        <Card>
-          <SettingsRow
-            searchId="setup"
-            description="Return to the Welcome step and review the setup choices. Indexed sessions, scan folders, repository choices, and current preferences stay on this machine."
-            trailing={
-              <PushButton
-                onClick={() => void handleRestartOnboarding()}
-                disabled={restartingSetup}
-              >
-                {restartingSetup ? "Opening…" : "Run setup again…"}
-              </PushButton>
-            }
-          >
-            <div role="status" aria-live="polite" aria-atomic="true">
-              {restartFailed && (
-                <StatusText tone="secondary" className="mt-1.5">
-                  Setup could not open. Try again or restart antiburn.
-                </StatusText>
-              )}
-            </div>
-          </SettingsRow>
         </Card>
       </SectionGroup>
     </Pane>

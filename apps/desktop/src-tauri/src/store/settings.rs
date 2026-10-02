@@ -124,30 +124,6 @@ impl Store {
         Ok((previous, saved, result))
     }
 
-    /// Make setup pending without changing the reader's data or choices.
-    pub fn restart_onboarding(&self) -> Result<(AppSettings, AppSettings)> {
-        let mut connection = self.lock();
-        let tx = connection.transaction()?;
-        let previous = read_settings(&tx)?;
-        let mut saved = previous.clone();
-        saved.onboarding_completed = false;
-        let saved = saved.normalized();
-        write_settings(&tx, &saved)?;
-        tx.execute(
-            "INSERT INTO setting (key, value) VALUES ('internal:onboardingFlow', 'restart')
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [],
-        )?;
-        tx.commit()?;
-        self.update_settings_snapshot(&saved);
-        Ok((previous, saved))
-    }
-
-    /// Whether the pending setup flow came from the explicit restart action.
-    pub fn onboarding_flow_is_restart(&self) -> bool {
-        self.internal_value("internal:onboardingFlow").as_deref() == Some("restart")
-    }
-
     /// Replace every preference, returning what was actually stored (clamped).
     #[cfg(test)]
     pub fn save_settings(&self, settings: &AppSettings) -> Result<AppSettings> {

@@ -458,9 +458,9 @@ function StepProgressBar({
 }
 
 /**
- * The first run's own pitch and privacy line, reusing the onboarding
- * Welcome step's copy. Shown only before the first step docks, so the
- * steps block gets the full middle area once it is running.
+ * The first run's own pitch and privacy line. Shown only before the first
+ * step docks, so the steps block gets the full middle area once it is
+ * running.
  */
 function FirstRunWelcome() {
   return (

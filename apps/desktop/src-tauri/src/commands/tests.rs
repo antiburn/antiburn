@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -453,22 +452,6 @@ fn repository(key: &str, name: &str, root: &str) -> RepositoryRecord {
         wsl_distro: None,
         enabled: true,
     }
-}
-
-#[test]
-fn restarting_onboarding_retires_the_popover_before_opening_setup() {
-    let actions = RefCell::new(Vec::new());
-
-    restart_onboarding_surfaces(
-        || actions.borrow_mut().push("hide_popover"),
-        || {
-            actions.borrow_mut().push("open_onboarding");
-            Ok(())
-        },
-    )
-    .expect("the test transition succeeds");
-
-    assert_eq!(*actions.borrow(), ["hide_popover", "open_onboarding"]);
 }
 
 /// The report request covers thirty days, ends one past now (the end

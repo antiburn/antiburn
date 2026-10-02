@@ -1132,8 +1132,8 @@ impl Default for AppSettings {
             // Empty: every provider antiburn can meter is metered. A reader
             // who wants fewer meters says so one provider at a time.
             live_usage_hidden_providers: HiddenMeters::default(),
-            // Empty: every agent with sessions shows. Onboarding and the
-            // Sources pane write slugs here when the reader turns one off.
+            // Empty: every agent with sessions shows. The Sources pane writes
+            // slugs here when the reader turns one off.
             disabled_agents: DisabledAgents::default(),
             // Official analytics-capable builds start enabled. Source builds
             // omit the client unless the builder selects its Cargo feature.

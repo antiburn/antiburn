@@ -882,7 +882,7 @@ describe("SettingsView", () => {
     expect(
       await screen.findByRole("switch", { name: "Share product analytics" }),
     ).toBeInTheDocument()
-    expect(screen.getByText(/Sends app launches, onboarding progress/i)).toHaveTextContent(
+    expect(screen.getByText(/Sends app launches, first-run progress/i)).toHaveTextContent(
       "Never prompts, sessions, source code, filenames, or paths.",
     )
 
@@ -1326,51 +1326,6 @@ describe("SettingsView", () => {
       "aria-selected",
       "true",
     )
-  })
-
-  it("closes Settings only after onboarding restarts successfully", async () => {
-    let finishRestart!: () => void
-    const restart = new Promise<void>((resolve) => {
-      finishRestart = resolve
-    })
-    confirmDialog.mockResolvedValue(true)
-    mockCommands({ restart_onboarding: () => restart })
-    render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    const [message] = confirmDialog.mock.calls[0] as [string]
-    expect(message).toMatch(/indexed sessions and current settings stay/i)
-    expect(message).toMatch(/returns the next time/i)
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("restart_onboarding"))
-    expect(closeWindow).not.toHaveBeenCalled()
-
-    finishRestart()
-
-    await waitFor(() => expect(closeWindow).toHaveBeenCalledTimes(1))
-  })
-
-  it("keeps onboarding unchanged when the restart is declined", async () => {
-    confirmDialog.mockResolvedValue(false)
-    render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    expect(invoke).not.toHaveBeenCalledWith("restart_onboarding")
-  })
-
-  it("keeps an actionable error visible when setup cannot open", async () => {
-    confirmDialog.mockResolvedValue(true)
-    mockCommands({ restart_onboarding: new Error("window failed") })
-    render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
-
-    expect(await screen.findByRole("status")).toHaveTextContent(/setup could not open/i)
-    expect(screen.getByRole("status")).toHaveTextContent(/try again or restart antiburn/i)
-    expect(closeWindow).not.toHaveBeenCalled()
   })
 })
 

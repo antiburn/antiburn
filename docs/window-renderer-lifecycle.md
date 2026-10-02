@@ -8,8 +8,8 @@ The main popover renderer also stays resident after its first use, so the
 application's primary surface can reopen immediately. Other renderers remain
 bounded by their interaction or handoff.
 
-This document covers the main window, popover, its peek companion, onboarding,
-and Settings renderers. The HUD and nudge windows have separate ownership rules.
+This document covers the main window, popover, its peek companion, and
+Settings renderers. The HUD and nudge windows have separate ownership rules.
 See [HUD states](hud-states.md) for the HUD and its detail window.
 
 ## The shared lifecycle
@@ -46,8 +46,8 @@ The shared Tauri adapters in
 [`window_lifecycle.rs`](../apps/desktop/src-tauri/src/window_lifecycle.rs) record
 load timing and warn about the current stale generation. They reset failed
 loads only for windows whose labels are free. Main-window failures use their
-ownership-aware resolver instead. The main-window, popover, Settings, and
-onboarding modules own their window-specific reveal and destruction policies.
+ownership-aware resolver instead. The main-window, popover, and Settings
+modules own their window-specific reveal and destruction policies.
 
 ## macOS overlay presentation
 
@@ -82,7 +82,7 @@ behavior before presentation. Frame placement reapplies the anchor's level.
 They bypass Tauri window conversion, so they do not need repeated collection
 configuration to defend against toolkit changes.
 
-This policy does not change Main, Settings, or Onboarding activation. It also
+This policy does not change Main or Settings activation. It also
 does not remove the upstream Wry cold-webview creation limitation documented
 in the [desktop README](../apps/desktop/README.md#known-gaps). Creation-time
 activation and reveal-time activation require separate macOS QA.
@@ -90,8 +90,10 @@ activation and reveal-time activation require separate macOS QA.
 ## Main window
 
 The main window uses a dedicated frontend entry and a retained renderer. An
-explicit launch creates it after onboarding. Background startup does not
-construct its webview. After first use, closing hides the window and preserves
+explicit launch creates it directly; its Overview is also where a fresh
+install's first-run setup happens, so there is no separate flow to create
+first. Background startup does not construct its webview. After first use,
+closing hides the window and preserves
 its renderer for the next open. Quit stops the application and all renderers.
 
 The native mechanism crate owns creation, reveal, and placement geometry. The
@@ -174,37 +176,38 @@ includes the health handshake. See the
 [validation runbook](runbooks/main-window.md) for separate cold, first-open,
 warm, acknowledgement, and visible-content measurements.
 
-## Onboarding handoff and popover prewarm
+## First-run handoff and popover prewarm
 
-Completing onboarding performs a deliberate handoff from the first-run window
-to the main and menu-bar surfaces:
+Finishing the first run — the Overview's own setup flow — performs a
+deliberate handoff into the menu bar:
 
-1. The shell hides onboarding immediately, opens the main window, and shows
-   the menu-bar-location notification. The default app-presence settings keep
-   both the menu-bar and macOS Dock icons visible.
+1. The shell shows the menu-bar-location notification. The default
+   app-presence settings keep both the menu-bar and macOS Dock icons visible.
 2. On the next main-loop turn, the shell requests one hidden popover renderer.
    This moves renderer startup out of the first menu-bar click.
-3. It waits one second before destroying onboarding. This lets the final
-   settings IPC response leave the renderer that sent it.
-4. The popover remains hidden after it reports readiness. Readiness starts a
+3. The popover remains hidden after it reports readiness. Readiness starts a
    one-minute handoff lease instead of revealing it.
 
-After onboarding, General → Application applies visibility changes without a
-renderer restart. Hiding the tray icon unpins and hides the tray-owned popover.
-On macOS the store normalizes a malformed both-hidden state by restoring the
-Dock icon, and the Settings controls prevent creating that state normally. On
-Windows and Linux, closing the main window exits when the tray icon is hidden.
+The main window stays open throughout: there is no separate window to hide or
+destroy, since the first run itself ran inside the main window's Overview.
+
+After the first run, General → Application applies visibility changes without
+a renderer restart. Hiding the tray icon unpins and hides the tray-owned
+popover. On macOS the store normalizes a malformed both-hidden state by
+restoring the Dock icon, and the Settings controls prevent creating that state
+normally. On Windows and Linux, closing the main window exits when the tray
+icon is hidden.
 
 `prewarm` is a handoff optimization, not a permanent resident window. It does
-nothing while onboarding is pending, when a popover window already exists, or
-when a popover load is already active. Its lease ends on the first reveal,
-onboarding restart, application shutdown, or the one-minute timeout.
+nothing when a popover window already exists, or when a popover load is
+already active. Its lease ends on the first reveal, application shutdown, or
+the one-minute timeout.
 If readiness never arrives, a 65-second loading fail-safe destroys the hidden
 renderer instead of leaving an unbounded WebContent process.
 Clicks, cancellations, Pin, and stale replacement do not restart either
 deadline. A replacement generation inherits the original absolute deadline.
 
-### First click after onboarding
+### First click after the first run
 
 The first tray click reuses the prewarmed generation when it is ready or still
 loading within the stale threshold:
@@ -221,12 +224,13 @@ releases the old window label. The replacement carries the pending reveal, so
 no two renderers load in parallel.
 
 A second toggle while the active renderer still loads cancels the pending
-reveal. An onboarding prewarm keeps its remaining absolute lease. A normal
+reveal. A first-run prewarm keeps its remaining absolute lease. A normal
 popover load stays available for the next open request.
 
-Restarting onboarding cancels and destroys a renderer that still belongs only
-to the onboarding prewarm. This prevents a hidden post-onboarding surface from
-surviving when onboarding becomes the active application surface again.
+Hiding the tray icon (`popover::hide_for_surface_handoff`) cancels and destroys
+a renderer that still belongs only to a first-run prewarm, the same way it
+retires an ordinary popover. This prevents a hidden prewarm surface from
+surviving a tray icon that no longer owns it.
 
 ## Popover residency and prewarm eviction
 
@@ -236,7 +240,7 @@ schedule destruction. The next open reuses the renderer and its loaded state.
 The renderer remains available until application shutdown or an explicit
 lifecycle reset.
 
-The onboarding prewarm keeps its renderer for 60 seconds after readiness. A
+The first-run prewarm keeps its renderer for 60 seconds after readiness. A
 prewarm that never becomes ready has a 65-second loading fail-safe. Cancelling
 a pending reveal does not extend or replace either absolute deadline. The
 first successful reveal consumes the one-shot lease and makes the renderer
@@ -249,7 +253,7 @@ conditions still hold:
 - it still names the current renderer generation;
 - the window is hidden.
 
-An unrevealed onboarding prewarm expires at its absolute deadline even when
+An unrevealed first-run prewarm expires at its absolute deadline even when
 Pin is enabled. After the first successful reveal, there is no eviction
 deadline for Pin to change.
 
@@ -321,27 +325,26 @@ Application shutdown uses the same native cancellation signal.
 
 | Timing     | Purpose                                                                                              | Start point                      |
 | ---------- | ---------------------------------------------------------------------------------------------------- | -------------------------------- |
-| 1 second   | Let onboarding's final IPC response complete before destroying its renderer                          | Onboarding completion            |
 | 5 seconds  | Mark an active renderer load stale; log a warning and permit one replacement on a later open request | Renderer build start             |
 | 300 ms     | Provisional main-window hidden health acknowledgement timeout                                        | Hidden retained open             |
 | 10 seconds | Provisional main-window recovery watchdog for each replacement generation                            | Recovery generation start        |
-| 60 seconds | Keep the one post-onboarding handoff renderer available for the first menu-bar click                 | Onboarding prewarm readiness     |
-| 65 seconds | Destroy an onboarding prewarm that never reports renderer readiness                                  | Onboarding prewarm build         |
+| 60 seconds | Keep the one post-first-run handoff renderer available for the first menu-bar click                  | First-run prewarm readiness      |
+| 65 seconds | Destroy a first-run prewarm that never reports renderer readiness                                    | First-run prewarm build          |
 | 5 seconds  | Refresh Insights processing status only while the pane has subscribers and remains visible           | Insights session start or resume |
 
 These values serve different purposes. The stale threshold is a recovery
 boundary, not an eviction deadline. The main-window 300 ms and 10-second values
 require post-implementation calibration before merge. No distribution is
 recorded here yet. The prewarm eviction delays are bounded handoff windows, not
-guarantees that a renderer will remain alive. A lifecycle reset, onboarding
-restart, application shutdown, or build failure can end one earlier.
+guarantees that a renderer will remain alive. A lifecycle reset, application
+shutdown, or build failure can end one earlier.
 
 ## Popover latency evidence
 
 The shell records content-free timing boundaries for each menu-bar open:
 
 - the open request and renderer generation;
-- whether the request uses the onboarding prewarm;
+- whether the request uses the first-run prewarm;
 - a renderer build that starts behind the request;
 - renderer readiness and reveal; and
 - the first settled activity and cached usage state.
@@ -398,7 +401,7 @@ Use these principles when adding or changing desktop windows:
 | Peek target policy and shell hooks                               | [`popover_peek.rs`](../apps/desktop/src-tauri/src/popover_peek.rs)                          |
 | Peek generations, concealment, and renderer destruction          | [`anchored-window`](../apps/desktop/src-tauri/crates/anchored-window/src/lib.rs)            |
 | Popover latency milestones and structured timing                 | [`timing.rs`](../apps/desktop/src-tauri/src/popover/timing.rs)                              |
-| Onboarding completion and delayed teardown                       | [`onboarding.rs`](../apps/desktop/src-tauri/src/onboarding.rs)                              |
+| First-run completion: menu-bar notice and popover prewarm        | [`commands/mod.rs`](../apps/desktop/src-tauri/src/commands/mod.rs)                           |
 | Settings creation, destruction, and native Insights cancellation | [`settings.rs`](../apps/desktop/src-tauri/src/settings.rs)                                  |
 | Global close and destroyed-window routing                        | [`lib.rs`](../apps/desktop/src-tauri/src/lib.rs)                                            |
 | React readiness marker                                           | [`WindowReadyMarker.tsx`](../apps/desktop/src/components/WindowReadyMarker.tsx)             |

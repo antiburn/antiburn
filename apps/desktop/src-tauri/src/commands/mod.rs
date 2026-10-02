@@ -18,9 +18,7 @@ use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, ProviderHint, SessionEvidence,
     SourceAcceptance, price_breakdown,
 };
-use antiburn_local::insights::{
-    BadgeId, BadgeStatus, NotAssessedReason, ReportCatalogs, session_badges,
-};
+use antiburn_local::insights::{NotAssessedReason, ReportCatalogs, session_badges};
 use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::paths::{home_dir, protected};
 use antiburn_local::pricing::ModelTokens;
@@ -37,11 +35,11 @@ use crate::dto::{
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
     BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
     ChecksReportPayload, CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome,
-    DeferredPermissionDir, HygieneSummaryPayload, InsightsBacklog, LiveUsageSummary,
-    OrchestrationStatus, PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason,
-    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
-    SessionHygieneRequest, SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary,
-    SessionRelation, SessionRelations, SubagentMember,
+    DeferredPermissionDir, InsightsBacklog, LiveUsageSummary, OrchestrationStatus,
+    PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
+    SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
+    SessionRelations, SubagentMember,
 };
 pub(crate) mod local_usage;
 pub(crate) mod quota;
@@ -112,7 +110,6 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
             crate::popover::renderer_ready(&window, generation);
         }
         crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
-        crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),
         label => {
             ::tracing::debug!(event = "window_ready_ignored", window = label);
         }
@@ -514,88 +511,12 @@ pub async fn set_interface_scale(
     }
 }
 
-/// Make setup pending, open it at Welcome, and keep all other local state.
-#[tauri::command]
-pub async fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
-    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
-    let store = app.state::<Store>().inner().clone();
-    let (previous, saved) = run_blocking(move || store.restart_onboarding().map_err(fail)).await?;
-    let main_previous = previous.clone();
-    let main_saved = saved.clone();
-    crate::main_window::on_main_value(&app, move |app| {
-        crate::analytics::prepare_onboarding_restart();
-        apply_settings_transition(app, &main_previous, &main_saved);
-        restart_onboarding_surfaces(
-            || crate::popover::hide_for_onboarding(app),
-            || crate::onboarding::restart(app).map_err(fail),
-        )
-    })
-    .await??;
-    let analytics_app = app.clone();
-    run_blocking(move || {
-        record_settings_transition(&analytics_app, &previous, &saved);
-        Ok(())
-    })
-    .await
-}
-
-fn restart_onboarding_surfaces(
-    hide_popover: impl FnOnce(),
-    open_onboarding: impl FnOnce() -> CommandResult<()>,
-) -> CommandResult<()> {
-    hide_popover();
-    open_onboarding()
-}
-
-/// Commit the first-run choices and finish onboarding as one transition.
-///
-/// The webview treats these values as a draft until the final button. Keeping
-/// the merge here means an unrelated preference written elsewhere cannot be
-/// replaced by an older whole-settings snapshot from the onboarding window.
-#[tauri::command]
-pub async fn finish_onboarding(
-    app: tauri::AppHandle,
-    activity_window_days: u32,
-    launch_at_login: bool,
-    disabled_agents: Option<Vec<String>>,
-    nudges_respect_dnd: Option<bool>,
-) -> CommandResult<AppSettings> {
-    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
-    let store = app.state::<Store>().inner().clone();
-    let (previous, saved) = run_blocking(move || {
-        store
-            .update_settings(|settings| {
-                settings.activity_window_days = activity_window_days;
-                settings.launch_at_login = launch_at_login;
-                if let Some(disabled) = disabled_agents {
-                    settings.disabled_agents = crate::store::DisabledAgents::selected(disabled);
-                }
-                if let Some(respect) = nudges_respect_dnd {
-                    settings.nudges_respect_dnd = respect;
-                }
-                settings.onboarding_completed = true;
-            })
-            .map_err(fail)
-    })
-    .await?;
-    apply_settings_transition_on_main(&app, &previous, &saved).await?;
-    let analytics_app = app.clone();
-    let analytics_previous = previous.clone();
-    let analytics_saved = saved.clone();
-    run_blocking(move || {
-        record_settings_transition(&analytics_app, &analytics_previous, &analytics_saved);
-        Ok(())
-    })
-    .await?;
-    Ok(saved)
-}
-
 /// Mark the first run finished, as its result first shows.
 ///
-/// Replaces `finish_onboarding` for the Overview's own first-run flow, which
-/// asks the reader nothing before it shows results. The settings-save path
-/// runs `apply_settings_transition`, which registers startup, requests a
-/// scan, and sends the menu-bar-home notification.
+/// The Overview's own first-run flow asks the reader nothing before it shows
+/// results. The settings-save path runs `apply_settings_transition`, which
+/// registers startup, requests a scan, and sends the menu-bar-home
+/// notification.
 #[tauri::command]
 pub async fn finish_first_run(app: tauri::AppHandle) -> CommandResult<AppSettings> {
     let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
@@ -1910,70 +1831,6 @@ pub fn cancel_checks_report(
         .state::<InsightsController>()
         .release_checks(&consumer_id);
     Ok(())
-}
-
-/// The aggregate hygiene numbers for the sessions in the activity window.
-///
-/// Same window and disabled-agent filter as `list_recent_sessions`, so the
-/// summary describes the sessions the list shows.
-#[tauri::command]
-pub async fn get_hygiene_summary(app: tauri::AppHandle) -> CommandResult<HygieneSummaryPayload> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let store = app.state::<Store>();
-        let settings = store.settings().map_err(fail)?;
-        let since = scan::unix_now() - i64::from(settings.activity_window_days) * 86_400;
-        let rows = store
-            .hygiene_summary_rows(&environment_key(None), since, &settings.disabled_agents)
-            .map_err(fail)?;
-        Ok(hygiene_summary_payload(rows))
-    })
-    .await
-    .map_err(fail)?
-}
-
-fn hygiene_summary_payload(rows: Vec<crate::store::HygieneSummaryRow>) -> HygieneSummaryPayload {
-    let catalogs = ReportCatalogs::default();
-    let total_sessions = rows.len() as u64;
-    let mut settled_sessions = 0;
-    let mut analyzed_sessions = 0;
-    let mut failing_sessions = 0;
-    let mut finding_counts = [0u64; BadgeId::ALL.len()];
-    for row in rows {
-        if row.settled {
-            settled_sessions += 1;
-        }
-        let Some(evidence_json) = row.evidence_json else {
-            continue;
-        };
-        let Ok(evidence) = serde_json::from_str::<SessionEvidence>(&evidence_json) else {
-            continue;
-        };
-        analyzed_sessions += 1;
-        let mut failed = false;
-        for (index, badge) in session_badges(&evidence, &catalogs).iter().enumerate() {
-            if badge.status == BadgeStatus::Finding {
-                failed = true;
-                finding_counts[index] += 1;
-            }
-        }
-        if failed {
-            failing_sessions += 1;
-        }
-    }
-    // Ties keep the first badge in `BadgeId::ALL` order.
-    let most_common_finding = finding_counts
-        .iter()
-        .enumerate()
-        .filter(|(_, count)| **count > 0)
-        .max_by(|left, right| left.1.cmp(right.1).then(right.0.cmp(&left.0)))
-        .map(|(index, _)| crate::dto::badge_id_str(BadgeId::ALL[index]));
-    HygieneSummaryPayload {
-        total_sessions,
-        settled_sessions,
-        analyzed_sessions,
-        failing_sessions,
-        most_common_finding,
-    }
 }
 
 /// The hygiene badges for a bounded set of stored session evidence rows.

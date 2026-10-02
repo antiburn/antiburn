@@ -477,23 +477,6 @@ export interface SessionHygienePayload {
   unusedResources: SessionUnusedResources | null
 }
 
-/**
- * Aggregate hygiene numbers for the sessions in the activity window.
- * Mirrors Rust `HygieneSummaryPayload`.
- */
-export interface HygieneSummary {
-  /** Sessions in the window, after the disabled-agent display filter. */
-  totalSessions: number
-  /** Sessions whose analysis reached a terminal state. */
-  settledSessions: number
-  /** Sessions with current ready evidence, so the checks ran. */
-  analyzedSessions: number
-  /** Analyzed sessions with at least one finding. */
-  failingSessions: number
-  /** Badge id of the most frequent finding, when any session fails. */
-  mostCommonFinding: SessionHygieneBadgeId | null
-}
-
 /** The real local detector results and bounded session navigation targets. */
 export async function getChecksReport(consumerId: string): Promise<ChecksReportPayload | null> {
   if (!hasShell()) return null
@@ -587,12 +570,6 @@ export async function cancelChecksReport(consumerId: string): Promise<void> {
 /** Run after the evidence worker publishes every item in its current queue. */
 export async function onChecksReportChanged(handler: () => void): Promise<UnlistenFn> {
   return listen("checks:report-changed", handler)
-}
-
-/** The aggregate hygiene numbers for the sessions in the activity window. */
-export async function getHygieneSummary(): Promise<HygieneSummary | null> {
-  if (!hasShell()) return null
-  return invoke<HygieneSummary>("get_hygiene_summary")
 }
 
 /** The hygiene badges reduced from a bounded set of stored evidence rows. */

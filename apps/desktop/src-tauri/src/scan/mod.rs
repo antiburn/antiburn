@@ -20,9 +20,9 @@
 //!
 //! When a pass runs:
 //!
-//! - **At launch**, once, if onboarding is finished. A first-run install has no
-//!   sources selected yet, so scanning before the flow completes would only
-//!   spend disk on a window nobody can see.
+//! - **At launch**, once, unless discovery is paused. A fresh install runs
+//!   this pass too: the first-run Overview follows it, rather than waiting
+//!   for an explicit scan request.
 //! - **Every [`TICK`], unconditionally.** R1/R2: the watcher is the primary
 //!   freshness path now, so the tick is 5 minutes of reconciliation for what
 //!   it cannot see — a WSL session (never watched) or a rare dropped OS
@@ -145,7 +145,7 @@ pub const EVENT_FINISHED: &str = "scan:finished";
 /// to correlate timestamps against reader actions after the fact.
 #[derive(Debug, Clone)]
 pub enum ScanTrigger {
-    /// The one pass run at startup, after onboarding has finished.
+    /// The one pass run at startup, unless discovery is paused.
     Launch,
     /// The scheduler's unconditional [`TICK`].
     Tick,
